@@ -6,6 +6,7 @@ export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
 export const INDEPENDENT_ORACLE_RESULT_SCHEMA = 'hex-rebuild-independent-oracle-result-v1';
 const ATOMIC_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename', 'transactional-store']);
+const DISCOVERY_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename']);
 const REBUILD_FORMATS = new Set(['macho', 'elf', 'pe']);
 const FORMAT_PROFILES = Object.freeze({
   macho: Object.freeze(['macho:64']),
@@ -25,6 +26,7 @@ const F6_NATIVE_INVARIANT_UNITS = Object.freeze([
 const F6_PRESERVATION_ORACLE_IDENTITY = 'external:llvm-readobj';
 const F6_PRESERVATION_ORACLE_VERSION = 'Ubuntu LLVM version 18.1.3';
 const TRUSTED_INDEPENDENT_ORACLE_PROVIDERS = new WeakSet();
+const TRUSTED_REBUILD_PUBLICATION_ADAPTERS = new WeakSet();
 
 // The preservation denominator accepts only the repository's registered
 // independent-provider adapter. A caller-supplied function cannot mint a
@@ -37,6 +39,19 @@ export function registerCanonicalIndependentOracleProvider(provider) {
 
 function isCanonicalIndependentOracleProvider(provider) {
   return typeof provider === 'function' && TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.has(provider);
+}
+
+// Discovery-bearing output can be published only by a repository bootstrap
+// adapter. This registration is a trust boundary between repository wiring
+// and ordinary caller callbacks, not a sandbox against same-privilege JS.
+export function registerCanonicalRebuildPublicationAdapter(adapter) {
+  if (typeof adapter !== 'function') throw new TypeError('rebuild-v2-publication-adapter-required');
+  TRUSTED_REBUILD_PUBLICATION_ADAPTERS.add(adapter);
+  return adapter;
+}
+
+function isCanonicalRebuildPublicationAdapter(adapter) {
+  return typeof adapter === 'function' && TRUSTED_REBUILD_PUBLICATION_ADAPTERS.has(adapter);
 }
 export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
 // These are evaluator-level bounded capabilities, not replacements for the
@@ -1256,8 +1271,70 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   if (control) {
     try { checkDiscoveryControl(control); } catch (error) { return discoveryError(error, 'invalid'); }
   }
-  ISSUED_VALIDATIONS.set(receipt, { materialized, discovery: discoveryProof });
+  ISSUED_VALIDATIONS.set(receipt, { materialized, discovery: discoveryProof,
+    publicationState: discoveryProof ? 'available' : null });
   return receipt;
+}
+
+function publishDiscoveryRebuild(materialized, proof, issued, control, adapter) {
+  const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
+  let active = true;
+  let authorizationUsed = false;
+  let committedIdentity = null;
+  let adapterError = null;
+
+  const authorizeCommit = (candidate = {}) => {
+    if (!active) throw new Error('rebuild-v2-publication-capability-revoked');
+    if (authorizationUsed) throw new Error('rebuild-v2-publication-capability-spent');
+    const protocol = String(candidate.protocol || '');
+    if (!DISCOVERY_PUBLICATION_PROTOCOLS.has(protocol)) throw new Error('rebuild-v2-publication-protocol-unsupported');
+    const publicationIdentity = String(candidate.publicationIdentity || '').trim();
+    if (!publicationIdentity) throw new Error('rebuild-v2-publication-identity-required');
+    if (typeof candidate.commit !== 'function') throw new Error('rebuild-v2-publication-synchronous-commit-required');
+    const stagedBytes = discoveryByteView(candidate.stagedBytes, issued.output.length).slice();
+    if (!sameDiscoveryBytes(stagedBytes, issued.output)) throw new Error('rebuild-v2-discovery-staged-bytes-mismatch');
+    checkDiscoveryControl(control);
+
+    // This is the single linearization point. Canonical adapters must perform
+    // their atomic primitive synchronously; a retained capability is revoked
+    // as soon as the adapter returns. Once this call returns, commit wins over
+    // a later abort because publication has already linearized.
+    authorizationUsed = true;
+    const commitResult = candidate.commit();
+    if (commitResult && typeof commitResult.then === 'function') {
+      throw new Error('rebuild-v2-publication-synchronous-commit-required');
+    }
+    committedIdentity = Object.freeze({ atomic: true, committed: true, protocol,
+      transactionId: materialized.transactionId, outputHash: materialized.outputHash,
+      outputIdentity, publicationIdentity });
+    return committedIdentity;
+  };
+
+  const request = Object.freeze({ bytes: issued.output.slice(), expectedLength: issued.output.length,
+    maxBytes: REBUILD_DISCOVERY_MAX_BYTES, transactionId: materialized.transactionId,
+    outputHash: materialized.outputHash, outputIdentity, signal: control.signal,
+    deadline: control.deadline, authorizeCommit });
+  try {
+    const adapterResult = adapter(request);
+    if (!committedIdentity && adapterResult && typeof adapterResult.then === 'function') {
+      Promise.resolve(adapterResult).catch(() => {});
+      adapterError = new Error('rebuild-v2-publication-adapter-must-be-synchronous');
+    }
+  } catch (error) {
+    adapterError = error;
+  } finally {
+    active = false;
+  }
+
+  if (committedIdentity) {
+    const discovery = { verified: true, byteLength: issued.output.length, outputHash: materialized.outputHash,
+      sourceArtifactId: proof.discovery.sourceArtifactId, outputArtifactId: proof.discovery.outputArtifactId };
+    return deepFreeze({ status: 'published', ...committedIdentity, discovery, result: committedIdentity });
+  }
+  if (adapterError) return { ...discoveryError(adapterError), commitState: 'not-committed' };
+  try { checkDiscoveryControl(control); }
+  catch (error) { return { ...discoveryError(error), commitState: 'not-committed' }; }
+  return { status: 'not-published', reason: 'rebuild-v2-publication-adapter-did-not-commit', commitState: 'not-committed' };
 }
 
 export async function publishRebuildTransaction(materialized, validation, options = {}) {
@@ -1279,12 +1356,21 @@ export async function publishRebuildTransaction(materialized, validation, option
       checkDiscoveryControl(control);
       if (!proof.discovery || !sameDiscoveryBytes(materialized.bytes, issued.output)) throw new Error('rebuild-v2-discovery-output-tampered');
     } catch (error) { return discoveryError(error); }
-    if (typeof options.readCommitted !== 'function') return { status: 'not-published', reason: 'rebuild-v2-discovery-readback-required' };
+    if (!isCanonicalRebuildPublicationAdapter(options.publicationAdapter)) {
+      return { status: 'not-published', reason: 'rebuild-v2-canonical-publication-adapter-required' };
+    }
   }
   try {
     if (hashBytes(materialized.bytes) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-materialization-output-tampered' };
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-materialization-output-invalid', detail: String(error?.message || error) };
+  }
+  if (issued.discovery) {
+    if (proof.publicationState !== 'available') {
+      return { status: 'rejected', reason: 'rebuild-v2-validation-unissued-or-stale' };
+    }
+    proof.publicationState = 'claimed';
+    return publishDiscoveryRebuild(materialized, proof, issued, control, options.publicationAdapter);
   }
   if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };
   try {

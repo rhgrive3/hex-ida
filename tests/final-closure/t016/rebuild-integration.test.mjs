@@ -6,10 +6,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { functionCandidates, discoveryArtifactForRebuild } from '../../../js/analysis/index.js';
-import { REBUILD_DISCOVERY_MAX_BYTES } from '../../../js/rebuild/transaction-v2.js';
+import { REBUILD_DISCOVERY_MAX_BYTES, registerCanonicalRebuildPublicationAdapter } from '../../../js/rebuild/transaction-v2.js';
 import { openBinary } from '../../../js/binary/index.js';
 import { createFormatSafeRebuildTransaction, validateFormatSafeMutation } from '../../../js/rebuild/format-safe.js';
 import { createRebuildTransaction, materializeRebuildTransaction, validateRebuildTransaction, publishRebuildTransaction } from '../../../js/rebuild/transaction-v2.js';
+import { createNodeAtomicPublicationAdapter } from '../../../tools/validation/discovery/node-atomic-publication.mjs';
 
 const source = new Uint8Array(fs.readFileSync(new URL('../../phase5/corpus/fixtures/vertical-sysv-amd64.elf', import.meta.url)));
 function transaction(overrides = {}) {
@@ -47,8 +48,40 @@ test('T016 counterexample: a discovery-required publication cannot succeed on an
     atomicPromote: async (_bytes, { materialized: m }) => { promotions += 1; return receipt(m); },
   });
   assert.equal(publication.status, 'not-published');
-  assert.equal(publication.reason, 'rebuild-v2-discovery-readback-required');
+  assert.equal(publication.reason, 'rebuild-v2-canonical-publication-adapter-required');
   assert.equal(promotions, 0, 'missing readback must be detected before any commit side effect');
+});
+
+test('T016 arbitrary callback receipts cannot mint discovery publication proof', async () => {
+  const { materialized, validation } = await prepare();
+  let promotions = 0;
+  const publication = await publishRebuildTransaction(materialized, validation, {
+    atomicPromote: async (_bytes, { materialized: m }) => { promotions += 1; return receipt(m); },
+    readCommitted: async () => ({ size: materialized.outputLength, read: async () => materialized.bytes.slice() }),
+  });
+  assert.equal(publication.status, 'not-published');
+  assert.equal(publication.reason, 'rebuild-v2-canonical-publication-adapter-required');
+  assert.equal(promotions, 0);
+});
+
+test('T016 an untrusted delayed callback is never invoked and cannot publish stale bytes', async (t) => {
+  const { materialized, validation } = await prepare();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t016-late-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const target = path.join(directory, 'committed.bin');
+  const controller = new AbortController();
+  const publication = publishRebuildTransaction(materialized, validation, {
+    signal: controller.signal,
+    atomicPromote: () => new Promise((resolve) => setTimeout(() => {
+      fs.writeFileSync(target, materialized.bytes);
+      resolve(receipt(materialized, target));
+    }, 20)),
+    readCommitted: async () => ({ size: materialized.outputLength, read: async () => materialized.bytes.slice() }),
+  });
+  setImmediate(() => controller.abort());
+  assert.equal((await publication).reason, 'rebuild-v2-canonical-publication-adapter-required');
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(fs.existsSync(target), false, 'cancelled publication must not commit later');
 });
 
 
@@ -70,51 +103,24 @@ function rawTransaction(bytes, overrides = {}) {
     requireDiscoveryPreservation: true, operations: [{ offset: 0, before: [bytes[0]], after: [bytes[0]] }], ...overrides });
 }
 
-// Positive proof uses tracked compiler-produced bytes, a real temporary file,
-// atomic rename and bounded reads of that committed file, not a receipt cache.
+// Positive proof uses tracked compiler-produced bytes, bounded readback of a
+// real same-directory temporary, and atomic rename, not a receipt cache.
 async function filePublication(t, materialized, validation) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t016-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'committed.bin');
-  let reads = 0;
   const publication = await publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async (bytes, { materialized: m }) => {
-      const temporary = path.join(directory, 'candidate.tmp');
-      fs.writeFileSync(temporary, bytes);
-      fs.renameSync(temporary, target);
-      return { ...receipt(m, target), protocol: 'temp-then-atomic-rename' };
-    },
-    readCommitted: async (request) => {
-      assert.equal(request.publicationIdentity, target);
-      assert.equal(request.expectedLength, materialized.outputLength);
-      assert.ok(request.expectedLength <= request.maxBytes);
-      return {
-        get size() { return BigInt(fs.statSync(target).size); },
-        read: async (offset, length, limits) => {
-          reads += 1;
-          assert.equal(offset, 0n);
-          assert.equal(length, request.expectedLength);
-          assert.equal(limits.maxBytes, REBUILD_DISCOVERY_MAX_BYTES);
-          const fd = fs.openSync(target, 'r');
-          try {
-            assert.equal(fs.fstatSync(fd).size, length);
-            const bytes = new Uint8Array(length);
-            const count = fs.readSync(fd, bytes, 0, length, 0);
-            assert.equal(fs.fstatSync(fd).size, length);
-            return bytes.subarray(0, count);
-          } finally { fs.closeSync(fd); }
-        },
-      };
-    },
+    publicationAdapter: createNodeAtomicPublicationAdapter({ targetPath: target }),
   });
   assert.equal(publication.status, 'published', JSON.stringify(publication));
   assert.equal(publication.discovery.verified, true);
-  assert.equal(reads, 1);
+  assert.equal(publication.publicationIdentity, path.resolve(target));
   assert.deepEqual(new Uint8Array(fs.readFileSync(target)), materialized.bytes);
+  assert.deepEqual(fs.readdirSync(directory), ['committed.bin']);
   return publication;
 }
 
-test('T016 real ELF: source parse -> changed bytes -> fresh discovery -> rename -> committed readback', async (t) => {
+test('T016 real ELF: source parse -> changed bytes -> fresh discovery -> verified temporary -> atomic rename', async (t) => {
   const { tx, materialized, validation } = await prepare({}, { loaderReparse: undefined });
   assert.ok(tx.requiredValidators.includes('discovery-preservation'));
   assert.notEqual(materialized.outputHash, tx.sourceHash);
@@ -190,7 +196,7 @@ for (const [name, change] of [
     assert.equal(materialized.discovery.contract, tx.discovery);
     assert.equal(validation.discovery.contract.required, true);
     assert.equal((await publishRebuildTransaction(materialized, validation, { requireDiscoveryPreservation: false })).reason,
-      'rebuild-v2-discovery-readback-required');
+      'rebuild-v2-canonical-publication-adapter-required');
   });
 }
 
@@ -382,40 +388,47 @@ test('T016 partial parser output and unsupported transformations stay rejected',
   assert.equal(discoveryFailure(v), 'rebuild-v2-discovery-transform-unsupported');
 });
 
-function memoryPublication(materialized, validation, { size = materialized.outputLength, raw = materialized.bytes.slice(), readCommitted, ...options } = {}) {
-  return publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async (_bytes, { materialized: m }) => receipt(m),
-    readCommitted: readCommitted ?? (async () => ({ size, read: async () => raw })), ...options,
-  });
+function guardedPublication(materialized, validation, { stagedBytes = materialized.bytes.slice(), commit = () => {}, adapter, ...options } = {}) {
+  const publicationAdapter = adapter ?? registerCanonicalRebuildPublicationAdapter((request) => request.authorizeCommit({
+    stagedBytes, protocol: 'temp-then-atomic-rename', publicationIdentity: 't016:test-target', commit,
+  }));
+  return publishRebuildTransaction(materialized, validation, { publicationAdapter, ...options });
 }
 
-test('T016 different committed bytes cannot publish even with matching receipt identities', async () => {
+test('T016 wrong staged bytes cannot reach the guarded commit', async () => {
   const { materialized, validation } = await prepare();
   const raw = materialized.bytes.slice(); raw[0] ^= 1;
-  const result = await memoryPublication(materialized, validation, { raw });
-  assert.equal(result.reason, 'rebuild-v2-discovery-committed-bytes-mismatch');
-  assert.equal(result.commitState, 'unverified');
+  let commits = 0;
+  const result = await guardedPublication(materialized, validation, { stagedBytes: raw, commit: () => { commits += 1; } });
+  assert.equal(result.reason, 'rebuild-v2-discovery-staged-bytes-mismatch');
+  assert.equal(result.commitState, 'not-committed');
+  assert.equal(commits, 0);
+});
+
+test('T016 unavailable discovery publication protocols remain unsupported', async () => {
+  const { materialized, validation } = await prepare();
+  let commits = 0;
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => request.authorizeCommit({
+    stagedBytes: materialized.bytes, protocol: 'transactional-store',
+    publicationIdentity: 't016:unsupported-store', commit: () => { commits += 1; },
+  }));
+  const result = await guardedPublication(materialized, validation, { adapter });
+  assert.equal(result.reason, 'rebuild-v2-publication-protocol-unsupported');
+  assert.equal(result.commitState, 'not-committed');
+  assert.equal(commits, 0);
 });
 
 for (const delta of [-1, 1, REBUILD_DISCOVERY_MAX_BYTES]) {
-  test(`T016 committed stat length N${delta < 0 ? '' : '+'}${delta} is rejected before read`, async () => {
-    const { materialized, validation } = await prepare();
-    let reads = 0;
-    const result = await memoryPublication(materialized, validation, {
-      readCommitted: async () => ({ size: materialized.outputLength + delta,
-        get read() { reads += 1; throw new Error('unbounded read attempted'); } }),
-    });
-    assert.match(result.reason, /byte-(length-mismatch|budget-exceeded)/);
-    assert.equal(reads, 0);
-  });
-  test(`T016 returned length N${delta < 0 ? '' : '+'}${delta} is rejected before element access/copy`, async () => {
+  test(`T016 staged length N${delta < 0 ? '' : '+'}${delta} is rejected before element access or commit`, async () => {
     const { materialized, validation } = await prepare();
     let elements = 0;
     const raw = new Array(materialized.outputLength + delta);
     Object.defineProperty(raw, '0', { get() { elements += 1; throw new Error('unbounded copy attempted'); } });
-    const result = await memoryPublication(materialized, validation, { raw });
+    let commits = 0;
+    const result = await guardedPublication(materialized, validation, { stagedBytes: raw, commit: () => { commits += 1; } });
     assert.match(result.reason, /byte-(length-mismatch|budget-exceeded)/);
     assert.equal(elements, 0);
+    assert.equal(commits, 0);
   });
 }
 
@@ -431,25 +444,18 @@ test('T016 source bounds precede copying, and declared byte ceiling cannot be ra
   assert.throws(() => transaction({ sourceLength: REBUILD_DISCOVERY_MAX_BYTES + 1 }), /byte-budget-exceeded/);
 });
 
-test('T016 readback must be readable bytes, not a verified boolean or a hash string', async () => {
-  const { materialized, validation } = await prepare();
-  for (const raw of [true, materialized.outputHash, { verified: true, outputHash: materialized.outputHash }]) {
-    assert.equal((await memoryPublication(materialized, validation, { raw })).reason, 'rebuild-v2-discovery-bytes-required');
+test('T016 staged proof must contain readable bytes, not a verified boolean or hash', async () => {
+  for (const stagedBytes of [true, 'bytes:forged', { verified: true }]) {
+    const { materialized, validation } = await prepare();
+    assert.equal((await guardedPublication(materialized, validation, { stagedBytes })).reason,
+      'rebuild-v2-discovery-bytes-required');
   }
-  assert.equal((await memoryPublication(materialized, validation, { readCommitted: async () => ({ size: materialized.outputLength, verified: true }) })).reason,
-    'rebuild-v2-discovery-readback-unreadable');
 });
 
-test('T016 changed size during readback and mutated materialization cannot publish', async () => {
+test('T016 mutated materialization cannot publish', async () => {
   const { materialized, validation } = await prepare();
-  let read = false;
-  const result = await memoryPublication(materialized, validation, { readCommitted: async () => ({
-    get size() { return materialized.outputLength + (read ? 1 : 0); },
-    read: async () => { read = true; return materialized.bytes.slice(); },
-  }) });
-  assert.equal(result.reason, 'rebuild-v2-discovery-byte-length-mismatch');
   materialized.bytes[0] ^= 1;
-  assert.equal((await memoryPublication(materialized, validation)).reason, 'rebuild-v2-discovery-output-tampered');
+  assert.equal((await guardedPublication(materialized, validation)).reason, 'rebuild-v2-discovery-output-tampered');
 });
 
 test('T016 cancelled and expired stages never materialize, validate or publish successfully', async () => {
@@ -459,32 +465,83 @@ test('T016 cancelled and expired stages never materialize, validate or publish s
     assert.notEqual((await materializeRebuildTransaction(tx, source, options)).status, 'materialized');
     assert.notEqual((await validateRebuildTransaction(tx, materialized, { ...validationOptions(), ...options })).status, 'valid');
     let commits = 0;
-    const result = await memoryPublication(materialized, validation, { ...options, atomicPromote: () => { commits += 1; } });
+    const result = await guardedPublication(materialized, validation, { ...options, commit: () => { commits += 1; } });
     assert.notEqual(result.status, 'published');
     assert.equal(commits, 0);
   }
 });
 
-for (const stage of ['promote', 'open', 'read']) {
-  test(`T016 cancellation interrupts a pending ${stage} without success`, async () => {
-    const { materialized, validation } = await prepare();
-    const controller = new AbortController();
-    const pending = () => { setImmediate(() => controller.abort()); return new Promise(() => {}); };
-    const result = await memoryPublication(materialized, validation, { signal: controller.signal,
-      ...(stage === 'promote' ? { atomicPromote: pending } : {}),
-      ...(stage === 'open' ? { readCommitted: pending } : {}),
-      ...(stage === 'read' ? { readCommitted: async () => ({ size: materialized.outputLength, read: pending }) } : {}),
-    });
-    assert.equal(result.status, 'cancelled');
-    assert.equal(result.reason, 'rebuild-v2-discovery-cancelled');
-  });
-}
-
-test('T016 readback deadline also bounds an adapter that never resolves', async () => {
+test('T016 cancellation revokes a canonical delayed attempt before commit', async (t) => {
   const { materialized, validation } = await prepare();
-  const result = await memoryPublication(materialized, validation, { deadline: Date.now() + 100,
-    readCommitted: async () => ({ size: materialized.outputLength, read: () => new Promise(() => {}) }) });
-  assert.equal(result.reason, 'rebuild-v2-discovery-deadline-exceeded');
+  const controller = new AbortController();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t016-cancel-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const target = path.join(directory, 'committed.bin');
+  let lateAttempt;
+  let commits = 0;
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
+    lateAttempt = () => request.authorizeCommit({ stagedBytes: materialized.bytes,
+      protocol: 'temp-then-atomic-rename', publicationIdentity: target, commit: () => {
+        commits += 1;
+        fs.writeFileSync(target, materialized.bytes);
+      } });
+    controller.abort();
+  });
+  const result = await guardedPublication(materialized, validation, { adapter, signal: controller.signal });
+  assert.equal(result.status, 'cancelled');
+  assert.throws(lateAttempt, /capability-revoked/);
+  assert.equal(commits, 0);
+  assert.equal(fs.existsSync(target), false);
+});
+
+test('T016 deadline revokes an asynchronous delayed attempt before commit', async (t) => {
+  const { materialized, validation } = await prepare();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t016-deadline-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const target = path.join(directory, 'committed.bin');
+  let commits = 0;
+  let lateError = null;
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => new Promise((resolve) => setTimeout(() => {
+    try {
+      request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
+        publicationIdentity: target, commit: () => {
+          commits += 1;
+          fs.writeFileSync(target, materialized.bytes);
+        } });
+    } catch (error) { lateError = error; }
+    resolve();
+  }, 20)));
+  const result = await guardedPublication(materialized, validation, { adapter, deadline: Date.now() + 5 });
+  assert.equal(result.reason, 'rebuild-v2-publication-adapter-must-be-synchronous');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.match(String(lateError?.message), /capability-revoked/);
+  assert.equal(commits, 0);
+  assert.equal(fs.existsSync(target), false);
+});
+
+test('T016 commit wins when cancellation follows the synchronous linearization point', async () => {
+  const { materialized, validation } = await prepare();
+  const controller = new AbortController();
+  let commits = 0;
+  const result = await guardedPublication(materialized, validation, { signal: controller.signal, commit: () => {
+    commits += 1;
+    controller.abort();
+  } });
+  assert.equal(result.status, 'published');
+  assert.equal(commits, 1);
+});
+
+test('T016 one issued validation authorizes exactly one publication attempt', async () => {
+  const { materialized, validation } = await prepare();
+  let retry;
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
+    retry = guardedPublication(materialized, validation);
+    request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
+      publicationIdentity: 't016:first', commit: () => {} });
+  });
+  assert.equal((await guardedPublication(materialized, validation, { adapter })).status, 'published');
+  assert.equal((await retry).reason, 'rebuild-v2-validation-unissued-or-stale');
+  assert.equal((await guardedPublication(materialized, validation)).reason, 'rebuild-v2-validation-unissued-or-stale');
 });
 
 for (const status of ['cancelled', 'deadline', 'resource-limit', 'partial', 'unsupported']) {
@@ -534,13 +591,13 @@ test('T016 a caller claiming unsigned cannot authorize a signed PE input', async
   assert.equal(discoveryFailure(v), 'rebuild-v2-discovery-signed-input-unsupported');
 });
 
-test('T016 abort before the deferred adapter invocation prevents commit side effects', async () => {
+test('T016 abort before adapter invocation prevents commit side effects', async () => {
   const { materialized, validation } = await prepare();
   const controller = new AbortController();
-  let promotions = 0;
-  const pending = memoryPublication(materialized, validation, { signal: controller.signal,
-    atomicPromote: () => { promotions += 1; return receipt(materialized); } });
   controller.abort();
-  assert.equal((await pending).status, 'cancelled');
-  assert.equal(promotions, 0);
+  let commits = 0;
+  const result = await guardedPublication(materialized, validation, { signal: controller.signal,
+    commit: () => { commits += 1; } });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(commits, 0);
 });
