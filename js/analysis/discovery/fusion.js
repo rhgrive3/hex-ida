@@ -135,6 +135,55 @@ function fuseStartState(evidence) {
  * separate extent metrics exist precisely so that leaving it unknown is not
  * punished as harshly as getting it wrong.
  */
+function regionBounds(region) {
+  try {
+    const start = BigInt(region?.start);
+    const end = BigInt(region?.end);
+    if (end < start) return null;
+    return { start, end };
+  } catch {
+    return null;
+  }
+}
+
+// Every partial range in the same authority tier must be contained in the
+// agreed complete region set. An outside range, a partial ownership
+// contradiction, or an unparseable range withdraws the exact claim.
+function checkPartialContainment(completeRegions, partialItems) {
+  const complete = [];
+  for (const region of completeRegions ?? []) {
+    const bounds = regionBounds(region);
+    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
+    complete.push(bounds);
+  }
+  const ownershipByRange = new Map();
+  for (const item of partialItems ?? []) {
+    for (const region of item?.regions ?? []) {
+      const bounds = regionBounds(region);
+      if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const key = `${bounds.start}-${bounds.end}`;
+      const prior = ownershipByRange.get(key);
+      if (prior != null && prior !== region.ownership) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [...new Set([prior, region.ownership])].sort(),
+        };
+      }
+      ownershipByRange.set(key, region.ownership);
+      const contained = complete.some((c) => c.start <= bounds.start && bounds.end <= c.end);
+      if (!contained) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent reaches outside the complete claim',
+          alternatives: [{ start: region.start, end: region.end }],
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function fuseExtent(evidence) {
   const withRegions = evidence.filter((item) => item.regions.length > 0);
   if (withRegions.length === 0) return { regions: [], state: 'unknown', conflicts: [] };
@@ -184,6 +233,11 @@ function fuseExtent(evidence) {
 
   if (signatures.size === 1) {
     const only = [...signatures.values()][0];
+    // A complete claim does not excuse unchecked partial ranges: every partial
+    // range in the same authority tier must be contained in the complete
+    // region set, or the extent claims contradict each other.
+    const containment = checkPartialContainment(only.regions, partial);
+    if (containment) return { regions: [], state: 'unknown', conflicts: [containment] };
     return {
       regions: only.regions,
       state: authoritative.length > 0 ? 'exact' : considered.length > 1 ? 'probable' : 'heuristic',
