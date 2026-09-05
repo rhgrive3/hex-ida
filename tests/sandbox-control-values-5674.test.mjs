@@ -38,3 +38,10 @@ test('worker-side defense does not Number-coerce malformed plugin indexes', () =
   const canonical = mod.__workerProgramForTest('', 'plugin', 1);
   assert.match(canonical, /const __hexUserIndex = 1;/);
 });
+
+test('irrelevant malformed index does not break script or discover mode', () => {
+  const script = mod.__workerProgramForTest('print(1);', 'script', ['1']);
+  const discover = mod.__workerProgramForTest('', 'discover', true);
+  assert.match(script, /const __hexUserMode = 'script';\nconst __hexUserIndex = 0;/);
+  assert.match(discover, /const __hexUserMode = \"discover\";\nconst __hexUserIndex = 0;/);
+});
