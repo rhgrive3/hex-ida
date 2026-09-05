@@ -576,6 +576,11 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   const budget = workBudget;
   const consumeCaptureWork = budget.consume;
   const capturedStrings = new Set();
+  // Property names are primitive strings and are repeatedly observed across
+  // every value/definition/origin projection.  The descriptor/key visit is
+  // still charged per object below; only the bounded text work is memoized,
+  // because the same key spelling requires no second conversion or storage.
+  const capturedPropertyKeys = new Set();
   const capturedBigints = new Set();
   const capture = (value, role = 'generic') => {
     if (value === null) return null;
@@ -646,7 +651,10 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
       for (const key of reportedKeys) {
         if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
         consumeCaptureWork(1);
-        budget.consumeText(key);
+        if (!capturedPropertyKeys.has(key)) {
+          budget.consumeText(key);
+          capturedPropertyKeys.add(key);
+        }
       }
       record = {
         source:value,
@@ -844,6 +852,16 @@ function createFastJsonGraphDigester({
   }
   const budget = workBudget ?? createIdentityWorkBudget(maxReferences);
   const consumeReferenceWork = budget.consume;
+  // Repeated property names are the same bounded text input across a shared
+  // metadata DAG. Descriptor/reference visits remain charged per occurrence;
+  // only property-name text conversion work is memoized.
+  const chargedPropertyText = new Set();
+  const consumePropertyText = (text) => {
+    if (typeof text !== 'string') throw new TypeError('identity-invalid-text-work');
+    if (chargedPropertyText.has(text)) return;
+    budget.consumeText(text);
+    chargedPropertyText.add(text);
+  };
   const semanticDescriptor = (object, key) => {
     let descriptors = descriptorMemo.get(object);
     if (descriptors == null) {
@@ -889,6 +907,11 @@ function createFastJsonGraphDigester({
     mix(hash, text.length);
     for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
   };
+  const writePropertyText = (hash, text) => {
+    consumePropertyText(text);
+    mix(hash, text.length);
+    for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
+  };
   // Seed the algorithm/schema version once per top-level digest. Repeating the
   // same version text for every Merkle node was measurable work on large DAGs.
   writeText(seeds, ANALYSIS_IDENTITY_DIGEST_VERSION);
@@ -913,7 +936,7 @@ function createFastJsonGraphDigester({
     mix(hash, keys.length);
     for (const key of keys) {
       mix(hash, TAG.PROPERTY);
-      writeText(hash, key);
+      writePropertyText(hash, key);
       writeDigest(hash, visit(trusted ? object[key] : dataValue(object, key)));
     }
   };
@@ -995,7 +1018,7 @@ function createFastJsonGraphDigester({
     try {
       const keys = semanticOwnKeys(item);
       consumeReferenceWork(keys.length);
-      for (const key of keys) budget.consumeText(key);
+      for (const key of keys) consumePropertyText(key);
       const prototype = Object.getPrototypeOf(item);
       let digest;
       if (Array.isArray(item)) {
@@ -1119,7 +1142,7 @@ function createFastJsonGraphDigester({
       const reportedKeys = semanticOwnKeys(item);
       const reported = new Set(reportedKeys);
       const keys = [...reportedKeys];
-      for (const key of reportedKeys) budget.consumeText(key);
+      for (const key of reportedKeys) consumePropertyText(key);
       for (const key of knownKeys) {
         if (!reported.has(key)) keys.push(key);
       }
@@ -1151,7 +1174,7 @@ function createFastJsonGraphDigester({
       }
       for (const [key, entryValue] of included) {
         mix(hash, TAG.PROPERTY);
-        writeText(hash, key);
+        writePropertyText(hash, key);
         writeDigest(hash, visit(entryValue));
       }
       const result = { digest: hash, includedCount:included.length, values };
