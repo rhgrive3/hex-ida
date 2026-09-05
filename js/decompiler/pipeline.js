@@ -1,5 +1,5 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
-import { exactLegacySameBlockStackStore } from './legacy-exact-return-repair.js';
+import { exactLegacySameBlockStackStore, legacyRecoveryControl } from './legacy-exact-return-repair.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { expr, mapChildren, sourceOf } from './ast/nodes.js';
@@ -92,6 +92,8 @@ function boundedPipelineOptions(options) {
     ['decompilerTimeBudgetMs', validTimeBudget],
     ['decompilerNodeBudget', validWorkBudget],
     ['decompilerIterationCap', validWorkBudget],
+    ['phase8TimeBudgetMs', validTimeBudget],
+    ['phase8WorkBudget', validWorkBudget],
   ]) {
     const field = ownData(options, key);
     if (field.present && (!field.valid || !valid(field.value))) return { blocked:true, options:safe };
@@ -103,7 +105,7 @@ function boundedPipelineOptions(options) {
   return { blocked:false, options:safe };
 }
 
-function sourceIds(node) {
+function sourceIds(node, control) {
   const source = fieldValue(node, 'source');
   const field = ownData(source, 'ir');
   if (!field.present) return [];
@@ -111,6 +113,7 @@ function sourceIds(node) {
   const ids = [];
   try {
     for (const id of field.value) {
+      if (control?.isAborted?.()) return null;
       const key = idKey(id);
       if (key == null) return null;
       ids.push(key);
@@ -352,10 +355,12 @@ function reanchorExactStackReturn(result, opts = {}) {
  * existing proof only for a trivially ordered same-block fixed-stack spill.
  * No CFG/path inference is added here, and any call/unknown barrier keeps the
  * load explicit. This is intentionally narrower than canonical v2 forwarding. */
-function recoverLegacySameBlockStackSpills(result, opts = {}) {
+function recoverLegacySameBlockStackSpills(result, opts = {}, control = legacyRecoveryControl(opts)) {
   if (!result?.semanticAst || !result?.ir || result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
+  if (control.isAborted()) return result;
   const instructionById = new Map();
   for (const inst of result.ir.instructions || []) {
+    if (control.isAborted()) return result;
     const id = idKey(fieldValue(inst, 'id'));
     if (id == null) continue;
     if (instructionById.has(id)) instructionById.set(id, null);
@@ -363,6 +368,7 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
   }
   const expressions = new Map();
   for (const item of result.semanticAst.values || []) {
+    if (control.isAborted()) return result;
     const id = idKey(fieldValue(item, 'valueId'));
     if (id != null) expressions.set(id, fieldValue(item, 'expression'));
   }
@@ -370,19 +376,19 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
   let scanAborted = false;
 
   const rewrite = (node, depth = 0) => {
-    if (recoveryAborted(opts)) { scanAborted = true; return node; }
+    if (control.isAborted()) { scanAborted = true; return node; }
     if (!node || depth > 64) return node;
     const nodeLocation = fieldValue(node, 'location');
     const nodeKey = fieldValue(nodeLocation, 'key');
     if (fieldValue(node, 'kind') === 'load' && fieldValue(nodeLocation, 'kind') === 'stack'
         && typeof nodeKey === 'string' && nodeKey.length > 0) {
-      const ids = sourceIds(node);
+      const ids = sourceIds(node, control);
       if (!ids || ids.length !== 1) return node;
       const load = instructionById.get(ids[0]);
       const loadLocation = fieldValue(load, 'loc');
       if (!load || fieldValue(load, 'op') !== 'load'
           || fieldValue(loadLocation, 'key') !== nodeKey) return node;
-      const store = exactLegacySameBlockStackStore(load, result.ir, opts);
+      const store = exactLegacySameBlockStackStore(load, result.ir, opts, control);
       const args = fieldValue(store, 'args');
       const storedValue = Array.isArray(args) ? valueOf(args[0]) : null;
       if (!storedValue) return node;
@@ -415,6 +421,7 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
 
   const valueChanges = [];
   for (const item of result.semanticAst.values || []) {
+    if (control.isAborted()) return result;
     const original = fieldValue(item, 'expression');
     const resolved = rewrite(original);
     if (scanAborted) return result;
@@ -424,6 +431,7 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
   }
   const outputChanges = [];
   for (const output of result.semanticAst.outputs || []) {
+    if (control.isAborted()) return result;
     const original = fieldValue(output, 'expression');
     if (!original) continue;
     const resolved = rewrite(original);
@@ -433,7 +441,7 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
 
   const nodeChanges = [];
   for (const node of result.cAst?.body || []) {
-    if (recoveryAborted(opts)) return result;
+    if (control.isAborted()) return result;
     const semantic = fieldValue(node, 'semantic');
     const text = fieldValue(node, 'text');
     if (!(fieldValue(semantic, 'op') === 'return'
@@ -444,33 +452,38 @@ function recoverLegacySameBlockStackSpills(result, opts = {}) {
     if (scanAborted) return result;
     if (resolved !== expression) nodeChanges.push({ node, expression, resolved, text:node.text });
   }
-  if (recoveryAborted(opts)) return result;
-  for (const { item, resolved } of valueChanges) item.expression = resolved;
-  for (const { output, resolved } of outputChanges) output.expression = resolved;
-  for (const { node, resolved } of nodeChanges) {
-    if (node.semantic) node.semantic.expression = resolved;
-    node.text = `return ${printExpression(resolved)};`;
-  }
-  if (recoveryAborted(opts)) {
+  const rollback = () => {
     for (const { item, original } of valueChanges) item.expression = original;
     for (const { output, original } of outputChanges) output.expression = original;
     for (const { node, expression, text } of nodeChanges) {
       if (node.semantic) node.semantic.expression = expression;
       node.text = text;
     }
+  };
+  if (control.isAborted()) return result;
+  for (const { item, resolved } of valueChanges) {
+    if (control.isAborted()) { rollback(); return result; }
+    item.expression = resolved;
+  }
+  for (const { output, resolved } of outputChanges) {
+    if (control.isAborted()) { rollback(); return result; }
+    output.expression = resolved;
+  }
+  for (const { node, resolved } of nodeChanges) {
+    if (control.isAborted()) { rollback(); return result; }
+    if (node.semantic) node.semantic.expression = resolved;
+    node.text = `return ${printExpression(resolved)};`;
+  }
+  if (control.isAborted()) {
+    rollback();
     return result;
   }
   const printedChanged = nodeChanges.length > 0;
   if (!printedChanged) return result;
   const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
   const printed = printProgram(result.cAst, { columnWidth });
-  if (recoveryAborted(opts)) {
-    for (const { item, original } of valueChanges) item.expression = original;
-    for (const { output, original } of outputChanges) output.expression = original;
-    for (const { node, expression, text } of nodeChanges) {
-      if (node.semantic) node.semantic.expression = expression;
-      node.text = text;
-    }
+  if (control.isAborted()) {
+    rollback();
     return result;
   }
   result.pseudocode = printed.text;

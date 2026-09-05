@@ -26,6 +26,12 @@ import {
   compilerTruthAccepted,
   compilerTruthGateResult,
 } from './compiler-truth-gate.mjs';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
+import { validateSemanticIrFunction } from '../../../js/semantics/ir/index.js';
+import { createMemoryRegionRef } from '../../../js/semantics/memoryssa/contract.js';
+import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
 
 function coerciveValue(counter) {
   return Object.defineProperties({}, {
@@ -165,6 +171,106 @@ function stackReturnWriterFixture(mode, writerRow = 1) {
     }] },
     rewriteProof:[],
     metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function committedReturnFixture({ registerKind = 'stack', registerSize = 4, registerRow = 3 } = {}) {
+  const origin = (id, address = 0x3000n) => ({
+    instructionIds:[id], virtualRanges:[{ start:address, end:address + 4n }],
+  });
+  const definitionValue = (id, definitionNodeId, machineType, address) => ({
+    id, kind:'definition', machineType, definitionNodeId, sourceEntityId:definitionNodeId,
+    origin:origin(`ins_${id}`, address),
+  });
+  const memory = (addressValueId, widthBits) => ({
+    addressSpace:'memory', addressExpr:{ valueId:addressValueId }, widthBits,
+    endian:'little', alignment:Math.max(1, widthBits / 8), volatility:false, atomic:false,
+    ordering:'unknown', faults:[],
+  });
+  const bit32 = { kind:'bitvector', widthBits:32 };
+  const addr64 = { kind:'address', widthBits:64, addressSpace:'memory' };
+  const values = [
+    definitionValue('addr', 'n_addr', addr64, 0x3000n),
+    { ...definitionValue('value', 'n_value', bit32, 0x3004n),
+      metadata:{ constant:{ kind:'bitvector', widthBits:32, value:0x12345678n } } },
+    definitionValue('loaded', 'n_load', bit32, 0x300cn),
+  ];
+  const nodes = [
+    { id:'n_addr', kind:'address', blockId:'b0', inputs:[], outputs:['addr'],
+      attributes:{ value:'0x4000' }, origin:origin('addr') },
+    { id:'n_value', kind:'const', blockId:'b0', inputs:[], outputs:['value'],
+      attributes:{ value:0x12345678 }, origin:origin('value', 0x3004n) },
+    { id:'n_store', kind:'store', blockId:'b0', inputs:['addr','value'], outputs:[],
+      memory:memory('addr', 32), attributes:{ machineEffects:{ operationMetadata:{ addressing:{ addressDisplacement:'0' } } } },
+      origin:origin('store', 0x3008n) },
+    { id:'n_load', kind:'load', blockId:'b0', inputs:['addr'], outputs:['loaded'],
+      memory:memory('addr', 32), attributes:{ machineEffects:{ operationMetadata:{ addressing:{ addressDisplacement:'0' } } } },
+      origin:origin('load', 0x300cn) },
+    { id:'n_return', kind:'return', blockId:'b0', inputs:['loaded'], outputs:[], origin:origin('return', 0x3010n) },
+  ];
+  const rawIr = {
+    schemaVersion:2, contractVersion:'2.0.0', functionId:'fn_t011_committed', entryBlockId:'b0',
+    blocks:[{ id:'b0', nodeIds:nodes.map((node) => node.id), origin:origin('block') }], values, nodes,
+    completeness:'complete', unknowns:[], origin:origin('function'),
+  };
+  const canonicalIr = validateSemanticIrFunction(rawIr);
+  const canonicalCfg = createSemanticCfg({
+    functionId:canonicalIr.functionId, entryBlockId:'b0', blocks:[{ id:'b0', successors:[] }],
+  });
+  const region = createMemoryRegionRef({
+    id:'r_global', kind:'global-absolute', binaryId:'binary_fixture', address:'0x4000', widthBits:32,
+    origin:origin('region', 0x4000n),
+  });
+  const identity = {
+    binaryId:'binary_fixture', sliceId:'slice_fixture', functionId:canonicalIr.functionId,
+    semanticIrId:'ir_fixture', scalarSsaId:'ssa_fixture', memorySsaId:'mssa_fixture', snapshotId:'snapshot_fixture',
+    semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonicalIr), scalarSsaBuildVersion:'1.0.0',
+    scalarSsaDigest:'ssa_fixture_digest', memorySsaBuildVersion:'1.0.0', analyzerVersion:'memoryssa-fixture',
+  };
+  const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
+    regions:[region], resolveRegion:() => region,
+    queryAlias:() => ({ relation:'must', reasonCodes:['identical-region-identity'], evidenceIds:['canonical-fixture-alias'],
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+    identity, snapshotId:'snapshot_fixture', canonicalIrIdentity:{
+      functionId:canonicalIr.functionId, semanticIrId:'ir_fixture', semanticIrContractVersion:'2.0.0',
+      semanticIrDigest:stableDigest(canonicalIr),
+    },
+  });
+  const projected = projectSemanticIrV2ToLegacyV1(rawIr, { memorySsa });
+  const canonicalLoad = projected.instructions.find((instruction) => instruction.op === 'load');
+  assert.ok(canonicalLoad?.memoryForwarding?.status === 'exact');
+
+  const key = 'stack:sp:e0:-16:s4';
+  const rootLoad = { id:500, op:'load', block:0, row:1, address:0x5004n,
+    loc:{ kind:'stack', key, size:4 }, args:[] };
+  const registerLoad = {
+    id:501, op:'load', block:0, row:registerRow, address:0x5008n,
+    semanticNodeId:'n_load', sourceEntityId:'n_load',
+    loc:{ kind:registerKind, key, size:registerSize }, args:[],
+    memoryForwarding:canonicalLoad.memoryForwarding,
+    memoryForwardingContext:canonicalLoad.memoryForwardingContext,
+  };
+  const snapshot = { id:'committed_snapshot', op:'load', block:0, row:0,
+    loc:{ kind:'field', key:'field:secret', name:'secret' },
+    extra:{ committedPhiSnapshot:true }, dst:{ id:'committed_dest' } };
+  const spilled = { id:'spilled_value', bits:32, def:snapshot };
+  const stackStore = { id:502, op:'store', block:0, row:2, address:0x5000n,
+    loc:{ kind:'stack', key, size:4 },
+    memDef:{ definitionId:canonicalLoad.memoryForwarding.contributingDefinitionIds[0] },
+    args:[{ value:spilled }] };
+  const ret = { id:503, op:'ret', block:0, row:4, address:0x5010n, args:[] };
+  const registerValue = { id:'return_reg', reg:'x0', bits:32, def:registerLoad };
+  const rootExpression = expr.load({ kind:'stack', key }, 32, { row:rootLoad.row, address:rootLoad.address, ir:rootLoad.id });
+  return {
+    semantic:true,
+    ir:{ instructions:[rootLoad, stackStore, registerLoad, ret], values:[registerValue], blocks:[{
+      index:0, startRow:0, endRow:ret.row, pred:[], succ:[], insts:[rootLoad, stackStore, registerLoad, ret],
+    }], idom:[-1] },
+    semanticAst:{ values:[{ valueId:'committed_dest', expression:expr.load({ kind:'field', key:'field:secret', name:'secret' }, 32) }],
+      conditions:[], outputs:[{ name:'return', expression:rootExpression }] },
+    cAst:{ body:[{ kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression:rootExpression }, source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] } }] },
+    rewriteProof:[], metrics:{ rewrittenExpressions:0 },
   };
 }
 
@@ -314,6 +420,37 @@ test('T011 PHI recovery reads the slot at LOAD time, before a later writer', () 
   assert.equal(result.metrics.rewrittenExpressions, 1);
 });
 
+test('T011 duplicate same-row memory writers fail closed independent of IR order', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const reverse of [false, true]) {
+      const result = stackReturnWriterFixture('after-load');
+      const stores = result.ir.instructions.filter((instruction) => instruction.op === 'store');
+      assert.equal(stores.length, 2);
+      stores[1].row = stores[0].row;
+      const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+      const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+      const ordered = reverse ? [stores[1], stores[0], load, ret] : [stores[0], stores[1], load, ret];
+      result.ir.instructions = ordered;
+      result.ir.blocks[0].insts = ordered;
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;', reverse ? 'reversed store order' : 'original store order');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+
+  for (const reverse of [false, true]) {
+    const result = legacyStaleReachingStoreFixture();
+    const [oldStore, newerStore, load] = result.ir.instructions;
+    newerStore.row = oldStore.row;
+    const ordered = reverse ? [newerStore, oldStore, load] : [oldStore, newerStore, load];
+    result.ir.instructions = ordered;
+    result.ir.blocks[0].insts = ordered;
+    materializeLegacyExactStackValues(result, { deterministicTransforms:true });
+    assert.equal(result.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load');
+    assert.equal(exactLegacySameBlockStackStore(load, result.ir, { deterministicTransforms:true }), null);
+  }
+});
+
 test('T011 PHI recovery does not infer missing or malformed STORE widths from a stack key', () => {
   for (const storeSize of [undefined, null, '4', 4n, new Number(4), NaN, Infinity]) {
     const result = stackReturnFixture({ storeSize });
@@ -431,6 +568,24 @@ test('T011 stack-return fallback stops at the authenticated physical LOAD', () =
   assert.equal(result.metrics.rewrittenExpressions, 1);
 });
 
+test('T011 committed forwarding requires a physical stack LOAD with matching width and readpoint', () => {
+  const exact = committedReturnFixture();
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  for (const options of [
+    { registerKind:'field' },
+    { registerSize:8 },
+    { registerRow:5 },
+  ]) {
+    const ambiguous = committedReturnFixture(options);
+    recoverExactStackReturn(ambiguous, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(ambiguous.cAst.body[0].text, 'return local_0;', JSON.stringify(options));
+    assert.equal(ambiguous.metrics.rewrittenExpressions, 0, JSON.stringify(options));
+  }
+});
+
 test('T011 malformed same-slot STORE is a barrier to older stack values', () => {
   const result = stackReturnWriterFixture('wrong-width');
   recoverExactStackReturn(result);
@@ -521,6 +676,47 @@ test('T011 stack recoveries honor an expired deadline and RewriteEngine rolls ba
   assert.equal(result.proof.length, 0);
 });
 
+test('T011 positive caller budgets bound structural scans before publication', () => {
+  const expanded = () => {
+    const result = stackReturnFixture();
+    const store = result.ir.instructions.find((instruction) => instruction.op === 'store');
+    const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+    const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+    load.row = 66;
+    ret.row = 67;
+    result.cAst.body[0].source.rows = [ret.row];
+    const nops = Array.from({ length:65 }, (_item, index) => ({
+      id:1000 + index, op:'nop', block:0, row:1 + index, args:[],
+    }));
+    result.ir.instructions = [store, ...nops, load, ret];
+    result.ir.blocks[0].endRow = ret.row;
+    result.ir.blocks[0].insts = result.ir.instructions;
+    return result;
+  };
+
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const workLimited = expanded();
+    recover(workLimited, { deterministicTransforms:true, decompilerNodeBudget:5 });
+    assert.equal(workLimited.cAst.body[0].text, 'return local_0;');
+    assert.equal(workLimited.metrics.rewrittenExpressions, 0);
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let tick = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => ++tick } });
+  try {
+    for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+      const timeLimited = expanded();
+      recover(timeLimited, { decompilerTimeBudgetMs:5 });
+      assert.equal(timeLimited.cAst.body[0].text, 'return local_0;');
+      assert.equal(timeLimited.metrics.rewrittenExpressions, 0);
+    }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
+    else delete globalThis.performance;
+  }
+});
+
 test('T011 stack recoveries honor zero budgets and forward deterministic mode', () => {
   for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
     for (const options of [{ decompilerNodeBudget:0 }, { decompilerTimeBudgetMs:0 }]) {
@@ -587,11 +783,35 @@ test('T011 public pipeline rejects coercive and zero decompiler budgets before c
     { decompilerNodeBudget:0 },
     { decompilerTimeBudgetMs:0 },
     { decompilerIterationCap:0 },
+    { phase8TimeBudgetMs:0 },
+    { phase8WorkBudget:0 },
   ]) {
     const result = structuredClone(base);
     const returned = enhancePipeline(result, null, options);
     assert.equal(returned, result);
     assert.deepEqual(result.cAst.body, []);
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 public pipeline rejects coercive Phase 8 budgets before optimizer entry', () => {
+  const counter = { count:0 };
+  const base = {
+    semantic:true,
+    ir:{ instructions:[], blocks:[], values:[] },
+    semanticAst:{ values:[], conditions:[], outputs:[] },
+    cAst:{ body:[] },
+  };
+  const malformed = [coerciveValue(counter), '20', 20n, new Number(20), NaN, Infinity, -1];
+  for (const key of ['phase8TimeBudgetMs', 'phase8WorkBudget']) {
+    for (const value of malformed) {
+      const result = structuredClone(base);
+      assert.doesNotThrow(() => enhancePipeline(result, null, {
+        phase8Optimize:true,
+        [key]:value,
+      }));
+      assert.deepEqual(result.cAst.body, []);
+    }
   }
   assert.equal(counter.count, 0);
 });

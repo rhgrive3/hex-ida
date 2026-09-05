@@ -58,13 +58,14 @@ function arrayField(object, key) {
   return { ok:field.valid && Array.isArray(field.value), value:field.valid && Array.isArray(field.value) ? field.value : [] };
 }
 
-function sourceValues(node, key, converter) {
+function sourceValues(node, key, converter, control) {
   const source = fieldValue(node, 'source');
   const values = arrayField(source, key);
   if (!values.ok) return null;
   const converted = [];
   try {
     for (const value of values.value) {
+      if (control?.isAborted?.()) return null;
       const convertedValue = converter(value);
       if (convertedValue == null) return null;
       converted.push(convertedValue);
@@ -89,20 +90,36 @@ function recoveryControl(opts) {
   const abortField = ownData(opts, 'shouldAbort');
   const deadlineField = ownData(opts, 'deadline');
   const deterministicField = ownData(opts, 'deterministicTransforms');
+  const timeBudgetField = ownData(opts, 'decompilerTimeBudgetMs');
+  const workBudgetField = ownData(opts, 'decompilerNodeBudget');
   const validDeadline = deadlineField.present && deadlineField.valid
     && typeof deadlineField.value === 'number'
     && (Number.isFinite(deadlineField.value) || deadlineField.value === Infinity);
   const deterministic = deterministicField.present && deterministicField.valid
     && deterministicField.value === true;
+  const validCallerTimeBudget = timeBudgetField.present && timeBudgetField.valid
+    && typeof timeBudgetField.value === 'number' && Number.isFinite(timeBudgetField.value)
+    && timeBudgetField.value >= 0;
+  const validCallerWorkBudget = workBudgetField.present && workBudgetField.valid
+    && typeof workBudgetField.value === 'number' && Number.isSafeInteger(workBudgetField.value)
+    && workBudgetField.value >= 0;
   let cancelled = (abortField.present && (!abortField.valid || typeof abortField.value !== 'function'))
     || (deadlineField.present && !validDeadline)
-    || (deterministicField.present && !deterministicField.valid);
+    || (deterministicField.present && (!deterministicField.valid || typeof deterministicField.value !== 'boolean'));
   const callback = abortField.present && abortField.valid && typeof abortField.value === 'function'
     ? abortField.value : null;
-  const deadline = validDeadline ? deadlineField.value : Infinity;
+  const started = now();
+  const callerTimeBudget = validCallerTimeBudget ? timeBudgetField.value : 50;
+  const callerWorkBudget = validCallerWorkBudget ? workBudgetField.value : 12000;
+  const derivedDeadline = !deterministic && validCallerTimeBudget
+    ? started + callerTimeBudget : Infinity;
+  const deadline = validDeadline ? Math.min(deadlineField.value, derivedDeadline) : derivedDeadline;
+  let workUsed = 0;
   const isAborted = () => {
     if (cancelled) return true;
     if (!deterministic && now() >= deadline) { cancelled = true; return true; }
+    if (workUsed >= callerWorkBudget) { cancelled = true; return true; }
+    workUsed += 1;
     if (!callback) return false;
     try {
       if (callback() === true) { cancelled = true; return true; }
@@ -123,7 +140,7 @@ function recoveryControl(opts) {
   };
 }
 
-function targetBlock(ir, term, opts) {
+function targetBlock(ir, term, opts, control) {
   const extra = fieldValue(term, 'extra');
   const address = fieldValue(extra, 'target');
   if (address == null) return null;
@@ -135,6 +152,7 @@ function targetBlock(ir, term, opts) {
   const blocks = arrayField(ir, 'blocks');
   if (!blocks.ok) return null;
   for (const block of blocks.value) {
+    if (control?.isAborted?.()) return null;
     const index = fieldValue(block, 'index');
     const startRow = fieldValue(block, 'startRow');
     const endRow = fieldValue(block, 'endRow');
@@ -144,27 +162,38 @@ function targetBlock(ir, term, opts) {
   return null;
 }
 
-function terminal(block) {
+function terminal(block, control) {
   const insts = arrayField(block, 'insts');
   if (!insts.ok) return null;
   for (let i = insts.value.length - 1; i >= 0; i--) {
+    if (control?.isAborted?.()) return null;
     if (['cbr', 'br', 'ret'].includes(fieldValue(insts.value[i], 'op'))) return insts.value[i];
   }
   return null;
 }
 
-function branchSuccessors(ir, block, term, opts) {
+function branchSuccessors(ir, block, term, opts, control) {
   const successors = arrayField(block, 'succ');
-  if (!successors.ok || successors.value.some((successor) => !validBlock(successor))) {
+  if (!successors.ok) {
     return { yes:null, no:null, exact:false };
+  }
+  for (const successor of successors.value) {
+    if (control?.isAborted?.() || !validBlock(successor)) return { yes:null, no:null, exact:false };
   }
   const op = fieldValue(term, 'op');
   if (op !== 'cbr' || successors.value.length < 2) {
     return { yes: successors.value[0] ?? null, no: successors.value[1] ?? null, exact: op !== 'cbr' };
   }
-  const yes = targetBlock(ir, term, opts);
-  if (yes == null || !successors.value.includes(yes)) return { yes: null, no: null, exact: false };
-  return { yes, no: successors.value.find((x) => x !== yes) ?? null, exact: true };
+  const yes = targetBlock(ir, term, opts, control);
+  if (yes == null) return { yes: null, no: null, exact: false };
+  let hasYes = false;
+  let no = null;
+  for (const successor of successors.value) {
+    if (control?.isAborted?.()) return { yes:null, no:null, exact:false };
+    if (successor === yes) hasYes = true;
+    else if (no == null) no = successor;
+  }
+  return hasYes ? { yes, no, exact: true } : { yes:null, no:null, exact:false };
 }
 
 function canReach(ir, start, target, blocked, cap = 256, control) {
@@ -180,18 +209,31 @@ function canReach(ir, start, target, blocked, cap = 256, control) {
     if (current === blocked || seen.has(current)) continue;
     seen.add(current);
     const successors = arrayField(blocks.value[current], 'succ');
-    if (!successors.ok || successors.value.some((next) => !validBlock(next))) return false;
-    for (const next of successors.value) if (!seen.has(next)) queue.push(next);
+    if (!successors.ok) return false;
+    for (const next of successors.value) {
+      if (control?.isAborted?.() || !validBlock(next)) return false;
+      if (!seen.has(next)) queue.push(next);
+    }
   }
   return false;
 }
 
 function armIndex(ir, controllerIndex, successor, mergeBlock, predecessors, control) {
-  if (successor === mergeBlock) return predecessors.indexOf(controllerIndex);
-  return predecessors.findIndex((pred) => canReach(ir, successor, pred, mergeBlock, 256, control));
+  if (successor === mergeBlock) {
+    for (let index = 0; index < predecessors.length; index++) {
+      if (control?.isAborted?.()) return -1;
+      if (predecessors[index] === controllerIndex) return index;
+    }
+    return -1;
+  }
+  for (let index = 0; index < predecessors.length; index++) {
+    if (control?.isAborted?.()) return -1;
+    if (canReach(ir, successor, predecessors[index], mergeBlock, 256, control)) return index;
+  }
+  return -1;
 }
 
-function dominates(ir, candidate, node) {
+function dominates(ir, candidate, node, control) {
   if (!validBlock(candidate) || !validBlock(node)) return false;
   const dominators = ownData(ir, 'dominators');
   const view = dominators.present && dominators.valid ? dominators.value?.[node] : null;
@@ -204,6 +246,7 @@ function dominates(ir, candidate, node) {
   const idomValues = idom.present && idom.valid && Array.isArray(idom.value) ? idom.value : [];
   let cur = node, guard = blocks.value.length + 2;
   while (cur != null && cur >= 0 && guard-- > 0) {
+    if (control?.isAborted?.()) return false;
     if (cur === candidate) return true;
     const parent = idomValues[cur];
     const blockParent = fieldValue(blocks.value[cur], 'idom');
@@ -213,13 +256,14 @@ function dominates(ir, candidate, node) {
   return false;
 }
 
-function domDepth(ir, block) {
+function domDepth(ir, block, control) {
   const blocks = arrayField(ir, 'blocks');
   if (!blocks.ok || !validBlock(block)) return 0;
   const idom = ownData(ir, 'idom');
   const idomValues = idom.present && idom.valid && Array.isArray(idom.value) ? idom.value : [];
   let depth = 0, cur = block, guard = blocks.value.length + 2;
   while (cur != null && cur >= 0 && guard-- > 0) {
+    if (control?.isAborted?.()) return 0;
     depth++;
     const parent = idomValues[cur];
     const blockParent = fieldValue(blocks.value[cur], 'idom');
@@ -237,16 +281,19 @@ function controllerForMerge(ir, mergeBlock, predecessors, opts, control) {
     if (control?.isAborted?.()) return null;
     const blockIndex = fieldValue(block, 'index');
     const successors = arrayField(block, 'succ');
-    if (!successors.ok || !validBlock(blockIndex) || successors.value.some((next) => !validBlock(next))) return null;
-    if (!dominates(ir, blockIndex, mergeBlock)) continue;
-    const term = terminal(block);
+    if (!successors.ok || !validBlock(blockIndex)) return null;
+    for (const next of successors.value) {
+      if (control?.isAborted?.() || !validBlock(next)) return null;
+    }
+    if (!dominates(ir, blockIndex, mergeBlock, control)) continue;
+    const term = terminal(block, control);
     if (fieldValue(term, 'op') !== 'cbr' || successors.value.length < 2) continue;
-    const arms = branchSuccessors(ir, block, term, opts);
+    const arms = branchSuccessors(ir, block, term, opts, control);
     if (!arms.exact) continue;
     const yesIndex = armIndex(ir, blockIndex, arms.yes, mergeBlock, predecessors, control);
     const noIndex = armIndex(ir, blockIndex, arms.no, mergeBlock, predecessors, control);
     if (yesIndex < 0 || noIndex < 0 || yesIndex === noIndex) continue;
-    candidates.push({ term, yesIndex, noIndex, depth: domDepth(ir, blockIndex) });
+    candidates.push({ term, yesIndex, noIndex, depth: domDepth(ir, blockIndex, control) });
   }
   candidates.sort((a, b) => b.depth - a.depth);
   if (!candidates.length) return null;
@@ -254,14 +301,16 @@ function controllerForMerge(ir, mergeBlock, predecessors, opts, control) {
   return candidates[0];
 }
 
-function expressionMaps(result) {
+function expressionMaps(result, control) {
   const values = new Map();
   for (const item of result.semanticAst?.values || []) {
+    if (control?.isAborted?.()) return null;
     const id = fieldValue(item, 'valueId');
     if (id != null) values.set(id, fieldValue(item, 'expression'));
   }
   const conditions = new Map();
   for (const item of result.semanticAst?.conditions || []) {
+    if (control?.isAborted?.()) return null;
     const id = fieldValue(item, 'ir');
     if (id != null) conditions.set(id, fieldValue(item, 'expression'));
   }
@@ -289,19 +338,22 @@ function expressionOfValue(value, maps) {
  * only when the Semantic IR itself proves a unique same-row companion BIN with
  * the same arithmetic sub-op. No ARM64 text is reparsed here.
  */
-function sameRowFlagProducer(cmp, ir) {
+function sameRowFlagProducer(cmp, ir, control) {
+  if (control?.isAborted?.()) return null;
   const cmpRow = fieldValue(cmp, 'row');
   const cmpSub = fieldValue(cmp, 'sub');
   if (!validRow(cmpRow) || !['sub', 'add', 'and'].includes(cmpSub)) return null;
   const instructions = arrayField(ir, 'instructions');
   if (!instructions.ok) return null;
-  const candidates = instructions.value.filter((inst) => {
+  const candidates = [];
+  for (const inst of instructions.value) {
+    if (control?.isAborted?.()) return null;
     const args = arrayField(inst, 'args');
     const dst = fieldValue(inst, 'dst');
-    return inst !== cmp && fieldValue(inst, 'op') === 'bin'
+    if (inst !== cmp && fieldValue(inst, 'op') === 'bin'
       && fieldValue(inst, 'row') === cmpRow && fieldValue(inst, 'sub') === cmpSub
-      && args.ok && args.value.length >= 2 && dst != null;
-  });
+      && args.ok && args.value.length >= 2 && dst != null) candidates.push(inst);
+  }
   if (candidates.length !== 1) return null;
   const producer = candidates[0];
   const cmpArgs = arrayField(cmp, 'args');
@@ -312,7 +364,8 @@ function sameRowFlagProducer(cmp, ir) {
   return producer;
 }
 
-function repairedFlagComparison(flagsValue, cond, maps, ir) {
+function repairedFlagComparison(flagsValue, cond, maps, ir, control) {
+  if (control?.isAborted?.()) return null;
   const cmp = fieldValue(flagsValue, 'def');
   if (fieldValue(cmp, 'op') !== 'cmp') return null;
 
@@ -325,7 +378,7 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
   if (fieldValue(shadow, 'op') === 'bin'
       && fieldValue(shadow, 'row') === fieldValue(cmp, 'row')
       && fieldValue(shadow, 'sub') === fieldValue(cmp, 'sub')) producer = shadow;
-  if (!producer) producer = sameRowFlagProducer(cmp, ir);
+  if (!producer) producer = sameRowFlagProducer(cmp, ir, control);
   if (producer) {
     const producerArgs = arrayField(producer, 'args');
     if (!producerArgs.ok) return null;
@@ -397,7 +450,8 @@ function invertCondition(condition) {
   return expr.unary('lnot', condition, 1, false, condition?.source);
 }
 
-function materializedFlagCondition(term, maps, ir) {
+function materializedFlagCondition(term, maps, ir, control) {
+  if (control?.isAborted?.()) return null;
   const extra = fieldValue(term, 'extra');
   const kind = fieldValue(extra, 'kind') || fieldValue(term, 'sub') || '';
   if (!['tbz', 'tbnz', 'cbz', 'cbnz'].includes(kind)) return null;
@@ -410,7 +464,7 @@ function materializedFlagCondition(term, maps, ir) {
   const selectArgs = arrayField(select, 'args');
   if (!selectArgs.ok) return null;
   const flagsValue = valueOf(selectArgs.value.at(-1));
-  const condition = repairedFlagComparison(flagsValue, fieldValue(select, 'cond'), maps, ir);
+  const condition = repairedFlagComparison(flagsValue, fieldValue(select, 'cond'), maps, ir, control);
   if (!condition) return null;
 
   // cset/csetm materialize true as a non-zero value and false as zero. Branches
@@ -418,12 +472,13 @@ function materializedFlagCondition(term, maps, ir) {
   return kind === 'tbz' || kind === 'cbz' ? invertCondition(condition) : condition;
 }
 
-function directFlagCondition(term, maps, ir) {
+function directFlagCondition(term, maps, ir, control) {
+  if (control?.isAborted?.()) return null;
   const extra = fieldValue(term, 'extra');
   const cond = fieldValue(term, 'cond') || fieldValue(extra, 'cond');
   if (!cond) return null;
   const args = arrayField(term, 'args');
-  return args.ok ? repairedFlagComparison(valueOf(args.value.at(-1)), cond, maps, ir) : null;
+  return args.ok ? repairedFlagComparison(valueOf(args.value.at(-1)), cond, maps, ir, control) : null;
 }
 
 function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0, control) {
@@ -431,7 +486,7 @@ function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, d
     if (control?.isAborted?.()) return null;
     if (!node || localDepth > 64) return node;
     if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
-      const slot = exactStackLoadSlot(ir, null, node);
+      const slot = exactStackLoadSlot(ir, null, node, control);
       if (!slot) return node;
       return resolveStackBefore(ir, fieldValue(slot.load, 'block'), fieldValue(slot.load, 'row'), slot.key, slot.size,
         maps, opts, engine, active, localDepth + 1, control) || node;
@@ -442,8 +497,8 @@ function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, d
 }
 
 function controlCondition(term, maps, engine, ir, opts, active, depth, control) {
-  const condition = materializedFlagCondition(term, maps, ir)
-    || directFlagCondition(term, maps, ir)
+  const condition = materializedFlagCondition(term, maps, ir, control)
+    || directFlagCondition(term, maps, ir, control)
     || maps.conditions.get(fieldValue(term, 'id'));
   if (!condition) return null;
   return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth, control), engine, control);
@@ -454,7 +509,8 @@ function positiveAccessSize(value) {
     && value <= Math.floor(Number.MAX_SAFE_INTEGER / 8) ? value : null;
 }
 
-function exactStackLoadSource(ir, value, expression) {
+function exactStackLoadSource(ir, value, expression, control) {
+  if (control?.isAborted?.()) return null;
   const expressionLocation = fieldValue(expression, 'location');
   const expressionKind = fieldValue(expression, 'kind');
   const expressionKey = fieldValue(expressionLocation, 'key');
@@ -463,24 +519,26 @@ function exactStackLoadSource(ir, value, expression) {
   // `value.def` is SSA metadata and may be a detached presentation object. A
   // recovery proof must bind to exactly one physical LOAD in ir.instructions;
   // the detached object is never sufficient by itself.
-  const ids = sourceValues(expression, 'ir', idKey);
+  const ids = sourceValues(expression, 'ir', idKey, control);
   if (!ids || ids.length === 0) return null;
   const instructions = arrayField(ir, 'instructions');
   if (!instructions.ok) return null;
-  const candidates = instructions.value.filter((inst) => {
+  const candidates = [];
+  for (const inst of instructions.value) {
+    if (control?.isAborted?.()) return null;
     const id = idKey(fieldValue(inst, 'id'));
     const op = fieldValue(inst, 'op');
     const location = fieldValue(inst, 'loc');
     const kind = fieldValue(location, 'kind');
     const key = fieldValue(location, 'key');
-    return id != null && ids.includes(id) && op === 'load' && kind === 'stack'
-      && key === expressionKey;
-  });
+    if (id != null && ids.includes(id) && op === 'load' && kind === 'stack'
+      && key === expressionKey) candidates.push(inst);
+  }
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-function exactStackLoadSlot(ir, value, expression) {
-  const load = exactStackLoadSource(ir, value, expression);
+function exactStackLoadSlot(ir, value, expression, control) {
+  const load = exactStackLoadSource(ir, value, expression, control);
   const location = fieldValue(load, 'loc');
   const size = positiveAccessSize(fieldValue(location, 'size'));
   const block = fieldValue(load, 'block');
@@ -503,7 +561,13 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
       || fieldValue(location, 'key') !== key
       || storeAccessSize(inst) !== size) return null;
   const instructions = arrayField(ir, 'instructions');
-  if (!instructions.ok || instructions.value.filter((candidate) => candidate === inst).length !== 1) return null;
+  if (!instructions.ok) return null;
+  let occurrences = 0;
+  for (const candidate of instructions.value) {
+    if (control?.isAborted?.()) return null;
+    if (candidate === inst) occurrences += 1;
+  }
+  if (occurrences !== 1) return null;
   if (!validBlock(fieldValue(inst, 'block')) || !validRow(fieldValue(inst, 'row'))) return null;
   const args = fieldValue(inst, 'args');
   const value = Array.isArray(args) ? valueOf(args[0]) : null;
@@ -517,7 +581,7 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
   // proven exactly, fail closed instead of emitting a select of unresolved loads.
   const expressionLocation = fieldValue(expression, 'location');
   if (fieldValue(expression, 'kind') === 'load' && fieldValue(expressionLocation, 'kind') === 'stack') {
-    const sourceSlot = exactStackLoadSlot(ir, value, expression);
+    const sourceSlot = exactStackLoadSlot(ir, value, expression, control);
     if (!sourceSlot) return null;
     expression = resolveStackBefore(ir, fieldValue(sourceSlot.load, 'block'), fieldValue(sourceSlot.load, 'row'),
       sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1, control);
@@ -546,6 +610,7 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
   const instructions = arrayField(ir, 'instructions');
   if (!instructions.ok || !validBlock(blockIndex) || (beforeRow != null && !validRow(beforeRow))) return null;
   const selected = [];
+  const memoryRows = new Set();
   for (const inst of instructions.value) {
     if (control?.isAborted?.()) return null;
     const block = fieldValue(inst, 'block');
@@ -557,6 +622,13 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
     // Otherwise the order relation can be forged by a getter or a coercible
     // string and an older value could be published.
     if (!validRow(row)) return null;
+    // Equal rows are normally harmless for value-only instructions, but two
+    // memory effects at one row have no authenticated order. Reject the whole
+    // proof so the result cannot depend on IR array order.
+    if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
+      if (memoryRows.has(row)) return null;
+      memoryRows.add(row);
+    }
     if (beforeRow == null || row < beforeRow) selected.push(inst);
   }
   selected.sort((a, b) => fieldValue(b, 'row') - fieldValue(a, 'row'));
@@ -598,12 +670,22 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, en
     const predecessorField = ownData(block, 'pred');
     if (!predecessorField.present || !predecessorField.valid || !Array.isArray(predecessorField.value)) return null;
     const predecessors = [...predecessorField.value];
-    if (predecessors.some((pred) => !validBlock(pred))) return null;
+    for (const pred of predecessors) {
+      if (control?.isAborted?.() || !validBlock(pred)) return null;
+    }
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) =>
-      resolveStackBefore(ir, pred, null, key, size, maps, opts, engine, active, depth + 1, control));
-    if (incoming.some((x) => !x)) return null;
-    const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
+    const incoming = [];
+    for (const pred of predecessors) {
+      if (control?.isAborted?.()) return null;
+      const resolved = resolveStackBefore(ir, pred, null, key, size, maps, opts, engine, active, depth + 1, control);
+      if (!resolved) return null;
+      incoming.push(resolved);
+    }
+    const unique = new Map();
+    for (const value of incoming) {
+      if (control?.isAborted?.()) return null;
+      unique.set(structuralKey(value), value);
+    }
     if (unique.size === 1) return incoming[0];
     if (predecessors.length !== 2 || unique.size !== 2) return null;
 
@@ -637,32 +719,59 @@ function isReturnNode(node) {
     || (typeof text === 'string' && /^return\b/.test(text.trim()));
 }
 
-function stackReturnSlot(ir, expression) {
-  const slot = exactStackLoadSlot(ir, null, expression);
+function returnOutput(result, control) {
+  const outputs = result.semanticAst?.outputs;
+  if (!Array.isArray(outputs)) return null;
+  for (const output of outputs) {
+    if (control?.isAborted?.()) return null;
+    if (fieldValue(output, 'name') === 'return') return output;
+  }
+  return null;
+}
+
+function returnNodes(result, control) {
+  const body = result.cAst?.body;
+  if (!Array.isArray(body)) return [];
+  const nodes = [];
+  for (const node of body) {
+    if (control?.isAborted?.()) return null;
+    if (isReturnNode(node)) nodes.push(node);
+  }
+  return nodes;
+}
+
+function stackReturnSlot(ir, expression, control) {
+  const slot = exactStackLoadSlot(ir, null, expression, control);
   // A rendered stack key is not evidence that a physical read occurred.
   const bits = fieldValue(expression, 'bits');
   if (!slot || !validBits(bits) || slot.size * 8 !== bits) return null;
   return slot;
 }
 
-function returnSiteForNode(node, ir, allowSingleFallback = false) {
+function returnSiteForNode(node, ir, allowSingleFallback = false, control) {
   const instructions = arrayField(ir, 'instructions');
   if (!instructions.ok) return null;
-  const rets = instructions.value.filter((inst) => fieldValue(inst, 'op') === 'ret');
+  const rets = [];
+  for (const inst of instructions.value) {
+    if (control?.isAborted?.()) return null;
+    if (fieldValue(inst, 'op') === 'ret') rets.push(inst);
+  }
   if (!rets.length) return null;
-  const rows = sourceValues(node, 'rows', (row) => validRow(row) ? row : null);
-  const irIds = sourceValues(node, 'ir', idKey);
-  const addresses = sourceValues(node, 'addresses', addressKey);
+  const rows = sourceValues(node, 'rows', (row) => validRow(row) ? row : null, control);
+  const irIds = sourceValues(node, 'ir', idKey, control);
+  const addresses = sourceValues(node, 'addresses', addressKey, control);
   if (rows == null || irIds == null || addresses == null) return null;
   const rowSet = new Set(rows);
   const idSet = new Set(irIds);
   const addressSet = new Set(addresses);
-  const matches = rets.filter((ret) => {
+  const matches = [];
+  for (const ret of rets) {
+    if (control?.isAborted?.()) return null;
     const row = fieldValue(ret, 'row');
     const id = idKey(fieldValue(ret, 'id'));
     const address = addressKey(fieldValue(ret, 'address'));
-    return rowSet.has(row) || (id != null && idSet.has(id)) || (address != null && addressSet.has(address));
-  });
+    if (rowSet.has(row) || (id != null && idSet.has(id)) || (address != null && addressSet.has(address))) matches.push(ret);
+  }
   if (matches.length === 1) return matches[0];
   if (!matches.length && allowSingleFallback && rets.length === 1) return rets[0];
   return null;
@@ -670,11 +779,11 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback, control) {
   if (control?.isAborted?.()) return null;
-  const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const nodeSlot = stackReturnSlot(result.ir, node?.semantic?.expression);
-  const slot = nodeSlot || (allowSingleFallback ? stackReturnSlot(result.ir, output?.expression) : null);
+  const output = returnOutput(result, control);
+  const nodeSlot = stackReturnSlot(result.ir, node?.semantic?.expression, control);
+  const slot = nodeSlot || (allowSingleFallback ? stackReturnSlot(result.ir, output?.expression, control) : null);
   if (!slot) return null;
-  const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
+  const retInst = returnSiteForNode(node, result.ir, allowSingleFallback, control);
   if (!retInst) return null;
   const load = slot.load;
   const loadRow = fieldValue(load, 'row');
@@ -684,7 +793,7 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
   if (!validRow(loadRow) || !validRow(retRow) || !validBlock(loadBlock) || !validBlock(retBlock)) return null;
   if (loadBlock === retBlock) {
     if (loadRow >= retRow) return null;
-  } else if (!dominates(result.ir, loadBlock, retBlock)) {
+  } else if (!dominates(result.ir, loadBlock, retBlock, control)) {
     return null;
   }
   // Stores after this read cannot change the value already consumed by RET.
@@ -693,7 +802,8 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
 }
 
 function rewriteReturnsInAst(result, maps, opts, engine, control) {
-  const nodes = (result.cAst?.body || []).filter(isReturnNode);
+  const nodes = returnNodes(result, control);
+  if (!nodes) return { changed:0, recovered:[], aborted:true };
   if (!nodes.length) return { changed:0, recovered:[] };
   const recovered = [];
   const allowSingleFallback = nodes.length === 1;
@@ -706,12 +816,13 @@ function rewriteReturnsInAst(result, maps, opts, engine, control) {
   // Recovery is a transaction: a cancellation during the scan must leave all
   // statements and semantic outputs at their original values.
   if (control?.isAborted?.()) return { changed:0, recovered:[], aborted:true };
-  const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const originals = recovered.map(({ node }) => ({
-    node,
-    text:node.text,
-    expression:node.semantic?.expression,
-  }));
+  const output = returnOutput(result, control);
+  if (control?.isAborted?.()) return { changed:0, recovered:[], aborted:true };
+  const originals = [];
+  for (const { node } of recovered) {
+    if (control?.isAborted?.()) return { changed:0, recovered:[], aborted:true };
+    originals.push({ node, text:node.text, expression:node.semantic?.expression });
+  }
   const originalOutput = output?.expression;
   const rollback = () => {
     for (const { node, text, expression } of originals) {
@@ -742,7 +853,8 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
   if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return result;
   const control = recoveryControl(opts);
   if (control.isAborted()) return result;
-  const maps = expressionMaps(result);
+  const maps = expressionMaps(result, control);
+  if (!maps) return result;
   const nodeBudget = validWorkBudget(fieldValue(opts, 'decompilerNodeBudget'), 12000);
   const timeBudget = validTimeBudget(fieldValue(opts, 'decompilerTimeBudgetMs'), 50);
   // Direct Memory-SSA proofs do not need the rewrite engine for a literal
