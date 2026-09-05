@@ -247,8 +247,64 @@ export function availability(entry, context) {
   if (!entry.agentExposed) return { ok: false, reason: entry.humanOnlyReason };
   if (typeof entry.available === 'function') return normalizeAvailability(entry.available(context));
   if (entry.agentTool && !context?.toolRegistry?.has?.(entry.agentTool)) return { ok: false, reason: `analysis-tool-unavailable:${entry.agentTool}` };
-  if (entry.category === 'runtime' && entry.id !== 'runtime.status' && !context?.runtimePlatform) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  if (entry.category === 'runtime' && entry.id !== 'runtime.status') return runtimeAvailability(entry, context);
   return { ok: true };
+}
+
+/*
+ * Discovery must agree with execution: verifyBinding() and the DebugAdapter
+ * require() gates reject session-less or unsupported operations, so listing
+ * them as available would advertise calls that can only fail. (#5104)
+ */
+function runtimeAvailability(entry, context) {
+  const platform = context?.runtimePlatform;
+  if (!platform) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  if (entry.id === 'runtime.connect') {
+    return hasRegisteredAdapter(platform)
+      ? { ok: true }
+      : { ok: false, reason: 'runtime-adapter-unavailable' };
+  }
+  let session = null;
+  try {
+    session = typeof platform.currentSession === 'function' ? platform.currentSession(false) : null;
+  } catch { session = null; }
+  if (!session) return { ok: false, reason: 'no-runtime-session' };
+  const required = RUNTIME_ADAPTER_REQUIREMENTS[entry.id];
+  if (required) {
+    const caps = session.adapter?.capabilities || {};
+    const satisfied = entry.id === 'runtime.breakpoint-create'
+      // Breakpoint kind is chosen per call; one supported kind suffices.
+      ? required.some((cap) => caps[cap] === true)
+      : required.every((cap) => caps[cap] === true);
+    if (!satisfied) return { ok: false, reason: `runtime-capability-unsupported:${entry.id}` };
+  }
+  return { ok: true };
+}
+
+// Capability id -> DebugAdapter capability flags required by the executor path
+// for that operation (mirrors runtimeAdapter()/require() usage).
+const RUNTIME_ADAPTER_REQUIREMENTS = Object.freeze({
+  'runtime.attach': Object.freeze(['attach']),
+  'runtime.breakpoint-create': Object.freeze(['breakpointAddress', 'breakpointFunction', 'breakpointConditional', 'watchpointMemory']),
+  'runtime.breakpoint-remove': Object.freeze(['removeBreakpoint']),
+  'runtime.watchpoint-create': Object.freeze(['watchpointMemory']),
+  'runtime.watchpoint-remove': Object.freeze(['removeBreakpoint']),
+  'runtime.continue': Object.freeze(['resume']),
+  'runtime.pause': Object.freeze(['pause']),
+  'runtime.step-in': Object.freeze(['stepInto']),
+  'runtime.step-over': Object.freeze(['stepOver']),
+  'runtime.step-out': Object.freeze(['stepOut']),
+  'runtime.registers': Object.freeze(['readRegisters']),
+  'runtime.memory-read': Object.freeze(['readMemory']),
+  'runtime.memory-write': Object.freeze(['readMemory', 'writeMemory']),
+});
+
+function hasRegisteredAdapter(platform) {
+  try {
+    if (platform.adapters instanceof Map) return platform.adapters.size > 0;
+    if (typeof platform.adapter === 'function') return platform.adapter() != null;
+  } catch { return false; }
+  return false;
 }
 function normalizeAvailability(value) { return value === true ? { ok: true } : value === false ? { ok: false, reason: 'capability-unavailable' } : value || { ok: true }; }
 
