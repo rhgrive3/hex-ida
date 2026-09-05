@@ -21,11 +21,12 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
-import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
+import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, isCanonicalPassResult } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
+
 
 /**
  * The authoritative analysis state.
@@ -143,6 +144,10 @@ function aborted(budget) {
   catch { return true; }
 }
 
+function isPassResultShapeUsable(result) {
+  return isCanonicalPassResult(result);
+}
+
 /**
  * Computes what a committed pass invalidates.
  *
@@ -196,6 +201,15 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // deadline must not have its work committed as if it had finished in time.
   if (aborted(budget)) {
     return Object.freeze({ committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason: 'cancelled-mid-pass' });
+  }
+
+  // Validate untrusted pass output before any later contract check can
+  // dereference it. This must remain before descriptor-identity validation.
+  if (!isPassResultShapeUsable(result)) {
+    return Object.freeze({
+      committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
+      stopReason: `malformed-result:${descriptor.id}`,
+    });
   }
 
   const stagedWrites = take();
