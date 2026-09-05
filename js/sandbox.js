@@ -87,6 +87,14 @@ const WORKER_PRELUDE = String.raw`
       if (!controlPostMessage) throw new Error('sandbox control channel is not ready');
       controlPostMessage(message);
     } catch {
+      // A structured-clone failure on the original payload (for example a
+      // function passed to print()) must not turn into a silent worker death.
+      // Report a fixed clone-safe diagnostic over the already-established
+      // private channel before closing. If the channel itself is broken the
+      // fallback can fail too, but cleanup must still be deterministic.
+      try {
+        if (controlPostMessage) controlPostMessage({ t: 'error', error: 'sandbox制御メッセージを送信できませんでした。' });
+      } catch {}
       try { close(); } catch {}
     }
   };
@@ -467,6 +475,40 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
+function sandboxOutputSize(value) {
+  const seen = new Set();
+  const stack = [value];
+  const over = MAX_SANDBOX_OUTPUT_BYTES + 1;
+  let bytes = 0;
+  let nodes = 0;
+  while (stack.length && bytes <= MAX_SANDBOX_OUTPUT_BYTES) {
+    const x = stack.pop();
+    if (++nodes > 4096) return over;
+    if (x == null) { bytes += 4; continue; }
+    if (typeof x === 'string') { bytes += x.length * 2; continue; }
+    if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
+    if (typeof x === 'boolean') { bytes += 4; continue; }
+    if (x instanceof ArrayBuffer || ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+    if (typeof x !== 'object') return over;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    // Match the worker/frame fail-closed output authority. Structured-clone
+    // containers whose payload is invisible to Object.keys cannot be measured
+    // soundly here, and accessors could change between measuring and forwarding.
+    if (x instanceof Map || x instanceof Set) return over;
+    const keys = Object.keys(x);
+    bytes += keys.length * 8;
+    if (keys.length > 2048) return over;
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(x, key);
+      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') return over;
+      bytes += key.length * 2;
+      stack.push(descriptor.value);
+    }
+  }
+  return bytes;
+}
+
 function isAbortSignalLike(signal) {
   if (signal == null) return true;
   const type = typeof signal;
@@ -581,7 +623,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         if (!Array.isArray(m.args)) return failBudget('不正なsandbox出力を受信したため停止しました。');
         const now = Date.now();
         if (now - sandboxOutputWindow >= 1000) { sandboxOutputWindow = now; sandboxOutputWindowCount = 0; }
-        const bytes = valueSize({ t: 'print', args: m.args }, new Set(), MAX_SANDBOX_OUTPUT_BYTES + 1);
+        const bytes = sandboxOutputSize({ t: 'print', args: m.args });
         sandboxOutputMessages++;
         sandboxOutputWindowCount++;
         sandboxOutputBytes += bytes;
