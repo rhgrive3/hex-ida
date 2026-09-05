@@ -122,6 +122,36 @@ export function installSymmetricWorkspaceDiff(app) {
   const workspace = app?.workspace;
   if (!workspace || workspace.__symmetricWorkspaceDiffVersion === INSTALL_VERSION) return workspace ?? null;
   const originalLoadBaseline = workspace.loadBaseline.bind(workspace);
+  // Single-flight waiter bookkeeping. Concurrent callers share one producer
+  // task but wait on isolated promises: a waiter abort ends only that
+  // waiter's promise, and the producer aborts only when no waiter remains.
+  let diffFlight = null;
+  function releaseDiffFlight(flight) {
+    flight.waiters = Math.max(0, flight.waiters - 1);
+    if (flight.waiters === 0 && diffFlight === flight) {
+      try { flight.abort(); } catch { /* best effort */ }
+    }
+  }
+  function joinDiffFlight(flight, callerSignal) {
+    if (callerSignal?.aborted) {
+      releaseDiffFlight(flight);
+      return Promise.reject(abortError(callerSignal));
+    }
+    flight.waiters++;
+    if (!callerSignal) return flight.task.finally(() => releaseDiffFlight(flight));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        callerSignal.removeEventListener('abort', onCallerAbort);
+        releaseDiffFlight(flight);
+      };
+      const onCallerAbort = () => { done(); reject(abortError(callerSignal)); };
+      callerSignal.addEventListener('abort', onCallerAbort, { once:true });
+      flight.task.then((value) => { done(); resolve(value); }, (error) => { done(); reject(error); });
+    });
+  }
 
   workspace.loadBaseline = async function loadSymmetricBaseline(file, options = {}) {
     const baseline = await originalLoadBaseline(file, options);
@@ -149,7 +179,11 @@ export function installSymmetricWorkspaceDiff(app) {
   };
 
   workspace.diff = async function symmetricDiff(options = {}) {
-    if (workspace.busy) return workspace.busy;
+    if (diffFlight) return joinDiffFlight(diffFlight, options.signal);
+    const producer = new AbortController();
+    const flight = { task:null, abort:() => producer.abort(), waiters:0 };
+    diffFlight = flight;
+    const signal = producer.signal;
     const revision = workspace.bindingRevision;
     const baseline = workspace.baseline;
     let task;
@@ -163,10 +197,10 @@ export function installSymmetricWorkspaceDiff(app) {
           throw error;
         }
       };
-      throwIfAborted(options.signal);
+      throwIfAborted(signal);
       const currentRegion = app.codeRegion?.() || currentRegions(app)[0] || null;
-      await app.ensureFunctions?.(currentRegion, { signal:options.signal ?? null, onProgress:options.onProgress, priority:'user-visible' });
-      throwIfAborted(options.signal);
+      await app.ensureFunctions?.(currentRegion, { signal:signal ?? null, onProgress:options.onProgress, priority:'user-visible' });
+      throwIfAborted(signal);
       assertCurrent();
       const current = await createSymmetricCodeFunctionSet({
         backend:app.backend,
@@ -174,7 +208,7 @@ export function installSymmetricWorkspaceDiff(app) {
         regions:currentRegions(app),
         architecture:workspace.identity?.metadata?.architecture,
         limit:MAX_DIFF_FUNCTIONS,
-        signal:options.signal ?? null,
+        signal:signal ?? null,
         onProgress:options.onProgress,
       });
       const before = baseline.functions;
@@ -186,7 +220,7 @@ export function installSymmetricWorkspaceDiff(app) {
       }
       let result = await runDiffInWorker(before, current, {
         mode:'full',
-        signal:options.signal,
+        signal,
         threshold:options.threshold ?? 0.62,
         matchBudget:options.matchBudget || { maxCandidateEvaluations:1500000, maxEdges:300000, maxComponentNodes:4096, maxComponentEdges:65536 },
       });
@@ -221,9 +255,10 @@ export function installSymmetricWorkspaceDiff(app) {
       };
       workspace.diffState = result;
       return result;
-    })().finally(() => { if (workspace.busy === task) workspace.busy = null; });
+    })().finally(() => { if (workspace.busy === task) workspace.busy = null; if (diffFlight === flight) diffFlight = null; });
+    flight.task = task;
     workspace.busy = task;
-    return task;
+    return joinDiffFlight(flight, options.signal);
   };
 
   Object.defineProperty(workspace, '__symmetricWorkspaceDiffVersion', { value:INSTALL_VERSION, configurable:true });
