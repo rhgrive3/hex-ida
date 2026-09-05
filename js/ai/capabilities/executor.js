@@ -239,7 +239,7 @@ function restoreStructMutation(notes, snapshot) {
 }
 
 function setStructField(app, args) {
-  if (!Array.isArray(app?.notes?.structs)) throw new AIError('tool_failed', 'Structure annotation adapter is unavailable.');
+  if (!Array.isArray(app?.notes?.structs) || typeof app.notes.save !== 'function') throw new AIError('tool_failed', 'Structure annotation adapter is unavailable.');
   const name = String(args.struct || args.name || '').trim(), offset = Number(args.offset);
   if (!name || !Number.isSafeInteger(offset) || offset < 0) throw new AIError('invalid_tool_call', 'A structure name and non-negative field offset are required.');
   let struct = app.notes.structs.find((item) => item?.name === name);
@@ -265,7 +265,7 @@ function setStructField(app, args) {
   app.notes.dirty = true;
   let saved;
   try {
-    saved = app.notes.save?.();
+    saved = app.notes.save();
   } catch (error) {
     restoreStructMutation(app.notes, snapshot);
     throw new AIError('tool_failed', `Structure annotation could not be persisted: ${error?.message || error}`);
