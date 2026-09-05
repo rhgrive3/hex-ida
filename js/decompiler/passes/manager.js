@@ -84,7 +84,7 @@ export class PassManager {
     }
     materializeLegacyExactStackValues(state);
     state.passElapsedMs = clock() - totalStart;
-    state.passDeadlineExceeded = state.passElapsedMs > totalBudget;
+    state.passDeadlineExceeded = !deterministic && state.passElapsedMs > totalBudget;
     return state;
   }
 }

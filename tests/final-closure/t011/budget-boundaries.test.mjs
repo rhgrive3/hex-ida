@@ -10,7 +10,9 @@ import {
   DEFAULT_REWRITE_BUDGET,
   RewriteEngine,
 } from '../../../js/decompiler/rewrite/engine.js';
+import { materializeLegacyExactStackValues } from '../../../js/decompiler/legacy-exact-return-repair.js';
 import { recoverExactStackPhiExpressions } from '../../../js/decompiler/passes/stack-phi-recovery.js';
+import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
 
 function coerciveValue(counter) {
   return Object.defineProperties({}, {
@@ -19,10 +21,10 @@ function coerciveValue(counter) {
   });
 }
 
-function stackReturnFixture({ includeLoad = true, storeSize = 4, barrier = false, sourceId = 11 } = {}) {
+function stackReturnFixture({ includeLoad = true, storeSize = 4, barrier = false, sourceId = 11, storeKind = 'stack' } = {}) {
   const key = 'stack:sp:e0:-16:s4';
   const value = { id:100 };
-  const store = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:'stack', key, size:storeSize }, args:[{ value }] };
+  const store = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:storeKind, key, size:storeSize }, args:[{ value }] };
   const load = { id:11, op:'load', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[] };
   const unknown = { id:12, op:'unknown', block:0, row:1, address:0x1004n, args:[] };
   const ret = { id:13, op:'ret', block:0, row:3, address:0x100cn, args:[] };
@@ -43,6 +45,55 @@ function stackReturnFixture({ includeLoad = true, storeSize = 4, barrier = false
     }] },
     rewriteProof:[],
     metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function multiReturnFixture() {
+  const key = 'stack:sp:e0:-16:s4';
+  const instructions = [];
+  const blocks = [];
+  const values = [];
+  const body = [];
+  for (const [index, literal] of [[0, 11n], [1, 22n]]) {
+    const value = { id:100 + index };
+    const store = { id:10 + index * 3, op:'store', block:index, row:index * 3, address:0x1000n + BigInt(index * 12), loc:{ kind:'stack', key, size:4 }, args:[{ value }] };
+    const load = { id:11 + index * 3, op:'load', block:index, row:index * 3 + 1, address:0x1004n + BigInt(index * 12), loc:{ kind:'stack', key, size:4 }, args:[] };
+    const ret = { id:12 + index * 3, op:'ret', block:index, row:index * 3 + 2, address:0x1008n + BigInt(index * 12), args:[] };
+    const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
+    instructions.push(store, load, ret);
+    blocks.push({ index, startRow:store.row, endRow:ret.row, pred:[], succ:[], insts:[store, load, ret] });
+    values.push({ valueId:value.id, expression:expr.constant(literal, 32, true) });
+    body.push({
+      kind:'stmt', indent:0, text:`return local_${index};`,
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    });
+  }
+  return {
+    semantic:true,
+    ir:{ compat:{ projection:'semantic-ir-v2-to-v1' }, instructions, blocks, idom:[-1, -1] },
+    semanticAst:{ values, conditions:[], outputs:[{ name:'return', expression:body[1].semantic.expression }] },
+    cAst:{ body },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function legacyForgedReachingStoreFixture() {
+  const key = 'stack:sp:e0:-16:s4';
+  const source = { id:100 };
+  const store = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:8 }, args:[{ value:source }] };
+  const unknown = { id:11, op:'unknown', block:0, row:1 };
+  const load = { id:12, op:'load', block:1, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:store, args:[] };
+  return {
+    ir:{ values:[source, { id:200, def:load }], instructions:[store, unknown, load], blocks:[
+      { index:0, insts:[store, unknown] },
+      { index:1, insts:[load] },
+    ] },
+    semanticAst:{ values:[
+      { valueId:100, expression:expr.constant(11n, 32, true) },
+      { valueId:200, expression:expr.load({ kind:'stack', key }, 32, { row:load.row, ir:load.id }) },
+    ] },
   };
 }
 
@@ -126,5 +177,51 @@ test('T011 stack return requires a width-bound physical LOAD and its source prov
     recoverExactStackPhiExpressions(ambiguous, { decompilerTimeBudgetMs:50 });
     assert.equal(ambiguous.cAst.body[0].text, 'return local_0;');
     assert.equal(ambiguous.metrics.rewrittenExpressions, 0);
+  }
+});
+
+test('T011 composed PHI then return recovery preserves each physical return', () => {
+  const result = multiReturnFixture();
+  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  assert.deepEqual(result.cAst.body.map((node) => node.text), ['return 11;', 'return 22;']);
+  recoverExactStackReturn(result);
+  assert.deepEqual(result.cAst.body.map((node) => node.text), ['return 11;', 'return 22;']);
+  assert.equal(result.metrics.rewrittenExpressions, 2);
+});
+
+test('T011 return fallback rejects width, LOAD, and location-kind ambiguity', () => {
+  for (const options of [
+    { name:'wrong-width', options:{ storeSize:8 } },
+    { name:'missing-physical-load', options:{ includeLoad:false } },
+    { name:'non-stack-key-collision', options:{ storeKind:'field' } },
+  ]) {
+    const result = stackReturnFixture(options.options);
+    recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;', options.name);
+    assert.equal(result.metrics.rewrittenExpressions, 0, options.name);
+  }
+});
+
+test('T011 legacy reachingStore metadata cannot cross width, block, or unknown barriers', () => {
+  const result = legacyForgedReachingStoreFixture();
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+});
+
+test('T011 deterministic PassManager mode does not report a disabled deadline', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let tick = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => ++tick } });
+  try {
+    const state = new PassManager([
+      { name:'deterministic', run:innerState => innerState },
+    ], { timeBudgetMs:0 }).run({ opts:{ deterministicTransforms:true } });
+    assert.equal(state.degraded, undefined);
+    assert.equal(state.passDeadlineExceeded, false);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
+    else delete globalThis.performance;
   }
 });
