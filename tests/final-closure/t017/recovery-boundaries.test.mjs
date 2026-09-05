@@ -44,6 +44,31 @@ function valueOperation(undefinedResult) {
   });
 }
 
+test('undefined-result condition arrays never silently lose sparse trailing entries', () => {
+  const descriptor = (condition) => createUndefinedResultDescriptor({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'array-shape', condition,
+  });
+  const dense = ['source-zero', { operandIndex:0 }, null];
+  assert.deepEqual(descriptor(dense).condition, dense);
+
+  const trailingHole = ['source-zero'];
+  trailingHole.length = 2;
+  const interiorHole = ['source-zero', , 'fallback'];
+  for (const condition of [trailingHole, interiorHole, new Array(2)]) {
+    assert.throws(() => descriptor(condition), /invalid-undefined-result-condition/);
+  }
+
+  let lengthReads = 0;
+  const trappedLength = new Proxy(dense, {
+    get(target, key, receiver) {
+      if (key === 'length') { lengthReads += 1; throw new Error('unexpected-length-read'); }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  assert.deepEqual(descriptor(trappedLength).condition, dense);
+  assert.equal(lengthReads, 0, 'array shape must use its own data descriptor');
+});
+
 test('undefined-result descriptors snapshot own data without coercion or getter execution', () => {
   const valid = { widthBits:32, mask:'0xffffffff', class:'fully', reason:'strict-snapshot' };
   let coercions = 0;

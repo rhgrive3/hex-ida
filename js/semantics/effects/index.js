@@ -159,12 +159,25 @@ function snapshotSerializableData(value, code, seen = new WeakSet()) {
   } catch { fail(code); }
   if ((!isArray && prototype !== Object.prototype && prototype !== null)
     || (isArray && prototype !== Array.prototype)) fail(code);
+  let arrayLength;
+  if (isArray) {
+    let lengthDescriptor;
+    try { lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length'); }
+    catch { fail(code); }
+    if (lengthDescriptor == null || !Object.hasOwn(lengthDescriptor, 'value')
+      || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) fail(code);
+    arrayLength = lengthDescriptor.value;
+    // Sparse arrays are not exact serializable conditions. Copying only their
+    // enumerable indices would silently discard trailing holes and change the
+    // published condition. Check shape before allocating or visiting elements.
+    if (keys.length !== arrayLength + 1) fail(code);
+  }
   seen.add(value);
   const out = isArray ? [] : {};
   for (const key of keys) {
     if (typeof key !== 'string') fail(code);
     if (isArray && key === 'length') continue;
-    if (isArray && (!/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) fail(code);
+    if (isArray && (!/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= arrayLength)) fail(code);
     let descriptor;
     try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
     catch { fail(code); }
