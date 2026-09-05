@@ -92,12 +92,62 @@ export function aggregateLayoutDescriptorPresent(parameter) {
   return [parameter, ...nestedLayouts].some(hasPhysicalField);
 }
 
-function sameDescriptorValue(left, right) {
+function enumerableDataDescriptors(value) {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).filter((key) => descriptors[key].enumerable);
+  if (keys.some((key) => typeof key !== 'string')) return null;
+  if (keys.some((key) => !Object.hasOwn(descriptors[key], 'value'))) return null;
+  return { descriptors, keys:keys.sort() };
+}
+
+function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRight = new WeakSet()) {
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== typeof right) return false;
-  if (typeof left !== 'object') return String(left) === String(right);
-  try { return JSON.stringify(left) === JSON.stringify(right); }
-  catch { return false; }
+  if (typeof left !== 'object') return false;
+  const leftArray = Array.isArray(left);
+  if (leftArray !== Array.isArray(right)) return false;
+  if (activeLeft.has(left) || activeRight.has(right)) return false;
+  activeLeft.add(left);
+  activeRight.add(right);
+  try {
+    if (leftArray) {
+      if (left.length !== right.length) return false;
+      const leftKeys = Object.keys(left);
+      const rightKeys = Object.keys(right);
+      if (leftKeys.length !== left.length || rightKeys.length !== right.length) return false;
+      for (let index = 0; index < left.length; index += 1) {
+        const leftDescriptor = Object.getOwnPropertyDescriptor(left, String(index));
+        const rightDescriptor = Object.getOwnPropertyDescriptor(right, String(index));
+        if (!leftDescriptor?.enumerable || !rightDescriptor?.enumerable
+          || !Object.hasOwn(leftDescriptor, 'value') || !Object.hasOwn(rightDescriptor, 'value')
+          || !sameDescriptorValue(leftDescriptor.value, rightDescriptor.value, activeLeft, activeRight)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    const leftData = enumerableDataDescriptors(left);
+    const rightData = enumerableDataDescriptors(right);
+    if (!leftData || !rightData || leftData.keys.length !== rightData.keys.length) return false;
+    for (let index = 0; index < leftData.keys.length; index += 1) {
+      const key = leftData.keys[index];
+      if (key !== rightData.keys[index]
+        || !sameDescriptorValue(
+          leftData.descriptors[key].value,
+          rightData.descriptors[key].value,
+          activeLeft,
+          activeRight,
+        )) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    activeLeft.delete(left);
+    activeRight.delete(right);
+  }
 }
 
 /*
