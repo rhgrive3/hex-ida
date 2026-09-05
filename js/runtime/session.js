@@ -30,7 +30,7 @@ export class DebugSession {
     this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
-    this.refreshErrors={modules:null,threads:null}; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
   }
   async connect(options = {}) {
     if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
@@ -56,25 +56,42 @@ export class DebugSession {
     return result;
   }
   async refreshState() {
+    const refreshToken={};
+    const refreshEpoch=this.epoch;
+    this._refreshToken=refreshToken;
+    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken;
+    const snapshot=()=>({modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}});
+    let modules=this.modules;
+    let threads=this.threads;
+    const errors={...this.refreshErrors};
     if (this.adapter.capabilities.modules) {
       try {
         const next=await this.adapter.getModules();
-        if (Array.isArray(next)) this.modules=next;
-        this.refreshErrors.modules=null;
+        if (!isCurrent()) return snapshot();
+        if (Array.isArray(next)) modules=next;
+        errors.modules=null;
       } catch (error) {
-        this.refreshErrors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
+        if (!isCurrent()) return snapshot();
+        errors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
       }
     }
     if (this.adapter.capabilities.threads) {
       try {
         const next=await this.adapter.getThreads();
-        if (Array.isArray(next)) this.threads=next;
-        this.refreshErrors.threads=null;
+        if (!isCurrent()) return snapshot();
+        if (Array.isArray(next)) threads=next;
+        errors.threads=null;
       } catch (error) {
-        this.refreshErrors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
+        if (!isCurrent()) return snapshot();
+        errors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
       }
     }
-    return {modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}};
+    if (!isCurrent()) return snapshot();
+    this.modules=modules;
+    this.threads=threads;
+    this.refreshErrors.modules=errors.modules;
+    this.refreshErrors.threads=errors.threads;
+    return snapshot();
   }
   acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
