@@ -48,6 +48,20 @@ for (const [debugRegister, aliasWhenClear] of [['dr4', 'dr6'], ['dr5', 'dr7']]) 
     assert.equal(result.metadata?.aliasWhenClear, aliasWhenClear);
     assert.equal(result.metadata?.faultWhenSet, '#UD');
     assert.equal(result.metadata?.debugGeneralDetectPrecedesAccess, true);
+    assert.ok(result.possibleFaults.some((fault) =>
+      fault.kind === 'undefined-opcode'
+      && fault.condition?.kind === 'x86-debug-register-alias-control'
+      && fault.condition?.register === debugRegister
+      && fault.condition?.controlRegister === 'cr4'
+      && fault.condition?.field === 'DE'
+      && fault.condition?.value === 1
+      && fault.detail?.fault === '#UD'),
+    `CR4.DE=1 must retain the #UD alternative for ${direction} ${debugRegister}`);
+    assert.ok(result.possibleFaults.some((fault) =>
+      fault.kind === 'debug-exception'
+      && fault.condition?.kind === 'x86-debug-general-detect'
+      && fault.detail?.fault === '#DB'),
+    `DR7.GD pre-access #DB must remain represented for ${direction} ${debugRegister}`);
   }
 }
 
