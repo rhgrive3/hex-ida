@@ -6,6 +6,7 @@ import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.
 import { decompileSemantic } from '../decompiler/semantic.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
+  partitionDecodedFunction,
   semanticAbiAdapter,
   semanticControlUnknowns,
 } from './semantic-function-base.js';
