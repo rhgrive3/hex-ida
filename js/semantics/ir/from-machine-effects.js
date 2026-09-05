@@ -25,8 +25,7 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
@@ -53,6 +52,8 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   const blockId = nonEmpty(rawBlockId, 'semantic-ir-lowering-block-id-required');
   const entryBlockId = rawEntryBlockId == null ? blockId : nonEmpty(rawEntryBlockId, 'semantic-ir-lowering-entry-block-id-required');
   if (entryBlockId !== blockId) fail('semantic-ir-lowering-single-bundle-entry-must-match-block');
+  const rawAddressWidthBits = context.addressWidthBits;
+  const addressWidthBits = positiveInteger(rawAddressWidthBits);
 
   const nodes = [];
   const values = [];
@@ -195,7 +196,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function createDefinitionValue(effect, nodeId, machineValue, role, ordinal) {
     const id = plannedOutputId(effect, machineValue, role, ordinal);
     if (valueIds.has(id)) return id;
-    const machineType = machineValueMachineType(machineValue, { addressWidthBits: context.addressWidthBits });
+    const machineType = machineValueMachineType(machineValue, { addressWidthBits });
     if (!machineType) fail('semantic-ir-lowering-unrepresentable-output-machine-type');
     return addValue({
       id,
@@ -238,7 +239,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   }
 
   function createConstant(effect, machineValue, role, ordinal = 0, overrideType = null) {
-    const machineType = overrideType ?? machineValueMachineType(machineValue, { addressWidthBits: context.addressWidthBits });
+    const machineType = overrideType ?? machineValueMachineType(machineValue, { addressWidthBits });
     if (!machineType) return null;
     const hasConcrete = machineValue.kind === 'bitvector'
       ? machineValue.value != null
@@ -271,7 +272,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   }
 
   function implicitStateRead(effect, machineValue, role, ordinal = 0) {
-    const machineType = machineValueMachineType(machineValue, { addressWidthBits: context.addressWidthBits });
+    const machineType = machineValueMachineType(machineValue, { addressWidthBits });
     if (!machineType) return null;
     const variable = createPhysicalStateVariable(machineValue);
     const nodeId = nodeIdFor(effect, `${role}-state-read`, ordinal);
@@ -307,13 +308,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       const key = machineValueReferenceKey(machineValue);
       const planned = temporaryDefinitions.get(key);
       if (planned) return planned.valueId;
-      const machineType = machineValueMachineType(machineValue, { addressWidthBits: context.addressWidthBits });
+      const machineType = machineValueMachineType(machineValue, { addressWidthBits });
       return createUnknownValue(effect, machineType, role, 'temporary-value-has-no-defining-machine-effect', machineValue, ordinal);
     }
     if (machineValue.kind === 'register' || machineValue.kind === 'flag') return implicitStateRead(effect, machineValue, role, ordinal);
     if (machineValue.kind === 'bitvector' || machineValue.kind === 'float') return createConstant(effect, machineValue, role, ordinal);
     if (machineValue.kind === 'vector' || machineValue.kind === 'predicate') {
-      const machineType = machineValueMachineType(machineValue, { addressWidthBits: context.addressWidthBits });
+      const machineType = machineValueMachineType(machineValue, { addressWidthBits });
       return createUnknownValue(effect, machineType, role, 'aggregate-machine-value-has-no-reference-identity', machineValue, ordinal);
     }
     if (['memory', 'code', 'tls', 'io'].includes(machineValue.kind)) {
@@ -344,7 +345,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     assertNotAborted(options);
     if (depth > MAX_EXPRESSION_DEPTH) return { valueId: null, reason: 'machine-expression-depth-exceeded' };
     if (!expression || typeof expression !== 'object' || Array.isArray(expression)) {
-      const width = positiveInteger(context.addressWidthBits);
+      const width = addressWidthBits;
       if (width != null && (typeof expression === 'number' || typeof expression === 'bigint' || typeof expression === 'string')) {
         const valueId = rawConstant(effect, expression, width, `${role}-constant`, depth, addressSpace);
         if (valueId) return { valueId };
@@ -373,7 +374,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (kind === 'add' || kind === 'sub') {
       const left = lowerExpression(effect, expression.left, addressSpace, `${role}-left`, depth + 1);
       const right = lowerExpression(effect, expression.right, addressSpace, `${role}-right`, depth + 1);
-      const widthBits = positiveInteger(expression.widthBits) ?? positiveInteger(context.addressWidthBits);
+      const widthBits = positiveInteger(expression.widthBits) ?? addressWidthBits;
       if (!left.valueId || !right.valueId || widthBits == null) {
         return { valueId: null, reason: left.reason ?? right.reason ?? 'address-arithmetic-width-missing' };
       }
@@ -439,7 +440,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
 
     if (kind === 'shift-left') {
       const inner = lowerExpression(effect, expression.value, addressSpace, `${role}-value`, depth + 1);
-      const widthBits = positiveInteger(expression.widthBits) ?? positiveInteger(context.addressWidthBits);
+      const widthBits = positiveInteger(expression.widthBits) ?? addressWidthBits;
       if (!inner.valueId || widthBits == null) return { valueId: null, reason: inner.reason ?? 'shift-expression-width-missing' };
       const amountId = rawConstant(effect, expression.amount, widthBits, `${role}-amount`, depth + 1);
       if (!amountId) return { valueId: null, reason: 'shift-expression-amount-invalid' };
@@ -863,7 +864,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       return implicitStateRead(effect, { ...condition, widthBits }, 'control-condition', 0);
     }
     if (condition.kind === 'absolute-address') {
-      const widthBits = positiveInteger(condition.widthBits) ?? positiveInteger(context.addressWidthBits);
+      const widthBits = positiveInteger(condition.widthBits) ?? addressWidthBits;
       if (widthBits == null) return null;
       return rawConstant(effect, condition.value, widthBits, 'control-condition', 0, 'code');
     }
