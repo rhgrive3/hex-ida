@@ -11,6 +11,9 @@ const MAX_RPC_TOTAL = 1000;
 const MAX_RPC_CONCURRENT = 8;
 const MAX_RPC_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_RPC_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_SANDBOX_OUTPUT_MESSAGES = 256;
+const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;
+const MAX_SANDBOX_OUTPUT_PER_SECOND = 96;
 
 const WORKER_PRELUDE = String.raw`
 (() => {
@@ -234,8 +237,10 @@ Promise.resolve(globalThis.__hexSandboxExecute(__hexUserEntry, __hexUserMode, __
 
 function workerProgram(source, mode, index) {
   const user = String(source || '');
-  const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
   const safeMode = mode === 'discover' || mode === 'plugin' ? mode : 'script';
+  const safeIndex = safeMode === 'plugin'
+    ? (typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1)
+    : 0;
   let body;
   if (safeMode === 'discover' || safeMode === 'plugin') {
     body = `
@@ -268,6 +273,7 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   const stop = () => {
     if (worker) { try { worker.terminate(); } catch {} worker = null; }
   };
+  const WORKER_MESSAGE_TYPES = new Set(['print', 'rpc', 'budgetExceeded', 'done', 'error', 'outputLimit']);
   const start = (m) => {
     stop();
     try {
@@ -281,7 +287,12 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       return;
     }
     worker.onmessage = (e) => {
-      const data=e.data || {};
+      const data=e.data;
+      if (!data || typeof data !== 'object' || Array.isArray(data) || !WORKER_MESSAGE_TYPES.has(data.t)) {
+        port.postMessage({ t: 'error', error: 'sandbox Workerから不正なmessageを受信しました。' });
+        stop();
+        return;
+      }
       if (data.t === 'outputLimit') { port.postMessage({t:'error',error:'出力が安全上限を超えたため停止しました。'}); stop(); return; }
       port.postMessage(data);
     };
@@ -336,6 +347,49 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   return n;
 }
 
+function hasExactKeys(value, expected) {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function isSandboxChannelMessage(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message) || typeof message.t !== 'string') return false;
+  if (message.t === 'ready') return hasExactKeys(message, ['t']);
+  if (message.t === 'print') return hasExactKeys(message, ['t', 'args']) && Array.isArray(message.args);
+  if (message.t === 'rpc') {
+    return hasExactKeys(message, ['t', 'id', 'method', 'args'])
+      && Number.isSafeInteger(message.id) && message.id > 0
+      && typeof message.method === 'string'
+      && Array.isArray(message.args);
+  }
+  if (message.t === 'budgetExceeded' || message.t === 'error') {
+    return hasExactKeys(message, ['t', 'error']) && typeof message.error === 'string';
+  }
+  if (message.t === 'done') return hasExactKeys(message, ['t', 'value']);
+  return false;
+}
+
+function createSandboxOutputBudget() {
+  let messages = 0;
+  let bytes = 0;
+  let windowStart = Date.now();
+  let windowCount = 0;
+  return (message, now = Date.now()) => {
+    if (now - windowStart >= 1000) {
+      windowStart = now;
+      windowCount = 0;
+    }
+    const messageBytes = valueSize(message, new Set(), MAX_SANDBOX_OUTPUT_BYTES + 1);
+    messages++;
+    windowCount++;
+    bytes += messageBytes;
+    return messageBytes > MAX_SANDBOX_OUTPUT_BYTES
+      || messages > MAX_SANDBOX_OUTPUT_MESSAGES
+      || bytes > MAX_SANDBOX_OUTPUT_BYTES
+      || windowCount > MAX_SANDBOX_OUTPUT_PER_SECOND;
+  };
+}
+
 function isAbortSignalLike(signal) {
   if (signal == null) return true;
   const type = typeof signal;
@@ -362,8 +416,8 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
   }
-  const safeIndex = sandboxIndex(index);
-  if (safeIndex == null) {
+  const safeIndex = mode === 'plugin' ? sandboxIndex(index) : 0;
+  if (mode === 'plugin' && safeIndex == null) {
     return Promise.resolve({ error: 'プラグイン番号が無効です。' });
   }
   const timeoutMs = sandboxTimeout(timeout);
@@ -385,6 +439,8 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     let rpcConcurrent = 0;
     let rpcInputBytes = 0;
     let rpcOutputBytes = 0;
+    let started = false;
+    const outputBudgetExceeded = createSandboxOutputBudget();
 
     function terminate() {
       try { channel.port1.postMessage({ t: 'terminate' }); } catch { /* ignore */ }
@@ -452,11 +508,21 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     channel.port1.onmessage = async (e) => {
       if (settled) return;
-      const m = e.data || {};
+      const m = e.data;
+      if (!isSandboxChannelMessage(m)) {
+        finish({ error: 'sandboxから不正なmessageを受信しました。' });
+        return;
+      }
       if (m.t === 'ready') {
+        if (started) {
+          finish({ error: 'sandboxから重複したready messageを受信しました。' });
+          return;
+        }
+        started = true;
         channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index: safeIndex });
       } else if (m.t === 'print') {
-        try { out(...(m.args || [])); } catch { /* output must not stop the sandbox */ }
+        if (outputBudgetExceeded(m)) return failBudget('出力が安全上限を超えたため停止しました。');
+        try { out(...m.args); } catch { /* output must not stop the sandbox */ }
       } else if (m.t === 'budgetExceeded') {
         failBudget(m.error || 'sandbox RPC budget exceeded');
       } else if (m.t === 'rpc') {
