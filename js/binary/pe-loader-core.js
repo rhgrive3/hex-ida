@@ -339,9 +339,12 @@ function mappedBaseRelocationTarget(image, rva) {
 
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
+  if((dir.rva&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at unaligned RVA 0x${dir.rva.toString(16)}`);return;}
   const span=mappedFileSpanForRva(image,dir.rva,dir.size);if(!span){budget.partial('relocations:directory-span','PE base-relocation directory crosses a mapped boundary');return;}
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);
+  if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);return;}
   while(off+8<=end){
+    if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:32},'relocation-block'))break;
     const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||(blockSize&3)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     const count=(blockSize-8)/2;
@@ -354,6 +357,7 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
     }
     off+=blockSize;
   }
+  if(off<end&&off+8>end)budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}: ${end-off} trailing byte(s)`);
 }
 
 export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
