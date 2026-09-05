@@ -24,7 +24,11 @@ export class ContextBroker {
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 4096));
+    // A caller-reduced budget is a contract: aiBudget() allows contextBytes
+    // down to 1, so the per-call floor here must be 1, not 4096. A context that
+    // cannot fit fails closed as context_too_large below; it is never widened
+    // back up. (#5103)
+    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 1));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
