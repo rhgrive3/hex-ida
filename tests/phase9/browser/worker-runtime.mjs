@@ -90,6 +90,9 @@ async function checkBrowser(name, browserType, baseUrl) {
         });
       });
       rawWorker.terminate();
+      const satModelValue = sat.model instanceof Map
+        ? sat.model.get(x.symbolId)
+        : sat.model?.[x.symbolId];
       const wideUnsat = await session.check(createVerificationQuery({
         kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
         claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
@@ -108,7 +111,7 @@ async function checkBrowser(name, browserType, baseUrl) {
       });
       const summary = {
         sat: sat.status,
-        satModel: sat.model ? String(sat.model.browser_x) : null,
+        satModel: sat.model ? String(satModelValue) : null,
         unsat: unsat.status,
         satBackend: sat.backend,
         unsatBackend: unsat.backend,
