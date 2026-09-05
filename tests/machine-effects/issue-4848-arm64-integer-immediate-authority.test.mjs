@@ -77,6 +77,10 @@ for (const mnemonic of ['cmp','cmn']) {
   assertSemantic(lift(mnemonic, [gp(0), imm(0xfffn)]), `${mnemonic} imm12 upper boundary`);
   assertPartial(lift(mnemonic, [gp(0), imm(0x1000n)]), `${mnemonic} imm12 out of range`);
 }
+assertSemantic(
+  lift('add', [gp(0), gp(1), imm(1n, { shift:{ op:'lsl', amount:12 } })]),
+  'ADD canonical LSL #12 modifier remains semantic',
+);
 
 // Logical immediates preserve encodable masks while rejecting non-encodable zero.
 assertSemantic(lift('and', [gp(0), gp(1), imm(0xffn)]), 'AND encodable logical immediate');
@@ -156,6 +160,71 @@ assertAuthorityFailure(
 );
 assert.equal(directFlagStateful.reads(), 0, 'direct flag boundary must reject an accessor without invoking it');
 assert.equal(directFlagStateful.coercions(), 0, 'direct flag boundary must not invoke hostile coercion hooks');
+
+// Reflection and modifier evidence are part of the same authority snapshot.
+// Throwing Proxy traps and stateful modifier accessors must fail closed before
+// validation/lowering can observe divergent values.
+const throwingImmediatePrototype = new Proxy(imm(1n), {
+  getPrototypeOf() { throw new Error('issue-4848-op-prototype-trap'); },
+});
+assertAuthorityFailure(
+  lift('add', [gp(0), gp(1), throwingImmediatePrototype]),
+  'throwing immediate getPrototypeOf trap',
+);
+
+const proxiedInstruction = new Proxy(instruction('add', [gp(0), gp(1), imm(1n)]), {
+  getPrototypeOf() { throw new Error('issue-4848-instruction-prototype-trap'); },
+});
+assertAuthorityFailure(
+  liftArm64MachineEffects(proxiedInstruction),
+  'throwing instruction getPrototypeOf trap',
+);
+
+for (const field of ['shift','extend']) {
+  let reads = 0;
+  const op = imm(1n);
+  Object.defineProperty(op, field, {
+    enumerable:true,
+    configurable:true,
+    get() {
+      reads += 1;
+      return reads === 1 ? null : { op:'ror', amount:1 };
+    },
+  });
+  assertAuthorityFailure(lift('add', [gp(0), gp(1), op]), `stateful ADD ${field} accessor`);
+  assert.equal(reads, 0, `${field} accessor must be rejected without invocation`);
+}
+
+let nestedShiftReads = 0;
+const nestedShift = {};
+Object.defineProperty(nestedShift, 'op', {
+  enumerable:true,
+  configurable:true,
+  get() {
+    nestedShiftReads += 1;
+    return nestedShiftReads === 1 ? 'lsl' : 'ror';
+  },
+});
+const nestedShiftOp = imm(1n, { shift:nestedShift });
+assertAuthorityFailure(lift('add', [gp(0), gp(1), nestedShiftOp]), 'stateful nested shift accessor');
+assert.equal(nestedShiftReads, 0, 'nested shift accessor must be rejected without invocation');
+
+// Conditional-compare immediates must enter typed authority before
+// structuredEncodingFailure() can call immediateOf()/BigInt() on raw evidence.
+for (const mnemonic of ['ccmp','ccmn']) {
+  let coercions = 0;
+  const hostile = {
+    [Symbol.toPrimitive]() {
+      coercions += 1;
+      return 1;
+    },
+  };
+  assertAuthorityFailure(
+    lift(mnemonic, [gp(0), imm(hostile), imm(0n), { k:'cond' }]),
+    `${mnemonic} hostile comparison immediate`,
+  );
+  assert.equal(coercions, 0, `${mnemonic} authority gate must precede BigInt coercion`);
+}
 
 // ADR/ADRP are address-evidence forms, not scalar-immediate authority forms.
 // Preserve their existing coercible-address parsing and range/alignment gate.

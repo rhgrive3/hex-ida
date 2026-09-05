@@ -43,7 +43,7 @@ const ARM64_VARIABLE_SHIFT_MNEMONICS = Object.freeze(new Set(['lslv','lsrv','asr
 const ARM64_BITFIELD_MNEMONICS = Object.freeze(new Set(['ubfm','sbfm','bfm','ubfx','sbfx','ubfiz','sbfiz','bfxil','bfi','bfc']));
 const ARM64_SCALAR_IMMEDIATE_AUTHORITY_MNEMONICS = Object.freeze(new Set([
   ...ARM64_ADD_SUB_IMMEDIATE_MNEMONICS,
-  'cmp','cmn',
+  'cmp','cmn','ccmp','ccmn',
   ...ARM64_LOGICAL_IMMEDIATE_MNEMONICS,
   'mov','movz','movn','movk',
   'lsl','lsr','asr','ror','extr',
