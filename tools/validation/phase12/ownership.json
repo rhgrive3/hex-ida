@@ -44,6 +44,8 @@
       "js/runtime/stage2.js",
       "js/managed/runtime-binding.js",
       "js/managed/index.js",
+      "js/managed/cil/frontend.js",
+      "js/managed/dex/validation.js",
       "docs/SUPPORT_MATRIX.md",
       "tools/validation/phase10/ownership.json",
       "tools/validation/phase10/ownership-check.mjs",
