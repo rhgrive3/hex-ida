@@ -97,6 +97,62 @@ function legacyForgedReachingStoreFixture() {
   };
 }
 
+function legacyStaleReachingStoreFixture() {
+  const key = 'stack:sp:e0:-16:s4';
+  const oldSource = { id:100 };
+  const newSource = { id:101 };
+  const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldSource }] };
+  const newerStore = { id:11, op:'store', block:0, row:1, loc:{ kind:'stack', key, size:4 }, args:[{ value:newSource }] };
+  const load = { id:12, op:'load', block:0, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:oldStore, args:[] };
+  return {
+    ir:{ values:[oldSource, newSource, { id:200, def:load }], instructions:[oldStore, newerStore, load], blocks:[
+      { index:0, insts:[oldStore, newerStore, load] },
+    ] },
+    semanticAst:{ values:[
+      { valueId:100, expression:expr.constant(11n, 32, true) },
+      { valueId:101, expression:expr.constant(22n, 32, true) },
+      { valueId:200, expression:expr.load({ kind:'stack', key }, 32, { row:load.row, ir:load.id }) },
+    ] },
+  };
+}
+
+function stackReturnWriterFixture(mode) {
+  const key = 'stack:sp:e0:-16:s4';
+  const oldValue = { id:100 };
+  const newValue = { id:101 };
+  const oldStore = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldValue }] };
+  const middle = mode === 'wrong-width'
+    ? { id:11, op:'store', block:0, row:1, address:0x1004n, loc:{ kind:'stack', key, size:8 }, args:[{ value:newValue }] }
+    : { id:12, op:'store', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[{ value:newValue }] };
+  const load = mode === 'wrong-width'
+    ? { id:13, op:'load', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[] }
+    : { id:11, op:'load', block:0, row:1, address:0x1004n, loc:{ kind:'stack', key, size:4 }, args:[] };
+  const ret = { id:14, op:'ret', block:0, row:3, address:0x100cn, args:[] };
+  const instructions = mode === 'wrong-width'
+    ? [oldStore, middle, load, ret]
+    : [oldStore, load, middle, ret];
+  const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:ret.row, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{
+      values:[
+        { valueId:oldValue.id, expression:expr.constant(11n, 32, true) },
+        { valueId:newValue.id, expression:expr.constant(22n, 32, true) },
+      ],
+      conditions:[],
+      outputs:[{ name:'return', expression }],
+    },
+    cAst:{ body:[{
+      kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    }] },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+  };
+}
+
 test('T011 time budgets require primitive finite nonnegative numbers', () => {
   const counter = { count:0 };
   const malformed = [NaN, Infinity, -Infinity, -1, '40', 40n, new Number(40), coerciveValue(counter)];
@@ -208,6 +264,43 @@ test('T011 legacy reachingStore metadata cannot cross width, block, or unknown b
   materializeLegacyExactStackValues(result);
   const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
   assert.equal(expression.kind, 'load');
+});
+
+test('T011 legacy reachingStore metadata cannot skip a newer same-slot writer', () => {
+  const result = legacyStaleReachingStoreFixture();
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+});
+
+test('T011 stack-return fallback stops at the authenticated physical LOAD', () => {
+  const result = stackReturnWriterFixture('post-load');
+  recoverExactStackReturn(result);
+  assert.equal(result.cAst.body[0].text, 'return 11;');
+  assert.equal(result.metrics.rewrittenExpressions, 1);
+});
+
+test('T011 malformed same-slot STORE is a barrier to older stack values', () => {
+  const result = stackReturnWriterFixture('wrong-width');
+  recoverExactStackReturn(result);
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 stack-return proof keeps scalar widths and rows type-strict', () => {
+  const malformed = [
+    result => { result.semanticAst.outputs[0].expression.bits = '32'; },
+    result => { result.semanticAst.outputs[0].expression.bits = NaN; },
+    result => { result.ir.instructions.find((inst) => inst.op === 'load').row = '2'; },
+    result => { result.ir.instructions.find((inst) => inst.op === 'load').row = NaN; },
+  ];
+  for (const mutate of malformed) {
+    const result = stackReturnFixture();
+    mutate(result);
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
 });
 
 test('T011 deterministic PassManager mode does not report a disabled deadline', () => {

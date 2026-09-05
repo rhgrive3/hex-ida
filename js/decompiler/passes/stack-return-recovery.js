@@ -197,8 +197,8 @@ function controller(ir, merge, predecessors, opts) {
 }
 
 function exactReturnLoad(result, root, ret) {
-  const bits = Number(root?.bits || 0);
-  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  const bits = root?.bits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
   const sourceIds = new Set((Array.isArray(root.source?.ir) ? root.source.ir : []).map(String));
   if (!sourceIds.size) return null;
   const candidates = (result.ir?.instructions || []).filter((inst) =>
@@ -211,7 +211,7 @@ function exactReturnLoad(result, root, ret) {
   const size = positiveAccessSize(load.loc?.size);
   if (size == null || size > Math.floor(Number.MAX_SAFE_INTEGER / 8) || size * 8 !== bits) return null;
   if (load.block === ret.block) {
-    if (load.row == null || ret.row == null || Number(load.row) >= Number(ret.row)) return null;
+    if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(ret.row) || load.row >= ret.row) return null;
   } else if (!dominates(result.ir, load.block, ret.block)) {
     return null;
   }
@@ -451,7 +451,7 @@ function unsafeBarrier(inst, key) {
     return (inst.memKills || []).some((loc) => loc?.key === key);
   }
   if (inst?.op !== 'store') return false;
-  if (inst.loc?.key === key && inst.loc?.kind !== 'stack') return true;
+  if (inst.loc?.key === key) return true;
   return inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
@@ -536,8 +536,8 @@ function rewriteReturn(result, expression, opts, ret) {
   return true;
 }
 
-function committedStackSpillOnExactReturnPath(result, root, ret, size) {
-  for (const inst of before(result.ir, ret.block, ret.row)) {
+function committedStackSpillOnExactReturnPath(result, root, load, size) {
+  for (const inst of before(result.ir, load.block, load.row)) {
     if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
       if (positiveAccessSize(inst.loc.size) !== size) return null;
       const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
@@ -598,7 +598,7 @@ export function recoverExactStackReturn(result, opts = {}) {
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
-    const proof = committedStackSpillOnExactReturnPath(result, root, ret, loadProof.size);
+    const proof = committedStackSpillOnExactReturnPath(result, root, loadProof.load, loadProof.size);
     if (proof) {
       committedSpill = proof.stackStore;
       committed = expr.load(proof.location, root.bits || 64, root.source, {
@@ -607,7 +607,7 @@ export function recoverExactStackReturn(result, opts = {}) {
       });
     }
   }
-  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key,
+  const recovered = committed || resolve(result.ir, loadProof.load.block, loadProof.load.row, root.location.key,
     loadProof.size, values, opts, engine, new Set());
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.

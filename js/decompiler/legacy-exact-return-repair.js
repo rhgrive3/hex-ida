@@ -24,8 +24,8 @@ function exactLegacyStore(result, load, node) {
   if (store?.op !== 'store' || store.loc?.kind !== 'stack' || store.loc.key !== load.loc.key) return null;
   if (instructions.filter((candidate) => candidate === store).length !== 1) return null;
   if (store.block !== load.block
-      || typeof store.row !== 'number' || !Number.isFinite(store.row)
-      || typeof load.row !== 'number' || !Number.isFinite(load.row)
+      || !Number.isSafeInteger(store.row)
+      || !Number.isSafeInteger(load.row)
       || store.row >= load.row) return null;
   const storeSize = positiveAccessSize(store.loc.size);
   const loadSize = positiveAccessSize(load.loc.size);
@@ -40,7 +40,7 @@ function exactLegacyStore(result, load, node) {
     if (inst.row <= store.row || inst.row >= load.row) continue;
     if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
     if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown'
-        || (inst.loc.key === load.loc.key && inst.loc.kind !== 'stack'))) return null;
+        || inst.loc.key === load.loc.key)) return null;
   }
   return store;
 }
