@@ -5,7 +5,7 @@ import { liftX86SystemRegisterMoveEffects } from '../../js/targets/architecture/
 let instructionCode = 0x597600;
 
 function register(name, access) {
-  return { type:'register', registerId:name, widthBits:64, access };
+  return { type:'register', register:{ id:name, registerId:name }, widthBits:64, access };
 }
 
 function systemMove({ opcode, modrm, rex = null, operands }) {
