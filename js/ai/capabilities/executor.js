@@ -134,7 +134,14 @@ function setNote(app, kind, args, after = null) {
   const address = BigInt(args.address); const value = String(args.value ?? '');
   const method = kind === 'name' ? 'setName' : 'setComment';
   if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
-  app.notes[method](address, value); after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+  const previous = kind === 'name' ? app.notes.nameOf?.(address) : app.notes.comment?.(address);
+  // NoteStore reports storage failure as false, not by throwing. An
+  // unpersisted note must not be reported as success. (#5141)
+  if (app.notes[method](address, value) === false) {
+    try { app.notes[method](address, previous == null ? '' : previous, { save: false }); } catch { /* persist already failed; keep the original error */ }
+    throw new AIError('tool_failed', `${kind} annotation could not be persisted.`);
+  }
+  after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
   return { ok: true, address: address.toString(), value };
 }
 
@@ -146,7 +153,14 @@ function renameSymbol(app, args) {
   const address = BigInt(args.address); const value = String(args.value ?? '');
   if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
   const previousName = app.notes.nameOf?.(address);
-  app.notes.setName(address, value);
+  // setName() === false means the storage write failed. Never run
+  // symbols.rename on top of an unpersisted note; restore the in-memory note
+  // without another storage attempt and fail closed. (#5141)
+  if (app.notes.setName(address, value) === false) {
+    try { app.notes.setName(address, previousName == null ? '' : previousName, { save: false }); } catch { /* persist already failed; keep the original error */ }
+    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    throw new AIError('tool_failed', 'Rename could not be persisted.');
+  }
   try {
     app.symbols?.rename?.(address, value);
   } catch (error) {
@@ -174,12 +188,26 @@ function setStructField(app, args) {
   const name = String(args.struct || args.name || '').trim(), offset = Number(args.offset);
   if (!name || !Number.isSafeInteger(offset) || offset < 0) throw new AIError('invalid_tool_call', 'A structure name and non-negative field offset are required.');
   let struct = app.notes.structs.find((item) => item?.name === name);
+  const created = !struct;
   if (!struct) { struct = { name, fields: [] }; app.notes.structs.push(struct); }
   if (!Array.isArray(struct.fields)) struct.fields = [];
+  const priorFields = struct.fields.slice();
   const field = { offset, name: String(args.field || args.fieldName || ''), type: String(args.type || '') };
   const index = struct.fields.findIndex((item) => Number(item?.offset) === offset);
   if (index >= 0) struct.fields[index] = field; else struct.fields.push(field);
-  app.notes.dirty = true; app.notes.save?.();
+  app.notes.dirty = true;
+  // notes.save() === false means the storage write failed: undo the in-memory
+  // edit so live state matches persisted state, then fail closed. (#5141)
+  if (typeof app.notes.save === 'function' && app.notes.save() === false) {
+    if (created) {
+      const at = app.notes.structs.indexOf(struct);
+      if (at >= 0) app.notes.structs.splice(at, 1);
+    } else {
+      struct.fields = priorFields;
+    }
+    app.notes.dirty = true;
+    throw new AIError('tool_failed', 'Structure field could not be persisted.');
+  }
   return { ok: true, struct: name, field };
 }
 
