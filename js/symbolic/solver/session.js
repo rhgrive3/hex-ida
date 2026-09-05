@@ -7,6 +7,7 @@
  */
 
 import { SOLVER_STATUS, createSolverResult } from './result.js';
+import { validateVerificationQuery } from '../verify/query.js';
 
 export const SESSION_STATE = Object.freeze({
   ACTIVE: 'active',
@@ -38,8 +39,16 @@ function safeReason(value, fallback) {
   return value == null || value === '' ? fallback : String(value);
 }
 
+function requireNonNegativeSafeInteger(value, name) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be a primitive non-negative safe integer`);
+  }
+  return value;
+}
+
 export class SolverSession {
   constructor(backend, options = {}) {
+    if (Object.prototype.hasOwnProperty.call(options, 'timeoutMs')) requireNonNegativeSafeInteger(options.timeoutMs, 'timeoutMs');
     this.backend = backend;
     this.options = Object.freeze({ ...options });
     this.state = SESSION_STATE.ACTIVE;
@@ -52,12 +61,13 @@ export class SolverSession {
   isCancelled() { return this.state === SESSION_STATE.CANCELLED; }
   isTerminated() { return this.state === SESSION_STATE.TERMINATED; }
 
-  _result(status, reason, lifecycle = {}) {
+  _result(status, reason, lifecycle = {}, queryHash = null) {
     return createSolverResult({
       status,
       reason,
       backend: this.backend?.id || 'unknown',
       backendVersion: this.backend?.version || '0.0.0',
+      queryHash,
       lifecycle: { publishable: false, ...lifecycle },
     });
   }
@@ -70,31 +80,42 @@ export class SolverSession {
         stale: true,
         cancelled: true,
         late: true,
-      }));
+      }, record.queryHash));
       try { this._onStale(record.token); } catch { /* provider cleanup is best effort */ }
     }
   }
 
   async check(query, options = {}) {
-    if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true });
-    if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true });
-    if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true });
-    if (options.signal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
+    let trustedQueryHash = query?.queryHash || null;
+    if (this.backend?.requiresCanonicalQueryIdentity) {
+      const identity = validateVerificationQuery(query, { maxExprNodes: this.backend.maxExprNodes || 100000 });
+      if (!identity.valid) {
+        return this._result(identity.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY, identity.reason, {
+          budgetExceeded: identity.limitExceeded === true,
+        }, null);
+      }
+      trustedQueryHash = identity.recomputedHash;
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'timeoutMs')) {
+      try { requireNonNegativeSafeInteger(options.timeoutMs, 'timeoutMs'); }
+      catch (error) { return this._result(SOLVER_STATUS.INVALID_QUERY, `invalid-budget:${error.message}`, {}, null); }
+    }
+    if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true }, trustedQueryHash);
+    if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true }, trustedQueryHash);
+    if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true }, trustedQueryHash);
+    if (options.signal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true }, trustedQueryHash);
 
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
     const controller = makeAbortController();
-    const sessionTimeoutMs = typeof this.options.timeoutMs === 'number' && Number.isFinite(this.options.timeoutMs)
-      ? this.options.timeoutMs
-      : 5000;
+    const sessionTimeoutMs = Object.prototype.hasOwnProperty.call(this.options, 'timeoutMs') ? this.options.timeoutMs : 5000;
     const requestedTimeoutMs = options.timeoutMs;
     const timeoutMs = requestedTimeoutMs == null
       ? sessionTimeoutMs
-      : typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
-        ? requestedTimeoutMs
-        : sessionTimeoutMs;
+      : requestedTimeoutMs;
     const record = {
       token,
+      queryHash: trustedQueryHash,
       controller,
       stale: false,
       timedOut: false,
@@ -117,14 +138,14 @@ export class SolverSession {
 
       let result = rawResult;
       if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
-        result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
+        result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result', {}, record.queryHash);
       }
 
       if (record.timedOut) {
         result = this._result(SOLVER_STATUS.TIMEOUT, safeReason(result.reason, 'query timed out'), {
           timedOut: true,
           late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-        });
+        }, record.queryHash);
       } else if (record.cancelled || record.disposed || record.stale || token !== this.currentQueryToken) {
         result = this._result(
           SOLVER_STATUS.CANCELLED,
@@ -136,13 +157,26 @@ export class SolverSession {
             stale: record.stale || token !== this.currentQueryToken,
             disposed: record.disposed,
             late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-          }
+          },
+          record.queryHash,
         );
       } else {
-        result = createSolverResult({
-          ...result,
-          lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-        });
+        const finalIdentity = this.backend?.requiresCanonicalQueryIdentity
+          ? validateVerificationQuery(query, { maxExprNodes: this.backend.maxExprNodes || 100000 })
+          : null;
+        if (finalIdentity && (!finalIdentity.valid || finalIdentity.recomputedHash !== record.queryHash)) {
+          result = this._result(
+            finalIdentity.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+            `query-identity-changed-during-execution:${finalIdentity.reason || 'hash-mismatch'}`,
+            { budgetExceeded: finalIdentity.limitExceeded === true },
+            null,
+          );
+        } else {
+          result = createSolverResult({
+            ...result,
+            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
+          });
+        }
       }
       record.resolve(result);
     };
@@ -156,7 +190,7 @@ export class SolverSession {
         this.state = SESSION_STATE.CANCELLED;
         try { controller.abort(); } catch { /* best effort */ }
         Promise.resolve(this._onCancel()).catch(() => {});
-        settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }));
+        settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }, record.queryHash));
       };
       options.signal.addEventListener('abort', onAbort, { once: true });
       record.removeExternalAbort = () => options.signal.removeEventListener?.('abort', onAbort);
@@ -171,15 +205,18 @@ export class SolverSession {
         this._terminationReason = 'timeout';
         try { controller.abort(); } catch { /* best effort */ }
         Promise.resolve(this._onTimeout(token)).catch(() => {});
-        settle(this._result(SOLVER_STATUS.TIMEOUT, `query execution timed out after ${timeoutMs}ms`, { timedOut: true }));
+        settle(this._result(SOLVER_STATUS.TIMEOUT, `query execution timed out after ${timeoutMs}ms`, { timedOut: true }, record.queryHash));
       }, timeoutMs);
     }
 
     Promise.resolve()
-      .then(() => this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
+      // Pass the normalized effective deadline to providers as well as owning
+      // the host timer. CPU-bound compilation can then fail closed even before
+      // the event loop has an opportunity to deliver the timer callback.
+      .then(() => this._executeCheck(query, { ...options, timeoutMs, signal: controller.signal }, token, controller.signal))
       .then((result) => { if (!record.settled) settle(result); })
       .catch((error) => {
-        if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure'));
+        if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure', {}, record.queryHash));
       });
 
     return promise;
@@ -195,7 +232,7 @@ export class SolverSession {
     for (const record of [...this._inFlight.values()]) {
       record.cancelled = true;
       try { record.controller.abort(); } catch { /* best effort */ }
-      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-cancelled-during-execution', { cancelled: true }));
+      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-cancelled-during-execution', { cancelled: true }, record.queryHash));
     }
     await this._onCancel();
   }
@@ -208,7 +245,7 @@ export class SolverSession {
     for (const record of [...this._inFlight.values()]) {
       record.disposed = true;
       try { record.controller.abort(); } catch { /* best effort */ }
-      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-disposed-during-execution', { disposed: true, cancelled: true }));
+      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-disposed-during-execution', { disposed: true, cancelled: true }, record.queryHash));
     }
     await this._onDispose(wasTerminated);
   }

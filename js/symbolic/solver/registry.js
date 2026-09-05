@@ -6,7 +6,7 @@
 
 import { FakeSolverBackend } from './fake-backend.js';
 import { PROOF_AUTHORITY } from './backend.js';
-import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { TieredBvBackend } from './tiered-backend.js';
 import { WorkerSolverBackend } from './worker-backend.js';
 
 export class SolverRegistry {
@@ -78,7 +78,7 @@ export function createProductionSolverRegistry({ workerFactory = null, preferWor
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
   const backend = canUseWorker
     ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined })
-    : new ExhaustiveBvBackend();
+    : new TieredBvBackend();
   registry.registerBackend(backend);
   return registry;
 }
@@ -90,6 +90,8 @@ export function createTestSolverRegistry() {
 }
 
 // Production imports never receive a fake provider. Browser targets select the
-// isolated worker transport; Node/CI uses the same exact finite-domain backend
-// directly because Worker is not a browser primitive there.
+// isolated worker transport; Node/CI uses the same exact tiered backend
+// directly because Worker is not a browser primitive there. The exhaustive
+// backend remains registered only inside the tiered backend as its <=8-bit
+// oracle/fallback.
 export const defaultSolverRegistry = createProductionSolverRegistry();
