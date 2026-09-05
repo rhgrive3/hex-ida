@@ -58,9 +58,9 @@ function controlKind(plugin, instruction) {
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null
-      ? null
-      : canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
+    if (target == null) return null;
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 
