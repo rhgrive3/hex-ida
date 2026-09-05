@@ -31,6 +31,10 @@ export function machoSymbolTruth(image) {
   if (!image || image.format !== 'macho') return null;
   const metadata = image.metadata || {};
   const reasons = [];
+  const components = [metadata.machoMetadata, metadata.chainedFixups, metadata.exportTrie, metadata.dyldBindings];
+  if (!components.some((value) => value && typeof value === 'object' && !Array.isArray(value))) {
+    reasons.push('symbol-metadata-unavailable');
+  }
   statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
   statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
   statusReasons(metadata.exportTrie, 'export-trie', reasons);
