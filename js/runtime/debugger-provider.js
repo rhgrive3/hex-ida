@@ -77,6 +77,12 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       processKey: session.target.processKey,
     }, this.eventOptions);
     const interventions = new InterventionLedger();
+    let interventionSequence = 0;
+    const interventionDraft = (input) => {
+      const draft = validateInterventionDraft(interventions, { ...input, sequence: interventionSequence });
+      interventionSequence += 1;
+      return draft;
+    };
     let unsubscribe = null;
 
     const ingest = (raw) => {
@@ -122,7 +128,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
@@ -135,7 +141,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         return { result: raw, intervention };
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
