@@ -5,7 +5,9 @@ export function uiRoot() {
 }
 
 export function setUiRoot(root) {
-  if (!root?.classList || !root?.style) throw new TypeError('Hex UI root must be an Element');
+  if (!root?.classList || !root?.style || typeof root.setAttribute !== 'function') {
+    throw new TypeError('Hex UI root must be an Element');
+  }
   globalThis.__HEX_UI_ROOT__ = root;
   return root;
 }
