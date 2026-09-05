@@ -7,7 +7,7 @@ const source = () => new MemoryByteSource(bytes, { maxReadLength: 2 });
 const expectedFnv = await hashByteSource(source(), { chunkSize: 2 });
 const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 
-for (const onProgress of [undefined, null, true, {}, [], 1]) {
+for (const onProgress of [undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress')]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
 }
@@ -37,6 +37,26 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
     hash(source(), { chunkSize: 0 }),
     /chunkSize must be a positive safe integer/,
   );
+
+  // Optional callback validation must not change the established method
+  // receiver, nor depend on a function's user-defined `call` property.
+  const events = [];
+  const options = { chunkSize: 2, onProgress(value) {
+    assert.equal(this, options);
+    events.push(value);
+  } };
+  options.onProgress.call = null;
+  assert.equal(await hash(source(), options), hash === hashByteSource ? expectedFnv : expectedTree);
+  assert.deepEqual(events, expectedProgress);
+
+  const callbackError = new Error('progress callback failure');
+  await assert.rejects(
+    hash(source(), { chunkSize: 2, onProgress() { throw callbackError; } }),
+    (error) => error === callbackError,
+  );
+  let emptyCallbacks = 0;
+  await hash(new MemoryByteSource(new Uint8Array()), { onProgress() { emptyCallbacks++; } });
+  assert.equal(emptyCallbacks, 0, 'empty sources must not synthesize progress callbacks');
 
   const controller = new AbortController();
   controller.abort();

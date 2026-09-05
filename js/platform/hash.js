@@ -34,7 +34,7 @@ export async function hashByteSource(input, options = {}) {
       hash = (hash * FNV_PRIME) & MASK64;
     }
     offset += BigInt(bytes.length);
-    onProgress?.({ done: offset, total: source.size });
+    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
   return `fnv1a64:${source.size.toString(16)}:${hash.toString(16).padStart(16, '0')}`;
 }
@@ -81,7 +81,7 @@ export async function sha256TreeByteSource(input, options = {}) {
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
     digests.push(new Uint8Array(await subtle.digest('SHA-256', bytes)));
     offset += BigInt(bytes.byteLength);
-    onProgress?.({ done: offset, total: source.size });
+    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
 
   const header = new TextEncoder().encode(
