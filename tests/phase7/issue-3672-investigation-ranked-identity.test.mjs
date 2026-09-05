@@ -30,7 +30,7 @@ test('#3672 canonical primitive address forms preserve the same function identit
   }
 });
 
-test('#3672 structured, boolean, negative, unsafe, and malformed addresses cannot mint candidate identity', () => {
+test('#3672 malformed addresses remain ordered but cannot mint function identity', () => {
   let coercions = 0;
   const coercible = {
     [Symbol.toPrimitive]() { coercions++; return 4096; },
@@ -52,12 +52,25 @@ test('#3672 structured, boolean, negative, unsafe, and malformed addresses canno
     'not-an-address',
   ]) {
     const result = project({ addr:address, reasons:[{ evidenceId:'ev-1' }] });
-    assert.equal(result.candidates.length, 0, `malformed address should be excluded: ${typeof address}`);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].candidateId, 'snapshot-3672:candidate:invalid:0');
+    assert.equal(result.candidates[0].entityId, null);
+    assert.deepEqual(result.candidates[0].evidenceIds, ['ev-1']);
   }
   assert.equal(coercions, 0);
 });
 
-test('#3672 malformed address exclusion preserves relative order and typed state of valid candidates', () => {
+test('#3672 malformed address identity cannot collide with a canonical function at the same index', () => {
+  const canonical = project({ addr:0n }).candidates[0];
+  const malformed = project({ addr:[0] }).candidates[0];
+  assert.equal(canonical.candidateId, 'snapshot-3672:candidate:0');
+  assert.equal(canonical.entityId, 'function:0');
+  assert.equal(malformed.candidateId, 'snapshot-3672:candidate:invalid:0');
+  assert.equal(malformed.entityId, null);
+  assert.notEqual(malformed.candidateId, canonical.candidateId);
+});
+
+test('#3672 malformed address preserves candidate ordering, verdict, and completeness state', () => {
   const result = typedRankedCandidates({
     total:3,
     candidates:[
@@ -68,12 +81,18 @@ test('#3672 malformed address exclusion preserves relative order and typed state
   }, context(false));
 
   assert.equal(result.total, 3);
-  assert.deepEqual(result.candidates.map((candidate) => candidate.label), ['first', 'third']);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.label), ['first', 'malformed', 'third']);
   assert.deepEqual(result.candidates.map((candidate) => candidate.candidateId), [
     'snapshot-3672:candidate:1000',
+    'snapshot-3672:candidate:invalid:1',
     'snapshot-3672:candidate:2000',
   ]);
-  assert.deepEqual(result.candidates.map((candidate) => candidate.verdict), ['supported', 'ambiguous']);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.entityId), [
+    'function:1000',
+    null,
+    'function:2000',
+  ]);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.verdict), ['supported', 'rejected', 'ambiguous']);
   for (const candidate of result.candidates) {
     assert.equal(candidate.completeness, 'partial');
     assert.deepEqual(candidate.missing, ['program-partial']);
