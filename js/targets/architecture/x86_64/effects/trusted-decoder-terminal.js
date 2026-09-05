@@ -229,7 +229,8 @@ function promotedControlEffect(partial, instruction, ownerId) {
   if (groups.has('call')) return { kind:'call', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('ret')) return { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('jump')) return { kind:'indirect', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
-  if (groups.has('int') || groups.has('iret')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
+  if (groups.has('iret')) return null;
+  if (groups.has('int')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
   if (ownerId === 'control') return null;
   return { kind:'fallthrough' };
 }
