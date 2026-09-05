@@ -27,23 +27,29 @@ for (const target of [['p1'], { toString: () => 'p1' }, 1, true]) {
 }
 
 assert.deepEqual(
-  sanitizeActions([{ kind: 'navigate', target: '0x1000', evidenceId: 'ev1' }], {
+  sanitizeActions([{ kind: 'open-address', target: '0x1000', evidenceId: 'ev1' }], {
     evidenceStore,
     addressExists,
   }),
-  [{ kind: 'navigate', target: '0x1000', evidenceId: 'ev1' }],
+  [{ kind: 'open-address', target: '0x1000', evidenceId: 'ev1' }],
   'canonical evidence IDs remain accepted',
 );
 
 for (const evidenceId of [['ev1'], { toString: () => 'ev1' }, 1, true]) {
   assert.deepEqual(
-    sanitizeActions([{ kind: 'navigate', target: '0x1000', evidenceId }], {
+    sanitizeActions([{ kind: 'open-address', target: '0x1000', evidenceId }], {
       evidenceStore,
       addressExists,
     }),
-    [{ kind: 'navigate', target: '0x1000' }],
+    [{ kind: 'open-address', target: '0x1000' }],
     'structured/non-string evidence IDs must not alias canonical evidence identities',
   );
 }
+
+assert.deepEqual(
+  sanitizeActions([{ kind: 'navigate', target: '0x1000', evidenceId: 'ev1' }], { evidenceStore, addressExists }),
+  [],
+  'unsupported action kinds remain rejected before identity validation',
+);
 
 console.log('ok issue #3352 sanitize action identities');

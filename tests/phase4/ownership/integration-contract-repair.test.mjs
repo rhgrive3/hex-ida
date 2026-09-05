@@ -113,9 +113,22 @@ test('manifest has the exact frozen-contract write-owner policy', () => {
 
 test('completed Phase 4 ownership wrapper is retired while canonical invariant checks retain Phase 4/5 contracts', () => {
   assert.equal(fs.existsSync(RETIRED_OWNERSHIP_WORKFLOW), false);
-  assert.match(INVARIANT_WORKFLOW, /const phaseCommands = new Set\(\['npm run phase4:test', 'npm run phase5:test'\]\)/);
-  assert.match(INVARIANT_WORKFLOW, /name: 'contracts-phase'/);
-  assert.match(INVARIANT_WORKFLOW, /Run exact check shard/);
+  assert.match(INVARIANT_WORKFLOW, /const required = \[/);
+  assert.match(INVARIANT_WORKFLOW, /'npm run phase4:test',\s*'npm run phase5:test'/);
+  const phase45Lane = INVARIANT_WORKFLOW.match(/name: 'phase45'[\s\S]*?prepareGenerated: 'false'/)?.[0];
+  assert.ok(phase45Lane, 'canonical phase45 lane is missing');
+  assert.match(phase45Lane, /coverageCommands: \['npm run phase4:test', 'npm run phase5:test'\]/);
+  assert.match(phase45Lane, /runCommands: \['npm run phase4:test', 'npm run phase5:test'\]/);
+  assert.match(INVARIANT_WORKFLOW, /const scheduled = lanes\.flatMap\(\(\{ coverageCommands \}\) => coverageCommands\)/);
+  assert.match(INVARIANT_WORKFLOW, /const scheduledCounts = new Map\(\)/);
+  assert.match(INVARIANT_WORKFLOW, /scheduled\.length !== parts\.length/);
+  assert.match(INVARIANT_WORKFLOW, /scheduledCounts\.get\(command\) !== 1/);
+  assert.match(INVARIANT_WORKFLOW, /scheduled\.some\(\(command\) => !parts\.includes\(command\)\)/);
+  assert.match(INVARIANT_WORKFLOW, /Run all remaining exact check commands and aggregate failures/);
+  assert.match(INVARIANT_WORKFLOW, /HEX_CHECK_COMMANDS_JSON/);
+  assert.match(INVARIANT_WORKFLOW, /check-lane-empty/);
+  assert.match(INVARIANT_WORKFLOW, /Exact check lane failures/);
+  assert.match(INVARIANT_WORKFLOW, /process\.exit\(1\)/);
   assert.match(INVARIANT_WORKFLOW, /Require complete repository check/);
 });
 

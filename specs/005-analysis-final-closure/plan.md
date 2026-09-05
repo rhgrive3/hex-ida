@@ -6,6 +6,19 @@
 
 ## Summary
 
+The 2026-09-05 user amendment limits the active delivery to Stage A through
+T024. Stop before T025/Stage B. Physical-device observations are explicitly
+`SKIPPED_USER_WAIVER`; this supersedes only their prior blocking requirement
+for this delivery, not browser/WebKit or runtime checks and not the historical
+Stage B platform denominator. No physical performance PASS is claimed.
+
+T058 is a reviewed, forward-only shared-contract repair after immutable T046:
+authenticate randomized build envelopes and compare decoded products instead
+of requiring fresh encryption keys/ciphertexts to repeat. T059 reuses the
+existing three-line scheduler ID repair. No previous component was accepted;
+the failed T051 proposed checkpoint must be regenerated and reverified under
+the amended verifier. T046 history and the living PR #6611 are preserved.
+
 Recover the work described by `origin/wip/recovery-handoff-20260904` at
 `84d277a962515031c1bcc4eba0dca4c44c41f0b7` without duplicating work already in
 live `origin/main`, promote the recovered product only with exact candidate and
@@ -394,7 +407,7 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
   registry. Every applicable component has nonempty `owned`, `rolling`, and
   `shadow` argv arrays; the workflow executes them directly without a shell on
   the detached exact synthetic candidate merge commit. T048 may append only
-  fully contracted T058+ rows.
+  fully contracted T060+ rows.
 - `contracts/integration-inventory.json` MUST validate the exact actual
   base-to-candidate path set. Its expected, actual, union, and entry path sets
   are duplicate-free and exactly equal, and each actual path must be allowed by
@@ -422,3 +435,50 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
 ## Complexity Tracking
 
 No constitutional violation or new architectural component is proposed.
+
+## T060 forward amendment — 2026-09-05
+
+This user-authorized amendment preserves the existing living branch and all
+historical T046/T058 and accepted component records. Historical checkpoint
+inventories certify their own Git bases; the refreshed current-main inventory
+is independently checked against the new base. A reviewed conflicting merge
+binds ordered parents, Git's actual conflict set, selected parent blobs and the
+resolved tree. Clean main changes cannot be dropped. Generated conflict choices
+are provisional until the integration owner canonically rebuilds the combined
+product twice with zero second diff.
+
+The bounded chain is prior checkpoint E → reviewed main merge R → amendment
+code A → generated product G → evidence E2 → immutable receipt P → unique T060
+status transition D. Code A may add only this amendment's declared paths and
+the T049 dependency on T060. Existing ownership, candidate commands and
+independent oracle contracts remain unchanged. Spec/plan amendments append to
+the preserved documents; activation changes only T060's checkbox/status and
+handoff. Receipt publication preserves historical handoffs and checkpoints.
+
+G uses the existing generation, cumulative rolling and independent-shadow
+verifier, bound to its own exact identity. Old runtime or CI cannot certify it.
+D bridges the next component checkpoint without changing historical rows; once
+a later component G exists, runtime verification selects that newer product.
+Stage B reads T060's historical transition instead of carrying the Stage A
+inventory forward. T060 remains PENDING until independent review, regressions,
+canonical rebuild, exact current-product runtime and CI are complete.
+
+Later main movement uses an ordered two-parent R2 from the current accepted
+checkpoint (D immediately after this amendment), not a rewritten amendment.
+R2 may refresh only inventory base/path sets and preserve retained owners;
+its receipt, handoffs and checkpoint metadata stay immutable. Conflicting
+tails use the same exact parent/blob verifier as explicit checkpoint rows.
+The amendment's accepted tasks remain an immutable prefix of later checkpoints.
+Static prefix compatibility is not proof: Git lineage, actual current-base
+inventory and exact generated-product gates remain mandatory.
+
+Post-activation fixture correction (2026-09-05): CI on D exposed a historical
+test seed that copied live T060 DONE into a PENDING scenario. Preserve the
+published D and original amendment receipt. A separate immutable T060
+revalidation uses D → A2 → G2 → E3 → P2: A2 may change only the existing
+preflight verifier/test and append this plan; ownership, tasks, production and
+gate commands cannot change. G2 repeats canonical generation, cumulative
+rolling and independent-shadow proof. E3 appends evidence; P2 adds only its
+separate receipt to the inventory. The next component bridges P2 and runtime
+verification selects G2. Exact-head CI remains mandatory; original handoffs
+and the original T060 activation identity are never rewritten.

@@ -13,7 +13,7 @@ function lift(mnemonic, operands, mutate = null) {
 for (const [mnemonic, operands] of [
   ['fadd','s0, s1, s31'],
   ['fmov','d31, d0'],
-  ['scvtf','d31, x31'],
+  ['scvtf','d31, xzr'],
 ]) {
   const effect = lift(mnemonic, operands);
   assert.ok(effect);
