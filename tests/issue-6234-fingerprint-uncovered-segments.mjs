@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { fingerprintImage } from '../js/binary/fingerprint.js';
+import { regionsForImage } from '../js/platform/describe.js';
 
 function makeImage(buffer, { sections = [], segments = [] } = {}) {
   return {
@@ -216,6 +217,83 @@ function makeSourceImage(buffer, { sections = [], segments = [] } = {}) {
 
   assert.equal(resFp.hash, srcFp.hash, 'resident and source-backed hashes must match');
   assert.equal(resFp.bytes, srcFp.bytes);
+}
+
+// 7. section and segment share VA interval but have conflicting file mapping -> both participate in hash
+{
+  const buf1 = new Uint8Array(0x1000);
+  buf1.fill(0x11, 0, 0x100);    // section bytes at fileOffset 0
+  buf1.fill(0x22, 0x100, 0x200); // segment bytes at fileOffset 0x100
+
+  const buf2 = new Uint8Array(buf1);
+  buf2[0x150] = 0x99; // modify byte in segment-owned file region
+
+  const sec = {
+    name: '.text',
+    source: 'section-header',
+    flags: 0x6n,
+    address: 0x1000n,
+    fileOffset: 0n,
+    fileSize: 0x100n,
+    size: 0x100n,
+    perms: { read: true, write: false, execute: true },
+  };
+  const seg = {
+    name: 'LOAD_CONFLICT',
+    address: 0x1000n,
+    fileOffset: 0x100n,
+    fileSize: 0x100n,
+    size: 0x100n,
+    perms: { read: true, write: false, execute: true },
+  };
+
+  const img1 = makeImage(buf1, { sections: [sec], segments: [seg] });
+  const img2 = makeImage(buf2, { sections: [sec], segments: [seg] });
+
+  const fp1 = fingerprintImage(img1);
+  const fp2 = fingerprintImage(img2);
+
+  assert.notEqual(fp1.hash, fp2.hash, 'modifying segment-mapped bytes with divergent fileOffset must change fingerprint');
+  assert.equal(fp1.bytes, 0x200, 'both section and non-coincident segment bytes must be hashed');
+}
+
+// 8. Non-mapped section with execute perms is excluded from executable fingerprinting and region projection
+{
+  const buf = new Uint8Array(0x1000);
+  buf.fill(0x77);
+
+  // Section with execute perms but source='section-header' and flags=0 (no SHF_ALLOC: not mapped)
+  const unmappedSec = {
+    name: '.unmapped_exec',
+    source: 'section-header',
+    flags: 0n,
+    address: 0x1000n,
+    fileOffset: 0n,
+    fileSize: 0x500n,
+    size: 0x500n,
+    perms: { read: true, write: false, execute: true },
+  };
+  // Overlapping executable segment
+  const seg = {
+    name: 'LOAD_EXEC',
+    address: 0x1000n,
+    fileOffset: 0n,
+    fileSize: 0x1000n,
+    size: 0x1000n,
+    perms: { read: true, write: false, execute: true },
+  };
+
+  const img = makeImage(buf, { sections: [unmappedSec], segments: [seg] });
+  const fp = fingerprintImage(img);
+
+  // The unmapped section must NOT enter executable fingerprint ranges; the segment bytes should be hashed once (0x1000)
+  assert.equal(fp.bytes, 0x1000, 'unmapped section must not double-count overlapping segment bytes');
+
+  // Also verify region projection: unmapped section must have exec: false
+  const regions = regionsForImage(img);
+  const secRegion = regions.find((r) => r.section === '.unmapped_exec');
+  assert.ok(secRegion, 'section region should exist');
+  assert.equal(secRegion.exec, false, 'unmapped section must not be projected as executable');
 }
 
 console.log('issue #6234 fingerprint uncovered segments tests: PASS');

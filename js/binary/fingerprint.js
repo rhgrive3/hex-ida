@@ -152,23 +152,13 @@ function subtractIntervals(start, end, covered) {
 }
 
 function fingerprintRanges(image, executableOnly) {
-  const sections = (image.sections || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
+  const sections = (image.sections || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || (x.perms?.execute && sectionHasMappedAddress(x))));
   const segments = (image.segments || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
 
   if (!sections.length) return segments;
   if (!segments.length) return sections;
 
   const ranges = [...sections];
-  const coveredIntervals = [];
-  for (const sec of sections) {
-    if (sec.address != null && sectionHasMappedAddress(sec)) {
-      const start = BigInt(sec.address);
-      const size = BigInt(sec.fileSize ?? sec.size ?? 0);
-      if (size > 0n) coveredIntervals.push({ start, end: start + size });
-    }
-  }
-
-  let mergedCovered = mergeIntervals(coveredIntervals);
 
   for (const seg of segments) {
     if (seg.address == null) continue;
@@ -176,7 +166,35 @@ function fingerprintRanges(image, executableOnly) {
     const segFileSize = BigInt(seg.fileSize ?? 0);
     if (segFileSize <= 0n) continue;
     const segEnd = segStart + segFileSize;
+    const segBias = BigInt(seg.fileOffset ?? 0) - segStart;
 
+    const coveredIntervals = [];
+    for (const sec of sections) {
+      if (sec.address == null || !sectionHasMappedAddress(sec)) continue;
+      const secStart = BigInt(sec.address);
+      const secSize = BigInt(sec.fileSize ?? sec.size ?? 0);
+      if (secSize <= 0n) continue;
+      const secEnd = secStart + secSize;
+      if (secEnd <= segStart || secStart >= segEnd) continue;
+
+      if (sec.fileOffset != null && seg.fileOffset != null) {
+        const secBias = BigInt(sec.fileOffset) - secStart;
+        if (secBias !== segBias) {
+          // Inconsistent file mapping: section does not cover segment file bytes
+          continue;
+        }
+      } else {
+        continue;
+      }
+
+      const overlapStart = secStart > segStart ? secStart : segStart;
+      const overlapEnd = secEnd < segEnd ? secEnd : segEnd;
+      if (overlapStart < overlapEnd) {
+        coveredIntervals.push({ start: overlapStart, end: overlapEnd });
+      }
+    }
+
+    const mergedCovered = mergeIntervals(coveredIntervals);
     const uncovered = subtractIntervals(segStart, segEnd, mergedCovered);
     for (const span of uncovered) {
       const spanSize = span.end - span.start;
@@ -189,8 +207,6 @@ function fingerprintRanges(image, executableOnly) {
         fileSize: spanSize,
         perms: seg.perms,
       });
-      mergedCovered.push({ start: span.start, end: span.end });
-      mergedCovered = mergeIntervals(mergedCovered);
     }
   }
 

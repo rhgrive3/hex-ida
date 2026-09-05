@@ -24,7 +24,7 @@ function regionFrom(item, id, kind) {
     vmAddr: BigInt(item.address ?? 0),
     size: fileSize,
     declaredSize,
-    exec: !!item.perms?.execute,
+    exec: !!item.perms?.execute && (kind !== 'section' || sectionHasMappedAddress(item)),
     write: !!item.perms?.write,
     read: !!item.perms?.read,
     zerofill: fileSize === 0n && declaredSize > 0n,
