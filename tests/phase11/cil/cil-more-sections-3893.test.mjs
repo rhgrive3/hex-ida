@@ -28,8 +28,15 @@ function writeFatEhSection(bytes, offset, { more = false, token = 0x01000001, cl
   return (offset + dataSize + 3) & ~3;
 }
 
-function buildCil({ sectionCount = 1, terminalAfter = sectionCount, truncateAfterFirst = false, unknownKind = false } = {}) {
-  const fullLength = 0x900;
+function buildCil({
+  sectionCount = 1,
+  terminalAfter = sectionCount,
+  truncateAfterFirst = false,
+  unknownKind = false,
+  zeroDataSize = false,
+  smallReservedNonzero = false,
+} = {}) {
+  const fullLength = Math.max(0x900, FIRST_SECTION_OFFSET + sectionCount * 32 + 0x100);
   const firstSectionEnd = FIRST_SECTION_OFFSET + 28;
   const bytes = new Uint8Array(truncateAfterFirst ? firstSectionEnd : fullLength);
   const view = new DataView(bytes.buffer);
@@ -95,6 +102,22 @@ function buildCil({ sectionCount = 1, terminalAfter = sectionCount, truncateAfte
     return bytes;
   }
 
+  if (zeroDataSize) {
+    bytes[FIRST_SECTION_OFFSET] = 0x41 | 0x80; // EHTable | FatFormat | MoreSects
+    bytes[FIRST_SECTION_OFFSET + 1] = 0;
+    bytes[FIRST_SECTION_OFFSET + 2] = 0;
+    bytes[FIRST_SECTION_OFFSET + 3] = 0;
+    return bytes;
+  }
+
+  if (smallReservedNonzero) {
+    bytes[FIRST_SECTION_OFFSET] = 0x01; // EHTable | SmallFormat
+    bytes[FIRST_SECTION_OFFSET + 1] = 16;
+    bytes[FIRST_SECTION_OFFSET + 2] = 1; // nonzero reserved byte
+    bytes[FIRST_SECTION_OFFSET + 3] = 0;
+    return bytes;
+  }
+
   let extraOffset = FIRST_SECTION_OFFSET;
   for (let index = 0; index < sectionCount; index++) {
     const more = index + 1 < terminalAfter;
@@ -137,5 +160,26 @@ test('#3893 unsupported method-data section kind does not silently look complete
   assert.throws(
     () => parseCil(buildCil({ unknownKind: true })),
     /cil-unsupported-method-extra-section/,
+  );
+});
+
+test('#3893 zero dataSize fails closed', () => {
+  assert.throws(
+    () => parseCil(buildCil({ zeroDataSize: true })),
+    /cil-invalid-method-extra-section/,
+  );
+});
+
+test('#3893 small format nonzero reserved bytes fails closed', () => {
+  assert.throws(
+    () => parseCil(buildCil({ smallReservedNonzero: true })),
+    /cil-invalid-method-extra-section/,
+  );
+});
+
+test('#3893 chained sections exceeding budget fail closed', () => {
+  assert.throws(
+    () => parseCil(buildCil({ sectionCount: 65 })),
+    /cil-method-extra-sections-exceeded/,
   );
 });
