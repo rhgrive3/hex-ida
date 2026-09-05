@@ -2,13 +2,48 @@ import { addressText } from '../validation.js';
 
 let turnSequence = 1;
 
+/* Binding IDs are primitive evidence, not arbitrary adapter objects. */
+export function canonicalBindingId(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
+export function firstBinding(...values) {
+  for (const value of values) {
+    const id = canonicalBindingId(value);
+    if (id != null) return id;
+  }
+  return null;
+}
+
+function canonicalSlice(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+  }
+  if (typeof value === 'bigint') return value >= 0n ? value.toString() : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^\d+$/.test(text)) return null;
+  try { return BigInt(text).toString(); }
+  catch { return null; }
+}
+
+function selectedSlice(local) {
+  const raw = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
+  if (raw == null) return { value: null, invalid: false };
+  const value = canonicalSlice(raw);
+  return { value, invalid: value == null };
+}
+
 export function createTurnSnapshot(local = {}, request = {}) {
   const current = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
   const range = resolveFunctionRange(local, current);
   const selection = snapshotSelection(local.selection);
-  const identity = resolveBinaryIdentity(local, request);
-  const projectId = first(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
-  const runtimeId = first(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
+  const slice = selectedSlice(local);
+  const identity = resolveBinaryIdentityAtSlice(local, request, slice);
+  const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
+  const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
   const requestedScope = String(request.scope || 'auto');
   return deepFreeze({
@@ -17,16 +52,16 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentity: identity,
     binaryId: identity.id,
     legacyBinaryId: identity.legacyId,
-    projectIdentity: projectId == null ? null : String(projectId),
+    projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
-    slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
+    slice: slice.value,
     currentFunction: current == null ? null : {
       address: addressText(current),
       range,
       name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, current)),
     },
     selection,
-    runtimeSessionIdentity: runtimeId == null ? null : String(runtimeId),
+    runtimeSessionIdentity: runtimeId,
     runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
@@ -65,9 +100,11 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
 }
 
 export function resolveBinaryIdentity(local = {}, request = {}) {
-  const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
-  if (explicit) return explicit;
-  const contentHash = first(
+  return resolveBinaryIdentityAtSlice(local, request, selectedSlice(local));
+}
+
+function resolveBinaryIdentityAtSlice(local, request, slice) {
+  const contentHash = firstBinding(
     request.binaryHash,
     local.binaryHash,
     local.binaryFingerprint?.hash,
@@ -75,24 +112,24 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
     local.binary?.fingerprint?.hash,
     local.project?.binaryHash,
   );
-  const legacyId = first(request.binaryId, local.binaryId);
-  const canonicalHash = nonEmptyText(contentHash);
-  if (canonicalHash) {
-    const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-    const suffix = slice == null ? '' : `:${String(slice)}`;
+  const legacyId = firstBinding(request.binaryId, local.binaryId);
+  const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
+  if (explicit && explicitIdentityMatchesSlice(explicit, contentHash, slice)) return explicit;
+  if (contentHash != null && !slice.invalid) {
     return {
-      id: `content:${canonicalHash}${suffix}`,
+      id: contentIdentityId(contentHash, slice),
       kind: 'content-derived',
       confidence: 'strong',
       state: 'ready',
       algorithm: first(local.binaryFingerprint?.algorithm, local.fingerprint?.algorithm, 'existing-hash'),
-      hash: canonicalHash,
-      legacyId: legacyId == null ? null : String(legacyId),
+      hash: contentHash,
+      legacyId,
     };
   }
-  const name = first(local.fileInfo?.name, local.binary?.name);
-  const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-  const fallback = legacyId != null ? String(legacyId) : (name ? `${name}:${String(slice ?? 0)}` : null);
+  const name = typeof local.fileInfo?.name === 'string'
+    ? local.fileInfo.name
+    : typeof local.binary?.name === 'string' ? local.binary.name : null;
+  const fallback = legacyId != null ? legacyId : (!slice.invalid && name ? `${name}:${slice.value ?? '0'}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
     kind: 'fallback', confidence: fallback ? 'weak' : 'none', state: 'hash-unavailable',
@@ -100,21 +137,39 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
   };
 }
 
+function contentIdentityId(hash, slice) {
+  return `content:${hash}${slice.value == null ? '' : `:${slice.value}`}`;
+}
+
+function explicitIdentityMatchesSlice(identity, contentHash, slice) {
+  // External identities do not claim ownership of the local binary slice.
+  // Content-derived identities do: accepting the bridge's raw String(slice)
+  // here would let an invalid, reordered, or zero-padded slice become strong.
+  if (identity.kind !== 'content-derived') return true;
+  if (slice.invalid) return false;
+  if (contentHash == null) return slice.value == null;
+  if (identity.hash != null && identity.hash !== contentHash) return false;
+  return identity.id === contentIdentityId(contentHash, slice);
+}
+
 function normalizeIdentity(value) {
   if (!value) return null;
   if (typeof value === 'string') {
-    const id = nonEmptyText(value);
+    const id = canonicalBindingId(value);
     return id ? { id, kind: 'external', confidence: 'strong', state: 'ready', algorithm: null, hash: null, legacyId: null } : null;
   }
   if (typeof value !== 'object' || Array.isArray(value)) return null;
-  const id = nonEmptyText(value.id);
-  const kind = value.kind == null ? 'external' : nonEmptyText(value.kind);
-  const confidence = value.confidence == null ? 'strong' : nonEmptyText(value.confidence);
-  const state = value.state == null ? 'ready' : nonEmptyText(value.state);
-  const algorithm = value.algorithm == null ? null : nonEmptyText(value.algorithm);
-  const hash = value.hash == null ? null : nonEmptyText(value.hash);
-  const legacyId = value.legacyId == null ? null : nonEmptyText(value.legacyId);
-  if (!id || !kind || !confidence || !state || (value.algorithm != null && !algorithm) || (value.hash != null && !hash) || (value.legacyId != null && !legacyId)) return null;
+  const id = canonicalBindingId(value.id);
+  const kind = value.kind == null ? 'external' : canonicalBindingId(value.kind);
+  const confidence = value.confidence == null ? 'strong' : canonicalBindingId(value.confidence);
+  const state = value.state == null ? 'ready' : canonicalBindingId(value.state);
+  const algorithm = value.algorithm == null ? null : canonicalBindingId(value.algorithm);
+  const hash = value.hash == null ? null : canonicalBindingId(value.hash);
+  const legacyId = value.legacyId == null ? null : canonicalBindingId(value.legacyId);
+  if (!id || !kind || !confidence || !state
+    || (value.algorithm != null && !algorithm)
+    || (value.hash != null && !hash)
+    || (value.legacyId != null && !legacyId)) return null;
   return {
     id, kind, confidence, state, algorithm, hash, legacyId,
   };
@@ -168,7 +223,6 @@ function snapshotNeighborhood(local, current) {
 }
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
-function nonEmptyText(value) { return typeof value === 'string' && value.trim() ? value.trim() : null; }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }

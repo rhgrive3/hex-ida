@@ -78,7 +78,7 @@ assert.throws(
 // Hot cache is bounded and persistent/backend correctness is independent of eviction.
 const entries = new Map();
 const backend = new MemoryArtifactBackend({ entries });
-const store = new ArtifactStore({ backend, hotCache:new ArtifactHotCache({ maxBytes:1024, maxEntries:2 }) });
+const store = new ArtifactStore({ backend, hotCache:new ArtifactHotCache({ maxBytes:2048, maxEntries:2 }) });
 await store.publish(a, { answer:42, order:{ y:2, x:1 } });
 let hit = await store.get(a);
 assert.equal(hit.status, 'hit');

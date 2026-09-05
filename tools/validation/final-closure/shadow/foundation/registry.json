@@ -39,6 +39,10 @@
     "T034": {"gateId": "t034-independent-verifier", "contractId": "t034-taint-regression-v1"},
     "T035": {"gateId": "t035-independent-verifier", "contractId": "t035-discovery-completeness-regression-v1"},
     "T036": {"gateId": "t036-independent-verifier", "contractId": "t036-binary-source-regression-v1"},
-    "T045": {"gateId": "t045-final-platform-verifier", "contractId": "t045-browser-platform-regression-v1"}
+    "T045": {"gateId": "t045-final-platform-verifier", "contractId": "t045-browser-platform-regression-v1"},
+    "T059": {
+      "gateId": "t059-independent-verifier",
+      "contractId": "t059-scheduler-strict-id-regression-v1"
+    }
   }
 }
