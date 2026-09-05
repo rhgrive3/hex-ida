@@ -5,7 +5,7 @@ import { liftX86SystemRegisterMoveEffects } from '../../js/targets/architecture/
 let instructionCode = 0x556500;
 
 function register(name, access) {
-  return { type:'register', register:name, access };
+  return { type:'register', register:{ id:name, registerId:name }, access };
 }
 
 function debugMove(debugRegister, direction) {
