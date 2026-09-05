@@ -85,4 +85,49 @@ assertAddressingError(
   'arm64-conflicting-addressing-mode',
 );
 
+let modeReads = 0;
+const driftingMode = memory({ disp:8n });
+Object.defineProperty(driftingMode, 'mode', {
+  enumerable:true,
+  get() {
+    modeReads += 1;
+    if (modeReads <= 2) return 'offset';
+    return { toLowerCase() { return 'pre'; } };
+  },
+});
+const driftingAddress = buildArm64EffectiveAddress(decoded(driftingMode), { accessWidthBits:64 });
+assert.equal(modeReads, 1, 'mode authority must be snapshotted exactly once');
+assert.equal(driftingAddress.mode, 'offset', 'validated mode snapshot must determine semantics');
+assert.equal(driftingAddress.writebackOperations.length, 0, 'later accessor values must not inject writeback');
+
+let malformedModeReads = 0;
+const malformedMode = memory({ disp:8n });
+Object.defineProperty(malformedMode, 'mode', {
+  enumerable:true,
+  get() {
+    malformedModeReads += 1;
+    return malformedModeReads === 1 ? ['offset'] : 'offset';
+  },
+});
+const malformedModeResult = liftArm64MachineEffects(decoded(malformedMode));
+assert.equal(malformedModeReads, 1, 'malformed mode accessor must not be re-read after validation');
+assert.equal(malformedModeResult.completeness, 'partial');
+assert.deepEqual(malformedModeResult.operations, [], 'malformed mode must publish no definite operations');
+assert.equal(malformedModeResult.unknownEffects?.reason, 'arm64-unsupported-addressing-mode');
+
+let malformedAliasReads = 0;
+const malformedAlias = memory({ disp:8n });
+Object.defineProperty(malformedAlias, 'addressingMode', {
+  enumerable:true,
+  get() {
+    malformedAliasReads += 1;
+    return malformedAliasReads === 1 ? ['post'] : 'post';
+  },
+});
+const malformedAliasResult = liftArm64MachineEffects(decoded(malformedAlias));
+assert.equal(malformedAliasReads, 1, 'addressingMode authority must be snapshotted exactly once');
+assert.equal(malformedAliasResult.completeness, 'partial');
+assert.deepEqual(malformedAliasResult.operations, [], 'malformed addressingMode must publish no definite operations');
+assert.equal(malformedAliasResult.unknownEffects?.reason, 'arm64-unsupported-addressing-mode');
+
 console.log('issue-4880 arm64 addressing-mode authority regression: PASS');
