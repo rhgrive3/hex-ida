@@ -4,6 +4,7 @@ import { FieldIndex } from '../js/fields.js';
 import { formatObjcMessage, objcMessage } from '../js/apple/objc-runtime.js';
 import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '../js/rtti.js';
 import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
+import '../js/objc-stub-recovery.js';
 
 // --- Test 1: #3444 Objective-C selector index rejects non-string selector ---
 {
@@ -151,6 +152,78 @@ import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
   assert.ok(objcSect.ecosystems.includes('objc'), 'ObjC provider must be discovered for sectname');
 
   console.log('✔ #6062 unified dispatcher provider discovery parity passed');
+}
+
+// --- Test 6: #3629 ObjC stub selector C strings must be proven NUL-terminated ---
+{
+  const Words = {
+    KIND: { BRANCH: 1, RET: 2 },
+    pcRelTarget(word) {
+      return word === 1 ? { reg: 0, value: 0x2000n } : null;
+    },
+    pairedOffset(word) {
+      return word === 2 ? { load: true, rn: 0, rd: 1, imm: 0n } : null;
+    },
+    classifyWord(word) {
+      return word === 3 ? this.KIND.BRANCH : 0;
+    },
+  };
+
+  const makeBudget = () => ({
+    takeRegion: () => true,
+    takeRead: () => true,
+    takeResident: () => true,
+    releaseResident: () => {},
+    takeOperation: () => true,
+    takeString: () => true,
+    takeName: () => true,
+    expired: () => false,
+  });
+
+  async function recoverSelector(selectorBytes, maxSelector = 3) {
+    const file = new Uint8Array(0x300);
+    const view = new DataView(file.buffer);
+    view.setUint32(0, 1, true);
+    view.setUint32(4, 2, true);
+    view.setUint32(8, 3, true);
+    let selectorPointer = 0x3000n;
+    for (let i = 0; i < 8; i++) {
+      file[0x100 + i] = Number(selectorPointer & 0xffn);
+      selectorPointer >>= 8n;
+    }
+    file.set(selectorBytes, 0x200);
+
+    const regions = [
+      { section: '__objc_stubs', fileOffset: 0n, size: 12n, vmAddr: 0x1000n },
+      { section: '__objc_selrefs', fileOffset: 0x100n, size: 8n, vmAddr: 0x2000n },
+      { section: '__objc_methname', fileOffset: 0x200n, size: BigInt(selectorBytes.length), vmAddr: 0x3000n },
+    ];
+
+    return globalThis.HexObjCStubRecovery.recover({
+      slice: { offset: 0n, size: BigInt(file.length), regions, info: { textVM: 0x1000n } },
+      known: [],
+      readRange: async (offset, length) => file.slice(Number(offset), Number(offset) + length),
+      cancelled: () => false,
+      requestId: 1,
+      fileSize: BigInt(file.length),
+      Words,
+      budget: makeBudget(),
+      sanitizePointer: (value) => value,
+      maxSelector,
+    });
+  }
+
+  const exact = await recoverSelector(Uint8Array.from([0x61, 0x62, 0x63, 0x00]));
+  assert.deepEqual(exact.map((entry) => entry.name), ['_objc_msgSend$abc'],
+    'selector exactly maxSelector chars long must remain valid when the following byte is NUL');
+
+  const overlong = await recoverSelector(Uint8Array.from([0x61, 0x62, 0x63, 0x64, 0x00]));
+  assert.deepEqual(overlong, [], 'overlong selector prefix must not be promoted to a canonical stub name');
+
+  const unterminated = await recoverSelector(Uint8Array.from([0x61, 0x62, 0x63]));
+  assert.deepEqual(unterminated, [], 'region-end without a NUL terminator must fail closed');
+
+  console.log('✔ #3629 ObjC stub selector termination proof passed');
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');
