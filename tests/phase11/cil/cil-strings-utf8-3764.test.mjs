@@ -65,7 +65,7 @@ function buildPeCliFixture(stringsBytes) {
   view.setUint32(streamHeader + 4, 0x20, true);
   bytes.set(new TextEncoder().encode('#Strings\0'), streamHeader + 8);
 
-  const secondStream = streamHeader + 12;
+  const secondStream = streamHeader + 20;
   view.setUint32(secondStream, 0xa0, true);
   view.setUint32(secondStream + 4, 0x18, true);
   bytes.set(new TextEncoder().encode('#~\0'), secondStream + 8);
