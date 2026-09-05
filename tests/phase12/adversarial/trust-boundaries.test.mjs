@@ -54,7 +54,7 @@ const localOnly = new ChangeLog(base);
 assert.equal(localOnly.applyOperation(remote).reason, 'remote-transport-security-gate-required');
 const authorized = new ChangeLog({ ...base, allowRemote: true, authorizedAuthors: ['authorized'] });
 assert.equal(authorized.applyOperation(remote).reason, 'unauthorized-remote-actor');
-const wrongBinary = createProjectOperation({ ...base, binaryIdentity: 'hex-binary:p:other:macho:arm64', operationId: 'wrong-binary', targetEntityId: 'e', factKind: 'comment', action: 'add', payload: 'x' });
+const wrongBinary = createProjectOperation({ ...base, binaryIdentity: 'hex-binary:p:other:macho:arm64', operationId: 'wrong-binary', targetEntityId: 'e', factKind: 'comment', action: 'set', payload: 'x' });
 assert.equal(localOnly.applyOperation(wrongBinary).reason, 'wrong-binary-identity');
 
 const source = Uint8Array.from([1, 2]);
