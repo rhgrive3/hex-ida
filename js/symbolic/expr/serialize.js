@@ -30,14 +30,14 @@ import {
 export const EXPR_SCHEMA_VERSION = '1.0.0';
 export const EXPR_DAG_VERSION = '1.0.0';
 
-function canonicalizeObject(obj) {
+export function canonicalizeObject(obj) {
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
   if (Array.isArray(obj)) {
     return obj.map(canonicalizeObject);
   }
-  const sorted = {};
+  const sorted = Object.create(null);
   for (const key of Object.keys(obj).sort()) {
     sorted[key] = canonicalizeObject(obj[key]);
   }
@@ -188,9 +188,21 @@ function plainNodeToExpr(plain) {
   switch (plain.kind) {
     case EXPR_KIND.CONST:
       if (sort.kind === SORT_KIND.BOOL) {
+        if (typeof plain.value !== 'boolean') {
+          throw new TypeError(`deserializeExprDag: Bool const value must be a boolean, got ${typeof plain.value}`);
+        }
         return createBool(plain.value);
       }
-      return createBv(sort.width, BigInt(plain.value));
+      if (typeof plain.value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(plain.value)) {
+        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+      }
+      {
+        const value = createBv(sort.width, BigInt(plain.value));
+        if (plain.value !== `0x${value.value.toString(16)}`) {
+          throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+        }
+        return value;
+      }
 
     case EXPR_KIND.FRESH_SYMBOL:
       // Restore the saved canonical symbolId. Discarding a present malformed ID
