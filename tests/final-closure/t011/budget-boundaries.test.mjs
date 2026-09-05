@@ -101,12 +101,13 @@ function legacyForgedReachingStoreFixture() {
   };
 }
 
-function legacyStaleReachingStoreFixture(writerRow = 1) {
+function legacyStaleReachingStoreFixture(writerRow = 1, writerKind = 'stack', writerHasKey = true) {
   const key = 'stack:sp:e0:-16:s4';
   const oldSource = { id:100 };
   const newSource = { id:101 };
   const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldSource }] };
-  const newerStore = { id:11, op:'store', block:0, row:writerRow, loc:{ kind:'stack', key, size:4 }, args:[{ value:newSource }] };
+  const newerStore = { id:11, op:'store', block:0, row:writerRow,
+    loc:{ kind:writerKind, ...(writerHasKey ? { key } : {}), size:4 }, args:[{ value:newSource }] };
   const load = { id:12, op:'load', block:0, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:oldStore, args:[] };
   return {
     ir:{ values:[oldSource, newSource, { id:200, def:load }], instructions:[oldStore, newerStore, load], blocks:[
@@ -285,6 +286,15 @@ test('T011 legacy malformed same-slot writer rows fail closed', () => {
     const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
     assert.equal(expression.kind, 'load', String(writerRow));
   }
+});
+
+test('T011 malformed unknown/no-key STORE rows fail closed through legacy and pipeline helpers', () => {
+  const result = legacyStaleReachingStoreFixture('1', 'unknown', false);
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+  const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+  assert.equal(exactLegacySameBlockStackStore(load, result.ir), null);
 });
 
 test('T011 pipeline legacy helper cannot skip a newer same-slot writer', () => {

@@ -32,7 +32,8 @@ export function exactLegacySameBlockStackStore(load, ir) {
     if (inst === store || inst === load) continue;
     if (!Number.isSafeInteger(inst.row)) {
       if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown'
-          || (inst.op === 'store' && inst.loc?.key === load.loc.key)) return null;
+          || (inst.op === 'store'
+            && (!inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === load.loc.key))) return null;
       continue;
     }
     if (inst.row <= store.row || inst.row >= load.row) continue;
