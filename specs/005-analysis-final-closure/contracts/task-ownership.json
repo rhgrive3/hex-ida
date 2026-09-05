@@ -381,6 +381,24 @@
     }
   },
   "tasks": {
+    "T060": {
+      "allowedPaths": [
+        "tools/validation/final-closure/preflight.mjs",
+        "tests/final-closure/moving-main-amendment.test.mjs",
+        "tests/final-closure/preflight.test.mjs",
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/evidence/moving-main-amendment.md"
+      ],
+      "forbiddenOverlap": [
+        "component production source, generated outputs, workflow or shadow oracle authority changes",
+        "rewriting T046, T058 revalidation or accepted checkpoint history",
+        "accepting a component before the reviewed amendment and current-main transaction are verified"
+      ]
+    },
     "T058": {
       "allowedPaths": [
         "tools/validation/final-closure/preflight.mjs",
@@ -628,7 +646,8 @@
         "js/semantics/compat/semantic-ir-v2-to-v1.js",
         "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
         "js/semantics/ir/from-machine-effects.js",
-        "tests/final-closure/t017/**"
+        "tests/final-closure/t017/**",
+        "tests/issue-1809-libc-effect-classification.mjs"
       ],
       "forbiddenOverlap": [
         "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",

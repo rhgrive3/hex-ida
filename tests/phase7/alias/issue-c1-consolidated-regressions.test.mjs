@@ -9,14 +9,13 @@ import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
 import { createEscapeRecord } from '../../../js/analysis/summary/escape.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
 
-const completeAliasStatus = createAnalysisStatus({
-  snapshotId: 'snapshot-c1-consolidated-regressions',
-  analyzerId: 'phase7.alias.fixture',
-  analyzerVersion: '1.0.0',
-  completeness: 'complete',
-});
-
 test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias authority', () => {
+  const status = createAnalysisStatus({
+    snapshotId: 'snap-3041',
+    analyzerId: 'phase7-regression',
+    analyzerVersion: '1',
+    completeness: 'complete',
+  });
   const setFor = (addressSpace, rootIdentity) => createPointsToSet({
     targets: [createPointsToTarget({
       addressSpace,
@@ -30,18 +29,18 @@ test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias au
   assert.equal(malformed.targets[0].addressSpace, 'unknown');
   const canonicalRegister = setFor('register', 'register-root');
   const failClosed = pointsToAlias(malformed, canonicalRegister, {
-    status: completeAliasStatus,
     widthBitsLeft: 32,
     widthBitsRight: 32,
+    status,
   });
   assert.notEqual(failClosed.relation, 'no');
   assert.equal(failClosed.reasonCodes.includes('distinct-address-space'), false);
 
   const canonicalMemory = setFor('memory', 'memory-root');
   const separated = pointsToAlias(canonicalMemory, canonicalRegister, {
-    status: completeAliasStatus,
     widthBitsLeft: 32,
     widthBitsRight: 32,
+    status,
   });
   assert.equal(separated.relation, 'no');
   assert.ok(separated.reasonCodes.includes('distinct-address-space'));
