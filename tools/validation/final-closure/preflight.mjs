@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
+import { createDecipheriv, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
+import { gunzipSync } from 'node:zlib';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
 
@@ -91,10 +92,14 @@ const RECOVERY_HANDOFF_CANONICAL_REMOTE_REF = 'refs/remotes/origin/wip/recovery-
 const RECOVERY_HANDOFF_SCRATCH_REMOTE_REF = 'refs/remotes/origin/__final_closure_recovery_handoff';
 const RECOVERY_HANDOFF_FETCH_REF = 'refs/heads/wip/recovery-handoff-20260904';
 const FOUNDATION_TASK_COUNT = 57;
+// Forward amendment tasks do not redefine the immutable T046 ownership snapshot.
+const RESERVED_TASK_COUNT = 59;
+const T014_APPROVED_METRICS_PATH = 'tools/validation/phase9/tiered-solver-metrics.mjs';
+const T017_APPROVED_FIXTURE_PATH = 'tests/issue-1809-libc-effect-classification.mjs';
 const EXPECTED_WORKFLOW_SHA256 = '18177a2e78bab81bf1aed9a681349235592bb0e52efedee292851717a485cfcd';
 const STAGE_A_COMPONENT_TASK_IDS = Object.freeze([
   'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
-  'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+  'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057', 'T059',
 ]);
 const STAGE_B_FOUNDATION_COMPONENT_TASK_IDS = Object.freeze([
   'T026', 'T027', 'T028', 'T029', 'T030', 'T031',
@@ -131,10 +136,25 @@ const STAGE_B_ROADMAP_STATUSES = Object.freeze([
 const STAGE_B_IMPLEMENTATION_ACTIONS = Object.freeze([
   'IMPLEMENT', 'NO_EDIT', 'NO_EDIT_EXTERNAL_BLOCK', 'RECONCILE_OWNER',
 ]);
-export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = 'fe5daeb553fca7c47f4f229b24d064a1';
+export const FROZEN_INITIAL_CANDIDATE_GATE_DIGEST = '63fb512b688c281f862740411f20df72';
+const FORWARD_AMENDMENT_OWNERSHIP_DIGEST = 'bfc9e2c97114e6f81f2107f07089b5eb';
+const FORWARD_AMENDMENT_PREVIOUS_OWNERS = Object.freeze({
+  'tools/validation/final-closure/preflight.mjs': 'T046',
+  'tools/validation/final-closure/shadow/foundation/registry.json': 'T046',
+  'tools/validation/final-closure/shadow/foundation/contracts.json': 'T046',
+  'tests/final-closure/preflight.test.mjs': 'T046',
+  'tests/final-closure/foundation-amendment.test.mjs': null,
+  'tests/phase4/ownership/integration-contract-repair.test.mjs': null,
+  'specs/005-analysis-final-closure/spec.md': 'T003',
+  'specs/005-analysis-final-closure/plan.md': 'T046',
+  'specs/005-analysis-final-closure/tasks.md': 'T046',
+  'specs/005-analysis-final-closure/contracts/task-ownership.json': 'T046',
+  'specs/005-analysis-final-closure/contracts/integration-inventory.json': 'T046',
+  'specs/005-analysis-final-closure/evidence/forward-amendment.md': null,
+});
 
 export const EXPECTED_TASK_IDS = Object.freeze(
-  Array.from({ length: FOUNDATION_TASK_COUNT }, (_, index) => `T${String(index + 1).padStart(3, '0')}`),
+  Array.from({ length: RESERVED_TASK_COUNT }, (_, index) => `T${String(index + 1).padStart(3, '0')}`),
 );
 
 export const EVIDENCE_IDENTITY_FIELDS = Object.freeze([
@@ -454,7 +474,7 @@ function dependencyErrors(blocks, taskIds) {
     state.set(taskId, 'done');
   };
   for (const taskId of taskIds) visit(taskId);
-  for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) > FOUNDATION_TASK_COUNT)) {
+  for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) > RESERVED_TASK_COUNT)) {
     if (!transitivelyDepends(taskId, 'T048', dependencies)) {
       errors.push(`tasks-dynamic-t048-dependency-missing:${taskId}`);
     }
@@ -521,7 +541,15 @@ export function foundationOwnershipSnapshot(ownership) {
     tasks: Object.fromEntries(
       Array.from({ length: FOUNDATION_TASK_COUNT }, (_, index) => {
         const taskId = `T${String(index + 1).padStart(3, '0')}`;
-        return [taskId, ownership?.tasks?.[taskId]];
+        const row = ownership?.tasks?.[taskId];
+        // T058 approves this exact addition already named by the frozen
+        // P-SYM01 source lock. The separate amendment digest pins the full new
+        // T014 row; the original T046 snapshot stays independently immutable.
+        const approvedAddition = taskId === 'T014' ? T014_APPROVED_METRICS_PATH
+          : taskId === 'T017' ? T017_APPROVED_FIXTURE_PATH : null;
+        return [taskId, approvedAddition != null && Array.isArray(row?.allowedPaths)
+          ? { ...row, allowedPaths: row.allowedPaths.filter((entry) => entry !== approvedAddition) }
+          : row];
       }),
     ),
   });
@@ -1064,7 +1092,7 @@ export function validateStageBApplicability({
 
   const componentTaskIds = taskIds.filter((taskId) => {
     const number = Number(taskId.slice(1));
-    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId) || number > FOUNDATION_TASK_COUNT;
+    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId) || number > RESERVED_TASK_COUNT;
   });
   const tasks = Array.isArray(coverage.tasks) ? coverage.tasks : [];
   const coverageTaskIds = tasks.map((row) => row?.taskId);
@@ -1097,7 +1125,7 @@ export function validateStageBApplicability({
       actionsByTask.set(row.taskId, row.implementationAction);
       continue;
     }
-    if (Number(row.taskId.slice(1)) > FOUNDATION_TASK_COUNT && row.implementationAction === 'NO_EDIT') {
+    if (Number(row.taskId.slice(1)) > RESERVED_TASK_COUNT && row.implementationAction === 'NO_EDIT') {
       errors.push(`stage-b-residual-coverage-superfluous-dynamic-no-edit:${row.taskId}`);
     }
     if (!STAGE_B_ROADMAP_IDS.includes(row.findingId)) {
@@ -1377,7 +1405,7 @@ function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = nul
     }
     return taskIds.filter((taskId) => {
       const number = Number(taskId.slice(1));
-      return (number >= 26 && number <= 36) || number === 45 || number > FOUNDATION_TASK_COUNT;
+      return (number >= 26 && number <= 36) || number === 45 || number > RESERVED_TASK_COUNT;
     });
   }
   return [];
@@ -1532,6 +1560,15 @@ function validateCheckpointContract({
     .map((entry) => entry?.ownerTaskId)
     .filter((taskId) => componentTaskIds.includes(taskId)))];
   if (checkpoint?.sequence === 0) {
+    if (checkpointEvidenceText != null && String(checkpointEvidenceText).trim() !== '') {
+      errors.push('checkpoint-prefanout-evidence-present');
+    }
+    const prematureHandoffs = componentTaskIds.filter(
+      (taskId) => integrationInventory?.taskHandoffs?.[taskId] != null,
+    );
+    if (prematureHandoffs.length > 0) {
+      errors.push(`checkpoint-prefanout-component-handoff:${prematureHandoffs.join(',')}`);
+    }
     if (checkpoint.state !== 'PREFANOUT' || checkpoint.acceptedTaskId !== null) {
       errors.push('checkpoint-prefanout-state-invalid');
     }
@@ -1989,7 +2026,7 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
       shadowAuthorityDefinition: null,
     });
   }
-  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > FOUNDATION_TASK_COUNT);
+  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > RESERVED_TASK_COUNT);
   const componentTaskIds = [...INITIAL_COMPONENT_TASK_IDS, ...dynamicTaskIds];
   const shadowPolicy = registry?.shadowEvidence;
   const shadowAuthorityDefinition = validateShadowAuthorityDefinition({
@@ -2103,6 +2140,10 @@ export function validatePreflightContracts({
   if (foundationOwnershipDigest !== FROZEN_FOUNDATION_OWNERSHIP_DIGEST) {
     errors.push('ownership-foundation-digest-mismatch');
   }
+  if (stableDigest({ T014: ownership?.tasks?.T014, T058: ownership?.tasks?.T058, T059: ownership?.tasks?.T059 })
+    !== FORWARD_AMENDMENT_OWNERSHIP_DIGEST) {
+    errors.push('ownership-forward-amendment-digest-mismatch');
+  }
   for (const taskId of taskIds) {
     const row = ownership?.tasks?.[taskId];
     const entries = row?.forbiddenOverlap;
@@ -2148,6 +2189,13 @@ export function validatePreflightContracts({
     expectedBaseSha,
   });
   errors.push(...inventoryResult.errors);
+  if (integrationInventory?.campaignStage === 'STAGE_A'
+    && integrationInventory?.checkpoint?.sequence === 0
+    && !exactSet((integrationInventory?.entries || [])
+      .filter((entry) => entry.ownerTaskId === 'T058').map((entry) => entry.path),
+    Object.keys(FORWARD_AMENDMENT_PREVIOUS_OWNERS))) {
+    errors.push('foundation-amendment-reassignment-set-invalid');
+  }
   validateStageBInitialInventory(integrationInventory, blocks, errors);
   const candidateGateResult = validateCandidateGateRegistry({
     ownership,
@@ -2690,7 +2738,7 @@ function pinnedShadowProofAuthority(ownership, shadowAuthorityDefinition, report
     ?.find((candidate) => candidate?.id === report.gateId);
   if (!policy || !gate) throw new Error('checkpoint-shadow-report-contract-missing');
   let contract;
-  if (Number(report.taskId.slice(1)) > FOUNDATION_TASK_COUNT) {
+  if (Number(report.taskId.slice(1)) > RESERVED_TASK_COUNT) {
     if (!validSha256(gate.contractSha256)
       || gate.contractSha256 !== sha256Text(canonicalJson(gate.contract))) {
       throw new Error('checkpoint-shadow-report-contract-pin-invalid');
@@ -2984,7 +3032,7 @@ function shadowEvidenceContract(ownership, taskId, gate, { blobEvidence, readJso
     || Array.isArray(contractsDocument.contracts)) {
     throw new Error('checkpoint-shadow-contracts-invalid');
   }
-  const dynamic = Number(taskId.slice(1)) > FOUNDATION_TASK_COUNT;
+  const dynamic = Number(taskId.slice(1)) > RESERVED_TASK_COUNT;
   let contract;
   let contractId;
   if (dynamic) {
@@ -4025,6 +4073,10 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     return evidenceCommitSha;
   });
   const canonicalT046 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T046');
+  const canonicalT058 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T058');
+  const foundationRevalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalT058);
+  assertAncestor(root, canonicalT046.transitionCommitSha, canonicalT058.handoff.headSha,
+    'foundation-amendment-precedes-original-handoff');
   for (let rowIndex = 0; rowIndex < ledger.checkpoints.length; rowIndex += 1) {
     const row = ledger.checkpoints[rowIndex];
     const cumulativeTaskIds = ledger.checkpoints
@@ -4032,7 +4084,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       .map((checkpointRow) => checkpointRow.acceptedTaskId);
     verifyMainReconciliation(root, row.mainReconciliation, {
       expectedPreviousEvidenceSha: rowIndex === 0
-        ? canonicalT046.transitionCommitSha
+        ? (foundationRevalidation?.publicationCommitSha ?? canonicalT058.transitionCommitSha)
         : evidenceCommitShas[rowIndex - 1],
       expectedIntegrationHeadSha: row.integrationParentSha,
       sequence: row.sequence,
@@ -4386,6 +4438,91 @@ export function canonicalTaskHandoffAnchor(root, integrationHeadSha, taskId) {
   });
 }
 
+const T058_REVALIDATION_CODE_PATHS = Object.freeze([
+  'tools/validation/final-closure/preflight.mjs',
+  'tests/final-closure/preflight.test.mjs',
+  'specs/005-analysis-final-closure/contracts/task-ownership.json',
+]);
+const T058_REVALIDATION_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/forward-amendment.md';
+
+// One reviewed fixture/verifier successor, not a mutable-path exemption. The
+// original first-DONE and evidence remain immutable. A scoped linear code
+// chain -> E -> R binds code, evidence, and receipt separately. Corrections
+// before receipt publication do not require rewriting an earlier commit.
+export function verifyT058Revalidation(root, integrationHeadSha, originalAnchor = null) {
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  const currentInventory = readJsonAt(root, integrationHeadSha, inventoryPath);
+  const receipts = currentInventory.taskHandoffRevalidations;
+  if (receipts == null) return null;
+  const fail = (detail) => { throw new Error(`task-handoff-revalidation-invalid:T058:${detail}`); };
+  if (!exactSet(Object.keys(receipts), ['T058'])) fail('task-set');
+  const receipt = receipts.T058;
+  if (!receipt || !exactSet(Object.keys(receipt), [
+    'schemaVersion', 'originalHandoff', 'activationCommitSha', 'code', 'evidence', 'paths',
+  ]) || receipt.schemaVersion !== 'hex-final-closure-t058-revalidation/v1') fail('schema');
+  const anchor = originalAnchor ?? canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T058');
+  if (canonicalJson(receipt.originalHandoff) !== canonicalJson(anchor.handoff)
+    || receipt.activationCommitSha !== anchor.transitionCommitSha) fail('original-anchor');
+  const paths = [...T058_REVALIDATION_CODE_PATHS, T058_REVALIDATION_EVIDENCE_PATH];
+  if (!exactSet(receipt.paths, paths)) fail('paths');
+  for (const key of ['code', 'evidence']) {
+    const identity = receipt[key];
+    if (!identity || !exactSet(Object.keys(identity), ['headSha', 'treeSha'])
+      || !validSha1(identity.headSha) || !validSha1(identity.treeSha)
+      || git(root, ['rev-parse', `${identity.headSha}^{tree}`]) !== identity.treeSha) fail(`${key}-identity`);
+  }
+  const parents = (sha) => git(root, ['show', '-s', '--format=%P', sha]).split(/\s+/).filter(Boolean);
+  if (receipt.code.headSha === anchor.transitionCommitSha
+    || runGit(root, ['merge-base', '--is-ancestor', anchor.transitionCommitSha, receipt.code.headSha]).status !== 0) fail('code-parent');
+  const codeHistory = git(root, ['rev-list', '--first-parent', receipt.code.headSha, `^${anchor.transitionCommitSha}`])
+    .split('\n').filter(Boolean);
+  for (const sha of codeHistory) {
+    const preceding = parents(sha);
+    if (preceding.length !== 1) fail('code-parent');
+    if (changedPaths(root, preceding[0], sha).some((repoPath) => !T058_REVALIDATION_CODE_PATHS.includes(repoPath))) fail('code-scope');
+  }
+  if (!exactSet(changedPaths(root, anchor.transitionCommitSha, receipt.code.headSha), T058_REVALIDATION_CODE_PATHS)) fail('code-scope');
+  const ownershipPath = 'specs/005-analysis-final-closure/contracts/task-ownership.json';
+  const amendedOwnership = readJsonAt(root, receipt.code.headSha, ownershipPath);
+  const expectedOwnership = readJsonAt(root, anchor.transitionCommitSha, ownershipPath);
+  expectedOwnership.tasks.T017.allowedPaths.push(T017_APPROVED_FIXTURE_PATH);
+  if (canonicalJson(amendedOwnership) !== canonicalJson(expectedOwnership)) fail('ownership-delta');
+  if (canonicalJson(parents(receipt.evidence.headSha)) !== canonicalJson([receipt.code.headSha])) fail('evidence-parent');
+  if (!exactSet(changedPaths(root, receipt.code.headSha, receipt.evidence.headSha), [T058_REVALIDATION_EVIDENCE_PATH])) fail('evidence-scope');
+  const previousEvidenceText = readOptionalText(root, T058_REVALIDATION_EVIDENCE_PATH, receipt.code.headSha);
+  const successorEvidenceText = readOptionalText(root, T058_REVALIDATION_EVIDENCE_PATH, receipt.evidence.headSha);
+  if (typeof previousEvidenceText !== 'string' || typeof successorEvidenceText !== 'string'
+    || !successorEvidenceText.startsWith(`${previousEvidenceText}\n`)
+    || !successorEvidenceText.slice(previousEvidenceText.length).includes(receipt.code.headSha)
+    || !successorEvidenceText.slice(previousEvidenceText.length).includes(receipt.code.treeSha)) fail('evidence-binding');
+
+  const history = git(root, ['rev-list', '--first-parent', '--reverse', integrationHeadSha, '--', inventoryPath])
+    .split('\n').filter(Boolean);
+  let publicationCommitSha = null;
+  for (const sha of history) {
+    const text = readOptionalText(root, inventoryPath, sha);
+    const historical = text == null ? null : JSON.parse(text).taskHandoffRevalidations;
+    if (historical == null) {
+      if (publicationCommitSha != null) fail('receipt-removed');
+      continue;
+    }
+    if (canonicalJson(historical) !== canonicalJson(receipts)) fail('receipt-rewritten');
+    publicationCommitSha ??= sha;
+  }
+  if (publicationCommitSha == null
+    || canonicalJson(parents(publicationCommitSha)) !== canonicalJson([receipt.evidence.headSha])) fail('receipt-parent');
+  if (!exactSet(changedPaths(root, receipt.evidence.headSha, publicationCommitSha), [inventoryPath])) fail('receipt-scope');
+  const published = readJsonAt(root, publicationCommitSha, inventoryPath);
+  delete published.taskHandoffRevalidations;
+  const evidenceInventory = readJsonAt(root, receipt.evidence.headSha, inventoryPath);
+  if (canonicalJson(published) !== canonicalJson(evidenceInventory)
+    || published.campaignStage !== 'STAGE_A' || published.checkpoint?.sequence !== 0) fail('receipt-state');
+  for (const repoPath of paths) {
+    if (published.entries?.find((entry) => entry.path === repoPath)?.ownerTaskId !== 'T058') fail('owner');
+  }
+  return Object.freeze({ publicationCommitSha, evidenceHeadSha: receipt.evidence.headSha, paths: Object.freeze(paths) });
+}
+
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   requireCompleteOwners = false,
 } = {}) {
@@ -4403,7 +4540,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   }
   const completedTaskIds = new Set(result?.taskHandoffResult?.completedTaskIds || []);
   const canonicalHandoffs = {};
-  for (const taskId of ['T046', 'T025']) {
+  for (const taskId of ['T046', 'T025', 'T058']) {
     if (!completedTaskIds.has(taskId)) continue;
     const canonical = canonicalTaskHandoffAnchor(root, integrationHeadSha, taskId);
     if (canonicalJson(handoffs[taskId]) !== canonicalJson(canonical.handoff)) {
@@ -4412,6 +4549,26 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     canonicalHandoffs[taskId] = canonical;
   }
   const canonicalT046 = canonicalHandoffs.T046 ?? null;
+  const revalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalHandoffs.T058 ?? null);
+  if (canonicalHandoffs.T058) {
+    if (!canonicalT046) throw new Error('foundation-amendment-original-handoff-missing');
+    assertAncestor(root, canonicalT046.transitionCommitSha, canonicalHandoffs.T058.handoff.headSha,
+      'foundation-amendment-precedes-original-handoff');
+    const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+    const originalInventory = readJsonAt(root, canonicalT046.transitionCommitSha, inventoryPath);
+    const amendedInventory = readJsonAt(root, canonicalHandoffs.T058.handoff.headSha, inventoryPath);
+    const reassigned = (amendedInventory.entries || [])
+      .filter((entry) => entry.ownerTaskId === 'T058').map((entry) => entry.path);
+    if (!exactSet(reassigned, Object.keys(FORWARD_AMENDMENT_PREVIOUS_OWNERS))) {
+      throw new Error('foundation-amendment-reassignment-set-invalid');
+    }
+    for (const [repoPath, previousOwner] of Object.entries(FORWARD_AMENDMENT_PREVIOUS_OWNERS)) {
+      const observedOwner = originalInventory.entries?.find((entry) => entry.path === repoPath)?.ownerTaskId ?? null;
+      if (observedOwner !== previousOwner) {
+        throw new Error(`foundation-amendment-original-owner-mismatch:${repoPath}`);
+      }
+    }
+  }
   const sealOwnedPaths = requireCompleteOwners || completedTaskIds.has('T046');
   const mutableCoordinationPaths = new Set([
     'specs/005-analysis-final-closure/contracts/integration-inventory.json',
@@ -4427,8 +4584,11 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
       continue;
     }
     if (!sealOwnedPaths || mutableCoordinationPaths.has(entry.path)) continue;
+    const sealedHead = ownerTaskId === 'T058' && revalidation?.paths.includes(entry.path)
+      ? revalidation.evidenceHeadSha
+      : handoff.headSha;
     const unchanged = runGit(root, [
-      'diff', '--quiet', handoff.headSha, integrationHeadSha, '--', entry.path,
+      'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
     ]);
     if (unchanged.status !== 0) {
       throw new Error(`task-handoff-owned-path-changed:${ownerTaskId}:${entry.path}`);
@@ -4438,6 +4598,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     taskCount: Object.keys(handoffs).length,
     canonicalT046TransitionCommitSha: canonicalT046?.transitionCommitSha ?? null,
     canonicalT025TransitionCommitSha: canonicalHandoffs.T025?.transitionCommitSha ?? null,
+    canonicalT058TransitionCommitSha: canonicalHandoffs.T058?.transitionCommitSha ?? null,
   });
 }
 
@@ -4516,6 +4677,9 @@ function validateComponentLane({ authority, bundle, root, candidateHeadSha, stag
         `component-task-not-implement:${authority.taskId}:${String(stageBApplicability.actionsByTask?.[authority.taskId] || 'MISSING')}`,
       );
     }
+  }
+  if (statuses.get('T058') !== 'DONE') {
+    throw new Error('component-foundation-amendment-not-done:T058');
   }
   if (statuses.get(authority.taskId) !== 'PENDING') {
     throw new Error(`component-task-not-pending:${authority.taskId}:${statuses.get(authority.taskId) || 'UNKNOWN'}`);
@@ -4965,6 +5129,253 @@ function checkpointRuntimeEphemeralManifest(root) {
   });
 }
 
+function checkpointRuntimeBuildJson(filePath, errorCode) {
+  let source;
+  try {
+    source = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    throw new Error(`${errorCode}:missing`);
+  }
+  try {
+    return JSON.parse(source);
+  } catch {
+    throw new Error(`${errorCode}:invalid-json`);
+  }
+}
+
+function checkpointRuntimeExactKeys(value, expectedKeys, errorCode) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${errorCode}:object-required`);
+  }
+  const actualKeys = Object.keys(value).sort();
+  const sortedExpected = [...expectedKeys].sort();
+  if (canonicalJson(actualKeys) !== canonicalJson(sortedExpected)) {
+    throw new Error(`${errorCode}:fields-invalid`);
+  }
+}
+
+function checkpointRuntimeBase64Url(value, byteLength, errorCode) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${errorCode}:encoding-invalid`);
+  }
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.length !== byteLength || decoded.toString('base64url') !== value) {
+    throw new Error(`${errorCode}:length-invalid`);
+  }
+  return decoded;
+}
+
+function checkpointRuntimeOutputIdentity(root, excludedPaths) {
+  const excluded = new Set(excludedPaths);
+  const entries = [];
+  const visit = (absoluteDirectory, repoDirectory) => {
+    const children = fs.readdirSync(absoluteDirectory, { withFileTypes: true })
+      .sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)));
+    for (const child of children) {
+      const repoPath = `${repoDirectory}/${child.name}`;
+      const absolute = path.join(absoluteDirectory, child.name);
+      const stat = fs.lstatSync(absolute);
+      if (excluded.has(repoPath)) {
+        if (!stat.isFile()) throw new Error(`checkpoint-runtime-build-output-kind-invalid:${repoPath}`);
+        continue;
+      }
+      if (stat.isDirectory()) {
+        entries.push({ path: repoPath, kind: 'DIRECTORY', mode: stat.mode });
+        visit(absolute, repoPath);
+      } else if (stat.isFile()) {
+        entries.push({
+          path: repoPath,
+          kind: 'FILE',
+          mode: stat.mode,
+          size: stat.size,
+          sha256: createHash('sha256').update(fs.readFileSync(absolute)).digest('hex'),
+        });
+      } else if (stat.isSymbolicLink()) {
+        entries.push({
+          path: repoPath,
+          kind: 'SYMLINK',
+          mode: stat.mode,
+          target: fs.readlinkSync(absolute),
+        });
+      } else {
+        throw new Error(`checkpoint-runtime-build-output-kind-invalid:${repoPath}`);
+      }
+    }
+  };
+  for (const repoRoot of ['.runtime-build', 'dist']) {
+    const absoluteRoot = path.join(root, repoRoot);
+    const stat = fs.lstatSync(absoluteRoot, { throwIfNoEntry: false });
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`checkpoint-runtime-build-output-root-invalid:${repoRoot}`);
+    }
+    entries.push({ path: repoRoot, kind: 'DIRECTORY', mode: stat.mode });
+    visit(absoluteRoot, repoRoot);
+  }
+  return sha256Text(canonicalJson(entries));
+}
+
+function checkpointRuntimeBuildProof(root) {
+  const secretsPath = path.join(root, '.runtime-build/runtime-secrets.js');
+  let secretsSource;
+  try {
+    secretsSource = fs.readFileSync(secretsPath, 'utf8').trim();
+  } catch {
+    throw new Error('checkpoint-runtime-build-secrets:missing');
+  }
+  const prefix = 'export const RUNTIME_BUILD=Object.freeze(';
+  const suffix = ');';
+  if (!secretsSource.startsWith(prefix) || !secretsSource.endsWith(suffix)) {
+    throw new Error('checkpoint-runtime-build-secrets:module-invalid');
+  }
+  let runtimeBuild;
+  try {
+    runtimeBuild = JSON.parse(secretsSource.slice(prefix.length, -suffix.length));
+  } catch {
+    throw new Error('checkpoint-runtime-build-secrets:json-invalid');
+  }
+  checkpointRuntimeExactKeys(
+    runtimeBuild,
+    ['manifest', 'contentKey', 'signingKey'],
+    'checkpoint-runtime-build-secrets',
+  );
+  const manifest = runtimeBuild.manifest;
+  checkpointRuntimeExactKeys(manifest, [
+    'buildId', 'runtimeVersion', 'ciphertextHash', 'contentHash', 'iv', 'aad',
+    'compression', 'assetPath', 'byteLength',
+  ], 'checkpoint-runtime-build-manifest');
+  if (typeof manifest.contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.contentHash)) {
+    throw new Error('checkpoint-runtime-build-content-hash-invalid');
+  }
+  if (typeof manifest.buildId !== 'string'
+    || !/^[a-f0-9]{24}$/.test(manifest.buildId)
+    || manifest.buildId !== manifest.contentHash.slice(0, 24)) {
+    throw new Error('checkpoint-runtime-build-id-invalid');
+  }
+  if (typeof manifest.runtimeVersion !== 'string' || !/^2\.2\.0\.[1-9][0-9]*$/.test(manifest.runtimeVersion)) {
+    throw new Error('checkpoint-runtime-build-version-invalid');
+  }
+  if (typeof manifest.ciphertextHash !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.ciphertextHash)) {
+    throw new Error('checkpoint-runtime-build-ciphertext-hash-invalid');
+  }
+  if (manifest.compression !== 'gzip') {
+    throw new Error('checkpoint-runtime-build-compression-invalid');
+  }
+  if (manifest.aad !== `hex-runtime:${manifest.buildId}:${manifest.runtimeVersion}`) {
+    throw new Error('checkpoint-runtime-build-aad-invalid');
+  }
+  const expectedAssetPath = `/.runtime/runtime.${manifest.buildId}.bin`;
+  if (manifest.assetPath !== expectedAssetPath) {
+    throw new Error('checkpoint-runtime-build-asset-path-invalid');
+  }
+  if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength < 17) {
+    throw new Error('checkpoint-runtime-build-byte-length-invalid');
+  }
+  const contentKey = checkpointRuntimeBase64Url(
+    runtimeBuild.contentKey,
+    32,
+    'checkpoint-runtime-build-content-key',
+  );
+  checkpointRuntimeBase64Url(
+    runtimeBuild.signingKey,
+    32,
+    'checkpoint-runtime-build-signing-key',
+  );
+  const iv = checkpointRuntimeBase64Url(manifest.iv, 12, 'checkpoint-runtime-build-iv');
+  const ciphertextPath = path.join(root, 'dist', manifest.assetPath.slice(1));
+  const ciphertextStat = fs.lstatSync(ciphertextPath, { throwIfNoEntry: false });
+  if (!ciphertextStat?.isFile() || ciphertextStat.isSymbolicLink()) {
+    throw new Error('checkpoint-runtime-build-ciphertext-missing');
+  }
+  const ciphertext = fs.readFileSync(ciphertextPath);
+  if (ciphertext.length !== manifest.byteLength) {
+    throw new Error('checkpoint-runtime-build-byte-length-mismatch');
+  }
+  if (createHash('sha256').update(ciphertext).digest('hex') !== manifest.ciphertextHash) {
+    throw new Error('checkpoint-runtime-build-ciphertext-hash-mismatch');
+  }
+  const publicManifest = checkpointRuntimeBuildJson(
+    path.join(root, 'dist/runtime-manifest.json'),
+    'checkpoint-runtime-build-public-manifest',
+  );
+  const { assetPath: _privateAssetPath, ...expectedPublicManifest } = manifest;
+  if (canonicalJson(publicManifest) !== canonicalJson(expectedPublicManifest)) {
+    throw new Error('checkpoint-runtime-build-public-manifest-mismatch');
+  }
+  const releaseState = checkpointRuntimeBuildJson(
+    path.join(root, 'userscript/release-version.json'),
+    'checkpoint-runtime-build-release-state',
+  );
+  checkpointRuntimeExactKeys(
+    releaseState,
+    ['serial', 'releaseIdentity', 'buildId'],
+    'checkpoint-runtime-build-release-state',
+  );
+  if (!Number.isSafeInteger(releaseState.serial)
+    || releaseState.serial < 1
+    || typeof releaseState.releaseIdentity !== 'string'
+    || !/^[a-f0-9]{64}$/.test(releaseState.releaseIdentity)
+    || releaseState.buildId !== manifest.buildId
+    || manifest.runtimeVersion !== `2.2.0.${releaseState.serial}`) {
+    throw new Error('checkpoint-runtime-build-release-state-invalid');
+  }
+  let compressed;
+  try {
+    const tag = ciphertext.subarray(ciphertext.length - 16);
+    const encrypted = ciphertext.subarray(0, ciphertext.length - 16);
+    const decipher = createDecipheriv('aes-256-gcm', contentKey, iv);
+    decipher.setAAD(Buffer.from(manifest.aad, 'utf8'));
+    decipher.setAuthTag(tag);
+    compressed = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+  } catch {
+    throw new Error('checkpoint-runtime-build-decryption-failed');
+  }
+  let plaintext;
+  try {
+    plaintext = gunzipSync(compressed, { maxOutputLength: 256 * 1024 * 1024 });
+  } catch {
+    throw new Error('checkpoint-runtime-build-decompression-failed');
+  }
+  const plaintextSha256 = createHash('sha256').update(plaintext).digest('hex');
+  if (plaintextSha256 !== manifest.contentHash) {
+    throw new Error('checkpoint-runtime-build-content-hash-mismatch');
+  }
+  const nonCryptographicOutputIdentity = checkpointRuntimeOutputIdentity(root, [
+    '.runtime-build/runtime-secrets.js',
+    'dist/runtime-manifest.json',
+    `dist${manifest.assetPath}`,
+  ]);
+  return Object.freeze({
+    productIdentity: Object.freeze({
+      buildId: manifest.buildId,
+      runtimeVersion: manifest.runtimeVersion,
+      contentHash: manifest.contentHash,
+      plaintextSha256,
+      releaseIdentity: releaseState.releaseIdentity,
+    }),
+    cryptographicMaterial: Object.freeze({
+      contentKey: runtimeBuild.contentKey,
+      signingKey: runtimeBuild.signingKey,
+      iv: manifest.iv,
+      ciphertextHash: manifest.ciphertextHash,
+    }),
+    nonCryptographicOutputIdentity,
+  });
+}
+
+function assertCheckpointRuntimeBuildReplay(first, second, sequence) {
+  if (canonicalJson(first.productIdentity) !== canonicalJson(second.productIdentity)) {
+    throw new Error(`checkpoint-runtime-build-product-mismatch:${sequence}`);
+  }
+  if (first.nonCryptographicOutputIdentity !== second.nonCryptographicOutputIdentity) {
+    throw new Error(`checkpoint-runtime-build-noncrypto-output-mismatch:${sequence}`);
+  }
+  for (const field of ['contentKey', 'signingKey', 'iv', 'ciphertextHash']) {
+    if (first.cryptographicMaterial[field] === second.cryptographicMaterial[field]) {
+      throw new Error(`checkpoint-runtime-build-crypto-not-refreshed:${sequence}:${field}`);
+    }
+  }
+}
+
 export function verifyCheckpointRuntimeEvidence({
   root = ROOT,
   result,
@@ -5064,11 +5475,14 @@ export function verifyCheckpointRuntimeEvidence({
     run('node', ['scripts/build-userscript.mjs'], {
       errorCode: `checkpoint-runtime-generation-failed:${row.sequence}:first`,
     });
-    const generatedEphemeral = assertProductState('generation-first');
+    assertProductState('generation-first');
+    const firstGeneratedBuild = checkpointRuntimeBuildProof(temporaryWorktree);
     run('node', ['scripts/build-userscript.mjs'], {
       errorCode: `checkpoint-runtime-generation-failed:${row.sequence}:second`,
     });
-    assertProductState('generation-second', generatedEphemeral.identity);
+    const generatedEphemeral = assertProductState('generation-second');
+    const secondGeneratedBuild = checkpointRuntimeBuildProof(temporaryWorktree);
+    assertCheckpointRuntimeBuildReplay(firstGeneratedBuild, secondGeneratedBuild, row.sequence);
     const generation = checkpointGenerationEvidence(temporaryWorktree, {
       acceptedMerge: row.acceptedMerge,
       checkpointProduct: row.checkpointProduct,

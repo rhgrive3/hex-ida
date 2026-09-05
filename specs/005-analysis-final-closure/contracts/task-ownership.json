@@ -27,13 +27,47 @@
       ],
       "minimumCaseCount": 1,
       "authorityArtifacts": [
-        {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "105ed35687d4b87347eed43f488a1ab7534607acb34036f3ef75922af49ae9d7"},
-        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "0eec9ae4296d2371700dac92369d2ab54d27dea50fcb87cc14f850ae41092c3f"},
+        {"role": "registry", "path": "tools/validation/final-closure/shadow/foundation/registry.json", "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"},
+        {"role": "contracts", "path": "tools/validation/final-closure/shadow/foundation/contracts.json", "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"},
         {"role": "oracleProvider", "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs", "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"},
         {"role": "productProvider", "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs", "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"}
       ]
     },
     "tasks": {
+      "T059": {
+        "owned": [
+          {
+            "id": "t059-owned-regressions",
+            "argv": [
+              "node",
+              "tests/final-closure/run.mjs",
+              "--group",
+              "t059"
+            ]
+          }
+        ],
+        "rolling": [
+          {
+            "id": "t059-scheduler-dag",
+            "argv": [
+              "node",
+              "tests/phase4/scheduler/dag.test.mjs"
+            ]
+          }
+        ],
+        "shadow": [
+          {
+            "id": "t059-independent-verifier",
+            "argv": [
+              "node",
+              "tools/validation/final-closure/preflight.mjs",
+              "--emit-shadow-evidence",
+              "--task",
+              "T059"
+            ]
+          }
+        ]
+      },
       "T011": {
         "owned": [
           {"id": "t011-owned-regressions", "argv": ["node", "tests/final-closure/run.mjs", "--group", "t011"]}
@@ -347,6 +381,38 @@
     }
   },
   "tasks": {
+    "T058": {
+      "allowedPaths": [
+        "tools/validation/final-closure/preflight.mjs",
+        "tools/validation/final-closure/shadow/foundation/registry.json",
+        "tools/validation/final-closure/shadow/foundation/contracts.json",
+        "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/foundation-amendment.test.mjs",
+        "tests/phase4/ownership/integration-contract-repair.test.mjs",
+        "specs/005-analysis-final-closure/spec.md",
+        "specs/005-analysis-final-closure/plan.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "specs/005-analysis-final-closure/evidence/forward-amendment.md"
+      ],
+      "forbiddenOverlap": [
+        "production component implementation, generated outputs, or mutation of immutable T046 handoff evidence",
+        "accepting any component while the forward amendment is not DONE",
+        "changing independent scheduler test authority from the T059 component"
+      ]
+    },
+    "T059": {
+      "allowedPaths": [
+        "js/core/scheduler/analysis-scheduler.js",
+        "tests/final-closure/t059/**"
+      ],
+      "forbiddenOverlap": [
+        "independent tests/phase4/scheduler/strict-authority-boundaries.test.mjs or other read-only scheduler test edits",
+        "coercive artifact IDs or changes outside the three public ID boundaries",
+        "generated outputs"
+      ]
+    },
     "T001": {
       "allowedPaths": ["specs/005-analysis-final-closure/research.md"],
       "forbiddenOverlap": ["production, test, generated-output, and Git ref mutation"]
@@ -489,7 +555,8 @@
         "tests/phase9/browser/**",
         "tests/final-closure/t014/**",
         "tools/validation/phase9/release-evidence.schema.json",
-        "tools/validation/phase9/verify.mjs"
+        "tools/validation/phase9/verify.mjs",
+        "tools/validation/phase9/tiered-solver-metrics.mjs"
       ],
       "forbiddenOverlap": [
         "decompiler, MachineEffects, loader, and generated-output paths",
@@ -561,7 +628,8 @@
         "js/semantics/compat/semantic-ir-v2-to-v1.js",
         "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
         "js/semantics/ir/from-machine-effects.js",
-        "tests/final-closure/t017/**"
+        "tests/final-closure/t017/**",
+        "tests/issue-1809-libc-effect-classification.mjs"
       ],
       "forbiddenOverlap": [
         "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",
