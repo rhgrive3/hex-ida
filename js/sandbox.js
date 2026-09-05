@@ -20,6 +20,15 @@ const WORKER_PRELUDE = String.raw`
   "use strict";
   const nativeImportScripts = globalThis.importScripts.bind(globalThis);
   const nativePostMessage = globalThis.postMessage.bind(globalThis);
+  const NativeArrayBuffer = ArrayBuffer;
+  const NativeObjectPrototype = Object.prototype;
+  const NativeSet = Set;
+  const nativeArrayIsArray = Array.isArray.bind(Array);
+  const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);
+  const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);
+  const nativeKeys = Object.keys.bind(Object);
+  const nativeDescriptor = Object.getOwnPropertyDescriptor.bind(Object);
+  const nativeNow = Date.now.bind(Date);
   for (const name of [
     'fetch', 'WebSocket', 'EventSource', 'XMLHttpRequest', 'Worker',
     'SharedWorker', 'importScripts', 'WebTransport', 'BroadcastChannel'
@@ -41,43 +50,43 @@ const WORKER_PRELUDE = String.raw`
   const OUTPUT_MAX_MESSAGES = 256;
   const OUTPUT_MAX_BYTES = 256 * 1024;
   const OUTPUT_MAX_PER_SECOND = 96;
-  let outputMessages = 0, outputBytes = 0, outputWindow = Date.now(), outputWindowCount = 0;
+  let outputMessages = 0, outputBytes = 0, outputWindow = nativeNow(), outputWindowCount = 0;
   const outputSize = (value) => {
-    const seen = new Set(); const stack=[value]; let bytes=0, nodes=0;
+    const seen = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
     while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
       const x=stack.pop(); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
       if (x == null) { bytes+=4; continue; }
       if (typeof x === 'string') { bytes += x.length * 2; continue; }
       if (typeof x === 'number' || typeof x === 'bigint') { bytes+=16; continue; }
       if (typeof x === 'boolean') { bytes+=4; continue; }
-      if (x instanceof ArrayBuffer) { bytes+=x.byteLength; continue; }
-      if (ArrayBuffer.isView(x)) { bytes+=x.byteLength; continue; }
-      if (typeof x === 'object') {
-        if (seen.has(x)) continue; seen.add(x);
-        // Map/Set entries are serialized by structured clone but are invisible
-        // to Object.keys(). Until the meter models those entries exactly, reject
-        // them instead of letting hidden payload bypass the output budget.
-        if (x instanceof Map || x instanceof Set) return OUTPUT_MAX_BYTES + 1;
-        const keys=Object.keys(x); bytes += keys.length * 8;
-        // The key scan is capped for measurer work, but an uncapped tail must
-        // never look small: anything beyond the cap is unmeasurable, so the
-        // whole message fails closed instead of bypassing the byte budget.
-        if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
-        for (let i=0;i<keys.length;i++) {
-          const descriptor=Object.getOwnPropertyDescriptor(x,keys[i]);
-          // Structured clone reads enumerable properties. An accessor can return
-          // one value while measuring and a different value while cloning, so it
-          // cannot provide stable byte authority and must fail closed.
-          if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) return OUTPUT_MAX_BYTES + 1;
-          bytes += keys[i].length*2;
-          stack.push(descriptor ? descriptor.value : undefined);
-        }
-      } else bytes+=32;
+      if (typeof x === 'undefined') { bytes+=4; continue; }
+      if (x instanceof NativeArrayBuffer) { bytes+=x.byteLength; continue; }
+      if (nativeArrayBufferIsView(x)) { bytes+=x.byteLength; continue; }
+      if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
+      if (seen.has(x)) continue; seen.add(x);
+      if (!nativeArrayIsArray(x)) {
+        const proto = nativeGetPrototypeOf(x);
+        if (proto !== NativeObjectPrototype && proto !== null) return OUTPUT_MAX_BYTES + 1;
+      }
+      const keys=nativeKeys(x); bytes += keys.length * 8;
+      // The key scan is capped for measurer work, but an uncapped tail must
+      // never look small: anything beyond the cap is unmeasurable, so the
+      // whole message fails closed instead of bypassing the byte budget.
+      if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
+      for (let i=0;i<keys.length;i++) {
+        const descriptor=nativeDescriptor(x,keys[i]);
+        // Structured clone reads enumerable properties. An accessor can return
+        // one value while measuring and a different value while cloning, so it
+        // cannot provide stable byte authority and must fail closed.
+        if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') return OUTPUT_MAX_BYTES + 1;
+        bytes += keys[i].length*2;
+        stack.push(descriptor.value);
+      }
     }
     return bytes;
   };
   const outputLimit = (message) => {
-    const now=Date.now(); if (now-outputWindow >= 1000) { outputWindow=now; outputWindowCount=0; }
+    const now=nativeNow(); if (now-outputWindow >= 1000) { outputWindow=now; outputWindowCount=0; }
     const bytes=outputSize(message);
     outputMessages++; outputWindowCount++; outputBytes+=bytes;
     return bytes > OUTPUT_MAX_BYTES || outputMessages > OUTPUT_MAX_MESSAGES || outputBytes > OUTPUT_MAX_BYTES || outputWindowCount > OUTPUT_MAX_PER_SECOND;
@@ -207,9 +216,9 @@ const WORKER_PRELUDE = String.raw`
   const loadUserFactory = (source, params, asyncFactory, sourceURL) => {
     const key = '__hexSandboxUserFactory';
     try { delete globalThis[key]; } catch {}
-    const declaration = '"use strict";\nglobalThis.' + key + ' = '
-      + (asyncFactory ? 'async ' : '') + 'function(' + params + ') { "use strict";\n'
-      + String(source) + '\n};\n//# sourceURL=' + sourceURL + '\n';
+    const declaration = '\"use strict\";\\nglobalThis.' + key + ' = '
+      + (asyncFactory ? 'async ' : '') + 'function(' + params + ') { \"use strict\";\\n'
+      + String(source) + '\\n};\\n//# sourceURL=' + sourceURL + '\\n';
     const blob = new Blob([declaration], { type: 'text/javascript' });
     const url = URL.createObjectURL(blob);
     try {
@@ -299,11 +308,11 @@ function workerProgram(source, mode, index) {
   return WORKER_PRELUDE + body + WORKER_POSTLUDE;
 }
 
-const FRAME = `<!doctype html><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src blob:; style-src 'none'; script-src 'unsafe-inline' blob:; base-uri 'none'; form-action 'none'">
+const FRAME = `<!doctype html><meta charset=\"utf-8\">
+<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src blob:; style-src 'none'; script-src 'unsafe-inline' blob:; base-uri 'none'; form-action 'none'\">
 <script>
 (() => {
-  "use strict";
+  \"use strict\";
   const WORKER_PRELUDE = ${JSON.stringify(WORKER_PRELUDE)};
   const WORKER_POSTLUDE = ${JSON.stringify(WORKER_POSTLUDE)};
   const workerProgram = ${workerProgram.toString()};
@@ -329,25 +338,26 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       if (typeof x === 'string') { bytes += x.length * 2; continue; }
       if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
       if (typeof x === 'boolean') { bytes += 4; continue; }
+      if (typeof x === 'undefined') { bytes += 4; continue; }
       if (x instanceof ArrayBuffer) { bytes += x.byteLength; continue; }
       if (ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
-      if (typeof x === 'object') {
-        if (seen.has(x)) continue;
-        seen.add(x);
-        if (x instanceof Map || x instanceof Set) return PUBLIC_OUTPUT_MAX_BYTES + 1;
-        const keys = Object.keys(x);
-        bytes += keys.length * 8;
-        if (keys.length > 2048) return PUBLIC_OUTPUT_MAX_BYTES + 1;
-        for (let i = 0; i < keys.length; i++) {
-          const descriptor = Object.getOwnPropertyDescriptor(x, keys[i]);
-          if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
-            return PUBLIC_OUTPUT_MAX_BYTES + 1;
-          }
-          bytes += keys[i].length * 2;
-          stack.push(descriptor.value);
+      if (typeof x !== 'object') return PUBLIC_OUTPUT_MAX_BYTES + 1;
+      if (seen.has(x)) continue;
+      seen.add(x);
+      if (!Array.isArray(x)) {
+        const proto = Object.getPrototypeOf(x);
+        if (proto !== Object.prototype && proto !== null) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+      }
+      const keys = Object.keys(x);
+      bytes += keys.length * 8;
+      if (keys.length > 2048) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+      for (let i = 0; i < keys.length; i++) {
+        const descriptor = Object.getOwnPropertyDescriptor(x, keys[i]);
+        if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+          return PUBLIC_OUTPUT_MAX_BYTES + 1;
         }
-      } else {
-        bytes += 32;
+        bytes += keys[i].length * 2;
+        stack.push(descriptor.value);
       }
     }
     return bytes;
@@ -488,14 +498,15 @@ function sandboxOutputSize(value) {
     if (typeof x === 'string') { bytes += x.length * 2; continue; }
     if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
     if (typeof x === 'boolean') { bytes += 4; continue; }
+    if (typeof x === 'undefined') { bytes += 4; continue; }
     if (x instanceof ArrayBuffer || ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
     if (typeof x !== 'object') return over;
     if (seen.has(x)) continue;
     seen.add(x);
-    // Match the worker/frame fail-closed output authority. Structured-clone
-    // containers whose payload is invisible to Object.keys cannot be measured
-    // soundly here, and accessors could change between measuring and forwarding.
-    if (x instanceof Map || x instanceof Set) return over;
+    if (!Array.isArray(x)) {
+      const proto = Object.getPrototypeOf(x);
+      if (proto !== Object.prototype && proto !== null) return over;
+    }
     const keys = Object.keys(x);
     bytes += keys.length * 8;
     if (keys.length > 2048) return over;
