@@ -39,6 +39,10 @@ export class WorkerAIProvider extends AIProvider {
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
     if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    // A malformed truthy signal must fail fast here, before the shared fetch
+    // starts and before any waiter is counted. Otherwise one bad caller leaks
+    // a ghost waiter that permanently breaks single-flight cancellation. (#5144)
+    assertAbortSignal(options.signal);
     if (!this.capabilitiesPromise) {
       const controller = new AbortController();
       this.capabilitiesController = controller;
@@ -53,6 +57,9 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   #waitForCapabilities(promise, signal) {
+    // Defense in depth: the waiter count is the cancellation accounting, so no
+    // waiter may be added for a signal that cannot participate in it. (#5144)
+    assertAbortSignal(signal);
     this.capabilitiesWaiters += 1;
     let released = false;
     const release = (cancelled = false) => {
@@ -167,6 +174,17 @@ function deriveCapabilitiesEndpoint(endpoint) {
 }
 
 const MAX_CAPABILITY_BYTES = 64 * 1024;
+
+function assertAbortSignal(signal) {
+  if (signal == null) return;
+  if (
+    typeof signal.aborted !== 'boolean'
+    || typeof signal.addEventListener !== 'function'
+    || typeof signal.removeEventListener !== 'function'
+  ) {
+    throw new AIError('invalid_tool_call', 'The capability preflight signal is not an AbortSignal.');
+  }
+}
 
 /*
  * Bounded capability-body reader shared in spirit with transport.js
