@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import {
   resolveBoundedNodeConcurrency,
@@ -9,6 +9,7 @@ import {
 import { phase3SchedulingPriority } from './semantic-corpus-manifest.mjs';
 
 const FAILURE_TAIL_CHARS = 3500;
+const DEFAULT_KILL_GRACE_MS = 1_000;
 const inProcessRunCache = new Map();
 
 function appendTail(current, chunk) {
@@ -16,7 +17,34 @@ function appendTail(current, chunk) {
   return next.length <= FAILURE_TAIL_CHARS ? next : next.slice(-FAILURE_TAIL_CHARS);
 }
 
-function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
+function signalProcessTree(child, signal) {
+  const pid = child?.pid;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (process.platform === 'win32') {
+    if (signal === 'SIGKILL') {
+      // taskkill /T is the Windows process-tree equivalent of signalling the
+      // detached POSIX process group. Keep this synchronous and bounded to one
+      // invocation; runOne settles independently and never waits for cleanup.
+      try {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+          stdio: 'ignore',
+          windowsHide: true,
+          timeout: DEFAULT_KILL_GRACE_MS,
+        });
+      } catch { /* best-effort cleanup after the proof has already failed */ }
+      return;
+    }
+    try { child.kill(signal); } catch { /* already gone */ }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* already gone */ }
+  }
+}
+
+function runOne({ suite, index, file, root, env, timeoutMs, killGraceMs, verbose }) {
   const display = `node ${file}`;
   const started = process.hrtime.bigint();
   return new Promise((resolve) => {
@@ -24,16 +52,15 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
     let stderrTail = '';
     let timedOut = false;
     let settled = false;
+    let killTimer = null;
     const child = spawn(process.execPath, [path.join(root, file)], {
       cwd: root,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // A dedicated process group lets the timeout terminate descendants in a
+      // single bounded operation rather than sleeping once per child.
+      detached: process.platform !== 'win32',
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-    }, timeoutMs);
-    timer.unref?.();
 
     const consume = (stream, isError) => {
       stream?.on('data', (chunk) => {
@@ -50,6 +77,7 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       const passed = !error && status === 0 && !timedOut;
       const combined = `${stdoutTail}\n${stderrTail}`.trim();
       const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
@@ -69,6 +97,24 @@ function runOne({ suite, index, file, root, env, timeoutMs, verbose }) {
       }));
     };
 
+    const timer = setTimeout(() => {
+      timedOut = true;
+      signalProcessTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => {
+        signalProcessTree(child, 'SIGKILL');
+        // Do not make proof completion depend on a hostile child's `close`
+        // event. We have issued the strongest platform cleanup and settle the
+        // failed leaf at one global deadline. Destroying pipes/unref prevents a
+        // stubborn descendant from retaining the runner event loop.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.unref?.();
+        finish(null, 'SIGKILL', new Error(`phase3 corpus command timed out after ${timeoutMs}ms`));
+      }, killGraceMs);
+      killTimer.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+
     child.once('error', (error) => finish(null, null, error));
     child.once('close', (status, signal) => finish(status, signal));
   });
@@ -82,7 +128,7 @@ function digestEnvironment(env) {
   return hash.digest('hex');
 }
 
-export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envName, concurrency } = {}) {
+export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, envName, concurrency } = {}) {
   const token = String(env?.HEX_PHASE3_INPROCESS_REUSE_TOKEN ?? '').trim();
   if (!token) return null;
   const hash = createHash('sha256');
@@ -90,6 +136,7 @@ export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envNa
   hash.update(String(suite)); hash.update('\0');
   hash.update(path.resolve(root)); hash.update('\0');
   hash.update(String(timeoutMs)); hash.update('\0');
+  hash.update(String(killGraceMs)); hash.update('\0');
   hash.update(String(envName)); hash.update('\0');
   hash.update(String(concurrency)); hash.update('\0');
   hash.update(digestEnvironment(env)); hash.update('\0');
@@ -97,7 +144,7 @@ export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envNa
   return hash.digest('hex');
 }
 
-async function executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile }) {
+async function executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile }) {
   const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = outputMode === 'verbose' || outputMode === 'full';
   // The 25-leaf corpus is already an outer process pool. compiler-truth is one
@@ -114,7 +161,16 @@ async function executePhase3Corpus({ suite, files, root, env, timeoutMs, concurr
     while (true) {
       const item = workItems[nextWorkIndex++];
       if (!item) return;
-      results[item.index] = await runOne({ suite, index: item.index, file: item.file, root, env:childEnv, timeoutMs, verbose });
+      results[item.index] = await runOne({
+        suite,
+        index: item.index,
+        file: item.file,
+        root,
+        env: childEnv,
+        timeoutMs,
+        killGraceMs,
+        verbose,
+      });
     }
   }
 
@@ -139,12 +195,19 @@ export async function runPhase3Corpus({
   root,
   env = process.env,
   timeoutMs = 600_000,
+  killGraceMs = DEFAULT_KILL_GRACE_MS,
   envName = 'HEX_PHASE3_CORPUS_CONCURRENCY',
   availableParallelism,
   priorityForFile = phase3SchedulingPriority,
 } = {}) {
   if (!suite || !Array.isArray(files) || !files.length || !root) {
     throw new TypeError('phase3 corpus runner requires suite, files and root');
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('phase3 corpus runner timeoutMs must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(killGraceMs) || killGraceMs <= 0) {
+    throw new TypeError('phase3 corpus runner killGraceMs must be a positive safe integer');
   }
   const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = outputMode === 'verbose' || outputMode === 'full';
@@ -159,12 +222,14 @@ export async function runPhase3Corpus({
     reserveCores: 0,
   }));
 
-  const reuseKey = phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, envName, concurrency });
-  if (!reuseKey) return executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile });
+  const reuseKey = phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, envName, concurrency });
+  if (!reuseKey) {
+    return executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile });
+  }
 
   let cached = inProcessRunCache.get(reuseKey);
   if (!cached) {
-    cached = executePhase3Corpus({ suite, files, root, env, timeoutMs, concurrency, priorityForFile });
+    cached = executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile });
     inProcessRunCache.set(reuseKey, cached);
   }
   return cached;
