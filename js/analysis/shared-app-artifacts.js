@@ -204,10 +204,20 @@ function statsFor(program, counts, scannedRefs, metadata = {}) {
     producerBudgetSupplied:metadata.budget != null,
   });
 }
+function canonicalStringResultRows(result) {
+  try {
+    const rows = result?.results;
+    return Array.isArray(rows) ? [...rows] : null;
+  } catch { return null; }
+}
 function canonicalStringResultRow(item) {
-  return item !== null && typeof item === 'object' && !Array.isArray(item)
-    && typeof item.addr === 'bigint' && item.addr >= 0n
-    && typeof item.text === 'string';
+  try {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+    const addr = item.addr;
+    const text = item.text;
+    if (typeof addr !== 'bigint' || addr < 0n || typeof text !== 'string') return null;
+    return { addr, text };
+  } catch { return null; }
 }
 
 function createStringEntry(app, key, initialOptions = {}) {
@@ -251,21 +261,22 @@ function createStringEntry(app, key, initialOptions = {}) {
       const result = await requestWithSignal(request, controller.signal);
       scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) { backendIncomplete = true; if (!skipped.includes(region)) skipped.push(region); }
-      const resultRows = Array.isArray(result?.results) ? result.results : null;
+      const resultRows = canonicalStringResultRows(result);
       if (!resultRows) {
         backendIncomplete = true;
         backendMalformed = true;
         if (!skipped.includes(region)) skipped.push(region);
       } else {
         for (const item of resultRows) {
-          if (!canonicalStringResultRow(item)) {
+          const row = canonicalStringResultRow(item);
+          if (!row) {
             backendIncomplete = true;
             backendMalformed = true;
             if (!skipped.includes(region)) skipped.push(region);
             continue;
           }
-          if (!budget.accept(item.text)) break;
-          rows.push({ addr:item.addr, text:item.text, region });
+          if (!budget.accept(row.text)) break;
+          rows.push({ addr:row.addr, text:row.text, region });
         }
       }
       if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';

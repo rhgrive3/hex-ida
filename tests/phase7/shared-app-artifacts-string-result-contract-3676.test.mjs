@@ -54,6 +54,70 @@ test('#3676 non-Array result containers fail closed without generic iteration', 
   }
 });
 
+test('#3676 result container authority is snapshotted once', async () => {
+  let resultReads = 0;
+  const backendResult = {
+    complete:true,
+    scannedBytes:4,
+    get results() {
+      resultReads++;
+      if (resultReads === 1) return [{ addr:0x1000n, text:'Stable' }];
+      return {};
+    },
+  };
+  const app = stringApp(() => Promise.resolve(backendResult));
+  installSharedAppArtifacts(app);
+
+  const rows = await app.ensureStrings();
+  assert.equal(resultReads, 1);
+  assert.equal(rows.complete, true);
+  assert.deepEqual(rows.map(({ addr, text }) => ({ addr, text })), [
+    { addr:0x1000n, text:'Stable' },
+  ]);
+});
+
+test('#3676 row authority is snapshotted once and accessor failures fail closed', async () => {
+  let addrReads = 0;
+  let textReads = 0;
+  const drifting = new Proxy({}, {
+    get(_target, key) {
+      if (key === 'addr') {
+        addrReads++;
+        return addrReads <= 2 ? 0x1000n : -1n;
+      }
+      if (key === 'text') {
+        textReads++;
+        return textReads === 1 ? 'Stable' : 'Drifted';
+      }
+      return undefined;
+    },
+  });
+  const throwing = new Proxy({}, {
+    get(_target, key) {
+      if (key === 'addr') return 0x1008n;
+      if (key === 'text') throw new Error('backend row accessor failed');
+      return undefined;
+    },
+  });
+  const app = stringApp(() => Promise.resolve({
+    complete:true,
+    scannedBytes:8,
+    results:[drifting, throwing],
+  }));
+  installSharedAppArtifacts(app);
+
+  const rows = await app.ensureStrings();
+  assert.equal(addrReads, 1);
+  assert.equal(textReads, 1);
+  assert.deepEqual(rows.map(({ addr, text }) => ({ addr, text })), [
+    { addr:0x1000n, text:'Stable' },
+  ]);
+  assert.equal(rows.complete, false);
+  assert.equal(rows.truncated, true);
+  assert.equal(rows.truncationReason, 'backend-malformed');
+  assert.deepEqual(rows.skippedRegions, ['r1']);
+});
+
 test('#3676 malformed rows are excluded and the incomplete artifact retries', async () => {
   let attempts = 0;
   const app = stringApp(() => {
