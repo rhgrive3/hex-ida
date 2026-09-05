@@ -113,4 +113,54 @@ async function rejectsToolFailed(promise) {
   assert.equal(app.autoReport, undefined, 'missing persistence adapter must fail before report mutation');
 }
 
+{
+  const legacyConfirmed = { legacy: true };
+  const app = {
+    projectAnnotations: [],
+    autoReport: { report: { confirmed: legacyConfirmed, deep: [] } },
+    workspace: { autosave: () => true },
+  };
+  await executorFor(app).execute(
+    'annotation.project',
+    { id: 'finding-6', value: { claim: 'canonicalize-confirmed' } },
+    { authorization },
+  );
+  assert.ok(Array.isArray(app.autoReport.report.confirmed), 'successful mutation must replace malformed confirmed state with a canonical array');
+  assert.equal(app.autoReport.report.confirmed.length, 1);
+  assert.equal(app.autoReport.report.confirmed[0].id, 'finding-6');
+}
+
+{
+  const annotations = [{ id: 'prior' }];
+  const legacyConfirmed = { legacy: true };
+  const app = {
+    projectAnnotations: annotations,
+    autoReport: { report: { confirmed: legacyConfirmed, deep: [] } },
+    workspace: { autosave: () => false },
+  };
+  await rejectsToolFailed(executorFor(app).execute(
+    'annotation.project',
+    { id: 'finding-7', value: { claim: 'restore-malformed-confirmed' } },
+    { authorization },
+  ));
+  assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }]);
+  assert.equal(app.autoReport.report.confirmed, legacyConfirmed, 'rollback must restore a prior non-array confirmed value exactly');
+}
+
+{
+  const legacyAutoReport = 'legacy-report';
+  const app = {
+    projectAnnotations: [{ id: 'prior' }],
+    autoReport: legacyAutoReport,
+    workspace: { autosave: () => false },
+  };
+  await rejectsToolFailed(executorFor(app).execute(
+    'annotation.project',
+    { id: 'finding-8', value: { claim: 'restore-malformed-report-root' } },
+    { authorization },
+  ));
+  assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }]);
+  assert.equal(app.autoReport, legacyAutoReport, 'rollback must restore a malformed prior autoReport root exactly');
+}
+
 console.log('issue-3762 AI project annotation autosave regression: ok');
