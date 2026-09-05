@@ -6,6 +6,19 @@ import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 
+function terminationAlias(raw) {
+  switch (raw) {
+    case 'limit': return 'timeout';
+    case 'cancel': return 'cancelled';
+    case 'crash':
+    case 'oob':
+    case 'unmapped': return 'fault';
+    case 'complete':
+    case 'success': return 'return';
+    default: return null;
+  }
+}
+
 function ownedClone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
@@ -24,14 +37,9 @@ function ownedClone(value) {
 function terminationOf(result = {}) {
   const value = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
   if (typeof value !== 'string') return 'exception';
-  const raw = value.toLowerCase();
+  const raw = value.trim().toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
-  if (/unsupported/.test(raw)) return 'unsupported';
-  if (/timeout|limit/.test(raw)) return 'timeout';
-  if (/cancel/.test(raw)) return 'cancelled';
-  if (/fault|crash|oob|unmapped/.test(raw)) return 'fault';
-  if (/return|complete|success/.test(raw)) return 'return';
-  return 'exception';
+  return terminationAlias(raw) ?? 'exception';
 }
 
 function completenessFor(termination) {
@@ -119,10 +127,18 @@ export class EmulatorProvider {
           if (runOptions.signal.aborted) externalAbort();
         }
       }
+      let timeoutTriggered = false;
       let timer = null;
-      if (!controller.signal.aborted) timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+      if (!controller.signal.aborted) {
+        timer = setTimeout(() => {
+          if (controller.signal.aborted) return;
+          timeoutTriggered = true;
+          controller.abort('timeout');
+        }, timeoutMs);
+      }
       session.setState('running');
       let raw;
+      let abortTermination = null;
       try {
         if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') } };
         else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
@@ -134,12 +150,13 @@ export class EmulatorProvider {
         if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') }, error: String(error?.message || error) };
         else raw = { stop: { kind: 'exception' }, error: String(error?.message || error) };
       } finally {
+        if (controller.signal.aborted) abortTermination = timeoutTriggered ? 'timeout' : 'cancelled';
         if (timer) clearTimeout(timer);
         if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
         session.releaseController(controller);
       }
 
-      const termination = terminationOf(raw || {});
+      const termination = abortTermination ?? terminationOf(raw || {});
       const completeness = completenessFor(termination);
       session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
       const sourceEvents = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw?.trace?.events) ? raw.trace.events : [];
