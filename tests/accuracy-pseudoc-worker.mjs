@@ -1,4 +1,4 @@
-import { openBinary } from './harness.mjs';
+import { NodeBackend, openBinary } from './harness.mjs';
 import { evaluatePseudocSample } from './accuracy-pseudoc-eval.mjs';
 
 const target = process.argv[2];
@@ -7,7 +7,18 @@ if (!target || typeof process.send !== 'function') {
 }
 
 const bootStart = Date.now();
-const world = await openBinary(target);
+// Pseudoc scoring reads only per-function analyze/region/symbol data. It never
+// consumes openBinary()'s whole-program call/reference index or global strings
+// list, so do not spend each local worker boot scanning those unused indexes.
+// The prototype override is process-local and restored before any task runs.
+const originalScanProgram = NodeBackend.prototype.scanProgram;
+NodeBackend.prototype.scanProgram = async () => null;
+let world;
+try {
+  world = await openBinary(target, { strings: false });
+} finally {
+  NodeBackend.prototype.scanProgram = originalScanProgram;
+}
 process.send({ type: 'ready', bootMs: Date.now() - bootStart });
 
 process.on('message', async (message) => {
