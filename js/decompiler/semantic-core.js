@@ -853,11 +853,11 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
-      if (state.activeLoop && next === state.loopHeader) { out.push(line('ctrl', indent, 'continue;', term2.row, term2.address)); return; }
-      if (state.activeLoop && next === state.loopExit) { out.push(line('ctrl', indent, 'break;', term2.row, term2.address)); return; }
+      if (state.activeLoop && next === state.loopHeader) { out.push(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
+      if (state.activeLoop && next === state.loopExit) { out.push(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
       if (next === stop) return;
       if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address)); state.gotos++; }
+      if (next != null) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) })); state.gotos++; }
       return;
     }
     if (term2.op === OP.CBR) {
@@ -898,7 +898,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       }
       const cond = renderBranchCondition(term2, ctx);
       if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-      if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address));
+      if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }));
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
   }
@@ -918,8 +918,11 @@ function faithfulCfg(ctx, indent = 1) {
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
       if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
-      if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address));
-    } else if (term.op === OP.BR && block.succ[0] != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(block.succ[0]))};`, term.row, term.address));
+      if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }));
+    } else if (term.op === OP.BR && block.succ[0] != null) {
+      const next = block.succ[0];
+      out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }));
+    }
   }
   return out;
 }
