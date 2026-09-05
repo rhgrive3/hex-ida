@@ -588,6 +588,14 @@ function mutationBytes(value) {
   return undefined;
 }
 
+function strictMutationSize(value) {
+  if (typeof value === 'bigint') {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+  }
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 /** Classify mutation consequences without validating or fabricating a signature. */
 export function assessAppleSigningImpact(signature, mutations = []) {
   if (!signature || signature.status === 'absent') return deepFreeze({ state: 'unsigned', validity: 'unknown', requiresAuthoritativeValidation: false, coveredMutations: [] });
@@ -605,7 +613,8 @@ export function assessAppleSigningImpact(signature, mutations = []) {
     const after = mutationBytes(mutation?.after);
     if (before === undefined || after === undefined) return deepFreeze({ state: 'blocked-mutation-bytes-invalid', validity: 'unknown', requiresAuthoritativeValidation: true, coveredMutations: [] });
     if (before && after && sameBytes(before, after)) continue;
-    const explicitSize = mutation?.size == null ? null : Number(mutation.size);
+    const explicitSize = mutation?.size == null ? null : strictMutationSize(mutation.size);
+    if (mutation?.size != null && explicitSize == null) return deepFreeze({ state: 'blocked-mutation-range-invalid', validity: 'unknown', requiresAuthoritativeValidation: true, coveredMutations: [] });
     const size = explicitSize == null ? Math.max(before?.length ?? 0, after?.length ?? 0) : explicitSize;
     if (!Number.isSafeInteger(size) || size < 0 || (size === 0 && !(before || after))) return deepFreeze({ state: 'blocked-mutation-range-invalid', validity: 'unknown', requiresAuthoritativeValidation: true, coveredMutations: [] });
     const end = offset + BigInt(Math.max(1, size));

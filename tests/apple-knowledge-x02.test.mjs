@@ -623,6 +623,8 @@ let signature;
   assert.equal(assessAppleSigningImpact(signature, [{ offset: 4, before: [1], after: [2] }]).state, 'invalidated-requires-resigning');
   assert.equal(assessAppleSigningImpact(signature, [{ offset: 4, before: [1], after: [999] }]).state, 'blocked-mutation-bytes-invalid');
   assert.equal(assessAppleSigningImpact(signature, [{ offset: -1n, size: 1 }]).state, 'blocked-mutation-range-invalid');
+  assert.equal(assessAppleSigningImpact(signature, [{ offset: 4n, size: '1' }]).state, 'blocked-mutation-range-invalid');
+  assert.equal(assessAppleSigningImpact(signature, [{ offset: 4n, size: { valueOf() { throw new Error('must-not-run'); } } }]).state, 'blocked-mutation-range-invalid');
 }
 
 // Matrix assembly retains language verdicts, PAC metadata, exact identities and deterministic round-trip.
