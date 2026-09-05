@@ -245,6 +245,10 @@ export class RuntimeProviderProtocolClient {
     let packet;
     try { packet = validateProviderPacket(input); }
     catch { return false; }
+    if (packet.type === 'close') {
+      this.close();
+      return true;
+    }
     if (packet.type === 'event-batch') {
       if (packet.epoch !== this.epoch) return false;
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
