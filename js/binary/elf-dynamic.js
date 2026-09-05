@@ -171,6 +171,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   applyVersionMetadata(image, versions, symbolBudget);
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
+  checkRiscvVariantCcTag(image, tags, relocs, symbols);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -225,7 +226,8 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const riscvVariantCc = Number(image?.metadata?.machine) === 243 && type === 2 && (other & 0x80) !== 0;
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -338,8 +340,20 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   return out;
 }
 
-function attachDynamicRelocations(image, relocs, symbols) {
+const EM_RISCV = 243;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
+
+function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  if ((tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0) return;
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
+  const missing = (relocs || []).some((rel) =>
+    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCc === true);
+  if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
+}
+
+function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
@@ -435,7 +449,7 @@ export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
 }
 
 function isIRelativeRelocation(machine, type) {
-  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032);
+  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032) || (machine === 243 && type === 58);
 }
 
 export function dynamicRelocationResolutionMetadata(image, rel, sym) {
