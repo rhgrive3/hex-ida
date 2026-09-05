@@ -30,7 +30,8 @@ const AddressProvenance = loadProvenance();
 // 1. Multiple entryKills for the same target must union all killed registers
 {
   const p = AddressProvenance.create({
-    range: [0n, 0x10000n],
+    rangeStart: 0n,
+    rangeEnd: 0x10000n,
     entryKills: [
       [8n, [0]],
       [8n, [1]],
@@ -57,7 +58,8 @@ const AddressProvenance = loadProvenance();
 // 2. Commutativity: reversing entry order produces identical results
 {
   const p = AddressProvenance.create({
-    range: [0n, 0x10000n],
+    rangeStart: 0n,
+    rangeEnd: 0x10000n,
     entryKills: [
       [8n, [1]],
       [8n, [0]],
@@ -78,7 +80,8 @@ const AddressProvenance = loadProvenance();
 // 3. Duplicate registers across entries are cleanly deduplicated
 {
   const p = AddressProvenance.create({
-    range: [0n, 0x10000n],
+    rangeStart: 0n,
+    rangeEnd: 0x10000n,
     entryKills: [
       [8n, [0, 1]],
       [8n, [1, 2]],
@@ -103,7 +106,8 @@ const AddressProvenance = loadProvenance();
 // 4. Different targets do not contaminate each other
 {
   const p = AddressProvenance.create({
-    range: [0n, 0x10000n],
+    rangeStart: 0n,
+    rangeEnd: 0x10000n,
     entryKills: [
       [8n, [0]],
       [16n, [1]],
@@ -158,7 +162,8 @@ const AddressProvenance = loadProvenance();
 
   context.scanProgram = () => {
     const p = context.AddressProvenance.create({
-      range: [0n, 0x10000n],
+      rangeStart: 0n,
+      rangeEnd: 0x10000n,
       entryKills: [[0n, [0]]],
     });
     p.note(0, 0x1000n, 0);
@@ -184,6 +189,30 @@ const AddressProvenance = loadProvenance();
   assert.equal(result.r0, null, 'inherited x0 kill must survive worker composition');
   assert.equal(result.r1, null, 'prepass x1 kill must survive same-target worker composition');
   assert.equal(result.r2, 0x3000n, 'unrelated provenance must remain intact');
+}
+
+// 6. Duplicate kills must retain both first-visit contracts in either order:
+// recent exact chains survive; older chains are available only through the
+// explicit, bounded entry fallback and are never restored as ordinary proof.
+for (const entries of [[[8n, [0]], [8n, [1]]], [[8n, [1]], [8n, [0]]]]) {
+  const p = AddressProvenance.create({
+    rangeStart: 0n,
+    rangeEnd: 16n,
+    pairWindow: 2,
+    entryKills: entries,
+  });
+  p.note(0, 0x1000n, 1); // immediately before target instruction index 2
+  p.note(1, 0x2000n, 0); // older preheader value: fallback only
+  assert.equal(p.enter(8n), true);
+  assert.equal(p.pendingEntries, 0);
+  assert.equal(p.base(0, 2), 0x1000n, 'immediately preceding exact chain survives');
+  assert.equal(p.base(1, 2), null, 'older killed chain is not ordinary proof');
+  assert.equal(p.base(1, 2, { allowEntryFallback: true }), 0x2000n);
+  assert.equal(p.base(1, 3, { allowEntryFallback: true }), null, 'fallback expires at the original window');
+  p.kill(1);
+  assert.equal(p.base(1, 2, { allowEntryFallback: true }), null, 'explicit write invalidation clears fallback');
+  p.clear();
+  assert.equal(p.base(0, 2, { allowEntryFallback: true }), null, 'full boundaries clear both forms');
 }
 
 console.log('issue #6225 address-provenance entryKills union regressions PASS');
