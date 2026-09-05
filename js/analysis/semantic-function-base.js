@@ -211,7 +211,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     const targetBlock = target == null ? null : byStart.get(target.toString());
-    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
+    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
       if (fallthroughBlock && (!targetBlock || fallthroughBlock.key !== targetBlock.key)) {
