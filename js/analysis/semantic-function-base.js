@@ -158,16 +158,35 @@ function directTarget(plugin, instruction) {
   } catch { return null; }
 }
 
-function callNoreturnState(options = {}) {
-  const prototype = options?.callPrototype;
+function prototypeNoreturnState(prototype) {
   if (!prototype || typeof prototype !== 'object') return 'unknown';
   if (prototype.noreturn === true || prototype.returns === false) return true;
   if (prototype.noreturn === false || prototype.returns === true) return false;
   return 'unknown';
 }
 
-function isAuthoritativeNoreturnCall(kind, options = {}) {
-  return kind === 'call' && callNoreturnState(options) === true;
+function callNoreturnState(options = {}) {
+  return prototypeNoreturnState(options?.callPrototype);
+}
+
+function resolveCfgCallPrototype(instruction, target, options = {}, callSiteCount = 0) {
+  const direct = instruction?.callPrototype ?? null;
+  if (direct != null) return direct;
+  if (typeof options?.callPrototypeFor === 'function') {
+    const call = {
+      instruction,
+      address:instruction?.address ?? null,
+      target,
+      callTarget:target,
+    };
+    try {
+      const resolved = options.callPrototypeFor(target, call);
+      if (resolved != null) return resolved;
+    } catch {
+      // Resolver failures are absence of authoritative per-call evidence.
+    }
+  }
+  return callSiteCount === 1 ? options?.callPrototype ?? null : null;
 }
 
 /**
@@ -185,13 +204,29 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     byAddress.set(address.toString(), instruction);
   }
 
+  const controlByAddress = new Map();
+  let callSiteCount = 0;
+  for (const instruction of ordered) {
+    const address = addressOf(instruction);
+    const kind = controlKind(architecturePlugin, instruction);
+    const target = directTarget(architecturePlugin, instruction);
+    controlByAddress.set(address.toString(), { kind, target, callPrototype:null, noreturn:false });
+    if (kind === 'call') callSiteCount += 1;
+  }
+  for (const instruction of ordered) {
+    const control = controlByAddress.get(addressOf(instruction).toString());
+    if (control.kind !== 'call') continue;
+    control.callPrototype = resolveCfgCallPrototype(instruction, control.target, options, callSiteCount);
+    control.noreturn = prototypeNoreturnState(control.callPrototype) === true;
+  }
+
   const starts = new Set([addressOf(ordered[0]).toString()]);
   for (let index = 0; index < ordered.length; index++) {
     const instruction = ordered[index];
-    const kind = controlKind(architecturePlugin, instruction);
-    const target = directTarget(architecturePlugin, instruction);
+    const control = controlByAddress.get(addressOf(instruction).toString());
+    const { kind, target } = control;
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
-    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
+    if ((['branch','conditional-branch','return','unknown'].includes(kind) || control.noreturn) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
   }
 
   const blocks = [];
@@ -208,8 +243,8 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
     const instruction = block.instructions.at(-1).decoded;
-    const kind = controlKind(architecturePlugin, instruction);
-    const target = directTarget(architecturePlugin, instruction);
+    const control = controlByAddress.get(addressOf(instruction).toString());
+    const { kind, target } = control;
     const targetBlock = target == null ? null : byStart.get(target.toString());
     const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
     if (kind === 'conditional-branch') {
@@ -219,7 +254,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       }
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
-    } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
+    } else if (!['return','unknown'].includes(kind) && !control.noreturn && fallthroughBlock) {
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
@@ -955,8 +990,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     const endian = normalizedProtocolString(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
     if (endian !== 'unknown') {
       const supported = architecturePlugin.supportedMemoryEndianness ?? [];
-      if (supported.length && !supported.includes(endian))
-        throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
+      if (supported.length && !supported.includes(endian)) throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
     }
   }
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
@@ -966,7 +1000,10 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const binaryId = assertRequiredString(input.binaryId, 'binary-id');
   const sliceId = assertRequiredString(input.sliceId, 'slice-id');
   const orderedInstructions = input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
-  const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
+  const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, {
+    callPrototype:input.callPrototype ?? null,
+    callPrototypeFor:input.callPrototypeFor,
+  });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
