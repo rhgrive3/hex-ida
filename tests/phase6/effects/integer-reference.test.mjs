@@ -187,4 +187,5 @@ test('writes whose destination is x0 are discarded rather than performed', () =>
   assert.equal(bundle.metadata.hint, true);
   assert.deepEqual(bundle.operations, []);
   assert.equal(bundle.statePreservation.proven, true);
+  assert.equal(bundle.statePreservation.reason, 'riscv64-base-architectural-hint');
 });

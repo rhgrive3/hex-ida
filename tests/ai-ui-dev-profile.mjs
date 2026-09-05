@@ -29,7 +29,14 @@ await run(async ({ browser }) => {
   check('Standard keeps the existing Auto analysis scope', /自動|Auto/.test(standard.scope || ''), standard.scope);
 
   await page.evaluate(() => document.querySelector('.ai-agent-profile .ai-seg[data-value="dev"]').click());
-  await page.waitForTimeout(100);
+  // Model the base panel's private asynchronous repaint. The Dev projection
+  // must repair the chip without another fixed delay or a panel.update call.
+  await page.evaluate(() => { document.querySelector('.ai-scope-chip').textContent = 'Scope: Auto'; });
+  await page.waitForFunction(() => {
+    const panel = document.getElementById('ai-panel');
+    const chip = document.querySelector('.ai-scope-chip');
+    return panel?.dataset.analysisScope === 'none' && /なし|None/.test(chip?.textContent || '');
+  });
   const dev = await page.evaluate(() => ({
     profile: document.querySelector('.ai-agent-profile .ai-seg.active')?.dataset.value,
     policyHidden: document.querySelector('.ai-dev-policy').hidden,
@@ -71,6 +78,22 @@ await run(async ({ browser }) => {
     scope: document.querySelector('.ai-scope-chip').textContent,
   }));
   check('switching back to Standard removes Dev-only controls and restores Standard scope', back.profile === 'standard' && back.policyHidden === true && /自動|Auto/.test(back.scope || ''), JSON.stringify(back));
+
+  const cleanup = await page.evaluate(() => {
+    const chip = document.querySelector('.ai-scope-chip');
+    window.__t051DetachedScopeChip = chip;
+    window.__hexAi.destroy();
+    chip.textContent = 'Scope: Auto';
+    return { detached: !chip.isConnected, assistantGone: !window.__hexAi };
+  });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  const afterDestroy = await page.evaluate(() => ({
+    text: window.__t051DetachedScopeChip?.textContent,
+    detached: !window.__t051DetachedScopeChip?.isConnected,
+  }));
+  check('destroy disconnects scope observation without repainting a detached chip',
+    cleanup.detached && cleanup.assistantGone && afterDestroy.detached && afterDestroy.text === 'Scope: Auto',
+    JSON.stringify({ cleanup, afterDestroy }));
   check('Dev profile wiring has no browser errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
   await context.close();
