@@ -1,0 +1,1830 @@
+diff --git a/js/symbolic/executor.js b/js/symbolic/executor.js
+--- a/js/symbolic/executor.js
++++ b/js/symbolic/executor.js
+@@ -6,6 +6,12 @@
+  */
+ import { OP, MK, COND, mayAliasProvenance } from '../ir.js';
+ import { valueBefore } from '../dataflow-semantic.js';
++import { createByteMemory } from './memory/byte-memory.js';
++import { QueryFailure, monotonicNow, boundedLimit } from './memory/query-state.js';
++import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar } from './translate/memory.js';
++import { createBv, createConnective, computeStructuralHash } from './expr/index.js';
++
++const BYTE_EXECUTION_OPS = new Set([OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP,OP.SEL,OP.LOAD,OP.STORE,OP.ADDR,OP.CALL,OP.RET,OP.BR,OP.CBR,OP.PHI,OP.CLOBBER,OP.UNKNOWN]);
+ 
+ export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
+ 
+@@ -78,7 +84,12 @@
+ }
+ 
+ function cmp(name, a, b, options = {}) {
+-  const bits = widthOf(options.bits);
++  const bits = a?.sort?.width ?? b?.sort?.width ?? widthOf(options.bits);
++  if (a?.sort || b?.sort) {
++    const left = a.sort ? a : createBv(bits, a.value);
++    const right = b.sort ? b : createBv(bits, b.value);
++    return translateMemoryScalar({ op: OP.CMP, cond: name, signed: options.signed }, [left, right], bits);
++  }
+   const signed = options.signed === true ? true : options.signed === false ? false : null;
+   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
+     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
+@@ -98,12 +109,14 @@
+ }
+ function negate(condition) {
+   if (!condition) return unknown('missing-condition');
++  if (condition.sort) return createConnective('not', condition);
+   if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
+   const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
+   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
+   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
+ }
+ function constraintAllowed(existing, condition) {
++  if (condition?.sort) return !(condition.kind === 'const' && condition.sort.kind === 'bool' && condition.value === false);
+   if (condition?.kind === SYM.CONST && condition.boolean) return condition.value !== 0n;
+   const key = conditionIdentity(condition);
+   for (const prior of existing || []) {
+@@ -115,6 +128,7 @@
+ 
+ export function expressionText(e) {
+   if (!e) return '?';
++  if (e.sort && e.kind !== 'const') return `Expr<${e.sort.kind}${e.sort.width ?? ''}>#${computeStructuralHash(e)}`;
+   if (e.kind === SYM.CONST) return e.value.toString();
+   if (e.kind === SYM.SYMBOL) return e.name;
+   if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
+@@ -132,10 +146,14 @@
+ }
+ 
+ function cloneState(s) {
++  s.byteMemory?.chargeExecution(1, s.values.size + s.constraints.length + s.branches.length + s.touchedFields.length + s.visits.size);
+   return {
+     block: s.block,
+     prevBlock: s.prevBlock,
+     memory: new Map(s.memory),
++    byteMemory: s.byteMemory?.fork(),
++    scalarCache: s.scalarCache,
++    taint: s.taint, control: s.control,
+     values: new Map(s.values),
+     constraints: s.constraints.slice(),
+     branches: s.branches.slice(),
+@@ -184,6 +202,7 @@
+ }
+ 
+ function loadExpression(inst, state, opts) {
++  if (state.byteMemory) return translateMemoryAccess(inst, state, opts);
+   if (!inst || !inst.loc) return unknown('missing-load-location', { instruction: inst && inst.id });
+   const key = locationKey(inst.loc);
+   if (key && state.memory.has(key)) {
+@@ -197,6 +216,7 @@
+ function evalValue(value, state, ir, opts, memo, active) {
+   if (!value) return unknown('missing-value');
+   if (state.values.has(value.id)) return state.values.get(value.id);
++  if (state.byteMemory) return translateExecutionValue(value, state, opts);
+   const stateKey = value.id + '@' + state.prevBlock + '@' + state.block;
+   if (memo.has(stateKey)) return memo.get(stateKey);
+   if (active.has(value.id)) return unknown('symbolic-cycle', { value: value.id });
+@@ -279,6 +299,7 @@
+     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
+     return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
+   }
++  if (state.byteMemory && (kind === 'tbz' || kind === 'tbnz')) throw new QueryFailure('bit-test-translation-unconnected');
+   if (kind === 'tbz' || kind === 'tbnz') {
+     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
+     const bit = BigInt(inst.extra && inst.extra.bit != null ? inst.extra.bit : 0);
+@@ -337,29 +358,33 @@
+ }
+ 
+ /** Explore bounded Semantic IR paths. */
+-export function symbolicExecute(ir, opts) {
++function executePaths(ir, opts) {
+   if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
+-  const maxPaths = executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
+-  const maxSteps = executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
+-  const maxBranches = executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
+-  const maxBlockVisits = executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
++  const maxPaths = opts?._byteMemory ? boundedLimit(opts.maxPaths, 16, 16, 'maxPaths') : executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
++  const maxSteps = opts?._byteMemory ? boundedLimit(opts.maxSteps, 2000, 2000, 'maxSteps') : executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
++  const maxBranches = opts?._byteMemory ? boundedLimit(opts.maxBranches, 32, 32, 'maxBranches') : executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
++  const maxBlockVisits = opts?._byteMemory ? boundedLimit(opts.maxBlockVisits, 3, 3, 'maxBlockVisits') : executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
+   const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
+   const cancelledFn = opts && opts.isCancelled || (() => false);
+   const signal = opts && opts.signal || null;
+   const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
+   const deadline = Date.now() + timeoutMs;
+   const addressMap = addressBlockMap(ir);
+-  const queue = [{ block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
++  const stats = opts?._executionMetrics ?? { paths: 0, stepsPerPath: 0, branches: 0, blockVisitsPerBlock: 0 };
++  const queue = [{ byteMemory: opts?._byteMemory, scalarCache: new Map(), taint: opts?._taint, control: null, block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
+   const paths = [];
+   let branchCount = 0;
+   let truncated = false;
+ 
+   while (queue.length && paths.length < maxPaths) {
+     if (cancelled() || Date.now() > deadline) { truncated = true; break; }
++    stats.paths = Math.max(stats.paths, paths.length + queue.length);
+     const state = queue.shift();
+     if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget')); continue; }
+     const n = (state.visits.get(state.block) || 0) + 1;
++    if (state.byteMemory && n > maxBlockVisits) { paths.push(stopResult(state, 'loop-budget')); continue; }
+     state.visits.set(state.block, n);
++    stats.blockVisitsPerBlock = Math.max(stats.blockVisitsPerBlock, n);
+     if (n > maxBlockVisits) { paths.push(stopResult(state, 'loop-budget')); continue; }
+     const block = ir.blocks[state.block];
+     if (!block) { paths.push(stopResult(state, 'missing-block')); continue; }
+@@ -373,17 +398,27 @@
+   const phiUpdates = [];
+   for (const phi of block.phis || []) {
+     if (!phi.dst) continue;
+-    const chosen = phiValue(phi, state);
++    const matches = state.byteMemory ? (phi.incoming || []).filter(item => item.from === state.prevBlock) : null;
++    const chosen = state.byteMemory ? (matches.length === 1 ? matches[0].value : null) : phiValue(phi, state);
++    if (state.byteMemory && !chosen) throw new QueryFailure('ambiguous-phi');
+     const value = chosen
+       ? evalValue(chosen, state, ir, opts, memo, new Set())
+       : unknown('ambiguous-phi', { instruction: phi.id });
+     phiUpdates.push([phi.dst.id, value]);
++    state.taint?.value(phi.dst.id, chosen ? [chosen.id] : [], 'phi', { unknown: !chosen, control: state.control });
+   }
+   for (const [id, value] of phiUpdates) state.values.set(id, value);
+ 
+ 
+     for (const inst of block.insts || []) {
++      if (state.byteMemory) {
++        state.byteMemory.check();
++        if (!BYTE_EXECUTION_OPS.has(inst.op)) throw new QueryFailure('unsupported-instruction');
++      }
++      if (state.byteMemory) state.byteMemory.chargeExecution();
++      if (state.byteMemory && state.steps >= maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
+       state.steps++;
++      stats.stepsPerPath = Math.max(stats.stepsPerPath, state.steps);
+       if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
+ 
+       if (inst.op === OP.LOAD) {
+@@ -395,6 +430,11 @@
+           paths.push(stopResult(state, value.reason, inst)); transferred = true; break;
+         }
+         state.values.set(inst.dst.id, value);
++        continue;
++      }
++      if (inst.op === OP.STORE && state.byteMemory) {
++        const value = translateMemoryAccess(inst, state, opts);
++        state.touchedFields.push({ instructionId: inst.id, value });
+         continue;
+       }
+       if (inst.op === OP.STORE) {
+@@ -414,10 +454,21 @@
+         continue;
+       }
+       if (inst.op === OP.CALL) {
++        if (state.byteMemory) {
++          state.byteMemory.barrier('unknown-call');
++          if (inst.dst) state.taint?.value(inst.dst.id, [], 'unknown-call', { unknown: true });
++        }
+         paths.push(stopResult(state, 'unsupported-call', inst)); transferred = true; break;
+       }
+       if (inst.op === OP.UNKNOWN || inst.op === OP.CLOBBER) {
++        state.byteMemory?.barrier('unknown-clobber');
+         paths.push(stopResult(state, 'unsupported-instruction', inst)); transferred = true; break;
++      }
++      if (state.byteMemory && inst.dst && ![OP.PHI, OP.RET, OP.CBR, OP.BR].includes(inst.op)) {
++        state.values.delete(inst.dst.id);
++        const translated = evalValue(inst.dst, state, ir, opts, new Map(), new Set());
++        if (!translated?.sort || translated.kind === 'unknown_semantic') throw new QueryFailure(translated?.reason ?? 'unsupported-value-op');
++        state.values.set(inst.dst.id, translated);
+       }
+       if (inst.op === OP.RET) {
+         const explicit = inst.args[0]?.value || null;
+@@ -439,8 +490,8 @@
+         }
+         const value = candidate ? evalValue(candidate, state, ir, opts, memo, new Set()) : null;
+         paths.push({
+-          status: value && value.kind === SYM.UNKNOWN ? 'unknown' : 'complete',
+-          reason: value && value.kind === SYM.UNKNOWN ? value.reason : null,
++          status: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? 'unknown' : 'complete',
++          reason: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? value.reason : null,
+           returnValue: value,
+           returnText: expressionText(value),
+           returnInferred: inferredReturn,
+@@ -453,12 +504,20 @@
+         break;
+       }
+       if (inst.op === OP.CBR) {
++        if (state.byteMemory && branchCount >= maxBranches) { paths.push(stopResult(state, 'branch-budget', inst)); transferred = true; break; }
++        if (state.taint) state.control = state.taint.joinHandles(state.control, ...(inst.args || []).map(a => a.value?.id));
++        stats.branches++;
+         if (++branchCount > maxBranches) { paths.push(stopResult(state, 'branch-budget', inst)); transferred = true; break; }
+         const cond = branchCondition(inst, state, ir, opts, memo);
++        if (state.byteMemory && (cond.kind === 'unknown_semantic' || cond.sort?.kind !== 'bool')) throw new QueryFailure(cond.reason ?? 'unsupported-branch-condition');
+         if (cond.kind === SYM.UNKNOWN) { paths.push(stopResult(state, cond.reason, inst)); transferred = true; break; }
+         const next = successorsForBranch(ir, block, inst, addressMap);
+         if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
+-        const inverse = negate(cond);
++        const inverse = cond.sort && cond.kind === 'const' ? Object.freeze({ ...cond, value: !cond.value }) : negate(cond);
++        if (state.byteMemory) {
++          const needed = Number(constraintAllowed(state.constraints, cond)) + Number(constraintAllowed(state.constraints, inverse));
++          if (paths.length + queue.length + needed > maxPaths) throw new QueryFailure('budget:paths');
++        }
+         if (constraintAllowed(state.constraints, cond)) {
+           const yes = cloneState(state);
+           yes.prevBlock = state.block; yes.block = next.target;
+@@ -494,5 +553,46 @@
+     }
+   }
+   if (queue.length) truncated = true;
+-  return { paths, truncated, engine: 'semantic-ir-symbolic' };
+-}
+\ No newline at end of file
++  return { paths, truncated, engine: 'semantic-ir-symbolic', ...(opts?._byteMemory ? { metrics: { ...stats, paths: paths.length } } : {}) };
++}
++/** Opt-in query identity preserves the legacy facade while enabling canonical byte state.
++ * No results of a cancelled/stale/budgeted exploration are published as complete paths.
++ */
++export function symbolicExecute(ir, opts = {}) {
++  if (!opts.byteMemory) return executePaths(ir, opts);
++  const started = monotonicNow();
++  let memory;
++  const executionMetrics = { paths: 0, stepsPerPath: 0, branches: 0, blockVisitsPerBlock: 0 };
++  try {
++    memory = createByteMemory({ ...opts.byteMemory, signal: opts.signal ?? opts.byteMemory.signal,
++      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled });
++    if (!ir || !Array.isArray(ir.blocks) || !ir.blocks.length) throw new QueryFailure('invalid-or-empty-ir');
++    // Preflight limits precede address-map construction and operand-array copies.
++    memory.chargeExecution(ir.blocks.length, ir.blocks.length);
++    for (const block of ir.blocks) {
++      if (!block || !Array.isArray(block.insts) || !Array.isArray(block.succ ?? [])) throw new QueryFailure('invalid-ir-block');
++      const phis = block.phis ?? [];
++      if (!Array.isArray(phis)) throw new QueryFailure('invalid-ir-phis');
++      memory.chargeExecution(block.insts.length + phis.length + (block.succ?.length ?? 0), block.insts.length + phis.length);
++      for (const list of [block.insts, phis]) for (const inst of list) {
++        if (!inst || !Array.isArray(inst.args ?? []) || !Array.isArray(inst.incoming ?? [])) throw new QueryFailure('invalid-ir-instruction');
++        memory.chargeExecution((inst.args?.length ?? 0) + (inst.incoming?.length ?? 0));
++      }
++    }
++    const result = executePaths(ir, { ...opts, _byteMemory: memory, _executionMetrics: executionMetrics });
++    memory.check();
++    const partial = result.truncated || result.paths.some(path => path.status !== 'complete');
++    const metrics = Object.freeze({ ...memory.metrics(), ...result.metrics, wallClock: monotonicNow() - started });
++    const paths = partial ? [] : result.paths.map(path => Object.freeze({ ...path,
++      constraints: Object.freeze(path.constraints), constraintText: Object.freeze(path.constraintText),
++      takenBranches: Object.freeze(path.takenBranches.map(Object.freeze)),
++      touchedFields: Object.freeze(path.touchedFields.map(Object.freeze)) }));
++    return Object.freeze({ ...result, identity: memory.identity, status: partial ? 'partial' : 'complete',
++      reason: partial ? (result.paths.find(path => path.status !== 'complete')?.reason ?? 'budget:exploration') : null, paths: Object.freeze(paths), metrics });
++  } catch (error) {
++    if (!(error instanceof QueryFailure)) throw error;
++    return Object.freeze({ engine: 'semantic-ir-symbolic', status: 'partial', reason: error.reason,
++      identity: memory?.identity ?? null, paths: Object.freeze([]), truncated: true,
++      metrics: Object.freeze({ ...(memory?.metrics() ?? {}), ...executionMetrics, wallClock: monotonicNow() - started }) });
++  }
++}
+diff --git a/js/symbolic/index.js b/js/symbolic/index.js
+--- a/js/symbolic/index.js
++++ b/js/symbolic/index.js
+@@ -11,3 +11,8 @@
+ export * as solver from './solver/index.js';
+ export * as evidence from './evidence/index.js';
+ export * as verify from './verify/index.js';
++export { createByteMemory, joinByteMemory } from './memory/byte-memory.js';
++export { createTaintModels } from './taint/models.js';
++export { queryTaint, isTaintQueryResult } from './query/taint.js';
++export { projectTaint } from './projection/taint.js';
++export { verifyDeobfuscationCandidate, isAdoptableCandidate } from './taint/proof-consumer.js';
+diff --git a/js/symbolic/memory/byte-memory.js b/js/symbolic/memory/byte-memory.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/memory/byte-memory.js
+@@ -0,0 +1,238 @@
++/**
++ * Finite-trace byte memory, lowered to the canonical Bool/BV DAG (NOT Array sort).
++ * Initial reads implement a single arbitrary function: r_i = ite(a_i=a_j,r_j,...,fresh_i).
++ * Ordered byte writes implement read-over-write. Thus equal addresses cannot acquire
++ * independent initial values, even across forks. The shared arena contains only the
++ * initial function and the query-wide budget; mutable stores are path-local.
++ */
++import {
++  bvSort, createBv, createBool, createFreshSymbol, createCompare, createBinary,
++  createIte, createExtract, createConcat,
++} from '../expr/index.js';
++import { collectSymbols } from '../solver/exhaustive-backend.js';
++import { createQueryGuard, QueryFailure, boundedLimit } from './query-state.js';
++
++const LIMITS = Object.freeze({ concreteMemoryBytes: 65536, symbolicMemoryCells: 4096,
++  storeHistoryEntries: 4096, aliasForks: 16, workItems: 250000,
++  expressionNodes: 100000, allocationUnits: 1000000 });
++const states = new WeakMap();
++const noLabels = Object.freeze({ clean: null, unknown: null, join: () => null });
++const sizes = new Set([1, 2, 4, 8]);
++function primitiveInteger(value) {
++  if (typeof value === 'bigint') return value;
++  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
++  throw new QueryFailure('unsafe-integer');
++}
++// Structural equality, not a name/string/hash/solver-boolean alias heuristic.
++// Calls are bounded by the validated term size and the query work budget.
++function children(expr) {
++  if (['unary','extract','cast'].includes(expr.kind)) return [expr.arg];
++  if (['binary','compare','concat'].includes(expr.kind)) return [expr.left,expr.right];
++  if (expr.kind === 'connective') return expr.args;
++  if (expr.kind === 'ite') return [expr.cond,expr.thenExpr,expr.elseExpr];
++  return [];
++}
++export function assertMemoryExpr(expr, guard, width = null) {
++  const available=guard.limits.workItems-guard.metrics().workItems;
++  if(available<1) guard.fail('budget:workItems');
++  const validated=collectSymbols([expr],{maxExprNodes:available,maxExprDepth:128});
++  if(validated.limitExceeded) guard.fail('budget:workItems');
++  guard.take('workItems',validated.traversalCount);
++  if(validated.unsupportedReason||validated.depthExceeded) throw new QueryFailure(validated.unsupportedReason??'expression-depth');
++  const work = [[expr,0]], seen = new Set();
++  while (work.length) {
++    guard.take('workItems');
++    const [node,depth] = work.pop();
++    if (!node || !Object.isFrozen(node) || !Object.isFrozen(node.sort) || depth > 128 ||
++        !['const','fresh_symbol','unary','binary','compare','connective','ite','extract','concat','cast'].includes(node.kind) ||
++        !['bool','bv'].includes(node.sort?.kind)) throw new QueryFailure('unsupported-expression');
++    if (node.sort.kind === 'bv' && (!Number.isSafeInteger(node.sort.width) || node.sort.width < 1 || node.sort.width > 64)) throw new QueryFailure('unsupported-width');
++    if (node.kind==='fresh_symbol' && (typeof node.symbolId!=='string'||!node.symbolId)) throw new QueryFailure('missing-canonical-symbol-id');
++    if (seen.has(node)) continue;
++    seen.add(node);
++    for (const child of children(node)) work.push([child,depth+1]);
++  }
++  if (width != null && (expr.sort.kind !== 'bv' || expr.sort.width !== width)) throw new QueryFailure('width-mismatch');
++  return expr;
++}
++function sameTerm(a,b,guard) {
++  const work=[[a,b]],seen=new Map();
++  while(work.length) {
++    guard.take('workItems');
++    const [x,y]=work.pop();if(x===y) continue;
++    if(x.kind!==y.kind||x.sort.kind!==y.sort.kind||x.sort.width!==y.sort.width) return false;
++    if(x.kind==='fresh_symbol') {if(x.symbolId!==y.symbolId) return false;continue;}
++    if(['value','op','high','low','targetWidth'].some(k=>x[k]!==y[k])) return false;
++    if(seen.get(x)?.has(y)) continue;
++    if(!seen.has(x)) seen.set(x,new Set());seen.get(x).add(y);
++    const xs=children(x),ys=children(y);if(xs.length!==ys.length) return false;
++    for(let i=0;i<xs.length;i++) work.push([xs[i],ys[i]]);
++  }
++  return true;
++}
++function makeState(arena, copy = null) {
++  const state = { arena, current: new Map(copy?.current ?? []), history: copy?.history.slice() ?? [],
++    mode: copy?.mode ?? 'concrete', symbolicWrites: copy?.symbolicWrites ?? false,
++    parents: copy?.parents ?? null, depth: copy?.depth ?? 0, barrier: copy?.barrier ?? null };
++  const { guard, bits, endian, labels } = arena;
++  const node = (fn) => { guard.take('expressionNodes'); return fn(); };
++  function eq(a,b) {
++    guard.take('workItems');
++    if (a === b || sameTerm(a,b,guard)) return createBool(true);
++    if (a.kind === 'const' && b.kind === 'const') return createBool(a.value === b.value);
++    return node(()=>createCompare('eq',a,b));
++  }
++  function choose(condition, yes, no) {
++    if (condition.kind === 'const') return condition.value ? yes : no;
++    return Object.freeze({ expression: node(()=>createIte(condition,yes.expression,no.expression)),
++      label: labels.join(yes.label,no.label) });
++  }
++  function address(value) {
++    if (value && typeof value === 'object') return assertMemoryExpr(value,guard,bits);
++    const n=primitiveInteger(value);
++    if (n<0n || n >= (1n<<BigInt(bits))) throw new QueryFailure('address-out-of-range');
++    return createBv(bits,n);
++  }
++  function access(value,size,options={}) {
++    guard.check(options.identity ?? arena.identity);
++    if (state.barrier) throw new QueryFailure(state.barrier);
++    if (!sizes.has(size)) throw new QueryFailure('unsupported-access-width');
++    if (options.addressSpace != null && options.addressSpace !== arena.identity.addressSpace) throw new QueryFailure('address-space-mismatch');
++    if (options.volatile != null && options.volatile !== false || options.atomic != null && options.atomic !== false) {
++      state.barrier=options.volatile ? 'volatile-barrier' : 'atomic-barrier';
++      throw new QueryFailure(state.barrier);
++    }
++    const a=address(value);
++    if (arena.alignment === 'natural' && size>1 && (a.kind!=='const' || a.value%BigInt(size)!==0n)) throw new QueryFailure('alignment-unproved');
++    if (arena.wrapping === 'reject' && size>1 && (a.kind!=='const' || a.value+BigInt(size)>(1n<<BigInt(bits)))) throw new QueryFailure('address-wrap-unproved');
++    guard.take('allocationUnits',size);
++    return Array.from({length:size},(_,i)=> {
++      if (!i) return a;
++      return a.kind==='const' ? createBv(bits,a.value+BigInt(i)) : node(()=>createBinary('add',a,createBv(bits,BigInt(i))));
++    });
++  }
++  function initialByte(a) {
++    guard.take('workItems');
++    if (a.kind==='const' && arena.initial.has(a.value)) return arena.initial.get(a.value);
++    for (const prior of arena.reads) {
++      guard.take('workItems');
++      if (a === prior.address || sameTerm(a,prior.address,guard)) return prior.byte;
++    }
++    guard.take('symbolicMemoryCells'); guard.take('allocationUnits');
++    let byte=Object.freeze({expression:node(()=>createFreshSymbol(bvSort(8),`mem_${arena.reads.length}`,{queryId:arena.identity.queryId,source:'initial-byte'})),label:labels.unknown});
++    // Every earlier read participates, including expressions observed by sibling paths.
++    for (const prior of arena.reads) byte=choose(eq(a,prior.address),prior.byte,byte);
++    for (const [key,known] of arena.initial) byte=choose(eq(a,createBv(bits,key)),known,byte);
++    arena.reads.push(Object.freeze({address:a,byte}));
++    return byte;
++  }
++  function readByte(a, currentState=state) {
++    guard.take('workItems');
++    if (currentState.barrier) throw new QueryFailure(currentState.barrier);
++    if (!currentState.symbolicWrites && !currentState.parents && a.kind==='const' && currentState.current.has(a.value)) return currentState.current.get(a.value);
++    // Check exact last writes before constructing an unnecessary unknown base.
++    let lastExact=-1;
++    for (let i=currentState.history.length-1;i>=0;i--) {
++      const c=eq(a,currentState.history[i].address);
++      if (c.kind==='const' && c.value) { lastExact=i;break; }
++    }
++    let byte;
++    if (lastExact>=0) byte=currentState.history[lastExact].byte;
++    else if (currentState.parents) {
++      const p=currentState.parents;
++      byte=choose(p.condition,readByte(a,p.yes),readByte(a,p.no));
++      byte=Object.freeze({...byte,label:labels.join(byte.label,p.label)});
++    } else byte=initialByte(a);
++    for (let i=lastExact+1;i<currentState.history.length;i++) {
++      const store=currentState.history[i]; byte=choose(eq(a,store.address),store.byte,byte);
++    }
++    return byte;
++  }
++  function outcome(action) {
++    try { const result=action();guard.check();return Object.freeze({...result,identity:arena.identity,mode:state.mode}); }
++    catch(error) {
++      if (!(error instanceof QueryFailure)) throw error;
++      // An unsupported access cannot be followed by an exact observation of stale memory.
++      state.barrier ||= error.reason;
++      return Object.freeze({status:'unknown',reason:error.reason,expression:null,label:labels.unknown,identity:arena.identity,mode:state.mode});
++    }
++  }
++  const api=Object.freeze({
++    identity:arena.identity, addressBits:bits, endian, wrapping:arena.wrapping,
++    load(value,size,options={}) { return outcome(()=> {
++      const addresses=access(value,size,options);
++      if (addresses.some(a=>a.kind!=='const')) state.mode='bounded-bv';
++      const bytes=addresses.map(a=>readByte(a));
++      const ordered=endian==='little' ? bytes.slice().reverse() : bytes;
++      let expression;
++      if (ordered.every(b=>b.expression.kind==='const')) {
++        expression=createBv(size*8,ordered.reduce((n,b)=>(n<<8n)|b.expression.value,0n));
++      } else expression=ordered.map(b=>b.expression).reduce((left,right)=>node(()=>createConcat(left,right)));
++      assertMemoryExpr(expression,guard,size*8);
++      const label=bytes.map(b=>b.label).reduce((a,b)=>labels.join(a,b),labels.clean);
++      return {status:expression.kind==='const'?'concrete':'symbolic',expression,label,bytes:Object.freeze(bytes)};
++    }); },
++    store(value,size,stored,options={}) { return outcome(()=> {
++      const addresses=access(value,size,options);
++      const expression=stored && typeof stored==='object' ? assertMemoryExpr(stored,guard,size*8) : createBv(size*8,primitiveInteger(stored));
++      guard.take('storeHistoryEntries',size); guard.take('allocationUnits',size);
++      const symbolic=addresses.some(a=>a.kind!=='const');
++      const added=new Set(addresses.filter(a=>a.kind==='const'&&!state.current.has(a.value)).map(a=>a.value));
++      guard.take('concreteMemoryBytes',added.size);
++      if (symbolic || expression.kind!=='const') guard.take('symbolicMemoryCells',size);
++      if (symbolic) { state.mode='bounded-bv';state.symbolicWrites=true; }
++      for(let i=0;i<size;i++) {
++        const lane=endian==='little'?i:size-1-i;
++        const byte=Object.freeze({expression:expression.kind==='const'?createBv(8,expression.value>>BigInt(lane*8)):node(()=>createExtract(expression,lane*8+7,lane*8)),label:options.label ?? labels.unknown});
++        state.history.push(Object.freeze({address:addresses[i],byte}));
++        if(addresses[i].kind==='const') state.current.set(addresses[i].value,byte);
++      }
++      return {status:'stored'};
++    }); },
++    barrier(reason='unknown-clobber') { guard.check();state.barrier=reason;return Object.freeze({status:'unknown',reason}); },
++    fork() {
++      guard.check();guard.take('aliasForks');guard.take('allocationUnits',state.current.size+state.history.length);
++      return makeState(arena,state);
++    },
++    check(current) { guard.check(current); if(state.barrier) throw new QueryFailure(state.barrier); },
++    // Executor/translation work shares this query's prechecked resource authority.
++    chargeExecution(work = 1, allocation = 0) { guard.take('workItems', work); guard.take('allocationUnits', allocation); },
++    metrics:guard.metrics,
++  });
++  states.set(api,state);return api;
++}
++export function createByteMemory(options={}) {
++  const guard=createQueryGuard(options,LIMITS);
++  const bits=boundedLimit(options.addressBits,64,64,'addressBits');
++  if(bits<1) throw new TypeError('addressBits must be positive');
++  const endian=options.endian ?? 'little',wrapping=options.wrapping ?? 'reject',alignment=options.alignment ?? 'unaligned';
++  if(!['little','big'].includes(endian)||!['reject','modular'].includes(wrapping)||!['unaligned','natural'].includes(alignment)) throw new TypeError('invalid memory geometry');
++  const labels=options.labelDomain ?? noLabels;
++  const initial=new Map();
++  const entries=options.initialBytes ?? [];
++  if(!Array.isArray(entries)) throw new TypeError('initialBytes must be [address,byte] pairs');
++  // Reserve before walking/allocating a potentially huge caller array.
++  guard.take('concreteMemoryBytes',entries.length);guard.take('allocationUnits',entries.length);
++  for(const entry of entries) {
++    guard.take('workItems');
++    if(!Array.isArray(entry)||entry.length!==2) throw new TypeError('invalid initial byte');
++    const a=primitiveInteger(entry[0]),b=primitiveInteger(entry[1]);
++    if(a<0n||a>=(1n<<BigInt(bits))||b<0n||b>255n||initial.has(a)) throw new TypeError('invalid/duplicate initial byte');
++    initial.set(a,Object.freeze({expression:createBv(8,b),label:labels.clean}));
++  }
++  const arena={guard,identity:guard.identity,bits,endian,wrapping,alignment,initial,labels,reads:[]};
++  return makeState(arena);
++}
++export function joinByteMemory(condition,yes,no,label=null) {
++  const a=states.get(yes),b=states.get(no);
++  if(!a||!b||a.arena!==b.arena) throw new QueryFailure('unrelated-memory-states');
++  const {guard}=a.arena;
++  assertMemoryExpr(condition,guard);
++  if(condition.sort.kind!=='bool') throw new QueryFailure('join-condition-sort');
++  guard.take('aliasForks');guard.take('allocationUnits',a.current.size+a.history.length+b.current.size+b.history.length);
++  if(Math.max(a.depth,b.depth)>=16) guard.fail('budget:merge-depth');
++  // Capture independent states; later writes in either parent cannot mutate the join.
++  const capture=s=>({...s,current:new Map(s.current),history:s.history.slice()});
++  return makeState(a.arena,{current:[],history:[],mode:'bounded-bv',symbolicWrites:true,depth:Math.max(a.depth,b.depth)+1,
++    parents:Object.freeze({condition,yes:capture(a),no:capture(b),label}),barrier:a.barrier||b.barrier});
++}
+diff --git a/js/symbolic/memory/query-state.js b/js/symbolic/memory/query-state.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/memory/query-state.js
+@@ -0,0 +1,58 @@
++/** Query-local identity and resource authority; no persistent analysis cache. */
++export const IDENTITY_FIELDS = Object.freeze([
++  'queryId', 'snapshotId', 'binaryId', 'functionId', 'architecture', 'addressSpace', 'semanticsVersion',
++]);
++export function memoryIdentity(value) {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('memory identity required');
++  const result = {};
++  for (const key of IDENTITY_FIELDS) {
++    if (typeof value[key] !== 'string' || !value[key].trim() || value[key].length > 1024) {
++      throw new TypeError(`identity.${key} must be a bounded nonempty string`);
++    }
++    result[key] = value[key];
++  }
++  return Object.freeze(result);
++}
++export function sameMemoryIdentity(a, b) {
++  return !!a && !!b && IDENTITY_FIELDS.every((key) => a[key] === b[key]);
++}
++export function boundedLimit(value, fallback, maximum, name) {
++  const n = value ?? fallback;
++  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0 || n > maximum) {
++    throw new TypeError(`${name} must be an integer in [0, ${maximum}]`);
++  }
++  return n;
++}
++export class QueryFailure extends Error {
++  constructor(reason) { super(reason); this.name = 'QueryFailure'; this.reason = reason; }
++}
++export const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
++export function createQueryGuard(options, ceilings) {
++  const identity = memoryIdentity(options.identity);
++  const now = options.now ?? monotonicNow;
++  const started = now();
++  const duration = boundedLimit(options.timeoutMs, 250, 5000, 'timeoutMs');
++  const limits = {}, counts = {};
++  for (const [key, maximum] of Object.entries(ceilings)) {
++    limits[key] = boundedLimit(options.limits?.[key], maximum, maximum, key);
++    counts[key] = 0;
++  }
++  let reason = null;
++  const fail = (code) => { reason ||= code; throw new QueryFailure(reason); };
++  function check(current = identity) {
++    if (reason) throw new QueryFailure(reason);
++    if (!sameMemoryIdentity(identity, current) || options.getCurrentIdentity && !sameMemoryIdentity(identity, options.getCurrentIdentity())) fail('stale-identity');
++    if (options.signal?.aborted || options.isCancelled?.()) fail('cancelled');
++    if (now() - started >= duration) fail('deadline');
++  }
++  function take(key, amount = 1) {
++    check();
++    if (!Number.isSafeInteger(amount) || amount < 0 || !Object.hasOwn(limits, key)) throw new TypeError('invalid resource charge');
++    if (amount > limits[key] - counts[key]) fail(`budget:${key}`);
++    counts[key] += amount;
++  }
++  return Object.freeze({ identity, limits: Object.freeze(limits), check, take, fail,
++    metrics: () => Object.freeze({ ...counts, wallClock: now() - started }),
++    reason: () => reason,
++  });
++}
+diff --git a/js/symbolic/projection/taint.js b/js/symbolic/projection/taint.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/projection/taint.js
+@@ -0,0 +1,23 @@
++/** Projection only: consume taint owner facts; never infer sources in UI/AI. */
++import { stableDigest } from '../../core/identity/index.js';
++import { createEvidenceNode, createEvidenceEdge } from '../../core/evidence/index.js';
++import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';
++import { isTaintQueryResult } from '../query/taint.js';
++export function projectTaint(result,{identity=result?.identity,modelIdentity=result?.modelIdentity}={}) {
++  if(!isTaintQueryResult(result,identity,modelIdentity)) return Object.freeze({status:'stale-or-unissued',evidence:null,graph:null});
++  const queryHash=stableDigest({identity,modelIdentity,values:result.values,edges:result.edges,sinks:result.sinks,status:result.status});
++  const prefix=`taint:${queryHash}:`;
++  const nodes=result.values.map(value=>createEvidenceNode({id:prefix+value.id,family:'SymbolicEvidence',
++    binaryId:identity.binaryId,targetEntityIds:value.valueId?[value.valueId]:[],semanticKind:'taint-flow',
++    completeness:result.status==='complete'?'bounded':'partial',deterministic:true,
++    payload:{identity,modelIdentity,valueId:value.valueId,taint:value.taint}}));
++  const edges=result.edges.map(edge=>createEvidenceEdge({from:prefix+edge.to,to:prefix+edge.from,type:'derived-from',metadata:{flowKind:edge.kind}}));
++  const evidence=createSymbolicEvidence({queryKind:'taint-flow',claimKind:'symbolic-query',
++    proofStatement:'Bounded conservative taint dependencies; not a semantic-equivalence proof',
++    targetEntities:result.sinks.map(s=>s.valueId),queryHash,backendId:'hex-taint-lattice',backendVersion:'1.0.0',
++    solverStatus:'unsupported',verdict:'unknown',architecture:identity.architecture,
++    completeness:{translation:'complete',controlFlow:result.status==='complete'?'complete':'partial',memoryEffects:result.status==='complete'?'complete':'partial',pathCoverage:result.status==='complete'?'complete':'partial',queryScope:'complete'},
++    proofScope:{kind:'query-local-taint',identity,modelIdentity},
++    metadata:{sources:result.models.sources,sinks:result.sinks,sanitizers:result.models.sanitizers,unknownSanitizers:result.unknownSanitizers,widened:result.widened}});
++  return Object.freeze({status:result.status,evidence,graph:Object.freeze({schemaVersion:1,nodes:Object.freeze(nodes),edges:Object.freeze(edges)})});
++}
+diff --git a/js/symbolic/query/taint.js b/js/symbolic/query/taint.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/query/taint.js
+@@ -0,0 +1,44 @@
++import { symbolicExecute } from '../executor.js';
++import { createTaintFlow } from '../taint/flow.js';
++import { QueryFailure, sameMemoryIdentity, monotonicNow } from '../memory/query-state.js';
++import { projectTaint } from '../projection/taint.js';
++const issued=new WeakMap();
++export function isTaintQueryResult(result,identity=result?.identity,modelIdentity=result?.modelIdentity) {
++  const state=issued.get(result);
++  if(!state||!sameMemoryIdentity(result.identity,identity)||result.modelIdentity!==modelIdentity) return false;
++  return !state.signal?.aborted && !state.isCancelled?.()
++    && (!state.getCurrentModelIdentity || result.modelIdentity === state.getCurrentModelIdentity())
++    && (!state.getCurrentIdentity || sameMemoryIdentity(result.identity,state.getCurrentIdentity()));
++}
++/** Run first-class taint through the real bounded executor and its byte memory. */
++export function queryTaint(ir,options={}) {
++  const start=monotonicNow();let flow,execution;
++  try {
++    flow=createTaintFlow(options);
++    const checkModel=()=> { if(options.getCurrentModelIdentity && options.getCurrentModelIdentity()!==options.models.modelIdentity) throw new QueryFailure('stale-model'); };
++    checkModel();
++    execution=symbolicExecute(ir,{...options.execution,signal:options.signal,isCancelled:options.isCancelled,
++      byteMemory:{...options.memory,identity:options.identity,signal:options.signal,isCancelled:options.isCancelled,
++        getCurrentIdentity:options.getCurrentIdentity,labelDomain:flow.labels},_taint:flow});
++    flow.check(); checkModel();
++    if(execution.status!=='complete' && /budget|deadline|cancel|stale/.test(execution.reason ?? '')) throw new QueryFailure(execution.reason);
++    const data=flow.solve({partial:execution.status!=='complete'});
++    const result=Object.freeze({schemaVersion:'hex-taint-query/v1',identity:flow.identity,
++      modelIdentity:options.models.modelIdentity,models:options.models,
++      status:execution.status==='complete'?'complete':'partial',reason:execution.reason,
++      ...data,execution,metrics:Object.freeze({...flow.metrics(),queryMilliseconds:monotonicNow()-start})});
++    const lifecycle={getCurrentIdentity:options.getCurrentIdentity,getCurrentModelIdentity:options.getCurrentModelIdentity,signal:options.signal,isCancelled:options.isCancelled};
++    issued.set(result,lifecycle);
++    const projection=projectTaint(result);
++    flow.check(); checkModel();
++    const final=Object.freeze({...result,evidence:projection.evidence,graph:projection.graph,
++      metrics:Object.freeze({...flow.metrics(),queryMilliseconds:monotonicNow()-start})});
++    issued.set(final,lifecycle);return final;
++  } catch(error) {
++    if(!(error instanceof QueryFailure)) throw error;
++    return Object.freeze({schemaVersion:'hex-taint-query/v1',identity:flow?.identity??null,
++      modelIdentity:options.models?.modelIdentity??null,status:'partial',reason:error.reason,
++      sinks:Object.freeze([]),values:Object.freeze([]),edges:Object.freeze([]),evidence:null,graph:null,
++      metrics:Object.freeze({...flow?.metrics(),queryMilliseconds:monotonicNow()-start})});
++  }
++}
+diff --git a/js/symbolic/taint/flow.js b/js/symbolic/taint/flow.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/taint/flow.js
+@@ -0,0 +1,107 @@
++/** One monotone taint graph over semantic value IDs; memory transports graph handles.
++ * A fixed point is computed only after the bounded executor has supplied actual
++ * byte-flow dependencies. No second alias/reaching-definition engine is involved.
++ */
++import { createQueryGuard, QueryFailure, boundedLimit } from '../memory/query-state.js';
++import { UNTAINTED, TAINT_TOP, sourceTaint, joinTaint, sameTaint, filterTaint } from './lattice.js';
++import { isTaintModels } from './models.js';
++const CEILINGS=Object.freeze({latticeValues:100000,flowEdges:200000,workItems:1000000,
++  sources:4096,sinks:4096,emittedRecords:100000});
++export function createTaintFlow(options) {
++  if(!isTaintModels(options.models)) throw new TypeError('registered immutable taint models required');
++  const guard=createQueryGuard({...options,timeoutMs:options.timeoutMs??120},CEILINGS);
++  const maxUpdates=boundedLimit(options.maxUpdates,8,8,'updatesPerValue');
++  const sourceLimit=boundedLimit(options.sourceLimit,4096,4096,'sourceLimit');
++  const nodes=new Map(), edges=[], handles=new WeakMap(), interned=new Map();
++  const sanitizers=new Map(options.models.sanitizers.map(x=>[x.valueId,x]));
++  let joinCounter=0, maxActualUpdates=0,widened=false;
++  function join(a,b) {
++    guard.take('workItems',1+(a.sources?.length??0)+(b.sources?.length??0));
++    return joinTaint(a,b,sourceLimit);
++  }
++  function ensureKey(key,semanticId=null) {
++    if(nodes.has(key)) return nodes.get(key);
++    guard.take('latticeValues');
++    const handle=Object.freeze({key});handles.set(handle,key);
++    const n={key,semanticId,handle,inputs:new Set(),outputs:new Set(),seed:UNTAINTED,state:UNTAINTED,updates:0,defined:false,sanitizer:sanitizers.get(semanticId)};
++    nodes.set(key,n);return n;
++  }
++  const clean=ensureKey('constant:clean');clean.defined=true;
++  const top=ensureKey('constant:top');top.defined=true;top.seed=TAINT_TOP;
++  function resolve(value) {
++    if(value==null) return clean;
++    if(typeof value==='object') {
++      const key=handles.get(value);if(!key) throw new QueryFailure('foreign-taint-handle');return nodes.get(key);
++    }
++    if(typeof value!=='string'||!value||value.length>1024) throw new QueryFailure('invalid-semantic-value-id');
++    return ensureKey(`value:${value}`,value);
++  }
++  function edge(input,output,kind) {
++    guard.take('workItems');
++    if(output.inputs.has(input.key)) return;
++    guard.take('flowEdges');
++    output.inputs.add(input.key);input.outputs.add(output.key);
++    edges.push(Object.freeze({from:input.key,to:output.key,kind}));
++  }
++  function value(id,inputs,kind,{unknown=false,control=null}={}) {
++    guard.check();
++    const out=resolve(id);out.defined=true;
++    if(unknown) out.seed=TAINT_TOP;
++    for(const input of inputs) if(input!=null) edge(resolve(input),out,kind);
++    if(control!=null) edge(resolve(control),out,'control');
++    return out.handle;
++  }
++  function joinHandles(...items) {
++    const inputs=items.filter(x=>x!=null).map(resolve);
++    if(!inputs.length) return clean.handle;
++    const unique=[...new Map(inputs.map(n=>[n.key,n])).values()].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
++    if(unique.length===1) return unique[0].handle;
++    const key=JSON.stringify(unique.map(n=>n.key));
++    if(interned.has(key)) return interned.get(key);
++    const out=ensureKey(`memory:${joinCounter++}`);out.defined=true;
++    for(const input of unique) edge(input,out,'memory/control-join');
++    interned.set(key,out.handle);return out.handle;
++  }
++  guard.take('sources',options.models.sources.length);guard.take('sinks',options.models.sinks.length);
++  for(const source of options.models.sources) {
++    const n=resolve(source.valueId);n.seed=join(n.seed,sourceTaint(source.id));n.defined=true;
++  }
++  for(const sink of options.models.sinks) resolve(sink.valueId);
++  function solve({partial=false}={}) {
++    guard.check();
++    for(const n of nodes.values()) if(!n.defined||partial) n.seed=TAINT_TOP;
++    guard.take('workItems',nodes.size); // Reserve the initial work-list before allocation.
++    const queue=[...nodes.keys()],queued=new Set(queue);
++    let head=0;
++    while(head<queue.length) {
++      guard.take('workItems');
++      const key=queue[head++];queued.delete(key);
++      const n=nodes.get(key);let next=UNTAINTED;
++      for(const input of n.inputs) {guard.take('workItems');next=join(next,nodes.get(input).state);}
++      if(n.sanitizer?.scope==='value') {
++        guard.take('workItems',n.sanitizer.removeSources.length+(next.sources?.length??0));
++        next=filterTaint(next,n.sanitizer.removeSources);
++      }
++      next=join(n.seed,next);
++      guard.take('workItems',1+(n.state.sources?.length??0)+(next.sources?.length??0));
++      if(sameTaint(n.state,next)) continue;
++      if(n.updates>=maxUpdates) guard.fail('budget:updatesPerValue');
++      // Widen on the last available update, retaining a conservative upper bound.
++      if(n.updates===maxUpdates-1 && next.kind!=='top') {next=TAINT_TOP;widened=true;}
++      n.state=next;n.updates++;maxActualUpdates=Math.max(maxActualUpdates,n.updates);
++      for(const out of n.outputs) if(!queued.has(out)) {
++        // Queue allocation is charged before append, including duplicate revisits.
++        guard.take('workItems');queue.push(out);queued.add(out);
++      }
++    }
++    guard.take('emittedRecords',nodes.size+edges.length+options.models.sinks.length+1); // Includes the summary evidence record.
++    const values=Object.freeze([...nodes.values()].map(n=>Object.freeze({id:n.key,valueId:n.semanticId,taint:n.state})));
++    const sinks=Object.freeze(options.models.sinks.map(s=>Object.freeze({...s,taint:resolve(s.valueId).state})));
++    guard.check();
++    return Object.freeze({values,edges:Object.freeze(edges.slice()),sinks,widened,
++      unknownSanitizers:Object.freeze(options.models.sanitizers.filter(s=>s.scope!=='value').map(s=>s.id))});
++  }
++  return Object.freeze({identity:guard.identity,value,joinHandles,solve,check:guard.check,
++    labels:Object.freeze({clean:clean.handle,unknown:top.handle,join:(a,b)=>joinHandles(a,b)}),
++    metrics:()=>Object.freeze({...guard.metrics(),updatesPerValue:maxActualUpdates})});
++}
+diff --git a/js/symbolic/taint/lattice.js b/js/symbolic/taint/lattice.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/taint/lattice.js
+@@ -0,0 +1,27 @@
++/** Finite source-set lattice: bottom (untainted), finite sets, and explicit TOP. */
++export const UNTAINTED=Object.freeze({kind:'untainted',sources:Object.freeze([])});
++export const TAINT_TOP=Object.freeze({kind:'top',sources:Object.freeze([])});
++export function sourceTaint(source) {
++  if(typeof source!=='string'||!source) throw new TypeError('taint source ID required');
++  return Object.freeze({kind:'sources',sources:Object.freeze([source])});
++}
++export function joinTaint(a,b,maxSources=4096) {
++  if(!Number.isSafeInteger(maxSources)||maxSources<0||maxSources>4096) throw new TypeError('invalid taint source limit');
++  if(!a||!b||a.kind==='top'||b.kind==='top') return TAINT_TOP;
++  const sources=new Set(a.sources);
++  for(const id of b.sources) { sources.add(id);if(sources.size>maxSources) return TAINT_TOP; }
++  if(sources.size>maxSources) return TAINT_TOP;
++  if(!sources.size) return UNTAINTED;
++  return Object.freeze({kind:'sources',sources:Object.freeze([...sources].sort())});
++}
++export function sameTaint(a,b) {
++  return a===b || !!a && !!b && a.kind===b.kind && a.sources.length===b.sources.length && a.sources.every((s,i)=>s===b.sources[i]);
++}
++// Filtering is a transfer, never an equivalence certificate. Only a registered
++// value-scoped model calls it; unknown/TOP cannot be sanitized into clean.
++export function filterTaint(value,declaredSources) {
++  if(value.kind==='top') return TAINT_TOP;
++  const removed=new Set(declaredSources);
++  const sources=value.sources.filter(s=>!removed.has(s));
++  return sources.length?Object.freeze({kind:'sources',sources:Object.freeze(sources)}):UNTAINTED;
++}
+diff --git a/js/symbolic/taint/models.js b/js/symbolic/taint/models.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/taint/models.js
+@@ -0,0 +1,35 @@
++import { stableDigest } from '../../core/identity/index.js';
++const issued=new WeakSet();
++function text(value,name) {
++  if(typeof value!=='string'||!value.trim()||value.length>1024) throw new TypeError(`invalid model ${name}`);
++  return value;
++}
++export function createTaintModels({id,version,provenance,sources=[],sinks=[],sanitizers=[]}={}) {
++  text(id,'id');text(version,'version');text(provenance,'provenance');
++  let sanitizerMemberships=0;
++  const normalize=(items,kind)=> {
++    if(!Array.isArray(items)||items.length>4096) throw new TypeError(`model ${kind} limit`);
++    const seen=new Set();
++    return Object.freeze(items.map(item=> {
++      text(item.id,'entry ID');text(item.valueId,'value ID');
++      if(seen.has(item.id)) throw new TypeError('duplicate model entry ID');seen.add(item.id);
++      const out={id:item.id,valueId:item.valueId,version:text(item.version??version,'version'),provenance:text(item.provenance??provenance,'provenance')};
++      if(kind==='sanitizers') {
++        out.scope=item.scope==='value'?'value':'unknown';
++        const remove=item.removeSources??[];
++        if(!Array.isArray(remove)||remove.length>4096) throw new TypeError('invalid sanitizer source scope');
++        sanitizerMemberships+=remove.length;
++        if(sanitizerMemberships>100000) throw new TypeError('sanitizer source membership limit');
++        out.removeSources=Object.freeze([...new Set(remove.map(s=>text(s,'source scope')))].sort());
++      }
++      return Object.freeze(out);
++    }));
++  };
++  const body={id,version,provenance,sources:normalize(sources,'sources'),sinks:normalize(sinks,'sinks'),sanitizers:normalize(sanitizers,'sanitizers')};
++  const values=new Set();
++  for(const entry of body.sanitizers) {
++    if(values.has(entry.valueId)) throw new TypeError('ambiguous sanitizer value binding');values.add(entry.valueId);
++  }
++  const result=Object.freeze({...body,modelIdentity:stableDigest(body)});issued.add(result);return result;
++}
++export function isTaintModels(value) { return issued.has(value); }
+diff --git a/js/symbolic/taint/proof-consumer.js b/js/symbolic/taint/proof-consumer.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/taint/proof-consumer.js
+@@ -0,0 +1,95 @@
++/** Pure expression adoption eligibility, NOT a decompiler transaction.
++ * The existing verification judge/session/evidence remain the only proof engine.
++ * Memory/effect transformations fail closed while #6602 owns that judge boundary.
++ */
++import { stableDigest } from '../../core/identity/index.js';
++import { createQueryGuard, QueryFailure, sameMemoryIdentity } from '../memory/query-state.js';
++import { assertMemoryExpr } from '../memory/byte-memory.js';
++import { collectSymbols, ExhaustiveBvBackend } from '../solver/exhaustive-backend.js';
++import { TieredBvBackend } from '../solver/tiered-backend.js';
++import { computeStructuralHashesBounded } from '../expr/hash.js';
++import { verifyBoundedEquivalence } from '../verify/equivalence.js';
++import { isProvedEvidence } from '../evidence/symbolic-evidence.js';
++import { isTaintQueryResult } from '../query/taint.js';
++const receipts=new WeakMap();
++function reject(reason,proof=null) {
++  return Object.freeze({eligible:false,scope:'pure-expression-only',reason,verdict:proof?.verdict??'unknown',
++    evidence:proof?.evidence??null,counterexample:proof?.evidence?.witnessModel??null});
++}
++function expressionNodes(roots,guard) {
++  const work=roots.slice(),seen=new Set(),out=[];
++  while(work.length) {
++    guard.take('workItems');const n=work.pop();if(seen.has(n)) continue;seen.add(n);out.push(n);
++    for(const key of ['arg','left','right','cond','thenExpr','elseExpr']) if(n[key]) work.push(n[key]);
++    if(n.args) for(const child of n.args) work.push(child);
++  }
++  return out;
++}
++export async function verifyDeobfuscationCandidate(candidate={}) {
++  const {before,after,identity,preconditions=[],correspondence={inputs:[]},memoryObservables,effectObservables,taintResult}=candidate;
++  if(['verified','proof','solverResult','session','backend'].some(key=>Object.hasOwn(candidate,key))) return reject('external-proof-not-accepted');
++  if(!before||!after) return reject('missing-target');
++  if(!Array.isArray(memoryObservables)||!Array.isArray(effectObservables)) return reject('missing-memory-effect-observables');
++  if(memoryObservables.length||effectObservables.length) return reject('memory-effect-judge-handoff');
++  if(!['candidateId','beforeValueId','afterValueId'].every(k=>typeof candidate[k]==='string'&&candidate[k].length>0&&candidate[k].length<=1024)) return reject('missing-candidate-value-identity');
++  if(!Array.isArray(preconditions)||preconditions.length>4096||!Array.isArray(correspondence.inputs)||correspondence.inputs.length>4096) return reject('invalid-precondition-correspondence');
++  if(taintResult && (!isTaintQueryResult(taintResult,identity)||taintResult.status!=='complete'||taintResult.unknownSanitizers.length||taintResult.sinks.some(sink=>sink.taint.kind==='top'))) return reject('incomplete-or-stale-taint');
++  const guard=createQueryGuard({...candidate,timeoutMs:candidate.timeoutMs??120},{workItems:100000});
++  let session;
++  try {
++    guard.check();
++    const roots=[before,after,...preconditions];
++    for(const expr of roots) assertMemoryExpr(expr,guard);
++    if(before.sort.kind!==after.sort.kind||before.sort.width!==after.sort.width) return reject('sort-width-mismatch');
++    if(preconditions.some(p=>p.sort.kind!=='bool')) return reject('precondition-sort');
++    const nodes=expressionNodes(roots,guard);
++    if(nodes.some(n=>n.kind==='fresh_symbol'&&n.meta?.source==='initial-byte')) return reject('memory-effect-judge-handoff');
++    const collected=collectSymbols(roots,{maxExprNodes:100000,maxExprDepth:128});
++    if(collected.unsupportedReason||collected.limitExceeded||collected.depthExceeded) return reject('unsupported-or-budgeted-expression');
++    // The shared judge has a name fallback during substitution. Distinct symbols
++    // with equal names must not reach it, even when symbolIds differ.
++    const names=new Map();
++    for(const symbol of collected.symbols) {
++      if(names.has(symbol.name)&&names.get(symbol.name)!==symbol.symbolId) return reject('ambiguous-symbol-name-handoff');
++      names.set(symbol.name,symbol.symbolId);
++    }
++    const beforeSymbols=new Set(collectSymbols([before]).symbols.map(s=>s.symbolId));
++    const afterSymbols=new Set(collectSymbols([after]).symbols.map(s=>s.symbolId));
++    const mapped=new Set();const inputs=[];
++    for(const pair of correspondence.inputs) {
++      guard.take('workItems');
++      if(!beforeSymbols.has(pair.before)||!afterSymbols.has(pair.after)||mapped.has(pair.after)) return reject('invalid-input-correspondence');
++      mapped.add(pair.after);inputs.push(Object.freeze({before:pair.before,after:pair.after}));
++    }
++    if([...afterSymbols].some(id=>!beforeSymbols.has(id)&&!mapped.has(id))) return reject('missing-input-correspondence');
++    const hashes=computeStructuralHashesBounded(roots,{maxNodes:100000});
++    if(!hashes.ok) return reject('expression-hash-budget');
++    guard.take('workItems',hashes.traversalCount);
++    const scope=Object.freeze({kind:'pure-expression-only',identity:guard.identity,candidateId:candidate.candidateId,
++      beforeValueId:candidate.beforeValueId,afterValueId:candidate.afterValueId,
++      beforeHash:hashes.hashes[0],afterHash:hashes.hashes[1],preconditionHashes:Object.freeze(hashes.hashes.slice(2)),
++      correspondence:Object.freeze(inputs),memoryObservables:Object.freeze([]),effectObservables:Object.freeze([]),
++      taint:taintResult?Object.freeze({modelIdentity:taintResult.modelIdentity,queryHash:taintResult.evidence.queryHash}):null});
++    const backend=candidate.backendTier==='tiered'?new TieredBvBackend():new ExhaustiveBvBackend();
++    if(candidate.backendTier!=null&&!['tiered','exhaustive'].includes(candidate.backendTier)) return reject('unsupported-backend');
++    session=backend.createSession({timeoutMs:candidate.timeoutMs??120,signal:candidate.signal});
++    const proof=await verifyBoundedEquivalence({beforeTarget:before,afterTarget:after,
++      correspondence:{inputs},preconditions:preconditions.slice(),memoryRegions:[],session,
++      options:{timeoutMs:candidate.timeoutMs??120,signal:candidate.signal,architecture:identity.architecture,
++        bitWidth:before.sort.width??null,proofScope:scope}});
++    guard.check();
++    if(taintResult && !isTaintQueryResult(taintResult,guard.identity)) return reject('stale-taint');
++    if(proof.verdict!=='proved'||!isProvedEvidence(proof.evidence)) return reject(proof.reasonCode??'proof-ineligible',proof);
++    const result=Object.freeze({eligible:true,scope:'pure-expression-only',verdict:'proved',reason:'proved-equivalent',
++      identity:guard.identity,binding:scope,bindingDigest:stableDigest(scope),before,after,evidence:proof.evidence});
++    receipts.set(result,{scope,taintResult,getCurrentIdentity:candidate.getCurrentIdentity,signal:candidate.signal,isCancelled:candidate.isCancelled});return result;
++  } catch(error) {
++    if(!(error instanceof QueryFailure)) throw error;
++    return reject(error.reason);
++  } finally { session?.dispose(); }
++}
++export function isAdoptableCandidate(result,{identity=result?.identity,before=result?.before,after=result?.after}={}) {
++  const receipt=receipts.get(result);
++  if(!receipt||!sameMemoryIdentity(identity,result.identity)||before!==result.before||after!==result.after) return false;
++  return (!receipt.taintResult || isTaintQueryResult(receipt.taintResult,identity)) && !receipt.signal?.aborted && !receipt.isCancelled?.() && (!receipt.getCurrentIdentity || sameMemoryIdentity(identity,receipt.getCurrentIdentity()));
++}
+diff --git a/js/symbolic/translate/index.js b/js/symbolic/translate/index.js
+--- a/js/symbolic/translate/index.js
++++ b/js/symbolic/translate/index.js
+@@ -7,3 +7,4 @@
+ export * from './support-matrix.js';
+ export * from './slice.js';
+ export * from './semantic-ir.js';
++export * from './memory.js';
+diff --git a/js/symbolic/translate/memory.js b/js/symbolic/translate/memory.js
+new file mode 100644
+--- /dev/null
++++ b/js/symbolic/translate/memory.js
+@@ -0,0 +1,137 @@
++/** Execution-state bridge. Scalar meaning still belongs to translateSemanticIR.
++ * Translate one ordinary IR instruction using placeholder SSA arguments, then
++ * substitute already evaluated canonical values (never legacy SYM lookalikes).
++ * Shared semantic-ir.js remains unchanged; this is the memory-enabled executor route.
++ */
++import { OP, MK } from '../../ir-base.js';
++import { translateSemanticIR } from './semantic-ir.js';
++import { createBv, createBool, createUnknownSemantic, bvSort, evaluateExpr } from '../expr/index.js';
++import { collectSymbols } from '../solver/exhaustive-backend.js';
++import { QueryFailure } from '../memory/query-state.js';
++const undef = (bits,reason) => createUnknownSemantic(bvSort(bits),reason);
++function validWidth(bits) {
++  if(typeof bits!=='number'||!Number.isSafeInteger(bits)||bits<1||bits>64) throw new QueryFailure('invalid-value-width');
++  return bits;
++}
++function substitute(node,args) {
++  if(node.kind==='fresh_symbol') return args[node.meta.argIndex] ?? node;
++  if(['const','unknown_semantic'].includes(node.kind)) return node;
++  const copy={...node};
++  for(const key of ['arg','left','right','cond','thenExpr','elseExpr']) if(node[key]) copy[key]=substitute(node[key],args);
++  if(node.args) copy.args=Object.freeze(node.args.map(x=>substitute(x,args)));
++  return Object.freeze(copy);
++}
++export function translateMemoryScalar(inst,args,bits) {
++  validWidth(bits);
++  if([OP.BIN,OP.UN].includes(inst.op) && (typeof (inst.subOp ?? inst.sub ?? inst.name)!=='string' || !(inst.subOp ?? inst.sub ?? inst.name).trim())) return undef(bits,'missing-or-invalid-scalar-operation');
++  // Unsupported compound/flag selection requires the shared translator owner.
++  if(inst.op===OP.SEL) return undef(bits,'memory-select-needs-canonical-condition');
++  if(args.some(x=>!x?.sort || (x.sort.kind==='bv' && x.sort.width!==bits))) return undef(bits,'scalar-input-width-mismatch');
++  const template={...inst,subOp:inst.subOp ?? inst.sub,args:args.map((_,i)=>({value:{id:`memory-slot-${i}`,kind:'arg',reg:`memory-slot-${i}`,index:i,bits}}))};
++  const translated=translateSemanticIR(template,{bitWidth:bits});
++  if(translated.status!=='exact') return translated.expression ?? undef(bits,'unsupported-scalar-translation');
++  const expression=substitute(translated.expression,args);
++  // Keep the existing concrete evaluator as the only constant-folding authority.
++  const shape=collectSymbols([expression],{maxExprNodes:4096,maxExprDepth:128});
++  if(shape.limitExceeded||shape.depthExceeded) throw new QueryFailure('scalar-expression-budget');
++  const result=evaluateExpr(expression);
++  return result.status==='value' ? (expression.sort.kind==='bv'?createBv(bits,result.value):createBool(result.value)) : expression;
++}
++export function translateExecutionValue(value,state,options={},active=new Set()) {
++  state.byteMemory?.chargeExecution();
++  if(typeof value?.id !== 'string' || !value.id || value.id.length > 1024) throw new QueryFailure('missing-semantic-value-id');
++  const bits=validWidth(value.bits);
++  if(state.values.has(value.id)) {
++    const cached=state.values.get(value.id);
++    if(cached?.sort?.kind==='bv' && cached.sort.width!==bits) throw new QueryFailure('semantic-value-width-conflict');
++    return cached;
++  }
++  if(active.has(value.id)||active.size>=64) throw new QueryFailure('value-cycle-or-depth');
++  active.add(value.id);
++  let expression, inputs=[];
++  if(value.const!=null || value.kind==='arg') {
++    if(state.scalarCache.has(value.id)) {
++      expression=state.scalarCache.get(value.id);
++      if(expression.sort.width!==bits) throw new QueryFailure('semantic-value-width-conflict');
++    }
++    else {
++      const index=value.index ?? (/^x[0-9]+$/.test(value.reg ?? '')?Number(value.reg.slice(1)):null);
++      const custom=options.symbolicArgs?.[index] ?? options.symbolicArgs?.[value.reg];
++      if(custom!=null && !['bigint','number','string'].includes(typeof custom)) throw new QueryFailure('unsupported-configured-argument');
++      if(typeof value.const==='number'&&!Number.isSafeInteger(value.const)||typeof custom==='number'&&!Number.isSafeInteger(custom)) throw new QueryFailure('unsafe-integer');
++      expression=translateSemanticIR(value,{bitWidth:bits,symbolicArgs:options.symbolicArgs}).expression;
++      state.scalarCache.set(value.id,expression);
++    }
++  } else if(value.def?.op===OP.LOAD) expression=undef(bits,'load-not-executed');
++  else if(value.def?.op===OP.PHI) {
++    const matches=(value.def.incoming??[]).filter(x=>x.from===state.prevBlock);
++    if(matches.length!==1) expression=undef(bits,'ambiguous-phi');
++    else { inputs=[matches[0].value.id];expression=translateExecutionValue(matches[0].value,state,options,active); }
++  } else if(value.def) {
++    state.byteMemory?.chargeExecution((value.def.args??[]).length,(value.def.args??[]).length);
++    const args=(value.def.args??[]).map(a=>a.value);
++    inputs=args.map(v=>v?.id);
++    expression=translateMemoryScalar(value.def,args.map(v=>translateExecutionValue(v,state,options,active)),bits);
++  } else expression=undef(bits,'value-without-definition');
++  active.delete(value.id);
++  state.taint?.value(value.id,inputs,'data',{unknown:expression?.kind==='unknown_semantic',control:state.control});
++  return expression;
++}
++export function translateMemoryAccess(inst,state,options={}) {
++  const memory=state.byteMemory;
++  const size=inst.loc?.size ?? inst.addr?.size ?? inst.extra?.size;
++  if(![1,2,4,8].includes(size)) throw new QueryFailure('unsupported-access-width');
++  const descriptor=inst.extra?.memoryAccess;
++  for(const width of [inst.loc?.size,inst.addr?.size,inst.extra?.size]) {
++    if(width!=null && width!==size) throw new QueryFailure('memory-width-mismatch');
++  }
++  for(const bits of [inst.addr?.widthBits,inst.extra?.widthBits,descriptor?.widthBits]) {
++    if(bits!=null && bits!==size*8) throw new QueryFailure('memory-width-mismatch');
++  }
++  for(const space of [inst.loc?.addressSpace,inst.addr?.addressSpace,descriptor?.addressSpace]) {
++    if(space!=null && space!==memory.identity.addressSpace) throw new QueryFailure('address-space-mismatch');
++  }
++  if(inst.addr?.precise===false || inst.extra?.addressPrecise===false) throw new QueryFailure('unresolved-memory-address');
++  // Consume the actual v2→v1 descriptor. Unknown qualifiers are not authority for
++  // ordinary memory, even when a legacy location key looks precise.
++  if(descriptor) {
++    if(descriptor.volatility===true) throw new QueryFailure('volatile-barrier');
++    if(descriptor.atomic===true) throw new QueryFailure('atomic-barrier');
++    if(descriptor.volatility!==false || descriptor.atomic!==false || descriptor.ordering!=null && !['unknown','none'].includes(descriptor.ordering)) throw new QueryFailure('unknown-memory-qualifiers');
++    if(descriptor.endian!==memory.endian) throw new QueryFailure('memory-endian-mismatch');
++  }
++  let address, addressIds=[];
++  // Absolute locations and the existing generic base+displacement IR contract only.
++  // No name-based FIELD/STACK alias inference and no ISA index/extension decoding.
++  if(inst.loc?.kind===MK.GLOBAL && inst.loc.address!=null) address=inst.loc.address;
++  else if(inst.addr?.base && !inst.addr.index && inst.addr.disp!=null) {
++    addressIds=[inst.addr.base.id];
++    address=translateExecutionValue(inst.addr.base,state,options);
++    if(address.sort?.kind!=='bv'||address.sort.width!==memory.addressBits) throw new QueryFailure('address-width-mismatch');
++    const disp=inst.addr.disp;
++    if(typeof disp!=='bigint' && !(typeof disp==='number'&&Number.isSafeInteger(disp))) throw new QueryFailure('unsafe-displacement');
++    if(BigInt(disp)!==0n) {
++      if(memory.wrapping==='reject' && (address.kind!=='const' || address.value+BigInt(disp)<0n || address.value+BigInt(disp)>=(1n<<BigInt(memory.addressBits)))) {
++        throw new QueryFailure('effective-address-wrap-unproved');
++      }
++      address=translateMemoryScalar({op:OP.BIN,subOp:'add'},[address,createBv(memory.addressBits,disp)],memory.addressBits);
++    }
++  } else throw new QueryFailure('unresolved-memory-address');
++  const access={identity:memory.identity,addressSpace:inst.loc?.addressSpace,
++    volatile:[inst.volatile,inst.extra?.volatile,inst.loc?.volatile].some(value=>value!=null&&value!==false),
++    atomic:[inst.atomic,inst.extra?.atomic,inst.loc?.atomic].some(value=>value!=null&&value!==false)};
++  if(inst.op===OP.LOAD) {
++    if(inst.dst?.bits!==size*8) throw new QueryFailure('load-width-mismatch');
++    const result=memory.load(address,size,access);
++    if(!result.expression) throw new QueryFailure(result.reason);
++    state.taint?.value(inst.dst.id,[result.label,...addressIds],'memory-load',{control:state.control});
++    return result.expression;
++  }
++  if(inst.op!==OP.STORE) throw new QueryFailure('not-memory-instruction');
++  const v=inst.args?.[0]?.value;
++  const expression=translateExecutionValue(v,state,options);
++  const label=state.taint?.joinHandles(v.id,...addressIds,state.control);
++  const result=memory.store(address,size,expression,{...access,label});
++  if(result.status!=='stored') throw new QueryFailure(result.reason);
++  return expression;
++}
+diff --git a/tests/final-closure/t033/performance-fixtures.mjs b/tests/final-closure/t033/performance-fixtures.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/final-closure/t033/performance-fixtures.mjs
+@@ -0,0 +1,57 @@
++import assert from 'node:assert/strict';
++import { performance } from 'node:perf_hooks';
++import { symbolicExecute, expr as E } from '../../../js/symbolic/index.js';
++import { collectSymbols } from '../../../js/symbolic/solver/exhaustive-backend.js';
++import { OP, MK } from '../../../js/ir.js';
++import { identity, integrationFixture } from '../../phase9/taint/fixtures.mjs';
++
++export function memoryFixture({endian='little',partial=false}={}) {
++  const loc=(address,size)=>({kind:MK.GLOBAL,address,size,key:`global:${address}:size:${size}`});
++  const word={id:'word',const:0x11223344n,bits:32},byte={id:'byte',const:0xaan,bits:8},out={id:'out',bits:32};
++  const store={id:'store',op:OP.STORE,loc:loc(0n,4),args:[{value:word}],row:0,address:0n};
++  const overwrite={id:'overwrite',op:OP.STORE,loc:loc(1n,1),args:[{value:byte}],row:1,address:4n};
++  const load={id:'load',op:OP.LOAD,loc:loc(0n,4),args:[],dst:out,row:2,address:8n};out.def=load;
++  const ret={id:'return',op:OP.RET,args:[{value:out}],row:3,address:12n};
++  const insts=partial?[store,overwrite,load,ret]:[store,load,ret];
++  return {ir:{entry:0,blocks:[{index:0,insts,succ:[]}],instructions:insts},options:{byteMemory:{identity,addressBits:8,endian}}};
++}
++export function aggregateTrials(trials) {
++  const keys=new Set(trials.flatMap(trial=>Object.keys(trial.metrics)));
++  return Object.fromEntries([...keys].map(key=>[key,Math.max(...trials.map(trial=>trial.metrics[key]??NaN))]));
++}
++export function measureMemoryCase(caseId) {
++  const started=performance.now(),trials=[];
++  const run=(ir,options)=> { const result=symbolicExecute(ir,options);trials.push(result);return result; };
++  const {ir,options}=memoryFixture({endian:caseId==='big-endian-full-load'?'big':'little',partial:caseId==='partial-overwrite'});
++  if(['little-endian-full-load','big-endian-full-load','partial-overwrite'].includes(caseId)) {
++    const r=run(ir,options);assert.equal(r.status,'complete',r.reason);
++    assert.equal(r.paths[0].returnValue.value,caseId==='partial-overwrite'?0x1122aa44n:0x11223344n);
++  } else if(caseId==='concrete-to-symbolic-escalation') {
++    const pointer={id:'pointer',kind:'arg',reg:'x0',index:0,bits:8};
++    ir.blocks[0].insts.splice(1,0,{id:'symbolic-store',op:OP.STORE,loc:{kind:MK.UNKNOWN,size:1},addr:{base:pointer,disp:0n,size:1},args:[{value:{id:'new-byte',const:0xaan,bits:8}}]});
++    const r=run(ir,options);assert.equal(r.status,'complete',r.reason);
++    const expression=r.paths[0].returnValue,symbols=collectSymbols([expression]).symbols;
++    assert.equal(symbols.length,1);const pointerSymbol=symbols[0];
++    for(const [address,expected] of [[0n,0x112233aan],[1n,0x1122aa44n],[8n,0x11223344n]]) {
++      assert.equal(E.evaluateExpr(expression,{[pointerSymbol.symbolId]:address}).value,expected);
++    }
++  } else if(caseId==='may-alias-fork') {
++    const fixture=integrationFixture();
++    fixture.blocks[0].insts[1].addr.base={id:'other',kind:'arg',index:3,reg:'x3',bits:8};
++    const r=run(fixture,{byteMemory:{identity,addressBits:8,wrapping:'modular'}});
++    assert.equal(r.status,'complete',r.reason);assert.equal(r.paths.length,2);assert.ok(r.metrics.aliasForks>0);
++  } else if(caseId==='unknown-clobber') {
++    ir.blocks[0].insts.splice(1,0,{id:'clobber',op:OP.CLOBBER,args:[]});
++    const r=run(ir,options);assert.equal(r.status,'partial');assert.equal(r.paths.length,0);
++  } else if(caseId==='volatile-barrier'||caseId==='atomic-barrier') {
++    ir.blocks[0].insts[1][caseId==='volatile-barrier'?'volatile':'atomic']=true;
++    const r=run(ir,options);assert.equal(r.status,'partial');assert.equal(r.reason,caseId);assert.equal(r.paths.length,0);
++  } else if(caseId==='cancel-replay') {
++    let checks=0;const stopped=run(ir,{...options,isCancelled:()=>++checks>30});
++    assert.equal(stopped.status,'partial');assert.equal(stopped.reason,'cancelled');assert.equal(stopped.paths.length,0);
++    const replay=run(ir,options);assert.equal(replay.status,'complete');assert.equal(replay.paths[0].returnValue.value,0x11223344n);
++  } else throw new Error(`unimplemented locked case: ${caseId}`);
++  const metrics=aggregateTrials(trials);
++  metrics.wallClock=performance.now()-started;
++  return {caseId,metrics,trials:trials.map(result=>({status:result.status,reason:result.reason,metrics:result.metrics})),assertions:'executed'};
++}
+diff --git a/tests/final-closure/t033/performance.test.mjs b/tests/final-closure/t033/performance.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/final-closure/t033/performance.test.mjs
+@@ -0,0 +1,27 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import path from 'node:path';
++import { stableDigest } from '../../../js/core/identity/index.js';
++import { measureMemoryCase } from './performance-fixtures.mjs';
++const locks=JSON.parse(fs.readFileSync(new URL('../../../specs/005-analysis-final-closure/contracts/performance-locks.json',import.meta.url),'utf8'));
++test('P-SYMMEM: locked nine cases measured through the production executor (Node only)',()=>{
++  const lock=locks.profiles['P-SYMMEM'];
++  assert.equal(stableDigest(lock.fixtureSet.descriptor),lock.fixtureSet.stableDigest);
++  assert.equal(lock.fixtureSet.descriptor.caseCount,9);
++  const cases=lock.fixtureSet.descriptor.cases.map(measureMemoryCase);
++  assert.equal(cases.length,9);
++  for(const row of cases) for(const threshold of lock.blockingThresholds) {
++    assert.equal(threshold.operator,'<=');
++    assert.ok(Number.isFinite(row.metrics[threshold.metric]),`${row.caseId}: missing ${threshold.metric}`);
++    assert.ok(row.metrics[threshold.metric]<=threshold.threshold,`${row.caseId}: ${threshold.metric}=${row.metrics[threshold.metric]}`);
++  }
++  const record={profile:'P-SYMMEM',fixtureSet:lock.fixtureSet,thresholds:lock.blockingThresholds,environment:{runtime:process.version,platform:process.platform,architecture:process.arch},
++    metricAggregation:'maximum count per constituent query; wallClock is measured case elapsed time including checks/replay',
++    officialCollector:'NOT RUN',iPadWebKit:'NOT RUN',cases};
++  if(process.env.HEX_002_METRICS_DIR) {
++    fs.mkdirSync(process.env.HEX_002_METRICS_DIR,{recursive:true});
++    fs.writeFileSync(path.join(process.env.HEX_002_METRICS_DIR,'P-SYMMEM.node.json'),JSON.stringify(record,null,2)+'\n');
++  }
++  console.log(`P-SYMMEM_NODE ${JSON.stringify(cases.map(row=>({caseId:row.caseId,metrics:row.metrics})))}`);
++});
+diff --git a/tests/final-closure/t034/performance.test.mjs b/tests/final-closure/t034/performance.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/final-closure/t034/performance.test.mjs
+@@ -0,0 +1,67 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import path from 'node:path';
++import { performance } from 'node:perf_hooks';
++import { stableDigest } from '../../../js/core/identity/index.js';
++import { queryTaint,createTaintModels,verifyDeobfuscationCandidate,expr as E } from '../../../js/symbolic/index.js';
++import { identity,scalarFixture,integrationFixture } from '../../phase9/taint/fixtures.mjs';
++import { aggregateTrials } from '../t033/performance-fixtures.mjs';
++const locks=JSON.parse(fs.readFileSync(new URL('../../../specs/005-analysis-final-closure/contracts/performance-locks.json',import.meta.url),'utf8'));
++const simpleModels=extra=>createTaintModels({id:'perf',version:'1',provenance:'owned:locked-fixtures',sources:[{id:'external',valueId:'input'}],sinks:[{id:'sink',valueId:'out'}],...extra});
++async function measureCase(caseId) {
++  const started=performance.now(),trials=[];let proof=null;
++  const run=(ir,options)=>{const result=queryTaint(ir,{identity,...options});trials.push(result);return result;};
++  if(['implicit-control-flow','byte-memory-flow','may-alias-store'].includes(caseId)) {
++    const ir=integrationFixture();
++    if(caseId==='may-alias-store') ir.blocks[0].insts[1].addr.base={id:'other',kind:'arg',index:3,reg:'x3',bits:8};
++    const models=createTaintModels({id:'byte-flow',version:'1',provenance:'owned:locked-fixtures',sources:[{id:'external',valueId:'byte'}],sinks:[{id:'sink',valueId:caseId==='implicit-control-flow'?'no':'final'}]});
++    const r=run(ir,{models,memory:{addressBits:8,wrapping:'modular'}});
++    assert.equal(r.status,'complete',r.reason);assert.notEqual(r.sinks[0].taint.kind,'untainted');assert.ok(r.evidence);
++    if(caseId==='implicit-control-flow') assert.ok(r.edges.some(edge=>edge.kind==='control'));
++  } else if(caseId==='known-sanitizer'||caseId==='unknown-sanitizer') {
++    const known=caseId==='known-sanitizer';
++    const models=simpleModels({sanitizers:[{id:'sanitize',valueId:'out',scope:known?'value':'unreviewed',removeSources:['external'],clean:true}]});
++    const r=run(scalarFixture(),{models,memory:{addressBits:8}});assert.equal(r.status,'complete',r.reason);
++    assert.equal(r.sinks[0].taint.kind,known?'untainted':'sources');
++  } else if(caseId==='cancel-replay') {
++    const models=simpleModels();let checks=0;
++    const r=run(scalarFixture(),{models,memory:{addressBits:8},isCancelled:()=>++checks>20});
++    assert.equal(r.status,'partial');assert.equal(r.reason,'cancelled');assert.equal(r.evidence,null);
++    const replay=run(scalarFixture(),{models,memory:{addressBits:8}});assert.equal(replay.status,'complete');assert.ok(replay.evidence);
++  } else if(['explicit-data-flow','proof-timeout','proven-deobfuscation'].includes(caseId)) {
++    const r=run(scalarFixture(),{models:simpleModels(),memory:{addressBits:8}});
++    assert.equal(r.status,'complete');assert.deepEqual(r.sinks[0].taint.sources,['external']);
++    if(caseId!=='explicit-data-flow') {
++      const x=E.createFreshSymbol(E.bvSort(4),'proof-input');
++      const proofStart=performance.now();
++      const result=await verifyDeobfuscationCandidate({candidateId:caseId,beforeValueId:'before',afterValueId:'after',identity,
++        before:E.createBinary('add',x,x),after:E.createBinary('shl',x,E.createBv(4,1)),memoryObservables:[],effectObservables:[],taintResult:r,
++        timeoutMs:caseId==='proof-timeout'?0:120});
++      proof={eligible:result.eligible,verdict:result.verdict,reason:result.reason,elapsedMilliseconds:performance.now()-proofStart,proofAuthority:result.evidence?.proofAuthority??null};
++      assert.equal(result.eligible,caseId==='proven-deobfuscation');
++      if(caseId==='proof-timeout') assert.equal(result.reason,'deadline');
++    }
++  } else throw new Error(`unimplemented locked case: ${caseId}`);
++  return {caseId,metrics:{...aggregateTrials(trials),phase8OptimizeStage:null},ownedCaseMilliseconds:performance.now()-started,
++    proof,trials:trials.map(r=>({status:r.status,reason:r.reason,metrics:r.metrics})),assertions:'executed'};
++}
++test('P-TAINT: locked nine cases and actual counts; phase8OptimizeStage explicitly NOT RUN',async()=>{
++  const lock=locks.profiles['P-TAINT'];assert.equal(stableDigest(lock.fixtureSet.descriptor),lock.fixtureSet.stableDigest);
++  assert.equal(lock.fixtureSet.descriptor.caseCount,9);
++  const cases=[];for(const caseId of lock.fixtureSet.descriptor.cases) cases.push(await measureCase(caseId));
++  for(const row of cases) for(const threshold of lock.blockingThresholds) {
++    if(threshold.metric==='phase8OptimizeStage') {assert.equal(row.metrics.phase8OptimizeStage,null);continue;}
++    assert.equal(threshold.operator,'<=');
++    assert.ok(Number.isFinite(row.metrics[threshold.metric]),`${row.caseId}: missing ${threshold.metric}`);
++    assert.ok(row.metrics[threshold.metric]<=threshold.threshold,`${row.caseId}: ${threshold.metric}=${row.metrics[threshold.metric]}`);
++  }
++  const record={profile:'P-TAINT',fixtureSet:lock.fixtureSet,thresholds:lock.blockingThresholds,environment:{runtime:process.version,platform:process.platform,architecture:process.arch},
++    metricAggregation:'maximum counter per constituent query; ownedCaseMilliseconds is NOT phase8OptimizeStage',
++    notRun:{phase8OptimizeStage:'No phase8 optimizer callsite is modified by this owned patch',officialCollector:'NOT RUN',iPadWebKit:'NOT RUN'},cases};
++  if(process.env.HEX_002_METRICS_DIR) {
++    fs.mkdirSync(process.env.HEX_002_METRICS_DIR,{recursive:true});
++    fs.writeFileSync(path.join(process.env.HEX_002_METRICS_DIR,'P-TAINT.node.json'),JSON.stringify(record,null,2)+'\n');
++  }
++  console.log(`P-TAINT_NODE ${JSON.stringify(cases.map(row=>({caseId:row.caseId,metrics:row.metrics,ownedCaseMilliseconds:row.ownedCaseMilliseconds,proof:row.proof})))}`);
++});
+diff --git a/tests/phase9/memory/backend-executor.test.mjs b/tests/phase9/memory/backend-executor.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/memory/backend-executor.test.mjs
+@@ -0,0 +1,99 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { createByteMemory, symbolicExecute, expr as E, solver, verify } from '../../../js/symbolic/index.js';
++import { OP } from '../../../js/ir.js';
++import { identity, integrationFixture, scalarFixture } from '../taint/fixtures.mjs';
++import { memoryFixture } from '../../final-closure/t033/performance-fixtures.mjs';
++
++test('bounded byte-memory formulas are consumed by the existing actual backend',async()=>{
++  const m=createByteMemory({identity,addressBits:2,initialBytes:[[0n,0n],[1n,1n],[2n,2n],[3n,3n]]});
++  const p=E.createFreshSymbol(E.bvSort(2),'p'),q=E.createFreshSymbol(E.bvSort(2),'q');
++  assert.equal(m.store(p,1,99n).status,'stored');const read=m.load(q,1);assert.ok(read.expression,read.reason);
++  const session=new solver.ExhaustiveBvBackend().createSession();
++  try {
++    const query=verify.createVerificationQuery({kind:verify.VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,claimKind:verify.CLAIM_KIND.EDGE_FEASIBLE,
++      targetEntity:'byte-read-over-write',constraints:[E.createCompare('eq',p,q)],assertion:E.createCompare('ne',read.expression,E.createBv(8,99))});
++    const result=await session.check(query);assert.equal(result.status,'unsat');
++    const alternative=verify.createVerificationQuery({kind:verify.VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,claimKind:verify.CLAIM_KIND.EDGE_FEASIBLE,
++      targetEntity:'byte-may-alias',assertion:E.createCompare('ne',read.expression,E.createBv(8,99))});
++    const witness=await session.check(alternative);assert.equal(witness.status,'sat');assert.equal(verify.validateSatModel(alternative,witness.model).valid,true);
++  } finally {session.dispose();}
++});
++test('concrete-only default executor parity and bounded canonical replay',()=>{
++  for(const endian of ['little','big']) {
++    const {ir,options}=memoryFixture({endian});
++    const legacy=symbolicExecute(ir),first=symbolicExecute(ir,options),second=symbolicExecute(ir,options);
++    assert.equal(first.status,'complete');assert.equal(first.paths[0].returnValue.value,legacy.paths[0].returnValue.value);
++    assert.deepEqual(first.paths,second.paths);
++  }
++});
++test('executor limit N-1/N/N+1 uses measured paths, steps, branches and visits',()=>{
++  const ir=integrationFixture(),byteMemory={identity,addressBits:8,wrapping:'modular'};
++  const base=symbolicExecute(ir,{byteMemory});assert.equal(base.status,'complete');
++  for(const [option,metric] of [['maxPaths','paths'],['maxSteps','stepsPerPath'],['maxBranches','branches'],['maxBlockVisits','blockVisitsPerBlock']]) {
++    const count=base.metrics[metric];
++    const low=symbolicExecute(ir,{byteMemory,[option]:count-1});assert.equal(low.status,'partial',option);assert.equal(low.paths.length,0);
++    for(const n of [count,count+1]) assert.equal(symbolicExecute(ir,{byteMemory,[option]:n}).status,'complete',option);
++  }
++});
++test('production rejects unresolved stores, width laundering and malformed flags',()=>{
++  const {ir,options}=memoryFixture();ir.blocks[0].insts[0].loc=null;
++  assert.equal(symbolicExecute(ir,options).status,'partial');
++  const bad=memoryFixture();bad.ir.blocks[0].insts[1].dst.bits=8;
++  assert.equal(symbolicExecute(bad.ir,bad.options).reason,'load-width-mismatch');
++  const flag=memoryFixture();flag.ir.blocks[0].insts[1].volatile='unknown';
++  assert.equal(symbolicExecute(flag.ir,flag.options).reason,'volatile-barrier');
++  const unsafe=scalarFixture();unsafe.blocks[0].insts[0].args[0].value.const=Number.MAX_SAFE_INTEGER+1;
++  assert.equal(symbolicExecute(unsafe,{byteMemory:{identity,addressBits:8}}).reason,'unsafe-integer');
++});
++test('preflight rejects oversized IR before making an address map',()=>{
++  const ir=scalarFixture();ir.blocks=Array(20).fill(ir.blocks[0]);
++  const r=symbolicExecute(ir,{byteMemory:{identity,addressBits:8,limits:{workItems:10}}});
++  assert.equal(r.status,'partial');assert.equal(r.reason,'budget:workItems');assert.equal(r.metrics.stepsPerPath,0);
++});
++test('nonmatching and duplicate PHI predecessor bindings cannot produce exact values',()=>{
++  for(const incoming of [[{from:99,value:{id:'wrong',const:0n,bits:8}}],[{from:1,value:{id:'one',const:1n,bits:8}},{from:1,value:{id:'two',const:2n,bits:8}}]]) {
++    const ir=integrationFixture();ir.blocks[3].phis[0].incoming=incoming;
++    const r=symbolicExecute(ir,{byteMemory:{identity,addressBits:8,wrapping:'modular'}});
++    assert.equal(r.status,'partial');assert.equal(r.reason,'ambiguous-phi');
++  }
++});
++
++test('actual compatibility memoryAccess qualifiers and addr space are not silently ignored',()=>{
++  const descriptor={widthBits:32,addressSpace:'data',endian:'little',atomic:false,volatility:false,ordering:'unknown'};
++  for(const [change,reason] of [
++    [{atomic:true},'atomic-barrier'],[{volatility:true},'volatile-barrier'],
++    [{atomic:null},'unknown-memory-qualifiers'],[{volatility:null},'unknown-memory-qualifiers'],
++    [{endian:'big'},'memory-endian-mismatch'],[{addressSpace:'code'},'address-space-mismatch'],
++    [{widthBits:64},'memory-width-mismatch'],
++  ]) {
++    const {ir,options}=memoryFixture();ir.blocks[0].insts[1].extra={memoryAccess:{...descriptor,...change}};
++    const result=symbolicExecute(ir,options);assert.equal(result.status,'partial');assert.equal(result.reason,reason);
++  }
++  const good=memoryFixture();good.ir.blocks[0].insts[1].extra={memoryAccess:descriptor};
++  assert.equal(symbolicExecute(good.ir,good.options).status,'complete');
++  const space=memoryFixture();space.ir.blocks[0].insts[1].addr={addressSpace:'code'};
++  assert.equal(symbolicExecute(space.ir,space.options).reason,'address-space-mismatch');
++  const imprecise=memoryFixture();imprecise.ir.blocks[0].insts[1].addr={precise:false};
++  assert.equal(symbolicExecute(imprecise.ir,imprecise.options).reason,'unresolved-memory-address');
++});
++
++test('existing FunctionSandbox.symbolic callsite reaches the canonical byte executor',async()=>{
++  const {FunctionSandbox}=await import('../../../js/symbolic/index.js');
++  const {ir,options}=memoryFixture({partial:true});
++  const r=new FunctionSandbox().symbolic(ir,options);
++  assert.equal(r.status,'complete');assert.equal(r.paths[0].returnValue.value,0x1122aa44n);
++  assert.equal(r.identity.snapshotId,identity.snapshotId);
++});
++
++test('unrecognized instructions and legacy lookalike input objects cannot mint exact execution',()=>{
++  const ir=scalarFixture();ir.blocks[0].insts.splice(1,0,{id:'unknown-effect',op:'unrecognized-effect',args:[]});
++  assert.equal(symbolicExecute(ir,{byteMemory:{identity,addressBits:8}}).status,'partial');
++  for(const configured of [{kind:'const',value:7n},Object.freeze({kind:'symbol',name:'x'}),false]) {
++    const r=symbolicExecute(scalarFixture(),{byteMemory:{identity,addressBits:8},symbolicArgs:{0:configured}});
++    assert.equal(r.status,'partial');assert.equal(r.reason,'unsupported-configured-argument');
++  }
++  const missing=scalarFixture();missing.blocks[0].insts[0].op=OP.BIN;
++  missing.blocks[0].insts[0].args.push({value:{id:'one',bits:8,const:1n}});
++  assert.equal(symbolicExecute(missing,{byteMemory:{identity,addressBits:8}}).status,'partial');
++});
+diff --git a/tests/phase9/memory/byte-memory-production.test.mjs b/tests/phase9/memory/byte-memory-production.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/memory/byte-memory-production.test.mjs
+@@ -0,0 +1,22 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { symbolicExecute } from '../../../js/symbolic/executor.js';
++import { OP, MK } from '../../../js/ir.js';
++export const identity = Object.freeze({queryId:'q002',snapshotId:'snapshot-1',binaryId:'binary-1',functionId:'f1',architecture:'generic',addressSpace:'data',semanticsVersion:'2.0.0'});
++export function fixture(endian='little') {
++  const loc=(address,size)=>({kind:MK.GLOBAL,address,size,key:`global:${address}:size:${size}`});
++  const a={id:'a',const:0x11223344n,bits:32};
++  const b={id:'b',const:0xaan,bits:8};
++  const dst={id:'loaded',bits:32};
++  const insts=[
++    {id:'s0',op:OP.STORE,loc:loc(0x100n,4),args:[{value:a}],row:0},
++    {id:'s1',op:OP.STORE,loc:loc(0x101n,1),args:[{value:b}],row:1},
++    {id:'l0',op:OP.LOAD,loc:loc(0x100n,4),args:[],dst,row:2},
++    {id:'r0',op:OP.RET,args:[{value:dst}],row:3},
++  ]; dst.def=insts[2];
++  return {ir:{entry:0,blocks:[{index:0,insts,succ:[]}],instructions:insts},options:{byteMemory:{identity,addressBits:64,endian}}};
++}
++test('T033 first counterexample: production executor observes a one-byte overwrite',()=>{
++  const {ir,options}=fixture(); const r=symbolicExecute(ir,options);
++  assert.equal(r.paths[0]?.returnValue?.value,0x1122aa44n);
++});
+diff --git a/tests/phase9/memory/byte-memory.test.mjs b/tests/phase9/memory/byte-memory.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/memory/byte-memory.test.mjs
+@@ -0,0 +1,118 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { createByteMemory, joinByteMemory } from '../../../js/symbolic/memory/byte-memory.js';
++import * as E from '../../../js/symbolic/expr/index.js';
++export const identity=Object.freeze({queryId:'m-test',snapshotId:'s1',binaryId:'b',functionId:'f',architecture:'generic',addressSpace:'data',semanticsVersion:'2'});
++const mem=(options={})=>createByteMemory({identity,...options});
++const value=(r,env)=>{assert.ok(r.expression,r.reason);const e=E.evaluateExpr(r.expression,env);assert.equal(e.status,'value');return e.value;};
++for(const endian of ['little','big']) for(const size of [1,2,4,8]) {
++  test(`byte memory: ${endian} ${size} byte parity and partial overwrite`,()=>{
++    const m=mem({endian});const n=BigInt.asUintN(size*8,0xfedcba9876543210n);
++    assert.equal(m.store(0x100n,size,n).status,'stored');assert.equal(value(m.load(0x100n,size)),n);
++    const i=size-1;m.store(0x100n+BigInt(i),1,0xaan);
++    const shift=BigInt((endian==='little'?i:size-1-i)*8);
++    const expected=(n&~(255n<<shift))|(0xaan<<shift);
++    assert.equal(value(m.load(0x100n,size)),expected);
++  });
++}
++test('escalation preserves old bytes, prior reads, and write order',()=>{
++  const m=mem({addressBits:8});m.store(4n,2,0x1234n);const before=m.load(4n,2);
++  const p=E.createFreshSymbol(E.bvSort(8),'p');m.store(p,1,0xeen);
++  assert.equal(value(before),0x1234n);
++  for(const a of [4n,5n,6n]) assert.equal(value(m.load(4n,2),{[p.symbolId]:a}),a===4n?0x12een:a===5n?0xee34n:0x1234n);
++  m.store(4n,1,0x77n);assert.equal(value(m.load(4n,1),{[p.symbolId]:4n}),0x77n);
++});
++test('unknown initial bytes form one function, not zero or independent symbols',()=>{
++  const m=mem({addressBits:2}),p=E.createFreshSymbol(E.bvSort(2),'p'),q=E.createFreshSymbol(E.bvSort(2),'q');
++  const a=m.load(p,1),same=m.load(p,1),b=m.load(q,1);
++  assert.equal(a.expression,same.expression);
++  assert.equal(E.evaluateExpr(a.expression).status,'unbound_symbol');
++  const syms=[];const walk=n=>{if(n.kind==='fresh_symbol'&&n.meta?.source==='initial-byte')syms.push(n);for(const k of ['arg','left','right','cond','thenExpr','elseExpr'])if(n[k])walk(n[k]);};walk(b.expression);
++  const env={[p.symbolId]:2n,[q.symbolId]:2n};for(const s of syms)env[s.symbolId]=s.name==='mem_0'?43n:199n;
++  assert.equal(value(a,env),43n);assert.equal(value(b,env),43n);
++});
++test('equal printed symbol names are NOT MustAlias',()=>{
++  const m=mem({addressBits:2,initialBytes:[[0n,1n],[1n,2n],[2n,3n],[3n,4n]]});
++  const p=E.createFreshSymbol(E.bvSort(2),'same'),q=E.createFreshSymbol(E.bvSort(2),'same');
++  m.store(p,1,9n);assert.equal(value(m.load(q,1),{[p.symbolId]:0n,[q.symbolId]:1n}),2n);
++});
++test('64-bit BigInt addresses and explicit modular wrap',()=>{
++  const high=0xffffffffffffffffn,m=mem({wrapping:'modular'});
++  assert.equal(m.store(high,2,0xbbaan).status,'stored');
++  assert.equal(value(m.load(high,1)),0xaan);assert.equal(value(m.load(0n,1)),0xbbn);
++  assert.equal(value(m.load(high,2)),0xbbaan);
++  assert.equal(mem().store(high,2,1n).status,'unknown');
++  assert.equal(mem().store(Number(high),1,1n).reason,'unsafe-integer');
++  assert.equal(mem().load(1n<<64n,1).reason,'address-out-of-range');
++});
++test('width/sort/alignment/space and malformed canonical lookalikes fail closed',()=>{
++  assert.equal(mem().store(0n,1,E.createBv(16,1n)).reason,'width-mismatch');
++  assert.equal(mem().load(E.createBool(true),1).reason,'width-mismatch');
++  assert.equal(mem({alignment:'natural'}).load(1n,2).reason,'alignment-unproved');
++  assert.equal(mem().load(0n,1,{addressSpace:'other'}).reason,'address-space-mismatch');
++  const forged=Object.freeze({kind:'const',sort:E.bvSort(8),value:999n});
++  assert.equal(mem().store(0n,1,forged).status,'unknown');
++});
++for(const reason of ['unknown-clobber','unknown-call','may-alias-clobber'])test(`barrier: ${reason}`,()=>{
++  const m=mem();m.store(0n,1,1n);m.barrier(reason);assert.equal(m.load(0n,1).reason,reason);
++});
++for(const flag of ['volatile','atomic'])test(`barrier: ${flag}`,()=>{
++  const m=mem();m.store(0n,1,1n);assert.equal(m.load(0n,1,{[flag]:true}).status,'unknown');assert.equal(m.load(0n,1).status,'unknown');
++});
++test('fork/join isolates writes and correlates initial unknown reads across paths',()=>{
++  const root=mem({addressBits:8});root.store(0n,1,7n);
++  const yes=root.fork(),no=root.fork();yes.store(0n,1,8n);no.store(0n,1,9n);
++  assert.equal(value(root.load(0n,1)),7n);
++  const cond=E.createFreshSymbol(E.boolSort(),'c');const join=joinByteMemory(cond,yes,no);
++  yes.store(0n,1,123n);
++  assert.equal(value(join.load(0n,1),{[cond.symbolId]:true}),8n);assert.equal(value(join.load(0n,1),{[cond.symbolId]:false}),9n);
++  const a=yes.load(22n,1),b=no.load(22n,1);assert.equal(a.expression,b.expression);
++  assert.throws(()=>joinByteMemory(cond,yes,mem({addressBits:8})),/unrelated/);
++});
++test('identity, mutation, cancellation and deadline cannot publish values',()=>{
++  const stale={...identity,snapshotId:'s2'};let current=identity;
++  const m=mem({getCurrentIdentity:()=>current});m.store(0n,1,1n);current=stale;
++  assert.equal(m.load(0n,1,{identity}).reason,'stale-identity');
++  const c=new AbortController(),a=mem({signal:c.signal});c.abort();assert.equal(a.load(0n,1).reason,'cancelled');
++  let now=0;const d=mem({now:()=>now,timeoutMs:1});now=1;assert.equal(d.load(0n,1).reason,'deadline');
++  const r=mem().load(0n,1);assert.ok(Object.isFrozen(r));assert.ok(Object.isFrozen(r.bytes));assert.ok(Object.isFrozen(r.expression));
++});
++for(const [budget,action] of [
++  ['concreteMemoryBytes',m=>m.store(0n,1,1n)],
++  ['storeHistoryEntries',m=>m.store(0n,1,1n)],
++  ['symbolicMemoryCells',m=>m.load(0n,1)],
++  ['aliasForks',m=>m.fork()],
++]) test(`budget N-1/N/N+1: ${budget}`,()=>{
++  for(const n of [0,1,2]) {
++    const m=mem({limits:{[budget]:n}});
++    for(let i=0;i<n;i++) {
++      const result=budget==='concreteMemoryBytes'?m.store(BigInt(i),1,1n):budget==='symbolicMemoryCells'?m.load(BigInt(i),1):action(m);
++      assert.notEqual(result?.status,'unknown');
++    }
++    if(budget==='aliasForks')assert.throws(()=>m.fork(),/budget/);
++    else {const r=budget==='concreteMemoryBytes'?m.store(BigInt(n),1,1n):budget==='symbolicMemoryCells'?m.load(BigInt(n),1):action(m);assert.equal(r.status,'unknown');assert.equal(r.expression,null);}
++  }
++});
++test('zero work/allocation and cancellation during actual byte processing',()=>{
++  assert.equal(mem({limits:{workItems:0}}).load(0n,1).status,'unknown');
++  assert.equal(mem({limits:{allocationUnits:0}}).store(0n,1,1n).status,'unknown');
++  let checks=0;const m=mem({isCancelled:()=>++checks>12});const r=m.store(0n,8,E.createFreshSymbol(E.bvSort(64),'v'));
++  assert.equal(r.status,'unknown');assert.equal(r.expression,null);assert.ok(checks>12);
++});
++test('independent finite byte oracle: exhaustive aliases, endians, partial writes and wrap',()=>{
++  let observations=0;
++  for(const endian of ['little','big'])for(const size of [1,2]) {
++    const initial=[3,77,149,251];
++    const m=mem({addressBits:2,wrapping:'modular',endian,initialBytes:initial.map((v,i)=>[BigInt(i),BigInt(v)])});
++    const p=E.createFreshSymbol(E.bvSort(2),'p'),q=E.createFreshSymbol(E.bvSort(2),'q'),r=E.createFreshSymbol(E.bvSort(2),'r');
++    m.store(p,2,0xabcdn);m.store(q,1,0x66n);const got=m.load(r,size);
++    for(let a=0;a<4;a++)for(let b=0;b<4;b++)for(let c=0;c<4;c++) {
++      const oracle=initial.slice();
++      oracle[a]=endian==='little'?0xcd:0xab;oracle[(a+1)%4]=endian==='little'?0xab:0xcd;oracle[b]=0x66;
++      let expected=0n;
++      for(let lane=0;lane<size;lane++) expected|=BigInt(oracle[(c+lane)%4])<<BigInt(8*(endian==='little'?lane:size-1-lane));
++      assert.equal(value(got,{[p.symbolId]:BigInt(a),[q.symbolId]:BigInt(b),[r.symbolId]:BigInt(c)}),expected);observations++;
++    }
++  }
++  assert.equal(observations,256);
++});
+diff --git a/tests/phase9/memory/performance.test.mjs b/tests/phase9/memory/performance.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/memory/performance.test.mjs
+@@ -0,0 +1,2 @@
++// The ordinary Phase 9 discovery route must execute these owned performance cases.
++import '../../final-closure/t033/performance.test.mjs';
+diff --git a/tests/phase9/taint/fixtures.mjs b/tests/phase9/taint/fixtures.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/fixtures.mjs
+@@ -0,0 +1,31 @@
++import { OP, MK } from '../../../js/ir.js';
++export const identity=Object.freeze({queryId:'taint-test',snapshotId:'s1',binaryId:'b1',functionId:'f1',architecture:'generic',addressSpace:'data',semanticsVersion:'2'});
++export function scalarFixture() {
++  const input={id:'input',kind:'arg',reg:'x0',index:0,bits:8},out={id:'out',bits:8};
++  const inst={id:'copy',op:OP.MOV,args:[{value:input}],dst:out,row:0,address:0n};out.def=inst;
++  const ret={id:'ret',op:OP.RET,args:[{value:out}],row:1,address:4n};
++  return {entry:0,blocks:[{index:0,insts:[inst,ret],succ:[]}],instructions:[inst,ret]};
++}
++export function integrationFixture() {
++  const ptr={id:'ptr',kind:'arg',reg:'x0',index:0,bits:8};
++  const word={id:'word',kind:'arg',reg:'x1',index:1,bits:16};
++  const byte={id:'byte',kind:'arg',reg:'x2',index:2,bits:8};
++  const loaded={id:'loaded',bits:8},yesValue={id:'yes',bits:8},noValue={id:'no',bits:8},final={id:'final',bits:8};
++  const loc=size=>({kind:MK.UNKNOWN,size});
++  const write={id:'write-word',op:OP.STORE,loc:loc(2),addr:{base:ptr,disp:0n,size:2},args:[{value:word}],row:0,address:0n};
++  const partial={id:'write-byte',op:OP.STORE,loc:loc(1),addr:{base:ptr,disp:1n,size:1},args:[{value:byte}],row:1,address:4n};
++  const load={id:'read-byte',op:OP.LOAD,loc:loc(1),addr:{base:ptr,disp:1n,size:1},args:[],dst:loaded,row:2,address:8n};loaded.def=load;
++  const branch={id:'branch',op:OP.CBR,args:[{value:loaded}],extra:{kind:'cbnz',target:16n},row:3,address:12n};
++  const yes={id:'yes-inst',op:OP.MOV,args:[{value:loaded}],dst:yesValue,row:4,address:16n};yesValue.def=yes;
++  const no={id:'no-inst',op:OP.MOV,args:[{value:{id:'zero',const:0n,bits:8}}],dst:noValue,row:6,address:24n};noValue.def=no;
++  const br1={id:'br1',op:OP.BR,args:[],extra:{target:32n},row:5,address:20n};
++  const br2={id:'br2',op:OP.BR,args:[],extra:{target:32n},row:7,address:28n};
++  const phi={id:'phi',op:OP.PHI,args:[],incoming:[{from:1,value:yesValue},{from:2,value:noValue}],dst:final};final.def=phi;
++  const ret={id:'ret',op:OP.RET,args:[{value:final}],row:8,address:32n};
++  return {entry:0,blocks:[
++    {index:0,insts:[write,partial,load,branch],succ:[1,2]},
++    {index:1,insts:[yes,br1],succ:[3]},
++    {index:2,insts:[no,br2],succ:[3]},
++    {index:3,phis:[phi],insts:[ret],succ:[]},
++  ],instructions:[write,partial,load,branch,yes,br1,no,br2,phi,ret]};
++}
+diff --git a/tests/phase9/taint/lattice.test.mjs b/tests/phase9/taint/lattice.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/lattice.test.mjs
+@@ -0,0 +1,34 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import * as symbolic from '../../../js/symbolic/index.js';
++test('T034 first counterexample: first-class taint is a production export',()=>{
++  assert.equal(typeof symbolic.queryTaint,'function');
++});
++import { UNTAINTED,TAINT_TOP,sourceTaint,joinTaint,sameTaint } from '../../../js/symbolic/taint/lattice.js';
++import { createTaintFlow } from '../../../js/symbolic/taint/flow.js';
++import { createTaintModels } from '../../../js/symbolic/taint/models.js';
++import { identity } from './fixtures.mjs';
++const models=()=>createTaintModels({id:'models',version:'1',provenance:'fixture:reviewed',sources:[{id:'a',valueId:'a'}],sinks:[{id:'out',valueId:'c'}]});
++test('lattice laws: bottom/TOP, commutativity, associativity, idempotence and overflow',()=>{
++  const all=[UNTAINTED,TAINT_TOP,sourceTaint('a'),sourceTaint('b'),joinTaint(sourceTaint('a'),sourceTaint('b'))];
++  for(const a of all)for(const b of all)for(const c of all) {
++    assert.ok(sameTaint(joinTaint(a,a),a));
++    assert.ok(sameTaint(joinTaint(a,b),joinTaint(b,a)));
++    assert.ok(sameTaint(joinTaint(joinTaint(a,b),c),joinTaint(a,joinTaint(b,c))));
++    assert.equal(joinTaint(a,TAINT_TOP).kind,'top');
++  }
++  assert.equal(joinTaint(sourceTaint('a'),sourceTaint('b'),1).kind,'top');
++  assert.notDeepEqual(UNTAINTED,TAINT_TOP);
++});
++test('phi/loop joins converge and bounded widening never drops sources',()=>{
++  const f=createTaintFlow({identity,models:models()});
++  f.value('b',['a','c'],'phi');f.value('c',['b'],'data');
++  assert.deepEqual(f.solve().sinks[0].taint.sources,['a']);
++  const bounded=createTaintFlow({identity,models:models(),maxUpdates:1});
++  bounded.value('b',['a','c'],'phi');bounded.value('c',['b'],'data');
++  const result=bounded.solve();assert.equal(result.sinks[0].taint.kind,'top');assert.equal(result.widened,true);assert.ok(bounded.metrics().updatesPerValue<=1);
++});
++test('model ID/version/provenance required; cloned model handles are not authority',()=>{
++  assert.throws(()=>createTaintModels({id:'x',version:'1'}),/provenance/);
++  const m=models();assert.throws(()=>createTaintFlow({identity,models:{...m}}),/registered/);
++});
+diff --git a/tests/phase9/taint/lifecycle-regression.test.mjs b/tests/phase9/taint/lifecycle-regression.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/lifecycle-regression.test.mjs
+@@ -0,0 +1,40 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { queryTaint, createTaintModels, projectTaint, symbolicExecute } from '../../../js/symbolic/index.js';
++import { OP } from '../../../js/ir.js';
++import { identity, scalarFixture, integrationFixture } from './fixtures.mjs';
++const models = () => createTaintModels({id:'lifecycle',version:'1',provenance:'regression',sources:[{id:'input',valueId:'input'}],sinks:[{id:'output',valueId:'out'}]});
++test('memory and executor resource failures cannot publish taint evidence', () => {
++  for (const extra of [
++    {memory:{addressBits:8,limits:{workItems:0}}},
++    {memory:{addressBits:8,timeoutMs:0}},
++    {execution:{maxSteps:0}}, {execution:{maxPaths:0}}, {execution:{maxBlockVisits:0}},
++  ]) {
++    const result=queryTaint(scalarFixture(),{identity,models:models(),...extra});
++    assert.equal(result.status,'partial');assert.equal(result.evidence,null,result.reason);
++    assert.equal(result.sinks.length,0);
++  }
++});
++test('unsupported dead scalar instructions do not launder incomplete execution', () => {
++  const ir=scalarFixture();
++  ir.blocks[0].insts[0].op=OP.SEL;
++  ir.blocks[0].insts[1].args=[{value:{id:'constant-return',const:0n,bits:8}}];
++  const result=symbolicExecute(ir,{byteMemory:{identity,addressBits:8}});
++  assert.equal(result.status,'partial');assert.equal(result.paths.length,0);
++});
++test('post-query cancel and model replacement invalidate evidence projection', () => {
++  const controller=new AbortController(), model=models();let currentModel=model.modelIdentity;
++  const options={identity,models:model,signal:controller.signal,getCurrentModelIdentity:()=>currentModel};
++  const result=queryTaint(scalarFixture(),options);assert.equal(result.status,'complete');
++  currentModel='new-model';assert.equal(projectTaint(result).evidence,null);
++  currentModel=model.modelIdentity;controller.abort();assert.equal(projectTaint(result).evidence,null);
++});
++test('empty byte-memory IR is not an exact function result', () => {
++  const result=symbolicExecute({blocks:[]},{byteMemory:{identity,addressBits:8}});
++  assert.equal(result.status,'partial');assert.equal(result.paths.length,0);
++});
++test('ambiguous symbolic effective-address wrap is not exact in reject mode', () => {
++  const ir=integrationFixture();ir.blocks[0].insts.shift();
++  const result=symbolicExecute(ir,{byteMemory:{identity,addressBits:8,wrapping:'reject'}});
++  assert.equal(result.status,'partial');assert.equal(result.paths.length,0);
++});
+diff --git a/tests/phase9/taint/performance.test.mjs b/tests/phase9/taint/performance.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/performance.test.mjs
+@@ -0,0 +1,2 @@
++// Included in the existing ordinary Phase 9 discovery, not an owned-only gate.
++import '../../final-closure/t034/performance.test.mjs';
+diff --git a/tests/phase9/taint/production.test.mjs b/tests/phase9/taint/production.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/production.test.mjs
+@@ -0,0 +1,83 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { queryTaint,createTaintModels,projectTaint } from '../../../js/symbolic/index.js';
++import { EvidenceGraph } from '../../../js/core/evidence/index.js';
++import { OP } from '../../../js/ir.js';
++import { identity,scalarFixture,integrationFixture } from './fixtures.mjs';
++export const scalarModels=(extras={})=>createTaintModels({id:'m',version:'1',provenance:'fixture:reviewed',sources:[{id:'external',valueId:'input'}],sinks:[{id:'sink',valueId:'out'}],...extras});
++const run=(extra={})=>queryTaint(scalarFixture(),{identity,models:scalarModels(),memory:{addressBits:8},...extra});
++test('production source→symbolic address/partial store→load→control/data→phi→sink→evidence',()=>{
++  const models=createTaintModels({id:'integration',version:'1',provenance:'fixture:semantic-values',
++    sources:[{id:'pointer',valueId:'ptr'},{id:'old-word',valueId:'word'},{id:'new-byte',valueId:'byte'}],sinks:[{id:'result',valueId:'final'},{id:'control-only',valueId:'no'}]});
++  const result=queryTaint(integrationFixture(),{identity,models,memory:{addressBits:8,wrapping:'modular'}});
++  assert.equal(result.status,'complete',result.reason);assert.equal(result.execution.paths.length,2);
++  assert.deepEqual(result.sinks[0].taint.sources,['new-byte','pointer']);
++  assert.deepEqual(result.sinks[1].taint.sources,['new-byte','pointer']);
++  assert.ok(result.edges.some(e=>e.kind==='memory-load'));assert.ok(result.edges.some(e=>e.kind==='control'));assert.ok(result.edges.some(e=>e.kind==='phi'));
++  assert.equal(result.evidence.proofAuthority,'none');assert.equal(result.evidence.verdict,'unknown');
++  const graph=EvidenceGraph.fromJSON(result.graph);assert.deepEqual(graph.unresolvedReferences(),[]);
++  assert.equal(result.evidence.proofScope.identity.snapshotId,identity.snapshotId);
++  assert.equal(Object.isFrozen(result.sinks[0].taint.sources),true);
++});
++test('direct explicit flow and replay use one stable model/query identity',()=>{
++  const a=run(),b=run();assert.equal(a.status,'complete',a.reason);assert.deepEqual(a.sinks[0].taint.sources,['external']);
++  assert.equal(a.evidence.id,b.evidence.id);assert.deepEqual(a.edges,b.edges);assert.equal(a.modelIdentity,b.modelIdentity);
++});
++test('known value-scoped sanitizer filters only declared sources; unknown/clean flags do not',()=>{
++  const good=scalarModels({sanitizers:[{id:'declared',valueId:'out',scope:'value',removeSources:['external']}]});
++  assert.equal(run({models:good}).sinks[0].taint.kind,'untainted');
++  const unrelated=scalarModels({sanitizers:[{id:'declared',valueId:'out',scope:'value',removeSources:['other']}]});
++  assert.deepEqual(run({models:unrelated}).sinks[0].taint.sources,['external']);
++  const unknown=scalarModels({sanitizers:[{id:'sanitize_everything',valueId:'out',clean:true}]});
++  const r=run({models:unknown});assert.deepEqual(r.sinks[0].taint.sources,['external']);assert.deepEqual(r.unknownSanitizers,['sanitize_everything']);
++});
++test('unknown call, missing value and loop exhaustion remain TOP/partial, not untainted',()=>{
++  const ir=scalarFixture();ir.blocks[0].insts.splice(1,0,{id:'call',op:OP.CALL,args:[]});
++  const r=queryTaint(ir,{identity,models:scalarModels(),memory:{addressBits:8}});
++  assert.equal(r.status,'partial');assert.equal(r.sinks[0].taint.kind,'top');
++  const missing=run({models:scalarModels({sinks:[{id:'lost',valueId:'missing'}]})});assert.equal(missing.sinks[0].taint.kind,'top');
++  const loop=scalarFixture();loop.blocks[0].insts.pop();loop.blocks[0].succ=[0];
++  const l=queryTaint(loop,{identity,models:scalarModels(),memory:{addressBits:8}});assert.equal(l.status,'partial');assert.equal(l.evidence,null);assert.equal(l.sinks.length,0);
++});
++test('may-alias store retains both candidate labels and unknown initial TOP',()=>{
++  const ir=integrationFixture();
++  const other={id:'other',kind:'arg',reg:'x3',index:3,bits:8};
++  ir.blocks[0].insts[1].addr.base=other;
++  const r=queryTaint(ir,{identity,models:createTaintModels({id:'may',version:'1',provenance:'fixture',sources:[{id:'secret',valueId:'byte'}],sinks:[{id:'out',valueId:'final'}]}),memory:{addressBits:8,wrapping:'modular'}});
++  assert.equal(r.status,'complete',r.reason);assert.ok(r.sinks[0].taint.kind==='top'||r.sinks[0].taint.sources.includes('secret'));
++});
++test('stale query/model identity and copied records are not projection authority',()=>{
++  let current=identity;const r=run({getCurrentIdentity:()=>current});
++  assert.equal(projectTaint({...r}).evidence,null);
++  assert.equal(projectTaint(r,{modelIdentity:'different'}).evidence,null);
++  current={...identity,snapshotId:'new'};assert.equal(projectTaint(r).evidence,null);
++});
++test('source/sink/work/allocation/emission limits and cancellation withhold publication',()=>{
++  for(const key of ['sources','sinks','workItems','latticeValues','flowEdges','emittedRecords']) {
++    const r=run({limits:{[key]:0}});assert.equal(r.status,'partial',key);assert.equal(r.evidence,null,key);assert.equal(r.sinks.length,0,key);
++  }
++  const ac=new AbortController();ac.abort();const cancelled=run({signal:ac.signal});assert.equal(cancelled.evidence,null);assert.equal(cancelled.reason,'cancelled');
++  let now=0;const d=run({now:()=>++now,timeoutMs:1});assert.equal(d.evidence,null);assert.equal(d.reason,'deadline');
++});
++test('measured N-1/N/N+1 graph limits are prechecked, not clipped to clean',()=>{
++  const base=run();
++  for(const key of ['latticeValues','flowEdges','emittedRecords','sources','sinks']) {
++    const n=base.metrics[key];
++    assert.equal(run({limits:{[key]:n-1}}).evidence,null,key);
++    assert.equal(run({limits:{[key]:n}}).status,'complete',key);
++    assert.equal(run({limits:{[key]:n+1}}).status,'complete',key);
++  }
++});
++
++test('sanitized partial byte store never sanitizes untouched neighboring bytes',()=>{
++  const ir=integrationFixture(),[wordStore,byteStore,load]=ir.blocks[0].insts;
++  const cleanByte={id:'clean-byte',bits:8};
++  const sanitize={id:'sanitize-copy',op:OP.MOV,args:byteStore.args,dst:cleanByte};cleanByte.def=sanitize;
++  byteStore.args=[{value:cleanByte}];load.addr.disp=0n;load.addr.size=2;load.loc.size=2;load.dst.bits=16;
++  const ret={id:'ret-word',op:OP.RET,args:[{value:load.dst}]};
++  const insts=[wordStore,sanitize,byteStore,load,ret];ir.blocks=[{index:0,insts,succ:[]}];ir.instructions=insts;
++  const models=createTaintModels({id:'byte-scope',version:'1',provenance:'test',sources:[{id:'old',valueId:'word'},{id:'new',valueId:'byte'}],
++    sanitizers:[{id:'remove-new',valueId:'clean-byte',scope:'value',removeSources:['new']}],sinks:[{id:'word-sink',valueId:'loaded'}]});
++  const result=queryTaint(ir,{identity,models,memory:{addressBits:8,wrapping:'modular'}});
++  assert.equal(result.status,'complete',result.reason);assert.deepEqual(result.sinks[0].taint.sources,['old']);
++});
+diff --git a/tests/phase9/taint/proof-consumer.test.mjs b/tests/phase9/taint/proof-consumer.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/phase9/taint/proof-consumer.test.mjs
+@@ -0,0 +1,76 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { verifyDeobfuscationCandidate,isAdoptableCandidate,expr as E } from '../../../js/symbolic/index.js';
++import { verifyBoundedEquivalence } from '../../../js/symbolic/verify/equivalence.js';
++import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
++import { identity } from './fixtures.mjs';
++export function candidate(extra={}) {
++  const x=E.createFreshSymbol(E.bvSort(4),'proof-input');
++  return {candidateId:'mba',beforeValueId:'before',afterValueId:'after',identity,
++    before:E.createBinary('add',x,x),after:E.createBinary('shl',x,E.createBv(4,1)),
++    memoryObservables:[],effectObservables:[],...extra};
++}
++test('real backend proved/refuted candidates differ at the public adoption boundary',async()=>{
++  const c=candidate(),proved=await verifyDeobfuscationCandidate(c);
++  assert.equal(proved.eligible,true,proved.reason);assert.equal(proved.evidence.proofAuthority,'exact');assert.equal(isAdoptableCandidate(proved),true);
++  const refuted=await verifyDeobfuscationCandidate({...c,after:E.createBv(4,1)});
++  assert.equal(refuted.eligible,false);assert.equal(refuted.verdict,'refuted');assert.ok(refuted.counterexample);
++});
++test('fake proof, memory/effect omission, stale receipts and same-name symbol collision fail closed',async()=>{
++  const c=candidate();assert.equal((await verifyDeobfuscationCandidate({...c,verified:true})).eligible,false);
++  const missing={...c};delete missing.memoryObservables;assert.equal((await verifyDeobfuscationCandidate(missing)).reason,'missing-memory-effect-observables');
++  assert.equal((await verifyDeobfuscationCandidate({...c,effectObservables:['call']})).eligible,false);
++  const proved=await verifyDeobfuscationCandidate(c);assert.equal(isAdoptableCandidate({...proved}),false);
++  assert.equal(isAdoptableCandidate(proved,{identity:{...identity,snapshotId:'new'}}),false);
++  assert.equal(isAdoptableCandidate(proved,{after:E.createBv(4,0)}),false);
++  const x=E.createFreshSymbol(E.bvSort(4),'collision'),y=E.createFreshSymbol(E.bvSort(4),'collision');
++  assert.equal((await verifyDeobfuscationCandidate({...c,before:x,after:y})).reason,'ambiguous-symbol-name-handoff');
++});
++test('contradictory preconditions, timeout, cancellation and late snapshot change cannot adopt',async()=>{
++  const c=candidate();assert.equal((await verifyDeobfuscationCandidate({...c,preconditions:[E.createBool(false)]})).eligible,false);
++  assert.equal((await verifyDeobfuscationCandidate({...c,timeoutMs:0})).eligible,false);
++  const ac=new AbortController();ac.abort();assert.equal((await verifyDeobfuscationCandidate({...c,signal:ac.signal})).eligible,false);
++  let current=identity;const promise=verifyDeobfuscationCandidate({...c,getCurrentIdentity:()=>current});current={...identity,snapshotId:'new'};
++  assert.equal((await promise).eligible,false);
++});
++test('the existing judge memory-observable counterexample stays outside adoption',async()=>{
++  // Independent byte observation: before[0]=1, after[0]=2, even though return values agree.
++  const memoryRegions=[{id:'byte-zero',before:1,after:2}];
++  const existing=await verifyBoundedEquivalence({beforeTarget:E.createBv(4,0),afterTarget:E.createBv(4,0),memoryRegions,backend:new ExhaustiveBvBackend()});
++  console.log(`READ_ONLY_JUDGE_MEMORY_COUNTEREXAMPLE=${existing.verdict}`);
++  assert.notEqual(memoryRegions[0].before,memoryRegions[0].after);
++  const guarded=await verifyDeobfuscationCandidate(candidate({before:E.createBv(4,0),after:E.createBv(4,0),memoryObservables:memoryRegions}));
++  assert.equal(guarded.eligible,false);assert.equal(guarded.reason,'memory-effect-judge-handoff');
++});
++test('actual tiered candidate proves a 32-bit pure expression without replacing SYM-01',async()=>{
++  const x=E.createFreshSymbol(E.bvSort(32),'wide');
++  const r=await verifyDeobfuscationCandidate(candidate({before:E.createBinary('xor',x,x),after:E.createBv(32,0),backendTier:'tiered'}));
++  assert.equal(r.eligible,true,r.reason);assert.equal(r.evidence.proofAuthority,'exact');
++});
++
++test('taint query/model scope is bound and stale/unknown taint cannot redeem a receipt',async()=>{
++  const {queryTaint,createTaintModels}=await import('../../../js/symbolic/index.js');
++  const {scalarFixture}=await import('./fixtures.mjs');
++  const models=createTaintModels({id:'proof-model',version:'1',provenance:'test',sources:[{id:'src',valueId:'input'}],sinks:[{id:'sink',valueId:'out'}]});
++  let currentModel=models.modelIdentity;
++  const taintResult=queryTaint(scalarFixture(),{identity,models,getCurrentModelIdentity:()=>currentModel,memory:{addressBits:8}});
++  const r=await verifyDeobfuscationCandidate(candidate({taintResult}));
++  assert.equal(r.eligible,true,r.reason);assert.equal(r.binding.taint.modelIdentity,models.modelIdentity);
++  assert.equal(r.binding.taint.queryHash,taintResult.evidence.queryHash);
++  currentModel='new-model';assert.equal(isAdoptableCandidate(r),false);
++  assert.equal((await verifyDeobfuscationCandidate(candidate({taintResult}))).eligible,false);
++  const top=queryTaint(scalarFixture(),{identity,models:createTaintModels({id:'unknown',version:'1',provenance:'test',sinks:[{id:'sink',valueId:'missing'}]}),memory:{addressBits:8}});
++  assert.equal((await verifyDeobfuscationCandidate(candidate({taintResult:top}))).eligible,false);
++});
++
++test('actual Bool proofs, nontrivial vacuity and unsupported widths fail closed',async()=>{
++  const flag=E.createFreshSymbol(E.boolSort(),'boolean-input');
++  const c=candidate({before:E.createConnective('not',E.createConnective('not',flag)),after:flag});
++  assert.equal((await verifyDeobfuscationCandidate(c)).eligible,true);
++  assert.equal((await verifyDeobfuscationCandidate({...c,after:E.createBool(false)})).verdict,'refuted');
++  const bv=candidate(),x=bv.before.left;
++  const impossible=[E.createCompare('eq',x,E.createBv(4,0)),E.createCompare('eq',x,E.createBv(4,1))];
++  assert.equal((await verifyDeobfuscationCandidate({...bv,preconditions:impossible})).eligible,false);
++  const wide=E.createFreshSymbol(E.bvSort(65),'unsupported-width');
++  assert.equal((await verifyDeobfuscationCandidate(candidate({before:wide,after:wide}))).eligible,false);
++});
