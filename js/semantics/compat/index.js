@@ -154,6 +154,32 @@ function semanticEdgeKind(node, index) {
       && node.attributes?.indirectControl?.targetState === 'candidate') return 'indirect-candidate';
   return 'unknown';
 }
+
+function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets, blockByAddress) {
+  const control = bundle.controlEffect;
+  if (control.kind !== 'conditional-branch' || !Array.isArray(fragment.nodes)) return fragment;
+  const rawTargets = control.targets?.length
+    ? [...control.targets]
+    : control.target == null ? [] : [control.target];
+  if (control.fallthrough != null) rawTargets.push(control.fallthrough);
+  else rawTargets.push({ kind: 'fallthrough-continuation', instructionId: bundle.instructionId });
+  const fallthrough = rawTargets[rawTargets.length - 1];
+  const fallthroughAddress = targetAddress(fallthrough);
+  const resolved = fallthroughAddress != null
+    && blockByAddress.has(fallthroughAddress)
+    && controlTargets.some((entry) => stableStringify(entry?.target) === stableStringify(fallthrough));
+  if (resolved) return fragment;
+
+  let changed = false;
+  const nodes = fragment.nodes.map((node) => {
+    if (node?.kind !== 'conditional-branch' || !Array.isArray(node.targets) || node.targets.length < 2) return node;
+    const targets = node.targets.slice(0, -1);
+    if (!targets.length) return node;
+    changed = true;
+    return { ...node, targets };
+  });
+  return changed ? { ...fragment, nodes } : fragment;
+}
 function normalizeSuccessor(input) {
   if (typeof input === 'string') return { to: input, kind: 'fallthrough' };
   input = object(input, 'semantic-v2-integration-invalid-successor');
@@ -378,13 +404,19 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         autoTargets.push({ target: target.target, blockId: targetBlock.id, ...(target.role == null ? {} : { role: target.role }) });
       }
 
-      const fragment = lowerMachineEffectBundleToSemanticIr(bundle, {
+      const loweredFragment = lowerMachineEffectBundleToSemanticIr(bundle, {
         functionId,
         blockId: block.id,
         entryBlockId: block.id,
         addressWidthBits: input.addressWidthBits,
         controlTargets: autoTargets,
       }, options.semanticIrOptions ?? {});
+      const fragment = filterUnresolvedConditionalFallthrough(
+        loweredFragment,
+        bundle,
+        autoTargets,
+        blockByAddress,
+      );
       completeness = promotedCompleteness(completeness, fragment.completeness);
       for (const issue of fragment.unknowns) issues.set(stableStringify(issue), issue);
       for (const value of fragment.values) mergeById(values, value, 'semantic-v2-integration-conflicting-value-id');
