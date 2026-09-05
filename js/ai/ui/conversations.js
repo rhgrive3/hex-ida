@@ -149,6 +149,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
   };
   const bucketKey = (space) => `${key}.${space}`;
   const indexKey = () => key === STORAGE_KEY ? INDEX_KEY : `${key}.index`;
+  const ownsLegacyStorage = key === STORAGE_KEY;
 
   const readIndex = () => {
     const store = backing();
@@ -189,6 +190,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
   };
 
   const migrateLegacyIfNeeded = () => {
+    if (!ownsLegacyStorage) return;
     const store = backing();
     if (!store) return;
     try {
@@ -228,11 +230,13 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) return parsed.map((item) => reviveConversation(item, space));
         }
-        const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
-        if (legacyRaw) {
-          const parsed = JSON.parse(legacyRaw);
-          if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
-            return parsed[space].map((item) => reviveConversation(item, space));
+        if (ownsLegacyStorage) {
+          const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+          if (legacyRaw) {
+            const parsed = JSON.parse(legacyRaw);
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
+              return parsed[space].map((item) => reviveConversation(item, space));
+            }
           }
         }
       } catch { return []; }
@@ -281,7 +285,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
         store.removeItem(indexKey());
-        store.removeItem(LEGACY_STORAGE_KEY);
+        if (ownsLegacyStorage) store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },
   };
