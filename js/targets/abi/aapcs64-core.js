@@ -42,7 +42,7 @@ function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const scalableClass = scalableAAPCS64Class(type, cls);
-  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|\bptr\b|object|class|block|closure/.test(type + ' ' + cls);
   const hfaMeta = aggregateBoolean(param, 'hfa');
   const hvaMeta = aggregateBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)

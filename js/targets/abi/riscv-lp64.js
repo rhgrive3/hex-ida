@@ -181,7 +181,7 @@ function parameterList(prototype) {
 function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
+  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|\bptr\b|object/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
