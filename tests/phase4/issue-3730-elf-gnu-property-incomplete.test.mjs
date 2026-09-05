@@ -93,6 +93,13 @@ function resultTuple(result) {
 }
 
 {
+  const { bytes } = makeElf([{ filesz:8 }]);
+  const result = parseAarch64GnuProperty(bytes);
+  assert.deepEqual(resultTuple(result), ['unknown', null, null]);
+  assert.match(result.warnings[0], /truncated GNU property note header/);
+}
+
+{
   const { bytes, view } = makeElf([{ filesz:20 }]);
   putU32(view, PROPERTY_OFFSET, 0xfffffff0);
   putU32(view, PROPERTY_OFFSET + 4, 0);

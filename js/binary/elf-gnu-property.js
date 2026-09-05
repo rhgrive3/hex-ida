@@ -162,6 +162,14 @@ export function parseAarch64GnuProperty(input, options = {}) {
       }
       cursor = next;
     }
+    if (cursor < end && cursor + 12 > end) {
+      const trailing = bytes.subarray(cursor, end);
+      const zeroPadding = trailing.length < 4 && trailing.every((byte) => byte === 0);
+      if (!zeroPadding) {
+        propertyIncomplete = true;
+        warnings.push(`truncated GNU property note header at file offset ${cursor}`);
+      }
+    }
   }
 
   if (propertyIncomplete) {
