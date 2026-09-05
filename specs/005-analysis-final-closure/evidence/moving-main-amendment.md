@@ -80,3 +80,42 @@ P publishes machine-derived generation, rolling and shadow receipts in
 Physical device: `SKIPPED_USER_WAIVER`, never PASS. Browser/runtime and exact-head
 CI remain required. CodeRabbit on an old PR head does not certify A/G/D.
 Answer 002 remains on hold; its contents were not read or adopted.
+
+## Post-activation revalidation — 2026-09-05
+
+Hosted run `33959764659` on published D
+`27e2429f87be465f479ca4172846c83d5e041739` failed a historical fixture:
+the fixture copied live T060 DONE into an intentionally PENDING task graph.
+The original activation, amendment, accepted checkpoints and handoffs remain
+unchanged. This append-only correction is D → A2 → G2 → E3 → P2; it is not
+a new component acceptance or a replacement for the failed run.
+
+- Final A2: `159f3064695e982db7c536334fba2620facd9e86`;
+  tree `9f9809b95e0db9d48e66fe9e179e1e9ed0b7b0de`.
+- Final G2: `672c29f180271ead32f33968c764625e7f0971bc`;
+  tree `9f9809b95e0db9d48e66fe9e179e1e9ed0b7b0de`.
+- A2 changes only the existing preflight verifier/test and append-only plan.
+  The historical fixture normalizes its T060 state. The separate immutable
+  revalidation receipt authenticates the code, generated product, evidence,
+  inventory-only publication and continuation without rewriting original D.
+- `node tests/final-closure/run.mjs` passed in 419.7 s on clean A2 predecessor
+  `b45abb68f810b0d8dc9ebd5a9c624208de6d4402`, already in T060 DONE state.
+  The final A2 delta adds an explicit publication-stage/prefix-length guard
+  and two negative assertions; its focused revalidation suite passed in
+  19.0 s. The predecessor full-run result is not exact-final-head CI proof.
+- Permanent real-Git cases cover receipt removal/rewrite, historical Stage B
+  verification, original D identity, verified A2/E3 path seals, G2 selection,
+  wrong parents, arbitrary source edits, invalid generation proof, publication
+  state and P2 → next-component continuation. Source/test syntax and diff
+  whitespace checks passed. Independent Luna Max review and root diff review
+  completed; T060 retains its original accepted-prefix length, not T058's zero.
+- Canonical generation on A2 produced no changes. Both canonical rebuilds on
+  exact G2 produced zero diff. All three registered T051/T059 cumulative
+  rolling gates and both pinned independent shadow reports passed on G2.
+  Release serial/build/release identities remain exactly those above.
+
+P2 publishes the machine-derived G2 receipt as
+`movingMainAmendmentRevalidation`. Exact P2 canonical full regression,
+operational verification and runtime reproduction remain mandatory in hosted
+CI before another component is accepted. At E3 publication these are pending,
+not PASS. Physical device remains `SKIPPED_USER_WAIVER`; Answer 002 is unread.
