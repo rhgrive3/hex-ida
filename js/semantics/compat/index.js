@@ -155,7 +155,7 @@ function semanticEdgeKind(node, index) {
   return 'unknown';
 }
 
-function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets, blockByAddress) {
+function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets, blockByAddress, context = {}) {
   const control = bundle.controlEffect;
   if (control.kind !== 'conditional-branch' || !Array.isArray(fragment.nodes)) return fragment;
   const rawTargets = control.targets?.length
@@ -170,6 +170,19 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     && controlTargets.some((entry) => stableStringify(entry?.target) === stableStringify(fallthrough));
   if (resolved) return fragment;
 
+  const unknown = {
+    reason: 'semantic-cfg-missing-fallthrough',
+    categories: ['control'],
+    detail: {
+      ...(context.blockKey == null ? {} : { blockKey: String(context.blockKey) }),
+      ...(context.instructionAddress == null ? {} : { instructionAddress: String(context.instructionAddress) }),
+      expectedAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+    },
+  };
+  const unknowns = [...(fragment.unknowns ?? [])];
+  if (!unknowns.some((item) => item?.reason === unknown.reason && item?.detail?.blockKey === unknown.detail?.blockKey)) {
+    unknowns.push(unknown);
+  }
   let changed = false;
   const nodes = fragment.nodes.map((node) => {
     if (node?.kind !== 'conditional-branch' || !Array.isArray(node.targets) || node.targets.length < 2) return node;
@@ -178,7 +191,12 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     changed = true;
     return { ...node, targets };
   });
-  return changed ? { ...fragment, nodes } : fragment;
+  return {
+    ...fragment,
+    ...(changed ? { nodes } : {}),
+    completeness: fragment.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknowns,
+  };
 }
 function normalizeSuccessor(input) {
   if (typeof input === 'string') return { to: input, kind: 'fallthrough' };
@@ -416,6 +434,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         bundle,
         autoTargets,
         blockByAddress,
+        { blockKey: block.key, instructionAddress: address.toString() },
       );
       completeness = promotedCompleteness(completeness, fragment.completeness);
       for (const issue of fragment.unknowns) issues.set(stableStringify(issue), issue);
