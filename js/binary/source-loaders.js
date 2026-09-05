@@ -19,7 +19,7 @@ export async function openBinarySource(input, opts = {}) {
   const sourceOptions = opts.source || {};
   const source = asByteSource(input, sourceOptions);
   const prefixLength = Number(source.size < 16n ? source.size : 16n);
-  const prefix = await source.readExactly(0n, prefixLength, { signal: opts.signal });
+  const prefix = await readChunked(source, 0n, prefixLength, { signal: opts.signal });
   const detected = detectBinary(prefix);
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
@@ -72,7 +72,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   }
 
   if (source.size < 8n) throw new Error('Mach-O universal header is truncated');
-  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await source.readExactly(0n, 8, { signal: opts.signal });
+  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await readChunked(source, 0n, 8, { signal: opts.signal });
   const hr = new ByteView(head, { littleEndian: fat.littleEndian });
   const count = hr.u32(4);
   if (count > 128) throw new Error(`unreasonable Mach-O slice count ${count}`);
@@ -80,7 +80,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const tableSize = count * entrySize;
   const extraSize = (fat.bits === 32 && source.size >= 8n + BigInt(tableSize + 20)) ? 20 : 0;
   if (8n + BigInt(tableSize) > source.size) throw new Error('Mach-O universal slice table is truncated');
-  const table = await source.readExactly(8n, tableSize + extraSize, { signal: opts.signal });
+  const table = await readChunked(source, 8n, tableSize + extraSize, { signal: opts.signal });
   const r = new ByteView(table, { littleEndian: fat.littleEndian, base: 8 });
   const all = [];
   for (let i = 0, p = 0; i < count; i++, p += entrySize) {
@@ -94,7 +94,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   // #6317: probe past-end arm64 compatibility slice for FAT32
   if (fat.bits === 32 && extraSize === 20) {
     const compat = await probePastEndArm64SliceAsync(r, count, source.size, async (off, len) => {
-      return source.readExactly(off, len, { signal: opts.signal });
+      return readChunked(source, off, len, { signal: opts.signal });
     }, all);
     if (compat) all.push(compat);
   }
@@ -104,7 +104,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
     if (slice.offset < 0n || slice.size <= 0n || slice.offset + slice.size > source.size) {
       throw new Error('Mach-O universal binary slice is outside file bounds');
     }
-    const headerBytes = await source.readExactly(slice.offset, Math.min(32, Number(slice.size)), { signal: opts.signal });
+    const headerBytes = await readChunked(source, slice.offset, Math.min(32, Number(slice.size)), { signal: opts.signal });
     const inner = parseInnerMachOHeader(headerBytes);
     validateFatSlice(slice, inner, source.size, opts);
   }
@@ -154,7 +154,26 @@ function withInitial(prefix, options) {
 }
 
 async function readPrefix(source, signal) {
-  return source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal });
+  const length = Number(source.size < 16n ? source.size : 16n);
+  return readChunked(source, 0n, length, { signal });
+}
+
+async function readChunked(source, offset, length, { signal } = {}) {
+  const total = Number(length);
+  if (!Number.isSafeInteger(total) || total < 0) throw new RangeError('chunked read length is invalid');
+  if (total === 0) return new Uint8Array(0);
+  const ceiling = Number(source?.maxReadLength ?? total);
+  const limit = Number.isSafeInteger(ceiling) && ceiling > 0 ? ceiling : total;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  const base = BigInt(offset);
+  while (pos < total) {
+    const chunk = Math.min(limit, total - pos);
+    const bytes = await source.readExactly(base + BigInt(pos), chunk, { signal });
+    out.set(bytes, pos);
+    pos += chunk;
+  }
+  return out;
 }
 
 function fatKind(bytes) {
