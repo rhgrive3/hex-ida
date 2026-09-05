@@ -7,6 +7,12 @@ function checkedRange(limit, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
 }
 
+function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
+  if (offset === 0) return;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset % alignment !== 0) fail(code);
+  checkedRange(limit, offset, minSize, code);
+}
+
 function requireIndex(table, idx, code) {
   if (!Number.isSafeInteger(idx) || idx < 0 || idx >= table.length) fail(code);
   return table[idx];
@@ -200,7 +206,10 @@ export function parseDex(bytes, options = {}) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
     const classIdx=view.getUint32(off,true),accessFlags=view.getUint32(off+4,true),superclassIdx=view.getUint32(off+8,true);
-    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true);
+    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true),staticValuesOff=view.getUint32(off+28,true);
+    requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
+    requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
+    requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
     const directMethods=[],virtualMethods=[];
     if(classDataOff>0) {
       if(classDataOff>=fileSize) fail('dex-invalid-class-data-offset');
