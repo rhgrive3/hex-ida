@@ -81,9 +81,17 @@ export class PluginHost {
       if (!Array.isArray(list)) return;
       const legacySeen = new Set();
       for (const p of list) {
-        if (!p || typeof p.source !== 'string') continue;
-        // v3 manifest fast path: restore registry directly without sandbox execution
-        if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+        try {
+          if (!p || typeof p.source !== 'string') continue;
+          // v3 manifest fast path: restore registry directly without sandbox execution
+          if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+            // Fail closed per installation: every definition must be a shape-valid
+            // object with an integer index. A single malformed definition skips
+            // only this installation, never the remaining entries.
+            for (const def of p.definitions) {
+              if (!def || typeof def !== 'object' || Array.isArray(def)) throw new TypeError('plugin definition shape invalid');
+              if (!Number.isInteger(def.index)) throw new TypeError('plugin definition index invalid');
+            }
           const installationId = String(p.installationId);
           const enabled = Array.isArray(p.enabledIndexes)
             ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
@@ -121,6 +129,7 @@ export class PluginHost {
           installationId: p.installationId || newInstallId(),
           enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
         });
+        } catch { /* one corrupted installation is isolated; continue restoring the rest */ }
       }
     } catch { /* corrupted plugin storage is isolated */ }
   }
