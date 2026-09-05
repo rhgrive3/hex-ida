@@ -987,8 +987,21 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
     Object.freeze(record.relevantDescriptorValues);
     Object.freeze(record.relevantDescriptorPresent);
     Object.freeze(record.relevantDescriptorEnumerable);
-    Object.freeze(record);
-    validationRecords.push(record);
+    // Retain only the witness used on a cache hit. Capture's descriptor maps,
+    // role sets and clone bookkeeping are no longer needed after publication.
+    validationRecords.push(Object.freeze({
+      source: record.source,
+      prototype: record.prototype,
+      kind: record.kind,
+      omitRootKeys: record.omitRootKeys,
+      relevantReportedKeys: record.relevantReportedKeys,
+      relevantDescriptorKeys: record.relevantDescriptorKeys,
+      relevantDescriptorValues: record.relevantDescriptorValues,
+      relevantDescriptorPresent: record.relevantDescriptorPresent,
+      relevantDescriptorEnumerable: record.relevantDescriptorEnumerable,
+      collectionEntries: record.collectionEntries,
+      dateValue: record.dateValue,
+    }));
   }
   PHASE8_SEMANTIC_SNAPSHOTS.add(snapshot);
   const cacheEntry = Object.freeze({
