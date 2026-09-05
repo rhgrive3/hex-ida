@@ -93,31 +93,35 @@ export function createChatGPTSandboxHost(options = {}) {
     state = 'sandbox-loading';
     setStatus(status, 'Loading Hex…', false);
 
-    try { documentRef.getElementById?.(IFRAME_ID)?.remove(); } catch {}
-    iframe = createSandboxIframe(documentRef, {
-      hostHtml,
-      cspNonce,
-      generation: currentGeneration,
-      sandboxToken: createEmbedNonce(),
-      apiOrigin,
-      virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
-      loaderVersion,
-      buildId,
-      runtimeContentHash,
-    });
-    const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
-
-    sandboxMonitor = createSandboxMonitor({
-      windowRef,
-      iframe,
-      generation: currentGeneration,
-      sandboxToken: token,
-      timeoutMs: bootstrapTimeoutMs,
-      signal: generationAbort.signal,
-    });
-    wrapper.insertBefore(iframe, status);
-
     try {
+      try { documentRef.getElementById?.(IFRAME_ID)?.remove(); } catch {}
+      iframe = createSandboxIframe(documentRef, {
+        hostHtml,
+        cspNonce,
+        generation: currentGeneration,
+        sandboxToken: createEmbedNonce(),
+        apiOrigin,
+        virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
+        loaderVersion,
+        buildId,
+        runtimeContentHash,
+      });
+      const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
+
+      sandboxMonitor = createSandboxMonitor({
+        windowRef,
+        iframe,
+        generation: currentGeneration,
+        sandboxToken: token,
+        timeoutMs: bootstrapTimeoutMs,
+        signal: generationAbort.signal,
+      });
+      // Setup may fail (or destroy may win) before `ready` is awaited below.
+      // Keep that orphaned rejection from escaping as unhandled; the await
+      // still observes the original outcome.
+      sandboxMonitor.ready.catch(() => {});
+      wrapper.insertBefore(iframe, status);
+
       await sandboxMonitor.ready;
       if (!isCurrent(currentGeneration)) return;
 
@@ -426,10 +430,12 @@ function ensureClose(documentRef) {
   return button;
 }
 function ensureStatus(documentRef, wrapper) {
-  let node = documentRef.getElementById?.(STATUS_ID);
-  if (node) return node;
-  node = documentRef.createElement('div');
-  node.id = STATUS_ID;
+  const existing = documentRef.getElementById?.(STATUS_ID);
+  if (existing && existing.parentNode === wrapper) return existing;
+  const node = documentRef.createElement('div');
+  // A foreign node may already hold the document-global id; never reuse it
+  // and never create a duplicate id. Our node is owned via the wrapper.
+  if (!existing) node.id = STATUS_ID;
   node.setAttribute('role', 'status');
   node.style.cssText = 'position:absolute;left:16px;bottom:max(16px,env(safe-area-inset-bottom));z-index:2;max-width:min(88vw,620px);padding:10px 14px;border-radius:12px;background:#111827;color:#fff;font:600 13px/1.35 system-ui;white-space:pre-wrap;box-shadow:0 4px 18px rgba(0,0,0,.22);cursor:default;';
   wrapper.append(node);
