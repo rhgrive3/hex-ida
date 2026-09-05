@@ -568,7 +568,7 @@
   "campaignStage": "STAGE_A",
   "integrationRef": "recovery/final-closure-v3-20260904",
   "baseRef": "origin/main",
-  "baseSha": "1f628a5f9f3a4571f797788f1d66bbcc1bffd188",
+  "baseSha": "1205386f3513bcb6fc6980352146101ec3be4622",
   "candidateRef": "HEAD",
   "taskHandoffRevalidations": {
     "T058": {
