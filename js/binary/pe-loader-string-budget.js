@@ -7,6 +7,11 @@ import {
 
 function exactCStringAccounting(reader, budget) {
   const rawCStringBytes = [];
+  const descriptorState = {
+    import: { seen: 0, terminated: false, budgetStopped: false },
+    delayImport: { seen: 0, terminated: false, budgetStopped: false },
+  };
+  let descriptorCapture = null;
 
   const accountingReader = new Proxy(reader, {
     get(target, property) {
@@ -15,6 +20,19 @@ function exactCStringAccounting(reader, budget) {
           const value = target.cstring(start, max);
           const nulAt = target.slice(start, max).indexOf(0);
           rawCStringBytes.push(nulAt >= 0 ? nulAt + 1 : null);
+          return value;
+        };
+      }
+      if (property === 'u32') {
+        return (offset) => {
+          const value = target.u32(offset);
+          if (descriptorCapture) {
+            descriptorCapture.values.push(value);
+            if (descriptorCapture.values.length === descriptorCapture.expected) {
+              if (descriptorCapture.values.every((field) => field === 0)) descriptorCapture.state.terminated = true;
+              descriptorCapture = null;
+            }
+          }
           return value;
         };
       }
@@ -32,7 +50,22 @@ function exactCStringAccounting(reader, budget) {
             const inputBytes = rawCStringBytes.shift();
             if (inputBytes != null) exactCost = { ...cost, inputBytes };
           }
-          return Reflect.apply(Reflect.get(target, 'take', target), target, [exactCost, reason]);
+          const accepted = Reflect.apply(Reflect.get(target, 'take', target), target, [exactCost, reason]);
+          const descriptor = reason === 'import-descriptor'
+            ? { state: descriptorState.import, expected: 5 }
+            : reason === 'delay-import-descriptor'
+              ? { state: descriptorState.delayImport, expected: 7 }
+              : null;
+          if (descriptor) {
+            if (accepted) {
+              descriptor.state.seen++;
+              descriptorCapture = { ...descriptor, values: [] };
+            } else {
+              descriptor.state.budgetStopped = true;
+              descriptorCapture = null;
+            }
+          }
+          return accepted;
         };
       }
       const value = Reflect.get(target, property, target);
@@ -40,7 +73,7 @@ function exactCStringAccounting(reader, budget) {
     },
   });
 
-  return { reader: accountingReader, budget: accountingBudget };
+  return { reader: accountingReader, budget: accountingBudget, descriptorState };
 }
 
 function delegatedContext(reader, image, sharedBudget) {
@@ -48,12 +81,36 @@ function delegatedContext(reader, image, sharedBudget) {
   return exactCStringAccounting(reader, budget);
 }
 
+function markImportDescriptorGuard(context, directory, image) {
+  const state = context.descriptorState.import;
+  const hasTrailingDescriptor = directory.size >= (state.seen + 1) * 20;
+  if (state.terminated || state.budgetStopped || state.seen !== 65536 || !hasTrailingDescriptor) return;
+  image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
+  image.metadata.peImports.complete = false;
+  image.metadata.peImports.truncatedTables++;
+  context.budget.partial('imports-partial', 'PE import descriptor table exceeded its 65536-record safety guard without a zero descriptor');
+}
+
+function markDelayImportDescriptorTermination(context, directory) {
+  const state = context.descriptorState.delayImport;
+  if (state.terminated || state.budgetStopped || state.seen === 0) return;
+  const hitGuardWithTrailingCapacity = state.seen === 65536 && directory.size >= (state.seen + 1) * 32;
+  context.budget.partial(
+    'delay-imports:unterminated-descriptor',
+    hitGuardWithTrailingCapacity
+      ? 'PE delay-import descriptor table exceeded its 65536-record safety guard without a zero descriptor'
+      : 'PE delay-import descriptor table reached its mapped boundary without a zero descriptor',
+  );
+}
+
 export function parseImports(reader, directory, image, sharedBudget = null) {
   if (!directory || !directory.rva || !directory.size) {
     return parseImportsCore(reader, directory, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
-  return parseImportsCore(context.reader, directory, image, context.budget);
+  const result = parseImportsCore(context.reader, directory, image, context.budget);
+  markImportDescriptorGuard(context, directory, image);
+  return result;
 }
 
 export function parseCoffSymbols(reader, pointer, count, image, sharedBudget = null) {
@@ -69,5 +126,7 @@ export function parseDelayImports(reader, directory, image, sharedBudget = null)
     return parseDelayImportsCore(reader, directory, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
-  return parseDelayImportsCore(context.reader, directory, image, context.budget);
+  const result = parseDelayImportsCore(context.reader, directory, image, context.budget);
+  markDelayImportDescriptorTermination(context, directory);
+  return result;
 }
