@@ -3,7 +3,12 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const PROPOSAL_CAPABILITIES = Object.freeze({
+  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
+  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
+});
 const EXECUTION_PAYLOADS = new WeakMap();
+const EXECUTION_AUTHORIZATIONS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -97,8 +102,11 @@ export class ProposalStore {
       proposal.status = 'failed';
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
+    let authorization = null;
     try {
-      await apply(proposalExecutionView(proposal));
+      const executionProposal = proposalExecutionView(proposal);
+      authorization = createProposalExecutionAuthorization(executionProposal, approvalToken);
+      await apply(executionProposal, authorization);
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
@@ -106,6 +114,8 @@ export class ProposalStore {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
       throw error;
+    } finally {
+      if (authorization) EXECUTION_AUTHORIZATIONS.delete(authorization);
     }
   }
 
@@ -126,6 +136,51 @@ function proposalExecutionView(proposal) {
   if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
   return { ...proposal, ...snapshotProposalPayload(payload) };
 }
+
+export function proposalCapabilityRequest(proposal) {
+  const capability = PROPOSAL_CAPABILITIES[proposal?.kind];
+  if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${proposal?.kind}`);
+  const target = proposalTargetObject(proposal.target);
+  let args;
+  if (proposal.kind === 'rename' || proposal.kind === 'comment' || proposal.kind === 'type') {
+    args = { ...target, value: proposal.after };
+  } else if (proposal.kind === 'struct-field') {
+    args = { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
+  } else if (proposal.kind === 'patch') {
+    args = { ...target, before: proposalByteArray(proposal.before), after: proposalByteArray(proposal.after) };
+  } else {
+    args = { ...target, value: proposal.after };
+  }
+  return { capability, args };
+}
+
+export function consumeProposalExecutionAuthorization(authorization, capability, args) {
+  if (!authorization || typeof authorization !== 'object') return false;
+  const grant = EXECUTION_AUTHORIZATIONS.get(authorization);
+  if (!grant) return false;
+  if (authorization.kind !== 'proposal' || authorization.proposalId !== grant.proposalId || authorization.token !== grant.token) return false;
+  if (capability !== grant.capability) return false;
+  let argsRevision;
+  try { argsRevision = fingerprint(args); } catch { return false; }
+  if (argsRevision !== grant.argsRevision) return false;
+  EXECUTION_AUTHORIZATIONS.delete(authorization);
+  return true;
+}
+
+function createProposalExecutionAuthorization(proposal, approvalToken) {
+  const request = proposalCapabilityRequest(proposal);
+  const authorization = Object.freeze({ kind: 'proposal', proposalId: proposal.id, token: approvalToken });
+  EXECUTION_AUTHORIZATIONS.set(authorization, {
+    proposalId: proposal.id,
+    token: approvalToken,
+    capability: request.capability,
+    argsRevision: fingerprint(request.args),
+  });
+  return authorization;
+}
+
+function proposalTargetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
+function proposalByteArray(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
 
 function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
   if (!source || typeof source !== 'object' || !target || typeof target !== 'object') return;
