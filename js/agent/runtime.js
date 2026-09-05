@@ -127,6 +127,23 @@ function explicitLimit(value, fallback, minimum = 0) {
   return Math.max(minimum, Math.floor(value));
 }
 
+function defaultMonotonicNow() {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  } catch { /* fall through to wall clock */ }
+  return Date.now();
+}
+
+function monotonicClockOf(cfg) {
+  if (typeof cfg?.monotonicNow === 'function') return cfg.monotonicNow;
+  if (typeof cfg?.clock === 'function') return cfg.clock;
+  if (typeof cfg?.now === 'function') return cfg.now;
+  const budget = cfg?.budget;
+  if (typeof budget?.monotonicNow === 'function') return budget.monotonicNow;
+  if (typeof budget?.clock === 'function') return budget.clock;
+  return defaultMonotonicNow;
+}
+
 function budgetOf(opts) {
   return {
     maxToolCalls: explicitLimit(opts && opts.maxToolCalls, 24, 0),
@@ -171,8 +188,10 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
-  const started = Date.now();
-  const deadlineExceeded = () => Date.now() - started >= budget.timeoutMs;
+  const monotonicNow = monotonicClockOf(cfg);
+  const started = monotonicNow();
+  const elapsedMs = () => monotonicNow() - started;
+  const deadlineExceeded = () => elapsedMs() >= budget.timeoutMs;
   const externallyCancelled = () => cfg.signal?.aborted === true;
   const cancelled = () => externallyCancelled() || budget.isCancelled() || deadlineExceeded();
   const cancellationReason = () => externallyCancelled() || budget.isCancelled() ? 'cancelled' : 'timeout';
@@ -203,7 +222,7 @@ export async function runAgent(config) {
     if (cancelled()) { stopReason = cancellationReason(); break; }
     let step;
     try {
-      const remainingMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
+      const remainingMs = Math.max(1, budget.timeoutMs - elapsedMs());
       const controller = new AbortController();
       const external = cfg.signal;
       let rejectExternalAbort;
@@ -275,7 +294,7 @@ export async function runAgent(config) {
   // without starting new analysis work.
   const remainingFunctions = Math.max(0, budget.maxFunctions - usedFunctionCount());
   const remainingDisassembly = Math.max(0, budget.maxDisassembly - disassembly);
-  const remainingTimeout = Math.max(0, budget.timeoutMs - (Date.now() - started));
+  const remainingTimeout = Math.max(0, budget.timeoutMs - elapsedMs());
   const plan = await planAnalysisGoal(query, countedContext, {
     maxFunctions: remainingFunctions,
     maxDisassembly: remainingDisassembly,
@@ -319,6 +338,6 @@ export async function runAgent(config) {
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: Date.now() - started },
+    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
   };
 }

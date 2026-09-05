@@ -515,9 +515,16 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.callersOf(address, Math.min(MAX_PAGE, offset + limit));
+      // MAX_PAGE bounds a single page (via pageOf), never the cumulative
+      // offset: the producer only serves a leading prefix, so reaching an
+      // offset beyond MAX_PAGE requires fetching the full prefix.
+      const source = program.callersOf(address, offset + limit);
       const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      if (source?.queryLimited === true && result.page.next == null) {
+        result.page.next = result.page.returned > 0
+          ? result.page.offset + result.page.returned
+          : result.page.total;
+      }
       return result;
     },
 
