@@ -13,6 +13,10 @@ const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
 
 function valueOf(a) { return a?.value || null; }
 
+function positiveAccessSize(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 function mapsOf(result) {
   return new Map((result.semanticAst?.values || []).map((v) => [v.valueId, v.expression]));
 }
@@ -192,12 +196,38 @@ function controller(ir, merge, predecessors, opts) {
   return candidates[0];
 }
 
-function storeValue(inst, key, values) {
-  if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+function exactReturnLoad(result, root, ret) {
+  const bits = root?.bits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
+  const sourceIds = new Set((Array.isArray(root.source?.ir) ? root.source.ir : []).map(String));
+  if (!sourceIds.size) return null;
+  const candidates = (result.ir?.instructions || []).filter((inst) =>
+    sourceIds.has(String(inst.id))
+      && inst?.op === 'load'
+      && inst.loc?.kind === 'stack'
+      && inst.loc.key === root.location.key);
+  if (candidates.length !== 1) return null;
+  const load = candidates[0];
+  const size = positiveAccessSize(load.loc?.size);
+  if (size == null || size > Math.floor(Number.MAX_SAFE_INTEGER / 8) || size * 8 !== bits) return null;
+  if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(ret.row)) return null;
+  if (load.block === ret.block) {
+    if (load.row >= ret.row) return null;
+  } else if (!dominates(result.ir, load.block, ret.block)) {
+    return null;
+  }
+  return { load, size };
+}
+
+function storeValue(inst, key, size, values) {
+  if (inst?.op !== 'store'
+      || inst.loc?.kind !== 'stack'
+      || inst.loc?.key !== key
+      || !Number.isSafeInteger(inst.row)
+      || positiveAccessSize(inst.loc?.size) !== size) return null;
   let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
-  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
-  const bits = bytes > 0 ? bytes * 8 : 0;
+  const bits = size * 8;
   if (bits) node = fitWidth(node, bits, {
     address:inst.address,
     row:inst.row,
@@ -415,6 +445,10 @@ function committedReturnValue(result, root, ret, opts = {}) {
 }
 
 function unsafeBarrier(inst, key) {
+  if (!Number.isSafeInteger(inst?.row)
+      && (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown'
+        || (inst?.op === 'store'
+          && (!inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key)))) return true;
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
   if (inst?.op === 'call') {
     // buildMemorySSA has already proven which locations this call can kill.
@@ -422,23 +456,40 @@ function unsafeBarrier(inst, key) {
     // through the call; an escaped stack address is present and remains a barrier.
     return (inst.memKills || []).some((loc) => loc?.key === key);
   }
-  return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
+  if (inst?.op !== 'store') return false;
+  if (inst.loc?.key === key) return true;
+  return inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function before(ir, block, row) {
+function before(ir, block, row, key) {
   return (ir.instructions || [])
-    .filter((i) => i.block === block && (row == null || i.row < row))
-    .sort((a,b) => (b.row ?? -1) - (a.row ?? -1));
+    .filter((i) => {
+      if (i.block !== block) return false;
+      const malformedBarrier = !Number.isSafeInteger(i.row)
+        && (i.op === 'call' || i.op === 'clobber' || i.op === 'unknown'
+          || (i.op === 'store'
+            && (!i.loc?.key || i.loc?.kind === 'unknown' || i.loc.key === key)));
+      if (malformedBarrier) return true;
+      return row == null || (Number.isSafeInteger(row) && Number.isSafeInteger(i.row) && i.row < row);
+    })
+    .sort((a,b) => {
+      const aMalformed = Number.isSafeInteger(a.row) ? 0 : 1;
+      const bMalformed = Number.isSafeInteger(b.row) ? 0 : 1;
+      if (aMalformed !== bMalformed) return bMalformed - aMalformed;
+      const aRow = Number.isSafeInteger(a.row) ? a.row : -Infinity;
+      const bRow = Number.isSafeInteger(b.row) ? b.row : -Infinity;
+      return bRow - aRow;
+    });
 }
 
-function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0) {
+function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, active, depth = 0) {
   if (blockIndex == null || depth > 64) return null;
-  const token = `${blockIndex}:${beforeRow ?? 'end'}:${key}`;
+  const token = `${blockIndex}:${beforeRow ?? 'end'}:${key}:${size}`;
   if (active.has(token)) return null;
   active.add(token);
   try {
-    for (const inst of before(ir, blockIndex, beforeRow)) {
-      const stored = storeValue(inst, key, values);
+    for (const inst of before(ir, blockIndex, beforeRow, key)) {
+      const stored = storeValue(inst, key, size, values);
       if (stored) return stored;
       if (unsafeBarrier(inst, key)) return null;
     }
@@ -446,7 +497,7 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
     const block = ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, values, opts, engine, active, depth + 1));
+    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, size, values, opts, engine, active, depth + 1));
     if (incoming.some((x) => !x)) return null;
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return incoming[0];
@@ -469,19 +520,32 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
   }
 }
 
-function rewriteReturn(result, expression, opts) {
+function isReturnNode(node) {
+  return node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim());
+}
+
+function returnNodeMatches(node, ret) {
+  const source = node?.source || {};
+  const rows = (Array.isArray(source.rows) ? source.rows : [])
+    .filter((row) => typeof row === 'number' && Number.isFinite(row));
+  const ir = (Array.isArray(source.ir) ? source.ir : [])
+    .filter((id) => typeof id === 'number' && Number.isFinite(id));
+  const addresses = (Array.isArray(source.addresses) ? source.addresses : []).filter((address) =>
+    typeof address === 'bigint' || (typeof address === 'number' && Number.isFinite(address)));
+  return rows.some((row) => Number(row) === Number(ret.row))
+    || ir.some((id) => Number(id) === Number(ret.id))
+    || addresses.some((address) => String(address) === String(ret.address));
+}
+
+function rewriteReturn(result, expression, opts, ret) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
   if (!output) return false;
+  const nodes = (result.cAst?.body || []).filter(isReturnNode);
+  if (nodes.length !== 1 || !returnNodeMatches(nodes[0], ret)) return false;
   output.expression = expression;
-  let changed = false;
-  for (const node of result.cAst?.body || []) {
-    if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
-      node.text = `return ${printExpression(expression)};`;
-      if (node.semantic) node.semantic.expression = expression;
-      changed = true;
-    }
-  }
-  if (!changed) return false;
+  const node = nodes[0];
+  node.text = `return ${printExpression(expression)};`;
+  if (node.semantic) node.semantic.expression = expression;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
   result.sourceMap = printed.mapping;
@@ -493,9 +557,11 @@ function rewriteReturn(result, expression, opts) {
   return true;
 }
 
-function committedStackSpillOnExactReturnPath(result, root, ret) {
-  for (const inst of before(result.ir, ret.block, ret.row)) {
+function committedStackSpillOnExactReturnPath(result, root, load, size) {
+  for (const inst of before(result.ir, load.block, load.row, root.location.key)) {
+    if (!Number.isSafeInteger(inst.row)) return null;
     if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
+      if (positiveAccessSize(inst.loc.size) !== size) return null;
       const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
       return location ? { stackStore:inst, location } : null;
     }
@@ -535,8 +601,14 @@ export function recoverExactStackReturn(result, opts = {}) {
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   const root = output?.expression;
   if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return result;
-  const ret = [...(result.ir.instructions || [])].reverse().find((i) => i.op === 'ret');
-  if (!ret) return result;
+  const returns = (result.ir.instructions || []).filter((i) => i.op === 'ret');
+  const returnNodes = (result.cAst.body || []).filter(isReturnNode);
+  // Stack-PHI recovery is path-local. The fallback has no per-output return
+  // envelope, so it must not guess among multiple physical RETs or statements.
+  if (returns.length !== 1 || returnNodes.length !== 1) return result;
+  const ret = returns[0];
+  const loadProof = exactReturnLoad(result, root, ret);
+  if (!loadProof || !returnNodeMatches(returnNodes[0], ret)) return result;
 
   const values = mapsOf(result);
   const engine = new RewriteEngine(DEFAULT_RULES, {
@@ -548,7 +620,7 @@ export function recoverExactStackReturn(result, opts = {}) {
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
-    const proof = committedStackSpillOnExactReturnPath(result, root, ret);
+    const proof = committedStackSpillOnExactReturnPath(result, root, loadProof.load, loadProof.size);
     if (proof) {
       committedSpill = proof.stackStore;
       committed = expr.load(proof.location, root.bits || 64, root.source, {
@@ -557,10 +629,12 @@ export function recoverExactStackReturn(result, opts = {}) {
       });
     }
   }
-  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
+  const recovered = committed || resolve(result.ir, loadProof.load.block, loadProof.load.row, root.location.key,
+    loadProof.size, values, opts, engine, new Set());
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
-  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
+  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack')
+      || !rewriteReturn(result, recovered, opts, ret)) return result;
   if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
 
   result.rewriteProof = [...(result.rewriteProof || []), {
