@@ -58,6 +58,7 @@ import {
   verifyStageBOperationalEvidence,
   verifyT058Revalidation,
   verifyT060Amendment,
+  verifyT060Revalidation,
   verifyTaskHandoffs,
 } from '../../tools/validation/final-closure/preflight.mjs';
 
@@ -274,8 +275,31 @@ function passingShadowProviderResult(command, argv) {
 const reservedT060FixtureBlock = fixtureTaskBlocks(liveTasksText)
   .find((block) => block.split('\n', 1)[0].includes('] T060 '));
 assert.ok(reservedT060FixtureBlock, 'the live contract must provide the reserved T060 fixture row');
+// The live row is now DONE, but these synthetic repositories model the
+// pre-activation A snapshot. Keep the fixture at A=PENDING and prove the
+// explicit A→D transition used by activation fixtures instead of inheriting
+// the current live status into historical validation.
+const historicalReservedT060FixtureBlock = rewriteTaskStatus(
+  reservedT060FixtureBlock,
+  'T060',
+  'PENDING',
+);
+const activatedReservedT060FixtureBlock = rewriteTaskStatus(
+  historicalReservedT060FixtureBlock,
+  'T060',
+  'DONE',
+);
+assert.match(historicalReservedT060FixtureBlock, /^- \[ \] T060\b/m);
+assert.match(historicalReservedT060FixtureBlock, /Status: PENDING\./);
+assert.match(activatedReservedT060FixtureBlock, /^- \[x\] T060\b/m);
+assert.match(activatedReservedT060FixtureBlock, /Status: DONE\./);
+assert.notEqual(
+  historicalReservedT060FixtureBlock,
+  activatedReservedT060FixtureBlock,
+  'the fixture must retain a distinct A(PENDING) to D(DONE) activation transition',
+);
 const extendedTasksText = rewriteDependencies(
-  `${tasksText}\n${reservedT060FixtureBlock}\n- [ ] T061 [CAMP] Dynamically materialized residual proof
+  `${tasksText}\n${historicalReservedT060FixtureBlock}\n- [ ] T061 [CAMP] Dynamically materialized residual proof
   - **Contract** — Objective: prove dynamic task coverage. Current evidence: test fixture. Owner/model: SOL Ultra. Risk: MEDIUM. Dependencies: T048. Owned paths: evidence only. Delta: none. Negative counterexample: missing owner. Tests: focused. Integration test: preflight. Completion evidence: fixture. Status: PENDING.\n`,
   'T049',
   'T046, T058, and T060',
@@ -322,7 +346,7 @@ assertIncludes(
 const checkpointFixtureOwnership = structuredClone(ownership);
 checkpointFixtureOwnership.tasks.T060 = structuredClone(liveOwnership.tasks.T060);
 const checkpointFixtureTasksText = rewriteDependencies(
-  `${tasksText}\n${reservedT060FixtureBlock}\n`,
+  `${tasksText}\n${historicalReservedT060FixtureBlock}\n`,
   'T049',
   'T046, T058, and T060',
 );
@@ -362,6 +386,11 @@ if (process.argv.includes('--moving-main-refresh-positive-only')) {
 if (process.argv.includes('--moving-main-refresh-negatives-only')) {
   verifyMovingMainRefreshNegativeFixtures();
   console.log('moving-main post-T060 refresh negative lifecycle: PASS');
+  process.exit(0);
+}
+if (process.argv.includes('--moving-main-revalidation-only')) {
+  verifyMovingMainRevalidationFixture();
+  console.log('moving-main post-T060 revalidation lifecycle: PASS');
   process.exit(0);
 }
 if (process.argv.includes('--stale-fork-only')) {
@@ -3866,6 +3895,379 @@ function createComponentFixture({
     publicationSha,
     lifecycle,
   };
+}
+
+function createT060RevalidationFixture() {
+  const fixture = createComponentFixture();
+  const root = fixture.candidate;
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  const evidencePath = 'specs/005-analysis-final-closure/evidence/moving-main-amendment.md';
+  const revalidationCodePaths = [
+    'tools/validation/final-closure/preflight.mjs',
+    'tests/final-closure/preflight.test.mjs',
+    'specs/005-analysis-final-closure/plan.md',
+  ];
+  try {
+    const originalReceipt = structuredClone(
+      fixture.integrationInventory.movingMainAmendment,
+    );
+    const acceptedTaskIds = [...originalReceipt.product.acceptedTaskIds];
+    git(root, ['switch', '--quiet', '--detach', fixture.integrationHeadSha]);
+    for (const repoPath of revalidationCodePaths) {
+      fs.appendFileSync(
+        path.join(root, repoPath),
+        `\n// bounded T060 revalidation code fixture: ${repoPath}\n`,
+      );
+    }
+    const codeHeadSha = commitAll(root, 'bounded T060 revalidation code successor');
+    const codeTreeSha = git(root, ['rev-parse', `${codeHeadSha}^{tree}`]);
+
+    const release = JSON.parse(fs.readFileSync(
+      path.join(root, 'userscript/release-version.json'), 'utf8',
+    ));
+    write(root, 'js/userscript/deployment-identity.generated.js',
+      `export const DEPLOYMENT_COMMIT = ${JSON.stringify(codeHeadSha)};\n`);
+    write(root, 'userscript/hex.user.template.js',
+      `${fs.readFileSync(path.join(root, 'userscript/hex.user.template.js'), 'utf8')}\n// T060 revalidation generated product\n`);
+    write(root, 'userscript/release-version.json', `${JSON.stringify({
+      ...release,
+      serial: release.serial + 1,
+      releaseIdentity: stableDigest([codeHeadSha, 'T060-revalidation']).padEnd(64, '0'),
+    }, null, 2)}\n`);
+    const checkpointProductCommitSha = commitAll(root, 'T060 revalidation generated product');
+    const checkpointProductTreeSha = git(root, [
+      'rev-parse', `${checkpointProductCommitSha}^{tree}`,
+    ]);
+    const acceptedMerge = { commitSha: codeHeadSha, treeSha: codeTreeSha };
+    const checkpointProduct = {
+      commitSha: checkpointProductCommitSha,
+      treeSha: checkpointProductTreeSha,
+    };
+    const integrationReconciliation = {
+      schemaVersion: 'hex-final-closure-product-reconciliation/v1',
+      ownerTaskId: 'T049',
+      mergeCommitSha: codeHeadSha,
+      productCommitSha: checkpointProductCommitSha,
+      paths: [],
+      pathCount: 0,
+      stableDigest: stableDigest([]),
+    };
+    const generation = checkpointGenerationEvidence(root, {
+      acceptedMerge,
+      checkpointProduct,
+      integrationReconciliation,
+    });
+    const candidateIdentity = {
+      headSha: checkpointProductCommitSha,
+      treeSha: checkpointProductTreeSha,
+    };
+    const rollingProductGates = executeRollingProductGates({
+      root,
+      ownership: checkpointFixtureOwnership,
+      ownershipCommitSha: checkpointProductCommitSha,
+      taskIds: acceptedTaskIds,
+      candidateIdentity,
+    });
+    const shadowReports = acceptedTaskIds.flatMap((taskId) => (
+      checkpointFixtureOwnership.candidateGates.tasks[taskId].shadow.map((gate) => (
+        createShadowGateEvidence({
+          root,
+          ownership: checkpointFixtureOwnership,
+          taskId,
+          gate,
+          headSha: checkpointProductCommitSha,
+          treeSha: checkpointProductTreeSha,
+          authoritySha: codeHeadSha,
+          oracleObservation: shadowRawObservation(taskId, gate.id),
+          productObservation: shadowRawObservation(taskId, gate.id),
+        })
+      ))
+    ));
+    const independentShadowVerifier = checkpointShadowGateEvidence(
+      candidateIdentity,
+      shadowReports,
+    );
+    const product = {
+      ...structuredClone(originalReceipt.product),
+      acceptedTaskIds,
+      acceptedMerge,
+      checkpointProduct,
+      integrationReconciliation,
+      generation,
+      rollingProductGates,
+      independentShadowVerifier,
+    };
+
+    const priorEvidenceText = fs.readFileSync(path.join(root, evidencePath), 'utf8');
+    fs.appendFileSync(
+      path.join(root, evidencePath),
+      `\nT060 revalidation code head: ${codeHeadSha}\nT060 revalidation code tree: ${codeTreeSha}\n`,
+    );
+    assert.ok(
+      fs.readFileSync(path.join(root, evidencePath), 'utf8').startsWith(`${priorEvidenceText}\n`),
+      'T060 revalidation evidence must append to the original receipt evidence',
+    );
+    const evidenceHeadSha = commitAll(root, 'T060 revalidation evidence successor');
+    const evidenceTreeSha = git(root, ['rev-parse', `${evidenceHeadSha}^{tree}`]);
+    const receipt = {
+      schemaVersion: 'hex-final-closure-t060-revalidation/v1',
+      activationCommitSha: fixture.integrationHeadSha,
+      code: { headSha: codeHeadSha, treeSha: codeTreeSha },
+      evidence: { headSha: evidenceHeadSha, treeSha: evidenceTreeSha },
+      product,
+    };
+    const publishedInventory = JSON.parse(fs.readFileSync(
+      path.join(root, inventoryPath),
+      'utf8',
+    ));
+    publishedInventory.movingMainAmendmentRevalidation = receipt;
+    write(root, inventoryPath, `${JSON.stringify(publishedInventory, null, 2)}\n`);
+    const publicationCommitSha = commitAll(root, 'publish T060 revalidation receipt');
+    assert.deepEqual(
+      git(root, ['show', '-s', '--format=%P', publicationCommitSha]).split(/\s+/).filter(Boolean),
+      [evidenceHeadSha],
+      'T060 revalidation publication must be a direct inventory-only child of E3',
+    );
+    assert.deepEqual(
+      changedPaths(root, evidenceHeadSha, publicationCommitSha),
+      [inventoryPath],
+      'T060 revalidation publication must change only the integration inventory',
+    );
+    const publishedReceipt = JSON.parse(git(root, [
+      'show', `${publicationCommitSha}:${inventoryPath}`,
+    ])).movingMainAmendment;
+    assert.deepEqual(
+      publishedReceipt,
+      originalReceipt,
+      'the original T060 receipt must remain unchanged at P2',
+    );
+    return {
+      ...fixture,
+      activationCommitSha: fixture.integrationHeadSha,
+      codeHeadSha,
+      codeTreeSha,
+      checkpointProductCommitSha,
+      checkpointProductTreeSha,
+      evidenceHeadSha,
+      evidenceTreeSha,
+      publicationCommitSha,
+      receipt,
+      originalReceipt,
+      acceptedTaskIds,
+      inventoryPath,
+    };
+  } catch (error) {
+    fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function verifyMovingMainRevalidationFixture() {
+  const fixture = createT060RevalidationFixture();
+  const root = fixture.candidate;
+  try {
+    assert.equal(
+      verifyT060Revalidation(root, fixture.activationCommitSha, {
+        activationCommitSha: fixture.activationCommitSha,
+        acceptedTaskIds: fixture.acceptedTaskIds,
+      }),
+      null,
+      'the original D activation must not infer a post-activation revalidation',
+    );
+    const verified = verifyT060Revalidation(root, fixture.publicationCommitSha, {
+      activationCommitSha: fixture.activationCommitSha,
+      acceptedTaskIds: fixture.acceptedTaskIds,
+    });
+    assert.equal(verified.publicationCommitSha, fixture.publicationCommitSha);
+    assert.equal(verified.codeHeadSha, fixture.codeHeadSha);
+    assert.equal(verified.evidenceHeadSha, fixture.evidenceHeadSha);
+    assert.deepEqual(
+      [...verified.paths].sort(),
+      [
+        'tools/validation/final-closure/preflight.mjs',
+        'tests/final-closure/preflight.test.mjs',
+        'specs/005-analysis-final-closure/plan.md',
+        'specs/005-analysis-final-closure/evidence/moving-main-amendment.md',
+      ].sort(),
+      'the revalidation receipt must bind exactly the bounded A2/E3 paths',
+    );
+    assert.equal(
+      verified.product.candidateIdentity.headSha,
+      fixture.checkpointProductCommitSha,
+      'the revalidation verifier must authenticate the new G2 product',
+    );
+    const amended = verifyT060Amendment(root, fixture.publicationCommitSha);
+    assert.equal(amended.activationCommitSha, fixture.activationCommitSha);
+    assert.equal(amended.continuationCommitSha, fixture.publicationCommitSha);
+    assert.equal(amended.revalidation.publicationCommitSha, fixture.publicationCommitSha);
+    assert.equal(amended.revalidation.codeHeadSha, fixture.codeHeadSha);
+    assert.equal(amended.product.candidateIdentity.headSha, fixture.checkpointProductCommitSha);
+    const publishedInventory = JSON.parse(readGitBlob(root, fixture.publicationCommitSha, fixture.inventoryPath));
+    const publishedResult = validateRollingCheckpointFixture(fixture.lifecycle, {
+      tasks: fixture.integrationTasks, inventory: publishedInventory,
+      checkpointEvidenceText: fixture.lifecycle.checkpointEvidenceText,
+    });
+    assert.equal(publishedResult.ok, true, publishedResult.errors.join('\n'));
+    const publishedOperational = verifyCheckpointOperationalEvidence(root, publishedResult,
+      fixture.publicationCommitSha, { currentMainSha: fixture.baseSha });
+    assert.equal(publishedOperational.tailMainReconciliation.previousEvidenceSha, fixture.publicationCommitSha);
+    assert.equal(publishedOperational.movingMainAmendment.product.candidateIdentity.headSha,
+      fixture.checkpointProductCommitSha, 'runtime selection must use revalidated G2');
+    assert.deepEqual(
+      JSON.parse(git(root, [
+        'show', `${fixture.publicationCommitSha}:${fixture.inventoryPath}`,
+      ])).movingMainAmendment,
+      fixture.originalReceipt,
+      'revalidation publication must not rewrite the original T060 receipt',
+    );
+
+    const rejectRevalidationMutation = (label, mutation, expected) => {
+      git(root, ['switch', '--quiet', '--detach', label === 'rewritten revalidation receipt'
+        ? fixture.publicationCommitSha : fixture.evidenceHeadSha]);
+      const inventory = JSON.parse(fs.readFileSync(
+        path.join(root, fixture.inventoryPath),
+        'utf8',
+      ));
+      inventory.movingMainAmendmentRevalidation = structuredClone(fixture.receipt);
+      mutation({ root, inventory, receipt: inventory.movingMainAmendmentRevalidation });
+      write(root, fixture.inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
+      const head = commitAll(root, label);
+      assert.throws(
+        () => verifyT060Revalidation(root, head, {
+          activationCommitSha: fixture.activationCommitSha,
+          acceptedTaskIds: fixture.acceptedTaskIds,
+        }),
+        expected,
+        label,
+      );
+    };
+
+    const wrongParentCodeSha = git(root, [
+      'commit-tree', fixture.codeTreeSha,
+      '-p', fixture.activationCommitSha,
+      '-p', fixture.handoffSha,
+      '-m', 'T060 revalidation wrong-parent code successor',
+    ]);
+    rejectRevalidationMutation(
+      'wrong revalidation code parents',
+      ({ receipt }) => {
+        receipt.code = {
+          headSha: wrongParentCodeSha,
+          treeSha: fixture.codeTreeSha,
+        };
+      },
+      /moving-main-revalidation-invalid:(?:code-parent|code-scope)/,
+    );
+    rejectRevalidationMutation(
+      'reused original T060 product',
+      ({ receipt }) => {
+        receipt.product = structuredClone(fixture.originalReceipt.product);
+      },
+      /moving-main-amendment-invalid:T060:product-authority/,
+    );
+    rejectRevalidationMutation(
+      'missing exact G2 generation proof',
+      ({ receipt }) => {
+        receipt.product.generation.firstRunDiffEmpty = false;
+      },
+      /checkpoint-generation-evidence-mismatch:T060/,
+    );
+    rejectRevalidationMutation(
+      'old T060 handoff activation',
+      ({ receipt }) => {
+        receipt.activationCommitSha = fixture.handoffSha;
+      },
+      /moving-main-revalidation-invalid:schema/,
+    );
+    rejectRevalidationMutation(
+      'rewritten revalidation receipt',
+      ({ receipt }) => {
+        receipt.product.rewrittenReceiptMarker = true;
+      },
+      /moving-main-revalidation-invalid:receipt-rewritten/,
+    );
+
+    assertIncludes(validate({ integrationInventory: {
+      ...integrationInventory, movingMainAmendmentRevalidation: fixture.receipt,
+    } }).errors, 'moving-main-revalidation-orphan',
+    'a revalidation cannot exist without its DONE original amendment');
+
+    git(root, ['switch', '--quiet', '--detach', fixture.publicationCommitSha]);
+    const removedReceiptInventory = JSON.parse(readGitBlob(root, fixture.publicationCommitSha,
+      fixture.inventoryPath));
+    delete removedReceiptInventory.movingMainAmendmentRevalidation;
+    write(root, fixture.inventoryPath, `${JSON.stringify(removedReceiptInventory, null, 2)}\n`);
+    const removedReceiptSha = commitAll(root, 'remove published T060 revalidation in Stage A');
+    assert.throws(() => verifyT060Revalidation(root, removedReceiptSha, {
+      activationCommitSha: fixture.activationCommitSha, acceptedTaskIds: fixture.acceptedTaskIds,
+    }), /moving-main-revalidation-invalid:receipt-removed/,
+    'an absent current receipt must not erase its immutable publication');
+
+    git(root, ['switch', '--quiet', '--detach', fixture.publicationCommitSha]);
+    const stageBInventory = structuredClone(removedReceiptInventory);
+    stageBInventory.campaignStage = 'STAGE_B';
+    delete stageBInventory.movingMainAmendment;
+    write(root, fixture.inventoryPath, `${JSON.stringify(stageBInventory, null, 2)}\n`);
+    const stageBHeadSha = commitAll(root, 'replace Stage A receipt fields in Stage B inventory');
+    const historical = verifyT060Amendment(root, fixture.activationCommitSha, {
+      revalidationHeadSha: stageBHeadSha,
+    });
+    assert.equal(historical.revalidation.publicationCommitSha, fixture.publicationCommitSha);
+    assert.equal(historical.product.candidateIdentity.headSha, fixture.checkpointProductCommitSha);
+    const stageBIdentity = verifyTaskHandoffs(root, {
+      checkpointResult: { checkpoint: { evidencePath: 'specs/005-analysis-final-closure/evidence/stage-b-checkpoints.md' },
+        ledger: { campaignStage: 'STAGE_B' } },
+      taskHandoffResult: { completedTaskIds: ['T046', 'T058', 'T060'],
+        handoffs: stageBInventory.taskHandoffs, inventoryEntries: stageBInventory.entries },
+    }, stageBHeadSha);
+    assert.equal(stageBIdentity.canonicalT060TransitionCommitSha, fixture.activationCommitSha,
+      'Stage B preserves D while authenticating and sealing the later A2/E3 correction');
+
+    git(root, ['switch', '--quiet', '--detach', fixture.evidenceHeadSha]);
+    const inventoryMutation = JSON.parse(fs.readFileSync(
+      path.join(root, fixture.inventoryPath),
+      'utf8',
+    ));
+    inventoryMutation.movingMainAmendmentRevalidation = structuredClone(fixture.receipt);
+    inventoryMutation.taskHandoffs.T060.headSha = fixture.publicationSha;
+    write(root, fixture.inventoryPath, `${JSON.stringify(inventoryMutation, null, 2)}\n`);
+    const inventoryMutationSha = commitAll(root, 'mutate T060 inventory before revalidation publication');
+    assert.throws(
+      () => verifyT060Revalidation(root, inventoryMutationSha, {
+        activationCommitSha: fixture.activationCommitSha,
+        acceptedTaskIds: fixture.acceptedTaskIds,
+      }),
+      /moving-main-revalidation-invalid:inventory-delta/,
+      'revalidation must reject a mutated pre-publication inventory',
+    );
+
+    git(root, ['switch', '--quiet', '--detach', fixture.activationCommitSha]);
+    write(root, 'js/t060-revalidation-unowned-fixture.js', '// forbidden revalidation path\n');
+    const arbitraryCodeHeadSha = commitAll(root, 'T060 revalidation arbitrary code path');
+    const arbitraryCodeTreeSha = git(root, ['rev-parse', `${arbitraryCodeHeadSha}^{tree}`]);
+    rejectRevalidationMutation(
+      'arbitrary T060 revalidation code path',
+      ({ receipt }) => {
+        receipt.code = { headSha: arbitraryCodeHeadSha, treeSha: arbitraryCodeTreeSha };
+      },
+      /moving-main-revalidation-invalid:code-scope/,
+    );
+    const continuation = appendComponentAfterT060({ ...fixture,
+      integrationHeadSha: fixture.publicationCommitSha });
+    const continuationResult = validateRollingCheckpointFixture(fixture, {
+      tasks: continuation.tasks, inventory: continuation.inventory,
+      checkpointEvidenceText: readGitBlob(root, continuation.integrationHeadSha,
+        'specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md'),
+    });
+    assert.equal(continuationResult.ok, true, continuationResult.errors.join('\n'));
+    const continuationOperational = verifyCheckpointOperationalEvidence(root, continuationResult,
+      continuation.integrationHeadSha, { currentMainSha: fixture.baseSha });
+    assert.equal(continuationOperational.amendmentIsLatestProduct, false);
+    assert.equal(continuation.row.mainReconciliation.previousEvidenceSha, fixture.publicationCommitSha,
+      'the next accepted component must bridge P2 without rewriting original D');
+  } finally {
+    fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+  }
 }
 
 function appendComponentAfterT060(fixture, taskId = 'T011', { spawn = spawnSync } = {}) {

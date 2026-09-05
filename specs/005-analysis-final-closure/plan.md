@@ -471,3 +471,14 @@ tails use the same exact parent/blob verifier as explicit checkpoint rows.
 The amendment's accepted tasks remain an immutable prefix of later checkpoints.
 Static prefix compatibility is not proof: Git lineage, actual current-base
 inventory and exact generated-product gates remain mandatory.
+
+Post-activation fixture correction (2026-09-05): CI on D exposed a historical
+test seed that copied live T060 DONE into a PENDING scenario. Preserve the
+published D and original amendment receipt. A separate immutable T060
+revalidation uses D → A2 → G2 → E3 → P2: A2 may change only the existing
+preflight verifier/test and append this plan; ownership, tasks, production and
+gate commands cannot change. G2 repeats canonical generation, cumulative
+rolling and independent-shadow proof. E3 appends evidence; P2 adds only its
+separate receipt to the inventory. The next component bridges P2 and runtime
+verification selects G2. Exact-head CI remains mandatory; original handoffs
+and the original T060 activation identity are never rewritten.

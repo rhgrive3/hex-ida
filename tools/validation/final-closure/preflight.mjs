@@ -83,6 +83,11 @@ const T060_AMENDMENT_CODE_PATHS = Object.freeze([
 ]);
 const T060_AMENDMENT_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/moving-main-amendment.md';
 const T060_AMENDMENT_INVENTORY_PATH = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+const T060_REVALIDATION_CODE_PATHS = Object.freeze([
+  'tools/validation/final-closure/preflight.mjs',
+  'tests/final-closure/preflight.test.mjs',
+  'specs/005-analysis-final-closure/plan.md',
+]);
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([
@@ -792,6 +797,20 @@ export function validateIntegrationInventory({
   // The immutable amendment certifies its own main snapshot. Later component
   // checkpoints may legitimately certify a newer base without rewriting it.
   const amendment = validateMovingMainAmendmentShape(integrationInventory?.movingMainAmendment, errors);
+  const revalidation = integrationInventory?.movingMainAmendmentRevalidation;
+  if (revalidation != null) {
+    if (amendment?.status !== 'DONE') errors.push('moving-main-revalidation-orphan');
+    if (!revalidation || typeof revalidation !== 'object' || Array.isArray(revalidation)
+      || !exactSet(Object.keys(revalidation), ['schemaVersion', 'activationCommitSha', 'code', 'evidence', 'product'])
+      || revalidation.schemaVersion !== 'hex-final-closure-t060-revalidation/v1'
+      || !validSha1(revalidation.activationCommitSha)
+      || !['code', 'evidence'].every((key) => revalidation[key]
+        && exactSet(Object.keys(revalidation[key]), ['headSha', 'treeSha'])
+        && validSha1(revalidation[key].headSha) && validSha1(revalidation[key].treeSha))
+      || revalidation.product?.schemaVersion !== T060_AMENDMENT_PRODUCT_SCHEMA_VERSION) {
+      errors.push('moving-main-revalidation-schema');
+    }
+  }
 
   const expected = integrationInventory?.expectedChangedPaths;
   const actual = integrationInventory?.actualChangedPaths;
@@ -4377,7 +4396,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   const amendmentIsLatestProduct = movingMainAmendment != null
     && amendmentIndex === ledger.checkpoints.length - 1;
   if (amendmentIsLatestProduct && (checkpointResult.remainingComponentTaskIds || []).length === 0
-    && integrationHeadSha !== movingMainAmendment.activationCommitSha) {
+    && integrationHeadSha !== movingMainAmendment.continuationCommitSha) {
     throw new Error('checkpoint-terminal-amendment-tail-unverified');
   }
   const canonicalT046 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T046');
@@ -4392,7 +4411,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       .map((checkpointRow) => checkpointRow.acceptedTaskId);
     verifyMainReconciliation(root, row.mainReconciliation, {
       expectedPreviousEvidenceSha: movingMainAmendment && rowIndex === amendmentIndex + 1
-        ? movingMainAmendment.activationCommitSha
+        ? movingMainAmendment.continuationCommitSha
         : rowIndex === 0
         ? (foundationRevalidation?.publicationCommitSha ?? canonicalT058.transitionCommitSha)
         : evidenceCommitShas[rowIndex - 1],
@@ -4506,7 +4525,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   const tailMainReconciliation = requiresExactCheckpointHead
     ? derivedTailMainReconciliation(root, {
       previousEvidenceSha: amendmentIsLatestProduct
-        ? movingMainAmendment.activationCommitSha : evidenceCommitSha,
+        ? movingMainAmendment.continuationCommitSha : evidenceCommitSha,
       integrationHeadSha,
       currentMainSha,
     })
@@ -4911,6 +4930,7 @@ export function verifyT060Amendment(root, integrationHeadSha, {
   expectedCurrentMainSha = null,
   acceptedTaskIds = null,
   requireDone = true,
+  revalidationHeadSha = integrationHeadSha,
 } = {}) {
   const inventory = readJsonAt(root, integrationHeadSha, T060_AMENDMENT_INVENTORY_PATH);
   const amendment = inventory?.movingMainAmendment;
@@ -5080,17 +5100,102 @@ export function verifyT060Amendment(root, integrationHeadSha, {
     .replace(/Status: PENDING\./, 'Status: DONE.');
   if (pendingRecord === expectedDoneRecord
     || publishedTasks.replace(pendingRecord, expectedDoneRecord) !== activatedTasks) fail('activation-task-delta');
+  assertAncestor(root, integrationHeadSha, revalidationHeadSha, 'moving-main-revalidation-head-not-descendant');
+  const revalidation = verifyT060Revalidation(root, revalidationHeadSha, {
+    activationCommitSha: anchor.transitionCommitSha,
+    acceptedTaskIds: product.acceptedTaskIds,
+  });
   return Object.freeze({
     status: amendment.status,
     publicationCommitSha,
     activationCommitSha: anchor.transitionCommitSha,
+    continuationCommitSha: revalidation?.publicationCommitSha ?? anchor.transitionCommitSha,
     previousEvidenceSha,
     mainReconciliation: verifiedReconciliation,
     codeHeadSha,
     evidenceHeadSha: amendment.evidence.headSha,
     paths: Object.freeze([...amendment.paths]),
-    product,
+    product: revalidation?.product ?? product,
+    revalidation,
   });
+}
+
+export function verifyT060Revalidation(root, integrationHeadSha, { activationCommitSha, acceptedTaskIds }) {
+  const field = 'movingMainAmendmentRevalidation';
+  const inventory = readJsonAt(root, integrationHeadSha, T060_AMENDMENT_INVENTORY_PATH);
+  const fail = (reason) => { throw new Error(`moving-main-revalidation-invalid:${reason}`); };
+  // Absence in the current inventory is not proof that no receipt existed.
+  // A cheap history probe avoids materializing every old inventory when the
+  // correction has never been published (the common historical-fixture case).
+  if (inventory[field] == null && git(root, ['log', '--first-parent', '-1', '--format=%H',
+    '-G', `"${field}"`, integrationHeadSha, '--', T060_AMENDMENT_INVENTORY_PATH]) === '') return null;
+  let receipt = null;
+  let publicationCommitSha = null;
+  for (const sha of git(root, ['rev-list', '--first-parent', '--reverse', integrationHeadSha,
+    '--', T060_AMENDMENT_INVENTORY_PATH]).split('\n').filter(Boolean)) {
+    const historicalInventory = readJsonAt(root, sha, T060_AMENDMENT_INVENTORY_PATH);
+    const historical = historicalInventory[field];
+    if (historical == null) {
+      if (publicationCommitSha != null && historicalInventory.campaignStage !== 'STAGE_B') fail('receipt-removed');
+      continue;
+    }
+    receipt ??= historical;
+    if (canonicalJson(historical) !== canonicalJson(receipt)) fail('receipt-rewritten');
+    publicationCommitSha ??= sha;
+  }
+  if (receipt == null) return null;
+  if (!exactSet(Object.keys(receipt), ['schemaVersion', 'activationCommitSha', 'code', 'evidence', 'product'])
+    || receipt.schemaVersion !== 'hex-final-closure-t060-revalidation/v1'
+    || receipt.activationCommitSha !== activationCommitSha) fail('schema');
+  for (const key of ['code', 'evidence']) {
+    const value = receipt[key];
+    if (!value || !exactSet(Object.keys(value), ['headSha', 'treeSha'])
+      || !validSha1(value.headSha) || !validSha1(value.treeSha)
+      || git(root, ['rev-parse', `${value.headSha}^{tree}`]) !== value.treeSha) fail(`${key}-identity`);
+  }
+  const parents = (sha) => git(root, ['show', '-s', '--format=%P', sha]).split(/\s+/).filter(Boolean);
+  assertAncestor(root, activationCommitSha, receipt.code.headSha, 'moving-main-revalidation-code-not-descendant');
+  const history = git(root, ['rev-list', '--first-parent', '--reverse',
+    `${activationCommitSha}..${receipt.code.headSha}`]).split('\n').filter(Boolean);
+  if (history.length === 0) fail('code-empty');
+  let previousSha = activationCommitSha;
+  for (const sha of history) {
+    if (canonicalJson(parents(sha)) !== canonicalJson([previousSha])
+      || changedPaths(root, previousSha, sha).some((p) => !T060_REVALIDATION_CODE_PATHS.includes(p))) fail('code-scope');
+    previousSha = sha;
+  }
+  if (previousSha !== receipt.code.headSha) fail('code-parent');
+  const codePaths = changedPaths(root, activationCommitSha, receipt.code.headSha);
+  if (!codePaths.includes('tests/final-closure/preflight.test.mjs')) fail('regression-missing');
+  const planPath = 'specs/005-analysis-final-closure/plan.md';
+  if (!readTextAt(root, receipt.code.headSha, planPath).startsWith(readTextAt(root, activationCommitSha, planPath))) {
+    fail('historical-plan-rewritten');
+  }
+  // No production, ownership, task status, gate command or old receipt can
+  // change in this bounded post-activation verifier/test correction.
+  const product = verifyT060ProductIdentity(root, receipt, integrationHeadSha, acceptedTaskIds);
+  if (changedPaths(root, receipt.code.headSha, receipt.product.checkpointProduct.commitSha)
+    .some((p) => !CHECKPOINT_GENERATED_PATHS.includes(p))) fail('product-scope');
+  if (canonicalJson(parents(receipt.evidence.headSha))
+    !== canonicalJson([receipt.product.checkpointProduct.commitSha])
+    || !exactSet(changedPaths(root, receipt.product.checkpointProduct.commitSha, receipt.evidence.headSha),
+      [T060_AMENDMENT_EVIDENCE_PATH])) fail('evidence-scope');
+  const priorEvidence = readTextAt(root, activationCommitSha, T060_AMENDMENT_EVIDENCE_PATH);
+  const evidence = readTextAt(root, receipt.evidence.headSha, T060_AMENDMENT_EVIDENCE_PATH);
+  const appended = evidence.slice(priorEvidence.length);
+  if (!evidence.startsWith(`${priorEvidence}\n`) || !appended.includes(receipt.code.headSha)
+    || !appended.includes(receipt.code.treeSha)) fail('evidence-binding');
+  if (publicationCommitSha == null || canonicalJson(parents(publicationCommitSha))
+    !== canonicalJson([receipt.evidence.headSha])
+    || !exactSet(changedPaths(root, receipt.evidence.headSha, publicationCommitSha),
+      [T060_AMENDMENT_INVENTORY_PATH])) fail('publication-scope');
+  const published = readJsonAt(root, publicationCommitSha, T060_AMENDMENT_INVENTORY_PATH);
+  delete published[field];
+  if (canonicalJson(published) !== canonicalJson(readJsonAt(root, receipt.evidence.headSha,
+    T060_AMENDMENT_INVENTORY_PATH))) fail('inventory-delta');
+  return Object.freeze({ publicationCommitSha, codeHeadSha: receipt.code.headSha,
+    evidenceHeadSha: receipt.evidence.headSha,
+    paths: Object.freeze([...codePaths, T060_AMENDMENT_EVIDENCE_PATH]), product });
 }
 
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
@@ -5127,6 +5232,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
       ? canonicalHandoffs.T060.transitionCommitSha : integrationHeadSha;
     movingMainAmendment = verifyT060Amendment(root, amendmentHeadSha, {
       requireDone: true,
+      revalidationHeadSha: integrationHeadSha,
     });
     if (!movingMainAmendment) throw new Error('moving-main-amendment-missing:T060');
   }
@@ -5171,6 +5277,11 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     if (ownerTaskId === 'T058' && movingMainAmendment?.paths.includes(entry.path)
       && T060_AMENDMENT_CODE_PATHS.includes(entry.path)) {
       sealedHead = movingMainAmendment.codeHeadSha;
+    }
+    if (['T058', 'T060'].includes(ownerTaskId)
+      && movingMainAmendment?.revalidation?.paths.includes(entry.path)) {
+      sealedHead = entry.path === T060_AMENDMENT_EVIDENCE_PATH
+        ? movingMainAmendment.revalidation.evidenceHeadSha : movingMainAmendment.revalidation.codeHeadSha;
     }
     const unchanged = runGit(root, [
       'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
