@@ -244,17 +244,45 @@ export class PlatformPluginRegistry {
       }
     }
 
+    // Declared outside try so both success and failure paths revoke it.
+    let budgetLive = true;
     try {
+      // Narrow capability facade: never hand the mutable ResourceBudget
+      // implementation (parent/children/used/scope) to third-party code.
+      // Only consume/remaining/snapshot are allowlisted, bound to the private
+      // backing scope, and revoked when the invocation settles.
+      const budgetBacking = pluginScope || context.resourceBudget || null;
+      const budgetFacade = budgetBacking && typeof budgetBacking.consume === 'function'
+        ? Object.freeze({
+            scopePath: typeof budgetBacking.scopePath === 'string'
+              ? budgetBacking.scopePath
+              : String(budgetBacking.scopePath ?? ''),
+            consume: (resource, amount) => {
+              if (!budgetLive) throw new Error('plugin resource budget is revoked');
+              return budgetBacking.consume(resource, amount);
+            },
+            remaining: (resource) => {
+              if (!budgetLive) throw new Error('plugin resource budget is revoked');
+              return budgetBacking.remaining(resource);
+            },
+            snapshot: (options) => {
+              if (!budgetLive) throw new Error('plugin resource budget is revoked');
+              return safeSnapshot(budgetBacking.snapshot(options));
+            },
+          })
+        : undefined;
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),
-        resourceBudget: pluginScope || context.resourceBudget,
+        resourceBudget: budgetFacade,
         reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
       });
       const safeArgs = args.map((arg) => safeSnapshot(arg));
       const value = await settleWithin(Promise.resolve().then(() => fn(safeContext, ...safeArgs)), timeoutMs, signal);
+      budgetLive = false;
       return { ok: true, value: safeSnapshot(value) };
     } catch (error) {
+      budgetLive = false;
       const failure = { type, id, method, error: error?.message || String(error), at: Date.now() };
       this.failures.push(failure); if (this.failures.length > 100) this.failures.shift();
       return { ok: false, error: failure.error, isolated: true, timeout: /timed out/i.test(failure.error) };
