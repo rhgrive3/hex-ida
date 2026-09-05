@@ -72,7 +72,13 @@ export function validatePluginManifest(manifest) {
     for (const key of Object.keys(manifest.permissions)) {
       if (!ALLOWED_PERMISSIONS.has(key)) throw new TypeError(`plugin-manifest-unknown-permission:${key}`);
     }
-    permissions = { binaryRead: Boolean(manifest.permissions.binaryRead) };
+    const binaryRead = Object.hasOwn(manifest.permissions, "binaryRead")
+      ? manifest.permissions.binaryRead
+      : undefined;
+    if (binaryRead !== undefined && typeof binaryRead !== "boolean") {
+      throw new TypeError("plugin-manifest-permissions-invalid");
+    }
+    permissions = { binaryRead: binaryRead === true };
   }
 
   if (!Array.isArray(manifest.supportedTargets) || manifest.supportedTargets.length === 0) {
