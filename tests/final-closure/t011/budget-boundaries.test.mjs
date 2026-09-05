@@ -251,6 +251,21 @@ test('T011 composed PHI then return recovery preserves each physical return', ()
   assert.equal(result.metrics.rewrittenExpressions, 2);
 });
 
+test('T011 PHI recovery binds the expression width to the physical LOAD', () => {
+  const result = stackReturnFixture();
+  result.cAst.body[0].semantic.expression.bits = 64;
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 PHI recovery reads the slot at LOAD time, before a later writer', () => {
+  const result = stackReturnWriterFixture('after-load');
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return 11;');
+  assert.equal(result.metrics.rewrittenExpressions, 1);
+});
+
 test('T011 return fallback rejects width, LOAD, and location-kind ambiguity', () => {
   for (const options of [
     { name:'wrong-width', options:{ storeSize:8 } },
