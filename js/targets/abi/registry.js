@@ -166,7 +166,23 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   if (id) {
     const explicit = abiPlugin(id);
     if (!explicit || explicit.id === 'unknown') return explicit;
-    return abiPluginClaimsCallingConvention(explicit, callingConvention) ? explicit : abiPlugin('unknown');
+    if (!abiPluginClaimsCallingConvention(explicit, callingConvention)) return abiPlugin('unknown');
+    // An explicit id selects the profile, not a waiver of target identity:
+    // the plugin must still match the target architecture (with the
+    // established arm64e->arm64 exception) and any given platform.
+    const arch = canonicalId(architecture);
+    if (arch && explicit.architectureId !== arch && !(arch === 'arm64e' && explicit.architectureId === 'arm64')) {
+      return abiPlugin('unknown');
+    }
+    const platformId = canonicalId(platform);
+    if (platformId) {
+      let matches = false;
+      try {
+        matches = explicit.platformPredicate({ architecture: arch || explicit.architectureId, platform: platformId });
+      } catch { matches = false; }
+      if (!matches) return abiPlugin('unknown');
+    }
+    return explicit;
   }
   const arch = canonicalId(architecture);
   const platformId = canonicalId(platform);
