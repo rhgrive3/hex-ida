@@ -118,4 +118,19 @@ function aggregate({ members, nestedMembers = members, padding, nestedPadding = 
   assert.equal(getterCalls, 0, 'descriptor equality must not invoke accessor evidence');
 }
 
+{
+  const { proxy, revoke } = Proxy.revocable({ bits:32, bytes:4, byteOffset:0 }, {});
+  revoke();
+  assert.doesNotThrow(() => {
+    assert.equal(
+      canonicalAggregateLayout(aggregate({
+        members:[member(32, 4, 0)],
+        nestedMembers:[proxy],
+      })),
+      null,
+      'revoked proxy evidence must fail closed rather than escaping the validator',
+    );
+  });
+}
+
 console.log('issue #5550 aggregate layout semantic descriptor equality regression: ok');
