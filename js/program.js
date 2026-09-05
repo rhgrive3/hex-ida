@@ -117,7 +117,6 @@ export function mergeProgramScans(scans = [], options = {}) {
     words += regionWords; kindsCovered += take; remainingKinds -= take;
     if (take < sourceCovered || take < regionWords) reasons.push(`${scan.regionId || 'region'}:kind-stat-budget`);
   }
-
   const uniqueReasons=[...new Set(reasons.filter(Boolean))];
   const unsupported=ordered.length>0 && ordered.every((x)=>x.unsupported===true);
   const callsCapped=callAvailable>callCap || ordered.some((x)=>x.callsCapped);
@@ -285,14 +284,16 @@ export class ProgramIndex {
   }
   callersOf(target, limit = 200) {
     limit = queryLimit(limit, 200);
-    const seen = new Map();
-    const sites = this.callSitesTo(target, Math.max(0, limit * 4));
-    let queryLimited = sites.complete !== true;
-    for (const c of sites) {
-      const key = c.caller != null ? c.caller.toString() : 's' + c.site.toString();
+    const order = this._callToOrder(), seen = new Map();
+    let i = lowerBound(this.callTo, order, target), queryLimited = false;
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.callTo[k] !== target) break;
+      const site = this.callFrom[k], caller = this.functionStartOf(site);
+      const key = caller != null ? caller.toString() : 's' + site.toString();
       if (!seen.has(key)) {
         if (seen.size >= limit) { queryLimited = true; break; }
-        seen.set(key, { addr: c.caller, site: c.site, count: 0 });
+        seen.set(key, { addr: caller, site, count: 0 });
       }
       seen.get(key).count++;
     }
