@@ -56,6 +56,8 @@ function createIdentityWorkBudget(limit = SEMANTIC_IR_DEFAULT_BUDGET.maxReferenc
 }
 
 function token(value, digests = null) {
+  const canonicalToken = digests?.graphDigester?.token;
+  if (canonicalToken != null) return canonicalToken(value);
   if (typeof value === 'string') {
     digests?.graphDigester?.consumeText?.(value);
     if (!value.trim()) throw new TypeError('identity-invalid-token');
@@ -845,22 +847,30 @@ function createFastJsonGraphDigester({
   const originSetMemo = new Map();
   const projectionMemo = new WeakMap();
   const descriptorMemo = new WeakMap();
+  // Field and own-key views are immutable for this call after their strict
+  // descriptor observation. Reuse them instead of repeating proxy/key
+  // enumeration for a shared node reached through multiple semantic roles.
+  const fieldMemo = new WeakMap();
+  const ownKeysMemo = new WeakMap();
   const digestReferences = new WeakSet();
   const active = new WeakSet();
   if (!Number.isSafeInteger(maxReferences) || maxReferences < 0) {
     throw new TypeError('identity-invalid-reference-budget');
   }
   const budget = workBudget ?? createIdentityWorkBudget(maxReferences);
-  const consumeReferenceWork = budget.consume;
-  // Repeated property names are the same bounded text input across a shared
-  // metadata DAG. Descriptor/reference visits remain charged per occurrence;
-  // only property-name text conversion work is memoized.
-  const chargedPropertyText = new Set();
-  const consumePropertyText = (text) => {
+  const consumeReferenceWork = (amount) => {
+    budget.consume(amount);
+  };
+  // Property names are observed once by the strict key walk and may be
+  // encountered again while writing a graph node. Keep that bounded text
+  // accounting separate from the transition cache below: a cache hit skips
+  // the actual mix loop, while every miss is charged before it runs.
+  const chargedPropertyKeyText = new Set();
+  const consumePropertyKeyText = (text) => {
     if (typeof text !== 'string') throw new TypeError('identity-invalid-text-work');
-    if (chargedPropertyText.has(text)) return;
+    if (chargedPropertyKeyText.has(text)) return;
     budget.consumeText(text);
-    chargedPropertyText.add(text);
+    chargedPropertyKeyText.add(text);
   };
   const semanticDescriptor = (object, key) => {
     let descriptors = descriptorMemo.get(object);
@@ -872,6 +882,13 @@ function createFastJsonGraphDigester({
     const descriptor = Object.getOwnPropertyDescriptor(object, key) ?? null;
     descriptors.set(key, descriptor);
     return descriptor;
+  };
+  const graphOwnKeys = (object) => {
+    const cached = ownKeysMemo.get(object);
+    if (cached != null) return cached;
+    const keys = semanticOwnKeys(object);
+    ownKeysMemo.set(object, keys);
+    return keys;
   };
   const dataValue = (object, key) => {
     const descriptor = semanticDescriptor(object, key);
@@ -907,10 +924,55 @@ function createFastJsonGraphDigester({
     mix(hash, text.length);
     for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
   };
+  // Each digest lane is independent. Cache exact per-lane text transitions so
+  // repeated metadata nodes avoid re-mixing every character while preserving
+  // the old byte-for-byte transcript. The cache is bounded; misses retain full
+  // text charging and hostile inputs cannot grow it without bound.
+  const PROPERTY_TEXT_TRANSITION_LIMIT = 131072;
+  const propertyTextTransitions = [new Map(), new Map(), new Map(), new Map()];
+  const tokenStringMemo = new Map();
+  const tokenNumberMemo = new Map();
+  const tokenBigintMemo = new Map();
+  const tokenObjectMemo = new WeakMap();
+  let propertyTextTransitionCount = 0;
   const writePropertyText = (hash, text) => {
-    consumePropertyText(text);
-    mix(hash, text.length);
-    for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
+    const next = [null, null, null, null];
+    let miss = false;
+    for (let lane = 0; lane < hash.length; lane += 1) {
+      const byInput = propertyTextTransitions[lane].get(text);
+      const cached = byInput?.get(hash[lane]);
+      if (cached != null) {
+        next[lane] = cached;
+        continue;
+      }
+      miss = true;
+    }
+    if (miss) {
+      // Charge before executing the transition. A hostile key that exhausts
+      // the call-local budget must not receive any uncharged mix work.
+      budget.consumeText(text);
+    }
+    for (let lane = 0; lane < hash.length; lane += 1) {
+      if (next[lane] != null) continue;
+      const byInput = propertyTextTransitions[lane].get(text);
+      let value = Math.imul(hash[lane] ^ text.length, primes[lane]) >>> 0;
+      for (let index = 0; index < text.length; index += 1) {
+        value = Math.imul(value ^ text.charCodeAt(index), primes[lane]) >>> 0;
+      }
+      next[lane] = value;
+      if (propertyTextTransitionCount < PROPERTY_TEXT_TRANSITION_LIMIT) {
+        const transitions = byInput ?? new Map();
+        if (byInput == null) propertyTextTransitions[lane].set(text, transitions);
+        if (!transitions.has(hash[lane])) {
+          transitions.set(hash[lane], value);
+          propertyTextTransitionCount += 1;
+        }
+      }
+    }
+    hash[0] = next[0];
+    hash[1] = next[1];
+    hash[2] = next[2];
+    hash[3] = next[3];
   };
   // Seed the algorithm/schema version once per top-level digest. Repeating the
   // same version text for every Merkle node was measurable work on large DAGs.
@@ -954,6 +1016,20 @@ function createFastJsonGraphDigester({
       cache.set(key, digest);
     }
     return digest;
+  };
+  const primeTokenDigest = (resolved, bodyText, bodyAlreadyCharged = false) => {
+    if (stringMemo.has(resolved)) return;
+    if (!bodyAlreadyCharged) budget.consumeText(bodyText);
+    const prefix = resolved.slice(0, resolved.length - bodyText.length);
+    const hash = createHash(TAG.STRING);
+    mix(hash, resolved.length);
+    for (let index = 0; index < prefix.length; index += 1) {
+      mix(hash, prefix.charCodeAt(index));
+    }
+    for (let index = 0; index < bodyText.length; index += 1) {
+      mix(hash, bodyText.charCodeAt(index));
+    }
+    stringMemo.set(resolved, hash);
   };
   const nullDigest = createHash(TAG.NULL);
   const undefinedDigest = createHash(TAG.UNDEFINED);
@@ -1016,9 +1092,9 @@ function createFastJsonGraphDigester({
     consumeReferenceWork(1);
     active.add(item);
     try {
-      const keys = semanticOwnKeys(item);
+      const keys = graphOwnKeys(item);
       consumeReferenceWork(keys.length);
-      for (const key of keys) consumePropertyText(key);
+      for (const key of keys) consumePropertyKeyText(key);
       const prototype = Object.getPrototypeOf(item);
       let digest;
       if (Array.isArray(item)) {
@@ -1139,10 +1215,10 @@ function createFastJsonGraphDigester({
     consumeReferenceWork(1);
     active.add(item);
     try {
-      const reportedKeys = semanticOwnKeys(item);
+      const reportedKeys = graphOwnKeys(item);
       const reported = new Set(reportedKeys);
       const keys = [...reportedKeys];
-      for (const key of reportedKeys) consumePropertyText(key);
+      for (const key of reportedKeys) consumePropertyKeyText(key);
       for (const key of knownKeys) {
         if (!reported.has(key)) keys.push(key);
       }
@@ -1190,6 +1266,55 @@ function createFastJsonGraphDigester({
     }
   };
   const digest = (value) => digestText(visit(value));
+  const graphToken = (value) => {
+    if (typeof value === 'string') {
+      if (!value.trim()) throw new TypeError('identity-invalid-token');
+      const cached = tokenStringMemo.get(value);
+      if (cached != null) return cached;
+      const resolved = `string:${value.length}:${value}`;
+      primeTokenDigest(resolved, value);
+      tokenStringMemo.set(value, resolved);
+      return resolved;
+    }
+    if (typeof value === 'bigint') {
+      const cached = tokenBigintMemo.get(value);
+      if (cached != null) return cached;
+      const text = budget.bigintText(value);
+      const resolved = `bigint:${text.length}:${text}`;
+      primeTokenDigest(resolved, text, true);
+      tokenBigintMemo.set(value, resolved);
+      return resolved;
+    }
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value)) throw new TypeError('identity-invalid-token');
+      const text = Object.is(value, -0) ? '-0' : String(value);
+      const cacheKey = text;
+      const cached = tokenNumberMemo.get(cacheKey);
+      if (cached != null) return cached;
+      const resolved = `number:${text.length}:${text}`;
+      primeTokenDigest(resolved, text, false);
+      tokenNumberMemo.set(cacheKey, resolved);
+      return resolved;
+    }
+    if (value == null) return null;
+    if (typeof value !== 'object') throw new TypeError('identity-invalid-token');
+    try {
+      const cached = tokenObjectMemo.get(value);
+      if (cached != null) return cached;
+      const projection = project(value, NO_SKIPPED_KEYS);
+      if (projection.values == null || projection.includedCount === 0) {
+        throw new TypeError('identity-invalid-token');
+      }
+      const digestValue = digest(projection.digest);
+      const resolved = `object:${digestValue.length}:${digestValue}`;
+      primitiveDigest(stringMemo, resolved, TAG.STRING, resolved);
+      tokenObjectMemo.set(value, resolved);
+      return resolved;
+    } catch {
+      throw new TypeError('identity-invalid-token');
+    }
+  };
+  digest.token = graphToken;
   digest.consumeText = budget.consumeText;
   digest.bigintText = budget.bigintText;
   digest.reference = (value) => {
@@ -1211,6 +1336,9 @@ function createFastJsonGraphDigester({
     if (value == null || typeof value !== 'object') {
       throw new TypeError('identity-invalid-semantic-node');
     }
+    let variants = fieldMemo.get(value);
+    const cached = variants?.get(keys);
+    if (cached != null) return cached;
     consumeReferenceWork(keys.size ?? keys.length);
     const fields = Object.create(null);
     for (const key of keys) {
@@ -1221,6 +1349,12 @@ function createFastJsonGraphDigester({
       }
       fields[key] = descriptor.value;
     }
+    Object.freeze(fields);
+    if (variants == null) {
+      variants = new Map();
+      fieldMemo.set(value, variants);
+    }
+    variants.set(keys, fields);
     return fields;
   };
   digest.record = (tag, values) => {
