@@ -1,15 +1,36 @@
-/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata. */
+/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata.
+ *
+ * Source provenance identity is typed per field. Canonical producers emit:
+ *   addresses -> BigInt (or safe non-negative integer), rows/ir/ssaDefs/ssaUses
+ *   -> safe non-negative integers. Anything else is malformed metadata and is
+ *   dropped at the boundary: coercing it with String() would let an Array,
+ *   boolean or object alias a canonical identity and merge unrelated evidence.
+ */
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
+function canonicalIdentity(v) {
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  return null;
+}
+function canonicalList(values) {
+  if (values == null) return [];
+  const list = Array.isArray(values) ? values : [values];
+  const out = [];
+  for (const v of list) {
+    const canonical = canonicalIdentity(v);
+    if (canonical !== null && !out.some((z) => z === canonical)) out.push(canonical);
+  }
+  return out;
+}
 export function sourceOf(source = null) {
   if (!source) return { addresses: [], rows: [], ir: [], ssaDefs: [], ssaUses: [], evidence: [] };
-  const one = (v) => v == null ? [] : Array.isArray(v) ? v.slice() : [v];
-  return { addresses: one(source.addresses ?? source.address), rows: one(source.rows ?? source.row), ir: one(source.ir ?? source.irId), ssaDefs: one(source.ssaDefs ?? source.ssaDef), ssaUses: one(source.ssaUses ?? source.ssaUse), evidence: freezeArray(source.evidence) };
+  return { addresses: canonicalList(source.addresses ?? source.address), rows: canonicalList(source.rows ?? source.row), ir: canonicalList(source.ir ?? source.irId), ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef), ssaUses: canonicalList(source.ssaUses ?? source.ssaUse), evidence: freezeArray(source.evidence) };
 }
 export function mergeSource(...sources) {
   const out = sourceOf();
   for (const s of sources) {
     const x = sourceOf(s);
-    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => String(z) === String(v))) out[k].push(v);
+    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => z === v)) out[k].push(v);
     out.evidence.push(...x.evidence);
   }
   return out;
