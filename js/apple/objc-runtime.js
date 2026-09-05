@@ -1,5 +1,7 @@
 /* Objective-C runtime intelligence built on top of objc.js metadata parsing. */
 
+const PROTOCOLS_KNOWN = Symbol('objc.protocolsKnown');
+
 function cleanClassName(name) {
   if (name == null || typeof name !== 'string') return null;
   return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
@@ -179,6 +181,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
       superName: cleanClassName(c.superName),
       protocols: (c.protocols || []).map((p) => cleanClassName(p.name || p)).filter(Boolean),
     };
+    Object.defineProperty(info, PROTOCOLS_KNOWN, { value: Array.isArray(c.protocols) });
     info.methods = shallowCloneArray(info.methods);
     info.classMethods = shallowCloneArray(info.classMethods);
     classes.set(info.name, info);
@@ -339,9 +342,16 @@ function protocolSet(index, chain, explicit) {
   return out;
 }
 
-function protocolRequirements(index, key, allowedProtocols) {
+function protocolContextKnown(index, chain, explicit) {
+  if (Array.isArray(explicit)) return true;
+  if (!hierarchyComplete(index, chain)) return false;
+  if (index.completeness?.classes?.complete === false || index.completeness?.categories?.complete === false) return false;
+  return chain.every((name) => index.classes.get(name)?.[PROTOCOLS_KNOWN] === true);
+}
+
+function protocolRequirements(index, key, allowedProtocols, contextKnown) {
   const all = index.protocolRequirementsBySelector?.get(key) || [];
-  if (!allowedProtocols.size) return all.slice();
+  if (!allowedProtocols.size && !contextKnown) return all.slice();
   return all.filter((m) => allowedProtocols.has(m.className));
 }
 
@@ -358,7 +368,8 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const chain = hierarchy(index, cleanReceiver);
   const ranks = new Map(chain.map((n, i) => [n, i]));
   const allowedProtocols = protocolSet(index, chain, protocols);
-  const requirements = protocolRequirements(index, key, allowedProtocols);
+  const contextKnown = protocolContextKnown(index, chain, protocols);
+  const requirements = protocolRequirements(index, key, allowedProtocols, contextKnown);
   const all = (index.methodsBySelector.get(key) || []).filter((m) => m.source !== 'protocol' && m.imp != null);
   if (!all.length) {
     return {
