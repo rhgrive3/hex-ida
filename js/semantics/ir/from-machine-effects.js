@@ -29,8 +29,8 @@ function positiveInteger(value) {
 }
 function primitiveInteger(value) {
   if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
-  if (typeof value !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/.test(value)) return null;
+  if (typeof value === 'number') return !Object.is(value, -0) && Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || !/^(?:0|-?[1-9][0-9]*)$/.test(value)) return null;
   try { return BigInt(value); }
   catch { return null; }
 }
@@ -372,7 +372,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       return { valueId: implicitStateRead(effect, { ...expression, widthBits }, role, depth) };
     }
     if (expression.kind === 'bitvector') {
-      const valueId = rawConstant(effect, expression.value, expression.widthBits, role, depth);
+      const valueId = rawConstant(effect, expression.value, expression.widthBits, role, depth, addressSpace);
       return valueId ? { valueId } : { valueId: null, reason: 'bitvector-expression-not-concrete' };
     }
 

@@ -69,7 +69,7 @@ for (const value of ['7', 7]) {
   assert.equal(ir.completeness, 'complete');
 }
 
-for (const value of [['7'], true, ['0x7'], Number.MAX_SAFE_INTEGER + 1, '01', ' 7 ', '+7', '0x7']) {
+for (const value of [['7'], true, ['0x7'], Number.MAX_SAFE_INTEGER + 1, '01', ' 7 ', '+7', '0x7', '-0', -0, '-00']) {
   const ir = lower(value);
   assert.equal(loads(ir).length, 0, `non-canonical raw constant must not become exact address authority: ${String(value)}`);
   assert.equal(unknownMemoryEffects(ir).length, 1);
@@ -77,6 +77,13 @@ for (const value of [['7'], true, ['0x7'], Number.MAX_SAFE_INTEGER + 1, '01', ' 
   assert.equal(addressConstants(ir).length, 0);
   assert.equal(ir.completeness, 'partial', 'rejecting malformed exact address input must not become complete-empty');
 }
+
+const negativeZero = lower('-0');
+assert.equal(loads(negativeZero).length, 0, 'negative zero string must not mint exact address authority');
+assert.equal(unknownMemoryEffects(negativeZero).length, 1);
+assert.equal(unknownMemoryEffects(negativeZero)[0].unknown.reason, 'bitvector-expression-not-concrete');
+assert.equal(addressConstants(negativeZero).length, 0);
+assert.equal(negativeZero.completeness, 'partial');
 
 const zero = lower('0');
 assert.equal(loads(zero).length, 1, 'canonical zero must remain lowerable');
