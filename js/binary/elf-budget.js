@@ -53,19 +53,21 @@ export function createELFMetadataBudget(image, options = {}) {
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
     take(cost = {}, reason = 'metadata') {
       if (signal?.aborted) return stop('aborted');
-      const opCost = metadataCost(cost.operations);
-      if (opCost == null) return stop(`${reason}:operations:invalid-cost`);
-      if (used.operations + opCost >= nextTimeCheck) {
-        nextTimeCheck = used.operations + opCost + 1024;
+      const amounts = Object.create(null);
+      amounts.operations = metadataCost(cost.operations);
+      if (amounts.operations == null) return stop(`${reason}:operations:invalid-cost`);
+      if (used.operations + amounts.operations >= nextTimeCheck) {
+        nextTimeCheck = used.operations + amounts.operations + 1024;
         if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
       for (const key of Object.keys(used)) {
-        const amount = metadataCost(cost[key]);
+        const amount = key === 'operations' ? amounts.operations : metadataCost(cost[key]);
         if (amount == null) return stop(`${reason}:${key}:invalid-cost`);
+        amounts[key] = amount;
         const next = used[key] + amount;
         if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += metadataCost(cost[key]);
+      for (const key of Object.keys(used)) used[key] += amounts[key];
       return true;
     },
     partial(reason, warning = null) { markELFMetadataPartial(image, reason, warning); return false; },

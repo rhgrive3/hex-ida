@@ -102,4 +102,38 @@ for (const [key, value] of [
   );
 }
 
+
+const statefulRecordImage = image();
+const statefulRecordBudget = createELFMetadataBudget(statefulRecordImage, {
+  limits:{ records:1, wallClockMs:10_000 },
+});
+let recordReads = 0;
+const statefulRecordCost = {
+  get records() {
+    recordReads += 1;
+    return recordReads === 1 ? 1 : 2;
+  },
+};
+assert.equal(statefulRecordBudget.take(statefulRecordCost, 'stateful-records'), true);
+assert.equal(recordReads, 1, 'records cost must be read exactly once');
+assert.equal(statefulRecordBudget.snapshot().used.records, 1);
+assert.ok(statefulRecordBudget.snapshot().used.records <= statefulRecordBudget.limits.records);
+
+const statefulOperationsImage = image();
+const statefulOperationsBudget = createELFMetadataBudget(statefulOperationsImage, {
+  limits:{ operations:1, wallClockMs:10_000 },
+});
+let operationReads = 0;
+const statefulOperationsCost = new Proxy({}, {
+  get(_target, key) {
+    if (key !== 'operations') return undefined;
+    operationReads += 1;
+    return operationReads === 1 ? 1 : 2;
+  },
+});
+assert.equal(statefulOperationsBudget.take(statefulOperationsCost, 'stateful-operations'), true);
+assert.equal(operationReads, 1, 'operations cost must be read exactly once');
+assert.equal(statefulOperationsBudget.snapshot().used.operations, 1);
+assert.ok(statefulOperationsBudget.snapshot().used.operations <= statefulOperationsBudget.limits.operations);
+
 console.log('issue-3699-elf-budget-limit-cost-types: PASS');
