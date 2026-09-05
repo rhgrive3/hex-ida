@@ -1,0 +1,151 @@
+diff --git a/js/metadata/index.js b/js/metadata/index.js
+index dd3c2b4..ddc2a3a 100644
+--- a/js/metadata/index.js
++++ b/js/metadata/index.js
+@@ -22,7 +22,7 @@ import {
+ } from './provider.js';
+ 
+ import { GoMetadataProvider, GO_PROVIDER_ID, GO_PCLNTAB_MAGICS } from './go.js';
+-import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable } from './rust.js';
++import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable, stripLegacyRustPrefix, isRustCandidateSymbol } from './rust.js';
+ import { SwiftMetadataProvider, SWIFT_PROVIDER_ID } from './swift.js';
+ import { ObjcMetadataProvider, OBJC_PROVIDER_ID } from './objc.js';
+ 
+@@ -47,6 +47,8 @@ export {
+   RUST_PROVIDER_ID,
+   demangleRustSymbol,
+   isRustLayoutStable,
++  stripLegacyRustPrefix,
++  isRustCandidateSymbol,
+   SwiftMetadataProvider,
+   SWIFT_PROVIDER_ID,
+   ObjcMetadataProvider,
+@@ -125,10 +127,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
+     }));
+   }
+ 
+-  if (symbols.some((s) => {
+-    const n = safeSymbolName(s);
+-    return n.startsWith('_R') || n.startsWith('__R') || n.startsWith('_ZN') || n.startsWith('ZN');
+-  }) || context.commentBuffer) {
++  if (symbols.some((s) => isRustCandidateSymbol(safeSymbolName(s))) || context.commentBuffer) {
+     providers.push(new RustMetadataProvider({
+       symbols,
+       commentBuffer: context.commentBuffer,
+diff --git a/js/metadata/rust.js b/js/metadata/rust.js
+index 1128a3a..820bd9f 100644
+--- a/js/metadata/rust.js
++++ b/js/metadata/rust.js
+@@ -440,13 +440,28 @@ function v0SuffixParses(s, pos, maxDepth) {
+   }
+ }
+ 
++/** Normalize the canonical legacy prefix and its single Mach-O decoration. */
++export function stripLegacyRustPrefix(text) {
++  if (typeof text !== 'string') return null;
++  if (text.startsWith('__ZN')) return text.slice(2);
++  if (text.startsWith('_ZN')) return text.slice(1);
++  if (text.startsWith('ZN')) return text;
++  return null;
++}
++
++/** Recognize supported Rust symbol prefixes without coercing metadata. */
++export function isRustCandidateSymbol(text) {
++  if (typeof text !== 'string') return false;
++  return text.startsWith('_R') || text.startsWith('__R') || stripLegacyRustPrefix(text) != null;
++}
++
+ /**
+- * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
++ * Demangles a Rust legacy symbol, including the single Mach-O decoration.
+  */
+ export function demangleRustLegacy(symbol) {
+   const original = String(symbol || '');
+-  const s = original.replace(/^_/, '');
+-  if (!s.startsWith('ZN')) {
++  const s = stripLegacyRustPrefix(original);
++  if (s == null) {
+     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
+   }
+ 
+@@ -515,7 +530,7 @@ export function demangleRustSymbol(symbol) {
+   if (text.startsWith('_R') || text.startsWith('__R')) {
+     return demangleRustV0(text);
+   }
+-  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
++  if (stripLegacyRustPrefix(text) != null) {
+     const leg = demangleRustLegacy(text);
+     if (leg.parsed) return leg;
+   }
+@@ -600,9 +615,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
+     let unreadable = 0;
+     let invalidEntries = 0;
+ 
+-    const isRustCandidateName = (name) =>
+-      typeof name === 'string' &&
+-      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
++    const isRustCandidateName = isRustCandidateSymbol;
+ 
+     for (const sym of rawSymbols) {
+       const name = sym.name || sym.symbol || String(sym);
+diff --git a/tests/phase7/metadata/rust-legacy-macos-prefix-6276.test.mjs b/tests/phase7/metadata/rust-legacy-macos-prefix-6276.test.mjs
+new file mode 100644
+index 0000000..09516bc
+--- /dev/null
++++ b/tests/phase7/metadata/rust-legacy-macos-prefix-6276.test.mjs
+@@ -0,0 +1,55 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  demangleRustLegacy,
++  demangleRustSymbol,
++  stripLegacyRustPrefix,
++  isRustCandidateSymbol,
++} from '../../../js/metadata/rust.js';
++import { parseUnifiedLanguageMetadata } from '../../../js/metadata/index.js';
++
++test('issue 6276: accepts canonical macOS legacy Rust prefix without over-stripping', async () => {
++  for (const [symbol, expected] of [
++    ['_ZN3fooE', 'foo'],
++    ['ZN3fooE', 'foo'],
++    ['__ZN3fooE', 'foo'],
++  ]) {
++    assert.equal(demangleRustLegacy(symbol).demangled, expected);
++    assert.equal(demangleRustSymbol(symbol).demangled, expected);
++  }
++
++  assert.equal(demangleRustSymbol('__RC3foo').demangled, 'foo');
++  assert.equal(stripLegacyRustPrefix('___ZN3fooE'), null);
++  assert.equal(isRustCandidateSymbol('___ZN3fooE'), false);
++  assert.equal(demangleRustSymbol('___ZN3fooE').parsed, false);
++  assert.equal(isRustCandidateSymbol('_Z1fv'), false);
++  assert.equal(isRustCandidateSymbol('_malloc'), false);
++
++  const result = await parseUnifiedLanguageMetadata({
++    symbols: [{ name: '__ZN3fooE', address: 0x1000n }],
++    sections: [],
++  });
++  assert.ok(result.ecosystems.includes('rust'));
++  const rust = result.results.find((entry) => entry.ecosystem === 'rust');
++  assert.equal(rust.provider.cachedParsed.rustSymbols[0].name, 'foo');
++});
++
++// Current-main repairs must survive reconciliation of this older owner branch.
++test('issue 6276: preserve malformed-prefix and metadata-shape boundaries', async () => {
++  for (const name of ['___ZN3fooE', '___RC3foo', '__ZN3foo', '_ZN3foo']) {
++    assert.equal(demangleRustSymbol(name).parsed, false, name);
++  }
++  for (const value of [null, undefined, false, 1, ['__ZN3fooE'], { toString() { throw new Error('coercion'); } }]) {
++    assert.equal(isRustCandidateSymbol(value), false);
++    assert.equal(stripLegacyRustPrefix(value), null);
++  }
++  for (const symbols of [null, {}, true, 'not-a-symbol-list']) {
++    const result = await parseUnifiedLanguageMetadata({ symbols, sections: [] });
++    assert.equal(result.ecosystems.includes('rust'), false);
++  }
++  const result = await parseUnifiedLanguageMetadata({
++    symbols: [{ symbol: '__ZN3fooE', address: 0x1000n }],
++    sections: [],
++  });
++  assert.equal(result.ecosystems.includes('rust'), true);
++});
