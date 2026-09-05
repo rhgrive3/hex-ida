@@ -282,7 +282,9 @@ export class RuntimeAuthorityTracker {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
     let observation;
     try {
-      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA ? input : createRuntimeObservation({ ...input, binding: this.binding });
+      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA
+        ? deepFreeze(clone(input))
+        : createRuntimeObservation({ ...input, binding: this.binding });
     } catch (error) {
       return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
     }
