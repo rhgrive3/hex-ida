@@ -368,7 +368,7 @@ export function showStrings(app) {
   })();
 }
 
-/** Canonical xref sheet: one AnalysisQueryAPI result, with explicit completeness. */
+/** Canonical xref sheet: consume AnalysisQueryAPI pagination without weakening source completeness. */
 export function showXrefs(app, target) {
   const api = app?.analysisQueries;
   if (!api) return;
@@ -376,37 +376,128 @@ export function showXrefs(app, target) {
   const sheet = new Sheet(t('xref.title'), { onClose:() => controller.abort('xrefs-sheet-closed') });
   const status = el('div', 'hint', t('xref.scanning'));
   const results = list();
+  const pageSize = 400;
+  let snapshot = null;
+  let nextOffset = 0;
+  let loaded = 0;
+  let completeness = null;
+  let exactTotal = null;
+  let loading = false;
+  const more = tapRow(t('search.more'), { onTap:() => { void loadNext(); } });
   sheet.body.append(el('div', 'hint', `${addrHex(target)}\n${t('xref.hint')}`), status, results);
+
+  const updateStatus = () => {
+    const state = completeness || 'unknown';
+    if (!loaded && nextOffset == null) {
+      status.textContent = state === 'complete'
+        ? t('xref.none')
+        : `この時点では参照を確認できません（解析状態: ${state}）。`;
+      return;
+    }
+    const count = exactTotal != null && exactTotal >= loaded
+      ? `${loaded.toLocaleString()}/${exactTotal.toLocaleString()} 件表示`
+      : `${loaded.toLocaleString()} 件表示`;
+    status.textContent = `${count} · ${state}`;
+  };
+
+  const appendRows = (rows) => {
+    const frag = document.createDocumentFragment();
+    for (const row of rows) {
+      const siteRaw = row?.site ?? row?.addr ?? row?.address;
+      let site;
+      try { site = BigInt(siteRaw); } catch { continue; }
+      const fn = app.symbols?.functionAt?.(site) ?? null;
+      const owner = fn ? (app.symbols?.nameAt?.(fn.start) || addrHex(fn.start)) : addrHex(site);
+      frag.append(tapRow(owner, {
+        sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
+        onTap:() => {
+          sheet.close();
+          if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
+          else app.goToAddress(site, { announce:true });
+        },
+      }));
+    }
+    results.append(frag);
+  };
+
+  const markPaginationPartial = () => {
+    if (completeness == null || completeness === 'complete' || completeness === 'unknown') {
+      completeness = 'partial';
+    }
+    exactTotal = null;
+    nextOffset = null;
+    more.remove();
+    updateStatus();
+  };
+
+  async function loadNext() {
+    if (loading || snapshot == null || nextOffset == null) return;
+    loading = true;
+    more.remove();
+    const requestedOffset = nextOffset;
+    try {
+      const page = await api.xrefs(
+        snapshot,
+        BigInt(target),
+        { offset:requestedOffset, limit:pageSize },
+        { signal:controller.signal },
+      );
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
+
+      const rows = Array.isArray(page?.value) ? page.value : [];
+      const pageCompleteness = page?.completeness ?? page?.status?.completeness ?? 'unknown';
+      if (completeness == null || (completeness === 'complete' && pageCompleteness !== 'complete')) {
+        completeness = pageCompleteness;
+      }
+
+      const rawTotal = page?.page?.total;
+      if (pageCompleteness === 'complete' && rawTotal != null) {
+        const candidateTotal = Number(rawTotal);
+        if (Number.isSafeInteger(candidateTotal) && candidateTotal >= requestedOffset + rows.length) {
+          exactTotal = exactTotal == null || exactTotal === candidateTotal ? candidateTotal : null;
+        } else {
+          exactTotal = null;
+        }
+      } else if (pageCompleteness !== 'complete') {
+        exactTotal = null;
+      }
+
+      appendRows(rows);
+      loaded += rows.length;
+
+      const rawNext = page?.page?.next;
+      if (rawNext == null) {
+        nextOffset = null;
+        updateStatus();
+        return;
+      }
+
+      const candidateNext = Number(rawNext);
+      const expectedNext = requestedOffset + rows.length;
+      if (!Number.isSafeInteger(candidateNext) || candidateNext <= requestedOffset || candidateNext !== expectedNext) {
+        markPaginationPartial();
+        return;
+      }
+
+      nextOffset = candidateNext;
+      more.replaceChildren();
+      more.append(el('div', null, t('search.showMore', { n:pageSize })));
+      results.append(more);
+      updateStatus();
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      status.textContent = '';
+      alertDialog(t('search.failed'), userError(error));
+    } finally {
+      loading = false;
+    }
+  }
 
   void (async () => {
     try {
-      const snapshot = await api.snapshot({ signal:controller.signal });
-      const page = await api.xrefs(snapshot, BigInt(target), { offset:0, limit:400 }, { signal:controller.signal });
+      snapshot = await api.snapshot({ signal:controller.signal });
       if (controller.signal.aborted || !sheet.root.isConnected) return;
-      const rows = page?.value || [];
-      const completeness = page?.completeness ?? page?.status?.completeness ?? 'unknown';
-      if (!rows.length) {
-        status.textContent = completeness === 'complete'
-          ? t('xref.none')
-          : `この時点では参照を確認できません（解析状態: ${completeness}）。`;
-        return;
-      }
-      status.textContent = `${rows.length} 件 · ${completeness}`;
-      for (const row of rows) {
-        const siteRaw = row?.site ?? row?.addr ?? row?.address;
-        let site;
-        try { site = BigInt(siteRaw); } catch { continue; }
-        const fn = app.symbols?.functionAt?.(site) ?? null;
-        const owner = fn ? (app.symbols?.nameAt?.(fn.start) || addrHex(fn.start)) : addrHex(site);
-        results.append(tapRow(owner, {
-          sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
-          onTap:() => {
-            sheet.close();
-            if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
-            else app.goToAddress(site, { announce:true });
-          },
-        }));
-      }
+      await loadNext();
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') return;
       status.textContent = '';
