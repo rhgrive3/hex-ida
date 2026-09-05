@@ -60,6 +60,10 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
     ...wasmModule.imports.filter((entry) => entry.desc.kind === 3).map((entry) => entry.desc),
     ...wasmModule.globals,
   ];
+  const tables = [
+    ...wasmModule.imports.filter((entry) => entry.desc.kind === 1).map((entry) => entry.desc),
+    ...wasmModule.tables,
+  ];
   const stack = [];
   const frames = [{ kind: 'function', height: 0, params: [], results: funcType.results.slice(), polymorphic: false, elseSeen: false }];
   let pos = 0;
@@ -190,8 +194,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const type = wasmModule.types[typeIndex.value];
         if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        const importedTables = wasmModule.imports.filter((entry) => entry.desc.kind === 1).length;
-        if (table.value >= importedTables + wasmModule.tables.length) fail('wasm-invalid-call-indirect-table-index');
+        const tableType = tables[table.value];
+        if (!tableType) fail('wasm-invalid-call-indirect-table-index');
+        if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
         pop(I32, 'wasm-stack-underflow-call-indirect');
         popTypes(type.params, 'wasm-stack-underflow-call-indirect');
         pushTypes(type.results);

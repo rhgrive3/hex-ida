@@ -113,6 +113,23 @@ assert.doesNotThrow(
   'plain select must continue to accept matching numeric operands',
 );
 
+assert.throws(
+  () => liftWasmFunction(0, moduleWith(
+    [0x41, 0x00, 0x11, 0x00, 0x00, 0x0b],
+    { tables: [{ elemType: EXTERNREF }] },
+  )),
+  /wasm-invalid-call-indirect-table-type/,
+  'call_indirect must reject an externref table as a callee authority',
+);
+
+assert.doesNotThrow(
+  () => liftWasmFunction(0, moduleWith(
+    [0x41, 0x00, 0x11, 0x00, 0x00, 0x0b],
+    { tables: [{ elemType: FUNCREF }] },
+  )),
+  'call_indirect must continue to accept a funcref table with a matching signature',
+);
+
 {
   const partial = liftWasmFunction(0, moduleWith([0x41, 0x00, 0x67, 0x1a, 0x0b]));
   assert.equal(partial.aggregateCompleteness, 'partial');
