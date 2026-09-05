@@ -1,0 +1,53 @@
+name: PR closeout pinned source snapshot
+on:
+  push:
+    branches: [audit/pr-closeout-source-20260905]
+    paths: [.github/workflows/pr-closeout-source-snapshot.yml]
+permissions:
+  contents: read
+concurrency:
+  group: pr-closeout-source-20260905
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+      - name: Export exact public source and branch deltas
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
+          out="$RUNNER_TEMP/pr-closeout-sources"
+          mkdir -p "$out"
+          git archive --format=tar "$base" | gzip -n > "$out/main.tar.gz"
+          git cat-file commit "$base" > "$out/main.commit"
+          git ls-tree -r "$base" > "$out/main.tree"
+          printf 'main %s %s\n' "$base" "$(git rev-parse "$base^{tree}")" > "$out/identities.txt"
+          for pair in \
+            6582:409f1f33ce241ece2382f2ba61b3ba2fb2a32669 \
+            6587:0df7f9673a2c3250e0ef151c92eac39c8f4a7b4b \
+            6588:7c57adc91169daf45d37596aa46e20dacd25f26d; do
+            number="${pair%%:*}"
+            sha="${pair#*:}"
+            git fetch --quiet --no-tags --depth=1 origin "$sha"
+            git diff --binary "$base" "$sha" > "$out/pr-$number.patch"
+            git cat-file commit "$sha" > "$out/pr-$number.commit"
+            git ls-tree -r "$sha" > "$out/pr-$number.tree"
+            printf '%s %s %s\n' "$number" "$sha" "$(git rev-parse "$sha^{tree}")" >> "$out/identities.txt"
+          done
+          gzip -t "$out/main.tar.gz"
+          (cd "$out" && sha256sum main.tar.gz *.patch *.commit *.tree identities.txt > SHA256SUMS)
+          cat "$out/identities.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-closeout-pinned-sources-20260905
+          path: ${{ runner.temp }}/pr-closeout-sources/
+          if-no-files-found: error
+          retention-days: 1
