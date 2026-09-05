@@ -187,7 +187,7 @@ function fuseExtent(evidence) {
     const only = [...signatures.values()][0];
     return {
       regions: only.regions,
-      state: authoritative.length > 0 ? 'exact' : considered.length > 1 ? 'probable' : 'heuristic',
+      state: authoritative.length > 0 ? 'exact' : new Set(only.sources).size > 1 ? 'probable' : 'heuristic',
       conflicts: [],
     };
   }
