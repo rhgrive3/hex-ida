@@ -235,8 +235,14 @@ export class RuntimeModuleBindingTable {
       });
     }
 
-    if (targetSliceId && binding.sliceId && targetSliceId !== binding.sliceId) {
-      return createRuntimeAddressResolution({ ...binding, runtimeAddress: address, state: 'mismatch', method: 'slice-id-mismatch', evidenceIds: binding.identityEvidenceIds });
+    if (targetSliceId && binding.sliceId !== targetSliceId) {
+      return createRuntimeAddressResolution({
+        ...binding,
+        runtimeAddress: address,
+        state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+        method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
+        evidenceIds: binding.identityEvidenceIds,
+      });
     }
 
     if (!binding.binaryId || binding.staticBase == null || binding.identityState === 'unresolved') {
