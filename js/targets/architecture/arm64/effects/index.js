@@ -448,8 +448,9 @@ function normalizedInstruction(decoded, context) {
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
-  const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
-  const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
+  const addressImmediate = mnemonic === 'adr' || mnemonic === 'adrp';
+  const adrImmediate = addressImmediate && operands.length > 1 ? immediateOf(operands[1]) : null;
+  const normalizedPcRelTarget = addressImmediate && decoded.pcRelTarget == null
     ? (adrImmediate ?? directTargetOf(decoded))
     : decoded.pcRelTarget;
   if (instructionId == null && origin == null && mode == null && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
