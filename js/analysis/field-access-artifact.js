@@ -1,8 +1,10 @@
 const CACHE = new WeakMap();
 
 function abortError(signal, fallback = 'Field-access search aborted') {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  if (signal?.reason instanceof Error) return signal.reason;
+  const reason = signal?.reason !== undefined ? signal.reason : fallback;
+  const error = new Error(String(reason));
+  error.name = 'AbortError';
   return error;
 }
 
