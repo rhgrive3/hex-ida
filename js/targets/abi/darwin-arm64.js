@@ -102,7 +102,11 @@ function parameterClass(param) {
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
   let alignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0 ? explicitAlignment : 1;
   if (!(Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0)) {
-    if (bytes >= 16) alignmentBytes = 16;
+    // An aggregate's natural alignment is not a function of its total size
+    // (a 16-byte char array aligns to 1). Without explicit evidence the
+    // stack granularity caps the guess at 8; exact 16-byte alignment needs
+    // alignment metadata.
+    if (bytes >= 16) alignmentBytes = aggregate ? 8 : 16;
     else if (bytes >= 8) alignmentBytes = 8;
     else if (bytes >= 4) alignmentBytes = 4;
     else if (bytes >= 2) alignmentBytes = 2;
