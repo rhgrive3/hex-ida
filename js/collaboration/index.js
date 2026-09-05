@@ -5,6 +5,9 @@ export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
 export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
 const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
+// Factory provenance is not a transport grant or a payload-integrity proof.
+// Never infer canonical identity validation from an untrusted schema tag.
+const CANONICAL_PROJECT_OPERATIONS = new WeakSet();
 
 function required(value, code) { if (typeof value !== 'string') throw new TypeError(code); const text = value.trim(); if (!text) throw new TypeError(code); return text; }
 function clone(value) {
@@ -15,7 +18,11 @@ function clone(value) {
   for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, { value: clone(item), enumerable: true, configurable: true, writable: true });
   return out;
 }
-function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function list(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
+  return [...new Set(value.map((parent) => required(parent, 'operation-causal-parent-invalid')))].sort();
+}
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
 // The identity an operationId is bound to: everything that decides state
@@ -61,7 +68,41 @@ export function createProjectOperation(input = {}) {
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
-  return deepFreeze(operation);
+  deepFreeze(operation);
+  CANONICAL_PROJECT_OPERATIONS.add(operation);
+  return operation;
+}
+
+export function isCanonicalProjectOperation(value) {
+  return CANONICAL_PROJECT_OPERATIONS.has(value);
+}
+
+function requireCanonicalProjectOperation(input) {
+  return isCanonicalProjectOperation(input) ? input : createProjectOperation(input);
+}
+
+// The remote gate expects malformed records to normalize to no authority.
+// Throwing ingress APIs use the same validator without swallowing its error.
+export function canonicalizeProjectOperation(input) {
+  try { return requireCanonicalProjectOperation(input); }
+  catch { return null; }
+}
+
+function rememberRestoredOperation(map, operation) {
+  const existing = map.get(operation.operationId);
+  if (existing && semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+  if (!existing) map.set(operation.operationId, operation);
+}
+
+function operationActionReason(action) {
+  if (typeof action !== 'string') return 'operation-action-required';
+  return OPERATION_ACTIONS.has(action) ? null : 'operation-action-unsupported';
+}
+
+function rawActionRejection(input) {
+  if (input?.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return null;
+  const reason = operationActionReason(input.action);
+  return reason ? Object.freeze({ status: 'rejected', reason }) : null;
 }
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
@@ -69,7 +110,7 @@ function compareOperations(a, b) { return a.operationId.localeCompare(b.operatio
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
-    const operation = createProjectOperation(input);
+    const operation = requireCanonicalProjectOperation(input);
     const existing = unique.get(operation.operationId);
     if (existing) {
       if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
@@ -104,16 +145,26 @@ export class ChangeLog {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
     this.state = cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity));
-    this.operations = new Map((options.operations || []).map((operation) => [operation.operationId, operation]));
-    this.pending = new Map(options.pending || []);
+    this.operations = new Map();
+    for (const input of options.operations ?? []) {
+      rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
+    }
+    this.pending = new Map();
+    for (const [key, input] of options.pending ?? []) {
+      const operation = requireCanonicalProjectOperation(input);
+      if (required(key, 'changelog-pending-key-invalid') !== operation.operationId) throw new TypeError('changelog-pending-id-mismatch');
+      const applied = this.operations.get(operation.operationId);
+      if (applied && semanticDigest(applied) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
+      rememberRestoredOperation(this.pending, operation);
+    }
     this.allowRemote = options.allowRemote === true;
-    this.authorizedAuthors = new Set((options.authorizedAuthors || []).map(String));
+    this.authorizedAuthors = new Set((options.authorizedAuthors ?? []).map((author) => required(author, 'changelog-author-identity-invalid')));
   }
 
   #validate(operation) {
     if (operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return { status: 'rejected', reason: 'schema-version-unsupported' };
-    if (typeof operation.action !== 'string') return { status: 'rejected', reason: 'operation-action-required' };
-    if (!OPERATION_ACTIONS.has(operation.action)) return { status: 'rejected', reason: 'operation-action-unsupported' };
+    const actionReason = operationActionReason(operation.action);
+    if (actionReason) return { status: 'rejected', reason: actionReason };
     if (operation.projectIdentity !== this.projectIdentity) return { status: 'rejected', reason: 'wrong-project-identity' };
     if (this.binaryIdentity !== operation.binaryIdentity) return { status: 'rejected', reason: 'wrong-binary-identity' };
     if (operation.provenance?.transport === 'remote') {
@@ -202,7 +253,9 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = createProjectOperation(input);
+    const actionRejection = rawActionRejection(input);
+    if (actionRejection) return actionRejection;
+    const operation = requireCanonicalProjectOperation(input);
     const existingPending = this.pending.get(operation.operationId);
     if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
       return Object.freeze({
@@ -228,7 +281,11 @@ export class ChangeLog {
   }
 
   applyBatch(inputs = []) {
-    const operations = inputs.map((input) => createProjectOperation(input));
+    for (const input of inputs) {
+      const actionRejection = rawActionRejection(input);
+      if (actionRejection) return actionRejection;
+    }
+    const operations = inputs.map((input) => requireCanonicalProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
@@ -317,7 +374,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
 export function mergeOperations(left = [], right = []) {
   const map = new Map();
   for (const input of [...left, ...right]) {
-    const operation = createProjectOperation(input);
+    const operation = requireCanonicalProjectOperation(input);
     const existing = map.get(operation.operationId);
     if (existing) {
       // Same ID pinning different content must not first-wins silently (#5397).
