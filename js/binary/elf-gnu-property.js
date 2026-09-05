@@ -89,6 +89,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
 
   const evidence = [];
   let featureBits = null;
+  let propertyIncomplete = false;
   for (let index = 0; index < phnum; index++) {
     const p = phoffNumber + index * phentsize;
     const type = r.u32(p);
@@ -97,6 +98,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
     const filesz = safeNumber(bits === 64 ? r.u64(p + 32) : BigInt(r.u32(p + 16)));
     if (offset == null || filesz == null || filesz > maxPropertyBytes
         || !boundedSpan(offset, filesz, bytes.byteLength)) {
+      propertyIncomplete = true;
       warnings.push(`PT_GNU_PROPERTY ${index} is outside bounded input`);
       continue;
     }
@@ -110,6 +112,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
       const descStart = align(nameStart + namesz, 4);
       const next = align(descStart + descsz, 4);
       if (!boundedSpan(nameStart, namesz, end) || !boundedSpan(descStart, descsz, end) || next <= cursor || next > end) {
+        propertyIncomplete = true;
         warnings.push(`malformed GNU property note at file offset ${cursor}`);
         break;
       }
@@ -127,11 +130,13 @@ export function parseAarch64GnuProperty(input, options = {}) {
           const dataSize = r.u32(propertyCursor + 4);
           const dataStart = propertyCursor + 8;
           if (!boundedSpan(dataStart, dataSize, descEnd)) {
+            propertyIncomplete = true;
             warnings.push(`malformed GNU property payload at file offset ${propertyCursor}`);
             break;
           }
           if (propertyType === GNU_PROPERTY_AARCH64_FEATURE_1_AND) {
             if (dataSize !== 4) {
+              propertyIncomplete = true;
               warnings.push(`malformed GNU_PROPERTY_AARCH64_FEATURE_1_AND size ${dataSize} at file offset ${propertyCursor}`);
             } else {
               const value = r.u32(dataStart);
@@ -147,14 +152,28 @@ export function parseAarch64GnuProperty(input, options = {}) {
             }
           }
           const advanced = align(dataStart + dataSize, propertyAlignment);
-          if (advanced <= propertyCursor) break;
+          if (advanced <= propertyCursor || advanced > descEnd) {
+            propertyIncomplete = true;
+            break;
+          }
           propertyCursor = advanced;
         }
+        if (propertyCursor < descEnd) propertyIncomplete = true;
       }
       cursor = next;
     }
   }
 
+  if (propertyIncomplete) {
+    return defaultResult({
+      loaderPolicy:'unknown',
+      btiRequested:null,
+      pacRequested:null,
+      ...(featureBits == null ? {} : { featureBits }),
+      evidence:Object.freeze(evidence),
+      warnings:Object.freeze(warnings),
+    });
+  }
   if (featureBits == null) {
     return defaultResult({
       loaderPolicy:'feature-bit-absent',
