@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -60,6 +60,40 @@ function normalizePermissions(value) {
     normalized[identity] = list(permissions);
   }
   return normalized;
+}
+
+function isPlainRecord(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function isCanonicalRemoteOperation(operation) {
+  if (!isPlainRecord(operation) || operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return false;
+  if (!validRawIdentity(operation.operationId)
+    || !validRawIdentity(operation.projectIdentity)
+    || !validRawIdentity(operation.targetEntityId)
+    || !validRawIdentity(operation.factKind)
+    || (operation.binaryIdentity != null && !validRawIdentity(operation.binaryIdentity))
+    || (operation.authorIdentity != null && !validRawIdentity(operation.authorIdentity))
+    || (operation.deviceIdentity != null && !validRawIdentity(operation.deviceIdentity))
+    || typeof operation.action !== 'string'
+    || !['set', 'remove', 'resolve', 'resurrect'].includes(operation.action)
+    || !Array.isArray(operation.causalParents)
+    || operation.causalParents.some((parent) => !validRawIdentity(parent))
+    || new Set(operation.causalParents).size !== operation.causalParents.length
+    || operation.causalParents.some((parent, index, list) => index > 0 && list[index - 1].localeCompare(parent) > 0)
+    || (operation.timestampHint != null && typeof operation.timestampHint !== 'string')
+    || (operation.beforeFingerprint != null && typeof operation.beforeFingerprint !== 'string')
+    || !isPlainRecord(operation.provenance)) {
+    return false;
+  }
+  try {
+    const canonical = createProjectOperation(operation);
+    return stableDigest(operation) === stableDigest(canonical);
+  } catch {
+    return false;
+  }
 }
 
 function authorized(permissions, operation) {
@@ -180,7 +214,7 @@ export class RemoteCollaborationGate {
     if (envelope.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (envelope.egress?.rawBinaryBytes === true || envelope.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of envelope.operations) {
-      if (!isCanonicalProjectOperation(canonicalizeProjectOperation(operation))) return { ok: false, reason: 'remote-operation-shape-invalid' };
+      if (!isCanonicalRemoteOperation(operation)) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
       if (operation.authorIdentity !== envelope.actorIdentity || operation.deviceIdentity !== envelope.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
       if (operation.provenance?.transport !== 'remote') return { ok: false, reason: 'remote-operation-provenance-invalid' };
