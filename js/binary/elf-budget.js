@@ -14,8 +14,12 @@ function metadataOf(image) {
 }
 
 function metadataLimit(value, fallback) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function metadataCost(value) {
+  if (value === undefined) return 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 export function markELFMetadataPartial(image, reason, warning = null) {
@@ -49,16 +53,21 @@ export function createELFMetadataBudget(image, options = {}) {
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
     take(cost = {}, reason = 'metadata') {
       if (signal?.aborted) return stop('aborted');
-      const opCost = Math.max(0, Number(cost.operations || 0));
-      if (used.operations + opCost >= nextTimeCheck) {
-        nextTimeCheck = used.operations + opCost + 1024;
+      const amounts = Object.create(null);
+      amounts.operations = metadataCost(cost.operations);
+      if (amounts.operations == null) return stop(`${reason}:operations:invalid-cost`);
+      if (used.operations + amounts.operations >= nextTimeCheck) {
+        nextTimeCheck = used.operations + amounts.operations + 1024;
         if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
       for (const key of Object.keys(used)) {
-        const next = used[key] + Math.max(0, Number(cost[key] || 0));
+        const amount = key === 'operations' ? amounts.operations : metadataCost(cost[key]);
+        if (amount == null) return stop(`${reason}:${key}:invalid-cost`);
+        amounts[key] = amount;
+        const next = used[key] + amount;
         if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += Math.max(0, Number(cost[key] || 0));
+      for (const key of Object.keys(used)) used[key] += amounts[key];
       return true;
     },
     partial(reason, warning = null) { markELFMetadataPartial(image, reason, warning); return false; },
