@@ -269,3 +269,26 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     return createLanguageMetadataPage({ records });
   }
 }
+
+// Capture the lexical implementation during module evaluation. The public
+// prototype remains extensible for compatibility, but Apple knowledge issuance
+// never dispatches through that mutable surface.
+const CANONICAL_SWIFT_PROBE = SwiftMetadataProvider.prototype.probe;
+const APPLY_SWIFT_PROBE = Reflect.apply;
+const CREATE_SWIFT_CONTEXT = Object.create;
+
+export async function probeCanonicalSwiftMetadata(options = {}) {
+  const provider = CREATE_SWIFT_CONTEXT(null);
+  provider.id = SWIFT_PROVIDER_ID;
+  provider.version = SWIFT_PROVIDER_VERSION;
+  provider.ecosystem = 'swift';
+  provider.readAt = options.readAt ?? null;
+  provider.sections = options.sections ?? [];
+  provider.binaryIdentity = options.binaryIdentity ?? null;
+  provider.architecture = options.architecture ?? 'arm64';
+  provider.platform = options.platform ?? 'darwin';
+  provider.options = options.options ?? {};
+  provider.cachedModel = null;
+  provider.cachedIndex = null;
+  return APPLY_SWIFT_PROBE(CANONICAL_SWIFT_PROBE, provider, []);
+}

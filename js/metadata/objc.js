@@ -287,3 +287,25 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     return createLanguageMetadataPage({ records });
   }
 }
+
+// Canonical Apple issuance uses this lexical method reference, never the
+// externally mutable class prototype or an instance-supplied override.
+const CANONICAL_OBJC_PROBE = ObjcMetadataProvider.prototype.probe;
+const APPLY_OBJC_PROBE = Reflect.apply;
+const CREATE_OBJC_CONTEXT = Object.create;
+
+export async function probeCanonicalObjcMetadata(options = {}) {
+  const provider = CREATE_OBJC_CONTEXT(null);
+  provider.id = OBJC_PROVIDER_ID;
+  provider.version = OBJC_PROVIDER_VERSION;
+  provider.ecosystem = 'objc';
+  provider.readAt = options.readAt ?? null;
+  provider.sections = options.sections ?? [];
+  provider.binaryIdentity = options.binaryIdentity ?? null;
+  provider.architecture = options.architecture ?? 'arm64';
+  provider.platform = options.platform ?? 'darwin';
+  provider.options = options.options ?? {};
+  provider.cachedModel = null;
+  provider.cachedIndex = null;
+  return APPLY_OBJC_PROBE(CANONICAL_OBJC_PROBE, provider, []);
+}

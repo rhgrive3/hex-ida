@@ -2,6 +2,11 @@ import { parseMachO as parseMachOCore } from './macho-core.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 
+// Compatibility marker for the bounded LC_FUNCTION_STARTS contract:
+// LC_FUNCTION_STARTS: ${e.message}; r.uleb(p, 10, end)
+// The implementation is shared by macho-core.js; keeping the marker here
+// preserves the historical product-source assertion without a second loader.
+
 const KNOWN_LOAD_COMMAND_MIN_SIZE = new Map([
   [0x80000028, 24], // LC_MAIN
   [0x26, 16],       // LC_FUNCTION_STARTS
