@@ -117,6 +117,7 @@ export function mergeProgramScans(scans = [], options = {}) {
     words += regionWords; kindsCovered += take; remainingKinds -= take;
     if (take < sourceCovered || take < regionWords) reasons.push(`${scan.regionId || 'region'}:kind-stat-budget`);
   }
+
   const uniqueReasons=[...new Set(reasons.filter(Boolean))];
   const unsupported=ordered.length>0 && ordered.every((x)=>x.unsupported===true);
   const callsCapped=callAvailable>callCap || ordered.some((x)=>x.callsCapped);
