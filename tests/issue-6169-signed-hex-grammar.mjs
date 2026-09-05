@@ -61,7 +61,7 @@ test('issue #6169 - malformed mixed-sign/hex strings stay rejected', async () =>
   for (const bad of ['+-0x10', '0x', '0xGG', '', '  ', '0b101', '16n', '-0x']) {
     await rejectsInvalidArgument(tools.get_function(bad), 'address');
   }
-  await rejectsInvalidArgument(tools.find_constant('+-0x10').catch(() => { throw new AgentToolError('invalid-argument', 'constant must be an integer', { name: 'constant' }); }), 'constant');
+  await rejectsInvalidArgument(tools.find_constant('+-0x10'), 'constant');
 });
 
 test('issue #6169 - boolean/Array/Object/fraction stay rejected (existing strictness)', async () => {

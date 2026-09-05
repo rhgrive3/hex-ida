@@ -88,9 +88,10 @@ export function normalizeAIInteraction(value, allowedTools) {
   // Model tool-call names are identity authority: only a primitive non-empty
   // string may reach submit_hex_result/allowedTools dispatch. String() would
   // launder structured values (e.g. ['submit_hex_result'] → 'submit_hex_result')
-  // past the schema boundary (#6165). `??` keeps explicit precedence so a
-  // type-violating call.name is never swapped for call.function?.name.
-  const rawName = call.name ?? call.function?.name ?? null;
+  // past the schema boundary (#6165). Only undefined/true omission permits
+  // fallback to provider-specific call.function?.name; an explicit null or
+  // invalid primitive stays on call.name and fails validation.
+  const rawName = call.name !== undefined ? call.name : (call.function?.name ?? null);
   if (typeof rawName !== 'string' || !rawName) throw new Error('The model returned an invalid function name.');
   const name = rawName;
   let args = call.arguments ?? call.input ?? call.function?.arguments ?? {};

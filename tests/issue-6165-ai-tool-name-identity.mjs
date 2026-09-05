@@ -43,6 +43,11 @@ test('issue #6165 - type-violating name is not rescued by function.name fallback
   assert.throws(() => normalizeAIInteraction({ steps: [call] }, []), /invalid function name/);
 });
 
+test('issue #6165 - explicit null name does not fall back to function.name', () => {
+  const call = { type: 'function_call', name: null, function: { name: 'submit_hex_result' }, arguments: { answer: 'done' } };
+  assert.throws(() => normalizeAIInteraction({ steps: [call] }, []), /invalid function name/);
+});
+
 test('issue #6165 - empty string name is rejected', () => {
   assert.throws(() => normalizeAIInteraction(functionCall(''), []), /invalid function name/);
 });

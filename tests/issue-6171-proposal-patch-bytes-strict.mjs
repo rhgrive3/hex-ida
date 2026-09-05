@@ -62,11 +62,14 @@ test('issue #6171 - boolean/null/object bytes fail closed before CapabilityExecu
 });
 
 test('issue #6171 - out-of-range integers fail closed at the proposal boundary', async () => {
-  const { store, proposal } = patchProposal([1], [256]);
-  const executor = new ProposalExecutor({ store, capabilityExecutor: {}, app: fakeApp([1, 2, 3, 4]) });
-  await assert.rejects(executor.verifyPostcondition(proposal, { after: [256] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
-  await assert.rejects(executor.verifyPostcondition(proposal, { after: [1.5] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
-  await assert.rejects(executor.verifyPostcondition(proposal, { after: [-1] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
+  const { store: invalidStore, proposal: invalidProposal } = patchProposal([1], [256]);
+  const executorInvalid = new ProposalExecutor({ store: invalidStore, capabilityExecutor: {}, app: fakeApp([1, 2, 3, 4]) });
+  await assert.rejects(executorInvalid.verifyPostcondition(invalidProposal, { after: [256] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
+
+  const { store: validStore, proposal: validProposal } = patchProposal([1], [2]);
+  const executorValid = new ProposalExecutor({ store: validStore, capabilityExecutor: {}, app: fakeApp([1, 2, 3, 4]) });
+  await assert.rejects(executorValid.verifyPostcondition(validProposal, { after: [1.5] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
+  await assert.rejects(executorValid.verifyPostcondition(validProposal, { after: [-1] }), (error) => error instanceof AIError && error.type === 'invalid_tool_call');
 });
 
 test('issue #6171 - full apply path rejects string bytes before patch.create executes', async () => {
