@@ -41,7 +41,10 @@ function probeHandle(result) {
 }
 
 function eventProbeHandle(raw) {
-  return normalizeProbeHandle(raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null);
+  const source = raw && raw.type === 'event' && typeof raw.event === 'string'
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
 }
 
 export class InstrumentationProvider {
