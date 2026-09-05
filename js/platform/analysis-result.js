@@ -1,4 +1,4 @@
-import { isExactFunctionSeed } from './worker-validation.js';
+import { isExactFunctionSeed, normalizeSeedConfidence } from './worker-validation.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -105,7 +105,7 @@ export function analysisFromBinaryImage(image) {
     const address = u64Address(seed.address);
     const key = address.toString();
     seedByAddress.set(key, seed);
-    const extentConfidence = Number(seed.extentConfidence ?? 0);
+    const extentConfidence = normalizeSeedConfidence(seed.extentConfidence, 0);
     if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
     let end = null;
     try {
@@ -127,7 +127,7 @@ export function analysisFromBinaryImage(image) {
   const functionProvenance = functions.map((addr) => {
     const seed = seedByAddress.get(addr.toString()) || {};
     const confirmed = isExactFunctionSeed(seed);
-    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+    return { source: seed.source || 'heuristic', confidence: normalizeSeedConfidence(seed.confidence, confirmed ? 1 : 0.5), confirmed };
   });
   const nameProvenance = sorted.map((entry) => entry.provenance);
   const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);

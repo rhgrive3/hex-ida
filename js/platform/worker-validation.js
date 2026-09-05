@@ -68,11 +68,19 @@ export function utf8Len(buf, index) {
   return need + 1;
 }
 
+// Confidence authority requires a primitive finite number in [0, 1].
+// Structured values (Array/Object/boolean/string) must never coerce into
+// exactness: Number(['0.95']) === 0.95 would otherwise mint proof state.
+export function normalizeSeedConfidence(value, fallback = 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) return fallback;
+  return value;
+}
+
 export function isExactFunctionSeed(seed) {
   if (!seed) return false;
-  const confidence = Number(seed.confidence ?? 0);
+  const confidence = normalizeSeedConfidence(seed.confidence, NaN);
   if (!Number.isFinite(confidence) || confidence < 0.9) return false;
   if (seed.exactFunctionStart === true) return true;
-  const sources = new Set([seed.source, ...(seed.sources || [])]);
+  const sources = new Set([seed.source, ...(Array.isArray(seed.sources) ? seed.sources : [])]);
   return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'tls-callback', 'guard-cf'].includes(s));
 }
