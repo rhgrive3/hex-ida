@@ -17,7 +17,7 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
   if (typeof mnemonic !== 'string') return false;
   const base = mnemonic.toLowerCase();
   return DIRECT_BRANCH.has(base) || INDIRECT_BRANCH.has(base) || COMPARE_BRANCH.has(base)
-    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
+    || TEST_BRANCH.has(base) || base === 'ret' || /^(?:b|bc)\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
 }
 
 function addressRef(address) {
@@ -47,7 +47,7 @@ function isAlignedDirectTarget(target) {
 
 function directBranchDisplacementBits(mnemonic) {
   if (mnemonic === 'b' || mnemonic === 'bl') return 26;
-  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  if (COMPARE_BRANCH.has(mnemonic) || /^(?:b|bc)\./.test(mnemonic)) return 19;
   if (TEST_BRANCH.has(mnemonic)) return 14;
   return null;
 }
@@ -142,7 +142,7 @@ function isBranchTestRegister(operand) {
 }
 
 function directBranchOperandShapeValid(instruction, mnemonic, ops) {
-  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+  if (mnemonic === 'b' || /^(?:b|bc)\./.test(mnemonic)) {
     return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
   }
   if (mnemonic === 'bl') {
@@ -290,7 +290,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     });
   }
 
-  const conditionCode = mnemonic.slice(2);
+  const conditionCode = mnemonic.startsWith('bc.') ? mnemonic.slice(3) : mnemonic.slice(2);
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
   return ctx.finish({
