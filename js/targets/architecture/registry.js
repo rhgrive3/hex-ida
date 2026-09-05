@@ -31,7 +31,7 @@ export class ArchitecturePluginV2 {
     this.registerFile = normalizeArchitectureHook(definition.registerFile, 'registerFile', () => Object.freeze([]));
     this.physicalAddressSpaces = normalizeArchitectureHook(definition.physicalAddressSpaces, 'physicalAddressSpaces', () => Object.freeze(['register','memory','code','unique']));
     this.decode = normalizeArchitectureHook(definition.decode, 'decode');
-    this.decodeProvider = definition.decodeProvider || null;
+    this.decodeProvider = normalizeArchitectureHook(definition.decodeProvider, 'decodeProvider');
     this.liftExact = normalizeArchitectureHook(definition.liftExact, 'liftExact');
     this.classifyControlFlow = normalizeArchitectureHook(definition.classifyControlFlow, 'classifyControlFlow', () => null);
     this.directControlTarget = normalizeArchitectureHook(definition.directControlTarget, 'directControlTarget', () => null);
