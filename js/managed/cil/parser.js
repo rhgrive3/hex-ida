@@ -154,7 +154,7 @@ function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x0f: // ClassLayout
       return 2 + 4 + tableIndexSize(rowCounts, 0x02);
     case 0x10: // FieldLayout
-      return 4 + tableIndexSize(rowCounts, 0x02);
+      return 4 + tableIndexSize(rowCounts, 0x04);
     case STANDALONE_SIG_TABLE: // StandAloneSig
       return blobIndexSize;
     default:
