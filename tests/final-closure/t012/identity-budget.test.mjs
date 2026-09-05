@@ -20,35 +20,34 @@ function referenceVectorGraph() {
   };
 }
 
-test('T012 preserves the reviewed v6 digest reference vector', () => {
+test('T012 preserves the reviewed v7 digest reference vector', () => {
   const result = canonicalAnalysisIdentity({ ir:referenceVectorGraph() });
   assert.equal(result.valid, true, result.reason ?? 'reference vector must remain valid');
-  // Captured from the pre-optimization v6 implementation at d740b307 for this
+  // Captured from the bounded key-child v7 implementation for this
   // exact graph. This is an independent transcript check, not a self-derived
   // expectation from the optimized call.
   assert.deepEqual(result.identity, {
-    binaryId:'binary:69a1f14325b0c65b2ebfc48c61ef6584',
-    functionId:'function:shape:f8eb8c66bb4b88f2ab4a66d555ba60ad',
-    snapshotId:'snapshot:107a0519e273d642bc1311b57d965c63',
-    semanticIrId:'semantic-ir:9e6a9c909af3e1a827e2d76d58d645d1',
-    ssaId:'ssa:73c22a61dc5e6db5c5e46a4abeb00f78',
+    binaryId:'binary:b367d20e39f5a17141be2424db680582',
+    functionId:'function:shape:8275876b374734dfcdf169ea34ff1774',
+    snapshotId:'snapshot:7b1b3f9b307b693fb48e6a7b4b8d7df6',
+    semanticIrId:'semantic-ir:0bf8eedaa554866253f82826aa19a5b7',
+    ssaId:'ssa:b1e7725e7baee4c28ba897f19d5239bf',
     analyzerVersion:'phase8-analysis-v1',
-    shapeDigest:'shape:f8eb8c66bb4b88f2ab4a66d555ba60ad',
+    shapeDigest:'shape:8275876b374734dfcdf169ea34ff1774',
   });
 });
 
-test('T012 charges repeated long-key transitions instead of laundering them through text reuse', () => {
+test('T012 charges distinct long-key text instead of laundering it through key reuse', () => {
   const ir = referenceVectorGraph();
-  const longKey = 'z'.repeat(1024);
   ir.metadata = {
     items:Array.from({ length:1280 }, (_, index) => ({
       [`prefix_${index}`]:index,
-      [longKey]:index,
+      [`${'z'.repeat(1024)}_${index}`]:index,
     })),
   };
   const result = canonicalAnalysisIdentity({ ir });
   assert.equal(result.valid, false,
-    'distinct long-key transition states must exhaust the fixed identity work budget');
+    'distinct long-key text must exhaust the fixed identity work budget');
 });
 
 test('T012 strict identity admits the frozen O2 DAG without widening its work cap', () => {

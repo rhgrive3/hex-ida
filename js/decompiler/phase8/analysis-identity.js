@@ -112,7 +112,7 @@ export const ANALYSIS_IDENTITY_VERSION = 'phase8-analysis-v1';
 // This seed frames every persistent semantic digest. Any transcript change
 // must advance it so evidence issued by the previous algorithm fails stale;
 // the public analyzer contract above remains independent.
-export const ANALYSIS_IDENTITY_DIGEST_VERSION = 'phase8-analysis-merkle-v6';
+export const ANALYSIS_IDENTITY_DIGEST_VERSION = 'phase8-analysis-merkle-v7';
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -924,55 +924,32 @@ function createFastJsonGraphDigester({
     mix(hash, text.length);
     for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
   };
-  // Each digest lane is independent. Cache exact per-lane text transitions so
-  // repeated metadata nodes avoid re-mixing every character while preserving
-  // the old byte-for-byte transcript. The cache is bounded; misses retain full
-  // text charging and hostile inputs cannot grow it without bound.
-  const PROPERTY_TEXT_TRANSITION_LIMIT = 131072;
-  const propertyTextTransitions = [new Map(), new Map(), new Map(), new Map()];
   const tokenStringMemo = new Map();
   const tokenNumberMemo = new Map();
   const tokenBigintMemo = new Map();
   const tokenObjectMemo = new WeakMap();
-  let propertyTextTransitionCount = 0;
+  // Property names are transcript data, not caller-controlled executable
+  // references. Hash each distinct spelling once and carry that immutable
+  // bounded child through every property occurrence. The cache is capped so a
+  // hostile stream of unique keys cannot turn one identity call into an
+  // unbounded metadata store; uncached keys pay their full text cost again.
+  const PROPERTY_KEY_DIGEST_LIMIT = 4096;
+  const propertyKeyDigests = new Map();
+  const propertyKeyDigest = (text) => {
+    const cached = propertyKeyDigests.get(text);
+    if (cached != null) return cached;
+    const digest = createHash(TAG.STRING);
+    writeText(digest, text);
+    if (propertyKeyDigests.size < PROPERTY_KEY_DIGEST_LIMIT) {
+      propertyKeyDigests.set(text, digest);
+    }
+    return digest;
+  };
   const writePropertyText = (hash, text) => {
-    const next = [null, null, null, null];
-    let miss = false;
-    for (let lane = 0; lane < hash.length; lane += 1) {
-      const byInput = propertyTextTransitions[lane].get(text);
-      const cached = byInput?.get(hash[lane]);
-      if (cached != null) {
-        next[lane] = cached;
-        continue;
-      }
-      miss = true;
-    }
-    if (miss) {
-      // Charge before executing the transition. A hostile key that exhausts
-      // the call-local budget must not receive any uncharged mix work.
-      budget.consumeText(text);
-    }
-    for (let lane = 0; lane < hash.length; lane += 1) {
-      if (next[lane] != null) continue;
-      const byInput = propertyTextTransitions[lane].get(text);
-      let value = Math.imul(hash[lane] ^ text.length, primes[lane]) >>> 0;
-      for (let index = 0; index < text.length; index += 1) {
-        value = Math.imul(value ^ text.charCodeAt(index), primes[lane]) >>> 0;
-      }
-      next[lane] = value;
-      if (propertyTextTransitionCount < PROPERTY_TEXT_TRANSITION_LIMIT) {
-        const transitions = byInput ?? new Map();
-        if (byInput == null) propertyTextTransitions[lane].set(text, transitions);
-        if (!transitions.has(hash[lane])) {
-          transitions.set(hash[lane], value);
-          propertyTextTransitionCount += 1;
-        }
-      }
-    }
-    hash[0] = next[0];
-    hash[1] = next[1];
-    hash[2] = next[2];
-    hash[3] = next[3];
+    // `graphOwnKeys`/`project` charge each property occurrence as reference
+    // work. This child reference therefore adds no unbounded budget path; the
+    // distinct spelling itself is charged by propertyKeyDigest above.
+    writeDigest(hash, propertyKeyDigest(text));
   };
   // Seed the algorithm/schema version once per top-level digest. Repeating the
   // same version text for every Merkle node was measurable work on large DAGs.

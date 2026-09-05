@@ -595,11 +595,23 @@ test('the digest migration makes old transcript identities stale without changin
   });
   assert.equal(current.valid, true);
   assert.equal(ANALYSIS_IDENTITY_VERSION, 'phase8-analysis-v1');
-  assert.equal(ANALYSIS_IDENTITY_DIGEST_VERSION, 'phase8-analysis-merkle-v6');
+  assert.equal(ANALYSIS_IDENTITY_DIGEST_VERSION, 'phase8-analysis-merkle-v7');
   assert.equal(current.identity.analyzerVersion, ANALYSIS_IDENTITY_VERSION);
   assert.equal(analysisIdentityMatches(previous, current.identity), false);
   assert.equal(canonicalAnalysisIdentity({ ir, analysisIdentity: previous }).valid, false,
-    'a full merkle-v5 identity must fail after the v6 transcript migration');
+    'a full merkle-v5 identity must fail after the v7 transcript migration');
+  const previousV6 = Object.freeze({
+    binaryId: 'binary:69a1f14325b0c65b2ebfc48c61ef6584',
+    functionId: 'function:shape:f8eb8c66bb4b88f2ab4a66d555ba60ad',
+    snapshotId: 'snapshot:107a0519e273d642bc1311b57d965c63',
+    semanticIrId: 'semantic-ir:9e6a9c909af3e1a827e2d76d58d645d1',
+    ssaId: 'ssa:73c22a61dc5e6db5c5e46a4abeb00f78',
+    analyzerVersion: 'phase8-analysis-v1',
+    shapeDigest: 'shape:f8eb8c66bb4b88f2ab4a66d555ba60ad',
+  });
+  assert.equal(analysisIdentityMatches(previousV6, current.identity), false);
+  assert.equal(canonicalAnalysisIdentity({ ir, analysisIdentity: previousV6 }).valid, false,
+    'a full merkle-v6 identity must fail after the v7 key-child transcript migration');
   const customProducer = canonicalAnalysisIdentity({
     ir,
     analysisIdentity:{ ...current.identity, analyzerVersion:'phase8-analysis-custom-producer' },
