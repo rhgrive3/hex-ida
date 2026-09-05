@@ -172,6 +172,31 @@ function linkableResolution(resolution) {
   return !!resolution && (resolution.state === 'exact' || resolution.state === 'resolved') && Array.isArray(resolution.targetEntityIds) && resolution.targetEntityIds.length > 0;
 }
 
+function canonicalIdentity(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function resolutionFingerprint(resolution) {
+  return resolution == null ? null : stableDigest(resolution);
+}
+
+function linkResolutionMatchesEvidence(evidence, resolution) {
+  if (!linkableResolution(resolution)) return false;
+  if (!canonicalIdentity(resolution.runtimeSessionId) || !canonicalIdentity(resolution.binaryId)) return false;
+  if (!resolution.targetEntityIds.every(canonicalIdentity)) return false;
+
+  const stored = evidence?.payload?.resolution;
+  const storedFingerprint = evidence?.payload?.resolutionFingerprint;
+  if (!stored || typeof storedFingerprint !== 'string' || !storedFingerprint) return false;
+  if (resolutionFingerprint(resolution) !== storedFingerprint) return false;
+  if (resolution.runtimeSessionId !== evidence.payload.runtimeSessionId) return false;
+  if (resolution.binaryId !== evidence.binaryId) return false;
+  if (stored.runtimeSessionId !== resolution.runtimeSessionId || stored.state !== resolution.state) return false;
+
+  const resolutionTargets = [...new Set(resolution.targetEntityIds)].sort();
+  return stableStringify(resolutionTargets) === stableStringify(evidence.targetEntityIds);
+}
+
 function resolutionCompleteness(resolution) {
   if (!resolution) return 'partial';
   if (resolution.state === 'exact') return 'complete';
@@ -196,6 +221,7 @@ export class RuntimeEvidenceBridge {
         'runtime event and address resolution must belong to the same runtime session',
       );
     }
+    const resolutionBinding = resolutionFingerprint(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
     const interventionRecords = this.interventions.ancestry(event.interventionIds);
@@ -236,6 +262,7 @@ export class RuntimeEvidenceBridge {
         eventKind: event.kind,
         eventPayload: event.payload,
         interventionIds: interventionRecords.map((record) => record.interventionId),
+        resolutionFingerprint: resolutionBinding,
         resolution: resolution ? {
           runtimeSessionId: resolution.runtimeSessionId,
           state: resolution.state,
@@ -257,6 +284,7 @@ export class RuntimeEvidenceBridge {
     if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
     const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
+    resolution = resolution == null ? null : ownedClone(resolution);
     if (!linkableResolution(resolution)) {
       return deepFreeze({ linked: false, reason: resolution?.state === 'mismatch' ? 'identity-mismatch' : 'static-resolution-required', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
     }
@@ -264,6 +292,9 @@ export class RuntimeEvidenceBridge {
     const evidence = this.graph.getNode(evidenceId);
     if (!claim || claim.family !== 'Claim') throw new DebugAdapterError('runtime-claim-not-found', `claim not found: ${claimId}`);
     if (!evidence || evidence.family !== 'RuntimeEvidence') throw new DebugAdapterError('runtime-evidence-not-found', `runtime evidence not found: ${evidenceId}`);
+    if (!linkResolutionMatchesEvidence(evidence, resolution)) {
+      return deepFreeze({ linked: false, reason: 'resolution-evidence-mismatch', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
+    }
     const edge = createEvidenceEdge({ type, from: claim.id, to: evidence.id, metadata: { resolutionState: resolution.state, method: resolution.method ?? null } });
     this.graph.addEdge(edge);
     return deepFreeze({ linked: true, edge });
