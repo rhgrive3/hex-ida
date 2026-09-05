@@ -122,8 +122,6 @@ const result = buildSemanticV2CompatibilityPipeline({
   addressWidthBits: 64,
   entryBlockKey: 'block-1000',
   blocks,
-  completeness: 'partial',
-  unknowns,
 });
 
 assert.equal(result.semanticIr.completeness, 'partial');
@@ -146,6 +144,36 @@ assert.equal(
   ),
   false,
   'the missing physical fallthrough must not become a false CFG edge',
+);
+
+const resolvedBlocks = partitionDecodedFunction([
+  {
+    address: 0x1000n,
+    length: 4n,
+    mode: 'test',
+    kind: 'conditional-branch',
+    target: 0x2000n,
+  },
+  { address: 0x1004n, length: 4n, mode: 'test', kind: 'return' },
+  { address: 0x2000n, length: 4n, mode: 'test', kind: 'return' },
+], plugin);
+const resolvedResult = buildSemanticV2CompatibilityPipeline({
+  architecturePlugin: plugin,
+  decoderSemanticVersion: 'test-decoder-1',
+  binaryId: 'binary_3754_resolved_fixture',
+  sliceId: 'slice_3754_resolved_fixture',
+  addressWidthBits: 64,
+  entryBlockKey: 'block-1000',
+  blocks: resolvedBlocks,
+});
+const resolvedEdgeKinds = resolvedResult.cfg.blocks.flatMap(
+  (block) => block.successors.map((edge) => edge.kind),
+);
+assert.equal(resolvedEdgeKinds.includes('conditional-true'), true);
+assert.equal(
+  resolvedEdgeKinds.includes('conditional-false'),
+  true,
+  'an exact decoded fallthrough must retain the false CFG edge',
 );
 
 console.log('issue-3754 semantic CFG completeness propagation: PASS');
