@@ -62,6 +62,17 @@ test('undefined-result descriptors snapshot own data without coercion or getter 
   assert.equal(getterCalls, 0);
   assert.throws(() => createUndefinedResultDescriptor(Object.assign(Object.create({ inherited:true }), valid)), /invalid-prototype/);
 
+  const protoCondition = {};
+  Object.defineProperty(protoCondition, '__proto__', {
+    enumerable: true, configurable: true, writable: true, value: { kind:'source-zero' },
+  });
+  const preservedProtoCondition = createUndefinedResultDescriptor({
+    ...valid, class:'conditional', condition:protoCondition,
+  }).condition;
+  assert.equal(Object.hasOwn(preservedProtoCondition, '__proto__'), true);
+  assert.deepEqual(preservedProtoCondition.__proto__, { kind:'source-zero' });
+  assert.equal(Object.getPrototypeOf(preservedProtoCondition), Object.prototype);
+
   const hidden = { ...valid };
   Object.defineProperty(hidden, 'unreviewed', { enumerable:false, value:true });
   assert.throws(() => createUndefinedResultDescriptor(hidden), /unexpected-undefined-result-field/);

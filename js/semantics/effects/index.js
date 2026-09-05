@@ -169,7 +169,12 @@ function snapshotSerializableData(value, code, seen = new WeakSet()) {
     try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
     catch { fail(code); }
     if (descriptor == null || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) fail(code);
-    out[key] = snapshotSerializableData(descriptor.value, code, seen);
+    Object.defineProperty(out, key, {
+      value: snapshotSerializableData(descriptor.value, code, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   seen.delete(value);
   return out;
