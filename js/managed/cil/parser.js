@@ -7,6 +7,7 @@ const CLI_DIRECTORY_INDEX = 14;
 const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
+const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -28,6 +29,27 @@ function readU16(view, offset, code = 'cil-truncated-structure') {
 function align4(offset) {
   return (offset + 3) & ~3;
 }
+
+function parseStringsHeap(bytes, offset, size) {
+  checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  const strings = [];
+  let position = offset;
+  const end = offset + size;
+  while (position < end) {
+    const start = position;
+    while (position < end && bytes[position] !== 0) position++;
+    let value;
+    try {
+      value = STRICT_UTF8_DECODER.decode(bytes.subarray(start, position));
+    } catch {
+      fail('cil-invalid-strings-utf8');
+    }
+    if (position < end) position++;
+    if (value) strings.push(value);
+  }
+  return strings;
+}
+
 
 function readPeCliLayout(bytes, view) {
   if (bytes.length < 64 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) return null;
@@ -444,18 +466,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const stringStream = streams.find((stream) => stream.name === '#Strings');
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
-  const strings = [];
-  if (stringStream) {
-    checkedRange(bytes, stringStream.offset, stringStream.size, 'cil-metadata-strings-out-of-bounds');
-    let position = stringStream.offset;
-    const end = stringStream.offset + stringStream.size;
-    while (position < end) {
-      let value = '';
-      while (position < end && bytes[position] !== 0) value += String.fromCharCode(bytes[position++]);
-      position++;
-      if (value) strings.push(value);
-    }
-  }
+  const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
   const tables = parseMetadataTables(bytes, view, tableStream);
   return Object.freeze({
     runtimeVersion,
@@ -636,7 +647,8 @@ export function probeCil(bytes) {
         return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
       }
       return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };
-    } catch {
+    } catch (error) {
+      if (error?.message === 'cil-invalid-strings-utf8') throw error;
       return { supported: false, confidence: 0, reason: 'malformed-pe-cli' };
     }
   }
@@ -731,16 +743,7 @@ export function parseCil(bytes, options = {}) {
 
       const stringStream = streams.find((st) => st.name === '#Strings');
       if (stringStream && stringStream.offset + stringStream.size <= u8.length) {
-        let p = stringStream.offset;
-        const end = stringStream.offset + stringStream.size;
-        while (p < end) {
-          let str = '';
-          while (p < end && u8[p] !== 0) {
-            str += String.fromCharCode(u8[p++]);
-          }
-          p++; // skip null
-          if (str) strings.push(str);
-        }
+        strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
       }
     }
   }
