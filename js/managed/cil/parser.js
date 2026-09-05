@@ -716,35 +716,38 @@ export function parseCil(bytes, options = {}) {
     }
   }
 
-  if (!metadataInfo && bsjbOffset >= 0 && bsjbOffset + 20 <= u8.length) {
-    const vLen = view.getUint32(bsjbOffset + 12, true);
-    if (bsjbOffset + 16 + vLen <= u8.length) {
-      const vBytes = u8.subarray(bsjbOffset + 16, bsjbOffset + 16 + vLen);
-      runtimeVersion = new TextDecoder('utf-8').decode(vBytes).replace(/\0+$/, '');
+  if (!metadataInfo && bsjbOffset >= 0) {
+    checkedRange(u8, bsjbOffset, 16, 'cil-metadata-root-truncated');
+    const vLen = readU32(view, bsjbOffset + 12, 'cil-metadata-root-truncated');
+    const versionStart = bsjbOffset + 16;
+    checkedRange(u8, versionStart, vLen, 'cil-metadata-version-truncated');
+    const versionEnd = versionStart + vLen;
+    const vBytes = u8.subarray(versionStart, versionEnd);
+    runtimeVersion = new TextDecoder('utf-8').decode(vBytes).replace(/\0+$/, '');
+
+    const flagsOff = align4(versionEnd);
+    checkedRange(u8, flagsOff, 4, 'cil-metadata-stream-header-truncated');
+    const streamCount = readU16(view, flagsOff + 2, 'cil-metadata-stream-header-truncated');
+    let sPos = flagsOff + 4;
+    const streams = [];
+    for (let s = 0; s < streamCount; s++) {
+      checkedRange(u8, sPos, 8, 'cil-metadata-stream-header-truncated');
+      const sOffset = readU32(view, sPos, 'cil-metadata-stream-header-truncated');
+      const sSize = readU32(view, sPos + 4, 'cil-metadata-stream-header-truncated');
+      sPos += 8;
+      let sName = '';
+      while (sPos < u8.length && u8[sPos] !== 0) {
+        sName += String.fromCharCode(u8[sPos++]);
+      }
+      if (sPos >= u8.length) fail('cil-metadata-stream-name-truncated');
+      sPos = align4(sPos + 1);
+      if (sPos > u8.length) fail('cil-metadata-stream-header-truncated');
+      streams.push({ name: sName, offset: bsjbOffset + sOffset, size: sSize });
     }
 
-    const flagsOff = bsjbOffset + 16 + vLen;
-    if (flagsOff + 4 <= u8.length) {
-      const streamCount = view.getUint16(flagsOff + 2, true);
-      let sPos = flagsOff + 4;
-      const streams = [];
-      for (let s = 0; s < streamCount; s++) {
-        if (sPos + 8 > u8.length) break;
-        const sOffset = view.getUint32(sPos, true);
-        const sSize = view.getUint32(sPos + 4, true);
-        sPos += 8;
-        let sName = '';
-        while (sPos < u8.length && u8[sPos] !== 0) {
-          sName += String.fromCharCode(u8[sPos++]);
-        }
-        sPos = (sPos + 4) & ~3; // 4-byte align
-        streams.push({ name: sName, offset: bsjbOffset + sOffset, size: sSize });
-      }
-
-      const stringStream = streams.find((st) => st.name === '#Strings');
-      if (stringStream && stringStream.offset + stringStream.size <= u8.length) {
-        strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
-      }
+    const stringStream = streams.find((st) => st.name === '#Strings');
+    if (stringStream && stringStream.offset + stringStream.size <= u8.length) {
+      strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
     }
   }
 
