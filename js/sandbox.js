@@ -156,17 +156,28 @@ const WORKER_PRELUDE = String.raw`
     seen.add(value);
     let n = 16;
     const isArray = nativeArrayIsArray(value);
-    if (!isArray && !nativeArrayBufferIsView(value)) {
+    if (isArray) {
       for (const key of nativeKeys(value)) {
-        n += Math.min(limit - n, key.length * 2);
+        const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += Math.min(limit - n, key.length * 2);
+          if (n >= limit) break;
+        }
+        n += measure(value[key], seen, limit - n);
         if (n >= limit) break;
       }
-    }
-    if (n < limit) {
-      const values = isArray ? value : Object.values(value);
-      for (const item of values) {
-        n += measure(item, seen, limit - n);
-        if (n >= limit) break;
+    } else {
+      if (!nativeArrayBufferIsView(value)) {
+        for (const key of nativeKeys(value)) {
+          n += Math.min(limit - n, key.length * 2);
+          if (n >= limit) break;
+        }
+      }
+      if (n < limit) {
+        for (const item of Object.values(value)) {
+          n += measure(item, seen, limit - n);
+          if (n >= limit) break;
+        }
       }
     }
     seen.delete(value);
@@ -511,17 +522,26 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   seen.add(value);
   let n = 16;
   const isArray = Array.isArray(value);
-  if (!isArray) {
+  if (isArray) {
+    for (const key of Object.keys(value)) {
+      const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+      if (!isIndex) {
+        n += Math.min(limit - n, key.length * 2);
+        if (n >= limit) break;
+      }
+      n += valueSize(value[key], seen, limit - n);
+      if (n >= limit) break;
+    }
+  } else {
     for (const key of Object.keys(value)) {
       n += Math.min(limit - n, key.length * 2);
       if (n >= limit) break;
     }
-  }
-  if (n < limit) {
-    const values = isArray ? value : Object.values(value);
-    for (const item of values) {
-      n += valueSize(item, seen, limit - n);
-      if (n >= limit) break;
+    if (n < limit) {
+      for (const item of Object.values(value)) {
+        n += valueSize(item, seen, limit - n);
+        if (n >= limit) break;
+      }
     }
   }
   seen.delete(value);

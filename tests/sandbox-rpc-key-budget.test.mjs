@@ -35,12 +35,27 @@ function oversizedKeyObject() {
   return { ['k'.repeat(Math.floor(INPUT_BUDGET / 2) + 64)]: null };
 }
 
+function oversizedKeyArray() {
+  const value = [];
+  value['k'.repeat(Math.floor(INPUT_BUDGET / 2) + 64)] = null;
+  return value;
+}
+
 test('worker and host reject an RPC object whose property names exceed 4 MiB', () => {
   const args = [oversizedKeyObject()];
   assert.ok(measure(args) > INPUT_BUDGET, 'worker budget must include property names');
   assert.ok(
     valueSize(args, new Set(), INPUT_BUDGET + 1) > INPUT_BUDGET,
     'host budget must independently include property names',
+  );
+});
+
+test('worker and host reject custom Array property names that exceed 4 MiB', () => {
+  const args = [oversizedKeyArray()];
+  assert.ok(measure(args) > INPUT_BUDGET, 'worker budget must include Array custom property names');
+  assert.ok(
+    valueSize(args, new Set(), INPUT_BUDGET + 1) > INPUT_BUDGET,
+    'host budget must independently include Array custom property names',
   );
 });
 
@@ -61,6 +76,18 @@ test('normal objects stay below budget and worker/host key accounting agrees', (
   const hostSize = valueSize(args, new Set(), INPUT_BUDGET + 1);
   assert.equal(workerSize, hostSize);
   assert.ok(workerSize < INPUT_BUDGET);
+});
+
+test('sparse Arrays visit only enumerable own entries instead of iterating length', () => {
+  const sparse = [];
+  sparse.length = 2 ** 32 - 1;
+  sparse[7] = 'x';
+  Object.defineProperty(sparse, Symbol.iterator, {
+    value() { throw new Error('RPC estimator must not invoke Array iteration'); },
+  });
+
+  assert.equal(measure(sparse), 18);
+  assert.equal(valueSize(sparse, new Set(), INPUT_BUDGET + 1), 18);
 });
 
 test('arrays, strings, ArrayBuffer/views, and cyclic termination semantics are preserved', () => {
