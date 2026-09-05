@@ -55,17 +55,91 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'columnWidth', 'prettyColumnWidth', 'theme', 'locale', 'language', 'selection', 'scrollTop', 'highlight',
 ]);
 
-function assertNoPresentationState(config, seen = new WeakSet()) {
-  if (!config || typeof config !== 'object') return;
-  if (seen.has(config)) fail('phase8-artifact-options-cycle');
-  seen.add(config);
+function isArrayIndex(key) {
+  if (!/^(0|[1-9]\d*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < 0xffffffff;
+}
+
+function snapshotArtifactOptions(value, active = new WeakSet()) {
+  if (!value || typeof value !== 'object') return value;
+  if (active.has(value)) fail('phase8-artifact-options-cycle');
+  active.add(value);
   try {
-    for (const key of Object.keys(config)) {
-      if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase8-artifact-presentation-state-in-key:${key}`);
-      assertNoPresentationState(config[key], seen);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const snapshotDataProperty = (key, descriptor) => {
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        fail(`phase8-artifact-options-accessor:${key}`);
+      }
+      if (descriptor.enumerable && FORBIDDEN_KEY_FIELDS.includes(key)) {
+        fail(`phase8-artifact-presentation-state-in-key:${key}`);
+      }
+      return snapshotArtifactOptions(descriptor.value, active);
+    };
+
+    if (value instanceof Map) {
+      const out = new Map();
+      for (const [key, entryValue] of Map.prototype.entries.call(value)) {
+        out.set(snapshotArtifactOptions(key, active), snapshotArtifactOptions(entryValue, active));
+      }
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
+      }
+      return out;
     }
+    if (value instanceof Set) {
+      const out = new Set();
+      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active));
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
+      }
+      return out;
+    }
+    if (ArrayBuffer.isView(value)) {
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.enumerable && !isArrayIndex(key)) snapshotDataProperty(key, descriptor);
+      }
+      if (typeof structuredClone === 'function') return structuredClone(value);
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice().buffer;
+      if (value instanceof DataView) return new DataView(bytes);
+      const Constructor = Object.getPrototypeOf(value)?.constructor;
+      if (typeof Constructor !== 'function') fail('phase8-artifact-options-view-invalid');
+      return new Constructor(bytes);
+    }
+    if (value instanceof ArrayBuffer) {
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
+      }
+      return ArrayBuffer.prototype.slice.call(value, 0);
+    }
+    if (value instanceof Date) {
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
+      }
+      return new Date(Date.prototype.getTime.call(value));
+    }
+    if (Array.isArray(value)) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0) fail('phase8-artifact-options-array-length-invalid');
+      const out = new Array(length);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (key === 'length' || (!descriptor.enumerable && !isArrayIndex(key))) continue;
+        const item = snapshotDataProperty(key, descriptor);
+        Object.defineProperty(out, key, { value:item, enumerable:descriptor.enumerable, configurable:true, writable:true });
+      }
+      return out;
+    }
+
+    const proto = Object.getPrototypeOf(value);
+    const out = Object.create(proto);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (!descriptor.enumerable) continue;
+      const item = snapshotDataProperty(key, descriptor);
+      Object.defineProperty(out, key, { value:item, enumerable:true, configurable:true, writable:true });
+    }
+    return out;
   } finally {
-    seen.delete(config);
+    active.delete(value);
   }
 }
 
@@ -83,8 +157,7 @@ export function createPhase8ArtifactDescriptor(input = {}) {
   if (!KIND_SET.has(kind)) fail(`phase8-artifact-unknown-kind:${kind}`);
   const classes = PHASE8_ARTIFACT_KINDS[kind];
 
-  const options = input.options ?? {};
-  assertNoPresentationState(options);
+  const options = snapshotArtifactOptions(input.options ?? {});
 
   const keyExtras = {
     phase8SchemaVersion: PHASE8_ARTIFACT_SCHEMA_VERSION,
