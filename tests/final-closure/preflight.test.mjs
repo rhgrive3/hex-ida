@@ -4186,6 +4186,17 @@ function verifyMovingMainRevalidationFixture() {
       },
       /moving-main-revalidation-invalid:receipt-rewritten/,
     );
+    for (const [label, mutation] of [
+      ['first revalidation publication in Stage B', ({ inventory }) => {
+        inventory.campaignStage = 'STAGE_B';
+      }],
+      ['first revalidation publication after component progress', ({ inventory }) => {
+        inventory.checkpoint.sequence += 1;
+      }],
+    ]) {
+      rejectRevalidationMutation(label, mutation,
+        /moving-main-revalidation-invalid:receipt-state/);
+    }
 
     assertIncludes(validate({ integrationInventory: {
       ...integrationInventory, movingMainAmendmentRevalidation: fixture.receipt,

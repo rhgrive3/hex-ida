@@ -5190,6 +5190,8 @@ export function verifyT060Revalidation(root, integrationHeadSha, { activationCom
     || !exactSet(changedPaths(root, receipt.evidence.headSha, publicationCommitSha),
       [T060_AMENDMENT_INVENTORY_PATH])) fail('publication-scope');
   const published = readJsonAt(root, publicationCommitSha, T060_AMENDMENT_INVENTORY_PATH);
+  if (published.campaignStage !== 'STAGE_A'
+    || published.checkpoint?.sequence !== acceptedTaskIds.length) fail('receipt-state');
   delete published[field];
   if (canonicalJson(published) !== canonicalJson(readJsonAt(root, receipt.evidence.headSha,
     T060_AMENDMENT_INVENTORY_PATH))) fail('inventory-delta');
