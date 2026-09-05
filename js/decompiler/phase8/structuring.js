@@ -36,7 +36,7 @@ import { createPassDescriptor, createPassResult } from './contract.js';
 
 export const STRUCTURING_PASS = createPassDescriptor({
   id: 'phase8.structuring',
-  version: '1.0.0',
+  version: '1.0.1',
   stage: 'structuring',
   budgetClass: 'standard',
   consumes: ['cfg', 'dominators', 'loops', 'ssa', 'induction'],
@@ -116,6 +116,30 @@ function createRelation(sets, tree, limits) {
     }
     return false;
   };
+}
+
+/**
+ * Read one complete immediate-post-dominator chain without guessing through
+ * missing or malformed upstream facts. A null parent is a proved terminal;
+ * missing slots, cycles and an over-budget chain remain unknown.
+ */
+function postDominatorChain(tree, start, limits) {
+  if (tree == null || !Number.isSafeInteger(start) || start < 0) return undefined;
+  const chain = [];
+  const seen = new Set();
+  let current = start;
+  for (let step = 0; step <= limits.maxChainWalk; step += 1) {
+    if (!Number.isSafeInteger(current) || current < 0 || seen.has(current)
+        || !Object.hasOwn(tree, current)) return undefined;
+    seen.add(current);
+    const parent = tree[current];
+    if (parent === null) return chain;
+    if (!Number.isSafeInteger(parent) || parent < 0 || parent === current
+        || step === limits.maxChainWalk) return undefined;
+    chain.push(parent);
+    current = parent;
+  }
+  return undefined;
 }
 
 /**
@@ -373,15 +397,27 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
     catch { return true; }
   };
 
-  // A block that post-dominates both arms, if there is one. Read off the
-  // upstream post-dominator sets; nothing is recomputed here.
+  // A block that post-dominates both arms, if there is one. Read it from the
+  // upstream sets or their canonical immediate tree; nothing is recomputed.
   const postDominatorSets = dominatorFacts?.postDominators ?? null;
   const sharedPostDominator = (left, right) => {
     const leftSet = postDominatorSets?.[left];
     const rightSet = postDominatorSets?.[right];
-    if (leftSet == null || rightSet == null) return undefined; // Not known.
-    const candidates = [...leftSet].filter((block) => block !== left && block !== right
-      && (typeof rightSet.has === 'function' ? rightSet.has(block) : [...rightSet].includes(block)));
+    let candidates;
+    if (leftSet != null && rightSet != null) {
+      candidates = [...leftSet].filter((block) => block !== left && block !== right
+        && (typeof rightSet.has === 'function' ? rightSet.has(block) : [...rightSet].includes(block)));
+    } else {
+      // Captured snapshots retain the canonical ipdom tree but omit executable
+      // DominanceView helpers. Complete bounded chains distinguish terminal arms
+      // from arms that meet; incomplete/malformed chains stay unknown.
+      const leftChain = postDominatorChain(ipdom, left, limits);
+      const rightChain = postDominatorChain(ipdom, right, limits);
+      if (leftChain == null || rightChain == null) return undefined;
+      const rightBlocks = new Set(rightChain);
+      candidates = leftChain.filter((block) => block !== left && block !== right
+        && rightBlocks.has(block));
+    }
     if (candidates.length === 0) return null;
     return candidates.sort((a, b) => a - b)[0];
   };
