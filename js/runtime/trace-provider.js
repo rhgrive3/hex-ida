@@ -201,8 +201,12 @@ export class TraceProvider {
       sourceCompleteness: this.recording.completeness,
     };
     const normalized = this.recording.events.map((event, index) => normalizedEventFromRecord(event, context, index));
-    sumDroppedEventCounts(normalized);
-    if (this.recording.dropped > 0 && !normalized.some((event) => event.kind === 'gap' || event.kind === 'dropped-events')) {
+    const explicitDropped = sumDroppedEventCounts(normalized);
+    const hasExplicitDrop = normalized.some((event) => event.kind === 'gap' || event.kind === 'dropped-events');
+    if (this.recording.dropped > 0 && hasExplicitDrop && explicitDropped !== this.recording.dropped) {
+      throw new DebugAdapterError('trace-invalid-dropped-count', `recording dropped count (${this.recording.dropped}) disagrees with explicit dropped events total (${explicitDropped})`);
+    }
+    if (this.recording.dropped > 0 && !hasExplicitDrop) {
       normalized.unshift(createRuntimeEvent({
         ...context,
         kind: 'dropped-events',
@@ -250,7 +254,7 @@ export class TraceProvider {
         sessionEpoch: session.epoch,
         events: session.normalizedEvents,
         completeness: session.sourceCompleteness,
-        dropped: this.recording.dropped,
+        dropped: sumDroppedEventCounts(session.normalizedEvents),
       }),
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
     });

@@ -47,4 +47,25 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
     () => overflow.openSession({ sessionNonce:'overflow' }),
     (error) => error?.code === 'trace-invalid-dropped-count',
   );
+
+  const disagreement = new TraceProvider(recording(
+    [{ kind:'dropped-events', payload:{ dropped:2 } }],
+    { dropped:5 },
+  ));
+  await assert.rejects(
+    () => disagreement.openSession({ sessionNonce:'disagreement' }),
+    (error) => error?.code === 'trace-invalid-dropped-count',
+  );
+
+  const agreement = new TraceProvider(recording(
+    [{ kind:'dropped-events', payload:{ dropped:3 } }],
+    { dropped:3 },
+  ));
+  const agreementSession = await agreement.openSession({ sessionNonce:'agreement' });
+  const replayBatch = await agreementSession.facets.trace.replay();
+  const eventBatch = (await agreementSession.facets.trace.events({ batchSize:1 }).next()).value;
+  assert.equal(replayBatch.dropped, 3);
+  assert.equal(eventBatch.dropped, 3);
+  await agreementSession.close();
 });
+
