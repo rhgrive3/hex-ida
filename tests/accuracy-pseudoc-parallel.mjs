@@ -37,6 +37,15 @@ export function workerConfiguration(argv) {
   return { initialWorkers, maxWorkers, scaleFile };
 }
 
+export function pseudocTaskOrder(samples) {
+  return samples.map(([a, end], index) => ({ index, a, end }))
+    .sort((left, right) => {
+      const leftBytes = left.end - left.a;
+      const rightBytes = right.end - right.a;
+      return rightBytes - leftBytes || left.index - right.index;
+    });
+}
+
 function selfTest() {
   assert.deepEqual(workerConfiguration([]), {
     initialWorkers: 4,
@@ -61,6 +70,11 @@ function selfTest() {
   assert.throws(
     () => workerConfiguration(['--workers=3', '--max-workers=4']),
     /scale-file-required/,
+  );
+  assert.deepEqual(
+    pseudocTaskOrder([[0, 4], [10, 30], [40, 52], [60, 80]]).map(({ index }) => index),
+    [1, 3, 2, 0],
+    'pseudoc tasks must be scheduled longest-span first with canonical index tie-breaks',
   );
   console.log('accuracy pseudoc elastic-worker configuration self-test passed');
 }
@@ -97,6 +111,7 @@ async function run(argv) {
     throw new Error(`expected the canonical 120 pseudoc samples, got ${samples.length}`);
   }
 
+  const tasks = pseudocTaskOrder(samples);
   let next = 0;
   let finished = 0;
   let lines = 0;
@@ -111,9 +126,8 @@ async function run(argv) {
   const started = Date.now();
 
   function assign(child, onError) {
-    if (failed || next >= samples.length) return false;
-    const index = next++;
-    const [a, end] = samples[index];
+    if (failed || next >= tasks.length) return false;
+    const { index, a, end } = tasks[next++];
     try {
       child.send({ type: 'task', index, a, end }, (error) => {
         if (error && !failed && finished < samples.length) onError(error);
@@ -162,7 +176,7 @@ async function run(argv) {
     };
 
     function spawnWorker() {
-      if (failed || children.size >= maxWorkers || next >= samples.length) return false;
+      if (failed || children.size >= maxWorkers || next >= tasks.length) return false;
       const worker = workerSequence++;
       let child;
       try {
@@ -246,7 +260,7 @@ async function run(argv) {
 
     function scaleIfReady() {
       if (failed || finished >= samples.length || !scaleFile || !fs.existsSync(scaleFile)) return;
-      while (children.size < maxWorkers && next < samples.length) {
+      while (children.size < maxWorkers && next < tasks.length) {
         if (!spawnWorker()) break;
       }
       if (children.size >= maxWorkers) clearScaleTimer();
