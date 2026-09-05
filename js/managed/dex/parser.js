@@ -209,7 +209,16 @@ export function parseDex(bytes, options = {}) {
       const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(u8,sOff);
       const {value:directMethodsSize,nextOffset:dOff}=readUleb128(u8,iOff);
       const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(u8,dOff); cPos=vOff;
-      for(let f=0;f<staticFieldsSize+instanceFieldsSize;f++) { const {nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2; }
+      let lastFieldIdx=0;
+      for(let f=0;f<staticFieldsSize;f++) {
+        const {value:delta,nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2;
+        lastFieldIdx+=delta; requireIndex(fields,lastFieldIdx,'dex-invalid-class-data-field-index');
+      }
+      lastFieldIdx=0;
+      for(let f=0;f<instanceFieldsSize;f++) {
+        const {value:delta,nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2;
+        lastFieldIdx+=delta; requireIndex(fields,lastFieldIdx,'dex-invalid-class-data-field-index');
+      }
       let lastMethodIdx=0;
       for(let m=0;m<directMethodsSize;m++) {
         const {value:delta,nextOffset:m1}=readUleb128(u8,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(u8,m1); const {value:codeOff,nextOffset:m3}=readUleb128(u8,m2); cPos=m3;
