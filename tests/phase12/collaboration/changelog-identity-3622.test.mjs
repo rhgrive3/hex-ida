@@ -24,6 +24,7 @@ const invalidIdentities = [
   false,
   '',
   '   ',
+  '\u0000',
 ];
 
 for (const value of invalidIdentities) {
@@ -54,12 +55,43 @@ for (const value of invalidIdentities) {
 }
 
 assert.throws(
+  () => createProjectOperation({ ...base, factKind: 'na\u0000me' }),
+  /operation-fact-kind-required/,
+);
+assert.throws(
   () => new ChangeLog({ projectIdentity: { id: 'project' } }),
   /changelog-project-identity-required/,
 );
 assert.throws(
   () => new ChangeLog({ projectIdentity: 'hex-project:p', binaryIdentity: ['binary'] }),
   /changelog-binary-identity-invalid/,
+);
+
+const legacyCollidingKey = 'a\u0000b\u0000c';
+assert.throws(
+  () => new ChangeLog({
+    projectIdentity: 'hex-project:p',
+    state: {
+      schemaVersion: 'hex-project-operation-v1',
+      projectIdentity: 'hex-project:p',
+      binaryIdentity: null,
+      facts: {
+        [legacyCollidingKey]: {
+          key: legacyCollidingKey,
+          targetEntityId: 'a\u0000b',
+          factKind: 'c',
+          values: [],
+          resolvedOperationId: null,
+          stateFingerprint: null,
+        },
+      },
+      conflicts: [],
+      tombstones: [],
+      unresolved: [],
+    },
+  }),
+  /changelog-state-target-entity-invalid/,
+  'restored state must not reintroduce the reserved fact-key separator through an identity component',
 );
 
 const rawSchemaTaggedStructured = {
