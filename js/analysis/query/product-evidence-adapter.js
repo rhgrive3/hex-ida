@@ -112,8 +112,11 @@ export function createAppAnalysisQueryAdapter(app) {
 
       const value = [...prefixValue];
       let remaining = requested.limit - value.length;
+      let consumedBaseRows = 0;
       if (remaining > 0) {
-        value.push(...baseRows.slice(0, remaining));
+        const upstreamRows = baseRows.slice(0, remaining);
+        consumedBaseRows = upstreamRows.length;
+        value.push(...upstreamRows);
         remaining = requested.limit - value.length;
       }
 
@@ -134,9 +137,9 @@ export function createAppAnalysisQueryAdapter(app) {
 
       let next = null;
       const localCursor = requested.offset + value.length;
-      if (value.length === requested.limit && localCursor < prefix.length) {
+      if (value.length === requested.limit && localCursor <= prefix.length) {
         next = localCursor;
-      } else if (baseHasNext) {
+      } else if (baseHasNext && consumedBaseRows > 0) {
         next = prefix.length + baseNext;
       } else if (!baseContinuationInvalid && upstreamTotal != null) {
         const availableTotal = prefix.length + upstreamTotal + suffix.length;

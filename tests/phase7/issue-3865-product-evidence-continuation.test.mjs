@@ -74,6 +74,32 @@ test('10000+ upstream rows traverse without duplicate or missing evidence', asyn
   assert.equal(result.page.total, rows.length);
 });
 
+test('page ending exactly at symbol prefix resumes at the first upstream row', async () => {
+  const rows = evidenceRows(7);
+  const address = 0x1000n;
+  const app = {
+    async getEvidence() { return rows; },
+    symbols: {
+      nameAt(value) { return value === address ? 'target' : null; },
+      nameEvidence(value) { return value === address ? { id: 'name-0', verdict: 'confirmed' } : null; },
+      functionEvidence(value) { return value === address ? { id: 'boundary-0', verdict: 'confirmed' } : null; },
+    },
+  };
+  const adapter = createAppAnalysisQueryAdapter(app);
+
+  const exactBoundary = await adapter.evidence({}, { address }, { offset: 0, limit: 2 });
+  assert.deepEqual(exactBoundary.value.map((row) => row.evidenceId), ['name-0', 'boundary-0']);
+  assert.equal(exactBoundary.page.next, 2);
+
+  const insidePrefix = await adapter.evidence({}, { address }, { offset: 1, limit: 1 });
+  assert.deepEqual(insidePrefix.value.map((row) => row.evidenceId), ['boundary-0']);
+  assert.equal(insidePrefix.page.next, 2);
+
+  const { seen } = await collect(adapter, { address }, 2);
+  assert.deepEqual(seen, ['name-0', 'boundary-0', ...rows.map((row) => row.id)]);
+  assert.equal(new Set(seen).size, seen.length);
+});
+
 test('symbol/function supplements keep stable ordering around paged upstream evidence', async () => {
   const rows = evidenceRows(5_001);
   const address = 0x1000n;
