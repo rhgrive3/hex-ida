@@ -84,10 +84,10 @@ conservative state and never passes silently.
 - [X] T015 [US2] Implement validateRenderProvenance(provenanceMap, { snapshotId }) returning frozen `{ state, entityStates, reasons, counts }` with states complete/incomplete and reasons provenance-loss/stale-snapshot/missing-snapshot/truncated/cancelled in js/decompiler/phase8/render-provenance.js (depends on T013, T014)
 - [X] T016 [US2] Implement budget caps maxEntities/maxOriginsPerEntity/maxTransformRecords with explicit truncated scopes and counts in js/decompiler/phase8/render-provenance.js (depends on T015)
 - [X] T017 [US2] Wire renderProvenanceLossCount and renderProvenanceStaleCount into tools/validation/phase8/metrics.mjs safety counters with the same hard-zero gating as existing stale counters (depends on T015)
-- [X] T018 [US2] Removals auditability: transforms that eliminate rendered entities record consumed evidence (removedRefs) so removal is auditable; test in tests/phase8/provenance/removal.test.mjs (depends on T015)
+- [ ] T018 [US2] Canonical removed-entity identity is still missing in C4-03 v1. The current ledger preserves consumed canonical origins but intentionally emits `removedRefs: []`; implement a reviewed canonical removed-entity identity producer and direct navigation regression before checking this task complete. Until then FR-009 remains explicitly unmet.
 - [X] T019 [US2] Cancellation test in tests/phase8/provenance/cancellation.test.mjs: pathological fixture cancelled mid-validation returns explicit incomplete/cancelled and never completes silently (depends on T016)
 
-**Checkpoint**: User Stories 1 AND 2 both work — navigation complete and fail-closed.
+**Checkpoint**: User Stories 1 and the implemented fail-closed portion of User Story 2 work, but removal-identity navigation remains an explicit residual gap until T018 is complete.
 
 ---
 
@@ -106,9 +106,9 @@ truncates explicitly.
 
 ### Implementation for User Story 3
 
-- [X] T021 [US3] Enrich ledger records (producedRefs/removedRefs/version) via contract validation in js/decompiler/phase8/contract.js and render-provenance.js, bounded by the Phase 2 caps (depends on T020, T016)
+- [X] T021 [US3] Enrich ledger records (producedRefs/removedRefs/version) via contract validation in js/decompiler/phase8/contract.js and render-provenance.js, bounded by the Phase 2 caps (depends on T020, T016). `removedRefs` remains empty until T018 supplies a canonical removed-entity identity.
 
-**Checkpoint**: All user stories independently functional.
+**Checkpoint**: Ledger production/consumption is functional for produced entities; removed-entity identity remains the explicit T018 residual.
 
 ---
 
@@ -119,7 +119,7 @@ truncates explicitly.
 - [X] T022 Run focused suite, ownership, and lint gates quiet: `node --test tests/phase8/provenance/`, `npm run phase8:test`, ownership manifest check, `node scripts/run-quiet-command.mjs --label check -- npm run check`; verify actual changed-file inventory against the ownership manifest
 - [X] T023 Update docs/analysis-improvement-finding-ledger.md HEX-C4-03 row + checkpoint with implementation evidence, focused test results, exact head, and generated-output handoff (ephemeral `npm run userscript:build` check, nothing committed)
 - [X] T024 Run quickstart.md validation end-to-end and record outcomes
-- [X] T025 Spec Kit convergence: confirm all tasks complete, all FR-001–FR-010 covered by tests, denominators unweakened; record residual gaps explicitly (none expected)
+- [ ] T025 Spec Kit convergence: all completed requirements must be covered by tests with denominators unweakened. This remains open because FR-009/T018 removal identity is explicitly unmet; do not claim full FR-001–FR-010 convergence until that residual is implemented or formally descoped by the owning specification.
 
 ---
 
