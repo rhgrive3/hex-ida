@@ -20,16 +20,16 @@ const CONST_RESULT_TYPES = new Map([
   [0x44, 0x7c], // f64.const -> f64
 ]);
 
-function validateConstExpr(expr, expectedType, importedGlobals, functionCount) {
+function validateConstExpr(expr, expectedType, globals, functionCount) {
   const ops = expr?.ops;
   if (!Array.isArray(ops) || ops.length !== 1) fail('wasm-invalid-const-expr-stack');
   const op = ops[0];
   let resultType = CONST_RESULT_TYPES.get(op?.opcode) ?? null;
   if (op?.opcode === 0x23) {
-    if (!Number.isSafeInteger(op.index) || op.index < 0 || op.index >= importedGlobals.length) {
+    if (!Number.isSafeInteger(op.index) || op.index < 0 || op.index >= globals.length) {
       fail('wasm-invalid-const-expr-global-index');
     }
-    const global = importedGlobals[op.index]?.desc;
+    const global = globals[op.index];
     if (global?.mutable !== false) fail('wasm-invalid-const-expr-global-mutability');
     resultType = global.valType;
   } else if (op?.opcode === 0xd2) {
@@ -52,11 +52,15 @@ export function parseWasm(bytes, options = {}) {
     }
   }
 
-  const importedGlobals = (module.imports || []).filter((entry) => entry?.desc?.kind === 3);
+  const importedGlobals = (module.imports || [])
+    .filter((entry) => entry?.desc?.kind === 3)
+    .map((entry) => entry.desc);
   const importedFunctions = (module.imports || []).filter((entry) => entry?.desc?.kind === 0);
   const functionCount = importedFunctions.length + (module.functions?.length || 0);
+  const globalContext = [...importedGlobals];
   for (const global of module.globals || []) {
-    validateConstExpr(global?.init, global?.valType, importedGlobals, functionCount);
+    validateConstExpr(global?.init, global?.valType, globalContext, functionCount);
+    globalContext.push(global);
   }
   for (const element of module.elements || []) {
     if (element?.mode === 'active') validateConstExpr(element.offsetExpr, 0x7f, importedGlobals, functionCount);
