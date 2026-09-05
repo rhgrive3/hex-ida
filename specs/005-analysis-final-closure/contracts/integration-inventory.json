@@ -597,9 +597,9 @@
   },
   "checkpoint": {
     "schemaVersion": "hex-final-closure-integration-checkpoint-state/v1",
-    "sequence": 3,
+    "sequence": 4,
     "state": "CHECKPOINT_GREEN",
-    "acceptedTaskId": "T052",
+    "acceptedTaskId": "T057",
     "evidencePath": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md"
   },
   "taskHandoffs": {
@@ -682,6 +682,11 @@
       "headSha": "0a521b282c6aa93afc94e0dfbfe701e705ccdf2a",
       "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b",
       "evidencePath": "tests/final-closure/t052/canonical-operation-registry.test.mjs"
+    },
+    "T057": {
+      "headSha": "8cca5b359a434fa11d18c60684fb4906288c2a15",
+      "treeSha": "d7c473e0740c6b273d211e338819d2c709e31194",
+      "evidencePath": "tests/final-closure/t057/cil-return-shape-authority.test.mjs"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -725,7 +730,9 @@
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+    "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase11/cil/cil-pipeline.test.mjs",
     "tests/phase12/adversarial/trust-boundaries.test.mjs",
     "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
@@ -780,7 +787,9 @@
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+    "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase11/cil/cil-pipeline.test.mjs",
     "tests/phase12/adversarial/trust-boundaries.test.mjs",
     "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
@@ -835,7 +844,9 @@
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+    "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+    "tests/phase11/cil/cil-pipeline.test.mjs",
     "tests/phase12/adversarial/trust-boundaries.test.mjs",
     "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
@@ -1005,8 +1016,16 @@
       "ownerTaskId": "T052"
     },
     {
+      "path": "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
+      "ownerTaskId": "T057"
+    },
+    {
       "path": "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
       "ownerTaskId": "T059"
+    },
+    {
+      "path": "tests/phase11/cil/cil-pipeline.test.mjs",
+      "ownerTaskId": "T057"
     },
     {
       "path": "tests/phase12/adversarial/trust-boundaries.test.mjs",
