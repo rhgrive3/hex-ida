@@ -95,6 +95,7 @@ const FOUNDATION_TASK_COUNT = 57;
 // Forward amendment tasks do not redefine the immutable T046 ownership snapshot.
 const RESERVED_TASK_COUNT = 59;
 const T014_APPROVED_METRICS_PATH = 'tools/validation/phase9/tiered-solver-metrics.mjs';
+const T017_APPROVED_FIXTURE_PATH = 'tests/issue-1809-libc-effect-classification.mjs';
 const EXPECTED_WORKFLOW_SHA256 = '18177a2e78bab81bf1aed9a681349235592bb0e52efedee292851717a485cfcd';
 const STAGE_A_COMPONENT_TASK_IDS = Object.freeze([
   'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
@@ -544,8 +545,10 @@ export function foundationOwnershipSnapshot(ownership) {
         // T058 approves this exact addition already named by the frozen
         // P-SYM01 source lock. The separate amendment digest pins the full new
         // T014 row; the original T046 snapshot stays independently immutable.
-        return [taskId, taskId === 'T014' && Array.isArray(row?.allowedPaths)
-          ? { ...row, allowedPaths: row.allowedPaths.filter((entry) => entry !== T014_APPROVED_METRICS_PATH) }
+        const approvedAddition = taskId === 'T014' ? T014_APPROVED_METRICS_PATH
+          : taskId === 'T017' ? T017_APPROVED_FIXTURE_PATH : null;
+        return [taskId, approvedAddition != null && Array.isArray(row?.allowedPaths)
+          ? { ...row, allowedPaths: row.allowedPaths.filter((entry) => entry !== approvedAddition) }
           : row];
       }),
     ),
@@ -4071,6 +4074,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   });
   const canonicalT046 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T046');
   const canonicalT058 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T058');
+  const foundationRevalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalT058);
   assertAncestor(root, canonicalT046.transitionCommitSha, canonicalT058.handoff.headSha,
     'foundation-amendment-precedes-original-handoff');
   for (let rowIndex = 0; rowIndex < ledger.checkpoints.length; rowIndex += 1) {
@@ -4080,7 +4084,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       .map((checkpointRow) => checkpointRow.acceptedTaskId);
     verifyMainReconciliation(root, row.mainReconciliation, {
       expectedPreviousEvidenceSha: rowIndex === 0
-        ? canonicalT058.transitionCommitSha
+        ? (foundationRevalidation?.publicationCommitSha ?? canonicalT058.transitionCommitSha)
         : evidenceCommitShas[rowIndex - 1],
       expectedIntegrationHeadSha: row.integrationParentSha,
       sequence: row.sequence,
@@ -4434,6 +4438,91 @@ export function canonicalTaskHandoffAnchor(root, integrationHeadSha, taskId) {
   });
 }
 
+const T058_REVALIDATION_CODE_PATHS = Object.freeze([
+  'tools/validation/final-closure/preflight.mjs',
+  'tests/final-closure/preflight.test.mjs',
+  'specs/005-analysis-final-closure/contracts/task-ownership.json',
+]);
+const T058_REVALIDATION_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/forward-amendment.md';
+
+// One reviewed fixture/verifier successor, not a mutable-path exemption. The
+// original first-DONE and evidence remain immutable. A scoped linear code
+// chain -> E -> R binds code, evidence, and receipt separately. Corrections
+// before receipt publication do not require rewriting an earlier commit.
+export function verifyT058Revalidation(root, integrationHeadSha, originalAnchor = null) {
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  const currentInventory = readJsonAt(root, integrationHeadSha, inventoryPath);
+  const receipts = currentInventory.taskHandoffRevalidations;
+  if (receipts == null) return null;
+  const fail = (detail) => { throw new Error(`task-handoff-revalidation-invalid:T058:${detail}`); };
+  if (!exactSet(Object.keys(receipts), ['T058'])) fail('task-set');
+  const receipt = receipts.T058;
+  if (!receipt || !exactSet(Object.keys(receipt), [
+    'schemaVersion', 'originalHandoff', 'activationCommitSha', 'code', 'evidence', 'paths',
+  ]) || receipt.schemaVersion !== 'hex-final-closure-t058-revalidation/v1') fail('schema');
+  const anchor = originalAnchor ?? canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T058');
+  if (canonicalJson(receipt.originalHandoff) !== canonicalJson(anchor.handoff)
+    || receipt.activationCommitSha !== anchor.transitionCommitSha) fail('original-anchor');
+  const paths = [...T058_REVALIDATION_CODE_PATHS, T058_REVALIDATION_EVIDENCE_PATH];
+  if (!exactSet(receipt.paths, paths)) fail('paths');
+  for (const key of ['code', 'evidence']) {
+    const identity = receipt[key];
+    if (!identity || !exactSet(Object.keys(identity), ['headSha', 'treeSha'])
+      || !validSha1(identity.headSha) || !validSha1(identity.treeSha)
+      || git(root, ['rev-parse', `${identity.headSha}^{tree}`]) !== identity.treeSha) fail(`${key}-identity`);
+  }
+  const parents = (sha) => git(root, ['show', '-s', '--format=%P', sha]).split(/\s+/).filter(Boolean);
+  if (receipt.code.headSha === anchor.transitionCommitSha
+    || runGit(root, ['merge-base', '--is-ancestor', anchor.transitionCommitSha, receipt.code.headSha]).status !== 0) fail('code-parent');
+  const codeHistory = git(root, ['rev-list', '--first-parent', receipt.code.headSha, `^${anchor.transitionCommitSha}`])
+    .split('\n').filter(Boolean);
+  for (const sha of codeHistory) {
+    const preceding = parents(sha);
+    if (preceding.length !== 1) fail('code-parent');
+    if (changedPaths(root, preceding[0], sha).some((repoPath) => !T058_REVALIDATION_CODE_PATHS.includes(repoPath))) fail('code-scope');
+  }
+  if (!exactSet(changedPaths(root, anchor.transitionCommitSha, receipt.code.headSha), T058_REVALIDATION_CODE_PATHS)) fail('code-scope');
+  const ownershipPath = 'specs/005-analysis-final-closure/contracts/task-ownership.json';
+  const amendedOwnership = readJsonAt(root, receipt.code.headSha, ownershipPath);
+  const expectedOwnership = readJsonAt(root, anchor.transitionCommitSha, ownershipPath);
+  expectedOwnership.tasks.T017.allowedPaths.push(T017_APPROVED_FIXTURE_PATH);
+  if (canonicalJson(amendedOwnership) !== canonicalJson(expectedOwnership)) fail('ownership-delta');
+  if (canonicalJson(parents(receipt.evidence.headSha)) !== canonicalJson([receipt.code.headSha])) fail('evidence-parent');
+  if (!exactSet(changedPaths(root, receipt.code.headSha, receipt.evidence.headSha), [T058_REVALIDATION_EVIDENCE_PATH])) fail('evidence-scope');
+  const previousEvidenceText = readOptionalText(root, T058_REVALIDATION_EVIDENCE_PATH, receipt.code.headSha);
+  const successorEvidenceText = readOptionalText(root, T058_REVALIDATION_EVIDENCE_PATH, receipt.evidence.headSha);
+  if (typeof previousEvidenceText !== 'string' || typeof successorEvidenceText !== 'string'
+    || !successorEvidenceText.startsWith(`${previousEvidenceText}\n`)
+    || !successorEvidenceText.slice(previousEvidenceText.length).includes(receipt.code.headSha)
+    || !successorEvidenceText.slice(previousEvidenceText.length).includes(receipt.code.treeSha)) fail('evidence-binding');
+
+  const history = git(root, ['rev-list', '--first-parent', '--reverse', integrationHeadSha, '--', inventoryPath])
+    .split('\n').filter(Boolean);
+  let publicationCommitSha = null;
+  for (const sha of history) {
+    const text = readOptionalText(root, inventoryPath, sha);
+    const historical = text == null ? null : JSON.parse(text).taskHandoffRevalidations;
+    if (historical == null) {
+      if (publicationCommitSha != null) fail('receipt-removed');
+      continue;
+    }
+    if (canonicalJson(historical) !== canonicalJson(receipts)) fail('receipt-rewritten');
+    publicationCommitSha ??= sha;
+  }
+  if (publicationCommitSha == null
+    || canonicalJson(parents(publicationCommitSha)) !== canonicalJson([receipt.evidence.headSha])) fail('receipt-parent');
+  if (!exactSet(changedPaths(root, receipt.evidence.headSha, publicationCommitSha), [inventoryPath])) fail('receipt-scope');
+  const published = readJsonAt(root, publicationCommitSha, inventoryPath);
+  delete published.taskHandoffRevalidations;
+  const evidenceInventory = readJsonAt(root, receipt.evidence.headSha, inventoryPath);
+  if (canonicalJson(published) !== canonicalJson(evidenceInventory)
+    || published.campaignStage !== 'STAGE_A' || published.checkpoint?.sequence !== 0) fail('receipt-state');
+  for (const repoPath of paths) {
+    if (published.entries?.find((entry) => entry.path === repoPath)?.ownerTaskId !== 'T058') fail('owner');
+  }
+  return Object.freeze({ publicationCommitSha, evidenceHeadSha: receipt.evidence.headSha, paths: Object.freeze(paths) });
+}
+
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   requireCompleteOwners = false,
 } = {}) {
@@ -4460,6 +4549,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     canonicalHandoffs[taskId] = canonical;
   }
   const canonicalT046 = canonicalHandoffs.T046 ?? null;
+  const revalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalHandoffs.T058 ?? null);
   if (canonicalHandoffs.T058) {
     if (!canonicalT046) throw new Error('foundation-amendment-original-handoff-missing');
     assertAncestor(root, canonicalT046.transitionCommitSha, canonicalHandoffs.T058.handoff.headSha,
@@ -4494,8 +4584,11 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
       continue;
     }
     if (!sealOwnedPaths || mutableCoordinationPaths.has(entry.path)) continue;
+    const sealedHead = ownerTaskId === 'T058' && revalidation?.paths.includes(entry.path)
+      ? revalidation.evidenceHeadSha
+      : handoff.headSha;
     const unchanged = runGit(root, [
-      'diff', '--quiet', handoff.headSha, integrationHeadSha, '--', entry.path,
+      'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
     ]);
     if (unchanged.status !== 0) {
       throw new Error(`task-handoff-owned-path-changed:${ownerTaskId}:${entry.path}`);

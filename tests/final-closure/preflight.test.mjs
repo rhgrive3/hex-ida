@@ -55,13 +55,22 @@ import {
   verifyCheckpointRuntimeEvidence,
   verifyLocalStageBWorktree,
   verifyStageBOperationalEvidence,
+  verifyT058Revalidation,
   verifyTaskHandoffs,
 } from '../../tools/validation/final-closure/preflight.mjs';
 
 const SOURCE_ROOT = process.cwd();
-const tasksText = fs.readFileSync('specs/005-analysis-final-closure/tasks.md', 'utf8');
-const ownership = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/task-ownership.json', 'utf8'));
-const integrationInventory = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/integration-inventory.json', 'utf8'));
+const liveTasksText = fs.readFileSync('specs/005-analysis-final-closure/tasks.md', 'utf8');
+const liveOwnership = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/task-ownership.json', 'utf8'));
+const liveIntegrationInventory = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/integration-inventory.json', 'utf8'));
+const syntheticPlanningSeed = loadSyntheticPlanningSeed(
+  liveTasksText,
+  liveIntegrationInventory,
+  liveOwnership,
+);
+const tasksText = syntheticPlanningSeed.tasksText;
+const ownership = syntheticPlanningSeed.ownership;
+const integrationInventory = syntheticPlanningSeed.integrationInventory;
 const platformLocks = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/final-platform-locks.json', 'utf8'));
 const performanceLocks = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/performance-locks.json', 'utf8'));
 const workflowText = fs.readFileSync('.github/workflows/final-closure-preflight.yml', 'utf8');
@@ -1160,6 +1169,119 @@ function commitAll(root, message) {
   return git(root, ['rev-parse', 'HEAD']);
 }
 
+function readGitBlob(root, revision, repoPath) {
+  const result = spawnSync(
+    'git',
+    ['show', `${revision}:${repoPath}`],
+    { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+  );
+  return result.status === 0 ? result.stdout : null;
+}
+
+function hasGitCommit(root, revision) {
+  const result = spawnSync(
+    'git',
+    ['cat-file', '-e', `${revision}^{commit}`],
+    { cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024 },
+  );
+  return result.status === 0;
+}
+
+function assertSyntheticPlanningSeed(seedTasksText, seedInventory, seedOwnership, sourceKind) {
+  const t058Block = fixtureTaskBlocks(seedTasksText)
+    .find((block) => block.split('\n', 1)[0].includes('] T058 '));
+  assert.ok(t058Block, `synthetic planning seed must contain T058 (${sourceKind})`);
+  assert.match(
+    t058Block,
+    /^- \[ \] T058 /m,
+    `synthetic planning seed must keep T058 pending (${sourceKind})`,
+  );
+  assert.match(
+    t058Block,
+    /Status: PENDING\./,
+    `synthetic planning seed must keep T058 status pending (${sourceKind})`,
+  );
+  assert.equal(
+    seedInventory.taskHandoffs?.T058,
+    undefined,
+    `synthetic planning seed must not carry a T058 handoff (${sourceKind})`,
+  );
+  assert.equal(
+    seedInventory.checkpoint?.sequence,
+    0,
+    `synthetic planning seed must begin at checkpoint sequence 0 (${sourceKind})`,
+  );
+  assert.equal(
+    seedInventory.checkpoint?.state,
+    'PREFANOUT',
+    `synthetic planning seed must be PREFANOUT (${sourceKind})`,
+  );
+  assert.ok(seedOwnership?.tasks && seedOwnership?.candidateGates,
+    `synthetic planning seed must contain ownership contract (${sourceKind})`);
+  return Object.freeze({
+    tasksText: seedTasksText,
+    integrationInventory: seedInventory,
+    ownership: seedOwnership,
+    sourceKind,
+  });
+}
+
+function loadSyntheticPlanningSeed(liveTasksText, liveIntegrationInventory, liveOwnership) {
+  const liveT058Handoff = liveIntegrationInventory.taskHandoffs?.T058;
+  if (!liveT058Handoff) {
+    return assertSyntheticPlanningSeed(
+      liveTasksText,
+      structuredClone(liveIntegrationInventory),
+      structuredClone(liveOwnership),
+      'CURRENT_NO_T058_HANDOFF',
+    );
+  }
+
+  assert.match(liveT058Handoff.headSha, /^[0-9a-f]{40}$/,
+    'live T058 handoff must identify an immutable commit');
+  assert.match(liveT058Handoff.treeSha, /^[0-9a-f]{40}$/,
+    'live T058 handoff must identify an immutable tree');
+  if (hasGitCommit(SOURCE_ROOT, liveT058Handoff.headSha)) {
+    assert.equal(
+      git(SOURCE_ROOT, ['rev-parse', `${liveT058Handoff.headSha}^{tree}`]),
+      liveT058Handoff.treeSha,
+      'live T058 handoff tree must match its immutable evidence publication',
+    );
+    const seedTasksText = readGitBlob(
+      SOURCE_ROOT,
+      liveT058Handoff.headSha,
+      'specs/005-analysis-final-closure/tasks.md',
+    );
+    const seedInventoryText = readGitBlob(
+      SOURCE_ROOT,
+      liveT058Handoff.headSha,
+      'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    );
+    const seedOwnershipText = readGitBlob(
+      SOURCE_ROOT,
+      liveT058Handoff.headSha,
+      'specs/005-analysis-final-closure/contracts/task-ownership.json',
+    );
+    assert.notEqual(seedTasksText, null,
+      'immutable T058 evidence publication must contain tasks.md');
+    assert.notEqual(seedInventoryText, null,
+      'immutable T058 evidence publication must contain integration inventory');
+    assert.notEqual(seedOwnershipText, null,
+      'immutable T058 evidence publication must contain task ownership');
+    return assertSyntheticPlanningSeed(
+      seedTasksText,
+      JSON.parse(seedInventoryText),
+      JSON.parse(seedOwnershipText),
+      'IMMUTABLE_T058_EVIDENCE_PUBLICATION',
+    );
+  }
+
+  assert.fail(
+    `immutable T058 evidence publication ${liveT058Handoff.headSha} is unavailable; `
+    + 'nested synthetic repositories are not permitted to infer a preactivation seed',
+  );
+}
+
 function copySourcePath(targetRoot, repoPath) {
   const sourcePath = path.join(SOURCE_ROOT, repoPath);
   const content = fs.existsSync(sourcePath)
@@ -1178,6 +1300,8 @@ function restoreImmutablePerformanceSource(origin) {
 
 function originalFoundationInventory(inventory) {
   const original = structuredClone(inventory);
+  delete original.taskHandoffs?.T058;
+  delete original.taskHandoffRevalidations;
   const newPaths = new Set([
     'tests/final-closure/foundation-amendment.test.mjs',
     'tests/phase4/ownership/integration-contract-repair.test.mjs',
@@ -1202,7 +1326,7 @@ function bindHandoffsToCommit(inventory, headSha, treeSha) {
 }
 
 function seedPreTransitionHandoffFiles(root) {
-  for (const evidencePath of new Set(Object.values(integrationInventory.taskHandoffs)
+  for (const evidencePath of new Set(Object.values(syntheticPlanningSeed.integrationInventory.taskHandoffs)
     .map((handoff) => handoff.evidencePath))) {
     write(root, evidencePath, `foundation evidence for ${evidencePath}\n`);
   }
@@ -1210,14 +1334,18 @@ function seedPreTransitionHandoffFiles(root) {
     'specs/005-analysis-final-closure/contracts/integration-inventory.json',
     'specs/005-analysis-final-closure/tasks.md',
   ]);
-  for (const entry of integrationInventory.entries) {
+  for (const entry of syntheticPlanningSeed.integrationInventory.entries) {
     if (mutableCoordinationPaths.has(entry.path)) continue;
+    if (entry.path === 'specs/005-analysis-final-closure/contracts/task-ownership.json') {
+      write(root, entry.path, `${JSON.stringify(syntheticPlanningSeed.ownership, null, 2)}\n`);
+      continue;
+    }
     copySourcePath(root, entry.path);
   }
   write(
     root,
     'specs/005-analysis-final-closure/tasks.md',
-    rewriteTaskStatus(tasksText, 'T046', 'PENDING'),
+    rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'PENDING'),
   );
 }
 
@@ -1771,12 +1899,12 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     'userscript/release-version.json',
   ];
   const finalPaths = [...new Set([
-    ...integrationInventory.unionChangedPaths,
+    ...syntheticPlanningSeed.integrationInventory.unionChangedPaths,
     evidencePath,
     ...componentPaths,
     ...generatedPaths,
   ])];
-  const inventory = structuredClone(integrationInventory);
+  const inventory = structuredClone(syntheticPlanningSeed.integrationInventory);
   inventory.baseSha = baseSha;
   inventory.expectedChangedPaths = [...finalPaths];
   inventory.actualChangedPaths = [...finalPaths];
@@ -1803,7 +1931,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
   };
 
-  for (const repoPath of integrationInventory.unionChangedPaths) {
+  for (const repoPath of syntheticPlanningSeed.integrationInventory.unionChangedPaths) {
     let content;
     if (repoPath === 'specs/005-analysis-final-closure/contracts/task-ownership.json') {
       content = `${JSON.stringify(ownership, null, 2)}\n`;
@@ -1834,7 +1962,9 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
   };
 
-  let fixtureTasksText = rewriteTaskStatus(tasksText, 'T046', 'DONE');
+  assert.equal(inventory.taskHandoffs.T058, undefined,
+    'rolling fixture must start before the live T058 activation handoff');
+  let fixtureTasksText = rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE');
   write(sandbox, 'specs/005-analysis-final-closure/tasks.md', fixtureTasksText);
   write(
     sandbox,
@@ -1857,6 +1987,13 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
   write(sandbox, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
     `${JSON.stringify(inventory, null, 2)}\n`);
   const foundationTransitionSha = commitAll(sandbox, 'T058 forward amendment activation');
+  const localT046Anchor = canonicalTaskHandoffAnchor(sandbox, foundationTransitionSha, 'T046');
+  assert.equal(localT046Anchor.transitionCommitSha, t046TransitionSha);
+  const localT058Anchor = canonicalTaskHandoffAnchor(sandbox, foundationTransitionSha, 'T058');
+  assert.equal(localT058Anchor.transitionCommitSha, foundationTransitionSha);
+  assert.equal(localT058Anchor.handoff.headSha, amendedPublicationSha);
+  assert.notEqual(localT058Anchor.handoff.headSha, foundationTransitionSha,
+    'T058 must be handed off by the prior publication, not self-anchored');
   const rows = [];
   const evidenceCommitShas = [];
   const componentHeadShas = [];
@@ -1976,7 +2113,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     );
     const independentShadowVerifier = checkpointShadowGateEvidence(candidateIdentity, shadowReports);
     const checkpointPaths = [...new Set([
-      ...integrationInventory.unionChangedPaths,
+      ...syntheticPlanningSeed.integrationInventory.unionChangedPaths,
       evidencePath,
       ...componentPaths.slice(0, index + 1),
       ...generatedPaths,
@@ -2926,7 +3063,7 @@ function createOperationalFixture() {
   const handoffSha = commitAll(candidate, 'foundation handoffs');
   const handoffTreeSha = git(candidate, ['rev-parse', 'HEAD^{tree}']);
 
-  const tempInventory = structuredClone(integrationInventory);
+  const tempInventory = structuredClone(syntheticPlanningSeed.integrationInventory);
   tempInventory.baseSha = baseSha;
   bindHandoffsToCommit(tempInventory, handoffSha, handoffTreeSha);
   tempInventory.taskHandoffs.T046 = {
@@ -2942,8 +3079,12 @@ function createOperationalFixture() {
   commitAll(candidate, 'publish pending handoff inventory');
   for (const repoPath of tempInventory.unionChangedPaths) {
     if (repoPath === 'specs/005-analysis-final-closure/contracts/integration-inventory.json') continue;
+    if (repoPath === 'specs/005-analysis-final-closure/contracts/task-ownership.json') {
+      write(candidate, repoPath, `${JSON.stringify(ownership, null, 2)}\n`);
+      continue;
+    }
     if (repoPath === 'specs/005-analysis-final-closure/tasks.md') {
-      write(candidate, repoPath, rewriteTaskStatus(tasksText, 'T046', 'DONE'));
+      write(candidate, repoPath, rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE'));
       continue;
     }
     const sourcePath = path.join(SOURCE_ROOT, repoPath);
@@ -2999,7 +3140,7 @@ function createStageBOperationalFixture() {
     `+${RECOVERY_HANDOFF_REF}:refs/remotes/origin/wip/recovery-handoff-20260904`,
   ]);
 
-  const stageAInventory = structuredClone(integrationInventory);
+  const stageAInventory = structuredClone(syntheticPlanningSeed.integrationInventory);
   stageAInventory.baseSha = stageACandidateBaseSha;
   bindHandoffsToCommit(stageAInventory, planningSha, planningTreeSha);
   stageAInventory.taskHandoffs.T046 = {
@@ -3015,8 +3156,12 @@ function createStageBOperationalFixture() {
   commitAll(original, 'publish pending Stage A handoff inventory');
   for (const repoPath of stageAInventory.unionChangedPaths) {
     if (repoPath === 'specs/005-analysis-final-closure/contracts/integration-inventory.json') continue;
+    if (repoPath === 'specs/005-analysis-final-closure/contracts/task-ownership.json') {
+      write(original, repoPath, `${JSON.stringify(ownership, null, 2)}\n`);
+      continue;
+    }
     if (repoPath === 'specs/005-analysis-final-closure/tasks.md') {
-      write(original, repoPath, rewriteTaskStatus(tasksText, 'T046', 'DONE'));
+      write(original, repoPath, rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE'));
       continue;
     }
     copySourcePath(original, repoPath);
@@ -3030,11 +3175,22 @@ function createStageBOperationalFixture() {
     treeSha: git(original, ['rev-parse', `${amendedPublicationSha}^{tree}`]),
     evidencePath: 'specs/005-analysis-final-closure/evidence/forward-amendment.md',
   };
-  const amendedStageATasks = rewriteTaskStatus(rewriteTaskStatus(tasksText, 'T046', 'DONE'), 'T058', 'DONE');
+  const amendedStageATasks = rewriteTaskStatus(
+    rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE'),
+    'T058',
+    'DONE',
+  );
   write(original, 'specs/005-analysis-final-closure/tasks.md', amendedStageATasks);
   write(original, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
     `${JSON.stringify(stageAInventory, null, 2)}\n`);
   const stageACandidateHeadSha = commitAll(original, 'stage A forward amendment');
+  const stageAT046Anchor = canonicalTaskHandoffAnchor(original, stageACandidateHeadSha, 'T046');
+  assert.equal(stageAT046Anchor.transitionCommitSha, originalFoundationSha);
+  const stageAT058Anchor = canonicalTaskHandoffAnchor(original, stageACandidateHeadSha, 'T058');
+  assert.equal(stageAT058Anchor.transitionCommitSha, stageACandidateHeadSha);
+  assert.equal(stageAT058Anchor.handoff.headSha, amendedPublicationSha);
+  assert.notEqual(stageAT058Anchor.handoff.headSha, stageACandidateHeadSha,
+    'Stage A T058 must be handed off by its prior publication');
   const stageACandidateTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
   const stageACandidateMergeTreeSha = git(original, [
     'merge-tree', '--write-tree', stageACandidateBaseSha, stageACandidateHeadSha,
@@ -3363,7 +3519,11 @@ function publishSubstitutedT025MatrixFixture(fixture) {
 
 function createComponentFixture() {
   const fixture = createOperationalFixture();
-  const integrationTasks = rewriteTaskStatus(rewriteTaskStatus(tasksText, 'T046', 'DONE'), 'T058', 'DONE');
+  const integrationTasks = rewriteTaskStatus(
+    rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE'),
+    'T058',
+    'DONE',
+  );
   const integrationInventoryFixture = structuredClone(fixture.inventory);
   integrationInventoryFixture.taskHandoffs.T058 = {
     headSha: fixture.headSha,
@@ -3374,6 +3534,15 @@ function createComponentFixture() {
   write(fixture.candidate, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
     `${JSON.stringify(integrationInventoryFixture, null, 2)}\n`);
   const integrationHeadSha = commitAll(fixture.candidate, 'activate forward amendment before component');
+  const componentT058Anchor = canonicalTaskHandoffAnchor(
+    fixture.candidate,
+    integrationHeadSha,
+    'T058',
+  );
+  assert.equal(componentT058Anchor.transitionCommitSha, integrationHeadSha);
+  assert.equal(componentT058Anchor.handoff.headSha, fixture.headSha);
+  assert.notEqual(componentT058Anchor.handoff.headSha, integrationHeadSha,
+    'component fixture must mint T058 from the prior local E publication');
   git(fixture.candidate, ['push', 'origin', fixture.inventory.integrationRef]);
 
   const componentRef = 'component/final-closure-t011-stack-return';
@@ -3394,6 +3563,96 @@ function createComponentFixture() {
     componentPath,
     componentHeadSha,
     eventPath,
+  };
+}
+
+function createT058RevalidationFixture({ widenOwnership = false } = {}) {
+  const fixture = createComponentFixture();
+  const codePaths = [
+    'tools/validation/final-closure/preflight.mjs',
+    'tests/final-closure/preflight.test.mjs',
+    'specs/005-analysis-final-closure/contracts/task-ownership.json',
+  ];
+  for (const repoPath of codePaths.slice(0, 2)) {
+    fs.appendFileSync(
+      path.join(fixture.candidate, repoPath),
+      `\n// bounded T058 revalidation code fixture: ${repoPath}\n`,
+    );
+  }
+  const amendedOwnership = JSON.parse(fs.readFileSync(
+    path.join(fixture.candidate, codePaths[2]),
+    'utf8',
+  ));
+  const approvedFixturePath = 'tests/issue-1809-libc-effect-classification.mjs';
+  assert.equal(
+    amendedOwnership.tasks.T017.allowedPaths.includes(approvedFixturePath),
+    false,
+    'the immutable E ownership seed must not already contain the approved successor append',
+  );
+  amendedOwnership.tasks.T017.allowedPaths.push(approvedFixturePath);
+  if (widenOwnership) amendedOwnership.tasks.T017.allowedPaths.push('js/unowned-fixture.js');
+  write(
+    fixture.candidate,
+    codePaths[2],
+    `${JSON.stringify(amendedOwnership, null, 2)}\n`,
+  );
+  const codeHeadSha = commitAll(fixture.candidate, 'bounded T058 revalidation code successor');
+  const codeTreeSha = git(fixture.candidate, ['rev-parse', `${codeHeadSha}^{tree}`]);
+
+  const evidencePath = 'specs/005-analysis-final-closure/evidence/forward-amendment.md';
+  const previousEvidenceText = fs.readFileSync(path.join(fixture.candidate, evidencePath), 'utf8');
+  fs.appendFileSync(
+    path.join(fixture.candidate, evidencePath),
+    `\nT058 revalidation code head: ${codeHeadSha}\nT058 revalidation code tree: ${codeTreeSha}\n`,
+  );
+  const evidenceHeadSha = commitAll(fixture.candidate, 'bounded T058 revalidation evidence successor');
+  const evidenceTreeSha = git(fixture.candidate, ['rev-parse', `${evidenceHeadSha}^{tree}`]);
+
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  const receipt = {
+    schemaVersion: 'hex-final-closure-t058-revalidation/v1',
+    originalHandoff: structuredClone(fixture.integrationInventory.taskHandoffs.T058),
+    activationCommitSha: fixture.integrationHeadSha,
+    code: { headSha: codeHeadSha, treeSha: codeTreeSha },
+    evidence: { headSha: evidenceHeadSha, treeSha: evidenceTreeSha },
+    paths: [...codePaths, evidencePath],
+  };
+  const publishedInventory = JSON.parse(fs.readFileSync(
+    path.join(fixture.candidate, inventoryPath),
+    'utf8',
+  ));
+  publishedInventory.taskHandoffRevalidations = { T058: receipt };
+  write(
+    fixture.candidate,
+    inventoryPath,
+    `${JSON.stringify(publishedInventory, null, 2)}\n`,
+  );
+  const publicationCommitSha = commitAll(
+    fixture.candidate,
+    'publish bounded T058 revalidation receipt',
+  );
+  const parentInventory = JSON.parse(git(fixture.candidate, [
+    'show', `${evidenceHeadSha}:${inventoryPath}`,
+  ]));
+  const receiptInventory = JSON.parse(git(fixture.candidate, [
+    'show', `${publicationCommitSha}:${inventoryPath}`,
+  ]));
+  const receiptOnlyInventory = structuredClone(receiptInventory);
+  delete receiptOnlyInventory.taskHandoffRevalidations;
+  assert.deepEqual(receiptOnlyInventory, parentInventory,
+    'receipt publication must be a direct inventory-only child of the E successor');
+  assert.equal(receiptInventory.checkpoint?.sequence, 0,
+    'the bounded T058 receipt must not advance the Stage A checkpoint');
+  return {
+    ...fixture,
+    codeHeadSha,
+    codeTreeSha,
+    evidenceHeadSha,
+    evidenceTreeSha,
+    publicationCommitSha,
+    receipt,
+    previousEvidenceText,
+    inventoryPath,
   };
 }
 
@@ -3610,7 +3869,7 @@ try {
   git(operational.candidate, ['restore', '--staged', '--worktree', verifierPath]);
 
   const operationalContract = (inventoryOverride) => validate({
-    tasksText: rewriteTaskStatus(tasksText, 'T046', 'DONE'),
+    tasksText: rewriteTaskStatus(syntheticPlanningSeed.tasksText, 'T046', 'DONE'),
     integrationInventory: inventoryOverride,
     actualChangedPaths: inventoryOverride.unionChangedPaths,
     expectedBaseSha: operational.baseSha,
@@ -3693,6 +3952,114 @@ try {
   );
 } finally {
   fs.rmSync(operational.sandbox, { recursive: true, force: true });
+}
+
+const t058Revalidation = createT058RevalidationFixture();
+try {
+  assert.equal(
+    verifyT058Revalidation(t058Revalidation.candidate, t058Revalidation.integrationHeadSha),
+    null,
+    'a pre-receipt T058 activation must not infer a successor revalidation',
+  );
+  const verifiedReceipt = verifyT058Revalidation(
+    t058Revalidation.candidate,
+    t058Revalidation.publicationCommitSha,
+  );
+  assert.equal(verifiedReceipt.publicationCommitSha, t058Revalidation.publicationCommitSha);
+  assert.equal(verifiedReceipt.evidenceHeadSha, t058Revalidation.evidenceHeadSha);
+  assert.deepEqual(verifiedReceipt.paths, t058Revalidation.receipt.paths);
+
+  const handoffResult = (sha) => {
+    const inventory = JSON.parse(git(t058Revalidation.candidate, [
+      'show', `${sha}:${t058Revalidation.inventoryPath}`,
+    ]));
+    return { taskHandoffResult: {
+      handoffs: inventory.taskHandoffs,
+      completedTaskIds: Object.keys(inventory.taskHandoffs),
+      inventoryEntries: inventory.entries,
+    } };
+  };
+  const anchored = verifyTaskHandoffs(t058Revalidation.candidate,
+    handoffResult(t058Revalidation.publicationCommitSha), t058Revalidation.publicationCommitSha);
+  assert.equal(anchored.canonicalT058TransitionCommitSha, t058Revalidation.integrationHeadSha,
+    'revalidation must not replace the original unique DONE transition');
+  assert.throws(() => verifyTaskHandoffs(t058Revalidation.candidate,
+    handoffResult(t058Revalidation.codeHeadSha), t058Revalidation.codeHeadSha),
+  /task-handoff-owned-path-changed:T058:/,
+  'code without a published receipt cannot bypass the original seal');
+
+  const mutateReceipt = (label, mutation, expected) => {
+    git(t058Revalidation.candidate, ['switch', '--quiet', '--detach', t058Revalidation.publicationCommitSha]);
+    const inventory = JSON.parse(fs.readFileSync(
+      path.join(t058Revalidation.candidate, t058Revalidation.inventoryPath), 'utf8'));
+    mutation(inventory.taskHandoffRevalidations.T058, inventory);
+    write(t058Revalidation.candidate, t058Revalidation.inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
+    const head = commitAll(t058Revalidation.candidate, label);
+    assert.throws(() => verifyTaskHandoffs(t058Revalidation.candidate, handoffResult(head), head), expected, label);
+  };
+  mutateReceipt('wrong successor tree', (receipt) => { receipt.code.treeSha = 'a'.repeat(40); },
+    /task-handoff-revalidation-invalid:T058:code-identity/);
+  mutateReceipt('wrong successor parent', (receipt) => {
+    receipt.code = { headSha: receipt.originalHandoff.headSha,
+      treeSha: receipt.originalHandoff.treeSha };
+  }, /task-handoff-revalidation-invalid:T058:code-parent/);
+  mutateReceipt('self-referential receipt evidence', (receipt) => {
+    receipt.evidence = { headSha: t058Revalidation.publicationCommitSha,
+      treeSha: git(t058Revalidation.candidate, ['rev-parse', `${t058Revalidation.publicationCommitSha}^{tree}`]) };
+  }, /task-handoff-revalidation-invalid:T058:evidence-parent/);
+  mutateReceipt('rewritten otherwise valid receipt', (receipt) => { receipt.paths.reverse(); },
+    /task-handoff-revalidation-invalid:T058:receipt-rewritten/);
+  mutateReceipt('removed receipt cannot unseal code', (_, inventory) => { delete inventory.taskHandoffRevalidations; },
+    /task-handoff-owned-path-changed:T058:/);
+  mutateReceipt('another task cannot acquire a revalidation', (receipt, inventory) => {
+    inventory.taskHandoffRevalidations.T051 = structuredClone(receipt);
+  }, /task-handoff-revalidation-invalid:T058:task-set/);
+
+  for (const repoPath of ['specs/005-analysis-final-closure/spec.md', 'tests/final-closure/preflight.test.mjs']) {
+    git(t058Revalidation.candidate, ['switch', '--quiet', '--detach', t058Revalidation.publicationCommitSha]);
+    fs.appendFileSync(path.join(t058Revalidation.candidate, repoPath), '\npost-receipt tampering\n');
+    const head = commitAll(t058Revalidation.candidate, 'reject changed sealed path');
+    assert.throws(() => verifyTaskHandoffs(t058Revalidation.candidate, handoffResult(head), head),
+      /task-handoff-owned-path-changed:T058:/,
+      'both original and revalidated paths remain sealed after the receipt');
+  }
+
+  git(t058Revalidation.candidate, [
+    'switch', '--quiet', '-c', 't058-revalidation-tampered', t058Revalidation.publicationCommitSha,
+  ]);
+  const tamperedInventory = JSON.parse(fs.readFileSync(
+    path.join(t058Revalidation.candidate, t058Revalidation.inventoryPath),
+    'utf8',
+  ));
+  tamperedInventory.taskHandoffRevalidations.T058.paths = [
+    ...tamperedInventory.taskHandoffRevalidations.T058.paths.slice(0, -1),
+  ];
+  write(
+    t058Revalidation.candidate,
+    t058Revalidation.inventoryPath,
+    `${JSON.stringify(tamperedInventory, null, 2)}\n`,
+  );
+  const tamperedHeadSha = commitAll(
+    t058Revalidation.candidate,
+    'reject tampered T058 revalidation receipt',
+  );
+  assert.throws(
+    () => verifyT058Revalidation(t058Revalidation.candidate, tamperedHeadSha),
+    /task-handoff-revalidation-invalid:T058:paths/,
+    'the revalidation verifier must reject a receipt that drops an owned path',
+  );
+} finally {
+  fs.rmSync(t058Revalidation.sandbox, { recursive: true, force: true });
+}
+
+const widenedT058Revalidation = createT058RevalidationFixture({ widenOwnership: true });
+try {
+  assert.throws(() => verifyT058Revalidation(widenedT058Revalidation.candidate,
+    widenedT058Revalidation.publicationCommitSha),
+  /task-handoff-revalidation-invalid:T058:ownership-delta/,
+  'the reviewed single fixture addition does not authorize any other ownership expansion');
+} finally {
+  fs.rmSync(widenedT058Revalidation.sandbox, { recursive: true, force: true });
 }
 
 const componentOperational = createComponentFixture();
