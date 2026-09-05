@@ -63,14 +63,18 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     });
     try {
       const result = await requestWithSignal(request, signal);
-      if (result?.starts?.length) {
-        symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+      const starts = Array.isArray(result?.starts) ? result.starts : [];
+      const room = Math.max(0, Math.min(share, remaining));
+      const accepted = starts.slice(0, room);
+      const overCap = starts.length > accepted.length;
+      if (accepted.length) {
+        symbols.addFunctions(accepted, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
-        remaining = Math.max(0, remaining - result.starts.length);
+        remaining = Math.max(0, remaining - accepted.length);
       }
-      const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
-      results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
-      if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
+      const complete = !overCap && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
+      results.push({ regionId:region.id, complete, capped:!!result?.capped || overCap, discovered:accepted.length });
+      if (!complete) reasons.push(overCap ? `function-global-budget:${region.id}` : `${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       results.push({ regionId:region.id, complete:false, error:true });
