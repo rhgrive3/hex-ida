@@ -32,9 +32,16 @@ function canonicalInstructionAddress(value, code) {
 function addressOf(instruction) {
   return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
 }
+function instructionLengthOf(instruction) {
+  const length = canonicalInstructionAddress(
+    instruction.length ?? instruction.size,
+    'semantic-function-instruction-length-invalid',
+  );
+  if (length === 0n) throw new TypeError('semantic-function-instruction-length-invalid');
+  return length;
+}
 function endOf(instruction) {
-  return addressOf(instruction)
-    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+  return addressOf(instruction) + instructionLengthOf(instruction);
 }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
@@ -82,6 +89,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
   const byAddress = new Map();
   for (const instruction of ordered) {
     const address = addressOf(instruction);
+    instructionLengthOf(instruction);
     if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
     byAddress.set(address.toString(), instruction);
   }
