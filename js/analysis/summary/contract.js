@@ -183,12 +183,37 @@ export function createIndirectCallSet(input = {}) {
   });
 }
 
+function strictProvenanceIndex(value) {
+  if (typeof value === 'bigint') {
+    const number = Number(value);
+    return Number.isSafeInteger(number) ? number : null;
+  }
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    return Number.isSafeInteger(number) ? number : null;
+  }
+  return null;
+}
+
+function strictProvenanceOffset(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
+    try { return BigInt(value.trim()); } catch { return null; }
+  }
+  return null;
+}
+
 function createReturnProvenance(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid-return-provenance');
   const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
-  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
-  const returnIndex = input.returnIndex == null ? null : Number(input.returnIndex);
-  const offset = input.offset == null ? null : BigInt(input.offset);
+  // Index/offset authority must be primitive numeric evidence: JavaScript
+  // coercion (single-element arrays, booleans) must never launder a
+  // structured value into a call-return provenance fact.
+  const argIndex = input.argIndex == null ? null : strictProvenanceIndex(input.argIndex);
+  const returnIndex = input.returnIndex == null ? null : strictProvenanceIndex(input.returnIndex);
+  const offset = input.offset == null ? null : strictProvenanceOffset(input.offset);
   const rootEntityId = optionalReturnIdentity(input.rootEntityId);
   const allocationSiteId = optionalReturnIdentity(input.allocationSiteId);
   if (input.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
@@ -196,6 +221,9 @@ function createReturnProvenance(input = {}) {
   }
   if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
     fail('function-summary-invalid-return-provenance-return-index');
+  }
+  if (input.offset != null && offset == null) {
+    fail('function-summary-invalid-return-provenance-offset');
   }
   const out = {
     kind,
