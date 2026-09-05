@@ -4,7 +4,11 @@ import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
-import { SEMANTIC_FUNCTION_ROUTE, semanticAbiAdapter } from './semantic-function-base.js';
+import {
+  SEMANTIC_FUNCTION_ROUTE,
+  semanticAbiAdapter,
+  semanticControlUnknowns,
+} from './semantic-function-base.js';
 
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
@@ -248,6 +252,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     ? input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)
     : input.instructions;
   const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
+  const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
@@ -260,6 +265,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     mode:input.mode ?? defaultMode ?? 'default',
     entryBlockKey:blocks[0].key,
     blocks,
+    completeness: controlUnknowns.length ? 'partial' : 'complete',
+    unknowns: controlUnknowns,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,
