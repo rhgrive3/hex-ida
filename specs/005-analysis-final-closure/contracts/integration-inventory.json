@@ -67,6 +67,11 @@
       "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
       "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/pre-fanout.md"
+    },
+    "T058": {
+      "headSha": "2d9e8ce8f9e327ab1255367475399bffe2e1b34a",
+      "treeSha": "ce5888ae8f18111e4a1d3fe7bd296b929d1cdae6",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/forward-amendment.md"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -84,6 +89,7 @@
     "specs/005-analysis-final-closure/contracts/performance-locks.json",
     "specs/005-analysis-final-closure/contracts/task-ownership.json",
     "specs/005-analysis-final-closure/data-model.md",
+    "specs/005-analysis-final-closure/evidence/forward-amendment.md",
     "specs/005-analysis-final-closure/evidence/github-state.md",
     "specs/005-analysis-final-closure/evidence/pre-fanout.md",
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
@@ -95,8 +101,10 @@
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
     "tools/validation/final-closure/preflight.mjs",
@@ -120,6 +128,7 @@
     "specs/005-analysis-final-closure/contracts/performance-locks.json",
     "specs/005-analysis-final-closure/contracts/task-ownership.json",
     "specs/005-analysis-final-closure/data-model.md",
+    "specs/005-analysis-final-closure/evidence/forward-amendment.md",
     "specs/005-analysis-final-closure/evidence/github-state.md",
     "specs/005-analysis-final-closure/evidence/pre-fanout.md",
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
@@ -131,8 +140,10 @@
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
     "tools/validation/final-closure/preflight.mjs",
@@ -156,6 +167,7 @@
     "specs/005-analysis-final-closure/contracts/performance-locks.json",
     "specs/005-analysis-final-closure/contracts/task-ownership.json",
     "specs/005-analysis-final-closure/data-model.md",
+    "specs/005-analysis-final-closure/evidence/forward-amendment.md",
     "specs/005-analysis-final-closure/evidence/github-state.md",
     "specs/005-analysis-final-closure/evidence/pre-fanout.md",
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
@@ -167,8 +179,10 @@
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
     "tools/validation/final-closure/preflight.mjs",
@@ -214,7 +228,7 @@
     },
     {
       "path": "specs/005-analysis-final-closure/contracts/integration-inventory.json",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "specs/005-analysis-final-closure/contracts/performance-locks.json",
@@ -222,11 +236,15 @@
     },
     {
       "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "specs/005-analysis-final-closure/data-model.md",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": "specs/005-analysis-final-closure/evidence/forward-amendment.md",
+      "ownerTaskId": "T058"
     },
     {
       "path": "specs/005-analysis-final-closure/evidence/github-state.md",
@@ -250,7 +268,7 @@
     },
     {
       "path": "specs/005-analysis-final-closure/plan.md",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "specs/005-analysis-final-closure/quickstart.md",
@@ -262,23 +280,31 @@
     },
     {
       "path": "specs/005-analysis-final-closure/spec.md",
-      "ownerTaskId": "T003"
+      "ownerTaskId": "T058"
     },
     {
       "path": "specs/005-analysis-final-closure/tasks.md",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "tests/final-closure/cross-lane-ownership.test.mjs",
       "ownerTaskId": "T046"
     },
     {
+      "path": "tests/final-closure/foundation-amendment.test.mjs",
+      "ownerTaskId": "T058"
+    },
+    {
       "path": "tests/final-closure/preflight.test.mjs",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "tests/final-closure/run.mjs",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",
+      "ownerTaskId": "T058"
     },
     {
       "path": "tests/stage1/verifier-self-tests.test.mjs",
@@ -290,11 +316,11 @@
     },
     {
       "path": "tools/validation/final-closure/preflight.mjs",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
@@ -306,7 +332,7 @@
     },
     {
       "path": "tools/validation/final-closure/shadow/foundation/registry.json",
-      "ownerTaskId": "T046"
+      "ownerTaskId": "T058"
     },
     {
       "path": "tools/validation/phase11/ownership-check.mjs",
