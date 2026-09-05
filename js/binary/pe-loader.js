@@ -57,7 +57,12 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const recordSize = machine === 0x8664
     ? 12
     : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
-  if (recordSize && dir.size % recordSize !== 0 && mappedFileSpanForRva(image, dir.rva, dir.size)) {
+  if (
+    recordSize
+    && Number.isSafeInteger(dir.size)
+    && dir.size % recordSize !== 0
+    && mappedFileSpanForRva(image, dir.rva, dir.size)
+  ) {
     const budget = ensureBudget(image, sharedBudget);
     budget.partial(
       'exception:directory-record-remainder',
