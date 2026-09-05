@@ -128,26 +128,25 @@ function projectAdapter(plugin) {
 }
 
 export function registerArchitectureAdapter(definition, { replace = false } = {}) {
-  const id = canonicalArchitectureId(definition?.id);
-  if (!id) throw new TypeError('architecture id is required');
-
+  const adapter = new ArchitectureAdapter(definition);
   const pluginDef = {
-    id,
-    instructionAlignment: definition.instructionAlignment,
-    fixedInstructionSize: definition.fixedInstructionSize,
-    viewerCompatible: definition.viewerCompatible,
-    decode: normalizeAdapterHook(definition.decode, 'decode'),
-    assemble: normalizeAdapterHook(definition.assemble, 'assemble'),
-    classifyControlFlow: normalizeAdapterHook(definition.controlFlow, 'controlFlow', () => null),
+    id: adapter.id,
+    instructionAlignment: adapter.instructionAlignment,
+    fixedInstructionSize: adapter.fixedInstructionSize,
+    viewerCompatible: adapter.viewerCompatible,
+    decode: adapter.decode,
+    assemble: adapter.assemble,
+    classifyControlFlow: adapter.controlFlow,
     semanticVersion: 'legacy-adapter-v1',
     capabilities: {
-      decode: definition.decode ? 'native' : 'unsupported',
+      decode: adapter.decode ? 'native' : 'unsupported',
       exactEffects: 'unsupported',
       semanticAnalysis: 'unsupported',
     },
   };
-  registerArchitecturePlugin(pluginDef, { replace });
-  return architectureAdapter(id);
+  const plugin = registerArchitecturePlugin(pluginDef, { replace });
+  ADAPTER_CACHE.set(plugin, adapter);
+  return adapter;
 }
 
 export function architectureAdapter(id) {
