@@ -7,6 +7,7 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
 const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -42,6 +43,14 @@ function accessOf(value) {
   const access = String(value ?? 'unknown');
   if (!ACCESS.has(access)) throw new TypeError('x86-decoded-instruction-invalid-access');
   return access;
+}
+
+function segmentOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  const segment = value.toLowerCase();
+  if (!SEGMENT_REGISTERS.has(segment)) throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  return segment;
 }
 
 function supplementaryRegisterShape(value, hintedWidthBits) {
@@ -106,7 +115,7 @@ function normalizeOperand(input, index) {
     const raw = input.memory && typeof input.memory === 'object' ? input.memory : input;
     const base = raw.base == null ? null : registerOf(raw.base, 'x86-decoded-instruction-unknown-memory-base', { decoderRegisterCode:raw.baseCode ?? raw.base?.decoderRegisterCode, widthBits:raw.base?.viewBits });
     const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index', { decoderRegisterCode:raw.indexCode ?? raw.index?.decoderRegisterCode, widthBits:raw.index?.viewBits });
-    const segment = raw.segment == null ? null : String(raw.segment).toLowerCase();
+    const segment = segmentOf(raw.segment);
     const scale = raw.scale == null ? 1 : integer(raw.scale, 'x86-decoded-instruction-invalid-memory-scale', { min:1, max:8 });
     if (![1,2,4,8].includes(scale)) throw new TypeError('x86-decoded-instruction-invalid-memory-scale');
     return Object.freeze({
