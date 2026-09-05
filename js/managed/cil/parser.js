@@ -7,7 +7,7 @@ const CLI_DIRECTORY_INDEX = 14;
 const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
-const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -579,7 +579,8 @@ export function probeCil(bytes) {
         return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
       }
       return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };
-    } catch {
+    } catch (error) {
+      if (error?.message === 'cil-invalid-strings-utf8') throw error;
       return { supported: false, confidence: 0, reason: 'malformed-pe-cli' };
     }
   }
