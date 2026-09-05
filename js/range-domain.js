@@ -1,5 +1,13 @@
 function validBits(bits) {
-  return typeof bits === 'number' && Number.isInteger(bits) && bits > 0 && bits <= 64 ? bits : 64;
+  if (bits == null) return 64;
+  return typeof bits === 'number' && Number.isInteger(bits) && bits > 0 && bits <= 64 ? bits : null;
+}
+
+function requireBits(bits) {
+  const width = validBits(bits);
+  if (width != null) return width;
+  if (typeof bits !== 'number') throw new TypeError('bit width must be a primitive number');
+  throw new RangeError('bit width must be an integer between 1 and 64');
 }
 
 function strictBigInt(value) {
@@ -29,13 +37,13 @@ function rangeFitsDomain(min, max, bits, signed) {
 }
 
 export function normalizeIntegerValue(value, bits = 64, signed = false) {
-  const width = validBits(bits);
+  const width = requireBits(bits);
   const raw = BigInt.asUintN(width, strictBigInt(value));
   return signed === true ? BigInt.asIntN(width, raw) : raw;
 }
 
 export function rangeWithDomain(min, max, bits = 64, signed = null) {
-  const width = validBits(bits);
+  const width = requireBits(bits);
   const domainSigned = normalizedSignedness(signed);
   const normalizedMin = strictBigInt(min);
   const normalizedMax = strictBigInt(max);
@@ -57,11 +65,12 @@ export function rangeWithDomain(min, max, bits = 64, signed = null) {
  */
 export function normalizeRangeDomain(range, bits, signed) {
   if (!range || range.min == null || range.max == null) return null;
-  const width = validBits(bits || range.bits || 64);
-  const srcBits = validBits(range.bits || width);
+  const width = validBits(bits ?? range.bits ?? 64);
+  if (width == null) return null;
+  const srcBits = validBits(range.bits ?? width);
   const srcSigned = normalizedSignedness(range.signed);
   const dstSigned = normalizedSignedness(signed);
-  if (srcBits !== width) return null;
+  if (srcBits == null || srcBits !== width) return null;
   let min, max;
   try {
     min = strictBigInt(range.min);
@@ -93,7 +102,8 @@ export function normalizeRangeDomain(range, bits, signed) {
 export function mergeRangeDomain(a, b, bits = null, signed = undefined) {
   if (!a && !b) return null;
   const source = a || b;
-  const width = validBits(bits || a?.bits || b?.bits || 64);
+  const width = validBits(bits ?? a?.bits ?? b?.bits ?? 64);
+  if (width == null) return null;
   const targetSigned = signed === undefined ? normalizedSignedness(source.signed) : normalizedSignedness(signed);
   if (!a) return normalizeRangeDomain(b, width, targetSigned);
   if (!b) return normalizeRangeDomain(a, width, targetSigned);
