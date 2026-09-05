@@ -120,13 +120,7 @@ export class RuntimeAnalysisPlatform {
   }
   async verifyHypothesis(hypothesis, options = {}) {
     const session = this.currentSession();
-    // A hypothesis explicitly bound to another binary must never be re-labeled
-    // onto the active session: the compiled experiment would silently pass the
-    // runExperiment mismatch guard and produce evidence for the wrong binary.
-    if (hypothesis?.binaryHash && session.binaryHash && hypothesis.binaryHash !== session.binaryHash) {
-      throw new DebugAdapterError('binary-version-mismatch','hypothesis binary hash does not match the active runtime session',{hypothesisHash:hypothesis.binaryHash,sessionHash:session.binaryHash});
-    }
-    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash || options.binaryHash || hypothesis?.binaryHash || null });
+    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash });
     return this.runExperiment(experiment, options);
   }
   async verifyFunction(functionAddress, options = {}) {

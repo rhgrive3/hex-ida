@@ -18,7 +18,6 @@ import { normalizeResponse } from '../render/normalize.js';
 export const MAX_CONVERSATIONS = 20;
 export const MAX_PERSISTED_TURNS = 40;
 export const MAX_PERSISTED_TEXT = 4000;
-export const MAX_PERSISTED_ERROR = 400;
 export const MAX_TITLE = 28;
 export const LEGACY_STORAGE_KEY = 'hex.ai.conversations.v1';
 export const STORAGE_KEY = 'hex.ai.conversations.v2';
@@ -78,9 +77,7 @@ function serializeTurn(turn) {
   const base = { role: turn.role, mode: turn.mode, style: turn.style, scope: turn.scope, at: turn.at || Date.now() };
   if (turn.role === 'user') return { ...base, text: String(turn.text || '').slice(0, MAX_PERSISTED_TEXT) };
   const answer = turn.response && turn.response.answerText ? turn.response.answerText : turn.text;
-  const record = { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
-  if (record.status === 'error' && turn.error) record.error = String(turn.error).slice(0, MAX_PERSISTED_ERROR);
-  return record;
+  return { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
 }
 
 function reviveTurn(raw, index) {
@@ -90,11 +87,9 @@ function reviveTurn(raw, index) {
   const text = String(raw.text || '');
   const base = { id: 'r' + index + '-' + Math.random().toString(36).slice(2, 7), mode, style, scope, at: raw.at || Date.now() };
   if (raw.role === 'user') return { ...base, role: 'user', text };
-  const status = raw.status === 'running' ? 'cancelled' : (raw.status || 'done');
-  const error = status === 'error' && raw.error ? String(raw.error).slice(0, MAX_PERSISTED_ERROR) : null;
   return {
-    ...base, role: 'assistant', status,
-    effectiveScope: scope, activity: [], error, text: '',
+    ...base, role: 'assistant', status: raw.status === 'running' ? 'cancelled' : (raw.status || 'done'),
+    effectiveScope: scope, activity: [], error: null, text: '',
     response: text ? normalizeResponse({ answer: text }, { mode, style }) : null,
   };
 }

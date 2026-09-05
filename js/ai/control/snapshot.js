@@ -139,15 +139,15 @@ function normalizeIdentity(value) {
   }
   if (typeof value !== 'object' || Array.isArray(value)) return null;
   const id = canonicalBindingId(value.id);
-  if (!id) return null;
+  const kind = value.kind == null ? 'external' : canonicalBindingId(value.kind);
+  const confidence = value.confidence == null ? 'strong' : canonicalBindingId(value.confidence);
+  const state = value.state == null ? 'ready' : canonicalBindingId(value.state);
+  const algorithm = value.algorithm == null ? null : canonicalBindingId(value.algorithm);
+  const hash = value.hash == null ? null : canonicalBindingId(value.hash);
+  const legacyId = value.legacyId == null ? null : canonicalBindingId(value.legacyId);
+  if (!id || !kind || !confidence || !state || (value.algorithm != null && !algorithm) || (value.hash != null && !hash) || (value.legacyId != null && !legacyId)) return null;
   return {
-    id,
-    kind: typeof value.kind === 'string' && value.kind ? value.kind : 'external',
-    confidence: typeof value.confidence === 'string' && value.confidence ? value.confidence : 'strong',
-    state: typeof value.state === 'string' && value.state ? value.state : 'ready',
-    algorithm: value.algorithm == null ? null : canonicalBindingId(value.algorithm),
-    hash: value.hash == null ? null : canonicalBindingId(value.hash),
-    legacyId: value.legacyId == null ? null : canonicalBindingId(value.legacyId),
+    id, kind, confidence, state, algorithm, hash, legacyId,
   };
 }
 

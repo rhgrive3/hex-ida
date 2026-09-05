@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sessionMatchesSnapshot } from "../js/ai/control/runtime-support.js";
+import { sessionMatchesSnapshot } from "../../../js/ai/control/runtime-support.js";
 
 const strongSnapshot = {
   binaryId: "content:aaaaaaaa",
