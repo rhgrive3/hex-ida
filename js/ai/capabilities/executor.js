@@ -1,6 +1,7 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
 import { validatePatchRange } from '../../patch.js';
+import { consumeProposalExecutionAuthorization } from '../proposals.js';
 
 export class CapabilityExecutor {
   constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null } = {}) {
@@ -19,7 +20,7 @@ export class CapabilityExecutor {
     assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, args, runtimePlatform);
-    if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
+    if (entry.requiresApproval && !consumeProposalExecutionAuthorization(options.authorization, id, args)) throw new AIError('approval_required', `Capability ${id} requires a valid proposal approval.`);
     if (entry.agentTool) return this.executeTool(entry, args, options);
     if (entry.actionKind) return this.executeAction(entry, args);
     return this.executeBuiltIn(entry, args, options, runtimePlatform);
@@ -109,7 +110,6 @@ export class CapabilityExecutor {
   }
 }
 
-function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
 function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
