@@ -292,7 +292,7 @@ test('tier boundary rejects a corrupt SAT model from an exact-claiming provider'
   const backend = new TieredBvBackend({ narrowBackend: new CorruptExactBackend() });
   const result = await backend.createSession().check(candidate);
   assert.equal(result.status, SOLVER_STATUS.PROVIDER_FAILURE);
-  assert.match(result.reason, /^tier-model-validation-failed:/);
+  assert.match(result.reason, /^tier-model-binding-validation-failed:/);
   assert.equal(result.lifecycle.publishable, false);
 });
 
