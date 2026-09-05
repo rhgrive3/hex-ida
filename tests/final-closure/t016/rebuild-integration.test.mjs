@@ -9,7 +9,8 @@ import { functionCandidates, discoveryArtifactForRebuild } from '../../../js/ana
 import { REBUILD_DISCOVERY_MAX_BYTES, registerCanonicalRebuildPublicationAdapter } from '../../../js/rebuild/transaction-v2.js';
 import { openBinary } from '../../../js/binary/index.js';
 import { createFormatSafeRebuildTransaction, validateFormatSafeMutation } from '../../../js/rebuild/format-safe.js';
-import { createRebuildTransaction, materializeRebuildTransaction, validateRebuildTransaction, publishRebuildTransaction } from '../../../js/rebuild/transaction-v2.js';
+import { createRebuildTransaction, evaluateF6RebuildDenominator, materializeRebuildTransaction,
+  publishRebuildTransaction, rebuildProfileSupport, validateRebuildTransaction } from '../../../js/rebuild/transaction-v2.js';
 import { createNodeAtomicPublicationAdapter } from '../../../tools/validation/discovery/node-atomic-publication.mjs';
 
 const source = new Uint8Array(fs.readFileSync(new URL('../../phase5/corpus/fixtures/vertical-sysv-amd64.elf', import.meta.url)));
@@ -137,6 +138,29 @@ test('T016 real ELF: source parse -> changed bytes -> fresh discovery -> verifie
     snapshotId: validation.discovery.outputBinding.snapshotId }, openBinary(materialized.bytes));
   assert.equal(independent.artifactId, validation.discovery.outputArtifactId);
   await filePublication(t, materialized, validation);
+});
+
+test('T016 discovery publication authority is bound to the exact issued receipt and validation', async (t) => {
+  const { tx, materialized, validation } = await prepare();
+  const publication = await filePublication(t, materialized, validation);
+  const actual = evaluateF6RebuildDenominator({ transaction: tx, validation, publication });
+  assert.equal(actual.cells['atomic-publication'].status, 'closed');
+  assert.equal(rebuildProfileSupport({ transaction: tx, validation, publication }).f6Denominator
+    .cells['atomic-publication'].status, 'closed');
+
+  for (const forged of [{ ...publication }, structuredClone(publication)]) {
+    assert.equal(evaluateF6RebuildDenominator({ transaction: tx, validation, publication: forged })
+      .cells['atomic-publication'].status, 'blocking');
+    assert.equal(rebuildProfileSupport({ transaction: tx, validation, publication: forged }).f6Denominator
+      .cells['atomic-publication'].status, 'blocking');
+  }
+  const other = await prepare();
+  assert.equal(other.tx.transactionId, tx.transactionId);
+  assert.equal(other.validation.validationId, validation.validationId);
+  assert.equal(evaluateF6RebuildDenominator({ transaction: tx, validation: other.validation, publication })
+    .cells['atomic-publication'].status, 'blocking');
+  assert.equal(evaluateF6RebuildDenominator({ transaction: other.tx, validation: other.validation, publication })
+    .cells['atomic-publication'].status, 'blocking');
 });
 
 const manifest = JSON.parse(fs.readFileSync(new URL('../../phase12/rebuild/fixtures/manifest.json', import.meta.url), 'utf8'));
@@ -494,27 +518,22 @@ test('T016 cancellation revokes a canonical delayed attempt before commit', asyn
   assert.equal(fs.existsSync(target), false);
 });
 
-test('T016 deadline revokes an asynchronous delayed attempt before commit', async (t) => {
+test('T016 deadline is rechecked after synchronous staging and before commit', async (t) => {
   const { materialized, validation } = await prepare();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t016-deadline-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'committed.bin');
   let commits = 0;
-  let lateError = null;
-  const adapter = registerCanonicalRebuildPublicationAdapter((request) => new Promise((resolve) => setTimeout(() => {
-    try {
-      request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
-        publicationIdentity: target, commit: () => {
-          commits += 1;
-          fs.writeFileSync(target, materialized.bytes);
-        } });
-    } catch (error) { lateError = error; }
-    resolve();
-  }, 20)));
-  const result = await guardedPublication(materialized, validation, { adapter, deadline: Date.now() + 5 });
-  assert.equal(result.reason, 'rebuild-v2-publication-adapter-must-be-synchronous');
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.match(String(lateError?.message), /capability-revoked/);
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
+    while (Date.now() < request.deadline) { /* deterministic deadline crossing */ }
+    request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
+      publicationIdentity: target, commit: () => {
+        commits += 1;
+        fs.writeFileSync(target, materialized.bytes);
+      } });
+  });
+  const result = await guardedPublication(materialized, validation, { adapter, deadline: Date.now() + 25 });
+  assert.equal(result.reason, 'rebuild-v2-discovery-deadline-exceeded');
   assert.equal(commits, 0);
   assert.equal(fs.existsSync(target), false);
 });
@@ -529,6 +548,38 @@ test('T016 commit wins when cancellation follows the synchronous linearization p
   } });
   assert.equal(result.status, 'published');
   assert.equal(commits, 1);
+});
+
+test('T016 commit-wins consumes a rejecting adapter thenable', async () => {
+  const { materialized, validation } = await prepare();
+  let consumed = 0;
+  const rejection = new Error('adapter-cleanup-failed-after-commit');
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
+    request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
+      publicationIdentity: 't016:thenable', commit: () => {} });
+    return { then(_resolve, reject) { consumed += 1; reject(rejection); } };
+  });
+  const result = await guardedPublication(materialized, validation, { adapter });
+  assert.equal(result.status, 'published');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(consumed, 1);
+});
+
+test('T016 commit-wins handles an adapter Promise rejection', async (t) => {
+  const { materialized, validation } = await prepare();
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.prependListener('unhandledRejection', onUnhandled);
+  t.after(() => process.removeListener('unhandledRejection', onUnhandled));
+  const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
+    request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
+      publicationIdentity: 't016:rejected-promise', commit: () => {} });
+    return Promise.reject(new Error('adapter-cleanup-failed-after-commit'));
+  });
+  assert.equal((await guardedPublication(materialized, validation, { adapter })).status, 'published');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled, []);
 });
 
 test('T016 one issued validation authorizes exactly one publication attempt', async () => {

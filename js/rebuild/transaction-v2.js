@@ -77,6 +77,7 @@ const DISCOVERY_TIMEOUT_MS = 10_000;
 const ISSUED_TRANSACTIONS = new WeakMap();
 const ISSUED_MATERIALIZATIONS = new WeakMap();
 const ISSUED_VALIDATIONS = new WeakMap();
+const ISSUED_PUBLICATIONS = new WeakMap();
 const TYPED_ARRAY = Object.getPrototypeOf(Uint8Array.prototype);
 const intrinsicGet = (prototype, key, value) => Object.getOwnPropertyDescriptor(prototype, key).get.call(value);
 const DISCOVERY_METADATA_LIMIT_FIELDS = Object.freeze({
@@ -573,6 +574,25 @@ function machoLayoutEvidenceValid(transaction, validation) {
     && matches(oracleResult.detail?.layoutEvidence);
 }
 
+function publicationEvidenceComplete(transaction, validation, publication) {
+  const structural = publication?.status === 'published'
+    && publication.atomic === true
+    && publication.committed === true
+    && publication.transactionId === transaction?.transactionId
+    && publication.outputHash === validation?.outputHash
+    && publication.outputIdentity === validation?.outputIdentity
+    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
+    && !!publication.publicationIdentity;
+  if (!structural || (transaction?.discovery == null && validation?.discovery == null)) return structural;
+  const issued = ISSUED_PUBLICATIONS.get(publication);
+  const validationAuthority = ISSUED_VALIDATIONS.get(validation);
+  return issued?.transaction === transaction
+    && issued?.validation === validation
+    && issued?.materialized === validationAuthority?.materialized
+    && issued?.discovery === validationAuthority?.discovery
+    && issued?.discovery === validation?.discovery;
+}
+
 /**
  * Evaluate F6's locked unit vocabulary against the actual v2 transaction
  * evidence.  A generic validator result or denominator identity is not an
@@ -599,14 +619,7 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && validation?.transactionId === transaction?.transactionId
     && rebuildIdentityMatches(validation, transaction)
     && validationIdentityValid(validation);
-  const publicationComplete = publication?.status === 'published'
-    && publication.atomic === true
-    && publication.committed === true
-    && publication.transactionId === transaction?.transactionId
-    && publication.outputHash === validation?.outputHash
-    && publication.outputIdentity === validation?.outputIdentity
-    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
-    && !!publication.publicationIdentity;
+  const publicationComplete = publicationEvidenceComplete(transaction, validation, publication);
   add('transaction-identity', validationPassed ? 'closed' : 'blocking', validationPassed ? null : 'f6-transaction-identity-unproven', validationPassed ? 'transaction-v2-validation-identity' : null);
 
   const preservationProof = validationPassed
@@ -1276,7 +1289,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   return receipt;
 }
 
-function publishDiscoveryRebuild(materialized, proof, issued, control, adapter) {
+function publishDiscoveryRebuild(materialized, validation, proof, issued, control, adapter) {
   const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
   let active = true;
   let authorizationUsed = false;
@@ -1316,9 +1329,9 @@ function publishDiscoveryRebuild(materialized, proof, issued, control, adapter) 
     deadline: control.deadline, authorizeCommit });
   try {
     const adapterResult = adapter(request);
-    if (!committedIdentity && adapterResult && typeof adapterResult.then === 'function') {
+    if (adapterResult && typeof adapterResult.then === 'function') {
       Promise.resolve(adapterResult).catch(() => {});
-      adapterError = new Error('rebuild-v2-publication-adapter-must-be-synchronous');
+      if (!committedIdentity) adapterError = new Error('rebuild-v2-publication-adapter-must-be-synchronous');
     }
   } catch (error) {
     adapterError = error;
@@ -1329,7 +1342,10 @@ function publishDiscoveryRebuild(materialized, proof, issued, control, adapter) 
   if (committedIdentity) {
     const discovery = { verified: true, byteLength: issued.output.length, outputHash: materialized.outputHash,
       sourceArtifactId: proof.discovery.sourceArtifactId, outputArtifactId: proof.discovery.outputArtifactId };
-    return deepFreeze({ status: 'published', ...committedIdentity, discovery, result: committedIdentity });
+    const receipt = deepFreeze({ status: 'published', ...committedIdentity, discovery, result: committedIdentity });
+    ISSUED_PUBLICATIONS.set(receipt, { transaction: issued.transaction, materialized, validation,
+      discovery: proof.discovery });
+    return receipt;
   }
   if (adapterError) return { ...discoveryError(adapterError), commitState: 'not-committed' };
   try { checkDiscoveryControl(control); }
@@ -1370,14 +1386,13 @@ export async function publishRebuildTransaction(materialized, validation, option
       return { status: 'rejected', reason: 'rebuild-v2-validation-unissued-or-stale' };
     }
     proof.publicationState = 'claimed';
-    return publishDiscoveryRebuild(materialized, proof, issued, control, options.publicationAdapter);
+    return publishDiscoveryRebuild(materialized, validation, proof, issued, control, options.publicationAdapter);
   }
   if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };
   try {
     // The promoter receives a detached copy. A publication adapter must not be
     // able to mutate the validated temporary output after its identity is fixed.
-    const promote = () => options.atomicPromote(issued.discovery ? issued.output.slice() : materialized.bytes.slice(), { materialized, validation });
-    const result = control ? await awaitDiscovery(control, promote) : await promote();
+    const result = await options.atomicPromote(materialized.bytes.slice(), { materialized, validation });
     if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
     const protocol = String(result.protocol || '');
     if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
@@ -1397,31 +1412,10 @@ export async function publishRebuildTransaction(materialized, validation, option
         }
       }
     }
-    let readback = null;
-    if (issued.discovery) {
-      const request = Object.freeze({ publicationIdentity, transactionId: materialized.transactionId,
-        outputHash: materialized.outputHash, outputIdentity, expectedLength: issued.output.length,
-        maxBytes: REBUILD_DISCOVERY_MAX_BYTES, signal: control.signal, deadline: control.deadline });
-      // readCommitted opens the committed object as a ByteSource-compatible
-      // { size, read(offset, length, options) }. Stat precedes read; even a lying
-      // size is caught by bounding the returned bytes before copying/hashing.
-      const committed = await awaitDiscovery(control, () => options.readCommitted(request));
-      discoveryLength(committed?.size, request.expectedLength);
-      if (typeof committed?.read !== 'function') throw new Error('rebuild-v2-discovery-readback-unreadable');
-      const raw = await awaitDiscovery(control, () => committed.read(0n, request.expectedLength, request));
-      discoveryLength(committed.size, request.expectedLength);
-      const bytes = discoveryByteView(raw, request.expectedLength).slice();
-      if (!sameDiscoveryBytes(bytes, issued.output)) throw new Error('rebuild-v2-discovery-committed-bytes-mismatch');
-      checkDiscoveryControl(control);
-      readback = { verified: true, byteLength: bytes.length, outputHash: materialized.outputHash,
-        sourceArtifactId: proof.discovery.sourceArtifactId, outputArtifactId: proof.discovery.outputArtifactId };
-    }
     const identity = { atomic: true, committed: true, protocol, transactionId: materialized.transactionId,
       outputHash: materialized.outputHash, outputIdentity, publicationIdentity };
-    return deepFreeze({ status: 'published', ...identity,
-      ...(readback ? { discovery: readback } : {}), result: readback ? identity : clone(result) });
+    return deepFreeze({ status: 'published', ...identity, result: clone(result) });
   } catch (error) {
-    if (issued.discovery) return { ...discoveryError(error), commitState: 'unverified' };
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
   }
 }
@@ -1455,14 +1449,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && validation.sourceHash === transaction.sourceHash
     && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
     && validation.outputIdentity === outputIdentity
-    && publication?.status === 'published'
-    && publication.atomic === true
-    && publication.committed === true
-    && publication.transactionId === transaction.transactionId
-    && publication.outputHash === validation.outputHash
-    && publication.outputIdentity === outputIdentity
-    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
-    && !!publication.publicationIdentity
+    && publicationEvidenceComplete(transaction, validation, publication)
     && transaction.requiredValidators.includes('loader-reparse')
     && transaction.requiredValidators.includes('independent-differential')
     && proof.exactHead === true
