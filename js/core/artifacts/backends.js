@@ -205,6 +205,7 @@ export class IndexedDbArtifactBackend {
   async #db() {
     if (this.dbPromise) return this.dbPromise;
     let promise;
+    let cachedPromise;
     promise = new Promise((resolve, reject) => {
       let request;
       let settled = false;
@@ -228,19 +229,20 @@ export class IndexedDbArtifactBackend {
         settled = true;
         db.onversionchange = () => {
           try { db.close(); } catch {}
-          if (this.dbPromise === promise) this.dbPromise = null;
+          if (this.dbPromise === cachedPromise) this.dbPromise = null;
         };
         resolve(db);
       };
       request.onerror = () => fail(storageError(request.error, 'open'));
       request.onblocked = () => fail(new ArtifactStorageError('artifact-storage-blocked', 'IndexedDB open is blocked'));
     });
-    this.dbPromise = promise.catch((error) => {
+    cachedPromise = promise.catch((error) => {
       this.metrics.openFailures++;
-      if (this.dbPromise) this.dbPromise = null;
+      if (this.dbPromise === cachedPromise) this.dbPromise = null;
       throw error;
     });
-    return this.dbPromise;
+    this.dbPromise = cachedPromise;
+    return cachedPromise;
   }
 
   async getRaw(artifactId) {
