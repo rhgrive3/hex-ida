@@ -524,16 +524,21 @@ test('T016 deadline is rechecked after synchronous staging and before commit', a
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'committed.bin');
   let commits = 0;
+  let staged = false;
+  let observedTime = Date.now();
+  t.mock.method(Date, 'now', () => observedTime);
   const adapter = registerCanonicalRebuildPublicationAdapter((request) => {
-    while (Date.now() < request.deadline) { /* deterministic deadline crossing */ }
+    staged = true;
+    observedTime = request.deadline;
     request.authorizeCommit({ stagedBytes: materialized.bytes, protocol: 'temp-then-atomic-rename',
       publicationIdentity: target, commit: () => {
         commits += 1;
         fs.writeFileSync(target, materialized.bytes);
       } });
   });
-  const result = await guardedPublication(materialized, validation, { adapter, deadline: Date.now() + 25 });
+  const result = await guardedPublication(materialized, validation, { adapter, deadline: observedTime + 1000 });
   assert.equal(result.reason, 'rebuild-v2-discovery-deadline-exceeded');
+  assert.equal(staged, true, 'the deadline must cross inside staging, not before adapter invocation');
   assert.equal(commits, 0);
   assert.equal(fs.existsSync(target), false);
 });
