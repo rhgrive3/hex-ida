@@ -122,6 +122,25 @@ export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
     });
   }
 
+  const privilegedId = String(privileged.register.id).toLowerCase();
+  if (actualKind === 'debug-register' && (privilegedId === 'dr4' || privilegedId === 'dr5')) {
+    return ctx.partial('x86-debug-register-alias-state-unmodelled', ['registers','faults','other'], {
+      metadata:{
+        family:'system',
+        operation:'mov',
+        systemRegisterMove:true,
+        registerClass:actualKind,
+        privilegedRegister:privilegedId,
+        encodingValidated:true,
+        controlRegister:'cr4',
+        controlField:'DE',
+        aliasWhenClear:privilegedId === 'dr4' ? 'dr6' : 'dr7',
+        faultWhenSet:'#UD',
+        debugGeneralDetectPrecedesAccess:true,
+      },
+    });
+  }
+
   const sourceValue = ctx.readRegister(source);
   if (!sourceValue) {
     return ctx.partial('x86-mov-control-debug-source-state-unmodelled', ['registers'], {
@@ -129,7 +148,6 @@ export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
     });
   }
 
-  const privilegedId = String(privileged.register.id).toLowerCase();
   const sourceId = String(source.register.physicalId).toLowerCase();
   const destinationId = String(destination.register.physicalId).toLowerCase();
   const writesPrivileged = shape.privilegedIndex === 0;
