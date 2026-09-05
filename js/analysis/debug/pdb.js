@@ -117,6 +117,9 @@ export function parseMsf(bytes) {
   if (numBlocks * blockSize > data.length + blockSize) {
     return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
   }
+  if (numDirectoryBytes < 4) {
+    return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
+  }
 
   const readBlock = (index) => {
     const start = index * blockSize;
@@ -196,6 +199,7 @@ export function parsePdbInfoStream(bytes) {
     guid: guidString(bytes, 12),
   };
 }
+
 /**
  * DBI header (NewDBIHdr).
  *
