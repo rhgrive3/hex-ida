@@ -75,9 +75,7 @@ export function conditionOf(instruction) {
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) {
-    try { return BigInt(explicit); } catch { return null; }
-  }
+  if (explicit != null) return typeof explicit === 'bigint' ? explicit : null;
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);
