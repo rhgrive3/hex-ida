@@ -10,7 +10,7 @@ function assertRejectsNonCallable(factory, field) {
   for (const value of NON_CALLABLE_VALUES) {
     assert.throws(
       () => factory({ [field]:value }),
-      new RegExp(`^TypeError: ${field} must be a function$`),
+      new RegExp(`^${field} must be a function$`),
       `${field} must reject ${Array.isArray(value) ? 'array' : typeof value}`,
     );
   }
@@ -23,7 +23,7 @@ function assertRejectsNonCallable(factory, field) {
   };
   assert.throws(
     () => factory({ [field]:hostile }),
-    new RegExp(`^TypeError: ${field} must be a function$`),
+    new RegExp(`^${field} must be a function$`),
   );
   assert.equal(coercions, 0, `${field} validation must not coerce provider objects`);
 }
