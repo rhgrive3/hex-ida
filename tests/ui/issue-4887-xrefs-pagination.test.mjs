@@ -30,10 +30,10 @@ test('showXrefs follows canonical page.next lazily with the original snapshot an
   assert.match(showXrefs, /let nextOffset = 0;/);
   assert.match(showXrefs, /const requestedOffset = nextOffset;/);
   assert.match(showXrefs, /api\.xrefs\([\s\S]*snapshot,[\s\S]*BigInt\(target\),[\s\S]*\{ offset:requestedOffset, limit:pageSize \}/);
-  assert.match(showXrefs, /const rawNext = page\?\.page\?\.next;/);
+  assert.match(showXrefs, /const rawNext = pageInfo\.next;/);
   assert.match(showXrefs, /const expectedNext = requestedOffset \+ rows\.length;/);
   assert.match(showXrefs, /candidateNext !== expectedNext/);
-  assert.match(showXrefs, /t\('search\.showMore', \{ n:pageSize \}\)/);
+  assert.match(showXrefs, /t\('search\.showMore', \{ n:remaining \}\)/);
 });
 
 test('399/400 stay single-page while 401 and 800+ remain reachable without gaps', () => {
@@ -44,19 +44,21 @@ test('399/400 stay single-page while 401 and 800+ remain reachable without gaps'
   assert.deepEqual(requestedOffsets(1201), [0, 400, 800, 1200]);
 });
 
-test('continuations fail closed on stalled, skipped, or malformed offsets', () => {
+test('continuations fail closed on stalled, skipped, malformed, or unproven pagination', () => {
   assert.equal(canonicalNext(0, 400, 400), 400);
   assert.equal(canonicalNext(400, 400, 800), 800);
   assert.equal(canonicalNext(400, 400, 400), null);
   assert.equal(canonicalNext(400, 400, 900), null);
   assert.equal(canonicalNext(400, 400, 'not-an-offset'), null);
+  assert.match(showXrefs, /!rowsValid \|\| !pageInfo \|\| !Object\.hasOwn\(pageInfo, 'next'\)/);
   assert.match(showXrefs, /function markPaginationPartial|const markPaginationPartial/);
   assert.match(showXrefs, /completeness = 'partial';/);
 });
 
-test('producer non-completeness is sticky and complete totals are only disclosed as exact', () => {
-  assert.match(showXrefs, /completeness === 'complete' && pageCompleteness !== 'complete'/);
-  assert.match(showXrefs, /pageCompleteness === 'complete' && rawTotal != null/);
+test('producer non-completeness stays sticky and only trustworthy complete totals are disclosed', () => {
+  assert.match(showXrefs, /completeness === 'complete' \|\| completeness === 'unknown' \|\| pageCompleteness === 'truncated'/);
+  assert.match(showXrefs, /pageCompleteness !== 'complete'/);
+  assert.match(showXrefs, /let totalTrusted = true;/);
   assert.match(showXrefs, /exactTotal = null;/);
   assert.match(showXrefs, /\$\{loaded\.toLocaleString\(\)\}\/\$\{exactTotal\.toLocaleString\(\)\} 件表示/);
 });
