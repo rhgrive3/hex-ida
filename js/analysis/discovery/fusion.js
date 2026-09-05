@@ -69,8 +69,9 @@ export class DiscoveryProducerRegistry {
     const producerIds = [];
     for (const producer of this.for(architectureId)) {
       if (options.signal?.aborted) break;
-      const produced = producer.produce(input, options) ?? [];
-      for (const item of produced) evidence.push({ ...item, producerId: producer.id, architectureId: producer.architectureId ?? null });
+      const produced = producer.produce(input, options);
+      if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
+      for (const item of produced ?? []) evidence.push({ ...item, producerId: producer.id, architectureId: producer.architectureId ?? null });
       producerIds.push(producer.id);
     }
     return { evidence, producerIds };

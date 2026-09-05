@@ -14,13 +14,14 @@ export function probeWasm(bytes) {
   return { supported: false, confidence: 0, reason: 'invalid-magic' };
 }
 
+function validateLebWidth(byte,count,width,signed,code){const maxBytes=Math.ceil(width/7);if(count<maxBytes)return;if(count>maxBytes||(byte&0x80)!==0)fail(code);const usedBits=width-(maxBytes-1)*7,payload=byte&0x7f,valueMask=(1<<usedBits)-1,unusedMask=0x7f&~valueMask;if(!signed){if((payload&unusedMask)!==0)fail(code);return;}const signBit=1<<(usedBits-1),expectedUnused=(payload&signBit)!==0?unusedMask:0;if((payload&unusedMask)!==expectedUnused)fail(code);}
 export function decodeUleb128(bytes, offset, maxBytes = 5) {
   let result=0,shift=0,pos=offset,count=0;
-  while(pos<bytes.length&&count<maxBytes){const byte=bytes[pos++];count++;result|=(byte&0x7f)<<shift;if((byte&0x80)===0)return{value:result>>>0,nextOffset:pos};shift+=7;}
+  while(pos<bytes.length&&count<maxBytes){const byte=bytes[pos++];count++;validateLebWidth(byte,count,32,false,'wasm-malformed-uleb128');result|=(byte&0x7f)<<shift;if((byte&0x80)===0)return{value:result>>>0,nextOffset:pos};shift+=7;}
   fail('wasm-malformed-uleb128');
 }
-export function decodeSleb128(bytes,offset,maxBytes=5){let result=0,shift=0,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<maxBytes){byte=bytes[pos++];count++;result|=(byte&0x7f)<<shift;shift+=7;if((byte&0x80)===0){if(shift<32&&(byte&0x40)!==0)result|=(~0<<shift);return{value:result|0,nextOffset:pos};}}fail('wasm-malformed-sleb128');}
-export function decodeSleb128_64(bytes,offset){let result=0n,shift=0n,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<10){byte=bytes[pos++];count++;result|=BigInt(byte&0x7f)<<shift;shift+=7n;if((byte&0x80)===0){if(shift<64n&&(byte&0x40)!==0)result|=(~0n<<shift);return{value:BigInt.asIntN(64,result),nextOffset:pos};}}fail('wasm-malformed-sleb128-64');}
+export function decodeSleb128(bytes,offset,maxBytes=5){let result=0,shift=0,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<maxBytes){byte=bytes[pos++];count++;validateLebWidth(byte,count,32,true,'wasm-malformed-sleb128');result|=(byte&0x7f)<<shift;shift+=7;if((byte&0x80)===0){if(shift<32&&(byte&0x40)!==0)result|=(~0<<shift);return{value:result|0,nextOffset:pos};}}fail('wasm-malformed-sleb128');}
+export function decodeSleb128_64(bytes,offset){let result=0n,shift=0n,pos=offset,count=0,byte=0;while(pos<bytes.length&&count<10){byte=bytes[pos++];count++;validateLebWidth(byte,count,64,true,'wasm-malformed-sleb128-64');result|=BigInt(byte&0x7f)<<shift;shift+=7n;if((byte&0x80)===0){if(shift<64n&&(byte&0x40)!==0)result|=(~0n<<shift);return{value:BigInt.asIntN(64,result),nextOffset:pos};}}fail('wasm-malformed-sleb128-64');}
 export function decodeName(bytes,offset){const{value:len,nextOffset}=decodeUleb128(bytes,offset);if(nextOffset+len>bytes.length)fail('wasm-truncated-name');const nameBytes=bytes.subarray(nextOffset,nextOffset+len);const name=new TextDecoder('utf-8',{fatal:true}).decode(nameBytes);return{name,nextOffset:nextOffset+len};}
 
 const WASM_VALUE_TYPES=new Set([0x7f,0x7e,0x7d,0x7c,0x7b,0x70,0x6f]);

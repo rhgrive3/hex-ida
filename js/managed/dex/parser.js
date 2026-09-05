@@ -7,6 +7,12 @@ function checkedRange(limit, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
 }
 
+function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
+  if (offset === 0) return;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset % alignment !== 0) fail(code);
+  checkedRange(limit, offset, minSize, code);
+}
+
 function requireIndex(table, idx, code) {
   if (!Number.isSafeInteger(idx) || idx < 0 || idx >= table.length) fail(code);
   return table[idx];
@@ -200,7 +206,10 @@ export function parseDex(bytes, options = {}) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
     const classIdx=view.getUint32(off,true),accessFlags=view.getUint32(off+4,true),superclassIdx=view.getUint32(off+8,true);
-    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true);
+    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true),staticValuesOff=view.getUint32(off+28,true);
+    requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
+    requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
+    requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
     const directMethods=[],virtualMethods=[];
     if(classDataOff>0) {
       if(classDataOff>=fileSize) fail('dex-invalid-class-data-offset');
@@ -209,7 +218,16 @@ export function parseDex(bytes, options = {}) {
       const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(u8,sOff);
       const {value:directMethodsSize,nextOffset:dOff}=readUleb128(u8,iOff);
       const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(u8,dOff); cPos=vOff;
-      for(let f=0;f<staticFieldsSize+instanceFieldsSize;f++) { const {nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2; }
+      let lastFieldIdx=0;
+      for(let f=0;f<staticFieldsSize;f++) {
+        const {value:delta,nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2;
+        lastFieldIdx+=delta; requireIndex(fields,lastFieldIdx,'dex-invalid-class-data-field-index');
+      }
+      lastFieldIdx=0;
+      for(let f=0;f<instanceFieldsSize;f++) {
+        const {value:delta,nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2;
+        lastFieldIdx+=delta; requireIndex(fields,lastFieldIdx,'dex-invalid-class-data-field-index');
+      }
       let lastMethodIdx=0;
       for(let m=0;m<directMethodsSize;m++) {
         const {value:delta,nextOffset:m1}=readUleb128(u8,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(u8,m1); const {value:codeOff,nextOffset:m3}=readUleb128(u8,m2); cPos=m3;

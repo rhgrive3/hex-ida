@@ -3,6 +3,8 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  parseExceptionFunctions as parseExceptionFunctionsCore,
+  parseLoadConfig as parseLoadConfigCore,
 } from './pe-loader-core.js';
 
 export {
@@ -11,7 +13,6 @@ export {
   mappedFileRangeForRva,
   mappedFileSpanForRva,
   parseImports,
-  parseExceptionFunctions,
   parseBaseRelocations,
   parseCoffSymbols,
   directory,
@@ -19,7 +20,6 @@ export {
   resolveCoffSectionName,
   parseDelayImports,
   parseTlsDirectory,
-  parseLoadConfig,
 } from './pe-loader-core.js';
 
 // The delegated core keeps these existing trust-boundary implementations. Keep
@@ -32,6 +32,40 @@ export {
 
 function ensureBudget(image, budget) {
   return budget || createPEMetadataBudget(image);
+}
+
+export function parseLoadConfig(r, dir, image, sharedBudget = null) {
+  if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
+  const budget = ensureBudget(image, sharedBudget);
+  const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (head) {
+    const internalSize = r.u32(head.start);
+    if (internalSize > dir.size) {
+      budget.partial(
+        'load-config:size-mismatch',
+        `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
+      );
+    }
+  }
+  return parseLoadConfigCore(r, dir, image, budget);
+}
+
+export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
+  if (!dir || !dir.rva || !dir.size) {
+    return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+  }
+  const recordSize = machine === 0x8664
+    ? 12
+    : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+  if (recordSize && dir.size % recordSize !== 0 && mappedFileSpanForRva(image, dir.rva, dir.size)) {
+    const budget = ensureBudget(image, sharedBudget);
+    budget.partial(
+      'exception:directory-record-remainder',
+      `PE exception directory size ${dir.size} is not a multiple of ${recordSize}`,
+    );
+    return parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  }
+  return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {
