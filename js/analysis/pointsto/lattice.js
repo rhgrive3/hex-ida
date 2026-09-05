@@ -202,7 +202,9 @@ export function createPointsToTarget(input = {}) {
     addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
-    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
+    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
+      ? input.rootEntityId.trim()
+      : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
