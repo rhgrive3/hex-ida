@@ -103,3 +103,14 @@ test('#6282 misaligned initial directory or block RVA fails closed', () => {
   assert.equal(image.relocations.length, 0, 'no relocations published from misaligned directory');
 });
 
+test('#6282 trailing partial block header fails closed', () => {
+  const { bytes, r, image } = fixture();
+  // One valid 12-byte block followed by 4 declared bytes that cannot form a block header.
+  writeBlock(bytes, 0x2000, 0x1000, 12, [0x0000, 0x0000]);
+  bytes.set([0xaa, 0xbb, 0xcc, 0xdd], 0x200C);
+  parseBaseRelocations(r, { rva: 0x2000, size: 16 }, image, 0x8664);
+  assert.equal(image.metadata.peMetadata.complete, false, 'declared trailing bytes must not look complete');
+  assert.ok(image.metadata.peMetadata.reasons.includes('relocations:malformed-block'), image.metadata.peMetadata.reasons.join(','));
+  assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
+  assert.equal(image.relocations.length, 0, 'ABSOLUTE-only valid prefix publishes no relocations');
+});

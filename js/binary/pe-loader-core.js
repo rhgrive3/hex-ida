@@ -323,7 +323,6 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
-
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
   if((dir.rva&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at unaligned RVA 0x${dir.rva.toString(16)}`);return;}
@@ -342,6 +341,7 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
     }
     off+=blockSize;
   }
+  if(off<end&&off+8>end)budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}: ${end-off} trailing byte(s)`);
 }
 
 export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
