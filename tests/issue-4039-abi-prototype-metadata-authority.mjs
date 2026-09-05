@@ -5,7 +5,7 @@ import {
   MICROSOFT_X64_ABI,
   RISCV_LP64D_ABI,
   SYSV_AMD64_ABI,
-} from '../../../js/targets/abi/index.js';
+} from '../js/targets/abi/index.js';
 
 function exactRegister(result, reg) {
   return Array.isArray(result?.arguments) && result.arguments.some((argument) => {
