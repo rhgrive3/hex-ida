@@ -19,15 +19,27 @@ export function parseJvm(bytes,options={}){
     case 8:ensure(pos,2,'jvm-truncated-cp-string');constantPool.push({tag:8,stringIndex:view.getUint16(pos,false)});pos+=2;break;
     case 9:case 10:case 11:ensure(pos,4,'jvm-truncated-cp-memberref');constantPool.push({tag,classIndex:view.getUint16(pos,false),nameAndTypeIndex:view.getUint16(pos+2,false)});pos+=4;break;
     case 12:ensure(pos,4,'jvm-truncated-cp-nameandtype');constantPool.push({tag:12,nameIndex:view.getUint16(pos,false),descriptorIndex:view.getUint16(pos+2,false)});pos+=4;break;
-    case 15:ensure(pos,3,'jvm-truncated-cp-methodhandle');pos+=3;constantPool.push({tag:15});break;
-    case 16:ensure(pos,2,'jvm-truncated-cp-methodtype');pos+=2;constantPool.push({tag:16});break;
-    case 17:case 18:ensure(pos,4,'jvm-truncated-cp-dynamic');pos+=4;constantPool.push({tag});break;
-    case 19:case 20:ensure(pos,2,'jvm-truncated-cp-module');pos+=2;constantPool.push({tag});break;
+    case 15:ensure(pos,3,'jvm-truncated-cp-methodhandle');constantPool.push({tag:15,referenceKind:u8[pos],referenceIndex:view.getUint16(pos+1,false)});pos+=3;break;
+    case 16:ensure(pos,2,'jvm-truncated-cp-methodtype');constantPool.push({tag:16,descriptorIndex:view.getUint16(pos,false)});pos+=2;break;
+    case 17:case 18:ensure(pos,4,'jvm-truncated-cp-dynamic');constantPool.push({tag,bootstrapMethodAttrIndex:view.getUint16(pos,false),nameAndTypeIndex:view.getUint16(pos+2,false)});pos+=4;break;
+    case 19:case 20:ensure(pos,2,'jvm-truncated-cp-module');constantPool.push({tag,nameIndex:view.getUint16(pos,false)});pos+=2;break;
     default:fail(`jvm-invalid-cp-tag-${tag}`);
   }}
   function requireCp(idx,tag,code){if(!Number.isInteger(idx)||idx<=0||idx>=constantPool.length)fail(code);const entry=constantPool[idx];if(!entry||entry.tag!==tag)fail(code);return entry;}
+  function requireCpOneOf(idx,tags,code){if(!Number.isInteger(idx)||idx<=0||idx>=constantPool.length)fail(code);const entry=constantPool[idx];if(!entry||!tags.includes(entry.tag))fail(code);return entry;}
   function requireUtf8(idx,code='jvm-invalid-utf8-index'){return requireCp(idx,1,code).value;}
   function requireClassName(idx,code='jvm-invalid-class-index'){const entry=requireCp(idx,7,code);return requireUtf8(entry.nameIndex,`${code}-name`);}
+  function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){
+    case 7:requireCp(entry.nameIndex,1,'jvm-invalid-cp-class-name-index');break;
+    case 8:requireCp(entry.stringIndex,1,'jvm-invalid-cp-string-index');break;
+    case 9:case 10:case 11:requireCp(entry.classIndex,7,'jvm-invalid-cp-memberref-class-index');requireCp(entry.nameAndTypeIndex,12,'jvm-invalid-cp-memberref-name-and-type-index');break;
+    case 12:requireCp(entry.nameIndex,1,'jvm-invalid-cp-nameandtype-name-index');requireCp(entry.descriptorIndex,1,'jvm-invalid-cp-nameandtype-descriptor-index');break;
+    case 15:{const kind=entry.referenceKind;if(!Number.isInteger(kind)||kind<1||kind>9)fail('jvm-invalid-cp-methodhandle-reference-kind');let tags;if(kind>=1&&kind<=4)tags=[9];else if(kind===9)tags=[11];else if((kind===6||kind===7)&&majorVersion>=52)tags=[10,11];else tags=[10];requireCpOneOf(entry.referenceIndex,tags,'jvm-invalid-cp-methodhandle-reference-index');break;}
+    case 16:requireCp(entry.descriptorIndex,1,'jvm-invalid-cp-methodtype-descriptor-index');break;
+    case 17:case 18:requireCp(entry.nameAndTypeIndex,12,'jvm-invalid-cp-dynamic-name-and-type-index');break;
+    case 19:case 20:requireCp(entry.nameIndex,1,'jvm-invalid-cp-module-name-index');break;
+  }}}
+  validateConstantPool();
   ensure(pos,8,'jvm-truncated-class-info');const accessFlags=view.getUint16(pos,false),thisClassIdx=view.getUint16(pos+2,false),superClassIdx=view.getUint16(pos+4,false),interfacesCount=view.getUint16(pos+6,false);pos+=8;
   const interfaces=[];ensure(pos,interfacesCount*2,'jvm-truncated-interfaces');for(let i=0;i<interfacesCount;i++){interfaces.push(requireClassName(view.getUint16(pos,false),'jvm-invalid-interface-index'));pos+=2;}
   ensure(pos,2,'jvm-truncated-fields-count');const fieldsCount=view.getUint16(pos,false);pos+=2;const fields=[];
