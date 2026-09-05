@@ -87,8 +87,13 @@ export function parseExports(r, dir, image, sharedBudget = null) {
   for(let i=0;i<numberOfNames;i++){
     if(!budget.take({inputBytes:6,records:1,objects:1,operations:2,estimatedHeapBytes:96},'export-name-record'))break;
     const nrva=r.u32(nr.start+i*4),ordIndex=r.u16(or.start+i*2);
+    // The ordinal table maps names into the Export Address Table; an index at
+    // or past NumberOfFunctions has no EAT entry to resolve to (#6115).
+    // Silently keeping it as a Map key lets the function loop invisibly drop
+    // the name, laundering a malformed table into a complete parse.
+    if(ordIndex>=numberOfFunctions){budget.partial('exports:name-ordinal-range',`Ignored PE export name with ordinal-table index ${ordIndex} outside the export address table (${numberOfFunctions} entries)`);continue;}
     const name=mappedCStringAtRva(r,image,nrva,budget,'PE export name');
-    if(!name||ordIndex>=numberOfFunctions)continue;
+    if(!name)continue;
     const aliases=names.get(ordIndex);
     if(aliases)aliases.add(name);else names.set(ordIndex,new Set([name]));
   }

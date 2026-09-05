@@ -88,6 +88,12 @@ const DW_FORM = Object.freeze({
   addrx1: 0x29, addrx2: 0x2a, addrx3: 0x2b, addrx4: 0x2c,
 });
 
+// DWARF5 address forms carry a zero-based index into the unit's `.debug_addr`
+// address array (#6184), not an address themselves.
+const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
+/** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
+const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+
 const DW_UT = Object.freeze({
   compile: 0x01,
   type: 0x02,
@@ -303,6 +309,33 @@ function strxString(index, unit, sections) {
 }
 
 /**
+ * Resolves a DW_FORM_addrx* index to an absolute address through `.debug_addr` (#6184).
+ *
+ * DWARF5 addrx forms carry a zero-based index into the address array anchored at
+ * the unit's `DW_AT_addr_base`. The `.debug_addr` table itself is a section
+ * header (unit_length/version/address_size/segment_selector_size) followed by
+ * address entries; the header size depends on the DWARF format, so the entry
+ * stride must match `unit.offsetSize`, not the address size, or the base offset
+ * desyncs. Out-of-range or truncated tables return null so callers fail closed
+ * instead of exposing the raw index as an address.
+ */
+function addrxAddress(index, unit, sections) {
+  const table = sections.debug_addr;
+  if (!table) return null;
+  const base = unit.addrBase;
+  if (!Number.isSafeInteger(base) || base < 0) return null;
+  const entrySize = unit.addressSize;
+  const indexNumber = Number(index);
+  if (!Number.isSafeInteger(indexNumber) || indexNumber < 0) return null;
+  const at = base + indexNumber * entrySize;
+  if (at + entrySize > table.length) return null;
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  let value = 0n;
+  for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  return value;
+}
+
+/**
  * Walks `.debug_info` and returns the DIE forest.
  *
  * DIEs are kept flat, keyed by their section offset, with a `parent` link. That
@@ -385,7 +418,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       }
     }
 
-    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
+    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
     const abbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset);
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
@@ -451,11 +484,36 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       if (attributes.has(DW_AT.str_offsets_base)) {
         unit.strOffsetsBase = Number(attributes.get(DW_AT.str_offsets_base).value);
       }
+      if (attributes.has(DW_AT.addr_base)) {
+        const raw = attributes.get(DW_AT.addr_base).value;
+        const base = Number(raw);
+        // addr_base is a section offset in bytes: it must land inside
+        // `.debug_addr` past its header, or no addrx entry can resolve (#6184).
+        unit.addrBase = Number.isSafeInteger(base) && base >= 0 && sections.debug_addr && base <= sections.debug_addr.length
+          ? base
+          : null;
+      }
       for (const [attribute, entry] of attributes) {
         if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
           const resolved = strxString(entry.value, unit, sections);
           attributes.set(attribute, { form: entry.form, value: resolved });
           if (resolved == null) dieComplete = false;
+        } else if (ADDRX_FORMS.includes(entry.form)) {
+          // addrx forms are indices into `.debug_addr`, not addresses (#6184).
+          // An unresolvable index stays unknown (null) and marks the DIE
+          // partial: publishing the raw index as an address would point
+          // consumers at a function start that does not exist.
+          const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections) : null;
+          attributes.set(attribute, { form: entry.form, value: resolved, addressForm: resolved != null });
+          if (resolved == null) {
+            // An address the parser cannot establish must make the whole unit's
+            // evidence partial, not only the DIE: a raw index must never be
+            // published as a PC (#6184).
+            dieComplete = false;
+            unitComplete = false;
+            complete = false;
+            diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
+          }
         }
       }
 
@@ -761,11 +819,13 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       const highPc = attributeValue(die, DW_AT.high_pc);
       const isFunction = die.tag === DW_TAG.subprogram;
       // DW_AT_high_pc is an offset from low_pc when its form is a constant, and
-      // an absolute address when its form is an address class.
+      // an absolute address when its form is an address class (DW_FORM_addr or
+      // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
+      const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
       const sizeBytes = highPc == null
         ? null
-        : highForm === DW_FORM.addr
+        : highIsAddress
           ? Number(BigInt(highPc) - BigInt(lowPc ?? 0n))
           : Number(highPc);
       return createDebugRecord({
