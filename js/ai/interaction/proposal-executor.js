@@ -13,7 +13,8 @@ export class ProposalExecutor {
   async approveAndApply(id) {
     if (!this.store) throw new AIError('tool_failed', 'No proposal store is available.');
     const { proposal, approvalToken } = this.store.approve(id);
-    const currentState = await this.currentState(proposal);
+    const executionProposal = typeof this.store.executionView === 'function' ? this.store.executionView(id) : proposal;
+    const currentState = await this.currentState(executionProposal);
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,

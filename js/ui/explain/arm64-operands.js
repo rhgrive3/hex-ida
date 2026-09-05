@@ -50,7 +50,9 @@ function parseReg(text) {
   const t = text.toLowerCase();
   if (m[1]) {
     const n = parseInt(m[2], 10);
-    if (n > 31) return null;
+    // AArch64 general-purpose names are X0..X30 / W0..W30: encoding 31 is
+    // SP or ZR, which have their own spellings handled below (#5340).
+    if (n > 30) return null;
     return { k: "reg", text: t, cls: "gp", bits: m[1].toLowerCase() === "x" ? 64 : 32, num: n };
   }
   if (m[3]) return { k: "reg", text: t, cls: "zr", bits: t[0] === "x" ? 64 : 32, num: 31 };
@@ -65,26 +67,38 @@ function parseReg(text) {
   if (m[8]) {
     const n = parseInt(m[9], 10);
     if (n > 31) return null;
-    return { k: "reg", text: t, cls: "vec", bits: 128, num: n, arr: m[10] || null };
+    // AdvSIMD arrangements are a closed set; an arbitrary lane count such as
+    // .0b / .99b / .2q names no architected vector shape (#5449).
+    const arr = m[10] || null;
+    if (arr && !/^(8b|16b|4h|8h|2s|4s|1d|2d)$/i.test(arr)) return null;
+    return { k: "reg", text: t, cls: "vec", bits: 128, num: n, arr };
   }
   return null;
 }
 
 /** "[x1, #0x10]!" などを 1 つのメモリオペランドにする。 */
 function parseMem(text) {
+  // A missing closing bracket must not be silently completed (#5348).
   const bang = text.endsWith("!");
-  const inner = text.replace(/^\[/, "").replace(/\]!?$/, "");
+  const core = bang ? text.slice(0, -1) : text;
+  if (!core.startsWith("[") || !core.endsWith("]")) return null;
+  const inner = core.slice(1, -1);
   const parts = splitTop(inner);
   if (!parts.length) return null;
   const base = parseReg(parts[0]);
   if (!base) return null;
+  // An A64 address base is a 64-bit general-purpose register or SP: SIMD/FP
+  // registers can be transferred data but never form an address (#5342).
+  if (!((base.cls === "gp" && base.bits === 64) || base.cls === "sp")) return null;
   const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
   for (let i = 1; i < parts.length; i++) {
     const p = parts[i];
     const imm = parseImm(p);
-    if (imm) { mem.disp = imm; mem.addressDisp = imm; continue; }
+    // A second immediate / index register names no valid addressing form:
+    // keep the operand rejected instead of rewriting it to another address (#5351).
+    if (imm) { if (mem.disp) return null; mem.disp = imm; mem.addressDisp = imm; continue; }
     const reg = parseReg(p);
-    if (reg) { mem.index = reg; continue; }
+    if (reg) { if (mem.index) return null; mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
     if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
   }

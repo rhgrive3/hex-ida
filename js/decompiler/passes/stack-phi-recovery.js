@@ -1,4 +1,4 @@
-import { expr, structuralKey } from '../ast/nodes.js';
+import { expr, mapChildren, structuralKey } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
@@ -145,10 +145,29 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
     }
   }
 
-  const left = expressionOfValue(leftValue, maps);
-  const right = expressionOfValue(rightValue, maps);
+  let left = expressionOfValue(leftValue, maps);
+  let right = expressionOfValue(rightValue, maps);
   if (!left || !right) return null;
-  const bits = Math.max(Number(cmp.bits || 0), Number(left.bits || 0), Number(right.bits || 0), 1);
+  const operandBits = [leftValue?.bits, rightValue?.bits]
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const exactOperandBits = operandBits.length === 2 && operandBits[0] === operandBits[1]
+    ? operandBits[0]
+    : 0;
+  const producerBits = Number(cmp.bits || producer?.bits || producer?.dst?.bits || exactOperandBits || 0);
+  const bits = producerBits > 0
+    ? producerBits
+    : Math.max(Number(left.bits || 0), Number(right.bits || 0), 1);
+  const fitOperand = (node) => Number(node.bits || bits) > bits
+    ? expr.unary('trunc', node, bits, node.signed ?? null, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `exact ${bits}-bit NZCV producer width` }],
+    }, { fromBits: Number(node.bits || bits) })
+    : node;
+  left = fitOperand(left);
+  right = fitOperand(right);
   return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
     address: cmp.address,
     row: cmp.row,
@@ -181,22 +200,83 @@ function materializedFlagCondition(term, maps, ir) {
   return kind === 'tbz' || kind === 'cbz' ? invertCondition(condition) : condition;
 }
 
-function controlCondition(term, maps, engine, ir) {
-  return simplify(materializedFlagCondition(term, maps, ir) || maps.conditions.get(term.id), engine);
+function directFlagCondition(term, maps, ir) {
+  const cond = term?.cond || term?.extra?.cond;
+  if (!cond) return null;
+  return repairedFlagComparison(valueOf(term.args?.at?.(-1)), cond, maps, ir);
 }
 
-function exactStoreExpression(inst, key, maps, engine) {
-  if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0) {
+  const rewrite = (node, localDepth = depth) => {
+    if (!node || localDepth > 64) return node;
+    if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
+      const slot = exactStackLoadSlot(ir, null, node);
+      if (!slot) return node;
+      return resolveStackBefore(ir, slot.load.block, slot.load.row, slot.key, slot.size,
+        maps, opts, engine, active, localDepth + 1) || node;
+    }
+    return mapChildren(node, (child) => rewrite(child, localDepth + 1));
+  };
+  return rewrite(condition);
+}
+
+function controlCondition(term, maps, engine, ir, opts, active, depth) {
+  const condition = materializedFlagCondition(term, maps, ir)
+    || directFlagCondition(term, maps, ir)
+    || maps.conditions.get(term.id);
+  if (!condition) return null;
+  return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth), engine);
+}
+
+function positiveAccessSize(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function exactStackLoadSource(ir, value, expression) {
+  if (expression?.kind !== 'load' || expression.location?.kind !== 'stack' || !expression.location?.key) return null;
+  const direct = value?.def;
+  if (direct?.op === 'load' && direct.loc?.kind === 'stack' && direct.loc.key === expression.location.key) return direct;
+
+  // Compatibility may wrap the semantic load with presentation/state provenance.
+  // Accept an indirect source only when that provenance identifies exactly one
+  // real LOAD for this exact stack slot.
+  const ids = new Set((expression.source?.ir || []).map(String));
+  const candidates = (ir?.instructions || []).filter((inst) =>
+    ids.has(String(inst.id)) && inst?.op === 'load' && inst.loc?.kind === 'stack'
+      && inst.loc.key === expression.location.key);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function exactStackLoadSlot(ir, value, expression) {
+  const load = exactStackLoadSource(ir, value, expression);
+  const size = positiveAccessSize(load?.loc?.size);
+  return load && size != null ? { load, key:load.loc.key, size } : null;
+}
+
+function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth) {
+  if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key
+      || positiveAccessSize(inst.loc?.size) !== size) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
+
+  // Clang -O0 often copies an argument spill into the branch-local return slot.
+  // Resolve that nested stack load at its own program point through the same
+  // CFG/barrier proof before publishing the outer join. If the source cannot be
+  // proven exactly, fail closed instead of emitting a select of unresolved loads.
+  if (expression.kind === 'load' && expression.location?.kind === 'stack') {
+    const sourceSlot = exactStackLoadSlot(ir, value, expression);
+    if (!sourceSlot) return null;
+    expression = resolveStackBefore(ir, sourceSlot.load.block, sourceSlot.load.row,
+      sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1);
+    if (!expression) return null;
+  }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
   // recovered source value instead of leaking the 64-bit entry-register width
   // through an -O0 spill. This is essential for signed int32 comparisons such
   // as clamp(x,0) when x has bit 31 set.
-  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
-  const storeBits = bytes > 0 ? bytes * 8 : 0;
+  const storeBits = size * 8;
   if (storeBits > 0 && Number(expression.bits || storeBits) > storeBits) {
     expression = simplify(expr.unary('trunc', expression, storeBits, expression.signed, {
       address: inst.address,
@@ -219,22 +299,24 @@ function hasUnsafeBarrier(inst, key) {
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, active, depth = 0) {
-  if (blockIndex == null || depth > 64) return null;
-  const visitKey = `${blockIndex}:${beforeRow ?? 'end'}:${key}`;
+function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth = 0) {
+  if (blockIndex == null || positiveAccessSize(size) == null || depth > 64) return null;
+  const visitKey = `${blockIndex}:${beforeRow ?? 'end'}:${key}:${size}`;
   if (active.has(visitKey)) return null;
   active.add(visitKey);
   try {
     for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
-      const stored = exactStoreExpression(inst, key, maps, engine);
-      if (stored) return stored;
+      if (inst?.op === 'store' && inst.loc?.key === key) {
+        return exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth);
+      }
       if (hasUnsafeBarrier(inst, key)) return null;
     }
 
     const block = ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolveStackBefore(ir, pred, null, key, maps, opts, engine, active, depth + 1));
+    const incoming = predecessors.map((pred) =>
+      resolveStackBefore(ir, pred, null, key, size, maps, opts, engine, active, depth + 1));
     if (incoming.some((x) => !x)) return null;
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return incoming[0];
@@ -242,9 +324,9 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
 
     const control = controllerForMerge(ir, blockIndex, predecessors, opts);
     if (!control) return null;
-    const condition = controlCondition(control.term, maps, engine, ir);
+    const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
     if (!condition) return null;
-    const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
+    const bits = size * 8;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
 
     // `yesIndex` is the machine branch target (condition true), `noIndex` is the
@@ -266,9 +348,8 @@ function isReturnNode(node) {
   return node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim());
 }
 
-function stackReturnKey(expression) {
-  return expression?.kind === 'load' && expression.location?.kind === 'stack' && expression.location?.key
-    ? expression.location.key : null;
+function stackReturnSlot(ir, expression) {
+  return exactStackLoadSlot(ir, null, expression);
 }
 
 function returnSiteForNode(node, ir, allowSingleFallback = false) {
@@ -286,12 +367,13 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
 
 function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const expression = node?.semantic?.expression || (allowSingleFallback ? output?.expression : null);
-  const key = stackReturnKey(expression);
-  if (!key) return null;
+  const nodeSlot = stackReturnSlot(result.ir, node?.semantic?.expression);
+  const slot = nodeSlot || (allowSingleFallback ? stackReturnSlot(result.ir, output?.expression) : null);
+  if (!slot) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
-  return resolveStackBefore(result.ir, retInst.block, retInst.row, key, maps, opts, engine, new Set());
+  return resolveStackBefore(result.ir, retInst.block, retInst.row, slot.key, slot.size,
+    maps, opts, engine, new Set());
 }
 
 function rewriteReturnsInAst(result, maps, opts, engine) {
@@ -320,6 +402,7 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     maxIterations: 10,
     nodeBudget: Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs: Math.min(10, Math.max(3, Number(opts.decompilerTimeBudgetMs || 50) / 5)),
+    deterministic: opts.deterministicTransforms === true,
     maxApplications: 512,
   });
   const rewrite = rewriteReturnsInAst(result, maps, opts, engine);

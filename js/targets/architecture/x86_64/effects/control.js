@@ -81,15 +81,22 @@ function trapEffect(ctx, family, featureMetadata) {
   }
   if (family === 'int') {
     const vector = ctx.operands[0]?.type === 'immediate' ? Number(ctx.operands[0].value) : 0;
-    return ctx.finish({
+    const reason = 'x86-int-delivery-state-unmodelled';
+    return ctx.partial(reason, ['control','faults','registers','memory','flags'], {
       family:'control',
-      controlEffect:{ kind:'trap', reason:'x86-int-software-interrupt' },
-      possibleFaults:[{
-        kind:'software-interrupt',
-        condition:{ kind:'always' },
-        detail:{ vector, exceptionClass:'trap', operation:'int' },
-      }],
-      metadata:{ ...featureMetadata, operation:'int', vector, architecturalTrap:true },
+      controlEffect:{ kind:'unknown', reason },
+      detail:{
+        vector,
+        requiredArchitecturalState:['idtr-idt-gate','cpl','gate-dpl-present-type','target-selector-rip','privilege-transition-stack'],
+        possibleOutcomes:['handler-delivery','#GP','#NP','#SS'],
+      },
+      metadata:{
+        ...featureMetadata,
+        operation:'int',
+        vector,
+        architecturalTrap:false,
+        interruptDeliveryModeled:false,
+      },
     });
   }
   return ctx.finish({

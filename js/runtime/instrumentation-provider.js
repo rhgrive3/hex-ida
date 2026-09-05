@@ -4,6 +4,12 @@ import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
+function moduleFields(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+  const module = payload.module && typeof payload.module === 'object' ? payload.module : payload;
+  return module;
+}
+
 function requiredMethod(backend, method, capability) {
   if (typeof backend?.[method] !== 'function') throw new DebugAdapterError('unsupported', `instrumentation backend does not support ${capability || method}`);
   return backend[method].bind(backend);
@@ -101,9 +107,24 @@ export class InstrumentationProvider {
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
       const handle = eventProbeHandle(raw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      if (!interventionId) return normalizer.push(raw);
-      const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
-      return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
+      const event = interventionId
+        ? normalizer.push({ ...raw, interventionIds: [...new Set([...(Array.isArray(raw?.interventionIds) ? raw.interventionIds : []), interventionId])] })
+        : normalizer.push(raw);
+      if (!event) return null;
+      const module = moduleFields(event);
+      if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey && !session.modules.get(bindingKey)) {
+          session.modules.load(normalizeRuntimeModuleBinding(module, {
+            bindingKey,
+            loadedSequence: event.sequence,
+          }));
+        }
+      } else if (event.kind === 'module-unload') {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+      }
+      return event;
     };
 
     try {
@@ -115,7 +136,8 @@ export class InstrumentationProvider {
       }
       if (typeof this.backend.getModules === 'function') {
         const modules = await this.backend.getModules();
-        for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'instrumentation backend getModules must return an array');
+        for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
           const bindingKey = moduleKey(module, i);
@@ -224,11 +246,32 @@ export class InstrumentationProvider {
     session.facets = Object.freeze({ instrumentation });
     session.setState('ready');
     this.activeSession = session;
+    let epochTransitionPending = false;
+    const commitEpoch = (reason) => {
+      const committed = session.newEpoch(reason);
+      normalizer.resetEpoch(committed);
+      return committed;
+    };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
-      const next = session.newEpoch(reason);
-      normalizer.resetEpoch(next);
-      if (typeof this.backend.setEpoch === 'function') this.backend.setEpoch(next);
-      return next;
+      if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+      if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
+      const next = session.epoch + 1;
+      if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
+      epochTransitionPending = true;
+      let backendResult;
+      try {
+        backendResult = this.backend.setEpoch(next);
+      } catch (err) {
+        epochTransitionPending = false;
+        throw err;
+      }
+      if (!backendResult || typeof backendResult.then !== 'function') {
+        epochTransitionPending = false;
+        return commitEpoch(reason);
+      }
+      return Promise.resolve(backendResult)
+        .then(() => commitEpoch(reason))
+        .finally(() => { epochTransitionPending = false; });
     };
     return session;
   }

@@ -22,5 +22,11 @@ for (const id of malformed) {
   assert.throws(() => store.evictHot(id), /artifact-id-required/);
 }
 
+const hotCache = new ArtifactHotCache();
+for (const bad of ['  ', ' artifact-A', 'artifact-A ', '\tartifact-A\n', '']) {
+  assert.throws(() => hotCache.get(bad), TypeError);
+  assert.throws(() => hotCache.put(bad, { x: 1 }), TypeError);
+}
+
 assert.equal((await store.get('missing-artifact')).status, 'miss');
 console.log('phase4 strict artifact id boundaries: PASS');

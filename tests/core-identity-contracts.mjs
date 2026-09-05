@@ -231,6 +231,25 @@ assert.throws(
   /snapshot-analysis-epoch-invalid/,
   'snapshot analysis epochs must reject non-finite numeric values',
 );
+for (const projectRevision of [-1, 1.5, '1.5', '1e3', '-1', '01', ' 1', '1 ']) {
+  assert.throws(
+    () => createAnalysisSnapshot({ binaryId: binaryA, projectRevision, analysisEpoch: 1, createdAt: '2026-09-02T00:00:00.000Z' }),
+    /snapshot-project-revision-invalid/,
+    `snapshot project revision must reject non-canonical value ${String(projectRevision)}`,
+  );
+}
+for (const analysisEpoch of [-2n, '-1', '1.5', '01', ' 1', '1 ']) {
+  assert.throws(
+    () => createAnalysisSnapshot({ binaryId: binaryA, projectRevision: 1, analysisEpoch, createdAt: '2026-09-02T00:00:00.000Z' }),
+    /snapshot-analysis-epoch-invalid/,
+    `snapshot analysis epoch must reject non-canonical value ${String(analysisEpoch)}`,
+  );
+}
+for (const value of [0, 7, 0n, 9007199254740993n, '0', '7', '9007199254740993']) {
+  const exact = createAnalysisSnapshot({ binaryId: binaryA, projectRevision: value, analysisEpoch: value, createdAt: '2026-09-02T00:00:00.000Z' });
+  assert.equal(exact.projectRevision, String(value));
+  assert.equal(exact.analysisEpoch, String(value));
+}
 assert.throws(
   () => createAnalysisSnapshot({
     binaryId: binaryA,
