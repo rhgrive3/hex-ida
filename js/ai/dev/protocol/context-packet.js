@@ -42,7 +42,7 @@ export function createDevContextPacket(input = {}) {
   if (!plainRecord(input)) throw new TypeError('ContextPacket requires a plain object.');
   const taskId = text(input.taskId, MAX_SHORT);
   if (!taskId) throw new TypeError('ContextPacket requires a taskId.');
-  const objective = text(input.objective, MAX_TEXT);
+  const objective = criticalText(input.objective, MAX_TEXT, 'objective');
   if (!objective) throw new TypeError('ContextPacket requires an objective.');
   return freezeDeep({
     schemaVersion: DEV_CONTEXT_PACKET_SCHEMA,
@@ -53,17 +53,17 @@ export function createDevContextPacket(input = {}) {
     leaseId: text(input.leaseId, MAX_SHORT) || null,
     role: text(input.role, MAX_SHORT) || null,
     objective,
-    successCriteria: list(input.successCriteria, (value) => text(value, MAX_TEXT)),
-    scope: text(input.scope, MAX_TEXT) || null,
-    constraints: list(input.constraints, (value) => text(value, MAX_TEXT)),
+    successCriteria: list(input.successCriteria, (value) => criticalText(value, MAX_TEXT, 'successCriteria')),
+    scope: criticalText(input.scope, MAX_TEXT, 'scope') || null,
+    constraints: list(input.constraints, (value) => criticalText(value, MAX_TEXT, 'constraints')),
     authoritativeFacts: list(input.authoritativeFacts, authoritativeFact),
     dependencyResults: list(input.dependencyResults, dependencyResult),
     artifactRefs: list(input.artifactRefs, artifactRef),
-    knownFailures: list(input.knownFailures, (value) => text(value, MAX_TEXT)),
-    unknowns: list(input.unknowns, (value) => text(value, MAX_TEXT)),
-    requiredEvidence: list(input.requiredEvidence, (value) => text(value, MAX_TEXT)),
-    forbiddenActions: list(input.forbiddenActions, (value) => text(value, MAX_TEXT)),
-    stopConditions: list(input.stopConditions, (value) => text(value, MAX_TEXT)),
+    knownFailures: list(input.knownFailures, (value) => criticalText(value, MAX_TEXT, 'knownFailures')),
+    unknowns: list(input.unknowns, (value) => criticalText(value, MAX_TEXT, 'unknowns')),
+    requiredEvidence: list(input.requiredEvidence, (value) => criticalText(value, MAX_TEXT, 'requiredEvidence')),
+    forbiddenActions: list(input.forbiddenActions, (value) => criticalText(value, MAX_TEXT, 'forbiddenActions')),
+    stopConditions: list(input.stopConditions, (value) => criticalText(value, MAX_TEXT, 'stopConditions')),
     contextDelta: list(input.contextDelta, contextDeltaEntry),
     budget: budget(input.budget),
   });
@@ -119,7 +119,7 @@ export function devTerminalReasonFrom({ runtimeReason = null, workerState = null
 
 function authoritativeFact(value) {
   if (!plainRecord(value)) return null;
-  const statement = text(value.statement ?? value.fact, MAX_TEXT);
+  const statement = criticalText(value.statement ?? value.fact, MAX_TEXT, 'authoritativeFacts.statement');
   if (!statement) return null;
   return {
     statement,
@@ -252,6 +252,16 @@ function text(value, max) {
   if (value == null) return '';
   const string = typeof value === 'string' ? value : String(value);
   return string.trim().slice(0, max);
+}
+/* Correctness-critical text: never silently truncate. Oversize input fails
+   closed so the caller cannot mistake a meaning-changed packet for a valid
+   one. Presentation-bounded fields (excerpts, error detail) keep text(). */
+function criticalText(value, max, field) {
+  if (value == null) return '';
+  const string = typeof value === 'string' ? value : String(value);
+  const trimmed = string.trim();
+  if (trimmed.length > max) throw new TypeError(`${field} exceeds ${max} characters.`);
+  return trimmed;
 }
 function list(value, normalize) {
   if (value == null) return [];
