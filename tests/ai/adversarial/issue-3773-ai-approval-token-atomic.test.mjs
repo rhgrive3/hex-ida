@@ -27,7 +27,7 @@ try {
   replaceCrypto(undefined);
   assert.throws(
     () => store.approve(proposal.id),
-    (error) => error?.code === 'tool_failed' && /Secure randomness/.test(error?.message || ''),
+    (error) => error?.type === 'tool_failed' && /Secure randomness/.test(error?.message || ''),
   );
   assert.equal(store.get(proposal.id).status, 'pending');
   assert.equal(store.approvals.has(proposal.id), false);
