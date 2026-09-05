@@ -96,8 +96,10 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
             bindingKey,
             loadedSequence: event.sequence,
           });
+          const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
+          const staged = scratch.load(normalized);
           const existing = session.modules.get(bindingKey);
-          if (!existing || !sameModuleBinding(existing, normalized)) {
+          if (!existing || !sameModuleBinding(existing, staged)) {
             if (existing) session.modules.unload(bindingKey, event.sequence);
             session.modules.load(normalized);
           }
