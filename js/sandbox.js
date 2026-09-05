@@ -20,7 +20,6 @@ const WORKER_PRELUDE = String.raw`
   "use strict";
   const nativeImportScripts = globalThis.importScripts.bind(globalThis);
   const nativePostMessage = globalThis.postMessage.bind(globalThis);
-  const NativeArrayBuffer = ArrayBuffer;
   const NativeObjectPrototype = Object.prototype;
   const NativeSet = Set;
   const nativeArrayIsArray = Array.isArray.bind(Array);
@@ -29,6 +28,19 @@ const WORKER_PRELUDE = String.raw`
   const nativeKeys = Object.keys.bind(Object);
   const nativeDescriptor = Object.getOwnPropertyDescriptor.bind(Object);
   const nativeNow = Date.now.bind(Date);
+  const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);
+  const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);
+  const nativeArrayPop = Function.prototype.call.bind(Array.prototype.pop);
+  const nativeArrayPush = Function.prototype.call.bind(Array.prototype.push);
+  const nativeArrayBufferByteLength = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+  );
+  const nativeTypedArrayBuffer = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+  );
+  const nativeDataViewBuffer = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+  );
   for (const name of [
     'fetch', 'WebSocket', 'EventSource', 'XMLHttpRequest', 'Worker',
     'SharedWorker', 'importScripts', 'WebTransport', 'BroadcastChannel'
@@ -54,16 +66,26 @@ const WORKER_PRELUDE = String.raw`
   const outputSize = (value) => {
     const seen = new NativeSet(); const stack=[value]; let bytes=0, nodes=0;
     while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
-      const x=stack.pop(); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
+      const x=nativeArrayPop(stack); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
       if (x == null) { bytes+=4; continue; }
       if (typeof x === 'string') { bytes += x.length * 2; continue; }
       if (typeof x === 'number' || typeof x === 'bigint') { bytes+=16; continue; }
       if (typeof x === 'boolean') { bytes+=4; continue; }
       if (typeof x === 'undefined') { bytes+=4; continue; }
-      if (x instanceof NativeArrayBuffer) { bytes+=x.byteLength; continue; }
-      if (nativeArrayBufferIsView(x)) { bytes+=x.byteLength; continue; }
+      let arrayBufferBytes = null;
+      try { arrayBufferBytes = nativeArrayBufferByteLength(x); } catch {}
+      if (arrayBufferBytes !== null) { bytes += arrayBufferBytes; continue; }
+      if (nativeArrayBufferIsView(x)) {
+        let buffer = null;
+        try { buffer = nativeTypedArrayBuffer(x); }
+        catch { try { buffer = nativeDataViewBuffer(x); } catch {} }
+        if (!buffer) return OUTPUT_MAX_BYTES + 1;
+        try { bytes += nativeArrayBufferByteLength(buffer); }
+        catch { return OUTPUT_MAX_BYTES + 1; }
+        continue;
+      }
       if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
-      if (seen.has(x)) continue; seen.add(x);
+      if (nativeSetHas(seen, x)) continue; nativeSetAdd(seen, x);
       // Only arrays and plain/null-prototype objects have byte authority through
       // enumerable own properties. Opaque cloneables (Blob/File/Error/etc.)
       // may carry hidden payload and therefore fail closed.
@@ -83,7 +105,7 @@ const WORKER_PRELUDE = String.raw`
         // cannot provide stable byte authority and must fail closed.
         if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') return OUTPUT_MAX_BYTES + 1;
         bytes += keys[i].length*2;
-        stack.push(descriptor.value);
+        nativeArrayPush(stack, descriptor.value);
       }
     }
     return bytes;
