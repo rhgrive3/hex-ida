@@ -363,7 +363,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
     const dom = ir.dominators?.[atInst.block];
     if (!dom || !dom.has(d.block)) continue;
     const depth = dominatorDepth(ir, d.block);
-    if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow)) {
+    if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow) {
       best = v; bestDepth = depth; bestRow = d.row ?? -Infinity;
     }
   }
@@ -596,7 +596,7 @@ function renderCall(inst, ctx) {
   if (name) {
     const args = !c.arityKnown ? '/* arguments unknown */'
       : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
-    return `${name}(${args})`;
+    return `${name}(${args});`;
   }
   const targetValue = valueOf(inst.args?.[0]);
   return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
@@ -711,7 +711,7 @@ function rmwOperand(rmw, ctx) {
   const loadValue=rmw.load?.dst;
   const written=valueOf(rmw.store?.args?.[0]);
   const inst=written?.def;
-  if (!inst || inst.op !== OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
+  if (!inst || inst.op!==OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
   const a=valueOf(inst.args?.[0]), b=valueOf(inst.args?.[1]);
   if (sameValue(a,loadValue)) return { op:inst.sub, other:b, reversed:false };
   if (sameValue(b,loadValue)) return { op:inst.sub, other:a, reversed:true };
@@ -719,50 +719,47 @@ function rmwOperand(rmw, ctx) {
 }
 
 function statementForStore(inst, ctx) {
-  const lhs = renderMemoryLocation(inst.loc, inst, ctx);
-  const rmw = ctx.rmwByStore.get(inst.id);
+  const lhs=renderMemoryLocation(inst.loc,inst,ctx);
+  const rmw=ctx.rmwByStore.get(inst.id);
   if (rmw) {
-    const hasSelect = (rmw.chain || []).some((x) => x.op === OP.SEL);
-    const upd = rmwOperand(rmw, ctx);
+    const hasSelect=(rmw.chain||[]).some((x)=>x.op===OP.SEL);
+    const upd=rmwOperand(rmw,ctx);
     if (upd && !hasSelect && !upd.reversed) {
-      const rhs = renderValue(upd.other, ctx);
-      const op = { add: '+=', sub: '-=', mul: '*=', sdiv: '/=', udiv: '/=' }[upd.op];
-      if (upd.op === 'add' && upd.other?.const === 1n) return `${lhs}++;`;
-      if (upd.op === 'sub' && upd.other?.const === 1n) return `${lhs}--;`;
+      const rhs=renderValue(upd.other,ctx);
+      const op={add:'+=',sub:'-=',mul:'*=',sdiv:'/=',udiv:'/='}[upd.op];
+      if (upd.op==='add' && upd.other?.const===1n) return `${lhs}++;`;
+      if (upd.op==='sub' && upd.other?.const===1n) return `${lhs}--;`;
       if (op) return `${lhs} ${op} ${rhs};`;
     }
   }
-  const rhs = renderValue(valueOf(inst.args?.[0]), ctx, { noMemoryFold: true });
+  const rhs=renderValue(valueOf(inst.args?.[0]),ctx,{noMemoryFold:true});
   return `${lhs} = ${rhs};`;
 }
 
 function evidenceOf(inst, reason) {
-  return { row: inst.row, address: inst.address ?? null, ir: inst.id, op: inst.op, text: inst.text || null, reason };
+  return { row:inst.row,address:inst.address??null,ir:inst.id,op:inst.op,text:inst.text||null,reason };
 }
 
 function emitBlockStatements(block, out, ctx, indent) {
-  const term = blockTerm(block);
-  for (const inst of block.insts || []) {
-    if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.LOAD || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
-    if (inst.op === OP.STORE) {
-      if (isMechanicalStackSpill(inst, ctx)) {
-        ctx.suppressed.push(evidenceOf(inst, 'compiler-only stack spill'));
-        continue;
-      }
-      const text = statementForStore(inst, ctx);
-      out.push(line('stmt', indent, text, inst.row, inst.address, { source: storeSource(inst, ctx) }));
-      ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
-    } else if (inst.op === OP.CALL) {
-      const c = callRecord(inst, ctx);
-      if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) { ctx.suppressed.push(evidenceOf(inst, `folded runtime noise: ${c.name}`)); continue; }
-      const call = renderCall(inst, ctx);
-      const extra = { source: callSource(inst, c, ctx) };
-      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra));
-      else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
-      ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
-    } else if (inst.op === OP.UNKNOWN) {
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
-      ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
+  const term=blockTerm(block);
+  for (const inst of block.insts||[]) {
+    if (inst===term || inst.op===OP.CMP || inst.op===OP.PHI || inst.op===OP.LOAD || inst.op===OP.CONST || inst.op===OP.MOV || inst.op===OP.BIN || inst.op===OP.UN || inst.op===OP.SEL || inst.op===OP.ADDR || inst.op===OP.MAC || inst.op===OP.BFX || inst.op===OP.BFI || inst.op===OP.CLOBBER) continue;
+    if (inst.op===OP.STORE) {
+      if (isMechanicalStackSpill(inst,ctx)) { ctx.suppressed.push(evidenceOf(inst,'compiler-only stack spill')); continue; }
+      const text=statementForStore(inst,ctx);
+      out.push(line('stmt',indent,text,inst.row,inst.address,{source:storeSource(inst,ctx)}));
+      ctx.evidence.push(evidenceOf(inst,'Memory SSA store'));
+    } else if (inst.op===OP.CALL) {
+      const c=callRecord(inst,ctx);
+      if (shouldFoldRuntimeCall(c.name,{expert:ctx.opts.expert})) { ctx.suppressed.push(evidenceOf(inst,`folded runtime noise: ${c.name}`)); continue; }
+      const call=renderCall(inst,ctx);
+      const extra={source:callSource(inst,c,ctx)};
+      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt',indent,`${ctx.materialNames.get(inst.dst.id)} = ${call};`,inst.row,inst.address,extra));
+      else out.push(line('stmt',indent,`${call};`,inst.row,inst.address,extra));
+      ctx.evidence.push(evidenceOf(inst,c.resolved.runtime==='objc'?'Objective-C dispatch':c.resolved.runtime==='swift'?'Swift dispatch':'call'));
+    } else if (inst.op===OP.UNKNOWN) {
+      out.push(line('stmt',indent,`__asm(${JSON.stringify(inst.text||'unknown')});`,inst.row,inst.address,{source:sourceForInst(inst,'unsupported instruction')})); ctx.unknown++;
+      ctx.evidence.push(evidenceOf(inst,'unsupported IR instruction retained faithfully'));
     }
   }
   return term;
@@ -770,247 +767,233 @@ function emitBlockStatements(block, out, ctx, indent) {
 
 /** Recover canonical SSA induction variables. */
 export function recoverInductionVariables(ir, ctx = null) {
-  const out = [];
-  for (const loop of ir.loops || []) {
-    const block = ir.blocks[loop.header];
-    for (const phi of block?.phis || []) {
-      if (!phi.dst || (phi.incoming || []).length !== 2) continue;
-      const outside = phi.incoming.find((x) => !loop.nodes.has(x.from));
-      const inside = phi.incoming.find((x) => loop.nodes.has(x.from));
-      if (!outside || !inside) continue;
-      const stepDef = inside.value?.def;
-      if (!stepDef || stepDef.op !== OP.BIN || !['add', 'sub'].includes(stepDef.sub)) continue;
-      const a = valueOf(stepDef.args?.[0]), b = valueOf(stepDef.args?.[1]);
-      let step = null;
-      if (sameValue(a, phi.dst) && b?.const != null) step = stepDef.sub === 'add' ? b.const : -b.const;
-      else if (stepDef.sub === 'add' && sameValue(b, phi.dst) && a?.const != null) step = a.const;
-      if (step == null) continue;
-      const term = blockTerm(block);
-      if (!term || term.op !== OP.CBR) continue;
-      const name = `i${out.length || ''}`;
-      out.push({ loop, phi, value: phi.dst, name, init: outside.value, step, conditionInst: term,
-        initText: ctx ? renderValue(outside.value, ctx) : null,
-        conditionText: ctx ? renderBranchCondition(term, ctx) : null });
+  const out=[];
+  for (const loop of ir.loops||[]) {
+    const block=ir.blocks[loop.header];
+    for (const phi of block?.phis||[]) {
+      if (!phi.dst || (phi.incoming||[]).length!==2) continue;
+      const outside=phi.incoming.find((x)=>!loop.nodes.has(x.from));
+      const inside=phi.incoming.find((x)=>loop.nodes.has(x.from));
+      if (!outside||!inside) continue;
+      const stepDef=inside.value?.def;
+      if (!stepDef || stepDef.op!==OP.BIN || !['add','sub'].includes(stepDef.sub)) continue;
+      const a=valueOf(stepDef.args?.[0]),b=valueOf(stepDef.args?.[1]);
+      let step=null;
+      if (sameValue(a,phi.dst)&&b?.const!=null) step=stepDef.sub==='add'?b.const:-b.const;
+      else if (stepDef.sub==='add'&&sameValue(b,phi.dst)&&a?.const!=null) step=a.const;
+      if (step==null) continue;
+      const term=blockTerm(block);
+      if (!term||term.op!==OP.CBR) continue;
+      const name=`i${out.length||''}`;
+      out.push({loop,phi,value:phi.dst,name,init:outside.value,step,conditionInst:term,
+        initText:ctx?renderValue(outside.value,ctx):null,
+        conditionText:ctx?renderBranchCondition(term,ctx):null});
     }
   }
   return out;
 }
 
 function loopRender(loop, block, term, ctx, state, indent, stop) {
-  if (!term || term.op !== OP.CBR || loop.exits.size !== 1 || block.succ.length !== 2) return null;
-  const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-  const yesInside = loop.nodes.has(yes), noInside = loop.nodes.has(no);
-  if (yesInside === noInside) return null;
-  const bodyStart = yesInside ? yes : no;
-  const exit = yesInside ? no : yes;
-  const invert = !yesInside;
-  const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
+  if (!term||term.op!==OP.CBR||loop.exits.size!==1||block.succ.length!==2) return null;
+  const {yes,no}=branchSucc(ctx.ir,block,term,ctx);
+  const yesInside=loop.nodes.has(yes),noInside=loop.nodes.has(no);
+  if (yesInside===noInside) return null;
+  const bodyStart=yesInside?yes:no;
+  const exit=yesInside?no:yes;
+  const invert=!yesInside;
+  const iv=ctx.inductions.find((x)=>x.loop.header===loop.header);
   let head;
-  if (iv && iv.init && iv.conditionInst === term) {
-    ctx.materialNames.set(iv.value.id, iv.name);
-    const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
-    let cond = renderBranchCondition(term, ctx, invert);
-    const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
-    head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
-  } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
-  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) })];
-  const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
-  emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
-  lines.push(line('ctrl', indent, '}'));
-  return { lines, next: exit === stop ? stop : exit };
+  if (iv&&iv.init&&iv.conditionInst===term) {
+    ctx.materialNames.set(iv.value.id,iv.name);
+    const init=renderValue(iv.init,ctx,{ignoreMaterial:true});
+    let cond=renderBranchCondition(term,ctx,invert);
+    const step=iv.step===1n?`${iv.name}++`:iv.step===-1n?`${iv.name}--`:`${iv.name} += ${iv.step}`;
+    head=`for (${typeNameOf(ctx.types.values.get(iv.value.id))==='unknown'?'int64':typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
+  } else head=`while (${renderBranchCondition(term,ctx,invert)})`;
+  const lines=[line('ctrl',indent,`${head} {`,term.row,term.address,{source:controlSource(term,ctx)})];
+  const local={...state,activeLoop:loop,loopHeader:loop.header,loopExit:exit};
+  emitRegion(bodyStart,loop.header,lines,ctx,local,indent+1,loop.nodes);
+  lines.push(line('ctrl',indent,'}'));
+  return {lines,next:exit===stop?stop:exit};
 }
 
 function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
-  let bi = start, guard = 0;
-  while (bi != null && bi !== stop && guard++ < MAX_BLOCKS) {
-    if (allowed && !allowed.has(bi)) return;
-    if (state.activeLoop && bi === state.loopHeader) return;
+  let bi=start,guard=0;
+  while (bi!=null&&bi!==stop&&guard++<MAX_BLOCKS) {
+    if (allowed&&!allowed.has(bi)) return;
+    if (state.activeLoop&&bi===state.loopHeader) return;
     if (state.visited.has(bi)) {
-      // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
-      // the canonical origin of the block it jumps into. Emitting it
-      // sourceless made the claim unauditable from the rendered line.
-      out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }));
+      out.push(line('stmt',indent,`goto loc_${hex(ctx.blockAddress(bi))};`,null,null,{source:jumpTargetSource(bi,ctx)}));
       state.gotos++; return;
     }
     state.visited.add(bi);
-    const block = ctx.ir.blocks[bi];
+    const block=ctx.ir.blocks[bi];
     if (!block) return;
-
-    const loop = ctx.graph.loopByHeader.get(bi);
-    const term = blockTerm(block);
-    if (loop && !state.activeLoop) {
-      emitBlockStatements(block, out, ctx, indent);
-      const lr = loopRender(loop, block, term, ctx, state, indent, stop);
-      if (lr) { out.push(...lr.lines); bi = lr.next; continue; }
+    const loop=ctx.graph.loopByHeader.get(bi);
+    const term=blockTerm(block);
+    if (loop&&!state.activeLoop) {
+      emitBlockStatements(block,out,ctx,indent);
+      const lr=loopRender(loop,block,term,ctx,state,indent,stop);
+      if (lr) { out.push(...lr.lines); bi=lr.next; continue; }
     }
-
-    const term2 = emitBlockStatements(block, out, ctx, indent);
-    if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
-    if (term2.op === OP.RET) {
-      const rv = returnValueAt(term2, ctx);
-      const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
-      out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
+    const term2=emitBlockStatements(block,out,ctx,indent);
+    if (!term2) { bi=block.succ.length===1?block.succ[0]:null; continue; }
+    if (term2.op===OP.RET) {
+      const rv=returnValueAt(term2,ctx);
+      const text=rv&&((rv.uses||[]).length||rv.const!=null||rv.def)?`return ${renderValue(rv,ctx)};`:'return;';
+      out.push(line('stmt',indent,text,term2.row,term2.address,{source:mergeSource(dependencySource(rv,ctx),sourceForInst(term2,'return'))})); ctx.evidence.push(evidenceOf(term2,'return')); return;
     }
-    if (term2.op === OP.BR) {
-      const next = block.succ[0] ?? null;
-      if (state.activeLoop && next === state.loopHeader) { out.push(line('ctrl', indent, 'continue;', term2.row, term2.address)); return; }
-      if (state.activeLoop && next === state.loopExit) { out.push(line('ctrl', indent, 'break;', term2.row, term2.address)); return; }
-      if (next === stop) return;
-      if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address)); state.gotos++; }
+    if (term2.op===OP.BR) {
+      const next=block.succ[0]??null;
+      if (state.activeLoop&&next===state.loopHeader) { out.push(line('ctrl',indent,'continue;',term2.row,term2.address,{source:controlSource(term2,ctx)})); return; }
+      if (state.activeLoop&&next===state.loopExit) { out.push(line('ctrl',indent,'break;',term2.row,term2.address,{source:controlSource(term2,ctx)})); return; }
+      if (next===stop) return;
+      if (next!=null&&!state.visited.has(next)&&(!allowed||allowed.has(next))) { bi=next; continue; }
+      if (next!=null) {
+        out.push(line('stmt',indent,`goto loc_${hex(ctx.blockAddress(next))};`,term2.row,term2.address,{source:mergeSource(controlSource(term2,ctx),jumpTargetSource(next,ctx))}));
+        state.gotos++;
+      }
       return;
     }
-    if (term2.op === OP.CBR) {
-      const sw = ctx.switchByRow.get(term2.row);
+    if (term2.op===OP.CBR) {
+      const sw=ctx.switchByRow.get(term2.row);
       if (sw) {
-        const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
-        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-        for (const c of sw.cases || []) {
-          out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }));
-        }
-        if (sw.defaultBlock != null) {
-          out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
-        }
-        out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
+        const expr=sw.expr||renderValue(reachingRegisterValue(ctx.ir,term2,sw.reg||'x0'),ctx);
+        out.push(line('ctrl',indent,`switch (${expr}) {`,term2.row,term2.address,{source:controlSource(term2,ctx)}));
+        for (const c of sw.cases||[]) out.push(line('ctrl',indent+1,`case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`,null,null,{source:jumpTargetSource(c.block,ctx)}));
+        if (sw.defaultBlock!=null) out.push(line('ctrl',indent+1,`default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`,null,null,{source:jumpTargetSource(sw.defaultBlock,ctx)}));
+        out.push(line('ctrl',indent,'}')); state.gotos+=(sw.cases||[]).length+(sw.defaultBlock!=null?1:0); return;
       }
-      const { yes, no } = branchSucc(ctx.ir, block, term2, ctx);
-      const join = ctx.graph.immediatePostDominators?.[bi];
-      const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
+      const {yes,no}=branchSucc(ctx.ir,block,term2,ctx);
+      const join=ctx.graph.immediatePostDominators?.[bi];
+      const structural=join!=null&&join!==bi&&yes!=null&&no!=null&&(!allowed||(allowed.has(yes)&&allowed.has(no)));
       if (structural) {
-        const yesEmpty = yes === join;
-        const noEmpty = no === join;
-        if (yesEmpty !== noEmpty) {
-          const invert = yesEmpty;
-          const bodyStart = yesEmpty ? no : yes;
-          const cond = renderBranchCondition(term2, ctx, invert);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+        const yesEmpty=yes===join,noEmpty=no===join;
+        if (yesEmpty!==noEmpty) {
+          const invert=yesEmpty,bodyStart=yesEmpty?no:yes,cond=renderBranchCondition(term2,ctx,invert);
+          out.push(line('ctrl',indent,`if (${cond}) {`,term2.row,term2.address,{source:controlSource(term2,ctx)}));
+          emitRegion(bodyStart,join,out,ctx,state,indent+1,allowed);
+          out.push(line('ctrl',indent,'}'));
         } else {
-          const cond = renderBranchCondition(term2, ctx);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-          emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '} else {'));
-          emitRegion(no, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+          const cond=renderBranchCondition(term2,ctx);
+          out.push(line('ctrl',indent,`if (${cond}) {`,term2.row,term2.address,{source:controlSource(term2,ctx)}));
+          emitRegion(yes,join,out,ctx,state,indent+1,allowed);
+          out.push(line('ctrl',indent,'} else {'));
+          emitRegion(no,join,out,ctx,state,indent+1,allowed);
+          out.push(line('ctrl',indent,'}'));
         }
-        bi = join; continue;
+        bi=join; continue;
       }
-      const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-      if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address));
-      state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
+      const cond=renderBranchCondition(term2,ctx);
+      if (yes!=null) out.push(line('ctrl',indent,`if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`,term2.row,term2.address,{source:controlSource(term2,ctx)}));
+      if (no!=null) out.push(line('stmt',indent,`goto loc_${hex(ctx.blockAddress(no))};`,term2.row,term2.address,{source:mergeSource(controlSource(term2,ctx),jumpTargetSource(no,ctx))}));
+      state.gotos+=(yes!=null?1:0)+(no!=null?1:0); return;
     }
   }
 }
 
 function faithfulCfg(ctx, indent = 1) {
-  const out = [];
-  const reachable = ctx.graph.reachable || new Set(ctx.ir.blocks.map((b) => b.index));
-  for (const bi of [...reachable].sort((a, b) => ctx.ir.blocks[a].startRow - ctx.ir.blocks[b].startRow)) {
-    const block = ctx.ir.blocks[bi];
-    out.push(line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi)));
-    const term = emitBlockStatements(block, out, ctx, indent + 1);
+  const out=[];
+  const reachable=ctx.graph.reachable||new Set(ctx.ir.blocks.map((b)=>b.index));
+  for (const bi of [...reachable].sort((a,b)=>ctx.ir.blocks[a].startRow-ctx.ir.blocks[b].startRow)) {
+    const block=ctx.ir.blocks[bi];
+    out.push(line('label',indent,`loc_${hex(ctx.blockAddress(bi))}:`,block.startRow,ctx.blockAddress(bi)));
+    const term=emitBlockStatements(block,out,ctx,indent+1);
     if (!term) continue;
-    if (term.op === OP.RET) {
-      const rv = returnValueAt(term, ctx);
-      out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
-    } else if (term.op === OP.CBR) {
-      const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
-      if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address));
-    } else if (term.op === OP.BR && block.succ[0] != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(block.succ[0]))};`, term.row, term.address));
+    if (term.op===OP.RET) {
+      const rv=returnValueAt(term,ctx);
+      out.push(line('stmt',indent+1,rv?`return ${renderValue(rv,ctx)};`:'return;',term.row,term.address,{source:mergeSource(dependencySource(rv,ctx),sourceForInst(term,'return'))}));
+    } else if (term.op===OP.CBR) {
+      const {yes,no}=branchSucc(ctx.ir,block,term,ctx);
+      if (yes!=null) out.push(line('ctrl',indent+1,`if (${renderBranchCondition(term,ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`,term.row,term.address,{source:controlSource(term,ctx)}));
+      if (no!=null) out.push(line('stmt',indent+1,`goto loc_${hex(ctx.blockAddress(no))};`,term.row,term.address,{source:mergeSource(controlSource(term,ctx),jumpTargetSource(no,ctx))}));
+    } else if (term.op===OP.BR&&block.succ[0]!=null) {
+      const next=block.succ[0];
+      out.push(line('stmt',indent+1,`goto loc_${hex(ctx.blockAddress(next))};`,term.row,term.address,{source:mergeSource(controlSource(term,ctx),jumpTargetSource(next,ctx))}));
+    }
   }
   return out;
 }
 
 function summarize(lines, ctx) {
-  const text = lines.map((l) => l.text).join('\n');
-  const rmw = text.match(/(self->\w+)\s*=\s*max\(\1\s*-\s*([^,]+),\s*0\)/);
-  if (rmw) return `${rmw[1].replace('self->', '')}から${rmw[2].trim()}を引き、0未満にならないよう制限して保存しています。`;
-  const add = text.match(/(self->\w+)\s*\+=\s*([^;]+)/);
-  if (add) return `${add[1].replace('self->', '')}に${add[2].trim()}を加えて保存しています。`;
-  if (ctx.evidence.some((e) => e.reason === 'Objective-C dispatch')) return 'Objective-C のメッセージ送信を型・selector情報付きで実行しています。';
-  if (ctx.evidence.some((e) => e.reason === 'Swift dispatch')) return 'Swift の呼び出しをABI情報付きで実行しています。';
+  const text=lines.map((l)=>l.text).join('\n');
+  const rmw=text.match(/(self->\w+)\s*=\s*max\(\1\s*-\s*([^,]+),\s*0\)/);
+  if (rmw) return `${rmw[1].replace('self->','')}から${rmw[2].trim()}を引き、0未満にならないよう制限して保存しています。`;
+  const add=text.match(/(self->\w+)\s*\+=\s*([^;]+)/);
+  if (add) return `${add[1].replace('self->','')}に${add[2].trim()}を加えて保存しています。`;
+  if (ctx.evidence.some((e)=>e.reason==='Objective-C dispatch')) return 'Objective-C のメッセージ送信を型・selector情報付きで実行しています。';
+  if (ctx.evidence.some((e)=>e.reason==='Swift dispatch')) return 'Swift の呼び出しをABI情報付きで実行しています。';
   if (ctx.rmw.length) return '同じメモリ位置を読み、計算結果を書き戻す更新処理を行っています。';
   return 'Semantic IR から復元できた処理を、確認できる範囲でC風に表示しています。';
 }
 
 function pseudocode(lines) {
-  return lines.map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text}`).join('\n');
+  return lines.map((l)=>`${'    '.repeat(Math.max(0,l.indent||0))}${l.text}`).join('\n');
 }
 
 function runtimeFromOpts(opts) {
-  if (opts.appleRuntime?.runtime === 'mixed') return opts.appleRuntime;
+  if (opts.appleRuntime?.runtime==='mixed') return opts.appleRuntime;
   return buildAppleRuntimeIndex({
-    objc: opts.objcRuntimeIndex || opts.objcModel || opts.appleRuntime?.objc || null,
-    swift: opts.swiftModel || opts.appleRuntime?.swift || null,
-    selectorRefs: opts.selectorRefs || [], selectorStubs: opts.selectorStubs || [], fixups: opts.fixups || [],
+    objc:opts.objcRuntimeIndex||opts.objcModel||opts.appleRuntime?.objc||null,
+    swift:opts.swiftModel||opts.appleRuntime?.swift||null,
+    selectorRefs:opts.selectorRefs||[],selectorStubs:opts.selectorStubs||[],fixups:opts.fixups||[],
   });
 }
 
 /** Main IR-first entry point. */
 export function decompileSemantic(model, opts = {}) {
-  const ir = opts.ir || irFor(model, { rowOfAddress: opts.rowOfAddress });
-  if (!ir || !ir.instructions?.length) return null;
-  const runtime = runtimeFromOpts(opts);
-  const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });
-  const graph = analyzeGraph(ir.blocks.map((b) => b.succ), ir.entry || 0);
-  ir.loops = graph.loops;
-  // Post-dominance is already computed by analyzeGraph. Attaching it here is
-  // what lets P8-5 read the join point of a conditional from the canonical
-  // control-flow analysis instead of deriving a second opinion about it.
-  ir.postDominators = graph.postDominators;
-  ir.ipdom = graph.immediatePostDominators;
-  const rmw = readModifyWrite(ir);
-  const firstAddr = model.instructions?.[0]?.address ?? opts.addr ?? 0n;
-  const ctx = {
-    ir, model, opts, runtime, types, graph, rmw,
-    rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
-    storedValueAliases: buildStoredValueAliases(ir),
-    returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
-    exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
-    callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
-    materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
-    blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
+  const ir=opts.ir||irFor(model,{rowOfAddress:opts.rowOfAddress});
+  if (!ir||!ir.instructions?.length) return null;
+  const runtime=runtimeFromOpts(opts);
+  const types=inferSemanticTypes(ir,model,{runtime,abiAdapter:opts.abiAdapter??null});
+  const graph=analyzeGraph(ir.blocks.map((b)=>b.succ),ir.entry||0);
+  ir.loops=graph.loops;
+  ir.postDominators=graph.postDominators;
+  ir.ipdom=graph.immediatePostDominators;
+  const rmw=readModifyWrite(ir);
+  const firstAddr=model.instructions?.[0]?.address??opts.addr??0n;
+  const ctx={
+    ir,model,opts,runtime,types,graph,rmw,
+    rmwByStore:new Map(rmw.map((r)=>[r.store.id,r])),
+    storedValueAliases:buildStoredValueAliases(ir),
+    returnInsts:(ir.instructions||[]).filter((i)=>i.op===OP.RET),
+    exprCache:new Map(),exprActive:new Set(),exprNodes:0,
+    callCache:new Map(),evidence:[],suppressed:[],unknown:0,unknownCallArities:0,
+    materialNames:new Map(),switchByRow:new Map((opts.switches||model.switches||[]).map((s)=>[s.row,s])),
+    blockAddress:(bi)=>model.instructions?.find((x)=>x.row===ir.blocks[bi]?.startRow)?.address??firstAddr+BigInt(ir.blocks[bi]?.startRow||0)*4n,
   };
-  ctx.materialNames = materialization(ctx);
-  ctx.inductions = recoverInductionVariables(ir, ctx);
-
-  const name = safeIdent(opts.notes?.nameOf?.(opts.addr) || opts.name || model.name || `sub_${hex(opts.addr ?? firstAddr)}`, 'sub');
-  const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr);
-  const body = [];
-  const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null };
-  emitRegion(ir.entry || 0, null, body, ctx, state, 1);
-
-  const reachable = graph.reachable || new Set();
-  const missing = [...reachable].filter((b) => !state.visited.has(b));
-  let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
+  ctx.materialNames=materialization(ctx);
+  ctx.inductions=recoverInductionVariables(ir,ctx);
+  const name=safeIdent(opts.notes?.nameOf?.(opts.addr)||opts.name||model.name||`sub_${hex(opts.addr??firstAddr)}`,'sub');
+  const signature=semanticSignature(name,types,opts.notes,opts.addr??firstAddr);
+  const body=[];
+  const state={visited:new Set(),gotos:0,activeLoop:null,loopHeader:null,loopExit:null};
+  emitRegion(ir.entry||0,null,body,ctx,state,1);
+  const reachable=graph.reachable||new Set();
+  const missing=[...reachable].filter((b)=>!state.visited.has(b));
+  let coverage={mode:'structured',reachable:reachable.size,emitted:state.visited.size,missing:missing.length,recovered:0,structuredMissing:missing.length};
   if (missing.length) {
-    body.length = 0; state.visited.clear(); state.gotos = 0;
-    body.push(...faithfulCfg(ctx, 1));
-    coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
+    body.length=0; state.visited.clear(); state.gotos=0;
+    body.push(...faithfulCfg(ctx,1));
+    coverage={mode:'linear',reachable:reachable.size,emitted:reachable.size,missing:0,recovered:missing.length,structuredMissing:missing.length};
   }
-
-  const lines = [
-    line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr, { source: sourceOf({ address: firstAddr, row: model.instructions?.[0]?.row ?? null, evidence: [{ reason: 'function entry' }] }) }),
-    line('ctrl', 0, '{'),
+  const lines=[
+    line('sig',0,signature,model.instructions?.[0]?.row??null,firstAddr,{source:sourceOf({address:firstAddr,row:model.instructions?.[0]?.row??null,evidence:[{reason:'function entry'}]})}),
+    line('ctrl',0,'{'),
   ];
   for (const l of body) lines.push(l);
-  lines.push(line('ctrl', 0, '}'));
-
-  const warnings = [...(types.warnings || [])];
+  lines.push(line('ctrl',0,'}'));
+  const warnings=[...(types.warnings||[])];
   if (state.gotos) warnings.push(`${state.gotos} control-flow edge(s) remain explicit because a safe source structure was not proven.`);
-  if (coverage.mode === 'linear') warnings.push('Structured CFG proof was incomplete; faithful address/edge mode was used.');
+  if (coverage.mode==='linear') warnings.push('Structured CFG proof was incomplete; faithful address/edge mode was used.');
   if (ctx.unknown) warnings.push(`${ctx.unknown} unsupported IR instruction(s) remain as __asm.`);
   if (ctx.unknownCallArities) warnings.push(`${ctx.unknownCallArities} call site(s) have unknown arity; live argument registers were intentionally not guessed.`);
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
-
-  const summary = summarize(body, ctx);
+  const summary=summarize(body,ctx);
   return {
-    lines, signature, types, summary, pseudocode: pseudocode(lines),
-    evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
-    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
-    semantic: true,
+    lines,signature,types,summary,pseudocode:pseudocode(lines),
+    evidence:ctx.evidence,warnings,labels:new Set(body.filter((l)=>l.kind==='label').map((l)=>l.text.replace(/:$/,''))),
+    coverage,ir,ctx:{runtime,suppressed:ctx.suppressed,inductions:ctx.inductions,irPrimary:true,unknownInstructions:ctx.unknown},
+    semantic:true,
   };
 }
