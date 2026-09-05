@@ -13,6 +13,29 @@ function text(value, code) {
 function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
+function canonicalRawBytes(value) {
+  if (value instanceof Uint8Array) return value.slice();
+  if (value == null) return new Uint8Array();
+  if (!Array.isArray(value)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+
+  const length = value.length;
+  const snapshot = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    // Raw byte authority is limited to dense data properties. Accessors are
+    // rejected rather than invoked so validation cannot observe one value and
+    // a later copy observe another.
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    const byte = descriptor.value;
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    snapshot[index] = byte;
+  }
+  return snapshot;
+}
 
 /**
  * Normalize one decoder row into the canonical RISC-V decoded instruction.
@@ -27,7 +50,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
   const size = Number(input.size ?? input.length);
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
-  const rawBytes = input.rawBytes instanceof Uint8Array ? input.rawBytes.slice() : Uint8Array.from(input.rawBytes || []);
+  const rawBytes = canonicalRawBytes(input.rawBytes);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
   const encodedLength = riscvInstructionLength(rawBytes[0] | (rawBytes[1] << 8));
   if (encodedLength !== size) throw new TypeError('riscv64-decoded-instruction-length-disagrees-with-encoding');
