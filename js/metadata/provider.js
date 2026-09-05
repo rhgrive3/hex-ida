@@ -17,18 +17,25 @@ export const METADATA_PROVIDER_CONTRACT_VERSION = '1.0.0';
 export const METADATA_PROVIDER_SCHEMA_VERSION = 1;
 
 export function isCanonicalAnalysisStatus(status) {
-  if (!status || typeof status !== 'object') return false;
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
   if (status.schemaVersion !== ANALYSIS_STATUS_SCHEMA_VERSION) return false;
-  if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()) return false;
-  if (typeof status.analyzerId !== 'string' || !status.analyzerId.trim()) return false;
-  if (typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
-  if (typeof status.completeness !== 'string') return false;
-  if (status.completeness === 'complete') {
-    if (status.stopReason != null) return false;
-  } else {
-    if (status.stopReason == null) return false;
+  try {
+    const canonical = createAnalysisStatus(status);
+    const keys = Object.keys(canonical);
+    if (Object.keys(status).length !== keys.length) return false;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(status, key)) return false;
+      if (Array.isArray(canonical[key])) {
+        if (!Array.isArray(status[key]) || status[key].length !== canonical[key].length) return false;
+        if (canonical[key].some((value, index) => status[key][index] !== value)) return false;
+      } else if (status[key] !== canonical[key]) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
-  return true;
 }
 
 /**
@@ -162,34 +169,7 @@ export function createLanguageMetadataIdentity(input = {}) {
 const CANONICAL_IDENTITIES = new WeakSet();
 
 export function isCanonicalLanguageIdentity(identity) {
-  if (!identity || typeof identity !== 'object') return false;
-  if (CANONICAL_IDENTITIES.has(identity)) return true;
-  if (typeof identity.verdict !== 'string' || !VERDICT_SET.has(identity.verdict)) return false;
-  if (typeof identity.providerId !== 'string' || !identity.providerId.trim()) return false;
-  if (typeof identity.providerVersion !== 'string' || !identity.providerVersion.trim()) return false;
-  if (typeof identity.ecosystem !== 'string' || !identity.ecosystem.trim()) return false;
-  if (typeof identity.method !== 'string' || !identity.method.trim() || identity.method === 'filename') return false;
-  if (identity.digest == null || typeof identity.digest !== 'string') return false;
-  const expectedDigest = stableDigest({
-    verdict: identity.verdict,
-    providerId: identity.providerId,
-    providerVersion: identity.providerVersion,
-    ecosystem: identity.ecosystem,
-    toolchainVersion: identity.toolchainVersion ?? null,
-    binaryIdentity: identity.binaryIdentity ?? null,
-    observed: identity.observed ?? null,
-    expected: identity.expected ?? null,
-  });
-  if (identity.digest !== expectedDigest) return false;
-  if (AUTHORITATIVE_VERDICTS.has(identity.verdict)) {
-    if (identity.observed == null && identity.expected == null && identity.toolchainVersion == null && identity.binaryIdentity == null) {
-      return false;
-    }
-    if (identity.verdict === 'matched-authoritative' && identity.expected != null && identity.observed != null && identity.expected !== identity.observed) {
-      return false;
-    }
-  }
-  return true;
+  return !!identity && typeof identity === 'object' && CANONICAL_IDENTITIES.has(identity);
 }
 
 /** True when this identity may create authoritative (hard) facts. */

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { createAnalysisStatus } from '../js/analysis/status.js';
+import { stableDigest } from '../js/core/identity/index.js';
 import {
   createLanguageMetadataIdentity,
   createLanguageMetadataRecord,
   createLanguageMetadataResult,
+  isCanonicalLanguageIdentity,
   isLanguageRecordAuthoritative,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
@@ -56,7 +58,35 @@ const forgedResult = {
 };
 assert.equal(isLanguageRecordAuthoritative(forgedResult, record), false);
 
-// 2. Canonical createLanguageMetadataIdentity identity works normally
+// 2. A structurally plausible plain identity with a matching digest must still
+// fail closed when a creator-invalid field is used as the authority proof.
+const forgedDigestPayload = {
+  verdict: 'matched-authoritative',
+  providerId: 'provider:test',
+  providerVersion: '1.0.0',
+  ecosystem: 'swift',
+  toolchainVersion: {},
+  binaryIdentity: null,
+  observed: null,
+  expected: null,
+};
+const forgedCanonicalLookingIdentity = {
+  ...forgedDigestPayload,
+  architecture: null,
+  platform: null,
+  method: 'runtime-metadata',
+  detail: null,
+  coverage: null,
+  digest: stableDigest(forgedDigestPayload),
+};
+assert.equal(isCanonicalLanguageIdentity(forgedCanonicalLookingIdentity), false);
+assert.equal(isLanguageRecordAuthoritative({
+  identity: forgedCanonicalLookingIdentity,
+  completeness: { complete: true },
+  status,
+}, record), false);
+
+// 3. Canonical createLanguageMetadataIdentity identity works normally
 const canonicalResult = createLanguageMetadataResult({
   identity: validIdentity,
   completeness: { complete: true },
@@ -64,7 +94,7 @@ const canonicalResult = createLanguageMetadataResult({
 });
 assert.equal(isLanguageRecordAuthoritative(canonicalResult, record), true);
 
-// 3. Forged identity does not emit hard constraints
+// 4. Forged identity does not emit hard constraints
 const graphEvents = [];
 const mockGraph = {
   addHardConstraint(c) { graphEvents.push({ type: 'hard', ...c }); },
@@ -74,7 +104,7 @@ applyLanguageMetadataTypesToGraph(mockGraph, forgedResult, { records: [record] }
 assert.equal(graphEvents.some((e) => e.type === 'hard'), false);
 assert.equal(graphEvents.some((e) => e.type === 'soft'), true);
 
-// 4. Forged identity function evidence is heuristic, not exact
+// 5. Forged identity function evidence is heuristic, not exact
 const evidences = languageMetadataFunctionEvidence(forgedResult, { records: [funcRecord] });
 assert.equal(evidences.length, 1);
 assert.equal(evidences[0].confidence, 'heuristic');

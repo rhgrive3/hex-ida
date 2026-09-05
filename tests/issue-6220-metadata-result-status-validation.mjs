@@ -3,6 +3,7 @@ import {
   createLanguageMetadataIdentity,
   createLanguageMetadataRecord,
   createLanguageMetadataResult,
+  isCanonicalAnalysisStatus,
   isLanguageRecordAuthoritative,
   applyLanguageMetadataTypesToGraph,
 } from '../js/metadata/provider.js';
@@ -58,6 +59,7 @@ const validResult = createLanguageMetadataResult({
   completeness: { complete: true },
   status: canonicalStatus,
 });
+assert.equal(isCanonicalAnalysisStatus(canonicalStatus), true);
 assert.equal(isLanguageRecordAuthoritative(validResult, validRecord), true);
 
 // 3. Forged raw status without canonical structure must not be authoritative
@@ -85,7 +87,22 @@ const missingFieldsResult = {
 };
 assert.equal(isLanguageRecordAuthoritative(missingFieldsResult, validRecord), false);
 
-// 5. Forged status must not emit hard constraints in applyLanguageMetadataTypesToGraph
+// 5. Creator-invalid fields must not be accepted by the hard-authority guard.
+const creatorInvalidStatuses = [
+  { ...canonicalStatus, budgetClass: 'unbounded' },
+  { ...canonicalStatus, evidenceIds: [{}] },
+  { ...canonicalStatus, dependencyIds: [''] },
+];
+for (const status of creatorInvalidStatuses) {
+  assert.equal(isCanonicalAnalysisStatus(status), false);
+  assert.equal(isLanguageRecordAuthoritative({
+    identity: validIdentity,
+    completeness: { complete: true },
+    status,
+  }, validRecord), false);
+}
+
+// 6. Forged status must not emit hard constraints in applyLanguageMetadataTypesToGraph
 const graphEvents = [];
 const mockGraph = {
   addHardConstraint(c) { graphEvents.push({ type: 'hard', ...c }); },
