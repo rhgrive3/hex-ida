@@ -73,8 +73,9 @@ function makeReadCapability(context, pluginScope = null, record = null) {
     manifestPerm = Boolean(record.manifest.permissions.binaryRead);
   }
   const allowed = manifestPerm && (policy.binaryRead === true || policy.readBinary === true);
+  // readRanges only narrows an already-granted read; it never mints permission.
+  if (!allowed) return async () => { throw new Error('plugin binary read permission denied'); };
   const ranges = normalizeRanges(policy.readRanges || policy.ranges || context.binary?.readRanges);
-  if (!allowed && !ranges.length) return async () => { throw new Error('plugin binary read permission denied'); };
   const perCall = Math.floor(finitePositive(policy.maxReadBytes, DEFAULT_READ_CALL_BYTES));
   const totalLimit = Math.floor(finitePositive(policy.maxTotalReadBytes, DEFAULT_READ_TOTAL_BYTES));
   let total = 0;
