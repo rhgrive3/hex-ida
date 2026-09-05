@@ -390,10 +390,18 @@ function addressImmediateEncodingFailure(instruction) {
     return `arm64-${mnemonic}-target-operand-unencodable`;
   }
   const address = asBigIntOrNull(instruction?.address);
-  const target = asBigIntOrNull(instruction?.pcRelTarget);
-  if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  if (address == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  let target = null;
+  if (instruction?.pcRelTarget !== undefined) {
+    if (instruction.pcRelTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = asBigIntOrNull(instruction.pcRelTarget);
+    if (target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  }
   const operandTarget = decodedAbsoluteTargetOf(targetOperand);
-  if (operandTarget != null && operandTarget !== target) {
+  if (target == null) {
+    if (operandTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = operandTarget;
+  } else if (operandTarget != null && operandTarget !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
   if (mnemonic === 'adr') {

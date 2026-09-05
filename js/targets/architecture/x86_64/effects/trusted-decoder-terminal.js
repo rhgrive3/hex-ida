@@ -3,7 +3,7 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
 } from '../../../../semantics/effects/index.js';
-import { isX87Instruction } from './extended-state-helpers.js';
+import { isX87Instruction, isX87RflagsInstruction } from './extended-state-helpers.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -82,7 +82,11 @@ function flagSets(instruction, family) {
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
 
-  if (isX87Instruction(instruction, family)) {
+  const isX87 = isX87Instruction(instruction, family);
+  const usesRflags = isX87RflagsInstruction(instruction, family);
+  const usesFpuFlags = (instruction?.detail?.flagsKind === 'fpu-flags' || isX87) && !usesRflags;
+
+  if (usesFpuFlags) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {
       if (bit(raw, test)) reads.add(`fpsw.${name.toLowerCase()}`);
       if (bit(raw, modify) || bit(raw, reset) || bit(raw, set) || bit(raw, undef)) writes.add(`fpsw.${name.toLowerCase()}`);
@@ -276,14 +280,16 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const registers = decoderRegisterSets(instruction);
   const flags = flagSets(instruction, family);
   const isX87 = isX87Instruction(instruction, family);
+  const usesRflags = isX87RflagsInstruction(instruction, family);
+  const usesFpuFlags = (instruction?.detail?.flagsKind === 'fpu-flags' || isX87) && !usesRflags;
   for (const value of flags.reads) {
-    if (isX87 && value.startsWith('rflags.')) return partial;
-    if (!isX87 && value.startsWith('fpsw.')) return partial;
+    if (usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!usesFpuFlags && value.startsWith('fpsw.')) return partial;
     registers.reads.add(value);
   }
   for (const value of flags.writes) {
-    if (isX87 && value.startsWith('rflags.')) return partial;
-    if (!isX87 && value.startsWith('fpsw.')) return partial;
+    if (usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!usesFpuFlags && value.startsWith('fpsw.')) return partial;
     registers.writes.add(value);
   }
   hiddenState(ownerId, family, registers.reads, registers.writes, instruction);

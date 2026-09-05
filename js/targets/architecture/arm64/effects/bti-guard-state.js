@@ -167,8 +167,8 @@ function normalizeBtype(val) {
 }
 
 function normalizeSctlrBt(val) {
-  if (val === true || val === 1 || val === '1' || val === 'enabled' || val === 'compatible') return true;
-  if (val === false || val === 0 || val === '0' || val === 'disabled' || val === 'incompatible') return false;
+  if (val === true || val === 1 || val === '1' || val === 'enabled' || val === 'incompatible') return true;
+  if (val === false || val === 0 || val === '0' || val === 'disabled' || val === 'compatible') return false;
   return null;
 }
 
@@ -280,7 +280,7 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
     }
 
     if (guardState.state === 'guarded') {
-      if (btype === 0 || btype === 1 || btype === 2) {
+      if (btype === 1 || btype === 2) {
         return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
           operations:bundle.operations,
           possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
@@ -295,8 +295,36 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
         }));
       }
 
+      if (btype === 0) {
+        const fault = Object.freeze({
+          kind:'branch-target-exception',
+          condition:Object.freeze({
+            kind:'bti-incompatible',
+            btype:0,
+            landingPadKind:'pacixsp',
+          }),
+          detail:Object.freeze({
+            guardedPageState:'guarded',
+            landingPadKind:'pacixsp',
+            incomingBtype:0,
+          }),
+        });
+        return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+          operations:bundle.operations,
+          possibleFaults:[...bundle.possibleFaults, fault],
+          completeness:bundle.completeness,
+          unknownEffects:bundle.unknownEffects,
+          metadata:{
+            btiGuardedPage:guardState,
+            btiCheck:'incompatible-branch-target',
+            landingPadKind:'pacixsp',
+            incomingBtype:0,
+          },
+        }));
+      }
+
       if (btype === 3) {
-        if (sctlrBt === true) {
+        if (sctlrBt === false) {
           return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
             operations:bundle.operations,
             possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
@@ -307,23 +335,23 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
               btiCheck:'compatible-sctlr-policy',
               landingPadKind:'pacixsp',
               incomingBtype:btype,
-              sctlrBt:true,
+              sctlrBt:false,
             },
           }));
         }
-        if (sctlrBt === false) {
+        if (sctlrBt === true) {
           const fault = Object.freeze({
             kind:'branch-target-exception',
             condition:Object.freeze({
               kind:'bti-incompatible',
               btype:3,
               landingPadKind:'pacixsp',
-              sctlrBt:false,
+              sctlrBt:true,
             }),
             detail:Object.freeze({
               guardedPageState:'guarded',
               landingPadKind:'pacixsp',
-              sctlrBt:false,
+              sctlrBt:true,
             }),
           });
           return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
@@ -336,7 +364,7 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
               btiCheck:'incompatible-branch-target',
               landingPadKind:'pacixsp',
               incomingBtype:btype,
-              sctlrBt:false,
+              sctlrBt:true,
             },
           }));
         }

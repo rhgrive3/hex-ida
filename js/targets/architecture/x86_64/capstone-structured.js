@@ -201,7 +201,10 @@
     const implicitReads = implicitRegisters(M, handle, detailPointer, 0, 40, 20);
     const implicitWrites = implicitRegisters(M, handle, detailPointer, 42, 82, 20);
     const groupList = groups(M, handle, detailPointer);
-    const flagsKind = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu') ? 'fpu-flags' : 'eflags';
+    const isFpuGroup = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
+    const normalizedFamily = String(opcodeName || mnemonic || '').toLowerCase();
+    const usesRflags = normalizedFamily.startsWith('fcmov') || ['fcomi', 'fcomip', 'fucomi', 'fucomip'].includes(normalizedFamily);
+    const flagsKind = isFpuGroup && !usesRflags ? 'fpu-flags' : 'eflags';
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
       prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),

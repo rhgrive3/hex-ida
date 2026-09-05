@@ -16,6 +16,16 @@ export const X87_FAMILIES = new Set([
   'fxsave','fxsave64','fxrstor','fxrstor64',
   'fninit','finit','fnclex','fclex','fnop','fdisi8087_nop','feni8087_nop','fsetpm',
 ]);
+export const X87_RFLAGS_FAMILIES = new Set([
+  'fcomi','fcomip','fucomi','fucompi',
+  'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
+]);
+
+export function isX87RflagsInstruction(instruction, family = null) {
+  const fam = String(family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '').toLowerCase();
+  return X87_RFLAGS_FAMILIES.has(fam) || fam.startsWith('fcmov');
+}
+
 export function isX87Instruction(instruction, family = null) {
   if (instruction?.detail?.flagsKind === 'fpu-flags') return true;
   const fam = String(family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '').toLowerCase();

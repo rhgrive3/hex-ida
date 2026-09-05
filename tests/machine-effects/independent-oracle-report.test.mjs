@@ -9,6 +9,7 @@ import {
   validateOracleReport,
 } from '../../tools/validation/machine-effects/oracle-report.mjs';
 import {
+  inspectExactHead,
   parseArgs,
   verifyCandidateMergeTree,
   verifyExactHead,
@@ -183,6 +184,12 @@ const { reportId: ignoredReportId, ...forgedBreadthPayload } = forgedBreadth;
 forgedBreadth.reportId = sha256Digest(forgedBreadthPayload);
 assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|unjustified-mismatch/);
 
+const exactHeadInspection = inspectExactHead({ cwd: process.cwd(), baseSha: assignedBase });
+const exactHeadFailure = !exactHeadInspection.clean
+  ? /release-working-tree-dirty/
+  : (!exactHeadInspection.allowlist.valid
+    ? /release-changed-file-outside-allowlist/
+    : /report-incomplete-architectural-evidence/);
 assert.throws(() => verifyExactHead({
   report,
   expectedHead: currentHead,
@@ -190,7 +197,7 @@ assert.throws(() => verifyExactHead({
   expectedCandidateTree: candidateTreeSha,
   requireClean: true,
   requireCandidateTree: true,
-}), /report-incomplete-architectural-evidence/);
+}), exactHeadFailure);
 
 assert.throws(() => verifyCandidateMergeTree({
   report,
