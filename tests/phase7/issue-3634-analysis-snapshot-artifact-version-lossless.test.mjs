@@ -76,6 +76,63 @@ assert.throws(
   'nested lossy values must fail closed',
 );
 
+const explicitNullArray = createAnalysisSnapshot({
+  ...base,
+  artifactVersions: { semantic: [null] },
+});
+assert.deepEqual(explicitNullArray.artifactVersions.semantic, [null], 'explicit null array entries remain canonical');
+
+const sparseArray = Array(1);
+assert.throws(
+  () => createAnalysisSnapshot({
+    ...base,
+    artifactVersions: { semantic: sparseArray },
+  }),
+  (error) => error instanceof TypeError
+    && error.message === 'analysis-snapshot-artifact-version-value-invalid',
+  'sparse array holes must not alias explicit null entries',
+);
+
+let nestedGetterReads = 0;
+const accessorBacked = {};
+Object.defineProperty(accessorBacked, 'nested', {
+  enumerable: true,
+  get() {
+    nestedGetterReads++;
+    return nestedGetterReads === 1 ? 'safe' : NaN;
+  },
+});
+assert.throws(
+  () => createAnalysisSnapshot({
+    ...base,
+    artifactVersions: { semantic: accessorBacked },
+  }),
+  (error) => error instanceof TypeError
+    && error.message === 'analysis-snapshot-artifact-version-value-invalid',
+  'accessor-backed nested values must fail before canonicalization',
+);
+assert.equal(nestedGetterReads, 0, 'artifact-version snapshot must not invoke nested accessors');
+
+let topLevelGetterReads = 0;
+const accessorVersions = {};
+Object.defineProperty(accessorVersions, 'semantic', {
+  enumerable: true,
+  get() {
+    topLevelGetterReads++;
+    return topLevelGetterReads === 1 ? 'safe' : NaN;
+  },
+});
+assert.throws(
+  () => createAnalysisSnapshot({
+    ...base,
+    artifactVersions: accessorVersions,
+  }),
+  (error) => error instanceof TypeError
+    && error.message === 'analysis-snapshot-artifact-version-value-invalid',
+  'artifact-version map accessors must fail before value reads',
+);
+assert.equal(topLevelGetterReads, 0, 'artifact-version map accessors must not be invoked');
+
 const nullSnapshot = createAnalysisSnapshot({
   ...base,
   artifactVersions: { semantic: null },
