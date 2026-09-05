@@ -193,10 +193,15 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   return { root:s.root };
 }
 
-function linkedController(parentSignal) {
+export function linkedController(parentSignal) {
   const controller = new AbortController();
-  if (parentSignal?.aborted) controller.abort(parentSignal.reason);
-  else if (parentSignal) parentSignal.addEventListener('abort', () => controller.abort(parentSignal.reason), { once:true });
+  if (!parentSignal || parentSignal.aborted) {
+    if (parentSignal?.aborted) controller.abort(parentSignal.reason);
+    return controller;
+  }
+  const onParentAbort = () => controller.abort(parentSignal.reason);
+  parentSignal.addEventListener('abort', onParentAbort, { once:true });
+  controller.signal.addEventListener('abort', () => parentSignal.removeEventListener('abort', onParentAbort), { once:true });
   return controller;
 }
 
