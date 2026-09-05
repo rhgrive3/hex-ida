@@ -64,14 +64,23 @@ const WORKER_PRELUDE = String.raw`
       if (nativeArrayBufferIsView(x)) { bytes+=x.byteLength; continue; }
       if (typeof x !== 'object') return OUTPUT_MAX_BYTES + 1;
       if (seen.has(x)) continue; seen.add(x);
+      // Only arrays and plain/null-prototype objects have byte authority through
+      // enumerable own properties. Opaque cloneables (Blob/File/Error/etc.)
+      // may carry hidden payload and therefore fail closed.
       if (!nativeArrayIsArray(x)) {
         const proto = nativeGetPrototypeOf(x);
         if (proto !== NativeObjectPrototype && proto !== null) return OUTPUT_MAX_BYTES + 1;
       }
       const keys=nativeKeys(x); bytes += keys.length * 8;
+      // The key scan is capped for measurer work, but an uncapped tail must
+      // never look small: anything beyond the cap is unmeasurable, so the
+      // whole message fails closed instead of bypassing the byte budget.
       if (keys.length > 2048) return OUTPUT_MAX_BYTES + 1;
       for (let i=0;i<keys.length;i++) {
         const descriptor=nativeDescriptor(x,keys[i]);
+        // Structured clone reads enumerable properties. An accessor can return
+        // one value while measuring and a different value while cloning, so it
+        // cannot provide stable byte authority and must fail closed.
         if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') return OUTPUT_MAX_BYTES + 1;
         bytes += keys[i].length*2;
         stack.push(descriptor.value);
@@ -90,6 +99,11 @@ const WORKER_PRELUDE = String.raw`
       if (!controlPostMessage) throw new Error('sandbox control channel is not ready');
       controlPostMessage(message);
     } catch {
+      // A structured-clone failure on the original payload (for example a
+      // function passed to print()) must not turn into a silent worker death.
+      // Report a fixed clone-safe diagnostic over the already-established
+      // private channel before closing. If the channel itself is broken the
+      // fallback can fail too, but cleanup must still be deterministic.
       try {
         if (controlPostMessage) controlPostMessage({ t: 'error', error: 'sandbox制御メッセージを送信できませんでした。' });
       } catch {}
@@ -103,8 +117,12 @@ const WORKER_PRELUDE = String.raw`
       try { close(); } catch {}
       return;
     }
+    // Public postMessage is user output only. It never enters the privileged
+    // control protocol, even when the payload forges a control discriminator.
     try { nativePostMessage(envelope); } catch {}
   };
+  // Direct user postMessage is fire-and-forget output too; route it through the
+  // same budget instead of letting it bypass print().
   try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
   const measure = (value, seen = new Set(), limit = MAX_ARGUMENT_UNITS + 1) => {
@@ -161,7 +179,7 @@ const WORKER_PRELUDE = String.raw`
     dump: (addr, len = 64) => rpc('emulatorDump', [id, addr, len]),
     store: (addr, size, value) => rpc('emulatorStore', [id, addr, size, value]),
     addBreakpoint: (addr) => rpc('emulatorAddBreakpoint', [id, addr]),
-    removeBreakpoint: (addr) => rpc('emulatorRemoveBreakpoint', [id]),
+    removeBreakpoint: (addr) => rpc('emulatorRemoveBreakpoint', [id, addr]),
     breakpoints: () => rpc('emulatorBreakpoints', [id]),
     reset: () => rpc('emulatorReset', [id]),
     destroy: () => rpc('emulatorDestroy', [id]),
@@ -201,13 +219,14 @@ const WORKER_PRELUDE = String.raw`
   const loadUserFactory = (source, params, asyncFactory, sourceURL) => {
     const key = '__hexSandboxUserFactory';
     try { delete globalThis[key]; } catch {}
-    const nl = String.fromCharCode(10);
-    const declaration = '"use strict";' + nl + 'globalThis.' + key + ' = '
-      + (asyncFactory ? 'async ' : '') + 'function(' + params + ') { "use strict";' + nl
-      + String(source) + nl + '};' + nl + '//# sourceURL=' + sourceURL + nl;
+    const declaration = '"use strict";\nglobalThis.' + key + ' = '
+      + (asyncFactory ? 'async ' : '') + 'function(' + params + ') { "use strict";\n'
+      + String(source) + '\n};\n//# sourceURL=' + sourceURL + '\n';
     const blob = new Blob([declaration], { type: 'text/javascript' });
     const url = URL.createObjectURL(blob);
     try {
+      // importScripts evaluates a distinct classic Script. The user factory can
+      // see the worker global, but cannot capture this IIFE's lexical bindings.
       nativeImportScripts(url);
     } finally {
       URL.revokeObjectURL(url);
@@ -412,6 +431,9 @@ const FRAME = `<!doctype html><meta charset="utf-8">
     workerPort.start();
     worker.onmessage = (e) => {
       const data = e.data;
+      // Public user postMessage traffic is deliberately separated from the
+      // privileged control channel. Re-validate and meter it in the frame too:
+      // user code can otherwise reach the native Worker sender via its prototype.
       if (!isPublicOutputEnvelope(data)) {
         failWorker('sandbox Workerの公開出力境界が壊れました。');
         return;
@@ -645,6 +667,9 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
           const allowed = api && typeof m.method === 'string' && Object.prototype.hasOwnProperty.call(api, m.method);
           const fn = allowed ? api[m.method] : null;
           if (typeof fn !== 'function') throw new Error('許可されていないAPIです: ' + m.method);
+          // All host APIs receive a final execution context. Existing JS APIs
+          // harmlessly ignore the extra argument; long-running adapters can
+          // observe signal and cancel backend/worker work immediately.
           value = await fn(...m.args, { signal: runController.signal });
           if (runController.signal.aborted) return;
           rpcOutputBytes += valueSize(value, new Set(), MAX_RPC_OUTPUT_BYTES + 1);
