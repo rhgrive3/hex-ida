@@ -135,6 +135,7 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
+    const traceEpoch = session.epoch;
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
     let observation = { stop:null, returnValue:null, branches:[] }, trace;
     const started = Date.now();
@@ -156,7 +157,14 @@ export class RuntimeAnalysisPlatform {
         trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
       }
     } finally { operation.release(); }
-    for (const event of trace.events || []) session.acceptEvent(event);
+    if (session.epoch !== traceEpoch) {
+      throw new DebugAdapterError('session-epoch-changed','runtime trace completed after the active session epoch changed',{traceEpoch,sessionEpoch:session.epoch});
+    }
+    for (const event of trace.events || []) {
+      if (!session.acceptEvent(event,traceEpoch)) {
+        throw new DebugAdapterError('session-epoch-event-mismatch','runtime trace contains an event outside the captured session epoch',{traceEpoch,eventEpoch:event?.epoch ?? null});
+      }
+    }
     const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const facts = factExtraction.facts;
     const replayable=isReplayable(adapter,observation,trace);
