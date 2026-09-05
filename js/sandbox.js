@@ -155,10 +155,19 @@ const WORKER_PRELUDE = String.raw`
     if (type !== 'object' || seen.has(value)) return 0;
     seen.add(value);
     let n = 16;
-    const values = Array.isArray(value) ? value : Object.values(value);
-    for (const item of values) {
-      n += measure(item, seen, limit - n);
-      if (n >= limit) break;
+    const isArray = nativeArrayIsArray(value);
+    if (!isArray && !nativeArrayBufferIsView(value)) {
+      for (const key of nativeKeys(value)) {
+        n += Math.min(limit - n, key.length * 2);
+        if (n >= limit) break;
+      }
+    }
+    if (n < limit) {
+      const values = isArray ? value : Object.values(value);
+      for (const item of values) {
+        n += measure(item, seen, limit - n);
+        if (n >= limit) break;
+      }
     }
     seen.delete(value);
     return n;
@@ -501,10 +510,19 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   if (type !== 'object' || seen.has(value)) return 0;
   seen.add(value);
   let n = 16;
-  const values = Array.isArray(value) ? value : Object.values(value);
-  for (const item of values) {
-    n += valueSize(item, seen, limit - n);
-    if (n >= limit) break;
+  const isArray = Array.isArray(value);
+  if (!isArray) {
+    for (const key of Object.keys(value)) {
+      n += Math.min(limit - n, key.length * 2);
+      if (n >= limit) break;
+    }
+  }
+  if (n < limit) {
+    const values = isArray ? value : Object.values(value);
+    for (const item of values) {
+      n += valueSize(item, seen, limit - n);
+      if (n >= limit) break;
+    }
   }
   seen.delete(value);
   return n;
