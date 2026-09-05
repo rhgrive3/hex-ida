@@ -194,12 +194,14 @@ jobs:
           path: ${{ matrix.target.oracle }}
           key: ${{ steps.oracle-key.outputs.key }}
       - name: Publish oracle for this run
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: cross-binary-oracle-${{ matrix.target.name }}
           path: ${{ matrix.target.oracle }}
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0
       - name: Validate required oracle
         run: |
           test -s "${{ matrix.target.oracle }}"
@@ -353,13 +355,13 @@ jobs:
           fi
 
       - name: Save exact core result cache
-        if: success() && steps.core-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name != 'pull_request' && steps.core-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-core.json
           key: accuracy-result-v9-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-core-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Save exact pinpoint result cache
-        if: success() && steps.pinpoint-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name != 'pull_request' && steps.pinpoint-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-pinpoint.json
@@ -378,6 +380,7 @@ jobs:
           name: accuracy-part-${{ matrix.target.name }}
           path: accuracy-part-${{ matrix.target.name }}-*.json
           if-no-files-found: error
+          compression-level: 0
 
   accuracy:
     name: accuracy
@@ -452,3 +455,4 @@ jobs:
             accuracy-TsumTsum.json
             accuracy-baseline-report.json
           if-no-files-found: error
+          compression-level: 0
