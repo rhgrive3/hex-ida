@@ -397,7 +397,6 @@ export function demangleRustV0(symbol, maxDepth = 32) {
   } catch {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
   }
-
   if (state.depthExceeded) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded' };
   }
@@ -508,6 +507,9 @@ export function demangleRustLegacy(symbol) {
 
   if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
+  }
+  if (i !== s.length) {
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
   }
 
   const demangled = components.join('::');
