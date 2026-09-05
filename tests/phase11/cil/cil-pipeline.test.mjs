@@ -16,6 +16,17 @@ for await (const m of frontend.enumerateMethods(image)) {
 assert.equal(methods.length, 1);
 
 const decoded = await frontend.decodeMethod(methods[0], { image });
+// This raw-metadata fixture omits MethodDef/#Blob signature authority. Its
+// bytecode returns one int32 local; state that contract explicitly for the
+// positive pipeline rather than certifying an unknown return shape as valid.
+const unknownReturn = await frontend.validateMethod(decoded);
+assert.equal(unknownReturn.status, 'partial');
+assert.ok(unknownReturn.warnings.some((warning) => warning.code === 'cil-return-stack-shape-unavailable'));
+
+const wrongReturn = await frontend.validateMethod(decoded, { returnStackSlots: 0 });
+assert.equal(wrongReturn.status, 'invalid');
+assert.ok(wrongReturn.errors.some((error) => error.code === 'cil-return-stack-shape-invalid'));
+
 const val = await frontend.validateMethod(decoded, { returnStackSlots: 1 });
 assert.equal(val.status, 'valid');
 
