@@ -1785,16 +1785,18 @@ function validateCheckpointContract({
   }
   const movingMainAmendment = integrationInventory?.movingMainAmendment;
   const historicalBaseChanged = latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha;
+  const amendedTaskIds = movingMainAmendment?.product?.acceptedTaskIds;
+  // The immutable amendment covers a prefix, not every future checkpoint.
+  // Actual refreshed-main ancestry, merge contents and inventory are verified
+  // from Git below; this structural check must not require rewriting a receipt.
+  const amendmentAllowsBaseRefresh = movingMainAmendment?.status === 'DONE'
+    && movingMainAmendment.previousEvidence?.headSha != null
+    && Array.isArray(amendedTaskIds) && amendedTaskIds.length > 0
+    && canonicalJson(amendedTaskIds) === canonicalJson(acceptedTaskIds.slice(0, amendedTaskIds.length));
   if (historicalBaseChanged
-    && (!movingMainAmendment
-      || movingMainAmendment.status !== 'DONE'
-      || movingMainAmendment.previousEvidence?.headSha == null
-      || movingMainAmendment.mainReconciliation?.currentMainSha !== integrationInventory?.baseSha)) {
+    && !amendmentAllowsBaseRefresh) {
     errors.push('checkpoint-moving-main-amendment-not-done');
   }
-  const amendmentAllowsBaseRefresh = movingMainAmendment?.status === 'DONE'
-    && movingMainAmendment.mainReconciliation?.currentMainSha === integrationInventory?.baseSha
-    && canonicalJson(movingMainAmendment.product?.acceptedTaskIds) === canonicalJson(acceptedTaskIds);
   if (!amendmentAllowsBaseRefresh
     && (latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha
       || (remainingComponentTaskIds.length > 0
@@ -4140,7 +4142,11 @@ export function verifyMainReconciliation(root, record, {
     || parents[1] !== record.currentMainSha) {
     throw new Error(`checkpoint-main-reconciliation-parents-invalid:${label}`);
   }
-  if (reviewed) return verifyReviewedMainMerge(root, record, observedTreeSha, label);
+  if (reviewed) {
+    const verified = verifyReviewedMainMerge(root, record, observedTreeSha, label);
+    verifyPostAmendmentInventoryRefresh(root, record);
+    return verified;
+  }
   const autoMergeTreeSha = candidateMergeTree(
     root,
     expectedPreviousEvidenceSha,
@@ -4154,7 +4160,19 @@ export function verifyMainReconciliation(root, record, {
     || adjustmentPaths.some((repoPath) => !MAIN_RECONCILIATION_ALLOWED_PATHS.includes(repoPath))) {
     throw new Error(`checkpoint-main-reconciliation-adjustment-invalid:${label}:${adjustmentPaths.join(',')}`);
   }
+  verifyPostAmendmentInventoryRefresh(root, record);
   return Object.freeze({ ...record, adjustmentPaths: Object.freeze([...adjustmentPaths]) });
+}
+
+function verifyPostAmendmentInventoryRefresh(root, record) {
+  const previousText = readOptionalText(root, T060_AMENDMENT_INVENTORY_PATH, record.previousEvidenceSha);
+  if (previousText == null || JSON.parse(previousText).movingMainAmendment?.status !== 'DONE') return;
+  // The same check applies when R2 is the current tail and when a later
+  // component checkpoint replays R2 as its historical integration parent.
+  verifyMainInventoryRefresh(root, {
+    previousSha: record.previousEvidenceSha, refreshedSha: record.integrationHeadSha,
+    currentMainSha: record.currentMainSha, errorPrefix: 'checkpoint-tail-inventory',
+  });
 }
 
 function verifyReviewedMainMerge(root, record, observedTreeSha, label) {
@@ -4237,21 +4255,86 @@ function derivedTailMainReconciliation(root, {
     throw new Error('checkpoint-tail-main-reconciliation-parents-invalid');
   }
   const observedCurrentMainSha = currentMainSha ?? parents[1];
-  const autoMergeTreeSha = candidateMergeTree(root, previousEvidenceSha, observedCurrentMainSha);
+  const merge = runGit(root, ['merge-tree', '--write-tree', '--name-only', '-z',
+    previousEvidenceSha, observedCurrentMainSha]);
+  const parts = merge.stdout.split('\0');
+  const autoMergeTreeSha = parts.shift();
+  const conflictEnd = parts.indexOf('');
+  const reviewed = merge.status === 1;
+  if (![0, 1].includes(merge.status) || !validSha1(autoMergeTreeSha)
+    || (reviewed && conflictEnd < 1)) {
+    throw new Error('checkpoint-tail-main-reconciliation-merge-invalid');
+  }
   const adjustmentPaths = changedPaths(root, autoMergeTreeSha, integrationHeadTreeSha);
-  if (adjustmentPaths.some((repoPath) => !MAIN_RECONCILIATION_ALLOWED_PATHS.includes(repoPath))) {
+  if (!reviewed && adjustmentPaths.some((repoPath) => !MAIN_RECONCILIATION_ALLOWED_PATHS.includes(repoPath))) {
     throw new Error(`checkpoint-tail-main-reconciliation-adjustment-invalid:${adjustmentPaths.join(',')}`);
   }
-  return Object.freeze({
-    mode: 'EXACT_MERGE',
+  const record = {
+    schemaVersion: reviewed ? 'hex-final-closure-main-reconciliation/v2' : MAIN_RECONCILIATION_SCHEMA_VERSION,
+    mode: reviewed ? 'REVIEWED_MERGE' : 'EXACT_MERGE',
     previousEvidenceSha,
     currentMainSha: observedCurrentMainSha,
     integrationHeadSha,
     integrationHeadTreeSha,
     autoMergeTreeSha,
-    adjustmentPaths: Object.freeze(adjustmentPaths),
+    adjustmentPaths,
     adjustmentStableDigest: stableDigest([...adjustmentPaths].sort()),
+  };
+  if (reviewed) {
+    const priorInventory = readJsonAt(root, previousEvidenceSha, T060_AMENDMENT_INVENTORY_PATH);
+    record.conflictResolutions = parts.slice(0, conflictEnd).map((repoPath) => {
+      if (!validRepoPath(repoPath)) throw new Error('checkpoint-tail-main-reconciliation-conflict-path-invalid');
+      const blob = (sha) => git(root, ['rev-parse', `${sha}:${repoPath}`]);
+      const integrationBlobSha = blob(previousEvidenceSha);
+      const mainBlobSha = blob(observedCurrentMainSha);
+      const resolvedBlobSha = blob(integrationHeadSha);
+      return { path: repoPath,
+        ownerTaskId: priorInventory.entries?.find((entry) => entry.path === repoPath)?.ownerTaskId,
+        integrationBlobSha, mainBlobSha, resolvedBlobSha,
+        selectedParent: resolvedBlobSha === integrationBlobSha ? 'INTEGRATION'
+          : resolvedBlobSha === mainBlobSha ? 'MAIN' : null };
+    });
+  }
+  // Derivation is not approval: reuse the same exact parent/blob/owner verifier
+  // as explicit checkpoint records, including regular-file and clean-main checks.
+  const verified = verifyMainReconciliation(root, record, {
+    expectedPreviousEvidenceSha: previousEvidenceSha,
+    expectedIntegrationHeadSha: integrationHeadSha,
+    requiredCurrentMainSha: observedCurrentMainSha,
+    sequence: 'TAIL',
   });
+  return verified;
+}
+
+function verifyMainInventoryRefresh(root, {
+  previousSha, refreshedSha, currentMainSha, ownershipSha = previousSha,
+  allowAmendmentPublication = false, errorPrefix,
+}) {
+  const fail = (reason) => { throw new Error(`${errorPrefix}-${reason}`); };
+  const prior = readJsonAt(root, previousSha, T060_AMENDMENT_INVENTORY_PATH);
+  const refreshed = readJsonAt(root, refreshedSha, T060_AMENDMENT_INVENTORY_PATH);
+  const preserved = (inventory) => {
+    const value = { ...inventory };
+    for (const key of ['baseSha', 'expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths',
+      'entries', ...(allowAmendmentPublication ? ['movingMainAmendment'] : [])]) delete value[key];
+    return value;
+  };
+  if (canonicalJson(preserved(prior)) !== canonicalJson(preserved(refreshed))) fail('delta');
+  const ownership = readJsonAt(root, ownershipSha,
+    'specs/005-analysis-final-closure/contracts/task-ownership.json');
+  const taskIds = taskBlocks(readTextAt(root, ownershipSha,
+    'specs/005-analysis-final-closure/tasks.md')).map((block) => block.split('\n')[0].match(/\bT\d{3}\b/)[0]);
+  const validated = validateIntegrationInventory({
+    integrationInventory: refreshed, ownership, taskIds,
+    actualChangedPaths: changedPaths(root, currentMainSha, refreshedSha),
+    expectedBaseSha: currentMainSha,
+  });
+  if (!validated.ok) fail('invalid');
+  // A refreshed base may remove paths from the diff, never reassign retained ones.
+  const priorOwners = new Map(prior.entries.map((entry) => [entry.path, entry.ownerTaskId]));
+  for (const entry of refreshed.entries) {
+    if (priorOwners.has(entry.path) && priorOwners.get(entry.path) !== entry.ownerTaskId) fail('owner-delta');
+  }
 }
 
 export function verifyCheckpointOperationalEvidence(root, result, integrationHeadSha, {
@@ -4970,33 +5053,11 @@ export function verifyT060Amendment(root, integrationHeadSha, {
     || !exactSet(changedPaths(root, amendment.evidence.headSha, publicationCommitSha), [T060_AMENDMENT_INVENTORY_PATH])) {
     fail('receipt-scope');
   }
-  const preservedInventory = (sha) => {
-    const value = readJsonAt(root, sha, T060_AMENDMENT_INVENTORY_PATH);
-    for (const key of ['baseSha', 'expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths',
-      'entries', 'movingMainAmendment']) delete value[key];
-    return value;
-  };
-  if (canonicalJson(preservedInventory(amendment.evidence.headSha))
-    !== canonicalJson(preservedInventory(publicationCommitSha))) fail('receipt-inventory-delta');
-  const priorInventory = readJsonAt(root, amendment.evidence.headSha, T060_AMENDMENT_INVENTORY_PATH);
-  const receiptInventory = readJsonAt(root, publicationCommitSha, T060_AMENDMENT_INVENTORY_PATH);
-  // A base refresh changes the path set, not the ownership of retained paths.
-  // Reuse the canonical inventory validator against P's actual Git diff so a
-  // later historical replay cannot hide a path by deleting all four set entries.
-  const receiptInventoryResult = validateIntegrationInventory({
-    integrationInventory: receiptInventory,
-    ownership: readJsonAt(root, codeHeadSha, ownershipPath),
-    taskIds: [...codeTaskRecords.keys()],
-    actualChangedPaths: changedPaths(root, receiptInventory.baseSha, publicationCommitSha),
-    expectedBaseSha: reconciliation.currentMainSha,
+  verifyMainInventoryRefresh(root, {
+    previousSha: amendment.evidence.headSha, refreshedSha: publicationCommitSha,
+    currentMainSha: reconciliation.currentMainSha, ownershipSha: codeHeadSha,
+    allowAmendmentPublication: true, errorPrefix: 'moving-main-amendment-receipt-inventory',
   });
-  if (!receiptInventoryResult.ok) fail('receipt-inventory-invalid');
-  const priorOwners = new Map(priorInventory.entries.map((entry) => [entry.path, entry.ownerTaskId]));
-  for (const entry of receiptInventory.entries) {
-    if (priorOwners.has(entry.path) && priorOwners.get(entry.path) !== entry.ownerTaskId) {
-      fail('receipt-inventory-owner-delta');
-    }
-  }
   const anchor = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T060');
   const activationParents = git(root, ['show', '-s', '--format=%P', anchor.transitionCommitSha])
     .split(/\s+/).filter(Boolean);

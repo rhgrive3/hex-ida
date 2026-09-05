@@ -53,6 +53,7 @@ import {
   validateTaskInventory,
   verifyCheckpointOperationalEvidence,
   verifyCheckpointRuntimeEvidence,
+  verifyMainReconciliation,
   verifyLocalStageBWorktree,
   verifyStageBOperationalEvidence,
   verifyT058Revalidation,
@@ -334,12 +335,33 @@ const CHECKPOINT_RUNTIME_FIXTURE_BUILD_ID = CHECKPOINT_RUNTIME_FIXTURE_CONTENT_H
 const IMMUTABLE_SYM01_COMMIT = '0d23cbfa595ea1d8753d5249626695bd9bae5ef3';
 const IMMUTABLE_SYM01_REF = 'refs/heads/wip/recovered-sym01-20260904';
 const RECOVERY_HANDOFF_REF = 'refs/heads/wip/recovery-handoff-20260904';
+const POST_T060_REFRESH_CONFLICT_PATHS = Object.freeze([
+  'js/ai/dev/ui/controls.js',
+  'tests/ai-ui-dev-profile.mjs',
+]);
+const POST_T060_REFRESH_T051_EVIDENCE_PATH = 'tests/final-closure/t051/post-t060-refresh-handoff.test.mjs';
 
 // Focused inner-loop entry; the canonical no-argument runner still executes
 // every assertion below, including this same amendment lifecycle regression.
 if (process.argv.includes('--moving-main-only')) {
   verifyMovingMainAmendmentFixture();
   console.log('moving-main amendment focused lifecycle: PASS');
+  process.exit(0);
+}
+if (process.argv.includes('--moving-main-refresh-only')) {
+  verifyMovingMainRefreshFixture();
+  verifyMovingMainRefreshNegativeFixtures();
+  console.log('moving-main post-T060 refresh focused lifecycle: PASS');
+  process.exit(0);
+}
+if (process.argv.includes('--moving-main-refresh-positive-only')) {
+  verifyMovingMainRefreshFixture();
+  console.log('moving-main post-T060 refresh positive lifecycle: PASS');
+  process.exit(0);
+}
+if (process.argv.includes('--moving-main-refresh-negatives-only')) {
+  verifyMovingMainRefreshNegativeFixtures();
+  console.log('moving-main post-T060 refresh negative lifecycle: PASS');
   process.exit(0);
 }
 if (process.argv.includes('--stale-fork-only')) {
@@ -1876,6 +1898,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
   moveMainBeforeSecond = false,
   reconcileSharedContractAtLast = false,
   productionContracts = false,
+  seedT051ConflictPaths = false,
 } = {}) {
   const fixtureOwnership = checkpointFixtureOwnership;
   const fixturePlanningTasksText = checkpointFixtureTasksText;
@@ -1944,6 +1967,9 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     evidencePath,
     ...componentPaths,
     ...generatedPaths,
+    ...(seedT051ConflictPaths
+      ? [...POST_T060_REFRESH_CONFLICT_PATHS, POST_T060_REFRESH_T051_EVIDENCE_PATH]
+      : []),
   ])];
   const inventory = structuredClone(syntheticPlanningSeed.integrationInventory);
   inventory.baseSha = baseSha;
@@ -1958,6 +1984,12 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
       path: repoPath,
       ownerTaskId: acceptedTaskIds[index],
     })),
+    ...(seedT051ConflictPaths
+      ? [
+        ...POST_T060_REFRESH_CONFLICT_PATHS,
+        POST_T060_REFRESH_T051_EVIDENCE_PATH,
+      ].map((repoPath) => ({ path: repoPath, ownerTaskId: 'T051' }))
+      : []),
   ];
   inventory.checkpoint = {
     schemaVersion: 'hex-final-closure-integration-checkpoint-state/v1',
@@ -2002,12 +2034,27 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     }
     write(sandbox, repoPath, content);
   }
+  if (seedT051ConflictPaths) {
+    write(sandbox, POST_T060_REFRESH_CONFLICT_PATHS[0],
+      '// integration-side T051 controls snapshot\nexport const integrationSideControls = true;\n');
+    write(sandbox, POST_T060_REFRESH_CONFLICT_PATHS[1],
+      '// integration-side T051 Dev profile snapshot\nexport const integrationSideProfile = true;\n');
+    write(sandbox, POST_T060_REFRESH_T051_EVIDENCE_PATH,
+      'T051 handoff fixture for the post-T060 reviewed refresh\n');
+  }
   const preFanoutSha = commitAll(sandbox, 'T046 prefanout integration');
   inventory.taskHandoffs.T046 = {
     headSha: preFanoutSha,
     treeSha: git(sandbox, ['rev-parse', `${preFanoutSha}^{tree}`]),
     evidencePath: 'specs/005-analysis-final-closure/evidence/pre-fanout.md',
   };
+  if (seedT051ConflictPaths) {
+    inventory.taskHandoffs.T051 = {
+      headSha: preFanoutSha,
+      treeSha: git(sandbox, ['rev-parse', `${preFanoutSha}^{tree}`]),
+      evidencePath: POST_T060_REFRESH_T051_EVIDENCE_PATH,
+    };
+  }
   if (productionContracts) {
     for (const handoff of Object.values(inventory.taskHandoffs)) {
       handoff.headSha = preFanoutSha;
@@ -2170,6 +2217,9 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
       evidencePath,
       ...componentPaths.slice(0, index + 1),
       ...generatedPaths,
+      ...(seedT051ConflictPaths
+        ? [...POST_T060_REFRESH_CONFLICT_PATHS, POST_T060_REFRESH_T051_EVIDENCE_PATH]
+        : []),
     ])];
     rows.push({
       sequence: index + 1,
@@ -3619,8 +3669,16 @@ function createLegacyComponentFixture() {
   };
 }
 
-function createComponentFixture({ codeMutator = null, publicationMutator = null } = {}) {
-  const lifecycle = createRollingCheckpointFixture(['T059'], { productionContracts: true });
+function createComponentFixture({
+  codeMutator = null,
+  publicationMutator = null,
+  seedT051ConflictPaths = false,
+} = {}) {
+  const acceptedTaskIds = seedT051ConflictPaths ? ['T051', 'T059'] : ['T059'];
+  const lifecycle = createRollingCheckpointFixture(acceptedTaskIds, {
+    productionContracts: true,
+    seedT051ConflictPaths,
+  });
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-component-amendment-'));
   const root = path.join(sandbox, 'candidate');
   fs.renameSync(lifecycle.sandbox, root);
@@ -3678,21 +3736,23 @@ function createComponentFixture({ codeMutator = null, publicationMutator = null 
     root,
     ownership: checkpointFixtureOwnership,
     ownershipCommitSha: productHeadSha,
-    taskIds: ['T059'],
+    taskIds: acceptedTaskIds,
     candidateIdentity,
   });
-  const shadowReports = checkpointFixtureOwnership.candidateGates.tasks.T059.shadow.map((gate) => (
-    createShadowGateEvidence({
-      root,
-      ownership: checkpointFixtureOwnership,
-      taskId: 'T059',
-      gate,
-      headSha: productHeadSha,
-      treeSha: productTreeSha,
-      authoritySha: codeHeadSha,
-      oracleObservation: shadowRawObservation('T059', gate.id),
-      productObservation: shadowRawObservation('T059', gate.id),
-    })
+  const shadowReports = acceptedTaskIds.flatMap((taskId) => (
+    checkpointFixtureOwnership.candidateGates.tasks[taskId].shadow.map((gate) => (
+      createShadowGateEvidence({
+        root,
+        ownership: checkpointFixtureOwnership,
+        taskId,
+        gate,
+        headSha: productHeadSha,
+        treeSha: productTreeSha,
+        authoritySha: codeHeadSha,
+        oracleObservation: shadowRawObservation(taskId, gate.id),
+        productObservation: shadowRawObservation(taskId, gate.id),
+      })
+    ))
   ));
   const independentShadowVerifier = checkpointShadowGateEvidence(candidateIdentity, shadowReports);
   const evidencePath = 'specs/005-analysis-final-closure/evidence/moving-main-amendment.md';
@@ -3737,7 +3797,7 @@ function createComponentFixture({ codeMutator = null, publicationMutator = null 
     paths: [...t060CodePaths, evidencePath],
     product: {
       schemaVersion: 'hex-final-closure-moving-main-product/v1',
-      acceptedTaskIds: ['T059'],
+      acceptedTaskIds,
       initialCandidateGateDigest: computeInitialCandidateGateDigest(checkpointFixtureOwnership),
       acceptedMerge,
       checkpointProduct,
@@ -3974,6 +4034,344 @@ function appendComponentAfterT060(fixture, taskId = 'T011', { spawn = spawnSync 
     evidenceCommitSha,
   };
   return fixture.continuation;
+}
+
+function createPostT060RefreshFixture({
+  resolutionMutator = null,
+  inventoryMutator = null,
+  tasksMutator = null,
+} = {}) {
+  const fixture = createComponentFixture({ seedT051ConflictPaths: true });
+  const root = fixture.candidate;
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  const refreshComponentRef = 'component/final-closure-t011-post-t060-refresh';
+  const refreshComponentPath = 'tests/final-closure/t011/post-t060-refresh.test.mjs';
+  try {
+    // E is a new main commit from the pre-T060 base. D already contains the
+    // T051-side files, so merging E into D produces real add/add conflicts.
+    git(root, ['switch', '--quiet', '--detach', fixture.baseSha]);
+    write(root, POST_T060_REFRESH_CONFLICT_PATHS[0],
+      '// main-side T051 controls snapshot\nexport const mainSideControls = true;\n');
+    write(root, POST_T060_REFRESH_CONFLICT_PATHS[1],
+      '// main-side T051 Dev profile snapshot\nexport const mainSideProfile = true;\n');
+    const refreshMainSha = commitAll(root, 'advance main after T060 activation');
+    git(root, ['push', '--force', 'origin', `${refreshMainSha}:refs/heads/main`]);
+
+    git(root, ['switch', '--quiet', '--detach', fixture.integrationHeadSha]);
+    const merge = spawnSync(
+      'git',
+      ['merge', '--no-ff', '--no-commit', refreshMainSha],
+      { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    );
+    assert.equal(
+      merge.status,
+      1,
+      `the post-T060 D→R2 fixture must have a conflicted two-parent merge:\n${merge.stdout}\n${merge.stderr}`,
+    );
+    assert.deepEqual(
+      git(root, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean).sort(),
+      [...POST_T060_REFRESH_CONFLICT_PATHS].sort(),
+      'R2 must expose exactly the two reviewed T051 conflict paths',
+    );
+    // The reviewed decision selects the immutable integration side for both
+    // conflicts. The only non-conflict adjustment is the refreshed inventory.
+    git(root, ['checkout', '--ours', '--', ...POST_T060_REFRESH_CONFLICT_PATHS]);
+    resolutionMutator?.({ root, conflictPaths: POST_T060_REFRESH_CONFLICT_PATHS });
+    git(root, ['add', '--', ...POST_T060_REFRESH_CONFLICT_PATHS]);
+    assert.equal(git(root, ['diff', '--name-only', '--diff-filter=U']), '');
+
+    const inventory = JSON.parse(fs.readFileSync(path.join(root, inventoryPath), 'utf8'));
+    inventory.baseSha = refreshMainSha;
+    write(root, inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
+    const provisionalR2Sha = commitAll(root, 'review T051 conflicts for post-T060 R2');
+    const refreshedPaths = changedPaths(root, refreshMainSha, provisionalR2Sha);
+    const entries = new Map(inventory.entries.map((entry) => [entry.path, entry]));
+    for (const repoPath of refreshedPaths) {
+      assert.ok(
+        entries.has(repoPath),
+        `the D inventory must retain an owner for refreshed path ${repoPath}`,
+      );
+    }
+    inventory.expectedChangedPaths = [...refreshedPaths];
+    inventory.actualChangedPaths = [...refreshedPaths];
+    inventory.unionChangedPaths = [...refreshedPaths];
+    inventory.entries = [...entries.values()]
+      .filter((entry) => refreshedPaths.includes(entry.path));
+    inventoryMutator?.(inventory);
+    write(root, inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
+    tasksMutator?.(root);
+    git(root, ['add', inventoryPath]);
+    if (tasksMutator != null) {
+      git(root, ['add', 'specs/005-analysis-final-closure/tasks.md']);
+    }
+    git(root, ['commit', '--amend', '--no-edit']);
+    const refreshIntegrationHeadSha = git(root, ['rev-parse', 'HEAD']);
+    assert.deepEqual(
+      git(root, ['show', '-s', '--format=%P', refreshIntegrationHeadSha]).split(/\s+/).filter(Boolean),
+      [fixture.integrationHeadSha, refreshMainSha],
+      'R2 must retain D as first parent and refreshed main E as second parent',
+    );
+    const amendedInventory = JSON.parse(fs.readFileSync(path.join(root, inventoryPath), 'utf8'));
+    if (inventoryMutator == null) assert.equal(amendedInventory.baseSha, refreshMainSha);
+    assert.deepEqual(amendedInventory.unionChangedPaths, changedPaths(root, refreshMainSha, refreshIntegrationHeadSha));
+    git(root, [
+      'push', '--force', 'origin',
+      `${refreshIntegrationHeadSha}:refs/heads/${fixture.integrationInventory.integrationRef}`,
+    ]);
+
+    git(root, ['switch', '--quiet', '-c', refreshComponentRef, refreshIntegrationHeadSha]);
+    write(root, refreshComponentPath, '// T011 component accepted after refreshed R2\n');
+    const refreshComponentHeadSha = commitAll(root, 'T011 component after post-T060 R2');
+    git(root, [
+      'push', '--force', 'origin',
+      `${refreshComponentHeadSha}:refs/heads/${refreshComponentRef}`,
+    ]);
+    git(root, ['push', '--force', 'origin', `${refreshComponentHeadSha}:refs/pull/11/head`]);
+    git(root, ['switch', '--quiet', '--detach', refreshIntegrationHeadSha]);
+    return {
+      ...fixture,
+      refreshMainSha,
+      refreshIntegrationHeadSha,
+      refreshComponentRef,
+      refreshComponentPath,
+      refreshComponentHeadSha,
+      refreshInventory: amendedInventory,
+    };
+  } catch (error) {
+    fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function derivePostT060RefreshReconciliationRecord(root, fixture, integrationHeadSha) {
+  const previousEvidenceSha = fixture.integrationHeadSha;
+  const currentMainSha = fixture.refreshMainSha;
+  const refreshedIntegrationHeadSha = integrationHeadSha ?? fixture.refreshIntegrationHeadSha;
+  const merge = spawnSync(
+    'git',
+    ['merge-tree', '--write-tree', '--name-only', '-z', previousEvidenceSha, currentMainSha],
+    { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+  );
+  assert.equal(merge.status, 1, 'the replay record must be derived from a real conflicted merge');
+  const parts = merge.stdout.split('\0');
+  const autoMergeTreeSha = parts.shift();
+  const conflictEnd = parts.indexOf('');
+  assert.match(autoMergeTreeSha, /^[0-9a-f]{40}$/);
+  assert.ok(conflictEnd > 0, 'the replay record must carry a NUL-delimited conflict section');
+  const conflictPaths = parts.slice(0, conflictEnd);
+  assert.deepEqual(
+    [...conflictPaths].sort(),
+    [...POST_T060_REFRESH_CONFLICT_PATHS].sort(),
+    'the replay record must retain the reviewed T051 conflict set',
+  );
+  const integrationHeadTreeSha = git(root, ['rev-parse', `${refreshedIntegrationHeadSha}^{tree}`]);
+  const adjustmentPaths = changedPaths(root, autoMergeTreeSha, integrationHeadTreeSha);
+  const inventory = JSON.parse(readGitBlob(
+    root,
+    previousEvidenceSha,
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+  ));
+  const blob = (sha, repoPath) => git(root, ['rev-parse', `${sha}:${repoPath}`]);
+  const conflictResolutions = conflictPaths.map((repoPath) => {
+    const integrationBlobSha = blob(previousEvidenceSha, repoPath);
+    const mainBlobSha = blob(currentMainSha, repoPath);
+    const resolvedBlobSha = blob(refreshedIntegrationHeadSha, repoPath);
+    return {
+      path: repoPath,
+      ownerTaskId: inventory.entries.find((entry) => entry.path === repoPath)?.ownerTaskId,
+      integrationBlobSha,
+      mainBlobSha,
+      resolvedBlobSha,
+      selectedParent: resolvedBlobSha === integrationBlobSha ? 'INTEGRATION'
+        : resolvedBlobSha === mainBlobSha ? 'MAIN' : null,
+    };
+  });
+  return {
+    schemaVersion: 'hex-final-closure-main-reconciliation/v2',
+    mode: 'REVIEWED_MERGE',
+    previousEvidenceSha,
+    currentMainSha,
+    integrationHeadSha: refreshedIntegrationHeadSha,
+    integrationHeadTreeSha,
+    autoMergeTreeSha,
+    adjustmentPaths,
+    adjustmentStableDigest: stableDigest([...adjustmentPaths].sort()),
+    conflictResolutions,
+  };
+}
+
+function verifyMovingMainRefreshFixture() {
+  const fixture = createPostT060RefreshFixture();
+  const root = fixture.candidate;
+  try {
+    const environment = componentEnvironment(fixture, {
+      number: 11,
+      headSha: fixture.refreshComponentHeadSha,
+      headRef: fixture.refreshComponentRef,
+      baseSha: fixture.refreshIntegrationHeadSha,
+    });
+    const prepared = prepareComponentCandidate({ root: fixture.candidate, environment });
+    assert.equal(prepared.taskId, 'T011');
+    assert.equal(prepared.baseSha, fixture.refreshIntegrationHeadSha);
+    assert.equal(prepared.componentHeadSha, fixture.refreshComponentHeadSha);
+    const report = runPreflight({ root: fixture.candidate, environment });
+    assert.equal(report.mode, 'COMPONENT_CANDIDATE');
+    assert.equal(report.componentTaskId, 'T011');
+    assert.equal(report.baseSha, fixture.refreshIntegrationHeadSha);
+    assert.equal(
+      report.checkpointIdentity.tailMainReconciliation.currentMainSha,
+      fixture.refreshMainSha,
+      'the operational tail must bind the refreshed R2 lineage to live main E',
+    );
+    assert.equal(report.checkpointIdentity.tailMainReconciliation.mode, 'REVIEWED_MERGE');
+    assert.deepEqual(
+      report.checkpointIdentity.tailMainReconciliation.conflictResolutions
+        .map((resolution) => resolution.path).sort(),
+      [...POST_T060_REFRESH_CONFLICT_PATHS].sort(),
+    );
+    assert.deepEqual(report.componentActualChangedPaths, [fixture.refreshComponentPath]);
+    assert.deepEqual(report.componentCandidateChangedPaths, [fixture.refreshComponentPath]);
+
+    const historicalRecord = derivePostT060RefreshReconciliationRecord(root, fixture);
+    const verifiedHistoricalRecord = verifyMainReconciliation(root, historicalRecord, {
+      expectedPreviousEvidenceSha: fixture.integrationHeadSha,
+      expectedIntegrationHeadSha: fixture.refreshIntegrationHeadSha,
+      requiredCurrentMainSha: fixture.refreshMainSha,
+      sequence: 'HISTORICAL_R2',
+    });
+    assert.equal(verifiedHistoricalRecord.mode, 'REVIEWED_MERGE');
+    assert.equal(verifiedHistoricalRecord.integrationHeadSha, fixture.refreshIntegrationHeadSha);
+
+    // Reuse the same real R2 parents for historical metadata negatives. These
+    // fields are not inventory-refresh output, even after R2 stops being a tail.
+    const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+    for (const field of ['taskHandoffs', 'taskHandoffRevalidations', 'checkpoint', 'movingMainAmendment']) {
+      git(root, ['switch', '--quiet', '--detach', fixture.refreshIntegrationHeadSha]);
+      const inventory = JSON.parse(readGitBlob(root, fixture.refreshIntegrationHeadSha, inventoryPath));
+      inventory[field] = { ...inventory[field], unrecordedRefreshMutation: true };
+      write(root, inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
+      git(root, ['add', '--', inventoryPath]);
+      const tree = git(root, ['write-tree']);
+      const sha = git(root, ['commit-tree', tree, '-p', fixture.integrationHeadSha,
+        '-p', fixture.refreshMainSha, '-m', `mutate R2 ${field}`]);
+      const record = derivePostT060RefreshReconciliationRecord(root, fixture, sha);
+      assert.throws(() => verifyMainReconciliation(root, record, {
+        expectedPreviousEvidenceSha: fixture.integrationHeadSha,
+        expectedIntegrationHeadSha: sha, requiredCurrentMainSha: fixture.refreshMainSha,
+        sequence: 'HISTORICAL_R2_METADATA',
+      }), /checkpoint-tail-inventory-delta/, `R2 must preserve historical ${field}`);
+      // Restore only this disposable fixture's staged mutation before switching.
+      write(root, inventoryPath, readGitBlob(root, fixture.refreshIntegrationHeadSha, inventoryPath));
+      git(root, ['add', '--', inventoryPath]);
+    }
+
+    // Keep the same two-parent R2 shape while mutating one resolved blob. A
+    // later historical replay must reject the actual tree, not just a record
+    // whose metadata was rewritten in memory.
+    git(root, ['switch', '--quiet', '--detach', fixture.refreshIntegrationHeadSha]);
+    write(root, POST_T060_REFRESH_CONFLICT_PATHS[0],
+      '// neither-parent blob; historical replay must reject this R2 tree\n');
+    git(root, ['add', '--', POST_T060_REFRESH_CONFLICT_PATHS[0]]);
+    const mutatedR2TreeSha = git(root, ['write-tree']);
+    const mutatedR2Commit = spawnSync(
+      'git',
+      [
+        'commit-tree', mutatedR2TreeSha,
+        '-p', fixture.integrationHeadSha,
+        '-p', fixture.refreshMainSha,
+        '-m', 'mutate reviewed R2 for historical replay regression',
+      ],
+      { cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024 },
+    );
+    assert.equal(mutatedR2Commit.status, 0, `git commit-tree failed:\n${mutatedR2Commit.stderr}`);
+    const mutatedR2Sha = mutatedR2Commit.stdout.trim();
+    const mutatedRecord = derivePostT060RefreshReconciliationRecord(root, {
+      ...fixture,
+      refreshIntegrationHeadSha: mutatedR2Sha,
+    });
+    assert.throws(
+      () => verifyMainReconciliation(root, mutatedRecord, {
+        expectedPreviousEvidenceSha: fixture.integrationHeadSha,
+        expectedIntegrationHeadSha: mutatedR2Sha,
+        requiredCurrentMainSha: fixture.refreshMainSha,
+        sequence: 'HISTORICAL_R2_MUTATED',
+      }),
+      /checkpoint-main-reconciliation-resolution-blob-mismatch:HISTORICAL_R2_MUTATED/,
+      'historical replay must reject a two-parent R2 with an unrecorded resolution blob',
+    );
+  } finally {
+    fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+  }
+}
+
+function verifyMovingMainRefreshNegativeFixtures() {
+  const negativeCases = [
+    [
+      'unrecorded conflict resolution blob',
+      {
+        resolutionMutator: ({ root, conflictPaths }) => {
+          write(root, conflictPaths[0],
+            '// neither-parent blob; reviewed resolution must reject this content\n');
+        },
+      },
+      /(?:checkpoint-main-reconciliation-(?:resolution-blob-mismatch|adjustment-invalid)|task-handoff-owned-path-changed:T051:js\/ai\/dev\/ui\/controls\.js)/,
+    ],
+    [
+      'retained T058 owner rewritten as T060',
+      {
+        inventoryMutator: (inventory) => {
+          const entry = inventory.entries.find(
+            (candidate) => candidate.path === 'tools/validation/final-closure/preflight.mjs',
+          );
+          assert.equal(entry?.ownerTaskId, 'T058');
+          entry.ownerTaskId = 'T060';
+        },
+      },
+      /(?:preflight-contract-invalid:[\s\S]*(?:inventory-path-outside-allowlist|integration-inventory-entry-owner-invalid)|checkpoint-tail-inventory-owner-delta)/,
+    ],
+    [
+      'refreshed inventory base rewritten',
+      {
+        inventoryMutator: (inventory) => {
+          inventory.baseSha = '0'.repeat(40);
+        },
+      },
+      /preflight-contract-invalid:[\s\S]*integration-inventory-base-sha-mismatch/,
+    ],
+    [
+      'accepted task set rewritten',
+      {
+        tasksMutator: (root) => {
+          const tasksPath = 'specs/005-analysis-final-closure/tasks.md';
+          write(root, tasksPath, rewriteTaskStatus(
+            fs.readFileSync(path.join(root, tasksPath), 'utf8'),
+            'T059',
+            'PENDING',
+          ));
+        },
+      },
+      /preflight-contract-invalid:[\s\S]*(?:checkpoint-accepted-task-not-done:T059|checkpoint-completed-task-set-mismatch|task-handoff-completed-set-mismatch)/,
+    ],
+  ];
+  for (const [label, options, expected] of negativeCases) {
+    const fixture = createPostT060RefreshFixture(options);
+    try {
+      const environment = componentEnvironment(fixture, {
+        number: 11,
+        headSha: fixture.refreshComponentHeadSha,
+        headRef: fixture.refreshComponentRef,
+        baseSha: fixture.refreshIntegrationHeadSha,
+      });
+      prepareComponentCandidate({ root: fixture.candidate, environment });
+      assert.throws(
+        () => runPreflight({ root: fixture.candidate, environment }),
+        expected,
+        `${label} must fail closed on the R2 candidate`,
+      );
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }
 }
 
 function verifyMovingMainAmendmentFixture() {
@@ -4763,6 +5161,8 @@ try {
 }
 
 verifyMovingMainAmendmentFixture();
+verifyMovingMainRefreshFixture();
+verifyMovingMainRefreshNegativeFixtures();
 const componentOperational = createComponentFixture();
 try {
   const environment = componentEnvironment(componentOperational);

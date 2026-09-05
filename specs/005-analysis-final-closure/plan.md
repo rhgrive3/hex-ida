@@ -462,3 +462,12 @@ a later component G exists, runtime verification selects that newer product.
 Stage B reads T060's historical transition instead of carrying the Stage A
 inventory forward. T060 remains PENDING until independent review, regressions,
 canonical rebuild, exact current-product runtime and CI are complete.
+
+Later main movement uses an ordered two-parent R2 from the current accepted
+checkpoint (D immediately after this amendment), not a rewritten amendment.
+R2 may refresh only inventory base/path sets and preserve retained owners;
+its receipt, handoffs and checkpoint metadata stay immutable. Conflicting
+tails use the same exact parent/blob verifier as explicit checkpoint rows.
+The amendment's accepted tasks remain an immutable prefix of later checkpoints.
+Static prefix compatibility is not proof: Git lineage, actual current-base
+inventory and exact generated-product gates remain mandatory.
