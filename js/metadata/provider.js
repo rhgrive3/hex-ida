@@ -265,19 +265,7 @@ export function isLanguageRecordAuthoritative(result, record) {
 const CANONICAL_RECORDS = new WeakSet();
 
 export function isCanonicalLanguageRecord(record) {
-  if (!record || typeof record !== 'object') return false;
-  if (CANONICAL_RECORDS.has(record)) return true;
-  if (typeof record.kind !== 'string' || !KIND_SET.has(record.kind)) return false;
-  if (typeof record.entityId !== 'string' || !record.entityId.trim()) return false;
-  if (typeof record.providerId !== 'string' || !record.providerId.trim()) return false;
-  if (typeof record.providerVersion !== 'string' || !record.providerVersion.trim()) return false;
-  if (typeof record.ecosystem !== 'string' || !record.ecosystem.trim()) return false;
-  if (!Array.isArray(record.evidenceIds)) return false;
-  if (record.evidenceIds.some((id) => typeof id !== 'string' || !id.trim())) return false;
-  if (record.address != null && (typeof record.address !== 'string' || !record.address.trim())) return false;
-  if (record.buildIdentity != null && (typeof record.buildIdentity !== 'string' || !record.buildIdentity.trim())) return false;
-  if (record.sizeBytes != null && (!Number.isSafeInteger(record.sizeBytes) || record.sizeBytes < 0)) return false;
-  return true;
+  return !!record && typeof record === 'object' && CANONICAL_RECORDS.has(record);
 }
 
 /** One record from a language metadata provider. */
