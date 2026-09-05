@@ -1,0 +1,38 @@
+name: Assemble 002 answer
+
+on:
+  push:
+    branches:
+      - docs/astra-analysis-memory-taint-orders-20260905
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    if: ${{ !contains(github.event.head_commit.message, '[assemble-002-done]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/astra-analysis-memory-taint-orders-20260905
+      - name: Assemble and verify answer
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cat Prompt/answer/.upload-002/part*.b64 | base64 -d > "$tmp/a.tar.xz"
+          xz -dc "$tmp/a.tar.xz" > "$tmp/a.tar"
+          tar -xf "$tmp/a.tar" -C "$tmp"
+          cp "$tmp/002-analysis-symbolic-memory-taint.md" Prompt/answer/
+          cp "$tmp/002-analysis-symbolic-memory-taint.patch" Prompt/answer/
+          cp "$tmp/002-analysis-symbolic-memory-taint-changed-files.zip" Prompt/answer/
+          echo "55596c4ee6d20bf58470d5deb9c34704e3d2ccf204bd52320c6f4c081c687a9d  Prompt/answer/002-analysis-symbolic-memory-taint.md" | sha256sum -c -
+          echo "e5b0bd7920970733f63fff79a0d899ededf39489cf3805f55d29963685ceb964  Prompt/answer/002-analysis-symbolic-memory-taint.patch" | sha256sum -c -
+          echo "5115ed5618d22106606e51b97683f57d18c3e543bdc7c42f1a46bdc5f6c3f432  Prompt/answer/002-analysis-symbolic-memory-taint-changed-files.zip" | sha256sum -c -
+          rm -rf Prompt/answer/.upload-002
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "answer: add symbolic memory and taint artifacts [assemble-002-done]"
+          git push origin HEAD:docs/astra-analysis-memory-taint-orders-20260905
