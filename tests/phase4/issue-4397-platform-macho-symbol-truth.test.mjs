@@ -20,6 +20,15 @@ const malformedOnly = machoSymbolTruth({
 assert.equal(malformedOnly.complete, false);
 assert.ok(malformedOnly.reasons.includes('symbol-metadata-unavailable'));
 
+for (const metadata of [
+  { machoMetadata:{} },
+  { exportTrie:{} },
+]) {
+  const unknown = machoSymbolTruth({ format:'macho', metadata });
+  assert.equal(unknown.complete, false);
+  assert.ok(unknown.reasons.includes('symbol-metadata-unavailable'));
+}
+
 const explicitIncomplete = machoSymbolTruth({
   format:'macho',
   metadata:{ machoMetadata:{ complete:false } },
