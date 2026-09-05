@@ -67,3 +67,40 @@ test('shared acyclic option objects are not mistaken for cycles', () => {
   });
   assert.ok(descriptor.artifactId);
 });
+
+test('stateful option accessors are rejected before they can drift into artifact hashing', () => {
+  let reads = 0;
+  const options = {};
+  Object.defineProperty(options, 'rows', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? [{ semanticMode: 'exact' }] : [{ columnWidth: 80 }];
+    },
+  });
+
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options }),
+    /phase8-artifact-options-accessor:rows/,
+  );
+  assert.equal(reads, 0, 'descriptor snapshot must not execute caller-owned accessors');
+});
+
+test('proxy get traps cannot change options between validation and hashing', () => {
+  let reads = 0;
+  const stable = { rows: [{ semanticMode: 'exact' }] };
+  const options = new Proxy(stable, {
+    get(target, key, receiver) {
+      if (key === 'rows') {
+        reads += 1;
+        return [{ columnWidth: 80 }];
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+
+  const proxied = createPhase8ArtifactDescriptor({ ...BASE, options });
+  const plain = createPhase8ArtifactDescriptor({ ...BASE, options: stable });
+  assert.equal(proxied.artifactId, plain.artifactId);
+  assert.equal(reads, 0, 'snapshot must use own data descriptors rather than proxy property reads');
+});
