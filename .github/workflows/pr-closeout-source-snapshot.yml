@@ -11,43 +11,79 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
-          fetch-depth: 1
+          path: control
           persist-credentials: false
           show-progress: false
-      - name: Export exact public source and branch deltas
+      - uses: actions/checkout@v4
+        with:
+          ref: 7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
+          path: source
+          fetch-depth: 1
+          show-progress: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Materialize exactly the locally reviewed Rust tree
+        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           base=7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
-          out="$RUNNER_TEMP/pr-closeout-sources"
-          mkdir -p "$out"
-          git archive --format=tar "$base" | gzip -n > "$out/main.tar.gz"
-          git cat-file commit "$base" > "$out/main.commit"
-          git ls-tree -r "$base" > "$out/main.tree"
-          printf 'main %s %s\n' "$base" "$(git rev-parse "$base^{tree}")" > "$out/identities.txt"
-          for pair in \
-            6582:409f1f33ce241ece2382f2ba61b3ba2fb2a32669 \
-            6587:0df7f9673a2c3250e0ef151c92eac39c8f4a7b4b \
-            6588:7c57adc91169daf45d37596aa46e20dacd25f26d; do
-            number="${pair%%:*}"
-            sha="${pair#*:}"
-            git fetch --quiet --no-tags --depth=1 origin "$sha"
-            git diff --binary "$base" "$sha" > "$out/pr-$number.patch"
-            git cat-file commit "$sha" > "$out/pr-$number.commit"
-            git ls-tree -r "$sha" > "$out/pr-$number.tree"
-            printf '%s %s %s\n' "$number" "$sha" "$(git rev-parse "$sha^{tree}")" >> "$out/identities.txt"
+          original=409f1f33ce241ece2382f2ba61b3ba2fb2a32669
+          expected=3cb50d29ec883a283a57bb65d2fcfef72d7cd8d3
+          git fetch --quiet --no-tags --depth=1 origin "$original"
+          git apply --index ../control/.audit/pr-6582-reconcile.patch
+          test "$(git write-tree)" = "$expected"
+          git diff --cached "$base" --check
+          actual=$(git diff --cached "$base" --name-only)
+          wanted=$(printf '%s\n' js/metadata/index.js js/metadata/rust.js tests/phase7/metadata/rust-legacy-macos-prefix-6276.test.mjs)
+          test "$actual" = "$wanted"
+          npm run metadata:test > "$RUNNER_TEMP/rust-metadata.log" 2>&1 || { tail -80 "$RUNNER_TEMP/rust-metadata.log"; exit 1; }
+          for test in \
+            tests/metadata-rust-max-depth-3162.test.mjs \
+            tests/issue-6239-rust-v0-array.mjs \
+            tests/issue-6237-rust-v0-punycode.mjs \
+            tests/issue-6203-rust-v0-backref.mjs \
+            tests/issue-4182-rust-v0-mutability.mjs \
+            tests/phase7/metadata/rust-legacy-macos-prefix-6276.test.mjs; do
+            node "$test" >> "$RUNNER_TEMP/rust-metadata.log" 2>&1 || { tail -80 "$RUNNER_TEMP/rust-metadata.log"; exit 1; }
           done
-          gzip -t "$out/main.tar.gz"
-          (cd "$out" && sha256sum main.tar.gz *.patch *.commit *.tree identities.txt > SHA256SUMS)
-          cat "$out/identities.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          candidate=$(printf '%s\n' 'fix(metadata): reconcile macOS Rust prefix owner with current main' | git commit-tree "$expected" -p "$original" -p "$base")
+          # Publish only a staging reference. The PR ref and main are never
+          # written here; the connector will perform the guarded PR fast-forward.
+          git push --quiet origin "$candidate:refs/heads/audit/pr-closeout-rust-candidate-20260905"
+          mkdir -p "$RUNNER_TEMP/pr-closeout-continued"
+          printf '%s\n' "$candidate" > "$RUNNER_TEMP/pr-closeout-continued/rust-candidate-sha.txt"
+          git cat-file commit "$candidate" > "$RUNNER_TEMP/pr-closeout-continued/rust-candidate.commit"
+          cp "$RUNNER_TEMP/rust-metadata.log" "$RUNNER_TEMP/pr-closeout-continued/"
+          echo "RUST_CANDIDATE=$candidate TREE=$expected METADATA_GATES=PASS"
+      - name: Export the existing baseline repair and frozen dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1
+          repair=190df092e0bc1fb9b1dfed8d287bfe1d33b7a1b0
+          out="$RUNNER_TEMP/pr-closeout-continued"
+          git fetch --quiet --no-tags --depth=1 origin "$repair"
+          git diff --binary "$base" "$repair" > "$out/pr-6552.patch"
+          git cat-file commit "$repair" > "$out/pr-6552.commit"
+          git ls-tree -r "$repair" > "$out/pr-6552.tree"
+          npm ci --no-audit --no-fund
+          tar -czf "$out/node_modules.tar.gz" node_modules
+          cp package-lock.json "$out/package-lock.json"
+          (cd "$out" && sha256sum *.patch *.commit *.tree *.tar.gz package-lock.json rust-candidate-sha.txt rust-metadata.log > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: pr-closeout-pinned-sources-20260905
-          path: ${{ runner.temp }}/pr-closeout-sources/
+          name: pr-closeout-continued-20260905
+          path: ${{ runner.temp }}/pr-closeout-continued/
           if-no-files-found: error
           retention-days: 1
