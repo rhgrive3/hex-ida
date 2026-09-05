@@ -206,7 +206,11 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       return;
     }
 
-    if (c.aggregate && c.bits > 128) {
+    // AAPCS64 Stage B.4 keys off the composite type's physical size, not the
+    // logical payload width: padding/over-alignment count toward the 16-byte
+    // indirect-copy threshold.
+    const aggregateSizeBytes = c.aggregateBytes ?? (c.bits > 0 ? Math.ceil(c.bits / 8) : 0);
+    if (c.aggregate && aggregateSizeBytes > 16) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
         ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,bytes:8,
