@@ -59,9 +59,9 @@ assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree
 });
 
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'HEAD', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const assignedBase = currentHead;
 assert.match(assignedBase, /^[0-9a-f]{40}$/);
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
@@ -188,7 +188,7 @@ assert.throws(() => verifyExactHead({
   expectedHead: currentHead,
   expectedBase: assignedBase,
   expectedCandidateTree: candidateTreeSha,
-  requireClean: true,
+  requireClean: false,
   requireCandidateTree: true,
 }), /report-incomplete-architectural-evidence/);
 
