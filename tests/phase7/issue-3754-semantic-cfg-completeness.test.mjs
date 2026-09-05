@@ -6,6 +6,7 @@ import {
   partitionDecodedFunction,
   semanticControlUnknowns,
 } from '../../js/analysis/semantic-function-base.js';
+import { partitionDecodedFunction as partitionPublic } from '../../js/analysis/semantic-function.js';
 
 const address = (value) => ({
   kind: 'absolute-address',
@@ -106,6 +107,13 @@ const ordinaryBlocks = partitionDecodedFunction([
 assert.equal(ordinaryBlocks.length, 2);
 assert.equal(semanticControlUnknowns(ordinaryBlocks, plugin).length, 1);
 
+const publicBlocks = partitionPublic([
+  { address: 0x3000n, length: 4n, mode: 'test', kind: 'fallthrough' },
+  { address: 0x4000n, length: 4n, mode: 'test', kind: 'return' },
+], plugin);
+assert.equal(publicBlocks.length, 2, 'the public partitioner must preserve sparse block boundaries');
+assert.equal(semanticControlUnknowns(publicBlocks, plugin).length, 1);
+
 const result = buildSemanticV2CompatibilityPipeline({
   architecturePlugin: plugin,
   decoderSemanticVersion: 'test-decoder-1',
@@ -119,7 +127,10 @@ const result = buildSemanticV2CompatibilityPipeline({
 });
 
 assert.equal(result.semanticIr.completeness, 'partial');
-assert.equal(result.semanticIr.unknowns.length, 1);
+assert.equal(
+  result.semanticIr.unknowns.some((unknown) => unknown.reason === 'semantic-cfg-missing-fallthrough'),
+  true,
+);
 assert.equal(result.legacyV1.truncated, true);
 assert.equal(
   result.legacyV1.instructions.some(
