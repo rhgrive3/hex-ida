@@ -32,9 +32,9 @@
   },
   "checkpoint": {
     "schemaVersion": "hex-final-closure-integration-checkpoint-state/v1",
-    "sequence": 1,
+    "sequence": 2,
     "state": "CHECKPOINT_GREEN",
-    "acceptedTaskId": "T051",
+    "acceptedTaskId": "T059",
     "evidencePath": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md"
   },
   "taskHandoffs": {
@@ -102,6 +102,11 @@
       "headSha": "3f0b6a31d54360d05e8560e50d6efc5a912fc29b",
       "treeSha": "17591181aab07357291a8fbbb651f8c1e91b83e2",
       "evidencePath": "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs"
+    },
+    "T059": {
+      "headSha": "c965cf30ef6426d2178759494006ba9f2864ed45",
+      "treeSha": "24f67206ef0bfedae63f1bd8196902613c3e7dd6",
+      "evidencePath": "tests/final-closure/t059/strict-artifact-id-authority.test.mjs"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -113,6 +118,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -140,6 +146,7 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -160,6 +167,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -187,6 +195,7 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -207,6 +216,7 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
+    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -234,6 +244,7 @@
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
     "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+    "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -271,6 +282,10 @@
     {
       "path": "js/ai/dev/ui/controls.js",
       "ownerTaskId": "T051"
+    },
+    {
+      "path": "js/core/scheduler/analysis-scheduler.js",
+      "ownerTaskId": "T059"
     },
     {
       "path": "package.json",
@@ -379,6 +394,10 @@
     {
       "path": "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
       "ownerTaskId": "T051"
+    },
+    {
+      "path": "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
+      "ownerTaskId": "T059"
     },
     {
       "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",
