@@ -126,7 +126,6 @@ export function reviveConversation(raw, namespace) {
   const turns = Array.isArray(raw && raw.turns) ? raw.turns.map(reviveTurn) : [];
   return createConversation({ ...raw, turns, namespace });
 }
-
 /**
  * Bounded localStorage for chat history.
  *
@@ -149,12 +148,13 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     return value == null || value === '' ? 'default' : String(value);
   };
   const bucketKey = (space) => `${key}.${space}`;
+  const indexKey = () => key === STORAGE_KEY ? INDEX_KEY : `${key}.index`;
 
   const readIndex = () => {
     const store = backing();
     if (!store) return nullIndex();
     try {
-      const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
+      const raw = store.getItem(indexKey());
       const parsed = raw ? JSON.parse(raw) : null;
       return parsed && typeof parsed === 'object' ? toNullIndex(parsed) : nullIndex();
     } catch { return nullIndex(); }
@@ -164,7 +164,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     const store = backing();
     if (!store) return false;
     try {
-      store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
+      store.setItem(indexKey(), JSON.stringify(index));
       return true;
     } catch { return false; }
   };
@@ -280,7 +280,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
         for (const space of Object.keys(index)) {
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
-        store.removeItem(INDEX_KEY);
+        store.removeItem(indexKey());
         store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },
