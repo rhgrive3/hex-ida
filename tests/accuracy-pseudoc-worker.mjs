@@ -7,7 +7,10 @@ if (!target || typeof process.send !== 'function') {
 }
 
 const bootStart = Date.now();
-const world = await openBinary(target);
+// Pseudoc scoring reads per-function text through analyzeFunctionCached(). The
+// eagerly built global strings list is never consumed by this worker, so avoid
+// scanning up to 64 MiB of string sections in every local analysis world.
+const world = await openBinary(target, { strings: false });
 process.send({ type: 'ready', bootMs: Date.now() - bootStart });
 
 process.on('message', async (message) => {
