@@ -10,6 +10,39 @@ import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from '../objc.js';
 export const OBJC_PROVIDER_ID = 'metadata.objc';
 export const OBJC_PROVIDER_VERSION = '1.0.0';
 
+// Canonical method collection shared by methods() and probe() counts so the
+// published page and the reported counts cannot drift. Covers class methods
+// and category methods (instance + class). Category entries carry the
+// category name in their identity so they never collide with class-body
+// methods of the same selector.
+function collectModelMethods(model) {
+  const out = [];
+  const seen = new Set();
+  const push = (owner, categoryName, m, isClassMethod) => {
+    if (!m || typeof m !== 'object') return;
+    const selector = m.sel || m.selector;
+    if (!selector) return;
+    const classMethod = isClassMethod || m.kind === '+' || m.classMethod === true;
+    const ownerId = categoryName != null && categoryName !== '' ? `${owner}(${categoryName})` : owner;
+    const key = `${ownerId}:${classMethod ? '+' : '-'}:${selector}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ owner, categoryName, method: m, selector, classMethod, key });
+  };
+  for (const cls of model?.classes || []) {
+    if (!cls || typeof cls !== 'object') continue;
+    for (const m of cls.methods || []) push(cls.name, null, m, false);
+    for (const m of cls.classMethods || []) push(cls.name, null, m, true);
+  }
+  for (const cat of model?.categories || []) {
+    if (!cat || typeof cat !== 'object') continue;
+    const owner = cat.className || cat.name || '<unknown>';
+    for (const m of cat.instanceMethods || cat.methods || []) push(owner, cat.name ?? null, m, false);
+    for (const m of cat.classMethods || []) push(owner, cat.name ?? null, m, true);
+  }
+  return out;
+}
+
 export class ObjcMetadataProvider extends LanguageMetadataProvider {
   constructor({
     readAt = null,
@@ -184,7 +217,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       },
     });
 
-    const totalMethods = (model.classes || []).reduce((acc, c) => acc + (c.methods?.length || 0) + (c.classMethods?.length || 0), 0);
+    const totalMethods = collectModelMethods(model).length;
     const counts = {
       types: model.classes?.length || 0,
       protocols: model.protocols?.length || 0,
@@ -250,38 +283,33 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     if (!model || !model.classes) return createLanguageMetadataPage({ records: [] });
 
     const records = [];
-    for (const cls of model.classes) {
-      const emitMethod = (m, isClassMethod) => {
-        const methodAddress = m.addr ?? m.imp;
-        const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
-        const selector = m.sel || m.selector;
-        const classMethod = isClassMethod || m.kind === '+' || m.classMethod === true;
-        records.push(
-          createLanguageMetadataRecord({
-            kind: 'method',
-            entityId: `method@${cls.name}:${classMethod ? '+' : '-'}:${selector}`,
-            name: m.name || `${classMethod ? '+' : '-'}[${cls.name} ${selector}]`,
-            address: addrStr,
-            providerId: this.id,
-            providerVersion: this.version,
-            ecosystem: 'objc',
-            buildIdentity: this.binaryIdentity,
-            descriptor: {
-              selector,
-              className: cls.name,
-              classMethod,
-              types: m.types || null,
-              implementationProven: m.implementationProven === true,
-            },
-          })
-        );
-      };
-      for (const m of cls.methods || []) {
-        emitMethod(m, false);
-      }
-      for (const m of cls.classMethods || []) {
-        emitMethod(m, true);
-      }
+    for (const entry of collectModelMethods(model)) {
+      const m = entry.method;
+      const clsName = entry.owner;
+      const methodAddress = m.addr ?? m.imp;
+      const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
+      const selector = entry.selector;
+      const classMethod = entry.classMethod;
+      records.push(
+        createLanguageMetadataRecord({
+          kind: 'method',
+          entityId: `method@${entry.key}`,
+          name: m.name || `${classMethod ? '+' : '-'}[${clsName}${entry.categoryName ? `(${entry.categoryName})` : ''} ${selector}]`,
+          address: addrStr,
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'objc',
+          buildIdentity: this.binaryIdentity,
+          descriptor: {
+            selector,
+            className: clsName,
+            category: entry.categoryName,
+            classMethod,
+            types: m.types || null,
+            implementationProven: m.implementationProven === true,
+          },
+        })
+      );
     }
 
     return createLanguageMetadataPage({ records });
