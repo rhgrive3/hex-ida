@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
           fetch-depth: 0
@@ -88,7 +88,7 @@ jobs:
 
       - name: Set up Node
         if: steps.impact.outputs.required == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -239,7 +239,7 @@ jobs:
 
       - name: Upload exact proof artifacts
         if: always() && steps.impact.outputs.required == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stage2-nonphysical-${{ steps.identity.outputs.sha || github.run_id }}
           path: reports/stage2/

@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.PRODUCT_SHA }}
           fetch-depth: 0
@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload exact-SHA evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase4-exact-sha-evidence-${{ env.PRODUCT_SHA }}
           path: |
