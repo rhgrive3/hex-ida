@@ -55,7 +55,7 @@ function buildPeCliFixture(stringsBytes) {
 
   view.setUint32(metadataOffset, 0x424a5342, true);
   view.setUint32(metadataOffset + 12, 12, true);
-  bytes.set(new TextEncoder().encode('v4.0.30319\\0\\0'), metadataOffset + 16);
+  bytes.set(new TextEncoder().encode('v4.0.30319\0\0'), metadataOffset + 16);
 
   const flagsOffset = metadataOffset + 28;
   view.setUint16(flagsOffset + 2, 2, true);
@@ -63,12 +63,12 @@ function buildPeCliFixture(stringsBytes) {
 
   view.setUint32(streamHeader, 0x80, true);
   view.setUint32(streamHeader + 4, 0x20, true);
-  bytes.set(new TextEncoder().encode('#Strings\\0'), streamHeader + 8);
+  bytes.set(new TextEncoder().encode('#Strings\0'), streamHeader + 8);
 
   const secondStream = streamHeader + 12;
   view.setUint32(secondStream, 0xa0, true);
   view.setUint32(secondStream + 4, 0x18, true);
-  bytes.set(new TextEncoder().encode('#~\\0'), secondStream + 8);
+  bytes.set(new TextEncoder().encode('#~\0'), secondStream + 8);
 
   bytes.set(stringsBytes, metadataOffset + 0x80);
   return bytes;
@@ -90,11 +90,12 @@ assert.throws(
   /cil-invalid-strings-utf8/,
 );
 
-const structural = parseCil(buildPeCliFixture(Uint8Array.from([
+const structuralBytes = buildPeCliFixture(Uint8Array.from([
   0x00, 0xef, 0xbb, 0xbf, 0x41, 0x00, // U+FEFF + A
-])));
-assert.equal(probeCil(structural).supported, true);
-assert.deepEqual(structural.strings, ['\\uFEFFA']);
+]));
+assert.equal(probeCil(structuralBytes).supported, true);
+const structural = parseCil(structuralBytes);
+assert.deepEqual(structural.strings, ['\uFEFFA']);
 
 assert.throws(
   () => parseCil(buildPeCliFixture(Uint8Array.from([0x00, 0xe3, 0x28, 0xa1, 0x00]))),
