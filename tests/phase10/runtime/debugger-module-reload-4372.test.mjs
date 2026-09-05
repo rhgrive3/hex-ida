@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { DebugAdapter } from '../../../js/debug/adapter.js';
+import { DebugAdapter, DebugAdapterError } from '../../../js/debug/adapter.js';
 import { DebuggerProvider } from '../../../js/runtime/debugger-provider.js';
 
 class EventAdapter extends DebugAdapter {
@@ -53,6 +53,28 @@ test('issue #4372 - identical module-load is idempotent but changed base replace
 
   const retired = session.modules.history().find((binding) => binding.generation === 1 && binding.unloadedSequence != null);
   assert.equal(retired?.unloadedSequence, 3, 'old generation must retire at the replacement event sequence');
+  await session.close();
+});
+
+test('issue #4372 - malformed replacement is rejected before retiring the active generation', async () => {
+  const session = await openSession('issue-4372-transactional');
+  const ingest = session.facets.debugger.events.ingest;
+
+  ingest(moduleLoad(5));
+  const before = session.modules.get('main');
+  assert.equal(before.generation, 1);
+
+  assert.throws(
+    () => ingest(moduleLoad(6, { runtimeBase: 1.5 })),
+    (error) => error instanceof DebugAdapterError && error.code === 'invalid-address',
+  );
+
+  const after = session.modules.get('main');
+  assert.ok(after, 'malformed replacement must not remove the current mapping');
+  assert.equal(after.generation, 1);
+  assert.equal(after.runtimeBase, 0x1000n);
+  assert.equal(after.loadedSequence, 5);
+  assert.equal(session.modules.history().some((binding) => binding.generation === 1 && binding.unloadedSequence === 6), false);
   await session.close();
 });
 
