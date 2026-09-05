@@ -853,13 +853,16 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     const result = createDebugProviderResult({
       ecosystem: 'dwarf',
       identity: {
-        verdict,
+        // Cancellation is an authority boundary, not merely a partial status.
+        // A matched build must not keep hard-fact authority after parsing stops
+        // before the debug source has been fully validated (#3932).
+        verdict: parsed.cancelled ? 'unsupported' : verdict,
         providerId: this.id,
         providerVersion: this.version,
         expected: expectedIdentity,
         observed: observedIdentity,
-        method,
-        detail,
+        method: parsed.cancelled ? 'cancelled' : method,
+        detail: parsed.cancelled ? 'debug parsing cancelled before completion' : detail,
       },
       sections: Object.keys(normalized).filter((key) => normalized[key] != null),
       counts: { dies: parsed.dies.size, units: parsed.units.length },
