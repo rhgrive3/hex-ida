@@ -27,6 +27,14 @@ function verdictBadge(verdict) {
   }
 }
 
+export function baseClassificationBadge(value, result) {
+  if (value?.base?.classification !== value?.classification) return 'unverified';
+  if (result?.completeness !== 'complete') return 'unverified';
+  if (value?.refinement == null) return 'unverified';
+  if (value?.refinementReason === 'semantic-evidence-unavailable') return 'unverified';
+  return 'confirmed';
+}
+
 function wrapRouteView(view, routeHost) {
   const originalGet = view.getState;
   return {
@@ -84,7 +92,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
           title:text('基礎分類', 'Base classification'),
           subtitle:String(value.base.classification || 'UNKNOWN'),
           meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
-          badge:evidenceBadge(value.base.classification === value.classification ? 'confirmed' : 'unverified'),
+          badge:evidenceBadge(baseClassificationBadge(value, result)),
         }));
       }
       if (value.refinement) {
