@@ -106,8 +106,15 @@ function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRigh
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== typeof right) return false;
   if (typeof left !== 'object') return false;
-  const leftArray = Array.isArray(left);
-  if (leftArray !== Array.isArray(right)) return false;
+  let leftArray;
+  let rightArray;
+  try {
+    leftArray = Array.isArray(left);
+    rightArray = Array.isArray(right);
+  } catch {
+    return false;
+  }
+  if (leftArray !== rightArray) return false;
   if (activeLeft.has(left) || activeRight.has(right)) return false;
   activeLeft.add(left);
   activeRight.add(right);
