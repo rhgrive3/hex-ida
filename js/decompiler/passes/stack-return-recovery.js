@@ -11,35 +11,168 @@ import {
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
 
-function valueOf(a) { return a?.value || null; }
+function ownData(object, key) {
+  if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
+    return { present:false, valid:true, value:undefined };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor) return { present:false, valid:true, value:undefined };
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      return { present:true, valid:false, value:undefined };
+    }
+    return { present:true, valid:true, value:descriptor.value };
+  } catch {
+    return { present:true, valid:false, value:undefined };
+  }
+}
+
+function fieldValue(object, key) {
+  const field = ownData(object, key);
+  return field.present && field.valid ? field.value : undefined;
+}
+
+function valueOf(a) {
+  const field = ownData(a, 'value');
+  return field.present && field.valid ? field.value || null : null;
+}
+
+function validRow(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validBlock(value) { return validRow(value); }
+
+function validBits(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function idKey(value) {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
+
+function addressKey(value) {
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
+
+function arrayField(object, key) {
+  const field = ownData(object, key);
+  if (!field.present) return { ok:true, value:[] };
+  return { ok:field.valid && Array.isArray(field.value), value:field.valid && Array.isArray(field.value) ? field.value : [] };
+}
+
+function sourceValues(node, key, converter) {
+  const source = fieldValue(node, 'source');
+  const values = arrayField(source, key);
+  if (!values.ok) return null;
+  const converted = [];
+  try {
+    for (const value of values.value) {
+      const convertedValue = converter(value);
+      if (convertedValue == null) return null;
+      converted.push(convertedValue);
+    }
+  } catch {
+    return null;
+  }
+  return converted;
+}
+
+function validTimeBudget(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function validWorkBudget(value, fallback) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function now() { return globalThis.performance?.now ? globalThis.performance.now() : Date.now(); }
+
+function recoveryControl(opts) {
+  const abortField = ownData(opts, 'shouldAbort');
+  const deadlineField = ownData(opts, 'deadline');
+  const deterministicField = ownData(opts, 'deterministicTransforms');
+  const validDeadline = deadlineField.present && deadlineField.valid
+    && typeof deadlineField.value === 'number'
+    && (Number.isFinite(deadlineField.value) || deadlineField.value === Infinity);
+  const deterministic = deterministicField.present && deterministicField.valid
+    && deterministicField.value === true;
+  let cancelled = (abortField.present && (!abortField.valid || typeof abortField.value !== 'function'))
+    || (deadlineField.present && !validDeadline)
+    || (deterministicField.present && !deterministicField.valid);
+  const callback = abortField.present && abortField.valid && typeof abortField.value === 'function'
+    ? abortField.value : null;
+  const deadline = validDeadline ? deadlineField.value : Infinity;
+  const isAborted = () => {
+    if (cancelled) return true;
+    if (!deterministic && now() >= deadline) { cancelled = true; return true; }
+    if (!callback) return false;
+    try {
+      if (callback() === true) { cancelled = true; return true; }
+    } catch {
+      cancelled = true;
+      return true;
+    }
+    return false;
+  };
+  return {
+    deterministic,
+    isAborted,
+    engineContext: {
+      deterministicTransforms:deterministic,
+      deadline,
+      shouldAbort:isAborted,
+    },
+  };
+}
 
 function positiveAccessSize(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    && value <= Math.floor(Number.MAX_SAFE_INTEGER / 8) ? value : null;
 }
 
 function mapsOf(result) {
-  return new Map((result.semanticAst?.values || []).map((v) => [v.valueId, v.expression]));
+  const values = new Map();
+  for (const value of result.semanticAst?.values || []) {
+    const id = fieldValue(value, 'valueId');
+    if (id != null) values.set(id, fieldValue(value, 'expression'));
+  }
+  return values;
 }
 
 function fitWidth(node, bits, source = null) {
-  bits = Number(bits || 0);
-  if (!node || !bits || Number(node.bits || bits) <= bits) return node;
-  return expr.unary('trunc', node, bits, node.signed ?? null, source || node.source, { fromBits:Number(node.bits || bits) });
+  if (!node || typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return node;
+  const nodeBitsField = ownData(node, 'bits');
+  if (nodeBitsField.present && (!nodeBitsField.valid || !validBits(nodeBitsField.value))) return null;
+  const nodeBits = nodeBitsField.present ? nodeBitsField.value : bits;
+  if (nodeBits <= bits) return node;
+  return expr.unary('trunc', node, bits, fieldValue(node, 'signed') ?? null, source || fieldValue(node, 'source'), { fromBits:nodeBits });
 }
 
 function expressionOf(value, values) {
-  const node = value ? values.get(value.id) || null : null;
-  return node ? fitWidth(node, value?.bits, {
-    row:value?.def?.row ?? null,
-    address:value?.def?.address ?? null,
-    ir:value?.def?.id ?? null,
-    ssaUse:value?.id ?? null,
+  const valueId = fieldValue(value, 'id');
+  const node = value && valueId != null ? values.get(valueId) || null : null;
+  const bitsField = ownData(value, 'bits');
+  if (value && bitsField.present
+      && (!bitsField.valid || (typeof bitsField.value !== 'number'
+        || !Number.isSafeInteger(bitsField.value) || bitsField.value <= 0))) return null;
+  return node ? fitWidth(node, bitsField.present ? bitsField.value : undefined, {
+    row:fieldValue(fieldValue(value, 'def'), 'row') ?? null,
+    address:fieldValue(fieldValue(value, 'def'), 'address') ?? null,
+    ir:fieldValue(fieldValue(value, 'def'), 'id') ?? null,
+    ssaUse:fieldValue(value, 'id') ?? null,
     evidence:[{ reason:'SSA value-width boundary' }],
   }) : null;
 }
 
-function simplify(node, engine) {
-  return node ? engine.rewrite(node).root : null;
+function simplify(node, engine, control) {
+  if (!node || control?.isAborted?.()) return null;
+  const rewritten = engine.rewrite(node, control?.engineContext || {}).root;
+  return control?.isAborted?.() ? null : rewritten;
 }
 
 function invert(node) {
@@ -50,144 +183,235 @@ function invert(node) {
 }
 
 function sameRowArithmetic(ir, cmp) {
-  const row = ir.byRow?.get?.(cmp.row) || (ir.instructions || []).filter((i) => i.row === cmp.row);
+  const cmpRow = fieldValue(cmp, 'row');
+  if (!validRow(cmpRow)) return null;
+  const instructions = arrayField(ir, 'instructions');
+  if (!instructions.ok) return null;
+  const cmpIndex = instructions.value.indexOf(cmp);
+  if (cmpIndex < 0) return null;
   let best = null;
-  for (const inst of row) {
-    if (inst.id >= cmp.id) continue;
-    if (inst.op !== 'bin' || inst.sub !== cmp.sub) continue;
-    if (!best || inst.id > best.id) best = inst;
+  let bestIndex = -1;
+  for (let index = 0; index < cmpIndex; index++) {
+    const inst = instructions.value[index];
+    if (fieldValue(inst, 'op') !== 'bin' || fieldValue(inst, 'row') !== cmpRow
+        || fieldValue(inst, 'sub') !== fieldValue(cmp, 'sub')) continue;
+    const args = arrayField(inst, 'args');
+    if (!args.ok || args.value.length < 2) continue;
+    if (index > bestIndex) { best = inst; bestIndex = index; }
   }
   return best;
 }
 
 function compareFromFlags(ir, flagsValue, cond, values) {
-  const cmp = flagsValue?.def;
-  if (cmp?.op !== 'cmp') return null;
+  const cmp = fieldValue(flagsValue, 'def');
+  if (fieldValue(cmp, 'op') !== 'cmp') return null;
 
   // Flag-setting arithmetic is lifted as BIN then CMP on the same ARM64 row.
   // SSA renaming can make CMP read the just-written destination. The preceding
   // same-row BIN is an exact proof of the original flag-producing operands.
+  const cmpArgs = arrayField(cmp, 'args');
+  if (!cmpArgs.ok) return null;
   const arithmetic = sameRowArithmetic(ir, cmp);
-  const leftValue = valueOf(arithmetic?.args?.[0] || cmp.args?.[0]);
-  const rightValue = valueOf(arithmetic?.args?.[1] || cmp.args?.[1]);
+  const arithmeticArgs = arithmetic ? arrayField(arithmetic, 'args') : { ok:false, value:[] };
+  const leftValue = valueOf(arithmeticArgs.ok ? arithmeticArgs.value[0] : cmpArgs.value[0]);
+  const rightValue = valueOf(arithmeticArgs.ok ? arithmeticArgs.value[1] : cmpArgs.value[1]);
   const left = expressionOf(leftValue, values);
   const right = expressionOf(rightValue, values);
   if (!left || !right) return null;
-  const bits = Number(cmp.bits || leftValue?.bits || rightValue?.bits || left.bits || right.bits || 64);
+  const cmpBits = fieldValue(cmp, 'bits');
+  const leftValueBits = fieldValue(leftValue, 'bits');
+  const rightValueBits = fieldValue(rightValue, 'bits');
+  const leftBits = fieldValue(left, 'bits');
+  const rightBits = fieldValue(right, 'bits');
+  if ((cmpBits != null && !validBits(cmpBits)) || (leftValueBits != null && !validBits(leftValueBits))
+      || (rightValueBits != null && !validBits(rightValueBits))
+      || (leftBits != null && !validBits(leftBits)) || (rightBits != null && !validBits(rightBits))) return null;
+  const bits = cmpBits || leftValueBits || rightValueBits || leftBits || rightBits || 64;
 
-  return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
-    address: cmp.address,
-    row: cmp.row,
-    ir: cmp.id,
-    ssaUses: [leftValue?.id, rightValue?.id].filter((x) => x != null),
+  const leftId = idKey(fieldValue(leftValue, 'id'));
+  const rightId = idKey(fieldValue(rightValue, 'id'));
+  return buildNZCVConditionExpression(fieldValue(cmp, 'sub') || 'sub', cond, left, right, bits, {
+    address: fieldValue(cmp, 'address'),
+    row: fieldValue(cmp, 'row'),
+    ir: fieldValue(cmp, 'id'),
+    ssaUses: [leftId, rightId].filter((x) => x != null),
     evidence: [{ reason: arithmetic ? 'same-row flag-producing arithmetic operands' : 'NZCV compare operands' }],
   });
 }
 
 function branchCondition(ir, term, values) {
-  const kind = term?.extra?.kind || term?.sub || '';
-  const tested = valueOf(term?.args?.[0]);
+  const extra = fieldValue(term, 'extra');
+  const kind = fieldValue(extra, 'kind') || fieldValue(term, 'sub') || '';
+  const termArgs = arrayField(term, 'args');
+  if (!termArgs.ok) return null;
+  const tested = valueOf(termArgs.value[0]);
 
   if (kind === 'cbz' || kind === 'cbnz') {
     const x = expressionOf(tested, values);
-    return x ? expr.compare(kind === 'cbz' ? 'eq' : 'ne', x, expr.constant(0, x.bits || 64), null, term.source) : null;
+    const xBits = fieldValue(x, 'bits');
+    if (!x || !validBits(xBits)) return null;
+    return expr.compare(kind === 'cbz' ? 'eq' : 'ne', x, expr.constant(0, xBits), null, fieldValue(term, 'source'));
   }
 
   if (kind === 'tbz' || kind === 'tbnz') {
-    const select = tested?.def;
-    if (select?.op === 'sel' && (select.sub === 'set' || select.sub === 'setm')) {
-      const flags = valueOf(select.args?.[select.args.length - 1]);
-      const materialized = compareFromFlags(ir, flags, select.cond, values);
+    const select = fieldValue(tested, 'def');
+    if (fieldValue(select, 'op') === 'sel' && ['set', 'setm'].includes(fieldValue(select, 'sub'))) {
+      const selectArgs = arrayField(select, 'args');
+      if (!selectArgs.ok) return null;
+      const flags = valueOf(selectArgs.value[selectArgs.value.length - 1]);
+      const materialized = compareFromFlags(ir, flags, fieldValue(select, 'cond'), values);
       if (materialized) return kind === 'tbz' ? invert(materialized) : materialized;
     }
 
     const x = expressionOf(tested, values);
     if (!x) return null;
-    const bit = Number(term.extra?.bit ?? 0);
-    const bits = Number(tested?.bits || x.bits || 64);
+    const bit = fieldValue(extra, 'bit');
+    const testedBits = fieldValue(tested, 'bits');
+    const xBits = fieldValue(x, 'bits');
+    const bits = testedBits ?? xBits ?? 64;
+    if ((testedBits != null && !validBits(testedBits)) || (xBits != null && !validBits(xBits))
+        || !validBits(bits) || typeof bit !== 'number' || !Number.isSafeInteger(bit) || bit < 0 || bit >= bits) return null;
     if (bit === bits - 1) {
-      return expr.compare(kind === 'tbz' ? 'ge' : 'lt', x, expr.constant(0, bits, true), true, term.source);
+      return expr.compare(kind === 'tbz' ? 'ge' : 'lt', x, expr.constant(0, bits, true), true, fieldValue(term, 'source'));
     }
-    const shifted = expr.binary('lshr', x, expr.constant(bit, bits, false), bits, false, term.source);
-    const masked = expr.binary('and', shifted, expr.constant(1, bits, false), bits, false, term.source);
-    return expr.compare(kind === 'tbz' ? 'eq' : 'ne', masked, expr.constant(0, bits, false), false, term.source);
+    const shifted = expr.binary('lshr', x, expr.constant(bit, bits, false), bits, false, fieldValue(term, 'source'));
+    const masked = expr.binary('and', shifted, expr.constant(1, bits, false), bits, false, fieldValue(term, 'source'));
+    return expr.compare(kind === 'tbz' ? 'eq' : 'ne', masked, expr.constant(0, bits, false), false, fieldValue(term, 'source'));
   }
 
-  if (kind === 'cond' || term?.cond) {
-    const flags = valueOf(term.args?.[term.args.length - 1]);
-    return compareFromFlags(ir, flags, term.cond || term.extra?.cond, values);
+  const condition = fieldValue(term, 'cond') || fieldValue(extra, 'cond');
+  if (kind === 'cond' || condition) {
+    const flags = valueOf(termArgs.value[termArgs.value.length - 1]);
+    return compareFromFlags(ir, flags, condition, values);
   }
   return null;
 }
 
 function targetBlock(ir, term, opts) {
-  const address = term?.extra?.target;
+  const extra = fieldValue(term, 'extra');
+  const address = fieldValue(extra, 'target');
   if (address == null) return null;
-  const row = opts.rowOfAddress?.(address);
-  if (row == null) return null;
-  return ir.blocks?.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+  const rowMapper = ownData(opts, 'rowOfAddress');
+  if (!rowMapper.present || !rowMapper.valid || typeof rowMapper.value !== 'function') return null;
+  let row;
+  try { row = rowMapper.value(address); } catch { return null; }
+  if (!validRow(row)) return null;
+  const blocks = arrayField(ir, 'blocks');
+  if (!blocks.ok) return null;
+  for (const block of blocks.value) {
+    const index = fieldValue(block, 'index');
+    const startRow = fieldValue(block, 'startRow');
+    const endRow = fieldValue(block, 'endRow');
+    if (!validBlock(index) || !validRow(startRow) || !validRow(endRow)) continue;
+    if (row >= startRow && row <= endRow) return index;
+  }
+  return null;
 }
 
 function terminal(block) {
-  const xs = block?.insts || [];
-  for (let i = xs.length - 1; i >= 0; i--) if (['cbr','br','ret'].includes(xs[i]?.op)) return xs[i];
+  const xs = arrayField(block, 'insts');
+  if (!xs.ok) return null;
+  for (let i = xs.value.length - 1; i >= 0; i--) {
+    if (['cbr','br','ret'].includes(fieldValue(xs.value[i], 'op'))) return xs.value[i];
+  }
   return null;
 }
 
 function branchArms(ir, block, term, opts) {
-  const succ = block?.succ || [];
-  if (term?.op !== 'cbr' || succ.length < 2) return { yes:succ[0] ?? null, no:succ[1] ?? null, exact:term?.op !== 'cbr' };
+  const successors = arrayField(block, 'succ');
+  if (!successors.ok || successors.value.some((successor) => !validBlock(successor))) {
+    return { yes:null, no:null, exact:false };
+  }
+  const succ = successors.value;
+  const op = fieldValue(term, 'op');
+  if (op !== 'cbr' || succ.length < 2) return { yes:succ[0] ?? null, no:succ[1] ?? null, exact:op !== 'cbr' };
   const yes = targetBlock(ir, term, opts);
   return yes != null && succ.includes(yes)
     ? { yes, no:succ.find((x) => x !== yes) ?? null, exact:true }
     : { yes:null, no:null, exact:false };
 }
 
-function canReach(ir, start, target, blocked, cap = 256) {
+function canReach(ir, start, target, blocked, cap = 256, control) {
   if (start == null || target == null) return false;
   const queue = [start], seen = new Set();
+  const blocks = arrayField(ir, 'blocks');
+  if (!blocks.ok) return false;
   while (queue.length && cap-- > 0) {
+    if (control?.isAborted?.()) return false;
     const at = queue.shift();
+    if (!validBlock(at)) return false;
     if (at === target) return true;
     if (at === blocked || seen.has(at)) continue;
     seen.add(at);
-    for (const next of ir.blocks?.[at]?.succ || []) if (!seen.has(next)) queue.push(next);
+    const successors = arrayField(blocks.value[at], 'succ');
+    if (!successors.ok) return false;
+    for (const next of successors.value) {
+      if (!validBlock(next)) return false;
+      if (!seen.has(next)) queue.push(next);
+    }
   }
   return false;
 }
 
-function armPredecessorIndex(ir, controller, successor, merge, predecessors) {
+function armPredecessorIndex(ir, controller, successor, merge, predecessors, control) {
   if (successor === merge) return predecessors.indexOf(controller.index);
-  return predecessors.findIndex((pred) => canReach(ir, successor, pred, merge));
+  return predecessors.findIndex((pred) => canReach(ir, successor, pred, merge, 256, control));
 }
 
 function dominates(ir, candidate, node) {
-  const view = ir.dominators?.[node];
-  if (view?.has) return view.has(candidate);
-  let cur = node, guard = (ir.blocks?.length || 0) + 2;
+  if (!validBlock(candidate) || !validBlock(node)) return false;
+  const dominators = ownData(ir, 'dominators');
+  const view = dominators.present && dominators.valid ? dominators.value?.[node] : null;
+  if (typeof view?.has === 'function') {
+    try { return view.has(candidate); } catch { return false; }
+  }
+  const blocks = arrayField(ir, 'blocks');
+  if (!blocks.ok) return false;
+  const idom = ownData(ir, 'idom');
+  const idomValues = idom.present && idom.valid && Array.isArray(idom.value) ? idom.value : [];
+  let cur = node, guard = blocks.value.length + 2;
   while (cur != null && cur >= 0 && guard-- > 0) {
     if (cur === candidate) return true;
-    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+    const parent = idomValues[cur];
+    const blockParent = fieldValue(blocks.value[cur], 'idom');
+    cur = parent ?? blockParent ?? -1;
+    if (cur !== -1 && !validBlock(cur)) return false;
   }
   return false;
 }
 
 function domDepth(ir, block) {
-  let depth = 0, cur = block, guard = (ir.blocks?.length || 0) + 2;
-  while (cur != null && cur >= 0 && guard-- > 0) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+  const blocks = arrayField(ir, 'blocks');
+  if (!blocks.ok || !validBlock(block)) return 0;
+  const idom = ownData(ir, 'idom');
+  const idomValues = idom.present && idom.valid && Array.isArray(idom.value) ? idom.value : [];
+  let depth = 0, cur = block, guard = blocks.value.length + 2;
+  while (cur != null && cur >= 0 && guard-- > 0) {
+    depth++;
+    const parent = idomValues[cur];
+    const blockParent = fieldValue(blocks.value[cur], 'idom');
+    cur = parent ?? blockParent ?? -1;
+    if (cur !== -1 && !validBlock(cur)) return 0;
+  }
   return depth;
 }
 
-function controller(ir, merge, predecessors, opts) {
+function controller(ir, merge, predecessors, opts, control) {
   const candidates = [];
-  for (const block of ir.blocks || []) {
-    if (!dominates(ir, block.index, merge)) continue;
+  const blocks = arrayField(ir, 'blocks');
+  if (!blocks.ok) return null;
+  for (const block of blocks.value) {
+    if (control?.isAborted?.()) return null;
+    const blockIndex = fieldValue(block, 'index');
+    const successors = arrayField(block, 'succ');
+    if (!successors.ok || !validBlock(blockIndex) || successors.value.some((next) => !validBlock(next))) return null;
+    if (!dominates(ir, blockIndex, merge)) continue;
     const term = terminal(block);
-    if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
+    if (fieldValue(term, 'op') !== 'cbr' || successors.value.length < 2) continue;
     const arms = branchArms(ir, block, term, opts);
     if (!arms.exact) continue;
-    const yesIndex = armPredecessorIndex(ir, block, arms.yes, merge, predecessors);
-    const noIndex = armPredecessorIndex(ir, block, arms.no, merge, predecessors);
+    const yesIndex = armPredecessorIndex(ir, { index:blockIndex }, arms.yes, merge, predecessors, control);
+    const noIndex = armPredecessorIndex(ir, { index:blockIndex }, arms.no, merge, predecessors, control);
     if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, depth:domDepth(ir, block.index) });
   }
   candidates.sort((a,b) => b.depth - a.depth);
@@ -197,125 +421,197 @@ function controller(ir, merge, predecessors, opts) {
 }
 
 function exactReturnLoad(result, root, ret) {
-  const bits = root?.bits;
-  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
-  const sourceIds = new Set((Array.isArray(root.source?.ir) ? root.source.ir : []).map(String));
-  if (!sourceIds.size) return null;
-  const candidates = (result.ir?.instructions || []).filter((inst) =>
-    sourceIds.has(String(inst.id))
-      && inst?.op === 'load'
-      && inst.loc?.kind === 'stack'
-      && inst.loc.key === root.location.key);
+  const bits = fieldValue(root, 'bits');
+  const rootLocation = fieldValue(root, 'location');
+  const rootKey = fieldValue(rootLocation, 'key');
+  if (!validBits(bits) || fieldValue(rootLocation, 'kind') !== 'stack'
+      || typeof rootKey !== 'string' || rootKey.length === 0) return null;
+  const sourceIds = sourceValues(root, 'ir', idKey);
+  if (!sourceIds || sourceIds.length === 0) return null;
+  const instructions = arrayField(result.ir, 'instructions');
+  if (!instructions.ok) return null;
+  const candidates = instructions.value.filter((inst) => {
+    const id = idKey(fieldValue(inst, 'id'));
+    const location = fieldValue(inst, 'loc');
+    return id != null && sourceIds.includes(id)
+      && fieldValue(inst, 'op') === 'load'
+      && fieldValue(location, 'kind') === 'stack'
+      && fieldValue(location, 'key') === rootKey;
+  });
   if (candidates.length !== 1) return null;
   const load = candidates[0];
-  const size = positiveAccessSize(load.loc?.size);
+  const location = fieldValue(load, 'loc');
+  const size = positiveAccessSize(fieldValue(location, 'size'));
   if (size == null || size > Math.floor(Number.MAX_SAFE_INTEGER / 8) || size * 8 !== bits) return null;
-  if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(ret.row)) return null;
-  if (load.block === ret.block) {
-    if (load.row >= ret.row) return null;
-  } else if (!dominates(result.ir, load.block, ret.block)) {
+  const loadRow = fieldValue(load, 'row');
+  const retRow = fieldValue(ret, 'row');
+  const loadBlock = fieldValue(load, 'block');
+  const retBlock = fieldValue(ret, 'block');
+  if (!validRow(loadRow) || !validRow(retRow) || !validBlock(loadBlock) || !validBlock(retBlock)) return null;
+  if (loadBlock === retBlock) {
+    if (loadRow >= retRow) return null;
+  } else if (!dominates(result.ir, loadBlock, retBlock)) {
     return null;
   }
   return { load, size };
 }
 
 function storeValue(inst, key, size, values) {
-  if (inst?.op !== 'store'
-      || inst.loc?.kind !== 'stack'
-      || inst.loc?.key !== key
-      || !Number.isSafeInteger(inst.row)
-      || positiveAccessSize(inst.loc?.size) !== size) return null;
-  let node = expressionOf(valueOf(inst.args?.[0]), values);
+  const location = fieldValue(inst, 'loc');
+  const row = fieldValue(inst, 'row');
+  if (fieldValue(inst, 'op') !== 'store'
+      || fieldValue(location, 'kind') !== 'stack'
+      || fieldValue(location, 'key') !== key
+      || !validRow(row)
+      || positiveAccessSize(fieldValue(location, 'size')) !== size) return null;
+  const args = fieldValue(inst, 'args');
+  const value = Array.isArray(args) ? valueOf(args[0]) : null;
+  let node = expressionOf(value, values);
   if (!node) return null;
   const bits = size * 8;
   if (bits) node = fitWidth(node, bits, {
-    address:inst.address,
-    row:inst.row,
-    ir:inst.id,
+    address:fieldValue(inst, 'address'),
+    row,
+    ir:fieldValue(inst, 'id'),
     evidence:[{ reason:`exact ${bits}-bit stack-store boundary` }],
   });
   return node;
 }
 
 function reachingRegisterDefinition(ir, atInst, reg) {
+  const values = arrayField(ir, 'values');
+  const instructions = arrayField(ir, 'instructions');
+  const atBlock = fieldValue(atInst, 'block');
+  const atRow = fieldValue(atInst, 'row');
+  if (!values.ok || !instructions.ok || !validBlock(atBlock) || !validRow(atRow) || typeof reg !== 'string') return null;
   let best = null, bestDepth = -1, bestRow = -Infinity;
-  for (const value of ir?.values || []) {
-    if (value?.reg !== reg || !value.def || value.clobbered) continue;
-    const def = value.def;
-    if (def.block === atInst.block) {
-      if (def.row == null || atInst.row == null || def.row >= atInst.row) continue;
-      if (def.row > bestRow) { best = value; bestRow = def.row; bestDepth = Number.MAX_SAFE_INTEGER; }
+  for (const value of values.value) {
+    const def = fieldValue(value, 'def');
+    const defBlock = fieldValue(def, 'block');
+    const defRow = fieldValue(def, 'row');
+    if (fieldValue(value, 'reg') !== reg || !def || fieldValue(value, 'clobbered') === true
+        || !validBlock(defBlock) || !validRow(defRow)
+        || instructions.value.filter((instruction) => instruction === def).length !== 1) continue;
+    if (defBlock === atBlock) {
+      if (defRow >= atRow) continue;
+      if (defRow > bestRow) { best = value; bestRow = defRow; bestDepth = Number.MAX_SAFE_INTEGER; }
       continue;
     }
-    if (!dominates(ir, def.block, atInst.block)) continue;
-    const depth = domDepth(ir, def.block);
-    if (bestDepth !== Number.MAX_SAFE_INTEGER && (depth > bestDepth || (depth === bestDepth && (def.row ?? -Infinity) > bestRow))) {
-      best = value; bestDepth = depth; bestRow = def.row ?? -Infinity;
+    if (!dominates(ir, defBlock, atBlock)) continue;
+    const depth = domDepth(ir, defBlock);
+    if (bestDepth !== Number.MAX_SAFE_INTEGER && (depth > bestDepth || (depth === bestDepth && defRow > bestRow))) {
+      best = value; bestDepth = depth; bestRow = defRow;
     }
   }
   return best;
 }
 
 function exactViewTrace(value, active = new Set()) {
-  if (!value || active.has(value.id)) return null;
-  active.add(value.id);
+  const valueId = idKey(fieldValue(value, 'id'));
+  if (!value || valueId == null || active.has(valueId)) return null;
+  const valueBits = ownData(value, 'bits');
+  if (valueBits.present && (!valueBits.valid || !validBits(valueBits.value))) return null;
+  active.add(valueId);
   let current = value;
   const steps = [];
-  while (current?.def?.op === 'mov' && current.def.args?.length === 1) {
-    const def = current.def;
-    const sub = def.sub ?? null;
+  while (fieldValue(fieldValue(current, 'def'), 'op') === 'mov') {
+    const def = fieldValue(current, 'def');
+    const args = arrayField(def, 'args');
+    if (!args.ok || args.value.length !== 1) break;
+    const sub = fieldValue(def, 'sub') ?? null;
+    const extra = fieldValue(def, 'extra');
     const exactIdentity = sub == null || sub === 'copy' || sub === 'bitcast'
-      || def.extra?.stateRead || def.extra?.stateWrite;
+      || fieldValue(extra, 'stateRead') === true || fieldValue(extra, 'stateWrite') === true;
     if (!exactIdentity && !EXACT_VIEW_MOV_SUBS.has(sub)) break;
-    const source = valueOf(def.args[0]);
-    if (!source || active.has(source.id)) break;
+    const source = valueOf(args.value[0]);
+    const sourceId = idKey(fieldValue(source, 'id'));
+    if (!source || sourceId == null || active.has(sourceId)) break;
     if (sub === 'trunc' || sub === 'zext') {
-      steps.push(`${sub}:${Number(source.bits || 0)}>${Number(current.bits || 0)}`);
+      const sourceBits = fieldValue(source, 'bits');
+      const currentBits = fieldValue(current, 'bits');
+      if (!validBits(sourceBits) || !validBits(currentBits)) return null;
+      steps.push(`${sub}:${sourceBits}>${currentBits}`);
     }
-    active.add(source.id);
+    active.add(sourceId);
     current = source;
   }
-  return { root: current, bits:Number(value.bits || 0), steps };
+  return { root: current, bits:valueBits.present ? valueBits.value : 0, steps };
 }
 
 function storedViewProjectsValue(stored, expected, store) {
   if (!stored || !expected || !store) return false;
-  if (stored === expected || stored.id === expected.id) return true;
+  const storedId = idKey(fieldValue(stored, 'id'));
+  const expectedId = idKey(fieldValue(expected, 'id'));
+  if (storedId == null || expectedId == null) return false;
+  if (stored === expected || storedId === expectedId) return true;
   const a = exactViewTrace(stored), b = exactViewTrace(expected);
-  if (!a?.root || !b?.root || a.root.id !== b.root.id) return false;
-  const widthBits = Number((store.loc?.size ?? store.addr?.size ?? store.extra?.size ?? 0) * 8);
-  if (widthBits > 0 && Number(stored.bits || 0) !== widthBits) return false;
+  const aRootId = idKey(fieldValue(a?.root, 'id'));
+  const bRootId = idKey(fieldValue(b?.root, 'id'));
+  if (!a?.root || !b?.root || aRootId == null || aRootId !== bRootId) return false;
+  const location = fieldValue(store, 'loc');
+  const address = fieldValue(store, 'addr');
+  const extra = fieldValue(store, 'extra');
+  const sizeField = ownData(location, 'size').present ? ownData(location, 'size')
+    : ownData(address, 'size').present ? ownData(address, 'size') : ownData(extra, 'size');
+  if (sizeField.present && (!sizeField.valid || positiveAccessSize(sizeField.value) == null)) return false;
+  const widthBits = sizeField.present ? sizeField.value * 8 : 0;
+  const storedBits = fieldValue(stored, 'bits');
+  if (storedBits != null && !validBits(storedBits)) return false;
+  if (widthBits > 0 && storedBits !== widthBits) return false;
   if (a.steps.length < b.steps.length) return false;
   const suffix = a.steps.slice(a.steps.length - b.steps.length);
   return suffix.every((step, index) => step === b.steps[index]);
 }
 
 function committedStoreBarrier(inst, key) {
-  if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
-  if (inst?.op === 'call') return (inst.memKills || []).some((loc) => loc?.key === key);
-  if (inst?.op !== 'store') return false;
-  return !inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key;
+  const op = fieldValue(inst, 'op');
+  const location = fieldValue(inst, 'loc');
+  const locationKey = fieldValue(location, 'key');
+  const locationKind = fieldValue(location, 'kind');
+  if (op === 'clobber' || op === 'unknown') return true;
+  if (op === 'call') {
+    const kills = arrayField(inst, 'memKills');
+    return !kills.ok || kills.value.some((loc) => fieldValue(loc, 'key') === key);
+  }
+  if (op !== 'store') return false;
+  return !locationKey || locationKind === 'unknown' || locationKey === key;
 }
 
 function storeOfExactValue(ir, blockIndex, value) {
+  const blocks = arrayField(ir, 'blocks');
+  const valueId = idKey(fieldValue(value, 'id'));
+  if (!blocks.ok || !validBlock(blockIndex) || valueId == null) return null;
   let current = blockIndex;
   const seen = new Set();
   const later = [];
-  let guard = Math.min(64, (ir?.blocks?.length || 0) + 2);
+  let guard = Math.min(64, blocks.value.length + 2);
   while (current != null && current >= 0 && guard-- > 0 && !seen.has(current)) {
+    if (!validBlock(current) || current >= blocks.value.length) return null;
     seen.add(current);
-    const instructions = [...(ir?.blocks?.[current]?.insts || [])]
-      .sort((a,b) => (b.row ?? -1) - (a.row ?? -1) || (b.id ?? -1) - (a.id ?? -1));
+    const blockInstructions = arrayField(blocks.value[current], 'insts');
+    if (!blockInstructions.ok) return null;
+    const instructions = [...blockInstructions.value];
+    if (instructions.some((instruction) => !validRow(fieldValue(instruction, 'row')))) return null;
+    instructions.sort((a,b) => fieldValue(b, 'row') - fieldValue(a, 'row'));
     for (const inst of instructions) {
-      if (inst?.op === 'store' && inst.loc?.kind !== 'stack' && inst.loc?.kind !== 'unknown'
-          && inst.loc?.key && storedViewProjectsValue(valueOf(inst.args?.[0]), value, inst)) {
+      const op = fieldValue(inst, 'op');
+      const location = fieldValue(inst, 'loc');
+      const locationKind = fieldValue(location, 'kind');
+      const locationKey = fieldValue(location, 'key');
+      const args = arrayField(inst, 'args');
+      if (op === 'store' && locationKind !== 'stack' && locationKind !== 'unknown'
+          && typeof locationKey === 'string' && locationKey.length > 0 && args.ok
+          && storedViewProjectsValue(valueOf(args.value[0]), value, inst)) {
         if (!dominates(ir, current, blockIndex)) return null;
-        if (later.some((candidate) => committedStoreBarrier(candidate, inst.loc.key))) return null;
+        if (later.some((candidate) => committedStoreBarrier(candidate, locationKey))) return null;
         return inst;
       }
       later.push(inst);
     }
-    const predecessors = [...(ir?.blocks?.[current]?.pred || [])];
+    const predecessorField = ownData(blocks.value[current], 'pred');
+    if (!predecessorField.present || !predecessorField.valid || !Array.isArray(predecessorField.value)) return null;
+    const predecessors = [...predecessorField.value];
+    if (predecessors.some((pred) => !validBlock(pred))) return null;
     if (predecessors.length !== 1) return null;
     current = predecessors[0];
   }
@@ -323,8 +619,13 @@ function storeOfExactValue(ir, blockIndex, value) {
 }
 
 function semanticLocationForStore(result, store) {
-  return (result.semanticAst?.stores || []).find((item) =>
-    (item.source?.ir || []).some((id) => Number(id) === Number(store?.id)))?.location || null;
+  const storeId = idKey(fieldValue(store, 'id'));
+  if (storeId == null) return null;
+  for (const item of result.semanticAst?.stores || []) {
+    const ids = sourceValues(item, 'ir', idKey);
+    if (ids?.includes(storeId)) return fieldValue(item, 'location') || null;
+  }
+  return null;
 }
 
 function locationIdentity(location) {
@@ -339,20 +640,41 @@ function locationIdentity(location) {
 }
 
 function semanticLocationForProvenSnapshot(result, definition) {
-  const projected = (result.semanticAst?.values || []).find((item) =>
-    String(item?.valueId ?? '') === String(definition?.dst?.id ?? ''))?.expression ?? null;
-  if (projected?.kind === 'load'
-      && projected.location?.kind !== 'stack' && projected.location?.kind !== 'unknown') return projected.location;
+  const definitionDst = fieldValue(definition, 'dst');
+  const definitionDstId = idKey(fieldValue(definitionDst, 'id'));
+  let projected = null;
+  if (definitionDstId != null) {
+    for (const item of result.semanticAst?.values || []) {
+      if (idKey(fieldValue(item, 'valueId')) === definitionDstId) {
+        projected = fieldValue(item, 'expression') || null;
+        break;
+      }
+    }
+  }
+  const projectedLocation = fieldValue(projected, 'location');
+  const projectedKind = fieldValue(projected, 'kind');
+  if (projectedKind === 'load'
+      && fieldValue(projectedLocation, 'kind') !== 'stack' && fieldValue(projectedLocation, 'kind') !== 'unknown') return projectedLocation;
 
-  const key = definition?.extra?.committedLocationKey ?? definition?.loc?.key;
-  if (!key) return null;
-  const rows = new Set((definition.extra?.committedStoreRows || [])
-    .map(Number).filter(Number.isFinite));
-  const locations = (result.ir?.instructions || [])
-    .filter((store) => store?.op === 'store'
-      && store.loc?.kind !== 'stack' && store.loc?.kind !== 'unknown'
-      && store.loc?.key === key
-      && (rows.size === 0 || rows.has(Number(store.row))))
+  const extra = fieldValue(definition, 'extra');
+  const definitionLocation = fieldValue(definition, 'loc');
+  const key = fieldValue(extra, 'committedLocationKey') ?? fieldValue(definitionLocation, 'key');
+  if (typeof key !== 'string' || key.length === 0) return null;
+  const rowField = ownData(extra, 'committedStoreRows');
+  if (rowField.present && (!rowField.valid || !Array.isArray(rowField.value)
+      || rowField.value.some((row) => !validRow(row)))) return null;
+  const rows = new Set(rowField.present ? rowField.value : []);
+  const instructions = arrayField(result.ir, 'instructions');
+  if (!instructions.ok) return null;
+  const locations = instructions.value
+    .filter((store) => {
+      const location = fieldValue(store, 'loc');
+      const kind = fieldValue(location, 'kind');
+      const storeKey = fieldValue(location, 'key');
+      return fieldValue(store, 'op') === 'store'
+        && typeof kind === 'string' && kind !== 'stack' && kind !== 'unknown'
+        && storeKey === key && (!rows.size || rows.has(fieldValue(store, 'row')));
+    })
     .map((store) => semanticLocationForStore(result, store));
   if (!locations.length || locations.some((location) => !location)) return null;
   const identity = locationIdentity(locations[0]);
@@ -361,19 +683,26 @@ function semanticLocationForProvenSnapshot(result, definition) {
 }
 
 function committedLocationForPhi(result, value) {
-  const definition = value?.def;
-  if (definition?.op === 'load'
-      && (definition.extra?.committedPhiSnapshot === true || definition.extra?.committedSnapshotView === true)
-      && definition.loc?.kind !== 'stack' && definition.loc?.kind !== 'unknown') {
+  const definition = fieldValue(value, 'def');
+  const definitionExtra = fieldValue(definition, 'extra');
+  const definitionLocation = fieldValue(definition, 'loc');
+  const definitionKind = fieldValue(definitionLocation, 'kind');
+  if (fieldValue(definition, 'op') === 'load'
+      && (fieldValue(definitionExtra, 'committedPhiSnapshot') === true || fieldValue(definitionExtra, 'committedSnapshotView') === true)
+      && typeof definitionKind === 'string' && definitionKind !== 'stack' && definitionKind !== 'unknown') {
     const location = semanticLocationForProvenSnapshot(result, definition);
     if (location) return location;
   }
 
   const phi = definition;
-  if (phi?.op !== 'phi' || !(phi.incoming || []).length) return null;
+  const incomingField = ownData(phi, 'incoming');
+  if (fieldValue(phi, 'op') !== 'phi' || !incomingField.present || !incomingField.valid
+      || !Array.isArray(incomingField.value) || !incomingField.value.length) return null;
   const locations = [];
-  for (const incoming of phi.incoming || []) {
-    const store = storeOfExactValue(result.ir, incoming.from, incoming.value);
+  for (const incoming of incomingField.value) {
+    const from = fieldValue(incoming, 'from');
+    const incomingValue = fieldValue(incoming, 'value');
+    const store = storeOfExactValue(result.ir, from, incomingValue);
     if (!store) return null;
     const location = semanticLocationForStore(result, store);
     if (!location) return null;
@@ -400,8 +729,9 @@ function canonicalReturnRegister(result, root, opts = {}) {
         returnType,
       });
       return Array.isArray(locations) && locations.length === 1
-        && locations[0]?.kind === 'register' && locations[0]?.aggregate !== true
-        ? String(locations[0].reg || '') || null : null;
+        && fieldValue(locations[0], 'kind') === 'register' && fieldValue(locations[0], 'aggregate') !== true
+        && typeof fieldValue(locations[0], 'reg') === 'string'
+        ? fieldValue(locations[0], 'reg') || null : null;
     } catch {
       return null;
     }
@@ -415,138 +745,196 @@ function canonicalReturnRegister(result, root, opts = {}) {
 }
 
 function committedReturnValue(result, root, ret, opts = {}) {
-  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
+  const rootLocation = fieldValue(root, 'location');
+  const rootKey = fieldValue(rootLocation, 'key');
+  if (fieldValue(root, 'kind') !== 'load' || fieldValue(rootLocation, 'kind') !== 'stack'
+      || typeof rootKey !== 'string' || rootKey.length === 0) return null;
   const returnRegister = canonicalReturnRegister(result, root, opts);
   if (!returnRegister) return null;
   const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister);
-  const load = reaching?.def;
-  if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
-  if (!isCanonicalExactMemoryForwarding(load.memoryForwarding,
-    canonicalMemoryForwardingContextForLoad(load.memoryForwarding, load,
-      load.memoryForwardingContext ?? load.extra?.memoryForwardingContext))) return null;
-  const definitionIds = new Set(load.memoryForwarding.contributingDefinitionIds.map(String));
-  const stackStores = (result.ir.instructions || []).filter((candidate) => {
-    const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-    return candidate?.op === 'store'
-      && candidate?.loc?.kind === 'stack'
-      && candidate.loc.key === root.location.key
-      && definitionId != null
-      && definitionIds.has(String(definitionId));
+  const load = fieldValue(reaching, 'def');
+  const loadLocation = fieldValue(load, 'loc');
+  if (fieldValue(load, 'op') !== 'load' || fieldValue(loadLocation, 'key') !== rootKey) return null;
+  const loadForwarding = fieldValue(load, 'memoryForwarding');
+  const loadExtra = fieldValue(load, 'extra');
+  const forwarding = loadForwarding ?? fieldValue(loadExtra, 'memoryForwarding');
+  let exactForwarding = false;
+  try {
+    exactForwarding = isCanonicalExactMemoryForwarding(forwarding,
+      canonicalMemoryForwardingContextForLoad(forwarding, load,
+        fieldValue(load, 'memoryForwardingContext') ?? fieldValue(loadExtra, 'memoryForwardingContext')));
+  } catch {
+    return null;
+  }
+  if (!exactForwarding) return null;
+  const contributingField = ownData(forwarding, 'contributingDefinitionIds');
+  if (!contributingField.present || !contributingField.valid || !Array.isArray(contributingField.value)) return null;
+  const definitionIds = new Set();
+  for (const definitionId of contributingField.value) {
+    const key = idKey(definitionId);
+    if (key == null) return null;
+    definitionIds.add(key);
+  }
+  const instructions = arrayField(result.ir, 'instructions');
+  if (!instructions.ok) return null;
+  const stackStores = instructions.value.filter((candidate) => {
+    const candidateLocation = fieldValue(candidate, 'loc');
+    const memDef = fieldValue(candidate, 'memDef');
+    const candidateExtra = fieldValue(candidate, 'extra');
+    const definitionId = fieldValue(memDef, 'definitionId') ?? fieldValue(candidateExtra, 'memoryDefinitionId');
+    const definitionKey = idKey(definitionId);
+    return fieldValue(candidate, 'op') === 'store'
+      && fieldValue(candidateLocation, 'kind') === 'stack'
+      && fieldValue(candidateLocation, 'key') === rootKey
+      && definitionKey != null
+      && definitionIds.has(definitionKey);
   });
   if (stackStores.length !== 1) return null;
   const stackStore = stackStores[0];
-  const spilled = valueOf(stackStore?.args?.[0]);
+  const stackArgs = arrayField(stackStore, 'args');
+  const spilled = stackArgs.ok ? valueOf(stackArgs.value[0]) : null;
   const location = committedLocationForPhi(result, spilled);
   if (!location) return null;
-  return expr.load(location, root.bits || 64, root.source, {
-    signed: root.signed ?? null,
+  const rootBits = fieldValue(root, 'bits');
+  if (!validBits(rootBits)) return null;
+  return expr.load(location, rootBits, fieldValue(root, 'source'), {
+    signed: fieldValue(root, 'signed') ?? null,
     proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
   });
 }
 
 function unsafeBarrier(inst, key) {
-  if (!Number.isSafeInteger(inst?.row)
-      && (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown'
-        || (inst?.op === 'store'
-          && (!inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key)))) return true;
-  if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
-  if (inst?.op === 'call') {
+  const op = fieldValue(inst, 'op');
+  const location = fieldValue(inst, 'loc');
+  const locationKey = fieldValue(location, 'key');
+  const locationKind = fieldValue(location, 'kind');
+  if (op === 'clobber' || op === 'unknown') return true;
+  if (op === 'call') {
     // buildMemorySSA has already proven which locations this call can kill.
     // A private caller stack slot is absent from memKills and is safe to carry
     // through the call; an escaped stack address is present and remains a barrier.
-    return (inst.memKills || []).some((loc) => loc?.key === key);
+    const kills = arrayField(inst, 'memKills');
+    if (!kills.ok) return true;
+    return kills.value.some((loc) => fieldValue(loc, 'key') === key);
   }
-  if (inst?.op !== 'store') return false;
-  if (inst.loc?.key === key) return true;
-  return inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
+  if (op !== 'store') return false;
+  if (locationKey === key) return true;
+  return !locationKey || locationKind === 'unknown';
 }
 
 function before(ir, block, row, key) {
-  return (ir.instructions || [])
-    .filter((i) => {
-      if (i.block !== block) return false;
-      const malformedBarrier = !Number.isSafeInteger(i.row)
-        && (i.op === 'call' || i.op === 'clobber' || i.op === 'unknown'
-          || (i.op === 'store'
-            && (!i.loc?.key || i.loc?.kind === 'unknown' || i.loc.key === key)));
-      if (malformedBarrier) return true;
-      return row == null || (Number.isSafeInteger(row) && Number.isSafeInteger(i.row) && i.row < row);
-    })
-    .sort((a,b) => {
-      const aMalformed = Number.isSafeInteger(a.row) ? 0 : 1;
-      const bMalformed = Number.isSafeInteger(b.row) ? 0 : 1;
-      if (aMalformed !== bMalformed) return bMalformed - aMalformed;
-      const aRow = Number.isSafeInteger(a.row) ? a.row : -Infinity;
-      const bRow = Number.isSafeInteger(b.row) ? b.row : -Infinity;
-      return bRow - aRow;
-    });
+  const instructions = arrayField(ir, 'instructions');
+  if (!instructions.ok || !validBlock(block) || (row != null && !validRow(row))) return null;
+  const selected = [];
+  for (const instruction of instructions.value) {
+    const instructionBlock = fieldValue(instruction, 'block');
+    if (!validBlock(instructionBlock)) return null;
+    if (instructionBlock !== block) continue;
+    const instructionRow = fieldValue(instruction, 'row');
+    if (!validRow(instructionRow)) return null;
+    if (row == null || instructionRow < row) selected.push(instruction);
+  }
+  selected.sort((a, b) => fieldValue(b, 'row') - fieldValue(a, 'row'));
+  return selected;
 }
 
-function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, active, depth = 0) {
-  if (blockIndex == null || depth > 64) return null;
+function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, active, depth = 0, control) {
+  if (control?.isAborted?.() || !validBlock(blockIndex) || (beforeRow != null && !validRow(beforeRow)) || depth > 64) return null;
   const token = `${blockIndex}:${beforeRow ?? 'end'}:${key}:${size}`;
   if (active.has(token)) return null;
   active.add(token);
   try {
-    for (const inst of before(ir, blockIndex, beforeRow, key)) {
+    const instructions = before(ir, blockIndex, beforeRow, key);
+    if (!instructions) return null;
+    for (const inst of instructions) {
+      if (control?.isAborted?.()) return null;
       const stored = storeValue(inst, key, size, values);
       if (stored) return stored;
       if (unsafeBarrier(inst, key)) return null;
     }
 
-    const block = ir.blocks?.[blockIndex];
-    const predecessors = [...(block?.pred || [])];
+    const blocks = arrayField(ir, 'blocks');
+    if (!blocks.ok || blockIndex >= blocks.value.length) return null;
+    const block = blocks.value[blockIndex];
+    const predecessorField = ownData(block, 'pred');
+    if (!predecessorField.present || !predecessorField.valid || !Array.isArray(predecessorField.value)) return null;
+    const predecessors = [...predecessorField.value];
+    if (predecessors.some((pred) => !validBlock(pred))) return null;
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, size, values, opts, engine, active, depth + 1));
+    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, size, values, opts, engine, active, depth + 1, control));
     if (incoming.some((x) => !x)) return null;
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return incoming[0];
     if (predecessors.length !== 2 || unique.size !== 2) return null;
 
-    const control = controller(ir, blockIndex, predecessors, opts);
-    if (!control) return null;
-    const condition = simplify(branchCondition(ir, control.term, values), engine);
+    const mergeControl = controller(ir, blockIndex, predecessors, opts, control);
+    if (!mergeControl) return null;
+    const condition = simplify(branchCondition(ir, mergeControl.term, values), engine, control);
     if (!condition) return null;
-    const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
-    const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
-    return simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
-      address:control.term.address,
-      row:control.term.row,
-      ir:control.term.id,
+    const firstBits = fieldValue(incoming[0], 'bits');
+    const secondBits = fieldValue(incoming[1], 'bits');
+    if ((firstBits != null && !validBits(firstBits)) || (secondBits != null && !validBits(secondBits))) return null;
+    const bits = firstBits || secondBits || 64;
+    const signed = fieldValue(condition, 'compareSigned') ?? fieldValue(incoming[0], 'signed')
+      ?? fieldValue(incoming[1], 'signed') ?? null;
+    return simplify(expr.select(condition, incoming[mergeControl.yesIndex], incoming[mergeControl.noIndex], bits, signed, {
+      address:fieldValue(mergeControl.term, 'address'),
+      row:fieldValue(mergeControl.term, 'row'),
+      ir:fieldValue(mergeControl.term, 'id'),
       evidence:[{ reason:'exact stack CFG join' }],
-    }), engine);
+    }), engine, control);
   } finally {
     active.delete(token);
   }
 }
 
 function isReturnNode(node) {
-  return node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim());
+  const semantic = fieldValue(node, 'semantic');
+  const text = fieldValue(node, 'text');
+  return fieldValue(semantic, 'op') === 'return'
+    || (typeof text === 'string' && /^return\b/.test(text.trim()));
 }
 
 function returnNodeMatches(node, ret) {
-  const source = node?.source || {};
-  const rows = (Array.isArray(source.rows) ? source.rows : [])
-    .filter((row) => typeof row === 'number' && Number.isFinite(row));
-  const ir = (Array.isArray(source.ir) ? source.ir : [])
-    .filter((id) => typeof id === 'number' && Number.isFinite(id));
-  const addresses = (Array.isArray(source.addresses) ? source.addresses : []).filter((address) =>
-    typeof address === 'bigint' || (typeof address === 'number' && Number.isFinite(address)));
-  return rows.some((row) => Number(row) === Number(ret.row))
-    || ir.some((id) => Number(id) === Number(ret.id))
-    || addresses.some((address) => String(address) === String(ret.address));
+  const rows = sourceValues(node, 'rows', (row) => validRow(row) ? row : null);
+  const ir = sourceValues(node, 'ir', idKey);
+  const addresses = sourceValues(node, 'addresses', addressKey);
+  if (rows == null || ir == null || addresses == null) return false;
+  const retRow = fieldValue(ret, 'row');
+  const retId = idKey(fieldValue(ret, 'id'));
+  const retAddress = addressKey(fieldValue(ret, 'address'));
+  return rows.includes(retRow)
+    || (retId != null && ir.includes(retId))
+    || (retAddress != null && addresses.includes(retAddress));
 }
 
-function rewriteReturn(result, expression, opts, ret) {
+function rewriteReturn(result, expression, opts, ret, control) {
+  if (control?.isAborted?.()) return false;
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
   if (!output) return false;
   const nodes = (result.cAst?.body || []).filter(isReturnNode);
   if (nodes.length !== 1 || !returnNodeMatches(nodes[0], ret)) return false;
-  output.expression = expression;
   const node = nodes[0];
+  const previousOutput = output.expression;
+  const previousText = node.text;
+  const previousExpression = node.semantic?.expression;
+  output.expression = expression;
   node.text = `return ${printExpression(expression)};`;
   if (node.semantic) node.semantic.expression = expression;
-  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  if (control?.isAborted?.()) {
+    output.expression = previousOutput;
+    node.text = previousText;
+    if (node.semantic) node.semantic.expression = previousExpression;
+    return false;
+  }
+  const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
+  const printed = printProgram(result.cAst, { columnWidth });
+  if (control?.isAborted?.()) {
+    output.expression = previousOutput;
+    node.text = previousText;
+    if (node.semantic) node.semantic.expression = previousExpression;
+    return false;
+  }
   result.pseudocode = printed.text;
   result.sourceMap = printed.mapping;
   result.lines = result.cAst.body.map((node) => ({
@@ -557,15 +945,24 @@ function rewriteReturn(result, expression, opts, ret) {
   return true;
 }
 
-function committedStackSpillOnExactReturnPath(result, root, load, size) {
-  for (const inst of before(result.ir, load.block, load.row, root.location.key)) {
-    if (!Number.isSafeInteger(inst.row)) return null;
-    if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
-      if (positiveAccessSize(inst.loc.size) !== size) return null;
-      const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
-      return location ? { stackStore:inst, location } : null;
+function committedStackSpillOnExactReturnPath(result, root, load, size, control) {
+  const rootLocation = fieldValue(root, 'location');
+  const rootKey = fieldValue(rootLocation, 'key');
+  if (typeof rootKey !== 'string' || rootKey.length === 0) return null;
+  const instructions = before(result.ir, fieldValue(load, 'block'), fieldValue(load, 'row'), rootKey);
+  if (!instructions) return null;
+  for (const inst of instructions) {
+    if (control?.isAborted?.()) return null;
+    const location = fieldValue(inst, 'loc');
+    if (fieldValue(inst, 'op') === 'store' && fieldValue(location, 'kind') === 'stack'
+        && fieldValue(location, 'key') === rootKey) {
+      if (positiveAccessSize(fieldValue(location, 'size')) !== size) return null;
+      const args = fieldValue(inst, 'args');
+      const storedValue = Array.isArray(args) ? valueOf(args[0]) : null;
+      const committedLocation = committedLocationForPhi(result, storedValue);
+      return committedLocation ? { stackStore:inst, location:committedLocation } : null;
     }
-    if (unsafeBarrier(inst, root.location.key)) return null;
+    if (unsafeBarrier(inst, rootKey)) return null;
   }
   return null;
 }
@@ -573,19 +970,23 @@ function committedStackSpillOnExactReturnPath(result, root, load, size) {
 function removeProofOnlyStackSpill(result, stackStore, opts) {
   const body = result.cAst?.body;
   if (!Array.isArray(body) || !stackStore) return false;
-  const storeRow = Number(stackStore.row);
-  const storeId = String(stackStore.id);
+  const storeRow = fieldValue(stackStore, 'row');
+  const storeId = idKey(fieldValue(stackStore, 'id'));
+  if (!validRow(storeRow) || storeId == null) return false;
   const filtered = body.filter((node) => {
-    const text = String(node?.text || '');
+    const text = fieldValue(node, 'text');
+    if (typeof text !== 'string') return true;
     if (!/^\s*local_[A-Za-z0-9_]+\s*=/.test(text)) return true;
-    const rows = node?.source?.rows || [];
-    const ir = node?.source?.ir || [];
-    const isSpill = rows.some((row) => Number(row) === storeRow) || ir.some((id) => String(id) === storeId);
+    const rows = sourceValues(node, 'rows', (row) => validRow(row) ? row : null);
+    const ir = sourceValues(node, 'ir', idKey);
+    if (rows == null || ir == null) return true;
+    const isSpill = rows.includes(storeRow) || ir.includes(storeId);
     return !isSpill;
   });
   if (filtered.length === body.length) return false;
   result.cAst.body = filtered;
-  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
+  const printed = printProgram(result.cAst, { columnWidth });
   result.pseudocode = printed.text;
   result.sourceMap = printed.mapping;
   result.lines = result.cAst.body.map((node) => ({
@@ -598,10 +999,17 @@ function removeProofOnlyStackSpill(result, stackStore, opts) {
 
 export function recoverExactStackReturn(result, opts = {}) {
   if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return result;
+  const control = recoveryControl(opts);
+  if (control.isAborted()) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   const root = output?.expression;
-  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return result;
-  const returns = (result.ir.instructions || []).filter((i) => i.op === 'ret');
+  const rootLocation = fieldValue(root, 'location');
+  const rootKey = fieldValue(rootLocation, 'key');
+  if (fieldValue(root, 'kind') !== 'load' || fieldValue(rootLocation, 'kind') !== 'stack'
+      || typeof rootKey !== 'string' || rootKey.length === 0) return result;
+  const instructions = arrayField(result.ir, 'instructions');
+  if (!instructions.ok) return result;
+  const returns = instructions.value.filter((i) => fieldValue(i, 'op') === 'ret');
   const returnNodes = (result.cAst.body || []).filter(isReturnNode);
   // Stack-PHI recovery is path-local. The fallback has no per-output return
   // envelope, so it must not guess among multiple physical RETs or statements.
@@ -611,30 +1019,41 @@ export function recoverExactStackReturn(result, opts = {}) {
   if (!loadProof || !returnNodeMatches(returnNodes[0], ret)) return result;
 
   const values = mapsOf(result);
+  const nodeBudget = validWorkBudget(fieldValue(opts, 'decompilerNodeBudget'), 12000);
+  const timeBudget = validTimeBudget(fieldValue(opts, 'decompilerTimeBudgetMs'), 50);
+  // A direct stack proof can resolve a literal without entering RewriteEngine;
+  // honor a zero caller budget before that proof starts. Deterministic mode
+  // intentionally disables only the wall-clock deadline, so its time zero is
+  // still allowed when work remains.
+  if (nodeBudget === 0 || (!control.deterministic && timeBudget === 0)) return result;
   const engine = new RewriteEngine(DEFAULT_RULES, {
     maxIterations:10,
-    nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
-    timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
+    nodeBudget:Math.min(2048, nodeBudget),
+    timeBudgetMs:Math.min(12, timeBudget / 4),
+    deterministic:control.deterministic,
     maxApplications:512,
   });
+  if (control.isAborted()) return result;
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
-    const proof = committedStackSpillOnExactReturnPath(result, root, loadProof.load, loadProof.size);
+    const proof = committedStackSpillOnExactReturnPath(result, root, loadProof.load, loadProof.size, control);
     if (proof) {
       committedSpill = proof.stackStore;
-      committed = expr.load(proof.location, root.bits || 64, root.source, {
-        signed:root.signed ?? null,
+      const rootBits = fieldValue(root, 'bits');
+      if (!validBits(rootBits)) return result;
+      committed = expr.load(proof.location, rootBits, fieldValue(root, 'source'), {
+        signed:fieldValue(root, 'signed') ?? null,
         proof:'exact return-path spill carries an SSA phi whose predecessors commit one lvalue',
       });
     }
   }
-  const recovered = committed || resolve(result.ir, loadProof.load.block, loadProof.load.row, root.location.key,
-    loadProof.size, values, opts, engine, new Set());
+  const recovered = committed || resolve(result.ir, fieldValue(loadProof.load, 'block'), fieldValue(loadProof.load, 'row'), rootKey,
+    loadProof.size, values, opts, engine, new Set(), 0, control);
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack')
-      || !rewriteReturn(result, recovered, opts, ret)) return result;
+      || !rewriteReturn(result, recovered, opts, ret, control)) return result;
   if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
 
   result.rewriteProof = [...(result.rewriteProof || []), {

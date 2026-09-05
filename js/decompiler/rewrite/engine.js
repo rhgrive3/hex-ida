@@ -21,6 +21,34 @@ function validWorkLimit(value, fallback) {
     : fallback;
 }
 
+/* Read option values without invoking a getter or a coercion hook.  Rewrite
+ * budgets are a resource boundary, so an object which can execute code while
+ * being converted to a number must be rejected rather than evaluated. */
+function ownData(object, key) {
+  if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
+    return { present:false, valid:true, value:undefined };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor) return { present:false, valid:true, value:undefined };
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      return { present:true, valid:false, value:undefined };
+    }
+    return { present:true, valid:true, value:descriptor.value };
+  } catch {
+    return { present:true, valid:false, value:undefined };
+  }
+}
+
+function strictBudget(budget, key, fallback) {
+  const option = ownData(budget, key);
+  return option.present && option.valid ? option.value : fallback;
+}
+
+function validDeadline(value) {
+  return typeof value === 'number' && (Number.isFinite(value) || value === Infinity);
+}
+
 function validateRule(rule) {
   for (const key of ['name', 'phase', 'match', 'rewrite', 'proof']) {
     if (rule?.[key] == null) throw new TypeError(`rewrite rule missing ${key}`);
@@ -33,7 +61,16 @@ function validateRule(rule) {
 export class RewriteEngine {
   constructor(rules = [], budget = {}) {
     this.rules = rules.map(validateRule);
-    this.budget = { ...DEFAULT_REWRITE_BUDGET, ...budget };
+    this.budget = {
+      maxIterations: strictBudget(budget, 'maxIterations', DEFAULT_REWRITE_BUDGET.maxIterations),
+      nodeBudget: strictBudget(budget, 'nodeBudget', DEFAULT_REWRITE_BUDGET.nodeBudget),
+      timeBudgetMs: strictBudget(budget, 'timeBudgetMs', DEFAULT_REWRITE_BUDGET.timeBudgetMs),
+      maxApplications: strictBudget(budget, 'maxApplications', DEFAULT_REWRITE_BUDGET.maxApplications),
+    };
+    const deterministic = ownData(budget, 'deterministic');
+    if (deterministic.present && deterministic.valid && typeof deterministic.value === 'boolean') {
+      this.budget.deterministic = deterministic.value;
+    }
     this.budget.timeBudgetMs = validTimeBudgetMs(this.budget.timeBudgetMs, DEFAULT_REWRITE_BUDGET.timeBudgetMs);
     this.budget.maxIterations = validWorkLimit(this.budget.maxIterations, DEFAULT_REWRITE_BUDGET.maxIterations);
     this.budget.nodeBudget = validWorkLimit(this.budget.nodeBudget, DEFAULT_REWRITE_BUDGET.nodeBudget);
@@ -56,9 +93,16 @@ export class RewriteEngine {
      * an unbounded mode — it is the same engine bounded by work instead of by
      * clock. Production defaults are unchanged.
      */
-    const deterministic = context.deterministicTransforms === true || this.budget.deterministic === true;
+    const deterministicOption = ownData(context, 'deterministicTransforms');
+    const callbackOption = ownData(context, 'shouldAbort');
+    const deadlineOption = ownData(context, 'deadline');
+    const contextInvalid = (deterministicOption.present && !deterministicOption.valid)
+      || (callbackOption.present && (!callbackOption.valid || typeof callbackOption.value !== 'function'))
+      || (deadlineOption.present && (!deadlineOption.valid || !validDeadline(deadlineOption.value)));
+    const deterministic = (deterministicOption.present && deterministicOption.valid
+      && deterministicOption.value === true) || this.budget.deterministic === true;
     const localDeadline = deterministic ? Infinity : started + this.budget.timeBudgetMs;
-    const contextDeadline = Number(context.deadline);
+    const contextDeadline = deadlineOption.present && deadlineOption.valid ? deadlineOption.value : Infinity;
     const deadline = !deterministic && Number.isFinite(contextDeadline)
       ? Math.min(localDeadline, contextDeadline)
       : localDeadline;
@@ -66,11 +110,21 @@ export class RewriteEngine {
     const stats = { iterations: 0, applications: 0, budgetExceeded: false, elapsedMs: 0, byRule: {} };
     const phases = [...new Set(this.rules.map((r) => r.phase))];
     let current = root;
+    let cancelled = contextInvalid;
 
     const overBudget = (candidate = current) => {
+      if (cancelled) return true;
       if (stats.applications >= this.budget.maxApplications) return true;
       if (nodeCount(candidate, new Set(), this.budget.nodeBudget) > this.budget.nodeBudget) return true;
-      if (now() >= deadline || context.shouldAbort?.()) return true;
+      if (now() >= deadline) { cancelled = true; return true; }
+      if (callbackOption.present) {
+        try {
+          if (callbackOption.value() === true) { cancelled = true; return true; }
+        } catch {
+          cancelled = true;
+          return true;
+        }
+      }
       return false;
     };
 
@@ -135,6 +189,16 @@ export class RewriteEngine {
       if (stats.budgetExceeded) break;
     }
     stats.elapsedMs = now() - started;
+    // A caller cancellation or deadline may arrive after one or more local
+    // rewrites.  Do not publish that partial fixed point as if the pass had
+    // completed: the recovery wrappers can then remain transaction-like.
+    if (cancelled) {
+      current = root;
+      // Proof entries describe the candidate tree that was rejected by the
+      // cancellation boundary; retaining them would let a caller publish
+      // evidence for a rewrite which is no longer present.
+      proof.length = 0;
+    }
     return { root: current, proof, stats };
   }
 }

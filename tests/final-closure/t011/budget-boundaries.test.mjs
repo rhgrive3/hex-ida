@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { expr } from '../../../js/decompiler/ast/nodes.js';
 import {
@@ -14,9 +16,16 @@ import {
   exactLegacySameBlockStackStore as canonicalExactLegacySameBlockStackStore,
   materializeLegacyExactStackValues,
 } from '../../../js/decompiler/legacy-exact-return-repair.js';
-import { exactLegacySameBlockStackStore } from '../../../js/decompiler/pipeline.js';
+import {
+  enhanceSemanticDecompilation as enhancePipeline,
+  exactLegacySameBlockStackStore,
+} from '../../../js/decompiler/pipeline.js';
 import { recoverExactStackPhiExpressions } from '../../../js/decompiler/passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
+import {
+  compilerTruthAccepted,
+  compilerTruthGateResult,
+} from './compiler-truth-gate.mjs';
 
 function coerciveValue(counter) {
   return Object.defineProperties({}, {
@@ -159,6 +168,45 @@ function stackReturnWriterFixture(mode, writerRow = 1) {
   };
 }
 
+function detachedNestedLoadFixture() {
+  const sourceKey = 'stack:sp:e0:-24:s4';
+  const returnKey = 'stack:sp:e0:-16:s4';
+  const literal = { id:100 };
+  const nested = { id:101 };
+  const sourceStore = { id:20, op:'store', block:0, row:0, address:0x2000n,
+    loc:{ kind:'stack', key:sourceKey, size:4 }, args:[{ value:literal }] };
+  const detachedLoad = { id:90, op:'load', block:0, row:1, address:0x2004n,
+    loc:{ kind:'stack', key:sourceKey, size:4 }, args:[] };
+  nested.def = detachedLoad;
+  const returnStore = { id:21, op:'store', block:0, row:2, address:0x2008n,
+    loc:{ kind:'stack', key:returnKey, size:4 }, args:[{ value:nested }] };
+  const returnLoad = { id:22, op:'load', block:0, row:3, address:0x200cn,
+    loc:{ kind:'stack', key:returnKey, size:4 }, args:[] };
+  const ret = { id:23, op:'ret', block:0, row:4, address:0x2010n, args:[] };
+  const instructions = [sourceStore, returnStore, returnLoad, ret];
+  const expression = expr.load({ kind:'stack', key:returnKey }, 32, { ir:returnLoad.id, row:returnLoad.row });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:4, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{
+      values:[
+        { valueId:literal.id, expression:expr.constant(11n, 32, true) },
+        { valueId:nested.id, expression:expr.load({ kind:'stack', key:sourceKey }, 32) },
+      ],
+      conditions:[],
+      outputs:[{ name:'return', expression }],
+    },
+    cAst:{ body:[{
+      kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    }] },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+    detachedLoad,
+  };
+}
+
 test('T011 time budgets require primitive finite nonnegative numbers', () => {
   const counter = { count:0 };
   const malformed = [NaN, Infinity, -Infinity, -1, '40', 40n, new Number(40), coerciveValue(counter)];
@@ -281,6 +329,33 @@ test('T011 PHI recovery does not infer missing or malformed STORE widths from a 
   assert.equal(instructionWidth.cAst.body[0].text, 'return 11;');
 });
 
+test('T011 direct PHI recovery rejects malformed STORE rows, including throwing getters', () => {
+  for (const row of ['1', 1.5, 1n, new Number(1), null, undefined]) {
+    const result = stackReturnFixture();
+    result.ir.instructions[0].row = row;
+    recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', String(row));
+    assert.equal(result.metrics.rewrittenExpressions, 0, String(row));
+  }
+  const counter = { count:0 };
+  const result = stackReturnFixture();
+  Object.defineProperty(result.ir.instructions[0], 'row', {
+    configurable:true,
+    get() { counter.count += 1; throw new Error('row getter must not run'); },
+  });
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+  assert.equal(counter.count, 0);
+});
+
+test('T011 PHI recovery requires a physical nested LOAD instead of detached value.def metadata', () => {
+  const result = detachedNestedLoadFixture();
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
 test('T011 return fallback rejects width, LOAD, and location-kind ambiguity', () => {
   for (const options of [
     { name:'wrong-width', options:{ storeSize:8 } },
@@ -316,6 +391,17 @@ test('T011 legacy malformed same-slot writer rows fail closed', () => {
     const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
     assert.equal(expression.kind, 'load', String(writerRow));
   }
+});
+
+test('T011 legacy materialization forwards active cancellation before publication', () => {
+  const result = legacyStaleReachingStoreFixture(1);
+  let calls = 0;
+  materializeLegacyExactStackValues(result, {
+    shouldAbort() { calls += 1; return calls >= 2; },
+  });
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+  assert.ok(calls >= 2);
 });
 
 test('T011 malformed unknown/no-key STORE rows fail closed through legacy and pipeline helpers', () => {
@@ -361,6 +447,175 @@ test('T011 malformed same-slot STORE rows fail closed as barriers', () => {
   }
 });
 
+test('T011 stack recoveries forward early and mid-scan cancellation without partial publication', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const early = stackReturnFixture();
+    let earlyCalls = 0;
+    recover(early, { deterministicTransforms:true, shouldAbort() { earlyCalls += 1; return true; } });
+    assert.equal(early.cAst.body[0].text, 'return local_0;');
+    assert.equal(early.metrics.rewrittenExpressions, 0);
+    assert.ok(earlyCalls > 0);
+
+    const mid = stackReturnFixture();
+    const { instructions, blocks } = mid.ir;
+    const load = instructions.find((instruction) => instruction.op === 'load');
+    const ret = instructions.find((instruction) => instruction.op === 'ret');
+    load.row = 64;
+    ret.row = 65;
+    blocks[0].endRow = ret.row;
+    const nops = Array.from({ length:32 }, (_item, index) => ({
+      id:1000 + index, op:'nop', block:0, row:1 + index, args:[],
+    }));
+    mid.ir.instructions = [instructions[0], ...nops, load, ret];
+    blocks[0].insts = mid.ir.instructions;
+    let midCalls = 0;
+    recover(mid, { deterministicTransforms:true, shouldAbort() { midCalls += 1; return midCalls >= 4; } });
+    assert.equal(mid.cAst.body[0].text, 'return local_0;');
+    assert.equal(mid.metrics.rewrittenExpressions, 0);
+    assert.ok(midCalls >= 4);
+  }
+
+  const multi = multiReturnFixture();
+  let sawFirstPublication = false;
+  recoverExactStackPhiExpressions(multi, {
+    deterministicTransforms:true,
+    shouldAbort() {
+      if (multi.cAst.body[0].text === 'return 11;') sawFirstPublication = true;
+      return sawFirstPublication;
+    },
+  });
+  assert.deepEqual(multi.cAst.body.map((node) => node.text), ['return local_0;', 'return local_1;']);
+  assert.equal(multi.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 stack recoveries honor an expired deadline and RewriteEngine rolls back mid-rewrite cancellation', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const result = stackReturnFixture();
+    recover(result, { deadline:0 });
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
+
+  const increment = {
+    name:'increment-once',
+    phase:'test',
+    match(node) { return node?.kind === 'const' ? {} : null; },
+    rewrite(node) { return expr.constant(node.value + 1n, node.bits, node.signed); },
+    proof() { return { reason:'mid-rewrite-cancellation-regression' }; },
+  };
+  const root = expr.binary('add', expr.constant(0n, 32, true), expr.constant(1n, 32, true), 32, true);
+  const engine = new RewriteEngine([increment], {
+    deterministic:true,
+    maxIterations:2,
+    nodeBudget:32,
+    maxApplications:8,
+  });
+  let calls = 0;
+  const result = engine.rewrite(root, {
+    deterministicTransforms:true,
+    shouldAbort() { calls += 1; return calls >= 6; },
+  });
+  assert.ok(result.stats.applications >= 1);
+  assert.ok(calls >= 6);
+  assert.equal(result.root, root);
+  assert.equal(result.proof.length, 0);
+});
+
+test('T011 stack recoveries honor zero budgets and forward deterministic mode', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const options of [{ decompilerNodeBudget:0 }, { decompilerTimeBudgetMs:0 }]) {
+      const result = stackReturnFixture();
+      recover(result, options);
+      assert.equal(result.cAst.body[0].text, 'return local_0;');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+  const deterministic = stackReturnFixture();
+  deterministic.semanticAst.values[0].expression.bits = 64;
+  recoverExactStackPhiExpressions(deterministic, {
+    decompilerTimeBudgetMs:0,
+    deterministicTransforms:true,
+  });
+  assert.equal(deterministic.cAst.body[0].text, 'return 11;');
+  assert.equal(deterministic.metrics.rewrittenExpressions, 1);
+
+  const counter = { count:0 };
+  const malformed = stackReturnFixture();
+  Object.defineProperty(malformed, 'decompilerTimeBudgetMs', {
+    configurable:true,
+    get() { counter.count += 1; return 0; },
+  });
+  // The option object is separate from the result; this descriptor exercises
+  // the same coercion boundary without allowing a getter to execute.
+  const options = {};
+  Object.defineProperty(options, 'decompilerTimeBudgetMs', {
+    configurable:true,
+    get() { counter.count += 1; return 0; },
+  });
+  recoverExactStackPhiExpressions(malformed, options);
+  assert.equal(counter.count, 0);
+  assert.equal(malformed.cAst.body[0].text, 'return 11;');
+
+  for (const key of ['decompilerNodeBudget', 'decompilerTimeBudgetMs']) {
+    for (const [index, value] of ['0', 0n, new Number(0), NaN, coerciveValue(counter)].entries()) {
+      for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+        const result = stackReturnFixture();
+        recover(result, { [key]:value });
+        assert.equal(result.cAst.body[0].text, 'return 11;', `${key}:case-${index}`);
+        assert.equal(result.metrics.rewrittenExpressions, 1, `${key}:case-${index}`);
+      }
+    }
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 public pipeline rejects coercive and zero decompiler budgets before core passes', () => {
+  const counter = { count:0 };
+  const coercive = coerciveValue(counter);
+  const base = {
+    semantic:true,
+    ir:{ instructions:[], blocks:[], values:[] },
+    semanticAst:{ values:[], conditions:[], outputs:[] },
+    cAst:{ body:[] },
+  };
+  for (const value of [coercive, '0', 0n, new Number(0), NaN]) {
+    const result = structuredClone(base);
+    assert.doesNotThrow(() => enhancePipeline(result, null, { decompilerNodeBudget:value }));
+    assert.deepEqual(result.cAst.body, []);
+  }
+  for (const options of [
+    { decompilerNodeBudget:0 },
+    { decompilerTimeBudgetMs:0 },
+    { decompilerIterationCap:0 },
+  ]) {
+    const result = structuredClone(base);
+    const returned = enhancePipeline(result, null, options);
+    assert.equal(returned, result);
+    assert.deepEqual(result.cAst.body, []);
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 row, block, and provenance values are noncoercive', () => {
+  const malformed = [
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'load').row = '2'; },
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'load').block = '0'; },
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'ret').row = new Number(3); },
+    result => { result.semanticAst.outputs[0].expression.source.ir = [null]; },
+    result => { result.cAst.body[0].source.rows = [null]; },
+    result => { result.cAst.body[0].source.ir = [{}]; },
+  ];
+  for (const mutate of malformed) {
+    for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+      const result = stackReturnFixture();
+      mutate(result);
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+});
+
 test('T011 stack-return proof keeps scalar widths and rows type-strict', () => {
   const malformed = [
     result => { result.semanticAst.outputs[0].expression.bits = '32'; },
@@ -391,4 +646,35 @@ test('T011 deterministic PassManager mode does not report a disabled deadline', 
     if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
     else delete globalThis.performance;
   }
+});
+
+test('T011 compiler truth requires every real C, extended, C++, and Objective-C denominator', () => {
+  const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const repositoryRoot = path.resolve(testDirectory, '../../..');
+  const gate = compilerTruthGateResult({ repositoryRoot });
+  assert.equal(gate.status, 0, String(gate.stderr || gate.stdout || 'compiler-truth command failed').slice(-4000));
+  assert.equal(gate.accepted, true, 'empty, skipped, or incomplete compiler truth must not pass T011');
+
+  // The canonical suites historically exited zero with clang unavailable and
+  // reported zero executed cases. Run that real path with a missing compiler;
+  // the T011 gate must reject the resulting 0-of-0 summaries.
+  const unavailable = compilerTruthGateResult({
+    repositoryRoot,
+    env: { ...process.env, CLANG:'/definitely/missing/t011-clang' },
+  });
+  assert.equal(unavailable.status, 0, 'unavailable compiler should still produce canonical diagnostics');
+  assert.equal(unavailable.summaries.core?.clangAvailable, false);
+  assert.equal(unavailable.summaries.core?.executed, 0);
+  assert.equal(unavailable.accepted, false, 'unavailable/0-of-0 compiler truth must fail T011');
+
+  // Keep the pure evaluator negative for a missing or truncated output, too.
+  assert.equal(compilerTruthAccepted({
+    core:{ clangAvailable:false, executed:0, expectedCases:0, hardFailures:0, results:[] },
+    extended:{ clangAvailable:false, executed:0, results:[] },
+    languages:{
+      cpp:{ status:'skipped', executed:0, semanticChecks:0, rows:[] },
+      objc:{ status:'skipped', executed:0, semanticChecks:0, rows:[] },
+    },
+  }), false);
+  assert.equal(compilerTruthAccepted({ core:null, extended:null, languages:null }), false);
 });
