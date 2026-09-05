@@ -1,4 +1,4 @@
-import { deepFreeze, jsonSafe, stableDigest } from "../../core/identity/index.js";
+import { deepFreeze, jsonSafe, lossyTypeWitness, stableDigest, validateCanonicalIdentityNumbers } from "../../core/identity/index.js";
 
 export const ANALYSIS_SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -25,7 +25,23 @@ function nonEmptyString(value, code) {
   return text;
 }
 
-function normalizeArtifacts(value) {
+function normalizeArtifactVersionValue(value) {
+  try {
+    validateCanonicalIdentityNumbers(value);
+  } catch {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+  if (lossyTypeWitness(value)) {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+  try {
+    return jsonSafe(value);
+  } catch {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+}
+
+export function normalizeAnalysisArtifactVersions(value) {
   if (value == null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
   const prototype = Object.getPrototypeOf(value);
@@ -37,7 +53,7 @@ function normalizeArtifacts(value) {
     if (Object.prototype.hasOwnProperty.call(normalized, cleanKey)) {
       throw new TypeError("analysis-snapshot-artifact-version-key-ambiguous");
     }
-    normalized[cleanKey] = jsonSafe(value[key]);
+    normalized[cleanKey] = normalizeArtifactVersionValue(value[key]);
   }
   return normalized;
 }
@@ -48,7 +64,7 @@ function identityTuple(value) {
     binaryId: nonEmptyString(value.binaryId, "analysis-snapshot-binary-id-required"),
     projectRevision: nonNegativeSafeInteger(value.projectRevision, "analysis-snapshot-project-revision-invalid"),
     analysisEpoch: nonNegativeSafeInteger(value.analysisEpoch, "analysis-snapshot-epoch-invalid"),
-    artifactVersions: normalizeArtifacts(value.artifactVersions),
+    artifactVersions: normalizeAnalysisArtifactVersions(value.artifactVersions),
   };
 }
 
