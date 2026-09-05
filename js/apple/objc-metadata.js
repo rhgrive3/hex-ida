@@ -199,6 +199,9 @@ function pointerTableAddress(value) {
   if (typeof value === 'string' && /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) return BigInt(value.trim());
   return null;
 }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function pointerTable(get, range, budget, parse, opts = {}) {
   const items = [];
   if (!range) {
@@ -235,7 +238,10 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
         items.push(item);
         if (item.completeness?.complete === false) incompleteItems++;
       } else invalidEntries++;
-    } catch { invalidEntries++; }
+    } catch (error) {
+      if (isCancellationError(error)) throw error;
+      invalidEntries++;
+    }
   }
   const capped = declared > budget;
   const complete = sizeValid && misalignedBytes === 0 && !capped && unreadableSlots === 0 && invalidEntries === 0 && incompleteItems === 0 && items.length === scanned && scanned === declared && !opts?.signal?.aborted;
