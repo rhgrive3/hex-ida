@@ -26,7 +26,38 @@ const list = (value, name) => {
   return [...value];
 };
 
-function encodedByteLength(text) { return new TextEncoder().encode(text).byteLength; }
+function utf8LengthWithinLimit(text, limit) {
+  // Every UTF-16 code unit encodes to at least one UTF-8 byte, so an
+  // obviously long string is rejected without touching the encoder at all.
+  if (text.length > limit) return limit + 1;
+  // Otherwise count with fixed-size encodeInto chunks and stop as soon as
+  // the limit is exceeded, so a rejected input never costs a full-size copy.
+  const encoder = new TextEncoder();
+  const CHAR_CHUNK = 32768;
+  const buffer = new Uint8Array(CHAR_CHUNK * 3);
+  let total = 0;
+  let pos = 0;
+  while (pos < text.length) {
+    let end = Math.min(pos + CHAR_CHUNK, text.length);
+    // Never split a surrogate pair across chunks; encodeInto would emit
+    // U+FFFD for the lone half and overcount the true byte length.
+    if (end < text.length) {
+      const tail = text.charCodeAt(end - 1);
+      if (tail >= 0xD800 && tail <= 0xDBFF) end -= 1;
+    }
+    const { read, written } = encoder.encodeInto(text.slice(pos, end), buffer);
+    if (read <= 0) break;
+    total += written;
+    if (total > limit) return total;
+    pos += read;
+  }
+  return total;
+}
+function assertTextProjectSize(text) {
+  if (utf8LengthWithinLimit(text, MAX_PROJECT_BYTES) > MAX_PROJECT_BYTES) {
+    throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
+  }
+}
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
@@ -144,7 +175,7 @@ export function serializeHexProject(project) {
   const text = JSON.stringify(normalized, (_key, value) => (
     typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString(16) } : escapeBigIntTag(value)
   ), 2);
-  assertProjectSize(encodedByteLength(text));
+  assertTextProjectSize(text);
   return text;
 }
 
@@ -154,7 +185,7 @@ export function parseHexProject(input) {
   else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = decodeProjectUtf8(input); }
   else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = decodeProjectUtf8(new Uint8Array(input)); }
   else throw new ProjectFormatError('project input must be JSON text or bytes');
-  assertProjectSize(encodedByteLength(text));
+  assertTextProjectSize(text);
   let raw;
   try {
     raw = JSON.parse(text, (_key, value) => {
