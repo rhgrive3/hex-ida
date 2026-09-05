@@ -16,20 +16,29 @@ function loadEstimators() {
 
   const workerBody = workerMatch[0].replace(/\n\n  const rpc$/, '');
   const hostBody = hostMatch[0].replace(/\n\nfunction sandboxOutputSize$/, '');
-  const measure = new Function(
+  const worker = new Function(
     `const MAX_ARGUMENT_UNITS = ${INPUT_BUDGET};\n`
+      + 'const NativeObjectPrototype = Object.prototype;\n'
+      + 'const NativeSet = Set;\n'
       + 'const nativeArrayIsArray = Array.isArray.bind(Array);\n'
       + 'const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);\n'
+      + 'const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);\n'
       + 'const nativeKeys = Object.keys.bind(Object);\n'
-      + `${workerBody}\nreturn measure;`,
+      + 'const nativeDescriptor = Object.getOwnPropertyDescriptor.bind(Object);\n'
+      + 'const nativeStructuredClone = globalThis.structuredClone.bind(globalThis);\n'
+      + 'const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);\n'
+      + 'const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);\n'
+      + 'const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);\n'
+      + 'const nativeArrayBufferByteLength = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);\n'
+      + `${workerBody}\nreturn { measure, prepareRpcArgs };`,
   )();
   const valueSize = new Function(
     `const MAX_RPC_OUTPUT_BYTES = ${16 * 1024 * 1024};\n${hostBody}\nreturn valueSize;`,
   )();
-  return { measure, valueSize };
+  return { ...worker, valueSize };
 }
 
-const { measure, valueSize } = loadEstimators();
+const { measure, prepareRpcArgs, valueSize } = loadEstimators();
 
 function oversizedKeyObject() {
   return { ['k'.repeat(Math.floor(INPUT_BUDGET / 2) + 64)]: null };
@@ -76,6 +85,41 @@ test('normal objects stay below budget and worker/host key accounting agrees', (
   const hostSize = valueSize(args, new Set(), INPUT_BUDGET + 1);
   assert.equal(workerSize, hostSize);
   assert.ok(workerSize < INPUT_BUDGET);
+});
+
+test('worker rejects accessor mutation before cloning caller-owned RPC input', () => {
+  const huge = 'k'.repeat(Math.floor(INPUT_BUDGET / 2) + 64);
+  const payload = {};
+  let getterCalls = 0;
+  Object.defineProperty(payload, 'x', {
+    enumerable: true,
+    get() {
+      getterCalls++;
+      Object.defineProperty(payload, huge, { value: null, enumerable: true });
+      return null;
+    },
+  });
+
+  assert.equal(prepareRpcArgs([payload], INPUT_BUDGET), null);
+  assert.equal(getterCalls, 0, 'preflight must inspect descriptors without invoking accessors');
+  assert.equal(Object.hasOwn(payload, huge), false, 'rejected input must not mutate before transport');
+});
+
+test('worker sends an owned snapshot for accepted RPC input', () => {
+  const payload = { nested: { alpha: 'ok' } };
+  const prepared = prepareRpcArgs([payload], INPUT_BUDGET);
+  assert.ok(prepared);
+  assert.notEqual(prepared.args[0], payload);
+  assert.notEqual(prepared.args[0].nested, payload.nested);
+  assert.equal(prepared.units, measure(prepared.args));
+
+  payload.nested.alpha = 'mutated-after-prepare';
+  payload.extra = oversizedKeyObject();
+  assert.deepEqual(prepared.args, [{ nested: { alpha: 'ok' } }]);
+});
+
+test('worker fails closed on opaque cloneables before RPC transport', () => {
+  assert.equal(prepareRpcArgs([new Map([['hidden', 'payload']])], INPUT_BUDGET), null);
 });
 
 test('sparse Arrays visit only enumerable own entries instead of iterating length', () => {
