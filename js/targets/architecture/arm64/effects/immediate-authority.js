@@ -8,33 +8,40 @@ export function snapshotArm64ImmediateOperands(instruction, ops) {
       continue;
     }
 
-    let descriptor;
+    let descriptors;
     try {
-      descriptor = Object.getOwnPropertyDescriptor(op, 'value');
+      descriptors = Object.getOwnPropertyDescriptors(op);
     } catch {
       return null;
     }
-    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    const valueDescriptor = descriptors.value;
+    if (!valueDescriptor || !Object.prototype.hasOwnProperty.call(valueDescriptor, 'value')) return null;
 
-    const stableOp = Object.create(op);
-    Object.defineProperty(stableOp, 'value', {
-      value: descriptor.value,
-      enumerable: descriptor.enumerable !== false,
+    descriptors.value = {
+      value: valueDescriptor.value,
+      enumerable: valueDescriptor.enumerable !== false,
       writable: false,
       configurable: false,
-    });
-    stableOps.push(stableOp);
+    };
+    stableOps.push(Object.create(Object.getPrototypeOf(op), descriptors));
     hasImmediate = true;
   }
 
   if (!hasImmediate) return Object.freeze({ instruction, ops });
 
-  const stableInstruction = Object.create(instruction);
-  Object.defineProperty(stableInstruction, 'ops', {
+  let instructionDescriptors;
+  try {
+    instructionDescriptors = Object.getOwnPropertyDescriptors(instruction);
+  } catch {
+    return null;
+  }
+  const opsDescriptor = instructionDescriptors.ops;
+  instructionDescriptors.ops = {
     value: stableOps,
-    enumerable: true,
+    enumerable: opsDescriptor?.enumerable !== false,
     writable: false,
     configurable: false,
-  });
+  };
+  const stableInstruction = Object.create(Object.getPrototypeOf(instruction), instructionDescriptors);
   return Object.freeze({ instruction: stableInstruction, ops: stableOps });
 }
