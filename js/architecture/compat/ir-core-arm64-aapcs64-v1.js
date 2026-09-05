@@ -275,9 +275,9 @@ function callResultLocation(insn, opts) {
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   if (proto.indirectResult === true || cls === 'indirect') return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:abiReturnBits(proto.returnBits || proto.bits || 64) };
+    return { reg:'v0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
   }
-  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:abiReturnBits(proto.returnBits || proto.bits || 64) };
+  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
   return null;
 }
 
@@ -288,10 +288,10 @@ function functionReturnLocation(opts) {
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   if (proto?.indirectResult === true || cls === 'indirect') return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:abiReturnBits(proto?.returnBits || proto?.bits || opts?.returnBits || 64) };
+    return { reg:'v0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
-    return { reg:'x0', bits:abiReturnBits(proto?.returnBits || proto?.bits || opts?.returnBits || 64) };
+    return { reg:'x0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
   }
   return null;
 }

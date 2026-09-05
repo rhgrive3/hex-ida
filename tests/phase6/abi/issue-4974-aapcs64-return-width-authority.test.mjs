@@ -54,6 +54,9 @@ assert.equal(call.dst?.bits, 32, 'primitive integer returnBits must remain autho
 call = callWith({ returnType:'int', bits:16, returnsValue:true });
 assert.equal(call.dst?.bits, 16, 'canonical bits alias must remain supported when returnBits is absent');
 
+call = callWith({ returnType:'int', returnBits:0, bits:32, returnsValue:true });
+assert.equal(call.dst?.bits, 64, 'present invalid returnBits must fail closed instead of falling through to bits');
+
 call = callWith({ returnType:'int', returnBits:['32'], returnsValue:true });
 assert.equal(call.dst?.bits, 64, 'structured integer returnBits must fall back instead of minting exact width');
 
@@ -74,6 +77,12 @@ assert.equal(coercions, 0, 'call return-width validation must not invoke coercio
 let ret = returnWith({ returnType:'int', returnBits:32, returnsValue:true });
 assert.equal(ret.extra?.returnReg, 'x0');
 assert.equal(ret.args?.[0]?.bits, 32, 'primitive function returnBits must remain authoritative');
+
+ret = build(['ret'], {
+  functionPrototype:{ returnType:'int', returnBits:false, bits:32, returnsValue:true },
+  returnBits:16,
+}).instructions.find((instruction) => instruction.op === OP.RET);
+assert.equal(ret.args?.[0]?.bits, 64, 'present invalid function returnBits must not fall through to proto.bits or opts.returnBits');
 
 ret = returnWith({ returnType:'int', returnBits:['32'], returnsValue:true });
 assert.equal(ret.args?.[0]?.bits, 64, 'structured function returnBits must not mint exact RET source width');
