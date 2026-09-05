@@ -300,10 +300,18 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   }]));
   const values = new Map();
   const nodes = new Map();
-  const issues = new Map();
+  const initialUnknowns = input.unknowns == null
+    ? []
+    : array(input.unknowns, 'semantic-v2-integration-invalid-function-unknowns');
+  const initialCompleteness = input.completeness
+    ?? (initialUnknowns.length ? 'partial' : 'complete');
+  if (!Object.hasOwn(COMPLETENESS_RANK, initialCompleteness)) {
+    fail('semantic-v2-integration-invalid-function-completeness');
+  }
+  const issues = new Map(initialUnknowns.map((unknown) => [stableStringify(unknown), unknown]));
   const bundles = [];
   const instructionTelemetry = [];
-  let completeness = 'complete';
+  let completeness = initialCompleteness;
   let unsupportedInstructionCount = 0;
 
   function mergeBlock(fragmentBlock) {
