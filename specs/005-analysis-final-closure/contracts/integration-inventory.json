@@ -5,11 +5,36 @@
   "baseRef": "origin/main",
   "baseSha": "7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1",
   "candidateRef": "HEAD",
+  "taskHandoffRevalidations": {
+    "T058": {
+      "schemaVersion": "hex-final-closure-t058-revalidation/v1",
+      "originalHandoff": {
+        "headSha": "2d9e8ce8f9e327ab1255367475399bffe2e1b34a",
+        "treeSha": "ce5888ae8f18111e4a1d3fe7bd296b929d1cdae6",
+        "evidencePath": "specs/005-analysis-final-closure/evidence/forward-amendment.md"
+      },
+      "activationCommitSha": "52774e4a52e237f1363006a85027460fe963818b",
+      "code": {
+        "headSha": "15cce99e5011cfb7b49084b38e69143a8e763dee",
+        "treeSha": "35dd09dc50f42848d4306b02764b7e2fcea0206a"
+      },
+      "evidence": {
+        "headSha": "831f1353b58591f6ee84452ea40be3b9a5d3b779",
+        "treeSha": "f5b0476ae9084b65b78427f2fd39202b636c6844"
+      },
+      "paths": [
+        "tools/validation/final-closure/preflight.mjs",
+        "tests/final-closure/preflight.test.mjs",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/evidence/forward-amendment.md"
+      ]
+    }
+  },
   "checkpoint": {
     "schemaVersion": "hex-final-closure-integration-checkpoint-state/v1",
-    "sequence": 0,
-    "state": "PREFANOUT",
-    "acceptedTaskId": null,
+    "sequence": 1,
+    "state": "CHECKPOINT_GREEN",
+    "acceptedTaskId": "T051",
     "evidencePath": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md"
   },
   "taskHandoffs": {
@@ -67,6 +92,16 @@
       "headSha": "148bb8a48d34507059b90a4202e3aa734f1fbc48",
       "treeSha": "f433d3779be2c7079d45494a04901cb8b9d2faf7",
       "evidencePath": "specs/005-analysis-final-closure/evidence/pre-fanout.md"
+    },
+    "T058": {
+      "headSha": "2d9e8ce8f9e327ab1255367475399bffe2e1b34a",
+      "treeSha": "ce5888ae8f18111e4a1d3fe7bd296b929d1cdae6",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/forward-amendment.md"
+    },
+    "T051": {
+      "headSha": "3f0b6a31d54360d05e8560e50d6efc5a912fc29b",
+      "treeSha": "17591181aab07357291a8fbbb651f8c1e91b83e2",
+      "evidencePath": "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -75,6 +110,9 @@
     ".github/workflows/final-closure-preflight.yml",
     ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/ui-regression.yml",
+    "js/ai/control/snapshot.js",
+    "js/ai/dev/ui/controls.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -90,15 +128,18 @@
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+    "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -108,12 +149,17 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "actualChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
     ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/ui-regression.yml",
+    "js/ai/control/snapshot.js",
+    "js/ai/dev/ui/controls.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -129,15 +175,18 @@
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+    "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -147,12 +196,17 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "unionChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
     ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/ui-regression.yml",
+    "js/ai/control/snapshot.js",
+    "js/ai/dev/ui/controls.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -168,15 +222,18 @@
     "specs/005-analysis-final-closure/evidence/recovery-matrix.md",
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
+    "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
     "specs/005-analysis-final-closure/spec.md",
     "specs/005-analysis-final-closure/tasks.md",
+    "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
     "tests/final-closure/run.mjs",
+    "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -186,7 +243,9 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "entries": [
     {
@@ -200,6 +259,18 @@
     {
       "path": ".github/workflows/phase12-release-validation.yml",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": ".github/workflows/ui-regression.yml",
+      "ownerTaskId": "T051"
+    },
+    {
+      "path": "js/ai/control/snapshot.js",
+      "ownerTaskId": "T051"
+    },
+    {
+      "path": "js/ai/dev/ui/controls.js",
+      "ownerTaskId": "T051"
     },
     {
       "path": "package.json",
@@ -262,6 +333,10 @@
       "ownerTaskId": "T046"
     },
     {
+      "path": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+      "ownerTaskId": "T049"
+    },
+    {
       "path": "specs/005-analysis-final-closure/plan.md",
       "ownerTaskId": "T058"
     },
@@ -282,6 +357,10 @@
       "ownerTaskId": "T058"
     },
     {
+      "path": "tests/ai-ui-dev-profile.mjs",
+      "ownerTaskId": "T051"
+    },
+    {
       "path": "tests/final-closure/cross-lane-ownership.test.mjs",
       "ownerTaskId": "T046"
     },
@@ -296,6 +375,10 @@
     {
       "path": "tests/final-closure/run.mjs",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": "tests/final-closure/t051/ai-snapshot-dev-scope.test.mjs",
+      "ownerTaskId": "T051"
     },
     {
       "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",
@@ -336,6 +419,14 @@
     {
       "path": "tools/validation/phase12/ownership.mjs",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": "userscript/hex.user.template.js",
+      "ownerTaskId": "T049"
+    },
+    {
+      "path": "userscript/release-version.json",
+      "ownerTaskId": "T049"
     }
   ]
 }

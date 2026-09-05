@@ -628,7 +628,8 @@
         "js/semantics/compat/semantic-ir-v2-to-v1.js",
         "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
         "js/semantics/ir/from-machine-effects.js",
-        "tests/final-closure/t017/**"
+        "tests/final-closure/t017/**",
+        "tests/issue-1809-libc-effect-classification.mjs"
       ],
       "forbiddenOverlap": [
         "T011 operand-forwarding.js and semantic-ir-v2-to-v1-memory.js private projection paths",
