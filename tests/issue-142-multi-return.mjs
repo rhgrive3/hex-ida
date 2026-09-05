@@ -5,8 +5,8 @@ import { recoverExactStackPhiExpressions } from '../js/decompiler/passes/stack-p
 const BASE = 0x100000000n;
 const KEY = 'stack:sp:e0:-16:s4';
 
-function stackLoad(row = null, address = null) {
-  return expr.load({ kind:'stack', key:KEY }, 32, { row, address });
+function stackLoad(row = null, address = null, ir = null) {
+  return expr.load({ kind:'stack', key:KEY }, 32, { row, address, ir });
 }
 function retNode(text, expression, ret, source = true) {
   return {
@@ -23,19 +23,20 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
   const rets = [];
   for (let i = 0; i < values.length; i++) {
     const value = { id:100 + i };
-    const store = { id:10 + i * 2, op:'store', block:i, row:i * 2, address:BASE + BigInt(i * 8), loc:{ key:KEY, kind:'stack' }, args:[{ value }] };
-    const ret = { id:11 + i * 2, op:'ret', block:i, row:i * 2 + 1, address:BASE + BigInt(i * 8 + 4), args:[] };
-    instructions.push(store, ret);
-    blocks.push({ index:i, startRow:store.row, endRow:ret.row, pred:[], succ:[], insts:[store, ret] });
+    const store = { id:10 + i * 3, op:'store', block:i, row:i * 3, address:BASE + BigInt(i * 12), loc:{ key:KEY, kind:'stack', size:4 }, args:[{ value }] };
+    const load = { id:11 + i * 3, op:'load', block:i, row:i * 3 + 1, address:BASE + BigInt(i * 12 + 4), loc:{ key:KEY, kind:'stack', size:4 }, args:[] };
+    const ret = { id:12 + i * 3, op:'ret', block:i, row:i * 3 + 2, address:BASE + BigInt(i * 12 + 8), args:[] };
+    instructions.push(store, load, ret);
+    blocks.push({ index:i, startRow:store.row, endRow:ret.row, pred:[], succ:[], insts:[store, load, ret] });
     semanticValues.push({ valueId:value.id, expression:expr.constant(BigInt(values[i]), 32, true) });
-    ast.push(retNode(`return local_${i};`, stackLoad(ret.row, ret.address), ret, !ambiguous));
+    ast.push(retNode(`return local_${i};`, stackLoad(load.row, load.address, load.id), ret, !ambiguous));
     rets.push(ret);
   }
   const body = order ? order.map((i) => ast[i]) : ast;
   return {
     semantic:true,
     ir:{ instructions, blocks, idom:blocks.map(() => -1) },
-    semanticAst:{ values:semanticValues, conditions:[], outputs:[{ name:'return', expression:stackLoad(rets.at(-1)?.row, rets.at(-1)?.address) }] },
+    semanticAst:{ values:semanticValues, conditions:[], outputs:[{ name:'return', expression:ast.at(-1)?.semantic?.expression }] },
     cAst:{ body }, rewriteProof:[], metrics:{ rewrittenExpressions:0 },
   };
 }
@@ -92,36 +93,38 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
   const result = linearResult([11, 22], { order:[1, 0] });
   recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
   const byRow = new Map(result.cAst.body.map((node) => [node.source.rows[0], node.text]));
-  assert.match(byRow.get(1), /return 11;/);
-  assert.match(byRow.get(3), /return 22;/);
+  const returns = result.ir.instructions.filter((instruction) => instruction.op === 'ret');
+  assert.match(byRow.get(returns[0].row), /return 11;/);
+  assert.match(byRow.get(returns[1].row), /return 22;/);
 }
 
 // Shared epilogue: one physical RET may reconstruct a precise CFG/Memory-SSA join.
 {
   const v1={id:201}, v2={id:202};
   const cbr={id:1,op:'cbr',block:0,row:0,address:BASE,args:[],extra:{target:BASE+4n}};
-  const s1={id:2,op:'store',block:1,row:1,address:BASE+4n,loc:{key:KEY,kind:'stack'},args:[{value:v1}]};
-  const s2={id:3,op:'store',block:2,row:2,address:BASE+8n,loc:{key:KEY,kind:'stack'},args:[{value:v2}]};
-  const ret={id:4,op:'ret',block:3,row:3,address:BASE+12n,args:[]};
+  const s1={id:2,op:'store',block:1,row:1,address:BASE+4n,loc:{key:KEY,kind:'stack',size:4},args:[{value:v1}]};
+  const s2={id:3,op:'store',block:2,row:2,address:BASE+8n,loc:{key:KEY,kind:'stack',size:4},args:[{value:v2}]};
+  const load={id:4,op:'load',block:3,row:3,address:BASE+12n,loc:{key:KEY,kind:'stack',size:4},args:[]};
+  const ret={id:5,op:'ret',block:3,row:4,address:BASE+16n,args:[]};
   const condition=expr.compare('eq',expr.variable('flag',32,false),expr.constant(0n,32,false),false);
   const result={
     semantic:true,
     ir:{
-      instructions:[cbr,s1,s2,ret],
+      instructions:[cbr,s1,s2,load,ret],
       blocks:[
         {index:0,startRow:0,endRow:0,pred:[],succ:[1,2],insts:[cbr]},
         {index:1,startRow:1,endRow:1,pred:[0],succ:[3],insts:[s1]},
         {index:2,startRow:2,endRow:2,pred:[0],succ:[3],insts:[s2]},
-        {index:3,startRow:3,endRow:3,pred:[1,2],succ:[],insts:[ret]},
+        {index:3,startRow:3,endRow:4,pred:[1,2],succ:[],insts:[load,ret]},
       ],
       idom:[-1,0,0,0],
     },
     semanticAst:{
       values:[{valueId:201,expression:expr.constant(11n,32,true)},{valueId:202,expression:expr.constant(22n,32,true)}],
       conditions:[{ir:1,expression:condition}],
-      outputs:[{name:'return',expression:stackLoad(ret.row,ret.address)}],
+      outputs:[{name:'return',expression:stackLoad(load.row,load.address,load.id)}],
     },
-    cAst:{body:[retNode('return local_join;',stackLoad(ret.row,ret.address),ret,true)]},
+    cAst:{body:[retNode('return local_join;',stackLoad(load.row,load.address,load.id),ret,true)]},
     rewriteProof:[], metrics:{rewrittenExpressions:0},
   };
   const rowOfAddress=(addr)=>Number((BigInt(addr)-BASE)/4n);
