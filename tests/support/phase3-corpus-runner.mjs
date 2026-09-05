@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import {
   resolveBoundedNodeConcurrency,
@@ -23,14 +23,14 @@ function signalProcessTree(child, signal) {
   if (process.platform === 'win32') {
     if (signal === 'SIGKILL') {
       // taskkill /T is the Windows process-tree equivalent of signalling the
-      // detached POSIX process group. Keep this synchronous and bounded to one
-      // invocation; runOne settles independently and never waits for cleanup.
+      // detached POSIX process group. Cleanup must not extend the proof
+      // deadline, so fire it best-effort and do not await its completion.
       try {
-        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
           stdio: 'ignore',
           windowsHide: true,
-          timeout: DEFAULT_KILL_GRACE_MS,
         });
+        killer.unref?.();
       } catch { /* best-effort cleanup after the proof has already failed */ }
       return;
     }
