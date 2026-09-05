@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseDebugInfo } from '../../../js/analysis/debug/dwarf.js';
+import { DwarfDebugInfoProvider, parseDebugInfo } from '../../../js/analysis/debug/dwarf.js';
 
 function dwarf4Unit(die, abbrevOffset = 0) {
   const unitLength = 2 + 4 + 1 + die.length;
@@ -102,4 +102,41 @@ test('#3932 abbreviation parsing observes cancellation checkpoints', () => {
   assert.equal(parsed.dies.size, 0);
   assert.ok(parsed.diagnostics.includes('debug parse cancelled'));
   assert.ok(checks >= 4);
+});
+
+test('#3932 mid-parse cancellation revokes matched debug authority', () => {
+  const buildIdNote = Uint8Array.from([
+    0x04, 0x00, 0x00, 0x00,
+    0x04, 0x00, 0x00, 0x00,
+    0x03, 0x00, 0x00, 0x00,
+    0x47, 0x4e, 0x55, 0x00,
+    0xde, 0xad, 0xbe, 0xef,
+  ]);
+  let checks = 0;
+  const signal = {
+    get aborted() {
+      checks += 1;
+      return checks >= 5;
+    },
+  };
+  const provider = new DwarfDebugInfoProvider();
+  const result = provider.probe({
+    snapshotId: 'snapshot-3932',
+    identity: { buildId: 'deadbeef' },
+    debugSections: {
+      '.note.gnu.build-id': buildIdNote,
+      debug_info: dwarf4Unit(oneDie),
+      debug_abbrev: oneAttributeTable,
+    },
+  }, {
+    signal,
+    budget: { maxRecords: 10, maxAbbrevDeclarations: 10, maxAbbrevAttributes: 10 },
+  });
+
+  assert.equal(result.parsed.cancelled, true);
+  assert.equal(result.authoritative, false);
+  assert.equal(result.identity.verdict, 'unsupported');
+  assert.equal(result.identity.method, 'cancelled');
+  assert.equal(result.status.stopReason, 'cancelled');
+  assert.ok(result.diagnostics.includes('debug parse cancelled'));
 });
