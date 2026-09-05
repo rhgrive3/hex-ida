@@ -144,8 +144,14 @@ function emptyState(projectIdentity, binaryIdentity) {
 
 function cloneState(state) { return clone(state); }
 
-function validateRestoredStateFactKeys(state) {
+function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw new TypeError('changelog-state-invalid');
+  const stateProjectIdentity = required(state.projectIdentity, 'changelog-state-project-identity-invalid');
+  if (stateProjectIdentity !== projectIdentity) throw new TypeError('changelog-state-project-identity-mismatch');
+  const stateBinaryIdentity = state.binaryIdentity == null ? null : required(state.binaryIdentity, 'changelog-state-binary-identity-invalid');
+  if (stateBinaryIdentity !== binaryIdentity) throw new TypeError('changelog-state-binary-identity-mismatch');
+  state.projectIdentity = stateProjectIdentity;
+  state.binaryIdentity = stateBinaryIdentity;
   const facts = state.facts ?? {};
   if (!facts || typeof facts !== 'object' || Array.isArray(facts)) throw new TypeError('changelog-state-facts-invalid');
   for (const [key, record] of Object.entries(facts)) {
@@ -171,7 +177,8 @@ export class ChangeLog {
   constructor(options = {}) {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
-    this.state = validateRestoredStateFactKeys(cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity)));
+    const restoredState = options.state == null ? emptyState(this.projectIdentity, this.binaryIdentity) : options.state;
+    this.state = validateRestoredStateFactKeys(cloneState(restoredState), this.projectIdentity, this.binaryIdentity);
     this.operations = new Map();
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
