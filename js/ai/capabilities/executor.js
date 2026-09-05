@@ -215,14 +215,16 @@ function setProjectAnnotation(app, args) {
   const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
   projectAnnotations.push(record);
   confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
+  let saved;
   try {
-    if (app.workspace.autosave() === false) {
-      rollback();
-      throw new AIError('tool_failed', 'Project annotation could not be persisted.');
-    }
+    saved = app.workspace.autosave();
   } catch (error) {
     rollback();
     throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
   }
   return record;
 }
