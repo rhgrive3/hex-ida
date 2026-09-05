@@ -64,6 +64,15 @@ const ISSUED_MATERIALIZATIONS = new WeakMap();
 const ISSUED_VALIDATIONS = new WeakMap();
 const TYPED_ARRAY = Object.getPrototypeOf(Uint8Array.prototype);
 const intrinsicGet = (prototype, key, value) => Object.getOwnPropertyDescriptor(prototype, key).get.call(value);
+const DISCOVERY_METADATA_LIMIT_FIELDS = Object.freeze({
+  elf: new Set(['inputBytes', 'records', 'objects', 'stringBytes', 'operations', 'estimatedHeapBytes', 'wallClockMs']),
+  pe: new Set(['inputBytes', 'records', 'objects', 'stringBytes', 'operations', 'estimatedHeapBytes', 'wallClockMs']),
+  macho: new Set(['inputBytes', 'records', 'objects', 'stringBytes', 'operations', 'warnings', 'estimatedHeapBytes', 'wallClockMs']),
+});
+const DISCOVERY_BUDGET_FIELDS = new Set(['maxCandidates', 'maxEvidencePerCandidate']);
+const DISCOVERY_ARTIFACT_BUDGET_FIELDS = new Set([
+  'maxTotalEvidence', 'maxCandidateViews', 'maxProducerRuns', 'maxIntervalClaims', 'maxReferences', 'maxCollisionWork',
+]);
 
 function discoveryRequested(input) {
   return input.requireDiscoveryPreservation === true || input.discovery != null
@@ -158,11 +167,52 @@ async function discoverySourceBytes(value, expected, control) {
   return discoveryByteView(value, expected).slice();
 }
 
+function normalizeDiscoveryNumericRecord(value, fields, code) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(code);
+  let prototype, descriptors;
+  try {
+    prototype = Object.getPrototypeOf(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    throw new TypeError(code);
+  }
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(code);
+  const normalized = Object.create(null);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== 'string' || !fields.has(key)) throw new TypeError(`${code}-key-invalid`);
+    const descriptor = descriptors[key];
+    if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'number'
+      || !Number.isSafeInteger(descriptor.value) || descriptor.value < 1) {
+      throw new TypeError(`${code}-${key}-invalid`);
+    }
+    normalized[key] = descriptor.value;
+  }
+  return Object.freeze(normalized);
+}
+
+function normalizeDiscoveryMetadataLimits(format, value) {
+  return normalizeDiscoveryNumericRecord(value, DISCOVERY_METADATA_LIMIT_FIELDS[format],
+    'rebuild-v2-discovery-metadata-limits-invalid');
+}
+
+function normalizeDiscoveryParseBudget(value) {
+  return normalizeDiscoveryNumericRecord(value, DISCOVERY_BUDGET_FIELDS, 'rebuild-v2-discovery-budget-invalid');
+}
+
+function normalizeDiscoveryArtifactBudget(value) {
+  return normalizeDiscoveryNumericRecord(value, DISCOVERY_ARTIFACT_BUDGET_FIELDS,
+    'rebuild-v2-discovery-artifact-budget-invalid');
+}
+
 async function parseDiscoveryBytes(transaction, bytes, sourceHash, snapshotId, control, options) {
   const { openBinary } = await import('../binary/index.js');
   const { functionCandidates, discoveryArtifactForRebuild } = await import('../analysis/index.js');
+  const metadataLimits = normalizeDiscoveryMetadataLimits(transaction.format, options.discoveryMetadataLimits);
+  const budget = normalizeDiscoveryParseBudget(options.discoveryBudget);
+  const artifactBudget = normalizeDiscoveryArtifactBudget(options.discoveryArtifactBudget);
   checkDiscoveryControl(control);
-  const image = openBinary(bytes.slice(), { signal: control.signal, metadataLimits: options.discoveryMetadataLimits });
+  const image = openBinary(bytes.slice(), { signal: control.signal, metadataLimits });
   checkDiscoveryControl(control);
   if (image.format !== transaction.format || image.arch !== transaction.architecture || image.arch === 'unknown') {
     throw new Error('rebuild-v2-discovery-parser-identity-mismatch');
@@ -180,7 +230,7 @@ async function parseDiscoveryBytes(transaction, bytes, sourceHash, snapshotId, c
   }
   const binding = { binaryId: transaction.binaryId, sourceHash, snapshotId, architectureId: image.arch };
   const { artifact } = functionCandidates({ input: { image }, ...binding, signal: control.signal,
-    budget: options.discoveryBudget, artifactBudget: options.discoveryArtifactBudget });
+    budget, artifactBudget });
   const sourceBinding = discoveryArtifactForRebuild(artifact, binding);
   checkDiscoveryControl(control);
   return { artifact, sourceBinding };
@@ -730,10 +780,18 @@ export function createRebuildTransaction(input = {}) {
   const architecture = required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase();
   const sourceHash = canonicalHash(input.sourceHash);
   const loaderVersion = required(input.loaderVersion, 'rebuild-v2-loader-version-required');
-  let suppliedDiscovery = input.discoveryBinding ?? input.expectedOriginalState?.discovery ?? null;
-  if (suppliedDiscovery != null && !isFactoryIssuedDiscoveryRebuildBinding(suppliedDiscovery)) {
-    throw new TypeError('rebuild-v2-discovery-binding-unissued');
+  const explicitDiscoveryBinding = input.discoveryBinding ?? null;
+  const expectedDiscoveryBinding = input.expectedOriginalState?.discovery ?? null;
+  for (const binding of [explicitDiscoveryBinding, expectedDiscoveryBinding]) {
+    if (binding != null && !isFactoryIssuedDiscoveryRebuildBinding(binding)) {
+      throw new TypeError('rebuild-v2-discovery-binding-unissued');
+    }
   }
+  if (explicitDiscoveryBinding != null && expectedDiscoveryBinding != null
+    && explicitDiscoveryBinding.digest !== expectedDiscoveryBinding.digest) {
+    throw new TypeError('rebuild-v2-discovery-binding-mismatch');
+  }
+  let suppliedDiscovery = explicitDiscoveryBinding ?? expectedDiscoveryBinding;
   if (input.discoveryArtifact != null) {
     const artifactBinding = discoveryArtifactForRebuild(input.discoveryArtifact);
     if (suppliedDiscovery && suppliedDiscovery.digest !== artifactBinding.digest) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
@@ -1026,6 +1084,27 @@ function validatorResult(name, executed, ok, reason = null, detail = null) {
   return deepFreeze({ validator: name, executed, status: ok ? 'passed' : 'failed', reason: ok ? null : reason, detail: clone(detail) });
 }
 
+function discoveryValidatorFieldsValid(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+  for (const [key, predicate] of [
+    ['completeness', (value) => value === 'complete'],
+    ['complete', (value) => value === true],
+    ['cancelled', (value) => value === false],
+    ['partial', (value) => value === false],
+  ]) {
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(result, key); }
+    catch { return false; }
+    if (descriptor == null) {
+      try { if (key in result) return false; }
+      catch { return false; }
+      continue;
+    }
+    if (!Object.hasOwn(descriptor, 'value') || !predicate(descriptor.value)) return false;
+  }
+  return true;
+}
+
 async function executeExternal(name, fn, context) {
   if (typeof fn !== 'function') return validatorResult(name, false, false, 'required-validator-unavailable');
   if (name === 'independent-differential' && context.preservationRequiresTrustedProvider && !context.independentOracleTrusted) {
@@ -1036,7 +1115,7 @@ async function executeExternal(name, fn, context) {
     if (context.transaction.discovery && result && (result.ok === false
       || (result.status != null && !['passed', 'valid'].includes(String(result.status).toLowerCase()))
       || (result.completeness != null && result.completeness !== 'complete')
-      || result.complete === false || result.cancelled === true || result.partial === true)) {
+      || !discoveryValidatorFieldsValid(result))) {
       return validatorResult(name, true, false, result.reason || 'validator-incomplete');
     }
     if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);

@@ -283,6 +283,39 @@ test('T016 writer and callback success cannot validate malformed output', async 
   assert.notEqual((await publishRebuildTransaction(materialized, validation)).status, 'published');
 });
 
+for (const [field, value] of [
+  ['complete', 'partial'],
+  ['complete', undefined],
+  ['cancelled', 'no'],
+  ['cancelled', undefined],
+  ['partial', 'no'],
+  ['partial', undefined],
+]) {
+  test(`T016 malformed discovery validator ${field} field cannot become valid`, async () => {
+    const tx = transaction();
+    const materialized = await materializeRebuildTransaction(tx, source);
+    assert.equal(materialized.status, 'materialized');
+    const validation = await validateRebuildTransaction(tx, materialized, {
+      ...validationOptions(),
+      loaderReparse: () => ({ ok: true, status: 'passed', [field]: value }),
+    });
+    assert.notEqual(validation.status, 'valid');
+    assert.equal(validation.failures.find((item) => item.validator === 'loader-reparse')?.reason,
+      'validator-incomplete');
+  });
+}
+
+test('T016 explicit complete discovery validator fields retain a valid result', async () => {
+  const tx = transaction();
+  const materialized = await materializeRebuildTransaction(tx, source);
+  assert.equal(materialized.status, 'materialized');
+  const validation = await validateRebuildTransaction(tx, materialized, {
+    ...validationOptions(),
+    loaderReparse: () => ({ ok: true, status: 'passed', completeness: 'complete', complete: true, cancelled: false, partial: false }),
+  });
+  assert.equal(validation.status, 'valid', JSON.stringify(validation));
+});
+
 test('T016 independent output parser rejects a changed architecture', async () => {
   const tx = transaction({ operations: [{ offset: 18, before: [source[18], source[19]], after: [183, 0] }] });
   const m = await materializeRebuildTransaction(tx, source);
@@ -304,6 +337,41 @@ for (const [name, options] of [
     assert.notEqual(validation.status, 'valid');
   });
 }
+
+for (const [name, options] of [
+  ['metadata limit string', { discoveryMetadataLimits: { records: 'not-a-number' } }],
+  ['metadata limit array shape', { discoveryMetadataLimits: [] }],
+  ['discovery budget undefined field', { discoveryBudget: { maxCandidates: undefined } }],
+  ['discovery budget unknown field', { discoveryBudget: { unknown: 1 } }],
+  ['artifact budget undefined field', { discoveryArtifactBudget: { maxTotalEvidence: undefined } }],
+  ['artifact budget unknown field', { discoveryArtifactBudget: { unknown: 1 } }],
+]) {
+  test(`T016 malformed ${name} cannot become complete source or output proof`, async () => {
+    const tx = transaction();
+    const malformedMaterialized = await materializeRebuildTransaction(tx, source, options);
+    assert.notEqual(malformedMaterialized.status, 'materialized');
+    const materialized = await materializeRebuildTransaction(tx, source);
+    assert.equal(materialized.status, 'materialized');
+    const validation = await validateRebuildTransaction(tx, materialized, { ...validationOptions(), ...options });
+    assert.notEqual(validation.status, 'valid');
+  });
+}
+
+test('T016 conflicting issued discovery bindings cannot authorize one transaction', () => {
+  const alternateImage = openBinary(source);
+  alternateImage.functionStarts = [{ address: 0x123456 }];
+  const explicitBinding = discoveryArtifactForRebuild(sourceArtifact());
+  const expectedBinding = discoveryArtifactForRebuild(sourceArtifact({}, alternateImage));
+  assert.notEqual(explicitBinding.digest, expectedBinding.digest);
+  assert.throws(() => transaction({
+    discoveryBinding: explicitBinding,
+    expectedOriginalState: { sourceHash: digest(source), discovery: expectedBinding },
+  }), /binding-mismatch/);
+  assert.doesNotThrow(() => transaction({
+    discoveryBinding: explicitBinding,
+    expectedOriginalState: { sourceHash: digest(source), discovery: explicitBinding },
+  }));
+});
 
 test('T016 partial parser output and unsupported transformations stay rejected', async () => {
   const truncated = source.slice(0, -1);
