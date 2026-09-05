@@ -154,7 +154,7 @@ function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x0f: // ClassLayout
       return 2 + 4 + tableIndexSize(rowCounts, 0x02);
     case 0x10: // FieldLayout
-      return 4 + tableIndexSize(rowCounts, 0x04);
+      return 4 + tableIndexSize(rowCounts, 0x02);
     case STANDALONE_SIG_TABLE: // StandAloneSig
       return blobIndexSize;
     default:
@@ -502,15 +502,18 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   const exceptionClauses = [];
 
   if ((flags & 0x08) !== 0) {
-    const extraOffset = align4(codeOffset + codeSize);
-    checkedRange(bytes, extraOffset, 4, 'cil-method-extra-section-truncated');
-    const kind = bytes[extraOffset];
-    const dataSize = bytes[extraOffset + 1]
-      | (bytes[extraOffset + 2] << 8)
-      | (bytes[extraOffset + 3] << 16);
-    if (dataSize < 4) fail('cil-invalid-method-extra-section');
-    checkedRange(bytes, extraOffset, dataSize, 'cil-method-extra-section-truncated');
-    if ((kind & 0x01) !== 0) {
+    let extraOffset = align4(codeOffset + codeSize);
+    let moreSections = true;
+    while (moreSections) {
+      checkedRange(bytes, extraOffset, 4, 'cil-method-extra-section-truncated');
+      const kind = bytes[extraOffset];
+      const dataSize = bytes[extraOffset + 1]
+        | (bytes[extraOffset + 2] << 8)
+        | (bytes[extraOffset + 3] << 16);
+      if (dataSize < 4) fail('cil-invalid-method-extra-section');
+      checkedRange(bytes, extraOffset, dataSize, 'cil-method-extra-section-truncated');
+      if ((kind & 0x3f) !== 0x01) fail('cil-unsupported-method-extra-section');
+
       const clauseSize = (kind & 0x40) !== 0 ? 24 : 12;
       if ((dataSize - 4) % clauseSize !== 0) fail('cil-invalid-method-clause-size');
       const clauseCount = (dataSize - 4) / clauseSize;
@@ -537,6 +540,13 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
             classTokenOrFilter: readU32(view, clauseOffset + 8, 'cil-small-method-clause-truncated'),
           });
         }
+      }
+
+      moreSections = (kind & 0x80) !== 0;
+      if (moreSections) {
+        const nextOffset = align4(extraOffset + dataSize);
+        if (nextOffset <= extraOffset) fail('cil-invalid-method-extra-section');
+        extraOffset = nextOffset;
       }
     }
   }
