@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createSearchPager } from '../../js/ui/panels/search.js';
+import { createSearchPager, createSearchRunLifecycle } from '../../js/ui/panels/search.js';
 
 function fixture(total, completeness = 'complete') {
   const rows=Array.from({length:total},(_,index)=>({addr:BigInt(index),row:index,text:`row ${index}`}));
@@ -71,6 +71,75 @@ for(const response of [
   await pager.next({signal:controller.signal,onProgress});
   assert.equal(sample.calls.every(call=>call.options.signal===controller.signal),true,'continuations must preserve the supplied abort signal');
   assert.equal(sample.calls.every(call=>call.options.onProgress===onProgress),true,'continuations must preserve progress ownership callback');
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise=new Promise((ok,fail)=>{resolve=ok;reject=fail;});
+  return {promise,resolve,reject};
+}
+
+async function settlePending(runs, controller, pending, ui, label) {
+  try {
+    const rows=await pending.promise;
+    runs.runIfActive(controller,()=>{ui.status=`${label}-complete`;ui.rows=[...rows];});
+  } catch {
+    runs.runIfActive(controller,()=>{ui.status=`${label}-failed`;ui.dialogs++;});
+  } finally {
+    runs.finish(controller,()=>{ui.button='find';});
+  }
+}
+
+for(const outcome of ['reject','resolve']){
+  const runs=createSearchRunLifecycle();
+  const ui={status:'old-searching',button:'stop',rows:['old'],dialogs:0};
+  const oldPending=deferred();
+  const old=runs.replace();
+  const oldTask=settlePending(runs,old,oldPending,ui,'old');
+  old.signal.addEventListener('abort',()=>{
+    runs.runIfActive(old,()=>{ui.status='stale-abort';ui.dialogs++;});
+  });
+
+  const currentPending=deferred();
+  const current=runs.replace();
+  const currentTask=settlePending(runs,current,currentPending,ui,'new');
+  ui.status='new-searching';ui.button='stop';ui.rows=[];
+
+  if(outcome==='reject')oldPending.reject(new Error('stale backend failure'));
+  else oldPending.resolve(['stale-late-row']);
+  await oldTask;
+
+  assert.equal(old.signal.aborted,true,'replacement must abort the previous request');
+  assert.equal(runs.active,current,'replacement must publish the new owner before abort observers run');
+  assert.deepEqual(ui,{status:'new-searching',button:'stop',rows:[],dialogs:0},`old ${outcome} must not mutate the current search UI`);
+
+  currentPending.resolve(['new']);
+  await currentTask;
+  assert.deepEqual(ui,{status:'new-complete',button:'find',rows:['new'],dialogs:0});
+}
+
+for(const reason of ['search-stopped','search-sheet-closed']){
+  const runs=createSearchRunLifecycle();
+  const ui={status:'active',button:'stop',rows:['first'],dialogs:0};
+  const pending=deferred();
+  const continuation=runs.start();
+  const task=settlePending(runs,continuation,pending,ui,'continuation');
+  continuation.signal.addEventListener('abort',()=>{
+    runs.runIfActive(continuation,()=>{ui.status='stale-abort';ui.rows.push('stale-abort-row');});
+  });
+  assert.ok(continuation,'continuation must acquire lifecycle ownership while idle');
+
+  const cancelled=runs.cancel(reason);
+  if(reason==='search-stopped'){ui.status='stopped';ui.button='find';}
+  const expected={...ui,rows:[...ui.rows]};
+  pending.resolve(['stale-late-row']);
+  await task;
+
+  assert.equal(cancelled,continuation,`${reason} must cancel the active continuation`);
+  assert.equal(continuation.signal.aborted,true,`${reason} must abort the continuation signal`);
+  assert.equal(runs.active,null,`${reason} must invalidate ownership before abort callbacks can mutate UI`);
+  assert.deepEqual(ui,expected,`${reason} must keep rows/status/button unchanged after a pending continuation settles`);
 }
 
 console.log('issue-4873-search-pagination: PASS');
