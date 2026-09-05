@@ -90,7 +90,7 @@ function parseMem(text) {
   // An A64 address base is a 64-bit general-purpose register or SP: SIMD/FP
   // registers can be transferred data but never form an address (#5342).
   if (!((base.cls === "gp" && base.bits === 64) || base.cls === "sp")) return null;
-  const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
+  const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, writebackReg: null, shift: null, mode: bang ? "pre" : "offset" };
   for (let i = 1; i < parts.length; i++) {
     const p = parts[i];
     const imm = parseImm(p);
@@ -104,6 +104,11 @@ function parseMem(text) {
   }
   if (mem.mode === "pre" && mem.disp) mem.writebackDisp = mem.disp;
   return mem;
+}
+
+function isPostIndexRegister(op) {
+  return op?.k === "reg" && op.cls === "gp" && op.bits === 64 &&
+    Number.isInteger(op.num) && op.num >= 0 && op.num <= 30;
 }
 
 /**
@@ -147,13 +152,27 @@ export function parseOperands(str) {
   }
   // 後置インデックス: "[x1], #8" は 2 つに割れているので戻す。
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].k === "mem" && out[i].mode === "offset" && out[i].disp == null &&
-        out[i].index == null && out[i + 1].k === "imm" && !out[i].text.endsWith("!")) {
+    const mem = out[i];
+    const next = out[i + 1];
+    if (mem.k !== "mem" || mem.mode !== "offset" || mem.disp != null ||
+        mem.index != null || mem.text.endsWith("!")) continue;
+    if (next.k === "imm") {
       // 直後が即値で、かつ元の文字列で "]" のあとにコンマが来ていた場合のみ。
-      out[i].writebackDisp = out[i + 1];
-      out[i].addressDisp = null;
-      out[i].disp = null;
-      out[i].mode = "post";
+      mem.writebackDisp = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
+      out.splice(i + 1, 1);
+      continue;
+    }
+    // parseOperands() has no mnemonic. Restrict register post-index folding to
+    // the AdvSIMD structure-list shape so unrelated "mem, reg" forms are not
+    // silently reinterpreted as writeback (#4105).
+    if (i > 0 && out[i - 1].k === "list" && isPostIndexRegister(next)) {
+      mem.writebackReg = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
       out.splice(i + 1, 1);
     }
   }
@@ -179,7 +198,7 @@ export function immText(op) {
   return dec;
 }
 
-/** 擬似コードに埋める短い形。小さい数は 10 進、大きい数は 16 進。 */
+/** 擬似コードの中で使う短い形。小さい数は 10 進、大きい数は 16 進。 */
 export function immShort(op) {
   if (!op) return "";
   if (op.float != null) return String(op.float);
