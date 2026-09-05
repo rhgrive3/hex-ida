@@ -324,7 +324,7 @@ function allowedBaseRelocationTypes(machine) {
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
-  if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
+  if(!dir||!dir.rva||!dir.size)return; const budget=ensureBudget(image,sharedBudget);
   if((dir.rva&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at unaligned RVA 0x${dir.rva.toString(16)}`);return;}
   const span=mappedFileSpanForRva(image,dir.rva,dir.size);if(!span){budget.partial('relocations:directory-span','PE base-relocation directory crosses a mapped boundary');return;}
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);

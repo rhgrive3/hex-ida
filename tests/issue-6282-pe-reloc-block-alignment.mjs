@@ -114,3 +114,14 @@ test('#6282 trailing partial block header fails closed', () => {
   assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
   assert.equal(image.relocations.length, 0, 'ABSOLUTE-only valid prefix publishes no relocations');
 });
+
+test('#6282 initial undersized directory size 1..7 fails closed', () => {
+  const { bytes, r, image } = fixture();
+  bytes.set([0x11, 0x22, 0x33, 0x44], 0x2000);
+  parseBaseRelocations(r, { rva: 0x2000, size: 4 }, image, 0x8664);
+  assert.equal(image.metadata.peMetadata.complete, false, 'undersized initial directory must be marked incomplete');
+  assert.ok(image.metadata.peMetadata.reasons.includes('relocations:malformed-block'), image.metadata.peMetadata.reasons.join(','));
+  assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
+  assert.equal(image.relocations.length, 0, 'no relocations published from undersized directory');
+});
+
