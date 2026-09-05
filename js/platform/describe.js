@@ -34,10 +34,63 @@ function regionFrom(item, id, kind) {
 
 export function regionsForImage(image, prefix = 'p0_') {
   const sections = image.sections || [];
+  const segments = image.segments || [];
   const usefulSections = sections.filter((s) => BigInt(s.fileSize ?? s.size ?? 0) > 0n || BigInt(s.size ?? 0n) > 0n);
-  const source = usefulSections.length ? usefulSections : (image.segments || []);
-  const kind = usefulSections.length ? 'section' : 'segment';
-  return source.map((item, index) => regionFrom(item, `${prefix}${kind[0]}${index}`, kind));
+  if (!usefulSections.length) {
+    return segments.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'segment'));
+  }
+  const sectionRegions = usefulSections.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'section'));
+  // Section presence is not coverage completeness: complement file-backed
+  // segment spans that no section covers, so executable mappings outside a
+  // partial section table are never dropped.
+  const covered = [];
+  for (const r of sectionRegions) {
+    if (r.size > 0n) covered.push([r.vmAddr, r.vmAddr + r.size]);
+  }
+  covered.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const merged = [];
+  for (const iv of covered) {
+    const last = merged[merged.length - 1];
+    if (last && iv[0] <= last[1]) {
+      if (iv[1] > last[1]) last[1] = iv[1];
+    } else {
+      merged.push([iv[0], iv[1]]);
+    }
+  }
+  const out = [...sectionRegions];
+  let complementIndex = 0;
+  for (const seg of segments) {
+    let segAddr, segSize, segFileOff;
+    try {
+      segAddr = BigInt(seg.address ?? 0);
+      segSize = BigInt(seg.fileSize ?? seg.size ?? 0);
+      segFileOff = BigInt(seg.fileOffset ?? 0);
+    } catch { continue; }
+    if (segSize <= 0n) continue;
+    let spans = [[segAddr, segAddr + segSize]];
+    for (const [cs, ce] of merged) {
+      for (let i = spans.length - 1; i >= 0; i--) {
+        const [s, e] = spans[i];
+        if (ce <= s || cs >= e) continue;
+        spans.splice(i, 1);
+        if (cs > s) spans.push([s, cs]);
+        if (ce < e) spans.push([ce, e]);
+      }
+      if (!spans.length) break;
+    }
+    for (const [uStart, uEnd] of spans) {
+      if (uEnd <= uStart) continue;
+      const delta = uStart - segAddr;
+      out.push(regionFrom({
+        ...seg,
+        address: uStart,
+        fileOffset: segFileOff + delta,
+        fileSize: uEnd - uStart,
+        size: uEnd - uStart,
+      }, `${prefix}x${complementIndex++}`, 'segment'));
+    }
+  }
+  return out;
 }
 
 export function describeBinaryImage(image, options = {}) {
