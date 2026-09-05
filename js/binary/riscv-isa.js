@@ -48,7 +48,11 @@ function strictAddress(value) {
 }
 
 export function normalizeRiscvIsaString(input) {
-  const canonical = String(input ?? '').trim().toLowerCase();
+  // ISA authority requires a primitive string. Structured values (Array,
+  // Object, number, boolean) must never coerce into a canonical profile:
+  // String(['rv64imc']) === 'rv64imc' would otherwise mint authority.
+  if (typeof input !== 'string') return null;
+  const canonical = input.trim().toLowerCase();
   const match = /^rv(32|64)([a-z0-9]+(?:_[a-z0-9]+)*)$/.exec(canonical);
   if (!match) return null;
   const xlen = Number(match[1]);
@@ -127,7 +131,8 @@ export function parseRiscvAttributes(input, options = {}) {
 }
 
 export function parseRiscvMappingSymbol(name) {
-  const text = String(name ?? '');
+  if (typeof name !== 'string') return null;
+  const text = name;
   const base = text.replace(/\.[^.]*$/, '');
   if (base === '$d') return Object.freeze({ kind:'data', isa:null });
   if (base === '$x') return Object.freeze({ kind:'instruction', isa:null });
@@ -161,11 +166,18 @@ export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   if (selected?.kind === 'data') return Object.freeze({ code:false, exact:true, evidence:'mapping-symbol-data' });
   const base = selected?.isa || metadata.file || null;
   if (!base) return options.allowAssumed === false ? null : fallback;
+  // ISA authority fields must already be primitives. Structured values from
+  // external producers must never coerce into an exact profile.
+  if (typeof base.canonical !== 'string'
+    || typeof base.xlen !== 'number' || !Number.isSafeInteger(base.xlen)
+    || typeof base.instructionAlignment !== 'number' || !Number.isSafeInteger(base.instructionAlignment)) {
+    return options.allowAssumed === false ? null : fallback;
+  }
   return Object.freeze({
-    canonical:String(base.canonical),
-    xlen:Number(base.xlen),
+    canonical:base.canonical,
+    xlen:base.xlen,
     compressedInstructions:base.compressedInstructions === true,
-    instructionAlignment:Number(base.instructionAlignment),
+    instructionAlignment:base.instructionAlignment,
     evidence:selected?.isa ? 'mapping-symbol' : String(base.evidence || metadata.evidence || 'elf-attribute'),
     exact:true,
     code:true,
