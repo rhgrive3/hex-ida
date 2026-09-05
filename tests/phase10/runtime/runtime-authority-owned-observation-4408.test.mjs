@@ -98,3 +98,71 @@ test('P10 runtime authority tracker preserves canonical factory observations (#4
   assert.equal(tracker.observations[0].observationId, canonical.observationId);
   assert.deepEqual(tracker.observations[0].payload, { x0: '1' });
 });
+
+test('P10 runtime authority tracker isolates Map and Set payloads against mutation (#4408)', () => {
+  const binding = validBinding();
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const inputMap = new Map([['n', 1]]);
+  const inputSet = new Set(['alpha']);
+  const canonical = createRuntimeObservation({
+    binding,
+    sequence: 0,
+    observedAt: '2026-09-05T00:00:00Z',
+    kind: 'structured-state',
+    payload: { map: inputMap, set: inputSet },
+  });
+
+  const accepted = tracker.accept(canonical);
+  assert.equal(accepted.status, 'accepted');
+
+  // Post-accept mutation of source Map/Set cannot affect stored tracker state
+  inputMap.set('n', 999);
+  inputSet.add('forged');
+  assert.equal(tracker.observations[0].payload.map.get('n'), 1);
+  assert.equal(tracker.observations[0].payload.set.has('forged'), false);
+
+  // Snapshot cannot expose mutable Map/Set references
+  const snapshot = tracker.snapshot();
+  assert.throws(() => {
+    snapshot.observations[0].payload.map.set('n', 2);
+  }, TypeError);
+  assert.throws(() => {
+    snapshot.observations[0].payload.set.add('beta');
+  }, TypeError);
+
+  assert.equal(tracker.observations[0].payload.map.get('n'), 1);
+  assert.equal(tracker.observations[0].payload.set.has('beta'), false);
+  assert.equal(tracker.observations[0].observationId, accepted.observationId);
+});
+
+test('P10 runtime authority tracker isolates Uint8Array and ArrayBuffer payloads against mutation (#4408)', () => {
+  const binding = validBinding();
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const rawBytes = new Uint8Array([1, 2, 3]);
+  const rawBuffer = new Uint8Array([4, 5]).buffer;
+  const canonical = createRuntimeObservation({
+    binding,
+    sequence: 0,
+    observedAt: '2026-09-05T00:00:00Z',
+    kind: 'buffer-snapshot',
+    payload: { bytes: rawBytes, buffer: rawBuffer },
+  });
+
+  const accepted = tracker.accept(canonical);
+  assert.equal(accepted.status, 'accepted');
+
+  // Post-accept mutation of source typed array cannot affect tracker
+  rawBytes[0] = 99;
+  assert.equal(tracker.observations[0].payload.bytes[0], 1);
+
+  // Post-snapshot mutation cannot alter stored tracker bytes or committed identity
+  const snapshot = tracker.snapshot();
+  snapshot.observations[0].payload.bytes[0] = 77;
+  new Uint8Array(snapshot.observations[0].payload.buffer)[0] = 88;
+
+  assert.equal(tracker.observations[0].payload.bytes[0], 1);
+  assert.equal(new Uint8Array(tracker.observations[0].payload.buffer)[0], 4);
+  assert.equal(tracker.snapshot().observations[0].payload.bytes[0], 1);
+  assert.equal(tracker.observations[0].observationId, accepted.observationId);
+});
+
