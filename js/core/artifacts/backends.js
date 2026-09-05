@@ -207,22 +207,33 @@ export class IndexedDbArtifactBackend {
     let promise;
     promise = new Promise((resolve, reject) => {
       let request;
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
       try { request = this.indexedDB.open(this.dbName, 1); }
-      catch (error) { reject(storageError(error, 'open')); return; }
+      catch (error) { fail(storageError(error, 'open')); return; }
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains('artifacts')) db.createObjectStore('artifacts', { keyPath:'artifactId' });
       };
       request.onsuccess = () => {
         const db = request.result;
+        if (settled) {
+          try { db.close(); } catch {}
+          return;
+        }
+        settled = true;
         db.onversionchange = () => {
           try { db.close(); } catch {}
           if (this.dbPromise === promise) this.dbPromise = null;
         };
         resolve(db);
       };
-      request.onerror = () => reject(storageError(request.error, 'open'));
-      request.onblocked = () => reject(new ArtifactStorageError('artifact-storage-blocked', 'IndexedDB open is blocked'));
+      request.onerror = () => fail(storageError(request.error, 'open'));
+      request.onblocked = () => fail(new ArtifactStorageError('artifact-storage-blocked', 'IndexedDB open is blocked'));
     });
     this.dbPromise = promise.catch((error) => {
       this.metrics.openFailures++;
