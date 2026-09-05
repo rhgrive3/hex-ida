@@ -76,6 +76,14 @@ function selfTest() {
     [1, 3, 2, 0],
     'pseudoc tasks must be scheduled longest-span first with canonical index tie-breaks',
   );
+  const workerSource = fs.readFileSync(path.join(HERE, 'accuracy-pseudoc-worker.mjs'), 'utf8');
+  const evaluatorSource = fs.readFileSync(path.join(HERE, 'accuracy-pseudoc-eval.mjs'), 'utf8');
+  assert.match(workerSource, /NodeBackend\.prototype\.scanProgram = async \(\) => null/,
+    'pseudoc workers must skip the unused whole-program scan during boot');
+  assert.match(workerSource, /finally \{\s*NodeBackend\.prototype\.scanProgram = originalScanProgram;\s*\}/,
+    'pseudoc workers must restore the backend scan method before processing tasks');
+  assert.doesNotMatch(evaluatorSource, /\bw\.(?:program|scan)\b/,
+    'pseudoc evaluation must not depend on the skipped whole-program index');
   console.log('accuracy pseudoc elastic-worker configuration self-test passed');
 }
 
