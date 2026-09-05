@@ -24,7 +24,7 @@ import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-i
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
-  version: '1.0.0',
+  version: '1.0.3',
   stage: 'memory-optimization',
   budgetClass: 'standard',
   // `ranges` is SCCP's output: two values that are the same constant are the
@@ -51,8 +51,696 @@ const NEVER_CONGRUENT = new Set(['call', 'clobber', 'unknown']);
 
 function fail(code) { throw new TypeError(code); }
 
+const INVALID_CONGRUENCE_KEY = Symbol('phase8-gvn-invalid-congruence-key');
+
+const BITVECTOR_BINARY_OPERATORS = new Set([
+  'add', 'sub', 'mul', 'and', 'or', 'xor', 'shl', 'lshr', 'ashr', 'rotl', 'rotr',
+  'udiv', 'urem', 'sdiv', 'srem', 'bic', 'orn', 'eon',
+]);
+const BITVECTOR_UNARY_OPERATORS = new Set([
+  'not', 'neg', 'zext', 'sext', 'trunc', 'is-zero',
+]);
+const SHIFT_OPERATORS = new Set([
+  'lsl', 'lsr', 'asr', 'uxtb', 'uxth', 'uxtw', 'sxtb', 'sxth', 'sxtw',
+]);
+const COMMON_SCALAR_EXTRA_KEYS = new Set([
+  'semanticNodeId', 'attributes', 'completeness', 'widthBits', 'compatSource',
+]);
+const LOAD_EXTRA_KEYS = new Set([
+  'semanticNodeId', 'size', 'widthBits', 'signed', 'memoryAccess', 'completeness',
+  'addressPrecise', 'addressOrigin', 'faults',
+]);
+const MEMORY_ACCESS_KEYS = new Set([
+  'addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment',
+  'volatility', 'atomic', 'ordering', 'faults',
+]);
+const INSTRUCTION_PROVENANCE_KEYS = [
+  'id', 'instructionId', 'definitionId', 'semanticNodeId', 'sourceEntityId',
+  'sourceEffectIds', 'sourceInstructionIds', 'address', 'text', 'origin',
+];
+const SCALAR_DEFINITION_KEYS = new Set([
+  'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', ...INSTRUCTION_PROVENANCE_KEYS,
+]);
+const LOAD_DEFINITION_KEYS = new Set([
+  'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', 'loc', 'addr', 'memUse',
+  'unknownAliasBarrier', 'memoryAliasRelation', ...INSTRUCTION_PROVENANCE_KEYS,
+]);
+const PRODUCED_VALUE_KEYS = new Set([
+  'id', 'vid', 'kind', 'reg', 'stateKey', 'version', 'bits', 'def', 'uses',
+  'const', 'range', 'signed', 'nullable', 'type', 'label', 'semanticValueId',
+  'semanticSsaValueId', 'sourceSemanticValueId', 'sourceEntityId', 'machineType',
+  'origin', 'float', 'floatConst', 'constKind',
+]);
+const LOAD_LOCATION_KEYS = new Set([
+  'key', 'kind', 'size', 'regionId', 'base', 'baseEntityId', 'index', 'scale',
+  'address', 'disp', 'uncertaintyIdentity', 'addressMetadataSource', 'origin',
+]);
+const LOAD_ADDRESS_KEYS = new Set([
+  'base', 'baseReg', 'disp', 'index', 'scale', 'extend', 'size', 'widthBits',
+  'stack', 'addressSpace', 'rawAddressValueId', 'indexSignedness', 'indexWidthBits',
+  'addressWidthBits', 'precise', 'unknownReason', 'compatDisplacementEvidence', 'origin',
+]);
+const LOAD_MEMORY_USE_KEYS = new Set([
+  'memDefs', 'reaching', 'unknownAlias', 'kind', 'reason', 'clobber',
+]);
+const MEMORY_DEFINITION_ENTRY_KEYS = new Set([
+  'inst', 'id', 'instructionId', 'definitionId',
+]);
+
+function supportedIdentityPrimitive(value) {
+  return (typeof value === 'string' && value.length > 0)
+    || typeof value === 'bigint'
+    || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
+function typedPrimitiveFrame(value) {
+  let type;
+  let text;
+  if (value === null) {
+    type = 'null';
+    text = '';
+  } else if (value === undefined) {
+    type = 'undefined';
+    text = '';
+  } else if (typeof value === 'string') {
+    type = 'string';
+    text = value;
+  } else if (typeof value === 'bigint') {
+    type = 'bigint';
+    text = String(value);
+  } else if (typeof value === 'boolean') {
+    type = 'boolean';
+    text = value ? 'true' : 'false';
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    type = 'number';
+    text = Object.is(value, -0) ? '-0' : String(value);
+  } else {
+    return null;
+  }
+  return `${type}:${text.length}:${text}`;
+}
+
+/** An injective transcript for one typed tuple, including every field boundary. */
+function framedTupleKey(kind, values) {
+  if (typeof kind !== 'string' || !kind || !Array.isArray(values)) return null;
+  const fields = [typedPrimitiveFrame(kind)];
+  for (const value of values) fields.push(typedPrimitiveFrame(value));
+  if (fields.some((field) => field == null)) return null;
+  return `tuple:${fields.length}:${fields.map((field) => `${field.length}:${field}`).join('')}`;
+}
+
+function hasOnlyOwnKeys(value, allowed) {
+  return isPlainRecord(value) && Object.keys(value).every((key) => allowed.has(key));
+}
+
+function createValueIdKeyer() {
+  const objectKeys = new WeakMap();
+  let nextObjectKey = 1;
+  return (value) => {
+    if (supportedIdentityPrimitive(value)) {
+      const framed = typedPrimitiveFrame(value);
+      return framed == null ? null : `value-id:${framed.length}:${framed}`;
+    }
+    if (value != null && typeof value === 'object') {
+      let key = objectKeys.get(value);
+      if (key == null) {
+        key = Symbol(`phase8-gvn-object-id-${nextObjectKey++}`);
+        objectKeys.set(value, key);
+      }
+      return key;
+    }
+    return null;
+  };
+}
+
+/**
+ * A Map-compatible outward fact table whose public keys retain exact ID type.
+ * Native Map uses SameValueZero, so it aliases -0 and +0. The underlying map
+ * stores a typed key while iteration and get/has expose the original ID.
+ */
+class CanonicalValueIdMap extends Map {
+  #keyOf;
+  #rawKeys = new Map();
+
+  constructor(keyOf, entries = []) {
+    super();
+    this.#keyOf = keyOf;
+    for (const [key, value] of entries) this.set(key, value);
+  }
+
+  #canonical(key) {
+    const canonical = this.#keyOf(key);
+    if (canonical == null) throw new TypeError('phase8-gvn-unsupported-value-id');
+    return canonical;
+  }
+
+  set(key, value) {
+    const canonical = this.#canonical(key);
+    this.#rawKeys.set(canonical, key);
+    Map.prototype.set.call(this, canonical, value);
+    return this;
+  }
+
+  get(key) {
+    const canonical = this.#keyOf(key);
+    return canonical == null ? undefined : Map.prototype.get.call(this, canonical);
+  }
+
+  has(key) {
+    const canonical = this.#keyOf(key);
+    return canonical != null && Map.prototype.has.call(this, canonical);
+  }
+
+  delete(key) {
+    const canonical = this.#keyOf(key);
+    if (canonical == null) return false;
+    this.#rawKeys.delete(canonical);
+    return Map.prototype.delete.call(this, canonical);
+  }
+
+  clear() {
+    this.#rawKeys.clear();
+    return Map.prototype.clear.call(this);
+  }
+
+  *entries() {
+    for (const [canonical, value] of Map.prototype.entries.call(this)) {
+      yield [this.#rawKeys.get(canonical), value];
+    }
+  }
+
+  *keys() {
+    for (const [key] of this.entries()) yield key;
+  }
+
+  values() { return Map.prototype.values.call(this); }
+  [Symbol.iterator]() { return this.entries(); }
+
+  forEach(callback, thisArg = undefined) {
+    if (typeof callback !== 'function') throw new TypeError('phase8-gvn-map-callback-required');
+    for (const [key, value] of this.entries()) callback.call(thisArg, value, key, this);
+  }
+}
+
+// A frozen object containing a native Map is not immutable: Map.prototype.set
+// can still mutate its internal slots.  Publish the same read-only view shape
+// used by SCCP, preserving typed `get`/iteration while removing mutation
+// authority from every consumer.
+function readonlyMap(source) {
+  const snapshot = source;
+  const view = {
+    get size() { return snapshot.size; },
+    get(key) { return snapshot.get(key); },
+    has(key) { return snapshot.has(key); },
+    set() { throw new TypeError('phase8-value-number-map-read-only'); },
+    delete() { throw new TypeError('phase8-value-number-map-read-only'); },
+    clear() { throw new TypeError('phase8-value-number-map-read-only'); },
+    keys() { return snapshot.keys(); },
+    values() { return snapshot.values(); },
+    entries() { return snapshot.entries(); },
+    forEach(callback, thisArg) {
+      if (typeof callback !== 'function') throw new TypeError('phase8-value-number-map-callback-required');
+      return snapshot.forEach((value, key) => callback.call(thisArg, value, key, view));
+    },
+    [Symbol.iterator]() { return snapshot[Symbol.iterator](); },
+  };
+  return Object.freeze(view);
+}
+
+function immutablePublishedValue(value, active = new Set()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (active.has(value)) throw new TypeError('phase8-value-number-publication-cycle');
+  active.add(value);
+  try {
+    if (Array.isArray(value)) return Object.freeze(value.map((item) => immutablePublishedValue(item, active)));
+    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+      throw new TypeError('phase8-value-number-publication-object');
+    }
+    const copy = {};
+    for (const key of Object.keys(value).sort()) copy[key] = immutablePublishedValue(value[key], active);
+    return Object.freeze(copy);
+  } finally {
+    active.delete(value);
+  }
+}
+
+function canonicalFactMap(source, keyOf) {
+  if (source == null) return null;
+  try {
+    if (Object.getPrototypeOf(source) === Map.prototype) {
+      return new CanonicalValueIdMap(keyOf, Map.prototype.entries.call(source));
+    }
+    // SCCP publishes a frozen read-only Map view so Map.prototype.set cannot
+    // mutate its evidence after publication. Consume that established artifact
+    // contract through its iterator, then keep only this pass-local typed copy.
+    if (Object.isFrozen(source) && typeof source.entries === 'function') {
+      return new CanonicalValueIdMap(keyOf, source.entries());
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function supportedResultWidth(bits) {
+  return typeof bits === 'number' && Number.isSafeInteger(bits) && bits > 0;
+}
+
+function isPlainRecord(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function bitvectorResultKey(value) {
+  if (value == null || typeof value !== 'object' || !supportedResultWidth(value.bits)) return null;
+  if (value.signed != null && typeof value.signed !== 'boolean') return null;
+  if (typeof value.kind !== 'string' || !value.kind) return null;
+  const machineType = value.machineType;
+  if (machineType == null) {
+    // Hand-authored v1 inputs predate machineType. Float markers must not use
+    // that compatibility path: equal bit widths do not make FP and integers the
+    // same machine value.
+    if (value.constKind === 'float' || value.float != null || value.floatConst != null) return null;
+    return framedTupleKey('legacy-bitvector-result', [value.bits, value.signed, value.kind]);
+  }
+  if (!isPlainRecord(machineType)) return null;
+  const keys = Object.keys(machineType).sort();
+  if (keys.length !== 2 || keys[0] !== 'kind' || keys[1] !== 'widthBits'
+      || machineType.kind !== 'bitvector' || machineType.widthBits !== value.bits) return null;
+  return framedTupleKey('bitvector-result', [
+    machineType.kind, machineType.widthBits, value.signed, value.kind,
+  ]);
+}
+
+function producedBitvectorKey(value, definition, {
+  allowConstantKind = false,
+  allowStoredConstant = false,
+} = {}) {
+  if (!hasOnlyOwnKeys(value, PRODUCED_VALUE_KEYS)
+      || (value.kind !== 'def' && !(allowConstantKind && value.kind === 'const'))
+      || value.def !== definition
+      || !supportedIdentityPrimitive(value.id)
+      || (Object.hasOwn(value, 'vid') && !Number.isSafeInteger(value.vid))
+      || (Object.hasOwn(value, 'reg') && value.reg != null)
+      || (Object.hasOwn(value, 'stateKey') && value.stateKey != null)
+      || (Object.hasOwn(value, 'version') && value.version !== 0)
+      || (Object.hasOwn(value, 'uses') && !Array.isArray(value.uses))
+      || (!allowStoredConstant && Object.hasOwn(value, 'const') && value.const != null)
+      || (Object.hasOwn(value, 'range') && value.range != null)
+      || (Object.hasOwn(value, 'nullable') && value.nullable != null)
+      || (Object.hasOwn(value, 'type') && value.type != null)
+      || (Object.hasOwn(value, 'float') && value.float != null)
+      || (Object.hasOwn(value, 'floatConst') && value.floatConst != null)
+      || (Object.hasOwn(value, 'constKind') && value.constKind != null)) {
+    return null;
+  }
+  return bitvectorResultKey(value);
+}
+
+function exactShiftKey(shift) {
+  if (!isPlainRecord(shift)) return null;
+  const keys = Object.keys(shift).sort();
+  if (keys.length !== 2 || keys[0] !== 'amount' || keys[1] !== 'op'
+      || !SHIFT_OPERATORS.has(shift.op)
+      || !Number.isSafeInteger(shift.amount) || shift.amount < 0) return null;
+  return framedTupleKey('operand-shift', [shift.op, shift.amount]);
+}
+
+function argumentCongruenceKey(argument, valueKey) {
+  if (!isPlainRecord(argument) || valueKey == null || valueKey === INVALID_CONGRUENCE_KEY) return null;
+  const allowed = new Set(['value', 'bits', 'shift', 'origin']);
+  if (Object.keys(argument).some((key) => !allowed.has(key))) return null;
+  let bits;
+  if (Object.hasOwn(argument, 'bits')) {
+    bits = argument.bits;
+    if (!supportedResultWidth(bits) || !supportedResultWidth(argument.value?.bits)
+        || bits > argument.value.bits) return null;
+  }
+  let shiftKey;
+  if (Object.hasOwn(argument, 'shift')) {
+    if (argument.shift == null) shiftKey = framedTupleKey('operand-shift-null', []);
+    else {
+      shiftKey = exactShiftKey(argument.shift);
+      if (shiftKey == null) return null;
+    }
+  }
+  return framedTupleKey('operand', [valueKey, bits, shiftKey]);
+}
+
+function scalarExtraKey(extra, producedBits, allowedSemanticKeys = new Map()) {
+  if (extra == null) return framedTupleKey('scalar-extra', []);
+  if (!isPlainRecord(extra)) return null;
+  const allowedKeys = new Set([...COMMON_SCALAR_EXTRA_KEYS, ...allowedSemanticKeys.keys()]);
+  if (Object.keys(extra).some((key) => !allowedKeys.has(key))) return null;
+  if (Object.hasOwn(extra, 'semanticNodeId') && !supportedIdentityPrimitive(extra.semanticNodeId)) return null;
+  // `attributes` is an open-ended producer metadata bag. Until the producer
+  // gives every member a value-semantics contract, even an apparently empty
+  // Proxy-backed bag cannot be treated as proof of scalar equality: ownKeys
+  // may legally hide configurable fields. Keep such operations singleton.
+  if (Object.hasOwn(extra, 'attributes')) return null;
+  if (Object.hasOwn(extra, 'completeness') && extra.completeness !== 'complete') return null;
+  if (Object.hasOwn(extra, 'widthBits') && extra.widthBits !== producedBits) return null;
+  if (Object.hasOwn(extra, 'compatSource')
+      && (typeof extra.compatSource !== 'string' || !extra.compatSource)) return null;
+  const fields = [
+    Object.hasOwn(extra, 'completeness'), extra.completeness,
+    Object.hasOwn(extra, 'widthBits'), extra.widthBits,
+    Object.hasOwn(extra, 'compatSource'), extra.compatSource,
+  ];
+  for (const [key, validator] of allowedSemanticKeys) {
+    const present = Object.hasOwn(extra, key);
+    const value = extra[key];
+    if (present && !validator(value)) return null;
+    fields.push(key, present, value);
+  }
+  return framedTupleKey('scalar-extra', fields);
+}
+
+function scalarOperationKey(instruction, produced, argumentKeys) {
+  const resultType = producedBitvectorKey(produced, instruction);
+  if (resultType == null || !hasOnlyOwnKeys(instruction, SCALAR_DEFINITION_KEYS)
+      || typeof instruction.op !== 'string' || instruction.dst !== produced) {
+    return null;
+  }
+  const operands = framedTupleKey('operands', argumentKeys);
+  if (operands == null) return null;
+
+  if (instruction.op === 'bin') {
+    if (!BITVECTOR_BINARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 2) return null;
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+      ['negate', (value) => typeof value === 'boolean'],
+    ]));
+    if (extra == null) return null;
+    const ordered = COMMUTATIVE.has(instruction.sub) ? [...argumentKeys].sort() : argumentKeys;
+    return framedTupleKey('scalar-bin', [
+      instruction.sub, resultType, extra, framedTupleKey('operands', ordered),
+    ]);
+  }
+  if (instruction.op === 'un') {
+    if (!BITVECTOR_UNARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 1) return null;
+    const positiveWidth = (value) => supportedResultWidth(value);
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+      ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
+    ]));
+    return extra == null ? null
+      : framedTupleKey('scalar-un', [instruction.sub, resultType, extra, operands]);
+  }
+  if (instruction.op === 'mov') {
+    // Zero-argument mov nodes are state reads. Their state identity is complex
+    // metadata and deliberately remains singleton until it has a producer-owned
+    // scalar equality contract.
+    if (argumentKeys.length !== 1
+        || (instruction.sub != null && typeof instruction.sub !== 'string')) return null;
+    const positiveWidth = (value) => supportedResultWidth(value);
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+      ['castKind', (value) => typeof value === 'string' && value.length > 0],
+      ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
+    ]));
+    return extra == null ? null
+      : framedTupleKey('scalar-mov', [instruction.sub, resultType, extra, operands]);
+  }
+
+  // cmp/sel/mac/bfx/bfi, FP/vector operations, state reads and unknown future
+  // forms carry semantics beyond an op/sub/bits tuple. Missing CSE is safe;
+  // merging one of those forms without a complete key is not.
+  return null;
+}
+
+function constantCongruenceKey(constant) {
+  if (constant == null || typeof constant !== 'object'
+      || !supportedResultWidth(constant.bits)
+      || typeof constant.value !== 'bigint') return null;
+  return framedTupleKey('constant', [constant.bits, constant.value]);
+}
+
 function memoryAccessOf(definition) {
   return definition?.extra?.memoryAccess ?? null;
+}
+
+function denseList(value) {
+  if (!Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== value.length) return false;
+  return keys.every((key, index) => key === String(index));
+}
+
+function referenceIdKey(value) {
+  if (value == null) return framedTupleKey('absent-reference', []);
+  if (!isPlainRecord(value) || !supportedIdentityPrimitive(value.id)) return null;
+  return framedTupleKey('value-reference', [value.id]);
+}
+
+function scalarOffset(value) {
+  return value == null || typeof value === 'bigint'
+    || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
+function loadLocationIdentity(location) {
+  if (!hasOnlyOwnKeys(location, LOAD_LOCATION_KEYS)
+      || !supportedIdentityPrimitive(location.key)
+      || !['stack', 'field', 'global'].includes(location.kind)
+      || !Number.isSafeInteger(location.size) || location.size <= 0
+      || (Object.hasOwn(location, 'regionId') && location.regionId != null
+        && !supportedIdentityPrimitive(location.regionId))
+      || (Object.hasOwn(location, 'baseEntityId') && location.baseEntityId != null
+        && !supportedIdentityPrimitive(location.baseEntityId))
+      || (Object.hasOwn(location, 'scale')
+        && (!Number.isSafeInteger(location.scale) || location.scale < 0))
+      || (Object.hasOwn(location, 'address') && !scalarOffset(location.address))
+      || (Object.hasOwn(location, 'disp') && !scalarOffset(location.disp))
+      || (Object.hasOwn(location, 'uncertaintyIdentity')
+        && location.uncertaintyIdentity != null)
+      || (Object.hasOwn(location, 'addressMetadataSource')
+        && (typeof location.addressMetadataSource !== 'string'
+          || location.addressMetadataSource.length === 0))) {
+    return null;
+  }
+  const base = Object.hasOwn(location, 'base') ? referenceIdKey(location.base) : null;
+  const index = Object.hasOwn(location, 'index') ? referenceIdKey(location.index) : null;
+  if ((Object.hasOwn(location, 'base') && base == null)
+      || (Object.hasOwn(location, 'index') && index == null)) return null;
+  return framedTupleKey('load-location', [
+    location.key, location.kind, location.size,
+    Object.hasOwn(location, 'regionId'), location.regionId,
+    Object.hasOwn(location, 'base'), base,
+    Object.hasOwn(location, 'baseEntityId'), location.baseEntityId,
+    Object.hasOwn(location, 'index'), index,
+    Object.hasOwn(location, 'scale'), location.scale,
+    Object.hasOwn(location, 'address'), location.address,
+    Object.hasOwn(location, 'disp'), location.disp,
+    Object.hasOwn(location, 'uncertaintyIdentity'), location.uncertaintyIdentity,
+    Object.hasOwn(location, 'addressMetadataSource'), location.addressMetadataSource,
+  ]);
+}
+
+function loadAddressIdentity(address) {
+  if (address == null) return framedTupleKey('load-address-absent', []);
+  if (!hasOnlyOwnKeys(address, LOAD_ADDRESS_KEYS)
+      || (Object.hasOwn(address, 'baseReg') && address.baseReg != null
+        && !supportedIdentityPrimitive(address.baseReg))
+      || (Object.hasOwn(address, 'disp') && !scalarOffset(address.disp))
+      || (Object.hasOwn(address, 'scale')
+        && (!Number.isSafeInteger(address.scale) || address.scale < 0))
+      || (Object.hasOwn(address, 'extend') && address.extend != null
+        && (typeof address.extend !== 'string' || address.extend.length === 0))
+      || (Object.hasOwn(address, 'size')
+        && (!Number.isSafeInteger(address.size) || address.size <= 0))
+      || (Object.hasOwn(address, 'widthBits')
+        && !supportedResultWidth(address.widthBits))
+      || (Object.hasOwn(address, 'stack') && typeof address.stack !== 'boolean')
+      || (Object.hasOwn(address, 'addressSpace') && address.addressSpace !== 'memory')
+      || (Object.hasOwn(address, 'rawAddressValueId')
+        && !supportedIdentityPrimitive(address.rawAddressValueId))
+      || (Object.hasOwn(address, 'indexSignedness') && address.indexSignedness != null
+        && !['signed', 'unsigned'].includes(address.indexSignedness))
+      || (Object.hasOwn(address, 'indexWidthBits') && address.indexWidthBits != null
+        && !supportedResultWidth(address.indexWidthBits))
+      || (Object.hasOwn(address, 'addressWidthBits') && address.addressWidthBits != null
+        && !supportedResultWidth(address.addressWidthBits))
+      || (Object.hasOwn(address, 'precise') && address.precise !== true)
+      || (Object.hasOwn(address, 'unknownReason') && address.unknownReason != null)
+      || (Object.hasOwn(address, 'compatDisplacementEvidence')
+        && (typeof address.compatDisplacementEvidence !== 'string'
+          || address.compatDisplacementEvidence.length === 0))) {
+    return null;
+  }
+  const base = Object.hasOwn(address, 'base') ? referenceIdKey(address.base) : null;
+  const index = Object.hasOwn(address, 'index') ? referenceIdKey(address.index) : null;
+  if ((Object.hasOwn(address, 'base') && base == null)
+      || (Object.hasOwn(address, 'index') && index == null)) return null;
+  return framedTupleKey('load-address', [
+    Object.hasOwn(address, 'base'), base,
+    Object.hasOwn(address, 'baseReg'), address.baseReg,
+    Object.hasOwn(address, 'disp'), address.disp,
+    Object.hasOwn(address, 'index'), index,
+    Object.hasOwn(address, 'scale'), address.scale,
+    Object.hasOwn(address, 'extend'), address.extend,
+    Object.hasOwn(address, 'size'), address.size,
+    Object.hasOwn(address, 'widthBits'), address.widthBits,
+    Object.hasOwn(address, 'stack'), address.stack,
+    Object.hasOwn(address, 'addressSpace'), address.addressSpace,
+    Object.hasOwn(address, 'rawAddressValueId'), address.rawAddressValueId,
+    Object.hasOwn(address, 'indexSignedness'), address.indexSignedness,
+    Object.hasOwn(address, 'indexWidthBits'), address.indexWidthBits,
+    Object.hasOwn(address, 'addressWidthBits'), address.addressWidthBits,
+    Object.hasOwn(address, 'precise'), address.precise,
+    Object.hasOwn(address, 'unknownReason'), address.unknownReason,
+    Object.hasOwn(address, 'compatDisplacementEvidence'), address.compatDisplacementEvidence,
+  ]);
+}
+
+function memoryDefinitionListKey(reaching) {
+  if (!denseList(reaching)) return null;
+  const framed = [];
+  for (const entry of reaching) {
+    if (!hasOnlyOwnKeys(entry, MEMORY_DEFINITION_ENTRY_KEYS)) return null;
+    const aliases = [];
+    if (Object.hasOwn(entry, 'inst') && entry.inst != null) {
+      if (!hasOnlyOwnKeys(entry.inst, new Set(['id']))
+          || !Object.hasOwn(entry.inst, 'id')) return null;
+      aliases.push(entry.inst.id);
+    }
+    for (const key of ['id', 'instructionId', 'definitionId']) {
+      if (Object.hasOwn(entry, key) && entry[key] != null) aliases.push(entry[key]);
+    }
+    if (aliases.length === 0 || aliases.some((id) => !supportedIdentityPrimitive(id))) return null;
+    const id = aliases[0];
+    if (aliases.some((candidate) => !Object.is(candidate, id))) return null;
+    framed.push(framedTupleKey('memory-definition', [id]));
+  }
+  framed.sort();
+  return framedTupleKey('memory-definition-list', framed);
+}
+
+function loadMemoryUseIdentity(use) {
+  if (!hasOnlyOwnKeys(use, LOAD_MEMORY_USE_KEYS)
+      || (Object.hasOwn(use, 'unknownAlias') && use.unknownAlias !== false)
+      || (Object.hasOwn(use, 'clobber') && use.clobber !== false)
+      || (Object.hasOwn(use, 'kind') && use.kind != null)
+      || (Object.hasOwn(use, 'reason') && use.reason != null)) return null;
+  const hasMemDefs = Object.hasOwn(use, 'memDefs');
+  const hasReaching = Object.hasOwn(use, 'reaching');
+  if (!hasMemDefs && !hasReaching) return null;
+  const memDefs = hasMemDefs ? memoryDefinitionListKey(use.memDefs) : null;
+  const reaching = hasReaching ? memoryDefinitionListKey(use.reaching) : null;
+  if ((hasMemDefs && memDefs == null) || (hasReaching && reaching == null)
+      || (hasMemDefs && hasReaching && memDefs !== reaching)) return null;
+  const version = memDefs ?? reaching;
+  return {
+    version,
+    key:framedTupleKey('load-memory-use', [
+      hasMemDefs, memDefs, hasReaching, reaching,
+      Object.hasOwn(use, 'unknownAlias'), use.unknownAlias,
+      Object.hasOwn(use, 'clobber'), use.clobber,
+      Object.hasOwn(use, 'kind'), use.kind,
+      Object.hasOwn(use, 'reason'), use.reason,
+    ]),
+  };
+}
+
+function loadValueIdentity(definition, access) {
+  if (!hasOnlyOwnKeys(definition, LOAD_DEFINITION_KEYS)
+      || definition.op !== 'load' || definition.sub != null
+      || !denseList(definition.args) || definition.args.length !== 0
+      || definition.dst == null
+      || definition.unknownAliasBarrier != null
+      || (Object.hasOwn(definition, 'memoryAliasRelation')
+        && definition.memoryAliasRelation !== 'must')
+      || !hasOnlyOwnKeys(definition?.extra, LOAD_EXTRA_KEYS)
+      || !hasOnlyOwnKeys(access, MEMORY_ACCESS_KEYS)) {
+    return { ok:false, reason:'load semantic fields are malformed or unsupported' };
+  }
+  if (access.addressSpace !== 'memory') {
+    return { ok:false, reason:'access is not ordinary memory' };
+  }
+  const accessBits = access.widthBits;
+  const projectedAccessBits = definition?.extra?.widthBits;
+  const resultBits = definition?.dst?.bits;
+  if (!supportedResultWidth(accessBits)
+      || !supportedResultWidth(projectedAccessBits)
+      || accessBits !== projectedAccessBits) {
+    return { ok:false, reason:'load access width is missing, malformed, or inconsistent' };
+  }
+  if (!supportedResultWidth(resultBits) || accessBits > resultBits) {
+    return { ok:false, reason:'load result width cannot represent the memory access' };
+  }
+  if (access.endian !== 'little' && access.endian !== 'big') {
+    return { ok:false, reason:'load memory endianness is missing or unsupported' };
+  }
+  if (!Object.hasOwn(access, 'alignment')
+      || (access.alignment !== null && (!Number.isSafeInteger(access.alignment) || access.alignment <= 0))) {
+    return { ok:false, reason:'load memory alignment is missing or malformed' };
+  }
+  if (!isPlainRecord(access.addressExpr)
+      || Object.keys(access.addressExpr).length !== 1
+      || !Object.hasOwn(access.addressExpr, 'valueId')
+      || !supportedIdentityPrimitive(access.addressExpr.valueId)) {
+    return { ok:false, reason:'load address expression is missing or malformed' };
+  }
+  if (Object.hasOwn(access, 'addressValueId')
+      && !Object.is(access.addressValueId, access.addressExpr.valueId)) {
+    return { ok:false, reason:'load address identity aliases disagree' };
+  }
+  const signed = definition?.extra?.signed;
+  if (typeof signed !== 'boolean') {
+    return { ok:false, reason:'load extension signedness is missing or malformed' };
+  }
+  const byteWidth = Math.ceil(accessBits / 8);
+  if (!Number.isSafeInteger(definition?.extra?.size) || definition.extra.size !== byteWidth
+      || !Number.isSafeInteger(definition?.loc?.size) || definition.loc.size !== byteWidth) {
+    return { ok:false, reason:'load byte width is missing, malformed, or inconsistent' };
+  }
+  if (definition.loc.kind != null
+      && (typeof definition.loc.kind !== 'string' || !definition.loc.kind)) {
+    return { ok:false, reason:'load location kind is malformed' };
+  }
+  if (definition.extra.completeness !== 'complete') {
+    return { ok:false, reason:'load semantic description is incomplete' };
+  }
+  if (!Array.isArray(access.faults) || access.faults.length !== 0) {
+    return { ok:false, reason:'load may fault or has malformed fault facts' };
+  }
+  if (Object.hasOwn(definition.extra, 'faults')
+      && (!Array.isArray(definition.extra.faults) || definition.extra.faults.length !== 0)) {
+    return { ok:false, reason:'load may trap or has malformed trap facts' };
+  }
+  const resultType = producedBitvectorKey(definition.dst, definition);
+  if (resultType == null) {
+    return { ok:false, reason:'load result is not a supported scalar bitvector' };
+  }
+  const locationIdentity = loadLocationIdentity(definition.loc);
+  if (locationIdentity == null) {
+    return { ok:false, reason:'load location identity is malformed or unsupported' };
+  }
+  const addressIdentity = loadAddressIdentity(
+    Object.hasOwn(definition, 'addr') ? definition.addr : null,
+  );
+  if (addressIdentity == null) {
+    return { ok:false, reason:'load address proof is malformed or unsupported' };
+  }
+  const memoryUseIdentity = loadMemoryUseIdentity(definition.memUse);
+  if (memoryUseIdentity == null) {
+    return { ok:false, reason:'reaching memory definitions are not determined' };
+  }
+  const extensionMode = accessBits === resultBits
+    ? 'identity'
+    : (signed ? 'sign-extend' : 'zero-extend');
+  return {
+    ok:true,
+    reason:null,
+    fields:[
+      access.addressSpace, access.addressExpr.valueId, accessBits, access.endian,
+      Object.hasOwn(access, 'addressValueId'), access.addressValueId,
+      access.alignment, definition.loc.kind, definition.loc.size,
+      signed, extensionMode, resultType,
+      definition.extra.completeness,
+      Object.hasOwn(definition.extra, 'faults'),
+      locationIdentity, addressIdentity, memoryUseIdentity.key,
+      Object.hasOwn(definition, 'memoryAliasRelation'), definition.memoryAliasRelation,
+    ],
+    memoryVersion:memoryUseIdentity.version,
+  };
 }
 
 /**
@@ -76,31 +764,44 @@ function memoryAccessOf(definition) {
 function loadIsReusable(definition) {
   const access = memoryAccessOf(definition);
   if (access == null) return { ok: false, reason: 'load carries no memory-access facts' };
+  if (definition?.unknownAliasBarrier != null) {
+    return { ok: false, reason: 'an unknown store lies between this load and its source' };
+  }
+  const valueIdentity = loadValueIdentity(definition, access);
+  if (!valueIdentity.ok) return valueIdentity;
   // Device or otherwise non-ordinary memory: re-execution is observable there
   // regardless of what the value is.
-  if (access.addressSpace != null && access.addressSpace !== 'memory') {
-    return { ok: false, reason: `access is to ${access.addressSpace}, not ordinary memory` };
+  if (access.volatility !== false && access.volatility !== 'unknown') {
+    return { ok: false, reason: access.volatility === true
+      ? 'the access is known to be volatile'
+      : 'load volatility facts are missing or malformed' };
   }
-  if (access.volatility === true) return { ok: false, reason: 'the access is known to be volatile' };
   // Atomicity is machine-recoverable — the instruction encoding says whether an
   // access is exclusive or atomic — so `unknown` here is a missing upstream fact,
   // not an unknowable one, and unknown is not permission.
   if (access.atomic !== false) {
     return { ok: false, reason: `atomicity is ${access.atomic === true ? 'yes' : 'unknown'}` };
   }
-  if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
-    return { ok: false, reason: `access imposes ordering: ${access.ordering}` };
-  }
-  if (definition.unknownAliasBarrier != null) {
-    return { ok: false, reason: 'an unknown store lies between this load and its source' };
+  // Canonical non-atomic Semantic IR uses `unknown` to mean ordering is not
+  // applicable. `relaxed` with atomic=false is deliberately rejected because
+  // that pair is noncanonical, not treated as an equivalent spelling.
+  if (access.ordering !== 'unknown') {
+    return { ok: false, reason: 'access imposes or carries unsupported ordering' };
   }
   if (definition.loc?.key == null) {
     return { ok: false, reason: 'load has no canonical location key' };
   }
+  if (!supportedIdentityPrimitive(definition.loc.key)) {
+    return { ok: false, reason: 'load location identity has an unsupported type' };
+  }
   if (definition.extra?.addressPrecise !== true) {
     return { ok: false, reason: 'load address is not proved precise' };
   }
-  return { ok: true, reason: null };
+  return {
+    ok:true,
+    reason:null,
+    valueIdentity:[...valueIdentity.fields, access.volatility, access.atomic, access.ordering],
+  };
 }
 
 /**
@@ -111,13 +812,7 @@ function loadIsReusable(definition) {
  * singleton — the conservative answer.
  */
 function memoryVersionKey(definition) {
-  const use = definition?.memUse;
-  if (use == null) return null;
-  const reaching = use.memDefs ?? use.reaching ?? null;
-  if (!Array.isArray(reaching)) return null;
-  const ids = reaching.map((entry) => entry?.inst?.id ?? entry?.id ?? null);
-  if (ids.some((id) => id == null)) return null;
-  return ids.map(String).sort().join('|');
+  return loadMemoryUseIdentity(definition?.memUse)?.version ?? null;
 }
 
 /**
@@ -126,15 +821,39 @@ function memoryVersionKey(definition) {
  * Reuse requires the earlier definition to dominate the later one; otherwise the
  * "earlier" value may not have been computed on the path that reaches the reuse.
  */
-function dominatorSets(ir) {
+function canonicalIdSet(source, keyOf) {
+  try {
+    const result = new Set();
+    for (const value of source ?? []) {
+      const key = keyOf(value);
+      if (key == null) return null;
+      result.add(key);
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function dominatorSets(ir, keyOf, trustProvidedFacts = true) {
   const sets = new Map();
+  if (!trustProvidedFacts) return sets;
   const raw = ir?.dominators;
   if (raw instanceof Map) {
-    for (const [block, dominators] of raw) sets.set(block, new Set(dominators));
+    for (const [block, dominators] of raw) {
+      const blockKey = keyOf(block);
+      const canonical = canonicalIdSet(dominators, keyOf);
+      if (blockKey == null || canonical == null) return new Map();
+      sets.set(blockKey, canonical);
+    }
     return sets;
   }
   if (Array.isArray(raw)) {
-    raw.forEach((dominators, block) => sets.set(block, new Set(dominators ?? [])));
+    for (let block = 0; block < raw.length; block += 1) {
+      const canonical = canonicalIdSet(raw[block], keyOf);
+      if (canonical == null) return new Map();
+      sets.set(keyOf(block), canonical);
+    }
     return sets;
   }
   // Fall back to the immediate-dominator chain, which is the same information.
@@ -142,19 +861,31 @@ function dominatorSets(ir) {
   if (idom == null) return sets;
   const immediateOf = (block) => (idom instanceof Map ? idom.get(block) : idom[block]);
   for (const block of (ir.blocks ?? []).map((item) => item.index)) {
-    const chain = new Set([block]);
+    const blockKey = keyOf(block);
+    if (blockKey == null) return new Map();
+    const chain = new Set([blockKey]);
     let current = immediateOf(block);
     let guard = 0;
-    while (current != null && !chain.has(current) && guard < 4096) { chain.add(current); current = immediateOf(current); guard += 1; }
-    sets.set(block, chain);
+    while (current != null && guard < 4096) {
+      const currentKey = keyOf(current);
+      if (currentKey == null) return new Map();
+      if (chain.has(currentKey)) break;
+      chain.add(currentKey);
+      current = immediateOf(current);
+      guard += 1;
+    }
+    sets.set(blockKey, chain);
   }
   return sets;
 }
 
-function dominates(sets, earlierBlock, laterBlock) {
+function dominates(sets, keyOf, earlierBlock, laterBlock) {
   if (earlierBlock == null || laterBlock == null) return false;
-  if (earlierBlock === laterBlock) return true;
-  return sets.get(laterBlock)?.has(earlierBlock) === true;
+  const earlierKey = keyOf(earlierBlock);
+  const laterKey = keyOf(laterBlock);
+  if (earlierKey == null || laterKey == null) return false;
+  if (earlierKey === laterKey) return true;
+  return sets.get(laterKey)?.has(earlierKey) === true;
 }
 
 /**
@@ -173,6 +904,9 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   const blocks = cfg?.blocks ?? [];
   const values = ssa?.values ?? [];
   if (area == null) fail('phase8-gvn-requires-staging-area');
+  // Snapshot binding/publication belongs to the transaction owner (T011).  The
+  // T012 consumer must remain loadable against the existing transaction
+  // contract; its own authority boundary is the canonical IR identity below.
   const resolvedIdentity = context.resolvedAnalysisIdentity ?? canonicalAnalysisIdentity(context);
   if (!resolvedIdentity.valid || !analysisIdentityMatches(scalarFacts?.identity, resolvedIdentity.identity)) {
     return createPassResult({
@@ -190,13 +924,35 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
     });
   }
 
-  const numbers = new Map();
+  const valueIdKey = createValueIdKeyer();
+  const numbers = new CanonicalValueIdMap(valueIdKey);
   const classes = new Map();
-  const singletonReasons = new Map();
+  const singletonReasons = new CanonicalValueIdMap(valueIdKey);
   const reuseCandidates = [];
   const diagnostics = [];
-  const dominatorsOf = dominatorSets(context.ir ?? { blocks, dominators: cfg?.dominators, idom: cfg?.idom });
-  const valueById = new Map(values.map((value) => [value.id, value]));
+  // A native Map/Set cannot retain the sign of a zero key. If this adversarial
+  // graph actually uses -0 as a block identity, do not consume ambiguous
+  // cross-block dominance evidence; exact same-block checks remain available.
+  const hasNegativeZeroBlock = blocks.some((block) => Object.is(block?.index, -0))
+    || values.some((value) => Object.is(value?.def?.block, -0));
+  const dominatorsOf = dominatorSets(
+    context.ir ?? { blocks, dominators:cfg?.dominators, idom:cfg?.idom },
+    valueIdKey,
+    !hasNegativeZeroBlock,
+  );
+  const valueById = new CanonicalValueIdMap(valueIdKey,
+    values.map((value) => [value.id, value]));
+  const canonicalFactsPresent = scalarFacts?.facts != null;
+  const canonicalFacts = canonicalFactMap(scalarFacts?.facts, valueIdKey);
+  const legacyConstants = canonicalFactMap(scalarFacts?.constants, valueIdKey);
+  // A native producer Map cannot say whether its sole zero key was inserted as
+  // -0 or +0. If this graph contains -0, decline every zero-keyed input fact;
+  // the typed GVN tables below can still number the two IR values separately.
+  const ambiguousNativeZeroFact = values.some((value) => Object.is(value.id, -0));
+  const inputFact = (map, valueId) => (
+    ambiguousNativeZeroFact && typeof valueId === 'number' && valueId === 0
+      ? null : map?.get(valueId) ?? null
+  );
 
   let nextNumber = 1;
   const keyToNumber = new Map();
@@ -221,17 +977,27 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   };
 
   const constantKey = (valueId) => {
-    const canonicalFacts = scalarFacts?.facts;
-    const canonical = canonicalFacts?.get?.(valueId) ?? null;
-    if (canonicalFacts != null) {
+    const canonical = inputFact(canonicalFacts, valueId);
+    if (canonicalFactsPresent) {
       if (scalarFacts?.completeness === 'complete' && canonical?.constant != null
           && ['exact', 'conservative'].includes(canonical.status)) {
-        return `const:${canonical.constant.bits}:${canonical.constant.value}`;
+        const resultType = bitvectorResultKey(valueById.get(valueId));
+        if (resultType == null) return INVALID_CONGRUENCE_KEY;
+        const constant = constantCongruenceKey(canonical.constant);
+        return constant == null
+          ? INVALID_CONGRUENCE_KEY
+          : framedTupleKey('typed-constant', [resultType, constant]);
       }
       return null;
     }
-    const constant = scalarFacts?.constants?.get(valueId);
-    return constant == null ? null : `const:${constant.bits}:${constant.value}`;
+    const constant = inputFact(legacyConstants, valueId);
+    if (constant == null) return null;
+    const resultType = bitvectorResultKey(valueById.get(valueId));
+    if (resultType == null) return INVALID_CONGRUENCE_KEY;
+    const digest = constantCongruenceKey(constant);
+    return digest == null
+      ? INVALID_CONGRUENCE_KEY
+      : framedTupleKey('typed-constant', [resultType, digest]);
   };
 
   const operandKey = (operand) => {
@@ -239,9 +1005,12 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
     // A proved constant is the same computation however it was produced, so the
     // constant itself is the key rather than the value that happened to hold it.
     const asConstant = constantKey(operand.id);
+    if (asConstant === INVALID_CONGRUENCE_KEY) return INVALID_CONGRUENCE_KEY;
     if (asConstant != null) return asConstant;
     const number = numbers.get(operand.id);
-    return number == null ? null : `vn:${number}`;
+    return number == null
+      ? null
+      : (framedTupleKey('value-number', [number]) ?? INVALID_CONGRUENCE_KEY);
   };
 
   const abortedNow = () => {
@@ -266,7 +1035,20 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
       const produced = instruction?.dst;
       if (produced == null) continue;
 
+      const producedType = producedBitvectorKey(produced, instruction, {
+        allowConstantKind:instruction.op === 'const',
+        allowStoredConstant:true,
+      });
+      if (producedType == null) {
+        singleton(produced, 'operation identity has an unsupported produced-value schema');
+        continue;
+      }
+
       const constant = constantKey(produced.id);
+      if (constant === INVALID_CONGRUENCE_KEY) {
+        singleton(produced, 'constant identity has unsupported tuple fields');
+        continue;
+      }
       if (constant != null) {
         // Every proved constant of the same width and value is one class.
         const existing = keyToNumber.get(constant);
@@ -292,7 +1074,18 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         if (!reusable.ok) { singleton(produced, reusable.reason); continue; }
         const version = memoryVersionKey(instruction);
         if (version == null) { singleton(produced, 'reaching memory definitions are not determined'); continue; }
-        const key = `load:${instruction.loc.key}:${produced.bits}:${version}`;
+        const key = supportedResultWidth(produced.bits)
+          ? framedTupleKey('load', [
+            instruction.loc.key,
+            produced.bits,
+            ...reusable.valueIdentity,
+            version,
+          ])
+          : null;
+        if (key == null) {
+          singleton(produced, 'load congruence identity has unsupported tuple fields');
+          continue;
+        }
         const existing = keyToNumber.get(key);
         if (existing == null) {
           const number = nextNumber++;
@@ -304,22 +1097,33 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         numbers.set(produced.id, existing);
         classes.get(existing).push(produced.id);
         const earlier = valueById.get(classes.get(existing)[0]);
-        if (earlier != null && dominates(dominatorsOf, earlier.def?.block, instruction.block)) {
+        if (earlier != null
+            && dominates(dominatorsOf, valueIdKey, earlier.def?.block, instruction.block)) {
           reuseCandidates.push({
             kind: 'load', valueId: produced.id, reuseOf: earlier.id,
-            proof: `same location ${instruction.loc.key} at ${produced.bits} bits, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates`,
+            proof: 'same typed canonical location and load interpretation, same reaching memory definitions, no unknown-store barrier, and the earlier load dominates',
           });
         }
         continue;
       }
 
-      const operands = (instruction.args ?? []).map((argument) => operandKey(argument?.value));
-      if (operands.some((key) => key == null)) {
-        singleton(produced, 'an operand has no value number yet');
+      if (!Array.isArray(instruction.args)) {
+        singleton(produced, 'operation arguments are malformed');
         continue;
       }
-      const ordering = COMMUTATIVE.has(instruction.sub) ? [...operands].sort() : operands;
-      const key = `${instruction.op}/${instruction.sub ?? '-'}:${produced.bits}:${ordering.join(',')}`;
+      const operands = instruction.args.map((argument) => {
+        const valueKey = operandKey(argument?.value);
+        return argumentCongruenceKey(argument, valueKey) ?? INVALID_CONGRUENCE_KEY;
+      });
+      if (operands.includes(INVALID_CONGRUENCE_KEY)) {
+        singleton(produced, 'an operand identity has unsupported tuple fields');
+        continue;
+      }
+      const key = scalarOperationKey(instruction, produced, operands);
+      if (key == null) {
+        singleton(produced, 'operation identity has unsupported tuple fields');
+        continue;
+      }
       const existing = keyToNumber.get(key);
       if (existing == null) {
         const number = nextNumber++;
@@ -331,25 +1135,32 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
       numbers.set(produced.id, existing);
       classes.get(existing).push(produced.id);
       const earlier = valueById.get(classes.get(existing)[0]);
-      if (earlier != null && dominates(dominatorsOf, earlier.def?.block, instruction.block)) {
+      if (earlier != null
+          && dominates(dominatorsOf, valueIdKey, earlier.def?.block, instruction.block)) {
         reuseCandidates.push({
           kind: 'scalar', valueId: produced.id, reuseOf: earlier.id,
-          proof: `identical ${instruction.op}/${instruction.sub ?? '-'} at ${produced.bits} bits over congruent operands, and the earlier definition dominates`,
+          proof: 'identical supported scalar-bitvector operation and type over congruent operands; the earlier definition dominates',
         });
       }
     }
   }
 
   const congruentClasses = [...classes.values()].filter((members) => members.length > 1);
+  const publishedClasses = readonlyMap(new Map(
+    [...classes.entries()].map(([number, members]) => [number, immutablePublishedValue(members)]),
+  ));
+  const publishedReuseCandidates = Object.freeze(
+    reuseCandidates.map((entry) => immutablePublishedValue(entry)),
+  );
   const facts = Object.freeze({
     passVersion: GVN_PASS.version,
-    numbers,
-    classes,
+    numbers:readonlyMap(numbers),
+    classes:publishedClasses,
     congruentClassCount: congruentClasses.length,
-    reuseCandidates: Object.freeze(reuseCandidates),
+    reuseCandidates:publishedReuseCandidates,
     // Why each value could not be numbered with anything else. A missed reuse
     // with no reason recorded is indistinguishable from a reuse nobody looked for.
-    singletonReasons,
+    singletonReasons:readonlyMap(singletonReasons),
     completeness: budgetExhausted ? 'partial' : 'complete',
   });
   area.stage('valueNumbers', facts);
