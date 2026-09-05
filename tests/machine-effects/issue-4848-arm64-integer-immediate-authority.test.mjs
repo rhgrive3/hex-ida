@@ -1,20 +1,26 @@
 import assert from 'node:assert/strict';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+import { liftArm64FlagEffects } from '../../js/targets/architecture/arm64/effects/flags.js';
 import { liftArm64IntegerEffects } from '../../js/targets/architecture/arm64/effects/integer.js';
 
 let seq = 0;
 const gp = (num, bits = 64) => ({ k:'reg', cls:'gp', num, bits, text:`${bits === 32 ? 'w' : 'x'}${num}` });
 const imm = (value, extra = {}) => ({ k:'imm', value, text:`#${typeof value === 'bigint' ? value : 'evidence'}`, ...extra });
 
-function lift(mnemonic, ops) {
+function instruction(mnemonic, ops, extra = {}) {
   const instructionId = `issue-4848:${mnemonic}:${++seq}`;
-  return liftArm64MachineEffects({
+  return {
     instructionId,
     mnemonic,
     mode:'a64',
     ops,
     origin:{ instructionIds:[instructionId] },
-  });
+    ...extra,
+  };
+}
+
+function lift(mnemonic, ops) {
+  return liftArm64MachineEffects(instruction(mnemonic, ops));
 }
 
 function assertSemantic(bundle, label) {
@@ -33,6 +39,31 @@ function assertAuthorityFailure(bundle, label) {
   assert.equal(bundle.operations.length, 0, `${label}: malformed immediate emits no definite operation`);
   assert.match(bundle.unknownEffects?.reason || '', /immediate-value-unencodable$/);
   assert.equal(bundle.metadata?.failClosed, true);
+}
+
+function statefulImmediate() {
+  let reads = 0;
+  let coercions = 0;
+  const op = { k:'imm', text:'#stateful-evidence' };
+  Object.defineProperty(op, 'value', {
+    enumerable:true,
+    configurable:true,
+    get() {
+      reads += 1;
+      if (reads <= 2) return 1n;
+      return {
+        valueOf() {
+          coercions += 1;
+          return 1;
+        },
+      };
+    },
+  });
+  return {
+    op,
+    reads:() => reads,
+    coercions:() => coercions,
+  };
 }
 
 // ADD/SUB and CMP/CMN retain the complete imm12 finite domain.
@@ -101,6 +132,40 @@ for (const malformed of malformedValues) {
     assertAuthorityFailure(lift(mnemonic, poisoned), `${mnemonic} ${typeof malformed}`);
   }
 }
+
+// Stateful accessors cannot validate as bigint and later substitute coercible
+// evidence into either the integer or flag semantic lowering path.
+const topLevelStateful = statefulImmediate();
+assertAuthorityFailure(
+  lift('add', [gp(0), gp(1), topLevelStateful.op]),
+  'top-level stateful ADD immediate',
+);
+
+const directIntegerStateful = statefulImmediate();
+assertAuthorityFailure(
+  liftArm64IntegerEffects(instruction('add', [gp(0), gp(1), directIntegerStateful.op])),
+  'direct integer stateful ADD immediate',
+);
+assert.equal(directIntegerStateful.reads(), 0, 'direct integer boundary must reject an accessor without invoking it');
+assert.equal(directIntegerStateful.coercions(), 0, 'direct integer boundary must not invoke hostile coercion hooks');
+
+const directFlagStateful = statefulImmediate();
+assertAuthorityFailure(
+  liftArm64FlagEffects(instruction('cmp', [gp(0), directFlagStateful.op])),
+  'direct flag stateful CMP immediate',
+);
+assert.equal(directFlagStateful.reads(), 0, 'direct flag boundary must reject an accessor without invoking it');
+assert.equal(directFlagStateful.coercions(), 0, 'direct flag boundary must not invoke hostile coercion hooks');
+
+// ADR/ADRP are address-evidence forms, not scalar-immediate authority forms.
+// Preserve their existing coercible-address parsing and range/alignment gate.
+assertSemantic(
+  liftArm64IntegerEffects(instruction('adr', [gp(0), imm('4100')], {
+    address:0x1000n,
+    pcRelTarget:0x1004n,
+  })),
+  'ADR string address evidence remains governed by address validation',
+);
 
 // The integer-family boundary must remain scoped: unrelated families are not
 // claimed merely because malformed immediate evidence is present.
