@@ -74,12 +74,24 @@ export function conversationTitle(conversation, ja = true) {
 
 /* ── persistence ────────────────────────────────────────────── */
 
+/** Keep the UTF-16 storage cap without cutting a supplementary code point. */
+function persistedErrorDetail(value) {
+  const text = String(value);
+  let end = Math.min(text.length, MAX_PERSISTED_ERROR);
+  if (end > 0 && end < text.length) {
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  return text.slice(0, end);
+}
+
 function serializeTurn(turn) {
   const base = { role: turn.role, mode: turn.mode, style: turn.style, scope: turn.scope, at: turn.at || Date.now() };
   if (turn.role === 'user') return { ...base, text: String(turn.text || '').slice(0, MAX_PERSISTED_TEXT) };
   const answer = turn.response && turn.response.answerText ? turn.response.answerText : turn.text;
   const record = { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
-  if (record.status === 'error' && turn.error) record.error = String(turn.error).slice(0, MAX_PERSISTED_ERROR);
+  if (record.status === 'error' && turn.error) record.error = persistedErrorDetail(turn.error);
   return record;
 }
 
@@ -91,7 +103,7 @@ function reviveTurn(raw, index) {
   const base = { id: 'r' + index + '-' + Math.random().toString(36).slice(2, 7), mode, style, scope, at: raw.at || Date.now() };
   if (raw.role === 'user') return { ...base, role: 'user', text };
   const status = raw.status === 'running' ? 'cancelled' : (raw.status || 'done');
-  const error = status === 'error' && raw.error ? String(raw.error).slice(0, MAX_PERSISTED_ERROR) : null;
+  const error = status === 'error' && raw.error ? persistedErrorDetail(raw.error) : null;
   return {
     ...base, role: 'assistant', status,
     effectiveScope: scope, activity: [], error, text: '',
