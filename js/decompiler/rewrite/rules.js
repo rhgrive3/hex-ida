@@ -95,7 +95,7 @@ const arithmeticRules = [
     (n,m) => expr.binary('add', m.inner.left, c(u(n.right.value - m.inner.right.value, n.bits), n), n.bits, n.signed, n.source),
     (n,m) => isStable(m.inner.left)),
   binRule('collect-sub-sub-constants', 'algebra', 'sub', (n) => n.left?.kind === 'binary' && n.left.op === 'sub' && isConst(n.left.right) && isConst(n.right) ? { inner:n.left } : null,
-    (n,m) => expr.binary('sub', m.inner.left, c(u(m.inner.right.value + n.right.value, n.bits), n), n.bits, n.signed, n.source),
+    (n,m) => expr.binary('sub', m.inner.left, c(u(m.inner.right.value + n.right.value, n.bits), n), n.bits, n.signed,n.source),
     (n,m) => isStable(m.inner.left)),
   binRule('factor-common-left-add', 'algebra', 'add', (n) => {
     const a=n.left,b=n.right;
@@ -163,7 +163,7 @@ const compareRules = [{
 }, {
   name: 'double-logical-not', phase: 'boolean',
   match: (n) => n?.kind === 'unary' && n.op === 'lnot' && n.arg?.kind === 'unary' && n.arg.op === 'lnot' ? {} : null,
-  precondition: (n) => isPure(n.arg.arg), rewrite: (n) => n.arg.arg, proof: proof('boolean-identity', '!!bool'), cost,
+  precondition: (n) => isPure(n.arg.arg) && n.arg.arg?.bits === 1, rewrite: (n) => n.arg.arg, proof: proof('boolean-identity', '!!bool'), cost,
 }];
 
 const compareCanonicalRules = [{
@@ -223,7 +223,7 @@ const selectRules = [{
   rewrite: (n) => n.whenTrue, proof: proof('conditional-identity', 'both select arms identical'), cost,
 }, {
   name: 'select-bool-materialize', phase: 'select',
-  match: (n) => n?.kind === 'select' && isConst(n.whenTrue, 1) && isConst(n.whenFalse, 0) ? {} : null,
+  match: (n) => n?.kind === 'select' && n.condition?.bits === 1 && isConst(n.whenTrue, 1) && isConst(n.whenFalse, 0) ? {} : null,
   rewrite: (n) => n.condition, proof: proof('conditional-identity', 'cond ? 1 : 0'), cost,
 }, {
   name: 'select-bool-invert', phase: 'select',
