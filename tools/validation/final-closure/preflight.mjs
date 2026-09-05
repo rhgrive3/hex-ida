@@ -70,6 +70,19 @@ const CHECKPOINT_RUNTIME_EPHEMERAL_ROOTS = Object.freeze([
   'dist',
   'node_modules',
 ]);
+const T060_AMENDMENT_SCHEMA_VERSION = 'hex-final-closure-moving-main-amendment/v1';
+const T060_AMENDMENT_PRODUCT_SCHEMA_VERSION = 'hex-final-closure-moving-main-product/v1';
+const T060_AMENDMENT_CODE_PATHS = Object.freeze([
+  'tools/validation/final-closure/preflight.mjs',
+  'tests/final-closure/moving-main-amendment.test.mjs',
+  'tests/final-closure/preflight.test.mjs',
+  'specs/005-analysis-final-closure/spec.md',
+  'specs/005-analysis-final-closure/plan.md',
+  'specs/005-analysis-final-closure/tasks.md',
+  'specs/005-analysis-final-closure/contracts/task-ownership.json',
+]);
+const T060_AMENDMENT_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/moving-main-amendment.md';
+const T060_AMENDMENT_INVENTORY_PATH = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([
@@ -93,7 +106,7 @@ const RECOVERY_HANDOFF_SCRATCH_REMOTE_REF = 'refs/remotes/origin/__final_closure
 const RECOVERY_HANDOFF_FETCH_REF = 'refs/heads/wip/recovery-handoff-20260904';
 const FOUNDATION_TASK_COUNT = 57;
 // Forward amendment tasks do not redefine the immutable T046 ownership snapshot.
-const RESERVED_TASK_COUNT = 59;
+const RESERVED_TASK_COUNT = 60;
 const T014_APPROVED_METRICS_PATH = 'tools/validation/phase9/tiered-solver-metrics.mjs';
 const T017_APPROVED_FIXTURE_PATH = 'tests/issue-1809-libc-effect-classification.mjs';
 const EXPECTED_WORKFLOW_SHA256 = '18177a2e78bab81bf1aed9a681349235592bb0e52efedee292851717a485cfcd';
@@ -648,6 +661,103 @@ export function validateTaskInventory({ taskId, actualPaths, ownership, requireN
   return Object.freeze({ ok: errors.length === 0, errors: Object.freeze(errors) });
 }
 
+function validateMovingMainAmendmentShape(amendment, errors, expectedCurrentMainSha = null) {
+  if (amendment == null) return null;
+  const fail = (code) => errors.push(`moving-main-amendment-${code}`);
+  if (!amendment || typeof amendment !== 'object' || Array.isArray(amendment)
+    || !exactSet(Object.keys(amendment), [
+      'schemaVersion', 'taskId', 'status', 'previousEvidence', 'mainReconciliation',
+      'code', 'evidence', 'paths', 'product',
+    ])
+    || amendment.schemaVersion !== T060_AMENDMENT_SCHEMA_VERSION
+    || amendment.taskId !== 'T060'
+    || !['PENDING', 'DONE'].includes(amendment.status)) {
+    fail('schema');
+    return null;
+  }
+  const identity = (value, label, shaKey = 'headSha') => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !exactSet(Object.keys(value), [shaKey, 'treeSha'])
+      || !validSha1(value[shaKey]) || !validSha1(value.treeSha)) {
+      fail(`${label}-identity`);
+      return false;
+    }
+    return true;
+  };
+  identity(amendment.previousEvidence, 'previous-evidence');
+  identity(amendment.code, 'code');
+  identity(amendment.evidence, 'evidence');
+  if (!Array.isArray(amendment.paths)
+    || !exactSet(amendment.paths, [...T060_AMENDMENT_CODE_PATHS, T060_AMENDMENT_EVIDENCE_PATH])) {
+    fail('paths');
+  }
+  const reconciliation = amendment.mainReconciliation;
+  const reviewed = reconciliation?.mode === 'REVIEWED_MERGE';
+  const reconciliationKeys = [
+    'schemaVersion', 'mode', 'previousEvidenceSha', 'currentMainSha',
+    'integrationHeadSha', 'integrationHeadTreeSha', 'autoMergeTreeSha',
+    'adjustmentPaths', 'adjustmentStableDigest',
+    ...(reviewed ? ['conflictResolutions'] : []),
+  ];
+  if (!reconciliation || typeof reconciliation !== 'object'
+    || !exactSet(Object.keys(reconciliation), reconciliationKeys)
+    || reconciliation.schemaVersion !== (reviewed
+      ? 'hex-final-closure-main-reconciliation/v2' : MAIN_RECONCILIATION_SCHEMA_VERSION)
+    || !['NOOP', 'EXACT_MERGE', 'REVIEWED_MERGE'].includes(reconciliation.mode)
+    || !validSha1(reconciliation.previousEvidenceSha)
+    || !validSha1(reconciliation.currentMainSha)
+    || !validSha1(reconciliation.integrationHeadSha)
+    || !validSha1(reconciliation.integrationHeadTreeSha)
+    || !Array.isArray(reconciliation.adjustmentPaths)
+    || !exactSet(reconciliation.adjustmentPaths, reconciliation.adjustmentPaths)
+    || reconciliation.adjustmentPaths.some((repoPath) => !validRepoPath(repoPath))
+    || reconciliation.adjustmentStableDigest !== stableDigest([...reconciliation.adjustmentPaths].sort())
+    || (reconciliation.mode === 'NOOP' && reconciliation.autoMergeTreeSha !== null)
+    || (reconciliation.mode !== 'NOOP' && !validSha1(reconciliation.autoMergeTreeSha))) {
+    fail('reconciliation');
+  } else {
+    if (reconciliation.previousEvidenceSha !== amendment.previousEvidence?.headSha) {
+      fail('previous-evidence-mismatch');
+    }
+    if (expectedCurrentMainSha != null && reconciliation.currentMainSha !== expectedCurrentMainSha) {
+      fail('current-main-mismatch');
+    }
+  }
+  if (amendment.status === 'DONE') {
+    const product = amendment.product;
+    if (!product || typeof product !== 'object' || Array.isArray(product)
+      || !exactSet(Object.keys(product), [
+        'schemaVersion', 'acceptedTaskIds', 'acceptedMerge', 'checkpointProduct',
+        'integrationReconciliation', 'generation', 'rollingProductGates',
+        'independentShadowVerifier', 'initialCandidateGateDigest',
+      ])
+      || product.schemaVersion !== T060_AMENDMENT_PRODUCT_SCHEMA_VERSION
+      || !Array.isArray(product.acceptedTaskIds)
+      || product.acceptedTaskIds.length === 0
+      || !exactSet(product.acceptedTaskIds, product.acceptedTaskIds)
+      || product.acceptedTaskIds.some((taskId) => !/^T\d{3}$/.test(String(taskId)))) {
+      fail('product');
+    } else {
+      identity(product.acceptedMerge, 'product-accepted-merge', 'commitSha');
+      identity(product.checkpointProduct, 'product-checkpoint', 'commitSha');
+      if (product.initialCandidateGateDigest !== FROZEN_INITIAL_CANDIDATE_GATE_DIGEST) fail('product-registry');
+      if (!product.integrationReconciliation || typeof product.integrationReconciliation !== 'object'
+        || !product.generation || typeof product.generation !== 'object'
+        || !product.rollingProductGates || typeof product.rollingProductGates !== 'object'
+        || !product.independentShadowVerifier || typeof product.independentShadowVerifier !== 'object') {
+        fail('product-evidence');
+      }
+    }
+  } else if (amendment.product != null) {
+    fail('pending-product-forbidden');
+  }
+  return Object.freeze({
+    status: amendment.status,
+    previousEvidenceSha: amendment.previousEvidence?.headSha ?? null,
+    reconciliation: amendment.mainReconciliation,
+  });
+}
+
 export function validateIntegrationInventory({
   integrationInventory,
   ownership,
@@ -678,6 +788,10 @@ export function validateIntegrationInventory({
   } else if (expectedBaseSha != null && baseSha !== expectedBaseSha) {
     errors.push(`integration-inventory-base-sha-mismatch:${baseSha}:${expectedBaseSha}`);
   }
+
+  // The immutable amendment certifies its own main snapshot. Later component
+  // checkpoints may legitimately certify a newer base without rewriting it.
+  const amendment = validateMovingMainAmendmentShape(integrationInventory?.movingMainAmendment, errors);
 
   const expected = integrationInventory?.expectedChangedPaths;
   const actual = integrationInventory?.actualChangedPaths;
@@ -737,6 +851,7 @@ export function validateIntegrationInventory({
     errors: Object.freeze(errors),
     pathCount: Array.isArray(union) ? union.length : 0,
     stableDigest: Array.isArray(union) ? stableDigest([...union].sort()) : null,
+    movingMainAmendment: amendment,
   });
 }
 
@@ -1422,8 +1537,17 @@ function validCheckpointRow(row, expectedSequence, errors, shadowValidation = nu
     if (!validSha1(row?.[field])) errors.push(`checkpoint-${field}-invalid:${expectedSequence}`);
   }
   const mainReconciliation = row?.mainReconciliation;
-  if (mainReconciliation?.schemaVersion !== MAIN_RECONCILIATION_SCHEMA_VERSION
-    || !['NOOP', 'EXACT_MERGE'].includes(mainReconciliation?.mode)
+  const reviewedMainReconciliation = mainReconciliation?.mode === 'REVIEWED_MERGE';
+  const reviewedResolutionShapeValid = !reviewedMainReconciliation
+    || (Array.isArray(mainReconciliation?.conflictResolutions)
+      && exactSet(
+        mainReconciliation.conflictResolutions.map((resolution) => resolution?.path),
+        mainReconciliation.conflictResolutions.map((resolution) => resolution?.path),
+      )
+      && mainReconciliation.conflictResolutions.every((resolution) => validRepoPath(resolution?.path)));
+  if (mainReconciliation?.schemaVersion !== (reviewedMainReconciliation
+    ? 'hex-final-closure-main-reconciliation/v2' : MAIN_RECONCILIATION_SCHEMA_VERSION)
+    || !['NOOP', 'EXACT_MERGE', 'REVIEWED_MERGE'].includes(mainReconciliation?.mode)
     || !validSha1(mainReconciliation?.previousEvidenceSha)
     || !validSha1(mainReconciliation?.currentMainSha)
     || mainReconciliation?.integrationHeadSha !== row?.integrationParentSha
@@ -1436,7 +1560,9 @@ function validCheckpointRow(row, expectedSequence, errors, shadowValidation = nu
       && (mainReconciliation.autoMergeTreeSha !== null
         || mainReconciliation.adjustmentPaths.length !== 0))
     || (mainReconciliation?.mode === 'EXACT_MERGE'
-      && !validSha1(mainReconciliation.autoMergeTreeSha))) {
+      && !validSha1(mainReconciliation.autoMergeTreeSha))
+    || (mainReconciliation?.mode === 'REVIEWED_MERGE'
+      && (!validSha1(mainReconciliation.autoMergeTreeSha) || !reviewedResolutionShapeValid))) {
     errors.push(`checkpoint-main-reconciliation-invalid:${expectedSequence}`);
   }
   if (!validSha1(row?.acceptedMerge?.commitSha)
@@ -1657,10 +1783,23 @@ function validateCheckpointContract({
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if (latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha
-    || (remainingComponentTaskIds.length > 0
+  const movingMainAmendment = integrationInventory?.movingMainAmendment;
+  const historicalBaseChanged = latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha;
+  if (historicalBaseChanged
+    && (!movingMainAmendment
+      || movingMainAmendment.status !== 'DONE'
+      || movingMainAmendment.previousEvidence?.headSha == null
+      || movingMainAmendment.mainReconciliation?.currentMainSha !== integrationInventory?.baseSha)) {
+    errors.push('checkpoint-moving-main-amendment-not-done');
+  }
+  const amendmentAllowsBaseRefresh = movingMainAmendment?.status === 'DONE'
+    && movingMainAmendment.mainReconciliation?.currentMainSha === integrationInventory?.baseSha
+    && canonicalJson(movingMainAmendment.product?.acceptedTaskIds) === canonicalJson(acceptedTaskIds);
+  if (!amendmentAllowsBaseRefresh
+    && (latest?.cumulativeInventory?.baseSha !== integrationInventory?.baseSha
+      || (remainingComponentTaskIds.length > 0
       && (latest?.cumulativeInventory?.stableDigest !== inventoryResult.stableDigest
-        || latest?.cumulativeInventory?.pathCount !== inventoryResult.pathCount))) {
+        || latest?.cumulativeInventory?.pathCount !== inventoryResult.pathCount)))) {
     errors.push('checkpoint-cumulative-inventory-mismatch');
   }
   return Object.freeze({
@@ -2116,7 +2255,18 @@ export function validatePreflightContracts({
     (_, index) => `T${String(index + 1).padStart(3, '0')}`,
   );
 
-  if (highestTaskNumber < EXPECTED_TASK_IDS.length || !exactSet(parsedTaskIds, contiguousTaskIds)) {
+  // The immutable preactivation publication predates the reserved T060
+  // amendment row.  It is used only as a fixed planning seed for the unit
+  // matrix; live candidates still have to carry the full reserved range.
+  const historicalPreactivationSeed = integrationInventory?.checkpoint?.sequence === 0
+    && integrationInventory?.checkpoint?.state === 'PREFANOUT'
+    && integrationInventory?.taskHandoffs?.T058 == null
+    && integrationInventory?.movingMainAmendment == null
+    && !parsedTaskIds.includes('T060');
+  const minimumTaskNumber = historicalPreactivationSeed
+    ? EXPECTED_TASK_IDS.length - 1
+    : EXPECTED_TASK_IDS.length;
+  if (highestTaskNumber < minimumTaskNumber || !exactSet(parsedTaskIds, contiguousTaskIds)) {
     errors.push('tasks-id-set-mismatch');
   }
   for (const block of blocks) {
@@ -2336,6 +2486,7 @@ export function validatePreflightContracts({
     integrationPathCount: inventoryResult.pathCount,
     integrationInventoryDigest: inventoryResult.stableDigest,
     integrationBaseSha: integrationInventory?.baseSha ?? null,
+    movingMainAmendment: inventoryResult.movingMainAmendment,
     foundationOwnershipDigest,
     performanceProfileCount: performance.profileIds.length,
     stageEvidence,
@@ -3927,13 +4078,14 @@ export function verifyLocalStageBWorktree({ root = ROOT, originalWorkspaceRoot =
   });
 }
 
-function verifyMainReconciliation(root, record, {
+export function verifyMainReconciliation(root, record, {
   expectedPreviousEvidenceSha,
   expectedIntegrationHeadSha,
   requiredCurrentMainSha = null,
   sequence,
 }) {
   const label = String(sequence);
+  const reviewed = record?.mode === 'REVIEWED_MERGE';
   const expectedKeys = [
     'schemaVersion',
     'mode',
@@ -3944,9 +4096,11 @@ function verifyMainReconciliation(root, record, {
     'autoMergeTreeSha',
     'adjustmentPaths',
     'adjustmentStableDigest',
+    ...(reviewed ? ['conflictResolutions'] : []),
   ];
   if (!record || !exactSet(Object.keys(record), expectedKeys)
-    || record.schemaVersion !== MAIN_RECONCILIATION_SCHEMA_VERSION
+    || record.schemaVersion !== (reviewed
+      ? 'hex-final-closure-main-reconciliation/v2' : MAIN_RECONCILIATION_SCHEMA_VERSION)
     || record.previousEvidenceSha !== expectedPreviousEvidenceSha
     || record.integrationHeadSha !== expectedIntegrationHeadSha
     || !validSha1(record.currentMainSha)
@@ -3975,7 +4129,7 @@ function verifyMainReconciliation(root, record, {
     );
     return Object.freeze({ ...record, adjustmentPaths: Object.freeze([]) });
   }
-  if (record.mode !== 'EXACT_MERGE') {
+  if (record.mode !== 'EXACT_MERGE' && !reviewed) {
     throw new Error(`checkpoint-main-reconciliation-mode-invalid:${label}`);
   }
   const parents = git(root, ['show', '-s', '--format=%P', expectedIntegrationHeadSha])
@@ -3986,6 +4140,7 @@ function verifyMainReconciliation(root, record, {
     || parents[1] !== record.currentMainSha) {
     throw new Error(`checkpoint-main-reconciliation-parents-invalid:${label}`);
   }
+  if (reviewed) return verifyReviewedMainMerge(root, record, observedTreeSha, label);
   const autoMergeTreeSha = candidateMergeTree(
     root,
     expectedPreviousEvidenceSha,
@@ -4000,6 +4155,56 @@ function verifyMainReconciliation(root, record, {
     throw new Error(`checkpoint-main-reconciliation-adjustment-invalid:${label}:${adjustmentPaths.join(',')}`);
   }
   return Object.freeze({ ...record, adjustmentPaths: Object.freeze([...adjustmentPaths]) });
+}
+
+function verifyReviewedMainMerge(root, record, observedTreeSha, label) {
+  const fail = (reason) => { throw new Error(`checkpoint-main-reconciliation-${reason}:${label}`); };
+  const merge = runGit(root, ['merge-tree', '--write-tree', '--name-only', '-z',
+    record.previousEvidenceSha, record.currentMainSha]);
+  const parts = merge.stdout.split('\0');
+  const autoTree = parts.shift();
+  const end = parts.indexOf('');
+  // A Git error is not a conflict. Require the NUL-delimited conflict section
+  // from a real conflicted merge, not diagnostic prose or a caller's path list.
+  if (merge.status !== 1 || !validSha1(autoTree) || end < 1) fail('conflict-set-invalid');
+  const conflicts = parts.slice(0, end);
+  if (!exactSet(conflicts, conflicts) || conflicts.some((p) => !validRepoPath(p))) fail('conflict-set-invalid');
+  if (record.autoMergeTreeSha !== autoTree) fail('auto-tree-mismatch');
+  const adjustments = changedPaths(root, autoTree, observedTreeSha);
+  if (!exactSet(adjustments, record.adjustmentPaths)
+    || adjustments.some((p) => !conflicts.includes(p) && !MAIN_RECONCILIATION_ALLOWED_PATHS.includes(p))) {
+    fail('adjustment-invalid');
+  }
+  const rows = record.conflictResolutions;
+  if (!Array.isArray(rows) || !exactSet(rows.map((r) => r?.path), conflicts)) fail('resolution-set-invalid');
+  const inventory = readJsonAt(root, record.previousEvidenceSha,
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json');
+  const ownership = readJsonAt(root, record.previousEvidenceSha,
+    'specs/005-analysis-final-closure/contracts/task-ownership.json');
+  const blob = (commit, repoPath) => {
+    const result = runGit(root, ['ls-tree', '-z', commit, '--', repoPath]);
+    const match = result.status === 0 && result.stdout.match(/^100644 blob ([0-9a-f]{40})\t([^\0]+)\0$/);
+    if (!match || match[2] !== repoPath) fail('resolution-regular-file-required');
+    return match[1];
+  };
+  for (const row of rows) {
+    if (!row || !exactSet(Object.keys(row), ['path', 'ownerTaskId', 'integrationBlobSha',
+      'mainBlobSha', 'resolvedBlobSha', 'selectedParent'])) fail('resolution-schema-invalid');
+    const owner = inventory.entries?.find((entry) => entry.path === row.path)?.ownerTaskId;
+    if (!owner || owner !== row.ownerTaskId
+      || !pathAllowed(row.path, ownership.tasks?.[owner]?.allowedPaths || [])) fail('resolution-owner-invalid');
+    const left = blob(record.previousEvidenceSha, row.path);
+    const right = blob(record.currentMainSha, row.path);
+    const resolved = blob(observedTreeSha, row.path);
+    if (row.integrationBlobSha !== left || row.mainBlobSha !== right || row.resolvedBlobSha !== resolved
+      || !['INTEGRATION', 'MAIN'].includes(row.selectedParent)
+      || resolved !== (row.selectedParent === 'INTEGRATION' ? left : right)) fail('resolution-blob-mismatch');
+  }
+  // This proves the reviewed merge's structural inventory, not semantic review
+  // or release readiness. Canonical generation and exact product gates remain
+  // mandatory before this input can participate in an accepted checkpoint.
+  return Object.freeze({ ...record, adjustmentPaths: Object.freeze([...adjustments]),
+    conflictResolutions: Object.freeze(rows.map((row) => Object.freeze({ ...row }))) });
 }
 
 function derivedTailMainReconciliation(root, {
@@ -4072,6 +4277,26 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     }
     return evidenceCommitSha;
   });
+  const amendmentCurrentMainSha = currentMainSha ?? result?.integrationBaseSha ?? null;
+  const amendmentIndex = result?.movingMainAmendment?.status === 'DONE'
+    ? evidenceCommitShas.indexOf(result.movingMainAmendment.previousEvidenceSha)
+    : -1;
+  if (result?.movingMainAmendment?.status === 'DONE' && amendmentIndex < 0) {
+    throw new Error('moving-main-amendment-checkpoint-anchor-missing');
+  }
+  const movingMainAmendment = result?.movingMainAmendment?.status === 'DONE'
+    ? verifyT060Amendment(root, integrationHeadSha, {
+      expectedPreviousEvidenceSha: evidenceCommitShas[amendmentIndex],
+      acceptedTaskIds: ledger.checkpoints.slice(0, amendmentIndex + 1).map((row) => row.acceptedTaskId),
+      requireDone: true,
+    })
+    : null;
+  const amendmentIsLatestProduct = movingMainAmendment != null
+    && amendmentIndex === ledger.checkpoints.length - 1;
+  if (amendmentIsLatestProduct && (checkpointResult.remainingComponentTaskIds || []).length === 0
+    && integrationHeadSha !== movingMainAmendment.activationCommitSha) {
+    throw new Error('checkpoint-terminal-amendment-tail-unverified');
+  }
   const canonicalT046 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T046');
   const canonicalT058 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T058');
   const foundationRevalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalT058);
@@ -4083,7 +4308,9 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       .slice(0, rowIndex + 1)
       .map((checkpointRow) => checkpointRow.acceptedTaskId);
     verifyMainReconciliation(root, row.mainReconciliation, {
-      expectedPreviousEvidenceSha: rowIndex === 0
+      expectedPreviousEvidenceSha: movingMainAmendment && rowIndex === amendmentIndex + 1
+        ? movingMainAmendment.activationCommitSha
+        : rowIndex === 0
         ? (foundationRevalidation?.publicationCommitSha ?? canonicalT058.transitionCommitSha)
         : evidenceCommitShas[rowIndex - 1],
       expectedIntegrationHeadSha: row.integrationParentSha,
@@ -4181,81 +4408,7 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       || reconciliationPaths.some((repoPath) => pathAllowed(repoPath, componentAllowedPaths))) {
       throw new Error(`checkpoint-product-reconciliation-owner-invalid:${row.sequence}:${reconciliationLane.errors.join(',')}`);
     }
-    const expectedGeneration = checkpointGenerationEvidence(root, {
-      acceptedMerge: row.acceptedMerge,
-      checkpointProduct: row.checkpointProduct,
-      integrationReconciliation: reconciliation,
-    });
-    if (canonicalJson(row.generation) !== canonicalJson(expectedGeneration)) {
-      throw new Error(`checkpoint-generation-evidence-mismatch:${row.sequence}`);
-    }
-    const candidateIdentity = Object.freeze({
-      headSha: row.checkpointProduct.commitSha,
-      treeSha: row.checkpointProduct.treeSha,
-    });
-    const checkpointOwnership = readJsonAt(
-      root,
-      row.checkpointProduct.commitSha,
-      'specs/005-analysis-final-closure/contracts/task-ownership.json',
-    );
-    if (computeInitialCandidateGateDigest(checkpointOwnership) !== row.initialCandidateGateDigest) {
-      throw new Error(`checkpoint-gate-registry-content-mismatch:${row.sequence}`);
-    }
-    try {
-      verifyRecordedRollingProductEvidence(
-        root,
-        checkpointOwnership,
-        cumulativeTaskIds,
-        candidateIdentity,
-        row.rollingProductGates,
-      );
-    } catch {
-      throw new Error(`checkpoint-rolling-evidence-mismatch:${row.sequence}`);
-    }
-    const shadowGates = cumulativeTaskIds.flatMap((taskId) => {
-      const gates = checkpointOwnership?.candidateGates?.tasks?.[taskId]?.shadow;
-      return Array.isArray(gates) ? gates.map((gate) => ({ taskId, gate })) : [];
-    });
-    const recordedReports = row.independentShadowVerifier?.reports;
-    if (shadowGates.length === 0
-      || cumulativeTaskIds.some((taskId) => {
-        const gates = checkpointOwnership?.candidateGates?.tasks?.[taskId]?.shadow;
-        return !Array.isArray(gates) || gates.length === 0;
-      })
-      || !Array.isArray(recordedReports)
-      || shadowGates.length !== recordedReports.length) {
-      throw new Error(`checkpoint-shadow-report-set-mismatch:${row.sequence}`);
-    }
-    const expectedReports = shadowGates.map(({ taskId, gate }) => {
-      const recorded = recordedReports.find(
-        (report) => report?.taskId === taskId && report?.gateId === gate.id,
-      );
-      if (!recorded) {
-        throw new Error(`checkpoint-shadow-report-missing:${row.sequence}:${taskId}:${gate.id}`);
-      }
-      return createShadowGateEvidenceAt({
-        root,
-        commitSha: row.checkpointProduct.commitSha,
-        authoritySha: row.acceptedMerge.commitSha,
-        ownership: checkpointOwnership,
-        taskId,
-        gate,
-        headSha: candidateIdentity.headSha,
-        treeSha: candidateIdentity.treeSha,
-        oracleObservation: recorded?.observations?.oracle,
-        productObservation: recorded?.observations?.product,
-      });
-    });
-    if (new Set(recordedReports.map(
-      (report) => `${String(report?.taskId)}\0${String(report?.gateId)}`,
-    )).size !== recordedReports.length
-      || expectedReports.some((report, index) => canonicalJson(report) !== canonicalJson(recordedReports[index]))) {
-      throw new Error(`checkpoint-shadow-report-mismatch:${row.sequence}`);
-    }
-    const expectedShadow = checkpointShadowGateEvidence(candidateIdentity, expectedReports);
-    if (canonicalJson(row.independentShadowVerifier) !== canonicalJson(expectedShadow)) {
-      throw new Error(`checkpoint-shadow-evidence-mismatch:${row.sequence}`);
-    }
+    const expectedShadow = verifyCheckpointProductProof(root, row, cumulativeTaskIds);
     if (rowIndex === ledger.checkpoints.length - 1
       && (checkpointResult.remainingComponentTaskIds || []).length === 0) {
       assertTerminalShadowCounterEvidence(expectedShadow);
@@ -4265,11 +4418,12 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   const evidenceCommitSha = evidenceCommitShas.at(-1);
   if (!validSha1(evidenceCommitSha)) throw new Error(`checkpoint-evidence-commit-missing:${evidencePath}`);
   assertAncestor(root, evidenceCommitSha, integrationHeadSha, 'checkpoint-evidence-not-ancestor');
-  const requiresExactCheckpointHead = componentMode
+  const requiresExactCheckpointHead = componentMode || amendmentIsLatestProduct
     || (checkpointResult.remainingComponentTaskIds || []).length > 0;
   const tailMainReconciliation = requiresExactCheckpointHead
     ? derivedTailMainReconciliation(root, {
-      previousEvidenceSha: evidenceCommitSha,
+      previousEvidenceSha: amendmentIsLatestProduct
+        ? movingMainAmendment.activationCommitSha : evidenceCommitSha,
       integrationHeadSha,
       currentMainSha,
     })
@@ -4341,7 +4495,14 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     latest.cumulativeInventory.baseSha,
     integrationHeadSha,
   );
-  if (latest.cumulativeInventory.baseSha === result.integrationBaseSha
+  if (movingMainAmendment) {
+    const currentInventory = readJsonAt(root, integrationHeadSha, T060_AMENDMENT_INVENTORY_PATH);
+    const refreshedPaths = changedPaths(root, amendmentCurrentMainSha, integrationHeadSha);
+    if (currentInventory.baseSha !== amendmentCurrentMainSha
+      || !exactSet(refreshedPaths, currentInventory.unionChangedPaths || [])) {
+      throw new Error('checkpoint-current-inventory-amendment-mismatch');
+    }
+  } else if (latest.cumulativeInventory.baseSha === result.integrationBaseSha
     && priorCumulativePaths.some((repoPath) => !currentCumulativePaths.includes(repoPath))) {
     throw new Error('checkpoint-current-inventory-lost-path');
   }
@@ -4352,7 +4513,72 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     productCommitSha: latest.checkpointProduct.commitSha,
     evidenceCommitSha,
     tailMainReconciliation,
+    movingMainAmendment,
+    amendmentIsLatestProduct,
   });
+}
+
+// Shared by ordinary component checkpoints and the bounded T060 successor.
+// Both use the same generated, rolling and independent-shadow authority.
+function verifyCheckpointProductProof(root, row, cumulativeTaskIds) {
+  const expectedGeneration = checkpointGenerationEvidence(root, {
+    acceptedMerge: row.acceptedMerge,
+    checkpointProduct: row.checkpointProduct,
+    integrationReconciliation: row.integrationReconciliation,
+  });
+  if (canonicalJson(row.generation) !== canonicalJson(expectedGeneration)) {
+    throw new Error(`checkpoint-generation-evidence-mismatch:${row.sequence}`);
+  }
+  const candidateIdentity = Object.freeze({
+    headSha: row.checkpointProduct.commitSha,
+    treeSha: row.checkpointProduct.treeSha,
+  });
+  const checkpointOwnership = readJsonAt(root, row.checkpointProduct.commitSha,
+    'specs/005-analysis-final-closure/contracts/task-ownership.json');
+  if (computeInitialCandidateGateDigest(checkpointOwnership) !== row.initialCandidateGateDigest) {
+    throw new Error(`checkpoint-gate-registry-content-mismatch:${row.sequence}`);
+  }
+  try {
+    verifyRecordedRollingProductEvidence(root, checkpointOwnership, cumulativeTaskIds,
+      candidateIdentity, row.rollingProductGates);
+  } catch {
+    throw new Error(`checkpoint-rolling-evidence-mismatch:${row.sequence}`);
+  }
+  const shadowGates = cumulativeTaskIds.flatMap((taskId) => {
+    const gates = checkpointOwnership?.candidateGates?.tasks?.[taskId]?.shadow;
+    return Array.isArray(gates) ? gates.map((gate) => ({ taskId, gate })) : [];
+  });
+  const recordedReports = row.independentShadowVerifier?.reports;
+  if (shadowGates.length === 0
+    || cumulativeTaskIds.some((taskId) => {
+      const gates = checkpointOwnership?.candidateGates?.tasks?.[taskId]?.shadow;
+      return !Array.isArray(gates) || gates.length === 0;
+    })
+    || !Array.isArray(recordedReports) || shadowGates.length !== recordedReports.length) {
+    throw new Error(`checkpoint-shadow-report-set-mismatch:${row.sequence}`);
+  }
+  const expectedReports = shadowGates.map(({ taskId, gate }) => {
+    const recorded = recordedReports.find(
+      (report) => report?.taskId === taskId && report?.gateId === gate.id);
+    if (!recorded) throw new Error(`checkpoint-shadow-report-missing:${row.sequence}:${taskId}:${gate.id}`);
+    return createShadowGateEvidenceAt({
+      root, commitSha: row.checkpointProduct.commitSha, authoritySha: row.acceptedMerge.commitSha,
+      ownership: checkpointOwnership, taskId, gate,
+      headSha: candidateIdentity.headSha, treeSha: candidateIdentity.treeSha,
+      oracleObservation: recorded?.observations?.oracle,
+      productObservation: recorded?.observations?.product,
+    });
+  });
+  if (new Set(recordedReports.map(
+    (report) => `${String(report?.taskId)}\0${String(report?.gateId)}`)).size !== recordedReports.length
+    || expectedReports.some((report, index) => canonicalJson(report) !== canonicalJson(recordedReports[index]))) {
+    throw new Error(`checkpoint-shadow-report-mismatch:${row.sequence}`);
+  }
+  const expectedShadow = checkpointShadowGateEvidence(candidateIdentity, expectedReports);
+  if (canonicalJson(row.independentShadowVerifier) !== canonicalJson(expectedShadow)) {
+    throw new Error(`checkpoint-shadow-evidence-mismatch:${row.sequence}`);
+  }
+  return expectedShadow;
 }
 
 export function canonicalTaskHandoffAnchor(root, integrationHeadSha, taskId) {
@@ -4523,6 +4749,289 @@ export function verifyT058Revalidation(root, integrationHeadSha, originalAnchor 
   return Object.freeze({ publicationCommitSha, evidenceHeadSha: receipt.evidence.headSha, paths: Object.freeze(paths) });
 }
 
+function verifyT060ProductIdentity(root, amendment, integrationHeadSha, acceptedTaskIds = null) {
+  const product = amendment.product;
+  const fail = (detail) => { throw new Error(`moving-main-amendment-invalid:T060:${detail}`); };
+  if (!product || product.schemaVersion !== T060_AMENDMENT_PRODUCT_SCHEMA_VERSION
+    || !Array.isArray(product.acceptedTaskIds)
+    || !exactSet(product.acceptedTaskIds, product.acceptedTaskIds)
+    || product.acceptedTaskIds.some((taskId) => !/^T\d{3}$/.test(String(taskId)))) {
+    fail('product-schema');
+  }
+  if (acceptedTaskIds != null
+    && (canonicalJson(product.acceptedTaskIds) !== canonicalJson(acceptedTaskIds))) {
+    fail('product-task-set');
+  }
+  const identity = (value, label) => {
+    if (!value || !exactSet(Object.keys(value), ['commitSha', 'treeSha'])
+      || !validSha1(value.commitSha) || !validSha1(value.treeSha)
+      || git(root, ['rev-parse', `${value.commitSha}^{tree}`]) !== value.treeSha) {
+      fail(`${label}-identity`);
+    }
+  };
+  identity(product.acceptedMerge, 'product-accepted-merge');
+  identity(product.checkpointProduct, 'product-checkpoint');
+  const productParents = git(root, ['show', '-s', '--format=%P', product.checkpointProduct.commitSha])
+    .split(/\s+/).filter(Boolean);
+  if (productParents.length !== 1 || productParents[0] !== product.acceptedMerge.commitSha) {
+    fail('product-parent');
+  }
+  if (product.acceptedMerge.commitSha !== amendment.code.headSha) fail('product-authority');
+  assertAncestor(root, product.checkpointProduct.commitSha, integrationHeadSha,
+    'moving-main-amendment-product-not-ancestor');
+  const productPaths = changedPaths(root, product.acceptedMerge.commitSha, product.checkpointProduct.commitSha);
+  const reconciliationPaths = productPaths.filter(
+    (repoPath) => !CHECKPOINT_GENERATED_PATHS.includes(repoPath),
+  );
+  const reconciliation = product.integrationReconciliation;
+  if (!reconciliation
+    || reconciliation.schemaVersion !== PRODUCT_RECONCILIATION_SCHEMA_VERSION
+    || reconciliation.ownerTaskId !== 'T049'
+    || reconciliation.mergeCommitSha !== product.acceptedMerge.commitSha
+    || reconciliation.productCommitSha !== product.checkpointProduct.commitSha
+    || !exactSet(reconciliation.paths, reconciliationPaths)
+    || reconciliation.pathCount !== reconciliationPaths.length
+    || reconciliation.stableDigest !== stableDigest([...reconciliationPaths].sort())
+    || reconciliationPaths.some((repoPath) => CHECKPOINT_PRODUCT_PUBLICATION_PATHS.includes(repoPath))) {
+    fail('product-reconciliation');
+  }
+  const ownership = readJsonAt(
+    root,
+    product.acceptedMerge.commitSha,
+    'specs/005-analysis-final-closure/contracts/task-ownership.json',
+  );
+  const lane = validateTaskInventory({
+    taskId: reconciliation.ownerTaskId,
+    actualPaths: reconciliationPaths,
+    ownership,
+    requireNonEmpty: false,
+  });
+  if (!lane.ok || reconciliationPaths.some((repoPath) => product.acceptedTaskIds.some(
+    (taskId) => pathAllowed(repoPath, ownership.tasks?.[taskId]?.allowedPaths || []),
+  ))) fail('product-reconciliation-owner');
+  verifyCheckpointProductProof(root, { ...product, sequence: 'T060' }, product.acceptedTaskIds);
+  return Object.freeze({
+    candidateIdentity: Object.freeze({
+      headSha: product.checkpointProduct.commitSha,
+      treeSha: product.checkpointProduct.treeSha,
+    }),
+    acceptedTaskIds: Object.freeze([...product.acceptedTaskIds]),
+    product,
+  });
+}
+
+// T060 is a forward successor to the accepted checkpoint, not a replacement
+// for its handoff. The main merge, code successor, evidence publication and
+// receipt publication are all independently authenticated from Git history.
+export function verifyT060Amendment(root, integrationHeadSha, {
+  expectedPreviousEvidenceSha = null,
+  expectedCurrentMainSha = null,
+  acceptedTaskIds = null,
+  requireDone = true,
+} = {}) {
+  const inventory = readJsonAt(root, integrationHeadSha, T060_AMENDMENT_INVENTORY_PATH);
+  const amendment = inventory?.movingMainAmendment;
+  if (amendment == null) return null;
+  const fail = (detail) => { throw new Error(`moving-main-amendment-invalid:T060:${detail}`); };
+  const errors = [];
+  validateMovingMainAmendmentShape(amendment, errors, expectedCurrentMainSha);
+  if (errors.length > 0) fail(errors[0].replace(/^moving-main-amendment-/, ''));
+  if (requireDone && amendment.status !== 'DONE') fail('not-done');
+  const previousEvidenceSha = amendment.previousEvidence.headSha;
+  if (expectedPreviousEvidenceSha != null && previousEvidenceSha !== expectedPreviousEvidenceSha) {
+    fail('previous-evidence');
+  }
+  if (git(root, ['rev-parse', `${previousEvidenceSha}^{tree}`]) !== amendment.previousEvidence.treeSha) {
+    fail('previous-evidence-identity');
+  }
+  const reconciliation = amendment.mainReconciliation;
+  const verifiedReconciliation = verifyMainReconciliation(root, reconciliation, {
+    expectedPreviousEvidenceSha: previousEvidenceSha,
+    expectedIntegrationHeadSha: reconciliation.integrationHeadSha,
+    requiredCurrentMainSha: expectedCurrentMainSha,
+    sequence: 'T060',
+  });
+  assertAncestor(root, reconciliation.integrationHeadSha, integrationHeadSha,
+    'moving-main-amendment-merge-not-ancestor');
+
+  const codeHeadSha = amendment.code.headSha;
+  if (git(root, ['rev-parse', `${codeHeadSha}^{tree}`]) !== amendment.code.treeSha) {
+    fail('code-identity');
+  }
+  assertAncestor(root, reconciliation.integrationHeadSha, codeHeadSha,
+    'moving-main-amendment-code-not-ancestor');
+  const codeHistory = git(root, [
+    'rev-list', '--first-parent', codeHeadSha, `^${reconciliation.integrationHeadSha}`,
+  ]).split('\n').filter(Boolean);
+  for (const sha of codeHistory) {
+    const parents = git(root, ['show', '-s', '--format=%P', sha]).split(/\s+/).filter(Boolean);
+    if (parents.length !== 1) fail('code-parent');
+    const changed = changedPaths(root, parents[0], sha);
+    if (changed.some((repoPath) => !T060_AMENDMENT_CODE_PATHS.includes(repoPath))) fail('code-scope');
+  }
+  if (codeHistory.length === 0) fail('code-empty');
+  if (!exactSet(
+    changedPaths(root, reconciliation.integrationHeadSha, codeHeadSha),
+    changedPaths(root, reconciliation.integrationHeadSha, codeHeadSha).filter(
+      (repoPath) => T060_AMENDMENT_CODE_PATHS.includes(repoPath),
+    ),
+  )) fail('code-scope');
+  const ownershipPath = 'specs/005-analysis-final-closure/contracts/task-ownership.json';
+  const priorOwnership = readJsonAt(root, previousEvidenceSha, ownershipPath);
+  const codeOwnership = readJsonAt(root, codeHeadSha, ownershipPath);
+  if (!exactSet(codeOwnership.tasks?.T060?.allowedPaths || [], [
+    ...T060_AMENDMENT_CODE_PATHS, T060_AMENDMENT_INVENTORY_PATH, T060_AMENDMENT_EVIDENCE_PATH,
+  ])) fail('ownership-scope');
+  // A successor verifier does not grant authority to widen unrelated owners,
+  // change frozen candidate argv, or rewrite an independent oracle contract.
+  delete priorOwnership.tasks.T060;
+  delete codeOwnership.tasks.T060;
+  if (canonicalJson(priorOwnership) !== canonicalJson(codeOwnership)) fail('ownership-delta');
+  for (const name of ['spec.md', 'plan.md']) {
+    const repoPath = `specs/005-analysis-final-closure/${name}`;
+    if (!readTextAt(root, codeHeadSha, repoPath).startsWith(readTextAt(root, previousEvidenceSha, repoPath))) {
+      fail('historical-spec-plan-rewritten');
+    }
+  }
+  const taskRecords = (sha) => new Map(taskBlocks(readTextAt(root, sha,
+    'specs/005-analysis-final-closure/tasks.md')).map((block) => {
+    const lines = block.split('\n');
+    return [lines[0].match(/\bT\d{3}\b/)[0], lines.slice(0, 2).join('\n')];
+  }));
+  const priorTaskRecords = taskRecords(previousEvidenceSha);
+  const codeTaskRecords = taskRecords(codeHeadSha);
+  for (const [taskId, previous] of priorTaskRecords) {
+    if (taskId === 'T060') continue;
+    const current = codeTaskRecords.get(taskId);
+    if (taskId === 'T049') {
+      const dependencies = (text) => text?.match(/Dependencies:(.*?)\. Owned paths:/)?.[1]
+        .match(/T\d{3}/g) || [];
+      if (!exactSet(dependencies(current), [...new Set([...dependencies(previous), 'T060'])])) {
+        fail('integration-dependency-delta');
+      }
+      const withoutDependencies = (text) => text?.replace(/Dependencies:.*?\. Owned paths:/,
+        'Dependencies: <reviewed successor>. Owned paths:');
+      if (withoutDependencies(previous) !== withoutDependencies(current)) fail('historical-task-rewritten');
+    } else if (previous !== current) fail('historical-task-rewritten');
+  }
+  if ([...codeTaskRecords.keys()].some((id) => id !== 'T060' && !priorTaskRecords.has(id))) {
+    fail('unrelated-task-added');
+  }
+  const tasksPath = 'specs/005-analysis-final-closure/tasks.md';
+  const withoutT060 = (text) => text.replace(/^- \[[ x]\] T060[^\n]*\n  - \*\*Contract\*\*[^\n]*\n/m, '')
+    .replace(/\n{3,}/g, '\n\n');
+  const priorTasksText = readTextAt(root, previousEvidenceSha, tasksPath);
+  const codeTasksText = readTextAt(root, codeHeadSha, tasksPath);
+  const normalizedCodeTasks = codeTasksText.replace(codeTaskRecords.get('T049'), priorTaskRecords.get('T049'));
+  if (withoutT060(normalizedCodeTasks) !== withoutT060(priorTasksText)) fail('historical-tasks-document-rewritten');
+
+  const evidenceParents = git(root, ['show', '-s', '--format=%P', amendment.evidence.headSha])
+    .split(/\s+/).filter(Boolean);
+  if (git(root, ['rev-parse', `${amendment.evidence.headSha}^{tree}`]) !== amendment.evidence.treeSha) {
+    fail('evidence-identity');
+  }
+  const product = amendment.status === 'DONE'
+    ? verifyT060ProductIdentity(root, amendment, integrationHeadSha, acceptedTaskIds)
+    : null;
+  const evidenceParentSha = product?.candidateIdentity.headSha ?? codeHeadSha;
+  if (evidenceParents.length !== 1 || evidenceParents[0] !== evidenceParentSha
+    || !exactSet(changedPaths(root, evidenceParentSha, amendment.evidence.headSha), [T060_AMENDMENT_EVIDENCE_PATH])) {
+    fail('evidence-scope');
+  }
+  const evidenceText = readOptionalText(root, T060_AMENDMENT_EVIDENCE_PATH, amendment.evidence.headSha);
+  if (typeof evidenceText !== 'string'
+    || !evidenceText.includes(codeHeadSha)
+    || !evidenceText.includes(amendment.code.treeSha)
+    || !evidenceText.includes(amendment.previousEvidence.headSha)) {
+    fail('evidence-binding');
+  }
+  const publicationHistory = git(root, [
+    'rev-list', '--first-parent', '--reverse', integrationHeadSha, '--', T060_AMENDMENT_INVENTORY_PATH,
+  ]).split('\n').filter(Boolean);
+  let publicationCommitSha = null;
+  for (const sha of publicationHistory) {
+    const historical = JSON.parse(readTextAt(root, sha, T060_AMENDMENT_INVENTORY_PATH));
+    if (historical?.movingMainAmendment == null) {
+      if (publicationCommitSha != null) fail('receipt-removed');
+      continue;
+    }
+    if (publicationCommitSha == null) {
+      publicationCommitSha = sha;
+      continue;
+    }
+    if (canonicalJson(historical.movingMainAmendment) !== canonicalJson(amendment)) {
+      fail('receipt-rewritten');
+    }
+  }
+  if (publicationCommitSha == null) fail('receipt-missing');
+  const publicationParents = git(root, ['show', '-s', '--format=%P', publicationCommitSha])
+    .split(/\s+/).filter(Boolean);
+  if (publicationParents.length !== 1 || publicationParents[0] !== amendment.evidence.headSha
+    || !exactSet(changedPaths(root, amendment.evidence.headSha, publicationCommitSha), [T060_AMENDMENT_INVENTORY_PATH])) {
+    fail('receipt-scope');
+  }
+  const preservedInventory = (sha) => {
+    const value = readJsonAt(root, sha, T060_AMENDMENT_INVENTORY_PATH);
+    for (const key of ['baseSha', 'expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths',
+      'entries', 'movingMainAmendment']) delete value[key];
+    return value;
+  };
+  if (canonicalJson(preservedInventory(amendment.evidence.headSha))
+    !== canonicalJson(preservedInventory(publicationCommitSha))) fail('receipt-inventory-delta');
+  const priorInventory = readJsonAt(root, amendment.evidence.headSha, T060_AMENDMENT_INVENTORY_PATH);
+  const receiptInventory = readJsonAt(root, publicationCommitSha, T060_AMENDMENT_INVENTORY_PATH);
+  // A base refresh changes the path set, not the ownership of retained paths.
+  // Reuse the canonical inventory validator against P's actual Git diff so a
+  // later historical replay cannot hide a path by deleting all four set entries.
+  const receiptInventoryResult = validateIntegrationInventory({
+    integrationInventory: receiptInventory,
+    ownership: readJsonAt(root, codeHeadSha, ownershipPath),
+    taskIds: [...codeTaskRecords.keys()],
+    actualChangedPaths: changedPaths(root, receiptInventory.baseSha, publicationCommitSha),
+    expectedBaseSha: reconciliation.currentMainSha,
+  });
+  if (!receiptInventoryResult.ok) fail('receipt-inventory-invalid');
+  const priorOwners = new Map(priorInventory.entries.map((entry) => [entry.path, entry.ownerTaskId]));
+  for (const entry of receiptInventory.entries) {
+    if (priorOwners.has(entry.path) && priorOwners.get(entry.path) !== entry.ownerTaskId) {
+      fail('receipt-inventory-owner-delta');
+    }
+  }
+  const anchor = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T060');
+  const activationParents = git(root, ['show', '-s', '--format=%P', anchor.transitionCommitSha])
+    .split(/\s+/).filter(Boolean);
+  if (anchor.handoff.headSha !== amendment.evidence.headSha
+    || anchor.handoff.treeSha !== amendment.evidence.treeSha
+    || anchor.handoff.evidencePath !== T060_AMENDMENT_EVIDENCE_PATH
+    || activationParents.length !== 1 || activationParents[0] !== publicationCommitSha
+    || !exactSet(changedPaths(root, publicationCommitSha, anchor.transitionCommitSha), [
+      T060_AMENDMENT_INVENTORY_PATH, 'specs/005-analysis-final-closure/tasks.md',
+    ])) fail('activation-scope');
+  const publishedInventory = readJsonAt(root, publicationCommitSha, T060_AMENDMENT_INVENTORY_PATH);
+  const activatedInventory = readJsonAt(root, anchor.transitionCommitSha, T060_AMENDMENT_INVENTORY_PATH);
+  delete publishedInventory.taskHandoffs.T060;
+  delete activatedInventory.taskHandoffs.T060;
+  if (canonicalJson(publishedInventory) !== canonicalJson(activatedInventory)) fail('activation-inventory-delta');
+  const publishedTasks = readTextAt(root, publicationCommitSha, tasksPath);
+  const activatedTasks = readTextAt(root, anchor.transitionCommitSha, tasksPath);
+  const pendingRecord = taskRecords(publicationCommitSha).get('T060');
+  const expectedDoneRecord = pendingRecord?.replace(/^- \[ \]/, '- [x]')
+    .replace(/Status: PENDING\./, 'Status: DONE.');
+  if (pendingRecord === expectedDoneRecord
+    || publishedTasks.replace(pendingRecord, expectedDoneRecord) !== activatedTasks) fail('activation-task-delta');
+  return Object.freeze({
+    status: amendment.status,
+    publicationCommitSha,
+    activationCommitSha: anchor.transitionCommitSha,
+    previousEvidenceSha,
+    mainReconciliation: verifiedReconciliation,
+    codeHeadSha,
+    evidenceHeadSha: amendment.evidence.headSha,
+    paths: Object.freeze([...amendment.paths]),
+    product,
+  });
+}
+
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   requireCompleteOwners = false,
 } = {}) {
@@ -4540,7 +5049,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   }
   const completedTaskIds = new Set(result?.taskHandoffResult?.completedTaskIds || []);
   const canonicalHandoffs = {};
-  for (const taskId of ['T046', 'T025', 'T058']) {
+  for (const taskId of ['T046', 'T025', 'T058', 'T060']) {
     if (!completedTaskIds.has(taskId)) continue;
     const canonical = canonicalTaskHandoffAnchor(root, integrationHeadSha, taskId);
     if (canonicalJson(handoffs[taskId]) !== canonicalJson(canonical.handoff)) {
@@ -4550,6 +5059,16 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   }
   const canonicalT046 = canonicalHandoffs.T046 ?? null;
   const revalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalHandoffs.T058 ?? null);
+  let movingMainAmendment = null;
+  if (completedTaskIds.has('T060')) {
+    const amendmentHeadSha = result?.checkpointResult?.ledger?.campaignStage === 'STAGE_B'
+      || result?.checkpointResult?.checkpoint?.evidencePath === CHECKPOINT_PATHS.STAGE_B
+      ? canonicalHandoffs.T060.transitionCommitSha : integrationHeadSha;
+    movingMainAmendment = verifyT060Amendment(root, amendmentHeadSha, {
+      requireDone: true,
+    });
+    if (!movingMainAmendment) throw new Error('moving-main-amendment-missing:T060');
+  }
   if (canonicalHandoffs.T058) {
     if (!canonicalT046) throw new Error('foundation-amendment-original-handoff-missing');
     assertAncestor(root, canonicalT046.transitionCommitSha, canonicalHandoffs.T058.handoff.headSha,
@@ -4584,9 +5103,14 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
       continue;
     }
     if (!sealOwnedPaths || mutableCoordinationPaths.has(entry.path)) continue;
-    const sealedHead = ownerTaskId === 'T058' && revalidation?.paths.includes(entry.path)
-      ? revalidation.evidenceHeadSha
-      : handoff.headSha;
+    let sealedHead = handoff.headSha;
+    if (ownerTaskId === 'T058' && revalidation?.paths.includes(entry.path)) {
+      sealedHead = revalidation.evidenceHeadSha;
+    }
+    if (ownerTaskId === 'T058' && movingMainAmendment?.paths.includes(entry.path)
+      && T060_AMENDMENT_CODE_PATHS.includes(entry.path)) {
+      sealedHead = movingMainAmendment.codeHeadSha;
+    }
     const unchanged = runGit(root, [
       'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
     ]);
@@ -4599,6 +5123,8 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     canonicalT046TransitionCommitSha: canonicalT046?.transitionCommitSha ?? null,
     canonicalT025TransitionCommitSha: canonicalHandoffs.T025?.transitionCommitSha ?? null,
     canonicalT058TransitionCommitSha: canonicalHandoffs.T058?.transitionCommitSha ?? null,
+    canonicalT060TransitionCommitSha: canonicalHandoffs.T060?.transitionCommitSha ?? null,
+    movingMainAmendmentPublicationCommitSha: movingMainAmendment?.publicationCommitSha ?? null,
   });
 }
 
@@ -4680,6 +5206,9 @@ function validateComponentLane({ authority, bundle, root, candidateHeadSha, stag
   }
   if (statuses.get('T058') !== 'DONE') {
     throw new Error('component-foundation-amendment-not-done:T058');
+  }
+  if (bundle.integrationInventory.campaignStage === 'STAGE_A' && statuses.get('T060') !== 'DONE') {
+    throw new Error('component-moving-main-amendment-not-done:T060');
   }
   if (statuses.get(authority.taskId) !== 'PENDING') {
     throw new Error(`component-task-not-pending:${authority.taskId}:${statuses.get(authority.taskId) || 'UNKNOWN'}`);
@@ -4850,6 +5379,10 @@ export function runPreflight({ root = ROOT, expectedSha, expectedBaseSha, enviro
       componentMode: true,
       currentMainSha,
     });
+    if (bundle.integrationInventory.campaignStage === 'STAGE_A'
+      && !checkpointIdentity?.movingMainAmendment?.product?.candidateIdentity) {
+      throw new Error('component-moving-main-amendment-product-proof-missing:T060');
+    }
     const stageTransitionIdentity = bundle.integrationInventory.campaignStage === 'STAGE_B'
       ? verifyStageBOperationalEvidence(root, result.stageEvidence, currentMainSha)
       : null;
@@ -5397,9 +5930,18 @@ export function verifyCheckpointRuntimeEvidence({
       sequence: 0,
     });
   }
-  const row = result.checkpointResult.ledger.checkpoints.at(-1);
-  const cumulativeTaskIds = result.checkpointResult.ledger.checkpoints
-    .map((checkpointRow) => checkpointRow.acceptedTaskId);
+  const historicalRow = result.checkpointResult.ledger.checkpoints.at(-1);
+  const amendmentProduct = operational.amendmentIsLatestProduct
+    ? operational.movingMainAmendment?.product?.product ?? null : null;
+  const row = amendmentProduct
+    ? Object.freeze({
+      ...amendmentProduct,
+      sequence: historicalRow.sequence + 1,
+      acceptedTaskId: historicalRow.acceptedTaskId,
+    })
+    : historicalRow;
+  const cumulativeTaskIds = amendmentProduct?.acceptedTaskIds
+    ?? result.checkpointResult.ledger.checkpoints.map((checkpointRow) => checkpointRow.acceptedTaskId);
   const productIdentity = Object.freeze({
     headSha: row.checkpointProduct.commitSha,
     treeSha: row.checkpointProduct.treeSha,

@@ -435,3 +435,30 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
 ## Complexity Tracking
 
 No constitutional violation or new architectural component is proposed.
+
+## T060 forward amendment — 2026-09-05
+
+This user-authorized amendment preserves the existing living branch and all
+historical T046/T058 and accepted component records. Historical checkpoint
+inventories certify their own Git bases; the refreshed current-main inventory
+is independently checked against the new base. A reviewed conflicting merge
+binds ordered parents, Git's actual conflict set, selected parent blobs and the
+resolved tree. Clean main changes cannot be dropped. Generated conflict choices
+are provisional until the integration owner canonically rebuilds the combined
+product twice with zero second diff.
+
+The bounded chain is prior checkpoint E → reviewed main merge R → amendment
+code A → generated product G → evidence E2 → immutable receipt P → unique T060
+status transition D. Code A may add only this amendment's declared paths and
+the T049 dependency on T060. Existing ownership, candidate commands and
+independent oracle contracts remain unchanged. Spec/plan amendments append to
+the preserved documents; activation changes only T060's checkbox/status and
+handoff. Receipt publication preserves historical handoffs and checkpoints.
+
+G uses the existing generation, cumulative rolling and independent-shadow
+verifier, bound to its own exact identity. Old runtime or CI cannot certify it.
+D bridges the next component checkpoint without changing historical rows; once
+a later component G exists, runtime verification selects that newer product.
+Stage B reads T060's historical transition instead of carrying the Stage A
+inventory forward. T060 remains PENDING until independent review, regressions,
+canonical rebuild, exact current-product runtime and CI are complete.
