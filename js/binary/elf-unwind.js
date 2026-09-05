@@ -401,7 +401,12 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
   const indirect = !!(enc & 0x80);
   const ptrBytes = ctx.bits === 64 ? 8 : 4;
   let p = p0;
-  if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+  if (application === 0x50) {
+    const alignment = BigInt(ptrBytes);
+    const fieldAddress = ctx.secAddress + BigInt(p - ctx.secOffset);
+    const padding = (alignment - (fieldAddress % alignment)) % alignment;
+    p += Number(padding);
+  }
   const requireSpan = (n) => {
     if (!Number.isSafeInteger(p) || !Number.isSafeInteger(end) || p < 0 || n < 0 || p > end || n > end - p)
       throw new Error('DW_EH_PE value crosses bounded record');
