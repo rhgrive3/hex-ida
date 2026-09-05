@@ -4,6 +4,7 @@ import {
   X86_LONG64_BASE_PROFILE_ID,
   resolveX86Long64FeatureEnvelope,
 } from '../../js/targets/architecture/x86_64/feature-contract.js';
+import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 
 const BASE = X86_LONG64_BASE_PROFILE_ID;
 
@@ -11,6 +12,31 @@ function assertMismatch(result, expectedProfileId = null) {
   assert.equal(result.supported, false);
   assert.equal(result.reason, 'x86-feature-profile-mismatch');
   assert.equal(result.profileId, expectedProfileId);
+}
+
+function trustedNop(featureProfileId = BASE) {
+  return {
+    contractVersion:'x86-64-decoded-instruction/v1',
+    decoderSemanticVersion:'capstone-5-x86-structured-v2',
+    mode:'long-64',
+    instructionId:'issue-5982:trusted-nop',
+    instructionCode:1,
+    instructionFamily:'nop',
+    mnemonic:'nop',
+    address:0x1000n,
+    length:1,
+    rawBytes:Uint8Array.of(0x90),
+    detailStatus:'complete',
+    featureProfileId,
+    detail:{
+      abiContractVersion:'capstone-5-wasm32-x86-detail/v1',
+      operandCount:0,
+      operands:[],
+      prefixes:{ legacy:[], rex:null, vector:null },
+      implicitReads:[],
+      implicitWrites:[],
+    },
+  };
 }
 
 const omitted = resolveX86Long64FeatureEnvelope();
@@ -91,5 +117,22 @@ const mpx = resolveX86Long64FeatureEnvelope({}, {
 });
 assert.equal(mpx.supported, false);
 assert.equal(mpx.reason, 'x86-mpx-requires-feature-enabled-profile');
+
+const canonicalMachineEffects = liftX86MachineEffects(trustedNop());
+assert.equal(canonicalMachineEffects?.completeness, 'exact');
+assert.equal(canonicalMachineEffects?.statePreservation?.proven, true);
+assert.equal(canonicalMachineEffects?.metadata?.featureProfileId, BASE);
+
+for (const [name, featureProfileId] of [
+  ['array', [BASE]],
+  ['object', { profileId:BASE }],
+]) {
+  const result = liftX86MachineEffects(trustedNop(featureProfileId));
+  assert.equal(result?.completeness, 'partial', `${name} profile must remain fail-closed after trusted decode`);
+  assert.equal(result?.unknownEffects?.reason, 'x86-feature-profile-mismatch');
+  assert.equal(result?.metadata?.failClosed, true);
+  assert.equal(result?.metadata?.featureProfileId, null);
+  assert.equal(result?.metadata?.terminalizedBy, undefined, `${name} profile must not gain trusted-terminal exact authority`);
+}
 
 console.log('issue-5982-x86-feature-profile-authority: PASS');
