@@ -57,7 +57,7 @@ export class RewriteEngine {
      * clock. Production defaults are unchanged.
      */
     const deterministic = context.deterministicTransforms === true || this.budget.deterministic === true;
-    const localDeadline = deterministic ? Infinity : started + Math.max(0, Number(this.budget.timeBudgetMs));
+    const localDeadline = deterministic ? Infinity : started + this.budget.timeBudgetMs;
     const contextDeadline = Number(context.deadline);
     const deadline = !deterministic && Number.isFinite(contextDeadline)
       ? Math.min(localDeadline, contextDeadline)
