@@ -46,7 +46,7 @@ test('legacy SSE preserves upper YMM while VEX.128 zeroes the upper half', () =>
   assert.equal(legacy.metadata.upperLaneBehavior, 'preserve-upper-128');
   assert.equal(physicalWrites(legacy,'ymm0').length, 1);
 
-  const vex = effects('vxorps', [reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')], { prefixes:vex2(0xf8), instructionId:'p5-i:vex128' });
+  const vex = effects('vxorps', [reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')], { prefixes:vex2(0xf0), rawBytes:[0xc5,0xf0,0x57,0xc2], instructionId:'p5-i:vex128' });
   assert.equal(vex.metadata.upperLaneBehavior, 'zero-upper-128');
   assert.equal(physicalWrites(vex,'ymm0').length, 1);
 });

@@ -17,14 +17,14 @@ test('XMM is a lower YMM view and legacy writes preserve upper physical state', 
 });
 
 test('VEX.128 zeroes YMM upper 128 and VEX.256 replaces the full YMM', () => {
-  const v128 = lift(instruction('vxorps', [reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')], { prefixes:vex2(0xf0), instructionId:'p5-3:vex128-xor' }));
+  const v128 = lift(instruction('vxorps', [reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')], { prefixes:vex2(0xf0), rawBytes:[0xc5,0xf0,0x57,0xc2], instructionId:'p5-3:vex128-xor' }));
   assert.equal(v128.completeness, 'exact');
   assert.equal(v128.metadata.vectorWidthBits, 128);
   assert.equal(v128.metadata.upperLaneBehavior, 'zero-upper-128');
   assert.equal(physicalWrites(v128,'ymm0').length, 1);
   assert.ok(ops(v128,'value').some((operation) => operation.opcode === 'zext' && operation.metadata?.fromBits === 128 && operation.metadata?.toBits === 256));
 
-  const v256 = lift(instruction('vxorps', [reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')], { prefixes:vex2(0xf4), instructionId:'p5-3:vex256-xor' }));
+  const v256 = lift(instruction('vxorps', [reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')], { prefixes:vex2(0xf4), rawBytes:[0xc5,0xf4,0x57,0xc2], instructionId:'p5-3:vex256-xor' }));
   assert.equal(v256.completeness, 'exact');
   assert.equal(v256.metadata.vectorWidthBits, 256);
   assert.equal(v256.metadata.upperLaneBehavior, 'replace-ymm');
@@ -33,16 +33,16 @@ test('VEX.128 zeroes YMM upper 128 and VEX.256 replaces the full YMM', () => {
 
 test('unsupported vector state and malformed encoding fail closed', () => {
   assert.throws(() => lift(instruction('pxor', [reg('xmm16'),reg('xmm0')], { instructionId:'p5-3:xmm16' })), /x86-decoded-instruction-high-vector-register-requires-evex/);
-  const zmm = lift(instruction('vxorps', [reg('zmm0'),reg('zmm1'),reg('zmm2')], { prefixes:evex(), instructionId:'p5-3:zmm' }));
+  const zmm = lift(instruction('vxorps', [reg('zmm0'),reg('zmm1'),reg('zmm2')], { prefixes:evex(), rawBytes:[0x62,0xf1,0x7c,0x08,0x57,0xc2], instructionId:'p5-3:zmm' }));
   assert.equal(zmm.completeness, 'partial');
   assert.match(zmm.unknownEffects.reason, /evex/);
-  const evexLow = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:evex(), instructionId:'p5-3:evex-low' }));
+  const evexLow = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:evex(), rawBytes:[0x62,0xf1,0x7c,0x08,0x57,0xc2], instructionId:'p5-3:evex-low' }));
   assert.equal(evexLow.completeness, 'partial');
   assert.match(evexLow.unknownEffects.reason, /trusted-decoder-provenance-required|evex-physical-state-unmodelled/);
   const malformed = lift(instruction('vxorps', [reg('xmm0'),reg('xmm1'),reg('xmm2')], { prefixes:{ legacy:[], rex:null, vector:{ kind:'vex2', bytes:[0xc4,0] } }, instructionId:'p5-3:bad-vex' }));
   assert.equal(malformed.completeness, 'partial');
   assert.match(malformed.unknownEffects.reason, /prefix-metadata-malformed/);
-  const mismatch = lift(instruction('vxorps', [reg('ymm0'),reg('ymm1'),reg('ymm2')], { prefixes:vex2(0xf0), instructionId:'p5-3:vex-mismatch' }));
+  const mismatch = lift(instruction('vxorps', [reg('ymm0'),reg('ymm1'),reg('ymm2')], { prefixes:vex2(0xf0), rawBytes:[0xc5,0xf0,0x57,0xc2], instructionId:'p5-3:vex-mismatch' }));
   assert.equal(mismatch.completeness, 'partial');
   assert.match(mismatch.unknownEffects.reason, /width-operand-mismatch/);
 });

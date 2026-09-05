@@ -183,5 +183,8 @@ test('writes whose destination is x0 are discarded rather than performed', () =>
   assert.equal(bundle.completeness, 'exact');
   const { registers } = evaluateBundle(bundle, { x11: 5n, x12: 7n });
   assert.equal(registers.get('x0'), undefined, 'x0 must never receive a value');
-  assert.deepEqual(bundle.metadata.discardedHardwiredZeroWrites, ['x0']);
+  assert.equal(bundle.metadata.architecturalNoOp, true);
+  assert.equal(bundle.metadata.hint, true);
+  assert.deepEqual(bundle.operations, []);
+  assert.equal(bundle.statePreservation.proven, true);
 });

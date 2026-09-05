@@ -30,9 +30,12 @@ try {
   assert.equal(matrix.matrixId, X86_LONG64_CLOSURE_MATRIX_ID);
   assert.equal(matrix.totalWitnessCount, 1487);
   assert.equal(matrix.unownedCount, 0, "No witness may be unowned");
-  assert.equal(matrix.partialCount, 0, `No valid witness may remain partial: ${JSON.stringify(matrix.blockingGaps)}`);
-  assert.equal(matrix.blockingGapCount, 0, `No semantic closure gap may remain: ${JSON.stringify(matrix.blockingGaps)}`);
-  assert.equal(matrix.closed, true, `Long-64 witness matrix must be terminal: ${JSON.stringify(matrix.blockingGaps)}`);
+  assert.equal(matrix.partialCount, 1, `Only delivery-state-dependent INT may remain partial: ${JSON.stringify(matrix.blockingGaps)}`);
+  assert.equal(matrix.blockingGapCount, 1, `The conservative INT boundary must remain explicit: ${JSON.stringify(matrix.blockingGaps)}`);
+  assert.equal(matrix.closed, false, 'a partial architectural-delivery boundary is not terminal semantic closure');
+  assert.deepEqual(matrix.blockingGaps, [{
+    id:238, name:'int', ownerId:'control', completeness:'partial', reason:'x86-int-delivery-state-unmodelled',
+  }]);
   assert.equal(matrix.rows.length, 1487);
 
   for (const row of matrix.rows) {

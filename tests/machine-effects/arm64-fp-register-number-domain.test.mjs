@@ -13,11 +13,17 @@ function lift(mnemonic, operands, mutate = null) {
 for (const [mnemonic, operands] of [
   ['fadd','s0, s1, s31'],
   ['fmov','d31, d0'],
-  ['scvtf','d31, x31'],
+  ['scvtf','d31, x30'],
 ]) {
   const effect = lift(mnemonic, operands);
   assert.ok(effect);
   assert.notEqual(effect.completeness, 'partial', `${mnemonic} ${operands}: legal register numbers must remain exact`);
+}
+
+{
+  const ambiguous = lift('scvtf', 'd31, x31');
+  assert.equal(ambiguous.completeness, 'partial', 'numeric register 31 spelling must not choose SP or XZR authority');
+  assert.equal(ambiguous.operations.filter((operation) => ['register-read','register-write','intrinsic'].includes(operation.kind)).length, 0);
 }
 
 for (const [mnemonic, operands, index, num] of [

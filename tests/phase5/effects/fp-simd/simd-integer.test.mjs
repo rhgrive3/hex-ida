@@ -52,8 +52,8 @@ test('broad vector ownership does not promote unproven operand roles to exactnes
 });
 
 test('VEX support is instruction-specific and does not overclaim AVX2 256-bit packed integer', () => {
-  const v128=effects('vpaddd',[reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')],{prefixes:vex2(0xf0),instructionId:'p5-3:vpaddd128'}); assert.equal(v128.completeness,'exact-with-intrinsic'); assert.equal(physicalWrites(v128,'ymm0').length,1); assert.ok(ops(v128,'value').some((op)=>op.opcode==='zext'&&op.metadata?.toBits===256));
-  const v256=effects('vpaddd',[reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')],{prefixes:vex2(0xf4),instructionId:'p5-3:vpaddd256'}); assert.equal(v256.completeness,'partial'); assert.match(v256.unknownEffects.reason,/vector-width-unmodelled/);
+  const v128=effects('vpaddd',[reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')],{prefixes:vex2(0xf1),rawBytes:[0xc5,0xf1,0xfe,0xc2],instructionId:'p5-3:vpaddd128'}); assert.equal(v128.completeness,'exact-with-intrinsic'); assert.equal(physicalWrites(v128,'ymm0').length,1); assert.ok(ops(v128,'value').some((op)=>op.opcode==='zext'&&op.metadata?.toBits===256));
+  const v256=effects('vpaddd',[reg('ymm0','write'),reg('ymm1','read'),reg('ymm2','read')],{prefixes:vex2(0xf4),rawBytes:[0xc5,0xf4,0xfe,0xc2],instructionId:'p5-3:vpaddd256'}); assert.equal(v256.completeness,'partial'); assert.match(v256.unknownEffects.reason,/vector-prefix-family-mismatch/);
 });
 
 test('MMX is an x87-stack alias and EMMS clears the canonical x87 tag word', () => {

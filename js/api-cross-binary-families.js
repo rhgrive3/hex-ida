@@ -97,6 +97,12 @@ const EXTRA_API_TABLE = [
   { id:'libc_reallocf', re:/^_?reallocf$/, cat:'memory', args:null, ret:'heap', effect:'alloc' },
   { id:'libc_runtime', re:/^_?(?:atexit|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
+
+  // BattleCats imports observed by the identity-bound cross-binary run. Keep
+  // these as exact API names: malloc_* and os_log_* are heterogeneous families.
+  { id:'malloc_size', re:/^_?malloc_size$/, cat:'memory', args:['ptr'], ret:'length', effect:'read' },
+  { id:'os_log_type_enabled', re:/^_?os_log_type_enabled$/, cat:'log', args:['log','type'], ret:'status', effect:'read' },
+  { id:'os_log_create', re:/^_?os_log_create$/, cat:'log', args:['subsystem','category'], ret:'object', effect:'runtime' },
 ];
 
 export function extraApiInfo(name) {

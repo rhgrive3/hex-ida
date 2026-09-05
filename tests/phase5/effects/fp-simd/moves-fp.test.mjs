@@ -38,7 +38,7 @@ test('MOVD/MOVQ scalar integer transfers preserve canonical vector identity', ()
 });
 
 test('VEX.128 scalar move uses merge-source low lane and zeroes physical upper state', () => {
-  const bundle=effects('vmovss',[reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')],{prefixes:vex2(0xf2),instructionId:'p5-3:vmovss'});
+  const bundle=effects('vmovss',[reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')],{prefixes:vex2(0xf2),rawBytes:[0xc5,0xf2,0x10,0xc2],instructionId:'p5-3:vmovss'});
   assert.equal(bundle.completeness,'exact'); assert.equal(bundle.metadata.xmmBitsAboveScalar,'from-vex-merge-source'); assert.equal(bundle.metadata.upperLaneBehavior,'zero-upper-128'); assert.equal(physicalWrites(bundle,'ymm0').length,1);
 });
 

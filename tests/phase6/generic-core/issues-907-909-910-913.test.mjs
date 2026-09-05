@@ -11,10 +11,10 @@ import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/risc
 import { liftArm64MemoryEffects } from '../../../js/targets/architecture/arm64/effects/memory.js';
 import { liftArm64AtomicEffects } from '../../../js/targets/architecture/arm64/effects/atomic.js';
 
-function rvControl(op, fields = {}) {
+function rvControl(op, fields = {}, { mode='rv64imc', instructionAlignment=2 } = {}) {
   return {
     contractVersion:'riscv64-decoded-instruction/v1', instructionId:`rv-${op}`, origin:{instructionIds:[`rv-${op}`]},
-    mode:'rv64imc', address:0x1000n, size:4,
+    mode, instructionAlignment, address:0x1000n, size:4,
     fields:{ supported:true, op, compressed:false, rd:'x0', rs1:'x10', rs2:'x11', imm:4, ...fields },
   };
 }
@@ -31,7 +31,7 @@ test('#907 IALIGN=16 does not invent instruction-address-misaligned faults', () 
 });
 
 test('#907 future IALIGN=32 profile retains an explicit 4-byte target-alignment fault', () => {
-  const branch = liftRiscv64ControlEffects(rvControl('beq', { imm:2 }), { instructionAlignment:4 });
+  const branch = liftRiscv64ControlEffects(rvControl('beq', { imm:2 }, { mode:'rv64im', instructionAlignment:4 }), { instructionAlignment:4 });
   assert.equal(branch.possibleFaults.length, 1);
   assert.equal(branch.possibleFaults[0].condition.alignmentBytes, 4);
 });
