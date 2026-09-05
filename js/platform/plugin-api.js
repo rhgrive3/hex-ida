@@ -4,6 +4,8 @@ const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider'
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
 const DEFAULT_READ_TOTAL_BYTES = 8 * 1024 * 1024;
+// Suffix counter for racing concurrent invocations that need distinct scopes.
+let budgetScopeSeq = 0;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -237,10 +239,32 @@ export class PlatformPluginRegistry {
     let pluginScope = null;
     if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
       const sanitized = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-      try {
-        pluginScope = context.resourceBudget.scope(sanitized);
-      } catch {
-        pluginScope = context.resourceBudget;
+      // Reuse the per-method child scope across invocations: ResourceBudget
+      // rejects duplicate sibling names and keeps children alive, so creating
+      // a same-named scope per invocation would throw on the second call.
+      // Never fall back to the root budget (fail-closed privilege widening).
+      const existing = typeof context.resourceBudget.children?.get === 'function'
+        ? context.resourceBudget.children.get(sanitized)
+        : undefined;
+      if (existing) {
+        pluginScope = existing;
+      } else {
+        try {
+          pluginScope = context.resourceBudget.scope(sanitized);
+        } catch {
+          const raced = typeof context.resourceBudget.children?.get === 'function'
+            ? context.resourceBudget.children.get(sanitized)
+            : undefined;
+          if (raced) {
+            pluginScope = raced;
+          } else {
+            try {
+              pluginScope = context.resourceBudget.scope(`${sanitized}.${++budgetScopeSeq}`);
+            } catch {
+              return { ok: false, error: 'plugin budget scope unavailable', isolated: true };
+            }
+          }
+        }
       }
     }
 
