@@ -194,12 +194,12 @@ assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|
 // Keep requireClean=true and isolate only the unit-test worktree.
 const exactHeadWorktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-me-release-worktree-'));
 const exactHeadWorktree = path.join(exactHeadWorktreeRoot, 'worktree');
-const addWorktree = spawnSync('git', ['worktree', 'add', '--detach', exactHeadWorktree, currentHead], {
-  cwd: process.cwd(),
-  encoding: 'utf8',
-});
-assert.equal(addWorktree.status, 0, addWorktree.stderr || 'failed to create isolated exact-head worktree');
 try {
+  const addWorktree = spawnSync('git', ['worktree', 'add', '--detach', exactHeadWorktree, currentHead], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+  assert.equal(addWorktree.status, 0, addWorktree.stderr || 'failed to create isolated exact-head worktree');
   const exactHeadInspection = inspectExactHead({ cwd: exactHeadWorktree, baseSha: assignedBase });
   assert.equal(exactHeadInspection.clean, true, `isolated exact-head worktree must be clean: ${exactHeadInspection.status}`);
   const exactHeadFailure = exactHeadInspection.allowlist.valid
