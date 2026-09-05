@@ -107,6 +107,11 @@
       "headSha": "c965cf30ef6426d2178759494006ba9f2864ed45",
       "treeSha": "24f67206ef0bfedae63f1bd8196902613c3e7dd6",
       "evidencePath": "tests/final-closure/t059/strict-artifact-id-authority.test.mjs"
+    },
+    "T060": {
+      "headSha": "b03e967b4ad91a59b71f757a37565da94ba0ca1c",
+      "treeSha": "0e72f2f3476c6577ed3157c34ffd4f8bf1672db3",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/moving-main-amendment.md"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
