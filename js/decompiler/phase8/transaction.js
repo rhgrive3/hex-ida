@@ -21,11 +21,12 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
-import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
+import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, isCanonicalPassResult } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
+
 
 /**
  * The authoritative analysis state.
@@ -144,26 +145,7 @@ function aborted(budget) {
 }
 
 function isPassResultShapeUsable(result) {
-  try {
-    return result != null
-      && typeof result === 'object'
-      && !Array.isArray(result)
-      && result.contractVersion === PHASE8_CONTRACT_VERSION
-      && typeof result.passId === 'string'
-      && typeof result.passVersion === 'string'
-      && typeof result.stage === 'string'
-      && typeof result.status === 'string'
-      && typeof result.changed === 'boolean'
-      && typeof result.completeness === 'string'
-      && Array.isArray(result.transforms)
-      && Array.isArray(result.diagnostics)
-      && Array.isArray(result.invalidated)
-      && Array.isArray(result.produced)
-      && Array.isArray(result.preserved)
-      && (result.stopReason == null || typeof result.stopReason === 'string');
-  } catch {
-    return false;
-  }
+  return isCanonicalPassResult(result);
 }
 
 /**

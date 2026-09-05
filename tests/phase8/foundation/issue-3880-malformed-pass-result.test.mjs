@@ -69,6 +69,15 @@ test('contract and required result fields must have their canonical outer shape'
     ['transforms null', { ...canonical, transforms: null }],
     ['diagnostics object', { ...canonical, diagnostics: {} }],
     ['preserved null', { ...canonical, preserved: null }],
+    ['unknown status', { ...canonical, status: 'bogus' }],
+    ['unknown completeness', { ...canonical, completeness: 'bogus' }],
+    ['unknown stage', { ...canonical, stage: 'bogus' }],
+    ['hostile produced element', { ...canonical, produced: [{ toString() { throw new Error('hostile'); } }] }],
+    ['hostile invalidated element', { ...canonical, invalidated: [{ toString() { throw new Error('hostile'); } }] }],
+    ['unknown analysis in produced', { ...canonical, produced: ['not-an-analysis-key'] }],
+    ['malformed diagnostics element', { ...canonical, diagnostics: [{ severity: 'error', code: 'err', message: 123 }] }],
+    ['malformed transforms element', { ...canonical, transforms: [{ kind: 'x', proof: 'y', targets: [123] }] }],
+    ['status changed contradiction', { ...canonical, status: 'unchanged', changed: true }],
   ];
 
   for (const [name, value] of malformed) {
@@ -144,4 +153,33 @@ test('canonical pass results still commit normally', () => {
   assert.equal(outcome.stopReason, null);
   assert.equal(state.version('ranges'), 1);
   assert.equal(state.get('ranges'), value);
+});
+
+test('staged work is discarded and transaction does not throw when pass returns a hostile element in produced', () => {
+  const state = createAnalysisState({});
+  const before = state.snapshot();
+  const ownDescriptor = descriptor(['ranges']);
+  const canonical = unchangedResult(ownDescriptor);
+  const pass = {
+    descriptor: ownDescriptor,
+    run(_context, _budget, staging) {
+      staging.stage('ranges', Object.freeze({ min: 0, max: 1, completeness: 'complete' }));
+      return {
+        ...canonical,
+        produced: [{ toString() { throw new Error('hostile'); } }],
+      };
+    },
+  };
+
+  let outcome;
+  assert.doesNotThrow(() => {
+    outcome = runPassTransaction(state, pass);
+  });
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.stopReason, `malformed-result:${PASS_ID}`);
+  assert.deepEqual(outcome.staged, []);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.deepEqual(state.snapshot(), before);
+  assert.equal(state.version('ranges'), 0);
+  assert.equal(state.get('ranges'), null);
 });

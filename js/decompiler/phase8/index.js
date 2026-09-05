@@ -32,7 +32,7 @@ import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
 import { PROVIDER_PASS, runProviderPass } from './providers.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
-export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
+export { createPassDescriptor, createPassResult, unchangedResult, isCanonicalPassResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
 export { commitAnalysisState, createAnalysisState, forkAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
