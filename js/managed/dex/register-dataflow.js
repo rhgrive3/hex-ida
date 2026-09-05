@@ -22,6 +22,12 @@ export function validateLinearIntRegisterDataflow(meta, image) {
   if (!params || !Number.isSafeInteger(meta?.registersSize) || !Number.isSafeInteger(meta?.insSize)) {
     return { complete:false, errors:[], provenOffsets:[] };
   }
+  // This proof is intentionally integer-only. A single-width DEX `return`
+  // opcode also carries float values, so non-integer return contracts must
+  // remain verifier-partial rather than being converted into type errors.
+  if (registerKind(method?.proto?.returnType) !== 'int') {
+    return { complete:false, errors:[], provenOffsets:[] };
+  }
 
   const registers = Array(meta.registersSize).fill(null);
   let cursor = meta.registersSize - meta.insSize;

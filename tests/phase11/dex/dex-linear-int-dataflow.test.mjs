@@ -25,4 +25,14 @@ const unsupported = validateLinearIntRegisterDataflow(
 assert.equal(unsupported.complete, false);
 assert.deepEqual(unsupported.errors, []);
 
+const floatReturn = validateLinearIntRegisterDataflow(
+  { methodIdx:0, isStatic:true, registersSize:1, insSize:1, triesSize:0, facts:[
+    { offset:0, opcode:0x0f, regs:[{ index:0, words:1 }], branch:null, invoke:null, moveResult:null, moveException:false },
+  ] },
+  { methods:[{ proto:{ params:['F'], returnType:'F' } }] },
+);
+assert.equal(floatReturn.complete, false);
+assert.deepEqual(floatReturn.errors, []);
+assert.deepEqual(floatReturn.provenOffsets, []);
+
 console.log('[phase11] DEX linear int register dataflow regression passed');
