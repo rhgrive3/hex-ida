@@ -92,12 +92,16 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
         if (bindingKey) {
+          const normalized = normalizeRuntimeModuleBinding(module, {
+            bindingKey,
+            loadedSequence: event.sequence,
+          });
+          const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
+          const staged = scratch.load(normalized);
           const existing = session.modules.get(bindingKey);
-          if (!existing) {
-            session.modules.load(normalizeRuntimeModuleBinding(module, {
-              bindingKey,
-              loadedSequence: event.sequence,
-            }));
+          if (!existing || !sameModuleBinding(existing, staged)) {
+            if (existing) session.modules.unload(bindingKey, event.sequence);
+            session.modules.load(normalized);
           }
         }
       } else if (event.kind === 'module-unload') {
