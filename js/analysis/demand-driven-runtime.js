@@ -25,6 +25,7 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function optionalCallback(value) { return typeof value === 'function' ? value : null; }
 function addressOf(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
@@ -258,7 +259,7 @@ function installMultiRegionShapes(app) {
   if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;
   const regionCache = new Map(); let combinedKey = null;
   app.ensureShapes = async function demandShapes(progressOrOptions = {}) {
-    const onProgress = typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress;
+    const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
     const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
     abortIfNeeded(signal);
     const epoch = Number(app.backend.gen ?? app.analysisEpoch ?? 0); const regions = executableRegions(app);
@@ -315,6 +316,7 @@ function installCancellableFunctionDiscovery(app) {
   const producers = new Map();
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
+    const onProgress = optionalCallback(options.onProgress);
     abortIfNeeded(options.signal);
     const run = async () => {
       if (app.symbolsReady) {
@@ -354,7 +356,7 @@ function installCancellableFunctionDiscovery(app) {
               remainingBytes -= size;
               continue;
             }
-            const request = app.backend.guessFunctions(item.id, share, (progress) => options.onProgress?.({
+            const request = app.backend.guessFunctions(item.id, share, (progress) => onProgress?.({
               phase:'functions', region:item.id,
               done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:unique.length,
             }));
