@@ -40,6 +40,20 @@ function restoreGlobal(name, descriptor) {
   else delete globalThis[name];
 }
 
+async function withLocalStorage(storage, run) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable:true,
+    writable:true,
+    value:storage,
+  });
+  try {
+    return await run();
+  } finally {
+    restoreGlobal('localStorage', descriptor);
+  }
+}
+
 async function withDiscoverySandbox(definitions, run) {
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -120,6 +134,9 @@ function persistedManifest(host) {
   }
 }
 
+const failingStorage = {
+  setItem() { throw new Error('quota'); },
+};
 const oldInstallation = {
   v:3,
   installationId:'old',
@@ -141,33 +158,35 @@ const oldPlugin = {
   origin:'test',
 };
 
-// #3650: a failed clear must roll back both halves of the logical registry,
-// including disabled-definition manifest metadata.
+// #3650: a real localStorage failure during clear must roll back both halves
+// of the logical registry, including disabled-definition manifest metadata.
 const clearHost = Object.create(PluginHost.prototype);
 clearHost.plugins = [oldPlugin];
 clearHost.installations = new Map([['old', oldInstallation]]);
 const clearInstallationsRef = clearHost.installations;
-clearHost.save = () => ({ ok:false, error:'quota' });
-const clearResult = clearHost.clear();
+const clearResult = await withLocalStorage(failingStorage, () => clearHost.clear());
 assert.equal(clearResult.ok, false);
 assert.equal(clearResult.persistenceError, true);
 assert.deepEqual(clearHost.plugins, [oldPlugin]);
 assert.equal(clearHost.installations, clearInstallationsRef, 'rollback preserves Map identity');
 assert.equal(clearHost.installations.get('old'), oldInstallation);
 assert.equal(clearHost.installations.get('old').definitions[1].name, 'Disabled');
-assert.deepEqual(persistedManifest(clearHost).map((entry) => entry.installationId), ['old']);
-assert.equal(persistedManifest(clearHost)[0].definitions.length, 2);
+const clearRetryManifest = persistedManifest(clearHost);
+assert.deepEqual(clearRetryManifest.map((entry) => entry.installationId), ['old']);
+assert.equal(clearRetryManifest[0].definitions.length, 2);
 
 // The install failure path uses the same transaction rollback and must not
-// leave a phantom installation after save() rejects the new logical state.
+// leave a phantom installation after the real persistence boundary fails.
 const installHost = Object.create(PluginHost.prototype);
 installHost.app = Object.create(null);
 installHost.plugins = [oldPlugin];
 installHost.installations = new Map([['old', oldInstallation]]);
-installHost.save = () => ({ ok:false, error:'quota' });
-const installResult = await withDiscoverySandbox(
-  [{ name:'New', description:'' }],
-  () => installHost.install('hex.plugin({ name:"New", run() {} })', 'test', { installationId:'new' }),
+const installResult = await withLocalStorage(
+  failingStorage,
+  () => withDiscoverySandbox(
+    [{ name:'New', description:'' }],
+    () => installHost.install('hex.plugin({ name:"New", run() {} })', 'test', { installationId:'new' }),
+  ),
 );
 assert.equal(installResult.persistenceError, true);
 assert.deepEqual(installHost.plugins, [oldPlugin]);
