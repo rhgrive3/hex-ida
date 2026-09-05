@@ -191,8 +191,19 @@ function setProjectAnnotation(app, args) {
   app.autoReport ||= { report: { confirmed: [], deep: [] } };
   app.autoReport.report ||= { confirmed: [], deep: [] };
   app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
-  app.workspace?.autosave?.(); return record;
+  const confirmedEntry = { ...record, confirmed: true, source: 'project-annotation' };
+  app.autoReport.report.confirmed.push(confirmedEntry);
+  // ProductWorkspace.autosave() reports storage failure as false (not by
+  // throwing). Returning the record anyway would present an unpersisted
+  // annotation as success; roll back and fail closed instead. (#5108)
+  if (typeof app.workspace?.autosave === 'function' && app.workspace.autosave() === false) {
+    const at = app.projectAnnotations.lastIndexOf(record);
+    if (at >= 0) app.projectAnnotations.splice(at, 1);
+    const flagged = app.autoReport.report.confirmed.lastIndexOf(confirmedEntry);
+    if (flagged >= 0) app.autoReport.report.confirmed.splice(flagged, 1);
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
 }
 
 async function previewPatch(app, args) {
