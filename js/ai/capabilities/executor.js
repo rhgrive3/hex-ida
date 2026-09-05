@@ -193,21 +193,23 @@ function setProjectAnnotation(app, args) {
   const projectAnnotationsLength = projectAnnotations.length;
 
   const previousAutoReport = app.autoReport;
-  app.autoReport ||= { report: { confirmed: [], deep: [] } };
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
   const autoReport = app.autoReport;
   const previousReport = autoReport.report;
-  autoReport.report ||= { confirmed: [], deep: [] };
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
   const report = autoReport.report;
   const previousConfirmed = report.confirmed;
-  report.confirmed ||= [];
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
   const confirmed = report.confirmed;
   const confirmedLength = confirmed.length;
 
   const rollback = () => {
     if (Array.isArray(previousProjectAnnotations)) previousProjectAnnotations.length = projectAnnotationsLength;
     else app.projectAnnotations = previousProjectAnnotations;
-    if (!previousAutoReport) app.autoReport = previousAutoReport;
-    else if (!previousReport) autoReport.report = previousReport;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
     else if (Array.isArray(previousConfirmed)) previousConfirmed.length = confirmedLength;
     else report.confirmed = previousConfirmed;
   };
