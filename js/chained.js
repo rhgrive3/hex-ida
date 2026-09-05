@@ -10,6 +10,8 @@
 const MH_MAGIC_64 = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
 const FAT_MAGIC_64 = 0xcafebabf;
+const FAT_CIGAM = 0xbebafeca;
+const FAT_CIGAM_64 = 0xbfbafeca;
 const LC_SEGMENT_64 = 0x19;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
 const S_SYMBOL_STUBS = 0x8;
@@ -52,7 +54,13 @@ function utf8z(u8, off) {
   }
 }
 
-function u32be(dv, off) { return dv.getUint32(off, false); }
+function fatFormat(magic) {
+  if (magic === FAT_MAGIC) return { is64: false, littleEndian: false };
+  if (magic === FAT_MAGIC_64) return { is64: true, littleEndian: false };
+  if (magic === FAT_CIGAM) return { is64: false, littleEndian: true };
+  if (magic === FAT_CIGAM_64) return { is64: true, littleEndian: true };
+  return null;
+}
 
 /** Return the bounded active architecture slice. */
 async function sliceOffset(file, sliceIndex) {
@@ -67,16 +75,17 @@ async function sliceOffset(file, sliceIndex) {
   if (dv.getUint32(0, true) === MH_MAGIC_64) {
     return sliceIndex == null || sliceIndex === 0 ? { base:0n, size:BigInt(file.size) } : null;
   }
-  const be = dv.getUint32(0, false);
-  if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
-  const n = u32be(dv, 4), idx = sliceIndex ?? 0;
+  const format = fatFormat(dv.getUint32(0, false));
+  if (!format || head.length < 8) return null;
+  const { is64: wide, littleEndian } = format;
+  const n = dv.getUint32(4, littleEndian), idx = sliceIndex ?? 0;
   if (idx >= n || n > 64) return null;
-  const wide = be === FAT_MAGIC_64, entry = wide ? 32 : 20;
+  const entry = wide ? 32 : 20;
   const table = await bytes(file, 0, 8 + n * entry);
   if (table.length < 8 + n * entry) return null;
   const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength), p = 8 + idx * entry;
-  const base = wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
-  const size = wide ? tdv.getBigUint64(p + 16, false) : BigInt(tdv.getUint32(p + 12, false));
+  const base = wide ? tdv.getBigUint64(p + 8, littleEndian) : BigInt(tdv.getUint32(p + 8, littleEndian));
+  const size = wide ? tdv.getBigUint64(p + 16, littleEndian) : BigInt(tdv.getUint32(p + 12, littleEndian));
   const total = BigInt(file.size);
   if (size <= 0n || base > total || size > total - base) return null;
   return { base, size };

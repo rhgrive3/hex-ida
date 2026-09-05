@@ -15,6 +15,8 @@
   const MH_CIGAM_32    = 0xcefaedfe;
   const FAT_MAGIC      = 0xcafebabe;
   const FAT_MAGIC_64   = 0xcafebabf;
+  const FAT_CIGAM      = 0xbebafeca;
+  const FAT_CIGAM_64   = 0xbfbafeca;
 
   const CPU_ARCH_ABI64    = 0x01000000;
   const CPU_ARCH_ABI64_32 = 0x02000000;
@@ -99,12 +101,20 @@
     return ((v >>> 16) & 0xffff) + '.' + ((v >>> 8) & 0xff) + '.' + (v & 0xff);
   }
 
+  function fatFormat(magic) {
+    if (magic === FAT_MAGIC) return { is64: false, littleEndian: false };
+    if (magic === FAT_MAGIC_64) return { is64: true, littleEndian: false };
+    if (magic === FAT_CIGAM) return { is64: false, littleEndian: true };
+    if (magic === FAT_CIGAM_64) return { is64: true, littleEndian: true };
+    return null;
+  }
+
   /** Detect container type from the first bytes. */
   function detect(buf) {
     if (buf.byteLength < 4) return { kind: 'unknown' };
     const dv = new DataView(buf);
-    const be = dv.getUint32(0, false);
-    if (be === FAT_MAGIC || be === FAT_MAGIC_64) return { kind: 'fat', is64: be === FAT_MAGIC_64 };
+    const format = fatFormat(dv.getUint32(0, false));
+    if (format) return { kind: 'fat', is64: format.is64 };
     const le = dv.getUint32(0, true);
     if (le === MH_MAGIC_64) return { kind: 'macho', is64: true, bigEndian: false };
     if (le === MH_MAGIC_32) return { kind: 'macho', is64: false, bigEndian: false };
@@ -119,20 +129,22 @@
    * CAFEBABE turns out to be something else (e.g. a Java class file).
    */
   function parseFat(buf, fileSize) {
+    if (buf.byteLength < 8) return null;
     const dv = new DataView(buf);
-    const magic = dv.getUint32(0, false);
-    const is64 = magic === FAT_MAGIC_64;
-    const n = dv.getUint32(4, false);
+    const format = fatFormat(dv.getUint32(0, false));
+    if (!format) return null;
+    const { is64, littleEndian } = format;
+    const n = dv.getUint32(4, littleEndian);
     if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
     const out = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
-      const cputype = dv.getInt32(o, false);
-      const cpusubtype = dv.getInt32(o + 4, false);
-      const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
-      const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
+      const cputype = dv.getInt32(o, littleEndian);
+      const cpusubtype = dv.getInt32(o + 4, littleEndian);
+      const offset = is64 ? dv.getBigUint64(o + 8, littleEndian) : BigInt(dv.getUint32(o + 8, littleEndian));
+      const size = is64 ? dv.getBigUint64(o + 16, littleEndian) : BigInt(dv.getUint32(o + 12, littleEndian));
       if (offset + size > fileSize) return null;      // not a fat binary after all
       const cn = cpuName(cputype, cpusubtype);
       out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
