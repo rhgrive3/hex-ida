@@ -1,11 +1,18 @@
 import { DebugAdapterError } from "../debug/adapter.js";
 
+function canonicalIdentity(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function hasProvenRuntimeStaticIdentity(module) {
   const identityEvidenceIds = module?.identityEvidenceIds;
   const hasCanonicalIdentityEvidence = Array.isArray(identityEvidenceIds) &&
     identityEvidenceIds.length > 0 &&
     identityEvidenceIds.every((id) => typeof id === "string" && id.trim().length > 0);
-  return module?.binaryId != null && (
+  const hasCanonicalStaticIdentity = canonicalIdentity(module?.binaryId) &&
+    (module?.sliceId == null || canonicalIdentity(module.sliceId)) &&
+    (module?.imageId == null || canonicalIdentity(module.imageId));
+  return hasCanonicalStaticIdentity && (
     module?.identityState === "exact" ||
     module?.identityState === "resolved" ||
     hasCanonicalIdentityEvidence
