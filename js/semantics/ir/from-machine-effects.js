@@ -27,6 +27,13 @@ function nonEmpty(value, code) {
 function positiveInteger(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
+function primitiveInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return !Object.is(value, -0) && Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string' || !/^(?:0|-?[1-9][0-9]*)$/.test(value)) return null;
+  try { return BigInt(value); }
+  catch { return null; }
+}
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
     const error = new Error('semantic-ir-lowering-cancelled');
@@ -332,9 +339,8 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function rawConstant(effect, value, widthBits, role, ordinal = 0, asAddressSpace = null) {
     const width = positiveInteger(widthBits);
     if (width == null) return null;
-    let integer;
-    try { integer = BigInt(value); }
-    catch { return null; }
+    const integer = primitiveInteger(value);
+    if (integer == null) return null;
     if (integer < 0n || integer >= (1n << BigInt(width))) return null;
     const machineValue = { kind: 'bitvector', widthBits: width, value: integer.toString() };
     const type = asAddressSpace == null ? null : { kind: 'address', widthBits: width, addressSpace: String(asAddressSpace) };
@@ -366,7 +372,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       return { valueId: implicitStateRead(effect, { ...expression, widthBits }, role, depth) };
     }
     if (expression.kind === 'bitvector') {
-      const valueId = rawConstant(effect, expression.value, expression.widthBits, role, depth);
+      const valueId = rawConstant(effect, expression.value, expression.widthBits, role, depth, addressSpace);
       return valueId ? { valueId } : { valueId: null, reason: 'bitvector-expression-not-concrete' };
     }
 
@@ -437,7 +443,6 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       });
       return { valueId };
     }
-
     if (kind === 'shift-left') {
       const inner = lowerExpression(effect, expression.value, addressSpace, `${role}-value`, depth + 1);
       const widthBits = positiveInteger(expression.widthBits) ?? addressWidthBits;
