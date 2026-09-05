@@ -116,11 +116,14 @@ function compactFunction(value, maxLines) {
 function compactInstruction(value) { return removeUndefined({ address: addressText(value?.address), mnemonic: String(value?.mnemonic || '').slice(0, 40), operands: String(value?.operands || '').slice(0, 500) }); }
 function compactEvidence(value) { return removeUndefined({ id: value.id, kind: value.kind, status: value.status, address: value.address, functionAddress: value.functionAddress, functionName: value.functionName, title: value.title, summary: value.summary, sourceTool: value.sourceTool }); }
 function compactHypothesis(value) { return { id: value.id, claim: value.claim, confidence: value.confidence, status: value.status, supportEvidenceIds: value.supportEvidenceIds, contradictionEvidenceIds: value.contradictionEvidenceIds, missingEvidence: value.missingEvidence }; }
+function normalizeEvidenceIds(value, limit) {
+  return Array.isArray(value) ? value.slice(0, limit) : [];
+}
 function compactObservations(values, maxBytes) {
   const newest = values.slice(-12).reverse(), out = []; let used = 0;
   for (let index = 0; index < newest.length; index++) {
     const value = newest[index];
-    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: (value.evidenceIds || []).slice(0, 100), data: jsonSafe(value.data) };
+    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: normalizeEvidenceIds(value.evidenceIds, 100), data: jsonSafe(value.data) };
     let size = byteLength(safe), remaining = maxBytes - used;
     if (size > remaining) {
       if (index === 0 && remaining > 256) { safe = fitObservation(safe, remaining); size = byteLength(safe); if (size <= remaining) { out.push(safe); used += size; } }
@@ -131,7 +134,7 @@ function compactObservations(values, maxBytes) {
   return out.reverse();
 }
 function fitObservation(value, maxBytes) {
-  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: (value.evidenceIds || []).slice(0, 32), data: { truncated: true } };
+  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: normalizeEvidenceIds(value.evidenceIds, 32), data: { truncated: true } };
   let summary = String(value.summary || ''), candidate = { ...base, summary };
   while (summary.length && byteLength(candidate) > maxBytes) { summary = summary.slice(0, Math.floor(summary.length * 0.7)); candidate = { ...base, summary, truncated: true }; }
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
