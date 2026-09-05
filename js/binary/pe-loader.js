@@ -3,6 +3,7 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  parseLoadConfig as parseLoadConfigCore,
 } from './pe-loader-core.js';
 
 export {
@@ -19,7 +20,6 @@ export {
   resolveCoffSectionName,
   parseDelayImports,
   parseTlsDirectory,
-  parseLoadConfig,
 } from './pe-loader-core.js';
 
 // The delegated core keeps these existing trust-boundary implementations. Keep
@@ -32,6 +32,22 @@ export {
 
 function ensureBudget(image, budget) {
   return budget || createPEMetadataBudget(image);
+}
+
+export function parseLoadConfig(r, dir, image, sharedBudget = null) {
+  if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
+  const budget = ensureBudget(image, sharedBudget);
+  const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (head) {
+    const internalSize = r.u32(head.start);
+    if (internalSize > dir.size) {
+      budget.partial(
+        'load-config:size-mismatch',
+        `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
+      );
+    }
+  }
+  return parseLoadConfigCore(r, dir, image, budget);
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {
