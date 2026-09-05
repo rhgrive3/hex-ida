@@ -16,8 +16,37 @@ for await (const m of frontend.enumerateMethods(image)) {
 assert.equal(methods.length, 1);
 
 const decoded = await frontend.decodeMethod(methods[0], { image });
-const val = await frontend.validateMethod(decoded);
+const withoutReturnShape = await frontend.validateMethod(decoded);
+assert.equal(withoutReturnShape.status, 'partial');
+assert.deepEqual(withoutReturnShape.errors, []);
+assert.deepEqual(withoutReturnShape.completeness, {
+  structural: 'complete',
+  specValidation: 'partial',
+  semanticEffect: 'complete',
+  resolution: 'complete',
+});
+assert.deepEqual(withoutReturnShape.warnings, [
+  { code: 'cil-return-stack-shape-unavailable' },
+]);
+assert.equal(
+  withoutReturnShape.verifierFacts.find((fact) => fact.code === 'cil-stack-dataflow-validated')?.returnStackSlots,
+  null,
+);
+
+const val = await frontend.validateMethod(decoded, { returnStackSlots: 1 });
 assert.equal(val.status, 'valid');
+assert.deepEqual(val.errors, []);
+assert.deepEqual(val.warnings, []);
+assert.deepEqual(val.completeness, {
+  structural: 'complete',
+  specValidation: 'valid',
+  semanticEffect: 'complete',
+  resolution: 'complete',
+});
+assert.equal(
+  val.verifierFacts.find((fact) => fact.code === 'cil-stack-dataflow-validated')?.returnStackSlots,
+  1,
+);
 
 const lifted = await frontend.liftMethod(decoded, val);
 const bridged = lowerVMEffectsToSemanticIr(lifted);
