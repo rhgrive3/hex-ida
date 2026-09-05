@@ -22,6 +22,7 @@
 import { stableDigest } from '../../core/identity/index.js';
 
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
+import { recomputeEquivalenceProofId } from './pass-validation.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -143,6 +144,66 @@ function aborted(budget) {
 }
 
 /**
+ * C4-04: admission rules for pass-local rewrite validation.
+ *
+ * - A transform whose validation says `refuted` refuses the whole
+ *   transaction: a proof of non-equivalence is hard evidence, not a warning.
+ * - `equivalent` rewrites must carry a proof id that recomputes exactly;
+ *   a mutated record is forged, not stale.
+ * - A transform that declares a rewrite payload without any validation and
+ *   without an explicit unvalidated reason is unproven work and refuses.
+ * - `unknown`/`unsupported` rewrites are dropped with diagnostics; the rest
+ *   of the transaction may still commit.
+ */
+function admissionForRewrites(result, descriptor) {
+  const diagnostics = [];
+  const transforms = [];
+  const dropped = [];
+  for (const transform of result.transforms || []) {
+    const validation = transform.validation;
+    if (validation == null) {
+      if (transform.rewrite != null && transform.unvalidatedReason == null) {
+        return { refuse: true, stopReason: 'rewrite-unvalidated', transforms: [], dropped: [], diagnostics: [] };
+      }
+      transforms.push(transform);
+      continue;
+    }
+    if (validation === 'refuted' || validation?.validation === 'refuted') {
+      return { refuse: true, stopReason: 'rewrite-refuted', transforms: [], dropped: [], diagnostics: [] };
+    }
+    if (validation === 'equivalent' || validation?.validation === 'equivalent') {
+      const expected = recomputeEquivalenceProofId(transform, descriptor);
+      if (validation.equivalenceProofId !== expected) {
+        return { refuse: true, stopReason: 'rewrite-proof-id-mismatch', transforms: [], dropped: [], diagnostics: [] };
+      }
+      transforms.push(transform);
+      continue;
+    }
+    if (validation === 'unknown' || validation?.validation === 'unknown'
+      || validation === 'unsupported' || validation?.validation === 'unsupported') {
+      dropped.push(transform);
+      diagnostics.push({
+        severity: 'warning',
+        code: 'phase8-rewrite-not-adopted',
+        message: `rewrite ${String(transform.kind)} was not adopted: ${String(validation?.reason ?? validation?.validation ?? 'unknown')}`,
+        reason: String(validation?.reason ?? validation?.validation ?? 'unknown'),
+      });
+      continue;
+    }
+    return { refuse: true, stopReason: 'rewrite-validation-malformed', transforms: [], dropped: [], diagnostics: [] };
+  }
+  return { refuse: false, stopReason: null, transforms, dropped, diagnostics };
+}
+
+function replaceTransforms(result, transforms, diagnostics) {
+  return Object.freeze({
+    ...result,
+    transforms: Object.freeze(transforms),
+    diagnostics: Object.freeze([...(result.diagnostics || []), ...diagnostics]),
+  });
+}
+
+/**
  * Computes what a committed pass invalidates.
  *
  * `preserves` is the promise; everything else the pass could have touched is
@@ -191,6 +252,7 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     });
   }
 
+
   // Checked after the pass as well as before it. A pass that outlived the
   // deadline must not have its work committed as if it had finished in time.
   if (aborted(budget)) {
@@ -218,6 +280,17 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   if (result.completeness !== 'complete') {
     const completeKey = result.produced.find((key) => state.get(key)?.completeness === 'complete');
     if (completeKey != null) return refuse(`incomplete-result-would-overwrite-complete:${descriptor.id}:${completeKey}`);
+  }
+
+  // C4-04 pass-local adoption gate. A rewrite that claims a BV before/after
+  // pair must carry machine validation from the canonical equivalence
+  // verifier; refuted or forged records refuse the whole transaction, and an
+  // unknown/unsupported rewrite is dropped with a diagnostic rather than
+  // adopted. This keeps a wrong rewrite from ever reaching canonical state.
+  const admission = admissionForRewrites(result, descriptor);
+  if (admission.refuse) return refuse(`${admission.stopReason}:${descriptor.id}`);
+  if (admission.dropped.length) {
+    result = replaceTransforms(result, admission.transforms, admission.diagnostics);
   }
 
   // Last check immediately before the only mutation point.  A cancellation
