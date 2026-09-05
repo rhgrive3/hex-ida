@@ -43,6 +43,23 @@ export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
 
 function fail(code) { throw new TypeError(code); }
 
+// A library model is authoritative only when it carries verifiable effect
+// evidence: effect regions, definite control knowledge, or escapes. An
+// unverified (empty, malformed-shape) object must not cancel the
+// unknown-call fallback (P7-INV-004: missing evidence is never purity).
+function isVerifiedLibraryModel(model) {
+  if (!model || typeof model !== 'object') return false;
+  for (const key of ['memoryReadRegions', 'memoryWriteRegions', 'escapes']) {
+    if (model[key] !== undefined && !Array.isArray(model[key])) return false;
+  }
+  const reads = model.memoryReadRegions ?? [];
+  const writes = model.memoryWriteRegions ?? [];
+  const escapes = model.escapes ?? [];
+  if (reads.length > 0 || writes.length > 0 || escapes.length > 0) return true;
+  return model.noreturn === true || model.noreturn === false
+    || model.mayThrow === true || model.mayThrow === false;
+}
+
 /**
  * Condenses the call graph into strongly connected components.
  *
@@ -361,7 +378,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       const model = models.get(target);
-      if (model && !locals.has(target)) {
+      if (isVerifiedLibraryModel(model) && !locals.has(target)) {
         // A library model applies only where the binary does not define the
         // callee, so it can never override contradictory binary evidence.
         reads.push(model.memoryReadRegions ?? []);
@@ -390,7 +407,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       }
       if (component.includes(candidate)) continue;
       const model = models.get(candidate);
-      if (model && !locals.has(candidate)) {
+      if (isVerifiedLibraryModel(model) && !locals.has(candidate)) {
         reads.push(model.memoryReadRegions ?? []);
         writes.push(model.memoryWriteRegions ?? []);
         noreturn.push(model.noreturn ?? 'unknown');
