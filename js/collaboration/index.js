@@ -9,7 +9,15 @@ const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 // Never infer canonical identity validation from an untrusted schema tag.
 const CANONICAL_PROJECT_OPERATIONS = new WeakSet();
 
-function required(value, code) { if (typeof value !== 'string') throw new TypeError(code); const text = value.trim(); if (!text) throw new TypeError(code); return text; }
+function required(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
+  // NUL is reserved as the internal fact-key tuple separator. Keeping it out
+  // of validated identity components makes the existing key format injective
+  // without changing persisted checkpoint/digest identities.
+  if (!text || text.includes('\u0000')) throw new TypeError(code);
+  return text;
+}
 function clone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
@@ -136,6 +144,25 @@ function emptyState(projectIdentity, binaryIdentity) {
 
 function cloneState(state) { return clone(state); }
 
+function validateRestoredStateFactKeys(state) {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) throw new TypeError('changelog-state-invalid');
+  const facts = state.facts ?? {};
+  if (!facts || typeof facts !== 'object' || Array.isArray(facts)) throw new TypeError('changelog-state-facts-invalid');
+  for (const [key, record] of Object.entries(facts)) {
+    const targetEntityId = required(record?.targetEntityId, 'changelog-state-target-entity-invalid');
+    const factKind = required(record?.factKind, 'changelog-state-fact-kind-invalid');
+    if (key !== factKey(targetEntityId, factKind) || record?.key !== key) throw new TypeError('changelog-state-fact-key-invalid');
+  }
+  const tombstones = state.tombstones ?? [];
+  if (!Array.isArray(tombstones)) throw new TypeError('changelog-state-tombstones-invalid');
+  for (const tombstone of tombstones) {
+    const targetEntityId = required(tombstone?.targetEntityId, 'changelog-state-target-entity-invalid');
+    const factKind = required(tombstone?.factKind, 'changelog-state-fact-kind-invalid');
+    if (tombstone?.key !== factKey(targetEntityId, factKind)) throw new TypeError('changelog-state-fact-key-invalid');
+  }
+  return state;
+}
+
 function permanentlyBlockedOp(log, operationId) {
   return (log.state?.unresolved || []).some((item) => item?.operationId === operationId && item?.reason === 'tombstone-protects-state');
 }
@@ -144,7 +171,7 @@ export class ChangeLog {
   constructor(options = {}) {
     this.projectIdentity = required(options.projectIdentity ?? options.projectId, 'changelog-project-identity-required');
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
-    this.state = cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity));
+    this.state = validateRestoredStateFactKeys(cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity)));
     this.operations = new Map();
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
