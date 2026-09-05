@@ -122,6 +122,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
+        const threadId = callOptions && typeof callOptions === 'object'
+          ? callOptions.threadId
+          : callOptions;
         const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
@@ -130,7 +133,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           requestedChange: { value },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const raw = await this.adapter.writeRegister(name, value, callOptions);
+        const raw = await this.adapter.writeRegister(name, value, threadId);
         const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
