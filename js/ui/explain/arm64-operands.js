@@ -90,7 +90,7 @@ function parseMem(text) {
   // An A64 address base is a 64-bit general-purpose register or SP: SIMD/FP
   // registers can be transferred data but never form an address (#5342).
   if (!((base.cls === "gp" && base.bits === 64) || base.cls === "sp")) return null;
-  const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, writebackReg: null, shift: null, mode: bang ? "pre" : "offset" };
+  const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
   for (let i = 1; i < parts.length; i++) {
     const p = parts[i];
     const imm = parseImm(p);
@@ -198,7 +198,7 @@ export function immText(op) {
   return dec;
 }
 
-/** 擬似コードの中で使う短い形。小さい数は 10 進、大きい数は 16 進。 */
+/** 擬似コードに埋める短い形。小さい数は 10 進、大きい数は 16 進。 */
 export function immShort(op) {
   if (!op) return "";
   if (op.float != null) return String(op.float);
