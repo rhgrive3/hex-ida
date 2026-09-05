@@ -182,7 +182,7 @@ async function executeWorker(source, mode = 'script', index = 0, { rejectUnclone
       if (rejectUncloneableControl
         && message?.t === 'print'
         && Array.isArray(message.args)
-        && message.args.some((value) => typeof value === 'function')) {
+        && message.args.some((value) => typeof value === 'function' || value === '__hexCloneFail__')) {
         throw new Error('DataCloneError');
       }
       controlMessages.push(message);
@@ -250,13 +250,25 @@ test('plugin factory is isolated too and normal plugin execution still completes
 
 test('control structured-clone failure reports a fixed error before worker close', async () => {
   const result = await executeWorker(`
-    print(() => {});
+    print('__hexCloneFail__');
   `, 'script', 0, { rejectUncloneableControl: true });
 
   assert.equal(result.closed, true, 'failed control send must still close the worker');
   assert.ok(
     result.controlMessages.some((m) => m.t === 'error' && /制御メッセージを送信できません/.test(m.error)),
     'a clone-safe diagnostic must reach the private channel instead of hanging until host timeout',
+  );
+});
+
+test('opaque function payload fails closed at the output meter', async () => {
+  const result = await executeWorker(`
+    print(() => {});
+  `);
+
+  assert.equal(result.closed, true, 'opaque payload must still close the worker');
+  assert.ok(
+    result.controlMessages.some((m) => m.t === 'outputLimit'),
+    'function payload must be rejected at the meter without reaching the control channel',
   );
 });
 
