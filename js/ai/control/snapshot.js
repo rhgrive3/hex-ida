@@ -76,16 +76,17 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
     local.project?.binaryHash,
   );
   const legacyId = first(request.binaryId, local.binaryId);
-  if (contentHash != null && String(contentHash)) {
+  const canonicalHash = nonEmptyText(contentHash);
+  if (canonicalHash) {
     const slice = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
     const suffix = slice == null ? '' : `:${String(slice)}`;
     return {
-      id: `content:${String(contentHash)}${suffix}`,
+      id: `content:${canonicalHash}${suffix}`,
       kind: 'content-derived',
       confidence: 'strong',
       state: 'ready',
       algorithm: first(local.binaryFingerprint?.algorithm, local.fingerprint?.algorithm, 'existing-hash'),
-      hash: String(contentHash),
+      hash: canonicalHash,
       legacyId: legacyId == null ? null : String(legacyId),
     };
   }
@@ -101,12 +102,21 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
 
 function normalizeIdentity(value) {
   if (!value) return null;
-  if (typeof value === 'string') return { id: value, kind: 'external', confidence: 'strong', state: 'ready', algorithm: null, hash: null, legacyId: null };
-  if (typeof value !== 'object' || !value.id) return null;
+  if (typeof value === 'string') {
+    const id = nonEmptyText(value);
+    return id ? { id, kind: 'external', confidence: 'strong', state: 'ready', algorithm: null, hash: null, legacyId: null } : null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = nonEmptyText(value.id);
+  const kind = value.kind == null ? 'external' : nonEmptyText(value.kind);
+  const confidence = value.confidence == null ? 'strong' : nonEmptyText(value.confidence);
+  const state = value.state == null ? 'ready' : nonEmptyText(value.state);
+  const algorithm = value.algorithm == null ? null : nonEmptyText(value.algorithm);
+  const hash = value.hash == null ? null : nonEmptyText(value.hash);
+  const legacyId = value.legacyId == null ? null : nonEmptyText(value.legacyId);
+  if (!id || !kind || !confidence || !state || (value.algorithm != null && !algorithm) || (value.hash != null && !hash) || (value.legacyId != null && !legacyId)) return null;
   return {
-    id: String(value.id), kind: String(value.kind || 'external'), confidence: String(value.confidence || 'strong'),
-    state: String(value.state || 'ready'), algorithm: value.algorithm == null ? null : String(value.algorithm),
-    hash: value.hash == null ? null : String(value.hash), legacyId: value.legacyId == null ? null : String(value.legacyId),
+    id, kind, confidence, state, algorithm, hash, legacyId,
   };
 }
 
@@ -158,6 +168,7 @@ function snapshotNeighborhood(local, current) {
 }
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
+function nonEmptyText(value) { return typeof value === 'string' && value.trim() ? value.trim() : null; }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }

@@ -6,6 +6,7 @@ function fail(code) { throw new TypeError(code); }
 const CLI_DIRECTORY_INDEX = 14;
 const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
+const STANDALONE_SIG_TABLE = 0x11;
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -128,9 +129,41 @@ function metadataRowSize(table, rowCounts, heapSizes) {
       return tableIndexSize(rowCounts, METHOD_DEF_TABLE);
     case METHOD_DEF_TABLE: // MethodDef
       return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, 0x08);
+    case 0x07: // ParamPtr
+      return tableIndexSize(rowCounts, 0x08);
+    case 0x08: // Param
+      return 2 + 2 + stringIndexSize;
+    case 0x09: // InterfaceImpl
+      return tableIndexSize(rowCounts, 0x02)
+        + codedIndexSize(rowCounts, [0x01, 0x02, 0x1b], 2);
+    case 0x0a: // MemberRef
+      return codedIndexSize(rowCounts, [0x02, 0x01, 0x1a, 0x06, 0x1b], 3)
+        + stringIndexSize + blobIndexSize;
+    case 0x0b: // Constant
+      return 2 + codedIndexSize(rowCounts, [0x04, 0x08, 0x17], 2) + blobIndexSize;
+    case 0x0c: // CustomAttribute
+      return codedIndexSize(
+        rowCounts,
+        [0x06, 0x04, 0x01, 0x02, 0x08, 0x09, 0x0a, 0x00, 0x0e, 0x17, 0x14, 0x11, 0x1a, 0x1b, 0x20, 0x23, 0x26, 0x27, 0x28, 0x2a, 0x2c, 0x2b],
+        5,
+      ) + codedIndexSize(rowCounts, [0x06, 0x0a], 3) + blobIndexSize;
+    case 0x0d: // FieldMarshal
+      return codedIndexSize(rowCounts, [0x04, 0x08], 1) + blobIndexSize;
+    case 0x0e: // DeclSecurity
+      return 2 + codedIndexSize(rowCounts, [0x02, 0x06, 0x20], 2) + blobIndexSize;
+    case 0x0f: // ClassLayout
+      return 2 + 4 + tableIndexSize(rowCounts, 0x02);
+    case 0x10: // FieldLayout
+      return 4 + tableIndexSize(rowCounts, 0x04);
+    case STANDALONE_SIG_TABLE: // StandAloneSig
+      return blobIndexSize;
     default:
       fail(`cil-metadata-table-unsupported:${table}`);
   }
+}
+
+function readHeapIndex(view, offset, size, code) {
+  return size === 2 ? readU16(view, offset, code) : readU32(view, offset, code);
 }
 
 function parseMetadataTables(bytes, view, tableStream) {
@@ -151,12 +184,11 @@ function parseMetadataTables(bytes, view, tableStream) {
     rowCounts[table] = readU32(view, pos, 'cil-metadata-row-counts-truncated');
     pos += 4;
   }
-  const methodCount = rowCounts[METHOD_DEF_TABLE] || 0;
-  if (methodCount === 0) return [];
-  if ((valid & (1n << BigInt(METHOD_DEF_TABLE))) === 0n) fail('cil-metadata-method-table-missing');
 
   const methodRvas = [];
-  for (let table = 0; table <= METHOD_DEF_TABLE; table++) {
+  const standAloneSigBlobIndexes = [];
+  const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
+  for (let table = 0; table <= STANDALONE_SIG_TABLE; table++) {
     const rows = rowCounts[table] || 0;
     if (rows === 0) continue;
     const rowSize = metadataRowSize(table, rowCounts, heapSizes);
@@ -167,10 +199,218 @@ function parseMetadataTables(bytes, view, tableStream) {
       for (let row = 0; row < rows; row++) {
         methodRvas.push(readU32(view, pos + row * rowSize, 'cil-metadata-method-row-truncated'));
       }
+    } else if (table === STANDALONE_SIG_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        standAloneSigBlobIndexes.push(
+          readHeapIndex(view, pos + row * rowSize, blobIndexSize, 'cil-metadata-standalone-signature-row-truncated'),
+        );
+      }
     }
     pos += rows * rowSize;
   }
-  return methodRvas;
+  return Object.freeze({ methodRvas, standAloneSigBlobIndexes });
+}
+
+function readSignatureCompressed(bytes, offset, code = 'cil-invalid-local-var-signature') {
+  let parsed;
+  try {
+    parsed = readCompressedInt(bytes, offset);
+  } catch {
+    fail(code);
+  }
+  const b0 = bytes[offset];
+  if (((b0 & 0xc0) === 0x80 && parsed.value < 0x80)
+    || ((b0 & 0xe0) === 0xc0 && parsed.value < 0x4000)) {
+    fail(code);
+  }
+  return parsed;
+}
+
+function parseTypeDefOrRefEncoded(bytes, offset, code) {
+  const parsed = readSignatureCompressed(bytes, offset, code);
+  const tag = parsed.value & 0x03;
+  const rid = parsed.value >>> 2;
+  if (tag > 2 || rid < 1) fail(code);
+  return parsed.nextOffset;
+}
+
+function consumeCustomMods(bytes, offset, code) {
+  let pos = offset;
+  while (bytes[pos] === 0x1f || bytes[pos] === 0x20) {
+    pos = parseTypeDefOrRefEncoded(bytes, pos + 1, code);
+  }
+  return pos;
+}
+
+function parseArrayShape(bytes, offset, code) {
+  let parsed = readSignatureCompressed(bytes, offset, code);
+  const rank = parsed.value;
+  if (rank < 1) fail(code);
+  parsed = readSignatureCompressed(bytes, parsed.nextOffset, code);
+  const sizes = parsed.value;
+  if (sizes > rank) fail(code);
+  let pos = parsed.nextOffset;
+  for (let index = 0; index < sizes; index++) {
+    pos = readSignatureCompressed(bytes, pos, code).nextOffset;
+  }
+  parsed = readSignatureCompressed(bytes, pos, code);
+  const lowerBounds = parsed.value;
+  if (lowerBounds > rank) fail(code);
+  pos = parsed.nextOffset;
+  for (let index = 0; index < lowerBounds; index++) {
+    pos = readSignatureCompressed(bytes, pos, code).nextOffset;
+  }
+  return pos;
+}
+
+function parseSignatureType(bytes, offset, code = 'cil-invalid-local-var-signature', depth = 0) {
+  if (depth > 32 || offset >= bytes.length) fail(code);
+  let pos = consumeCustomMods(bytes, offset, code);
+  if (pos >= bytes.length) fail(code);
+  const elementType = bytes[pos++];
+
+  if ([
+    0x02, // BOOLEAN
+    0x03, // CHAR
+    0x04, // I1
+    0x05, // U1
+    0x06, // I2
+    0x07, // U2
+    0x08, // I4
+    0x09, // U4
+    0x0a, // I8
+    0x0b, // U8
+    0x0c, // R4
+    0x0d, // R8
+    0x0e, // STRING
+    0x18, // I
+    0x19, // U
+    0x1c, // OBJECT
+  ].includes(elementType)) {
+    return pos;
+  }
+
+  if (elementType === 0x11 || elementType === 0x12) { // VALUETYPE / CLASS
+    return parseTypeDefOrRefEncoded(bytes, pos, code);
+  }
+  if (elementType === 0x13 || elementType === 0x1e) { // VAR / MVAR
+    return readSignatureCompressed(bytes, pos, code).nextOffset;
+  }
+  if (elementType === 0x0f) { // PTR
+    pos = consumeCustomMods(bytes, pos, code);
+    if (bytes[pos] === 0x01) return pos + 1; // PTR VOID
+    return parseSignatureType(bytes, pos, code, depth + 1);
+  }
+  if (elementType === 0x1d) { // SZARRAY
+    pos = consumeCustomMods(bytes, pos, code);
+    return parseSignatureType(bytes, pos, code, depth + 1);
+  }
+  if (elementType === 0x14) { // ARRAY
+    pos = parseSignatureType(bytes, pos, code, depth + 1);
+    return parseArrayShape(bytes, pos, code);
+  }
+  if (elementType === 0x15) { // GENERICINST
+    if (bytes[pos] !== 0x11 && bytes[pos] !== 0x12) fail(code);
+    pos = parseTypeDefOrRefEncoded(bytes, pos + 1, code);
+    const count = readSignatureCompressed(bytes, pos, code);
+    pos = count.nextOffset;
+    for (let index = 0; index < count.value; index++) {
+      pos = parseSignatureType(bytes, pos, code, depth + 1);
+    }
+    return pos;
+  }
+  if (elementType === 0x1b) { // FNPTR
+    return parseMethodSignature(bytes, pos, code, depth + 1);
+  }
+  fail(code);
+}
+
+function parseReturnType(bytes, offset, code, depth) {
+  let pos = consumeCustomMods(bytes, offset, code);
+  if (bytes[pos] === 0x01 || bytes[pos] === 0x16) return pos + 1; // VOID / TYPEDBYREF
+  if (bytes[pos] === 0x10) pos = consumeCustomMods(bytes, pos + 1, code); // BYREF
+  return parseSignatureType(bytes, pos, code, depth);
+}
+
+function parseParamType(bytes, offset, code, depth) {
+  let pos = consumeCustomMods(bytes, offset, code);
+  if (bytes[pos] === 0x16) return pos + 1; // TYPEDBYREF
+  if (bytes[pos] === 0x10) pos = consumeCustomMods(bytes, pos + 1, code); // BYREF
+  return parseSignatureType(bytes, pos, code, depth);
+}
+
+function parseMethodSignature(bytes, offset, code, depth) {
+  if (depth > 32 || offset >= bytes.length) fail(code);
+  const callConv = bytes[offset++];
+  const kind = callConv & 0x0f;
+  if (![0x00, 0x01, 0x02, 0x03, 0x04, 0x05].includes(kind) || (callConv & 0x80) !== 0) fail(code);
+  if ((callConv & 0x10) !== 0) {
+    offset = readSignatureCompressed(bytes, offset, code).nextOffset;
+  }
+  const count = readSignatureCompressed(bytes, offset, code);
+  offset = parseReturnType(bytes, count.nextOffset, code, depth + 1);
+  let sentinelSeen = false;
+  for (let index = 0; index < count.value; index++) {
+    if (bytes[offset] === 0x41) { // SENTINEL
+      if (kind !== 0x05 || sentinelSeen) fail(code);
+      sentinelSeen = true;
+      offset += 1;
+    }
+    offset = parseParamType(bytes, offset, code, depth + 1);
+  }
+  return offset;
+}
+
+function validateLocalVarSignature(blob) {
+  const code = 'cil-invalid-local-var-signature';
+  if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x07) fail(code);
+  const count = readSignatureCompressed(blob, 1, code);
+  if (count.value < 1 || count.value > 0xfffe) fail(code);
+  let pos = count.nextOffset;
+
+  for (let index = 0; index < count.value; index++) {
+    pos = consumeCustomMods(blob, pos, code);
+    let constrained = false;
+    while (blob[pos] === 0x45) { // PINNED
+      constrained = true;
+      pos += 1;
+    }
+    if (!constrained && blob[pos] === 0x16) { // TYPEDBYREF
+      pos += 1;
+      continue;
+    }
+    if (blob[pos] === 0x10) pos = consumeCustomMods(blob, pos + 1, code); // BYREF
+    pos = parseSignatureType(blob, pos, code);
+  }
+  if (pos !== blob.length) fail(code);
+}
+
+function localVarSignatureBlob(bytes, token, metadataInfo) {
+  if ((token >>> 24) !== STANDALONE_SIG_TABLE) fail('cil-invalid-local-var-sig-token');
+  const rid = token & 0x00ffffff;
+  if (rid < 1 || rid > metadataInfo.standAloneSigBlobIndexes.length) {
+    fail('cil-local-var-sig-row-missing');
+  }
+  const blobStream = metadataInfo.blobStream;
+  if (!blobStream) fail('cil-local-var-sig-blob-heap-missing');
+  const blobIndex = metadataInfo.standAloneSigBlobIndexes[rid - 1];
+  if (!Number.isSafeInteger(blobIndex) || blobIndex < 1 || blobIndex >= blobStream.size) {
+    fail('cil-local-var-sig-blob-missing');
+  }
+  checkedRange(bytes, blobStream.offset, blobStream.size, 'cil-metadata-blob-out-of-bounds');
+  const heap = bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size);
+  let lengthInfo;
+  try {
+    lengthInfo = readCompressedInt(heap, blobIndex);
+  } catch {
+    fail('cil-local-var-sig-blob-invalid');
+  }
+  const { value:length, nextOffset } = lengthInfo;
+  if (!Number.isSafeInteger(length) || nextOffset > heap.length - length) {
+    fail('cil-local-var-sig-blob-invalid');
+  }
+  if (length < 1) fail('cil-local-var-sig-blob-missing');
+  return heap.subarray(nextOffset, nextOffset + length);
 }
 
 function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
@@ -203,6 +443,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
 
   const stringStream = streams.find((stream) => stream.name === '#Strings');
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
+  const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
   const strings = [];
   if (stringStream) {
     checkedRange(bytes, stringStream.offset, stringStream.size, 'cil-metadata-strings-out-of-bounds');
@@ -215,10 +456,17 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
       if (value) strings.push(value);
     }
   }
-  return Object.freeze({ runtimeVersion, strings, methodRvas: parseMetadataTables(bytes, view, tableStream) });
+  const tables = parseMetadataTables(bytes, view, tableStream);
+  return Object.freeze({
+    runtimeVersion,
+    strings,
+    methodRvas: tables.methodRvas,
+    standAloneSigBlobIndexes: tables.standAloneSigBlobIndexes,
+    blobStream,
+  });
 }
 
-function parseMethodBody(bytes, view, offset) {
+function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   checkedRange(bytes, offset, 1, 'cil-method-body-unmapped');
   const headerByte = bytes[offset];
   if ((headerByte & 0x03) === 0x02) {
@@ -226,6 +474,7 @@ function parseMethodBody(bytes, view, offset) {
     checkedRange(bytes, offset + 1, codeSize, 'cil-tiny-method-body-truncated');
     return {
       headerOffset: offset,
+      codeOffset: offset + 1,
       isTiny: true,
       maxStack: 8,
       codeSize,
@@ -242,6 +491,11 @@ function parseMethodBody(bytes, view, offset) {
   const maxStack = readU16(view, offset + 2, 'cil-fat-method-header-truncated');
   const codeSize = readU32(view, offset + 4, 'cil-fat-method-header-truncated');
   const localVarSigTok = readU32(view, offset + 8, 'cil-fat-method-header-truncated');
+  if (localVarSigTok !== 0) {
+    if ((localVarSigTok >>> 24) !== STANDALONE_SIG_TABLE) fail('cil-invalid-local-var-sig-token');
+    if (!metadataInfo) fail('cil-local-var-sig-metadata-unavailable');
+    validateLocalVarSignature(localVarSignatureBlob(bytes, localVarSigTok, metadataInfo));
+  }
   const codeOffset = offset + headerSize;
   checkedRange(bytes, codeOffset, codeSize, 'cil-fat-method-body-truncated');
   const bytecode = bytes.subarray(codeOffset, codeOffset + codeSize);
@@ -289,6 +543,7 @@ function parseMethodBody(bytes, view, offset) {
 
   return {
     headerOffset: offset,
+    codeOffset,
     isTiny: false,
     maxStack,
     codeSize,
@@ -431,7 +686,7 @@ export function parseCil(bytes, options = {}) {
       const methodOffset = peCli.mapRva(methodRva, 1, 'cil-method-rva-unmapped');
       if (seenOffsets.has(methodOffset)) continue;
       seenOffsets.add(methodOffset);
-      methodBodies.push(parseMethodBody(u8, view, methodOffset));
+      methodBodies.push(parseMethodBody(u8, view, methodOffset, metadataInfo));
     }
   } else {
     // Compatibility for the deliberately minimal Phase 11 fixture, which has

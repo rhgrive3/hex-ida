@@ -121,6 +121,7 @@ class FunctionLoader {
     this.maxFunctions = explicitLimit(maxFunctions, 64);
     this.cache = new Map();
     this.analyzed = new Set();
+    this.attempted = new Set();
     this.inflight = new Map();
   }
   _put(key, value) {
@@ -136,7 +137,7 @@ class FunctionLoader {
       const hit = this.cache.get(key); this._put(key, hit); return hit;
     }
     if (this.inflight.has(key)) return this.inflight.get(key);
-    if (!this.analyzed.has(key) && this.analyzed.size + this.inflight.size >= this.maxFunctions) {
+    if (!this.attempted.has(key) && this.attempted.size >= this.maxFunctions) {
       throw new AgentToolError('function-budget', 'function-budget: function analysis budget exhausted', { maxFunctions: this.maxFunctions });
     }
     const pending = (async () => {
@@ -145,6 +146,7 @@ class FunctionLoader {
         try { range = this.ctx.program.functionRange(addr); }
         catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method: 'functionRange', cause: String(error && error.message || error) }); }
       }
+      this.attempted.add(key);
       const model = await this.ctx.analyze(addr, range && range.end);
       this.analyzed.add(key);
       this._put(key, model || null);
@@ -154,7 +156,7 @@ class FunctionLoader {
     try { return await pending; }
     finally { this.inflight.delete(key); }
   }
-  analysisCount() { return this.analyzed.size; }
+  analysisCount() { return this.attempted.size; }
 }
 
 function nameFor(ctx, addr) {

@@ -92,10 +92,10 @@ export function selfRegisters(model) {
    *
    * ここで追跡をやめると、ARC が入った関数（＝アプリのほとんど）で
    * self を見失い、フィールドの読み書きが 1 件も名指しできなくなる。
-   */
+  */
   const identityCalls = new Set();
   for (const c of (model && model.calls) || []) {
-    if (c.name && IDENTITY_HELPER.test(c.name)) identityCalls.add(c.row);
+    if (typeof c?.name === 'string' && IDENTITY_HELPER.test(c.name)) identityCalls.add(c.row);
   }
 
   for (const insn of insns) {
