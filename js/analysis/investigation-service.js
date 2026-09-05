@@ -232,24 +232,25 @@ function rankedCandidateAddress(value) {
   }
 }
 function typedRankedCandidates(ranked, context) {
-  const candidates = [];
-  Array.from(ranked?.candidates || []).forEach((candidate, index) => {
+  const candidates = Array.from(ranked?.candidates || [], (candidate, index) => {
     const rawAddress = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
     const address = rankedCandidateAddress(rawAddress);
-    if (rawAddress != null && address === undefined) return;
+    const invalidAddress = rawAddress != null && address === undefined;
     const evidenceIds = [...new Set((candidate?.reasons || [])
       .flatMap((reason) => [reason?.evidenceId, reason?.id])
       .filter((value) => typeof value === 'string' && value.length > 0))];
-    candidates.push(Object.freeze({
+    return Object.freeze({
       ...candidate,
-      candidateId:`${context.snapshotId}:candidate:${address == null ? index : address.toString(16)}`,
-      entityId:address == null ? null : `function:${address.toString(16)}`,
+      candidateId:invalidAddress
+        ? `${context.snapshotId}:candidate:invalid:${index}`
+        : `${context.snapshotId}:candidate:${address == null ? index : address.toString(16)}`,
+      entityId:invalidAddress || address == null ? null : `function:${address.toString(16)}`,
       verdict:candidate?.verdict ?? VERDICT.NONE,
       evidenceIds,
       completeness:context.completeness.complete ? 'complete' : 'partial',
       missing:context.completeness.complete ? [] : context.completeness.reasons.slice(),
       snapshotId:context.snapshotId,
-    }));
+    });
   });
   return Object.freeze({ ...(ranked || {}), candidates });
 }
