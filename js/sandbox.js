@@ -302,6 +302,71 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   let worker = null;
   let workerPort = null;
   let port = null;
+  const PUBLIC_OUTPUT_MAX_MESSAGES = ${MAX_SANDBOX_OUTPUT_MESSAGES};
+  const PUBLIC_OUTPUT_MAX_BYTES = ${MAX_SANDBOX_OUTPUT_BYTES};
+  const PUBLIC_OUTPUT_MAX_PER_SECOND = ${MAX_SANDBOX_OUTPUT_PER_SECOND};
+  let publicOutputMessages = 0;
+  let publicOutputBytes = 0;
+  let publicOutputWindow = Date.now();
+  let publicOutputWindowCount = 0;
+  const publicOutputSize = (value) => {
+    const seen = new Set();
+    const stack = [value];
+    let bytes = 0;
+    let nodes = 0;
+    while (stack.length && bytes <= PUBLIC_OUTPUT_MAX_BYTES) {
+      const x = stack.pop();
+      if (++nodes > 4096) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+      if (x == null) { bytes += 4; continue; }
+      if (typeof x === 'string') { bytes += x.length * 2; continue; }
+      if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
+      if (typeof x === 'boolean') { bytes += 4; continue; }
+      if (x instanceof ArrayBuffer) { bytes += x.byteLength; continue; }
+      if (ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+      if (typeof x === 'object') {
+        if (seen.has(x)) continue;
+        seen.add(x);
+        if (x instanceof Map || x instanceof Set) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+        const keys = Object.keys(x);
+        bytes += keys.length * 8;
+        if (keys.length > 2048) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+        for (let i = 0; i < keys.length; i++) {
+          const descriptor = Object.getOwnPropertyDescriptor(x, keys[i]);
+          if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+            return PUBLIC_OUTPUT_MAX_BYTES + 1;
+          }
+          bytes += keys[i].length * 2;
+          stack.push(descriptor.value);
+        }
+      } else {
+        bytes += 32;
+      }
+    }
+    return bytes;
+  };
+  const isPublicOutputEnvelope = (data) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const keys = Object.keys(data);
+    return keys.length === 2
+      && Object.prototype.hasOwnProperty.call(data, 't')
+      && Object.prototype.hasOwnProperty.call(data, 'value')
+      && data.t === 'userOutput';
+  };
+  const publicOutputLimit = (data) => {
+    const now = Date.now();
+    if (now - publicOutputWindow >= 1000) {
+      publicOutputWindow = now;
+      publicOutputWindowCount = 0;
+    }
+    const bytes = publicOutputSize(data);
+    publicOutputMessages++;
+    publicOutputWindowCount++;
+    publicOutputBytes += bytes;
+    return bytes > PUBLIC_OUTPUT_MAX_BYTES
+      || publicOutputMessages > PUBLIC_OUTPUT_MAX_MESSAGES
+      || publicOutputBytes > PUBLIC_OUTPUT_MAX_BYTES
+      || publicOutputWindowCount > PUBLIC_OUTPUT_MAX_PER_SECOND;
+  };
   const stop = () => {
     if (workerPort) { try { workerPort.close(); } catch {} workerPort = null; }
     if (worker) { try { worker.terminate(); } catch {} worker = null; }
@@ -320,6 +385,10 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   };
   const start = (m) => {
     stop();
+    publicOutputMessages = 0;
+    publicOutputBytes = 0;
+    publicOutputWindow = Date.now();
+    publicOutputWindowCount = 0;
     try {
       const source = workerProgram(m.source, m.mode, m.index);
       const blob = new Blob([source], { type: 'text/javascript' });
@@ -342,10 +411,14 @@ const FRAME = `<!doctype html><meta charset="utf-8">
     worker.onmessage = (e) => {
       const data = e.data;
       // Public user postMessage traffic is deliberately separated from the
-      // privileged control channel. It is bounded in the Worker and never
-      // interpreted as done/rpc/print authority by the frame or host.
-      if (!data || typeof data !== 'object' || data.t !== 'userOutput') {
+      // privileged control channel. Re-validate and meter it in the frame too:
+      // user code can otherwise reach the native Worker sender via its prototype.
+      if (!isPublicOutputEnvelope(data)) {
         failWorker('sandbox Workerの公開出力境界が壊れました。');
+        return;
+      }
+      if (publicOutputLimit(data)) {
+        failWorker('出力が安全上限を超えたため停止しました。');
       }
     };
     worker.onerror = (e) => {
