@@ -6,7 +6,6 @@ import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.
 import { decompileSemantic } from '../decompiler/semantic.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
-  partitionDecodedFunction,
   semanticAbiAdapter,
   semanticControlUnknowns,
 } from './semantic-function-base.js';
@@ -79,6 +78,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
+    if (ordered[index + 1] && addressOf(ordered[index + 1]) !== endOf(instruction)) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
     if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) {
       starts.add(addressOf(ordered[index + 1]).toString());
     }
