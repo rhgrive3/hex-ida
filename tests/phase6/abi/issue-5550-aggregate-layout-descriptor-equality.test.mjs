@@ -83,6 +83,32 @@ function aggregate({ members, nestedMembers = members, padding, nestedPadding = 
 }
 
 {
+  const topMembers = [member(32, 4, 0)];
+  topMembers[Symbol('authority')] = 'x';
+  assert.equal(
+    canonicalAggregateLayout(aggregate({
+      members:topMembers,
+      nestedMembers:[member(32, 4, 0)],
+    })),
+    null,
+    'enumerable symbol-backed array evidence must fail closed',
+  );
+}
+
+{
+  const topMembers = [member(32, 4, 0)];
+  topMembers.authority = 'x';
+  assert.equal(
+    canonicalAggregateLayout(aggregate({
+      members:topMembers,
+      nestedMembers:[member(32, 4, 0)],
+    })),
+    null,
+    'enumerable non-index array evidence must fail closed',
+  );
+}
+
+{
   assert.equal(
     canonicalAggregateLayout(aggregate({
       bits:64,

@@ -102,6 +102,20 @@ function enumerableDataDescriptors(value) {
   return { descriptors, keys:keys.sort() };
 }
 
+function enumerableArrayDataDescriptors(value) {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthDescriptor = descriptors.length;
+  if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null;
+  const keys = Reflect.ownKeys(descriptors).filter((key) => descriptors[key].enumerable);
+  if (keys.length !== lengthDescriptor.value) return null;
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const key = String(index);
+    if (keys[index] !== key || !Object.hasOwn(descriptors[key], 'value')) return null;
+  }
+  return { descriptors, length:lengthDescriptor.value };
+}
+
 function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRight = new WeakSet()) {
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== typeof right) return false;
@@ -120,18 +134,17 @@ function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRigh
   activeRight.add(right);
   try {
     if (leftArray) {
-      if (left.length !== right.length) return false;
-      const leftKeys = Object.keys(left);
-      const rightKeys = Object.keys(right);
-      if (leftKeys.length !== left.length || rightKeys.length !== right.length) return false;
-      for (let index = 0; index < left.length; index += 1) {
-        const leftDescriptor = Object.getOwnPropertyDescriptor(left, String(index));
-        const rightDescriptor = Object.getOwnPropertyDescriptor(right, String(index));
-        if (!leftDescriptor?.enumerable || !rightDescriptor?.enumerable
-          || !Object.hasOwn(leftDescriptor, 'value') || !Object.hasOwn(rightDescriptor, 'value')
-          || !sameDescriptorValue(leftDescriptor.value, rightDescriptor.value, activeLeft, activeRight)) {
-          return false;
-        }
+      const leftData = enumerableArrayDataDescriptors(left);
+      const rightData = enumerableArrayDataDescriptors(right);
+      if (!leftData || !rightData || leftData.length !== rightData.length) return false;
+      for (let index = 0; index < leftData.length; index += 1) {
+        const key = String(index);
+        if (!sameDescriptorValue(
+          leftData.descriptors[key].value,
+          rightData.descriptors[key].value,
+          activeLeft,
+          activeRight,
+        )) return false;
       }
       return true;
     }
