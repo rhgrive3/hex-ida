@@ -1,5 +1,6 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
+import { createCilCallSignatureResolver } from './call-signatures.js';
 import { liftCilMethod } from './lifter.js';
 import { validateCilEffectFunction } from './validation.js';
 import { parseCil, probeCil } from './parser.js';
@@ -59,7 +60,23 @@ export class CilFrontend {
   }
 
   async validateMethod(decoded, context = {}) {
-    return validateCilEffectFunction(decoded, context);
+    let returnStackSlots = context?.returnStackSlots;
+    if (returnStackSlots === undefined && context?.image && decoded?.methodId) {
+      try {
+        const tokenMatch = String(decoded.methodId).match(/0x[0-9a-fA-F]+/);
+        if (tokenMatch) {
+          const token = parseInt(tokenMatch[0], 16);
+          const resolver = createCilCallSignatureResolver(context.image);
+          const res = resolver(token);
+          if (res?.complete && res.signature) {
+            returnStackSlots = res.signature.returnValue ? 1 : 0;
+          }
+        }
+      } catch {
+        // Fall back to context/unresolved return shape
+      }
+    }
+    return validateCilEffectFunction(decoded, returnStackSlots !== undefined ? { ...context, returnStackSlots } : context);
   }
 
   async liftMethod(decoded, validation, context = {}) {

@@ -16,7 +16,7 @@ for await (const m of frontend.enumerateMethods(image)) {
 assert.equal(methods.length, 1);
 
 const decoded = await frontend.decodeMethod(methods[0], { image });
-const val = await frontend.validateMethod(decoded);
+const val = await frontend.validateMethod(decoded, { returnStackSlots: 1 });
 assert.equal(val.status, 'valid');
 
 const lifted = await frontend.liftMethod(decoded, val);

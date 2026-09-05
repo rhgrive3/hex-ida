@@ -15,9 +15,31 @@ function clone(value) {
   for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, { value: clone(item), enumerable: true, configurable: true, writable: true });
   return out;
 }
-function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function list(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
+  return [...new Set(value.map(String).filter(Boolean))].sort();
+}
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
+
+const CANONICAL_OPERATIONS = new WeakSet();
+
+function canonicalOperation(input) {
+  if (CANONICAL_OPERATIONS.has(input)) return input;
+  if (input != null && typeof input === 'object') {
+    try { return createProjectOperation(input); } catch (error) { return { normalized: false, input, error }; }
+  }
+  return { normalized: false, input, error: new TypeError('operation-input-invalid') };
+}
+
+export function canonicalizeProjectOperation(input) {
+  return canonicalOperation(input);
+}
+
+export function isCanonicalProjectOperation(value) {
+  return !!value && typeof value === 'object' && value.normalized !== false && CANONICAL_OPERATIONS.has(value);
+}
 // The identity an operationId is bound to: everything that decides state
 // semantics. Two operations sharing an ID must agree on all of it, otherwise
 // replicas silently fork under an identical ID set (#5397).
@@ -39,8 +61,9 @@ export function createProjectOperation(input = {}) {
   const projectIdentity = required(input.projectIdentity ?? input.projectId, 'operation-project-identity-required');
   const targetEntityId = required(input.targetEntityId ?? input.entityId, 'operation-target-entity-required');
   const factKind = required(input.factKind, 'operation-fact-kind-required');
-  const actionInput = input.action ?? 'set';
-  if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
+  const actionInput = input.action ?? 'set'; // action || 'set'
+  if (typeof actionInput !== 'string') throw new TypeError('operation-action-required');
+  if (typeof input.action === 'string' && !actionInput.trim() && input.schemaVersion == null) throw new TypeError('operation-action-required');
   const action = actionInput;
   if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
@@ -61,7 +84,13 @@ export function createProjectOperation(input = {}) {
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
+  CANONICAL_OPERATIONS.add(operation);
   return deepFreeze(operation);
+}
+
+function registerCanonicalOperation(operation) {
+  CANONICAL_OPERATIONS.add(operation);
+  return operation;
 }
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
@@ -69,7 +98,7 @@ function compareOperations(a, b) { return a.operationId.localeCompare(b.operatio
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
   for (const input of operations) {
-    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = canonicalOperation(input);
     const existing = unique.get(operation.operationId);
     if (existing) {
       if (semanticDigest(existing) !== semanticDigest(operation)) throw new TypeError('operation-id-content-mismatch');
@@ -202,7 +231,12 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = canonicalOperation(input);
+    if (operation.normalized === false) {
+      const reason = operation.error?.message || 'operation-input-invalid';
+      this.pending.delete(String(operation.input?.operationId ?? ''));
+      return Object.freeze({ status: 'rejected', reason, operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
+    }
     const existingPending = this.pending.get(operation.operationId);
     if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
       return Object.freeze({
@@ -228,7 +262,14 @@ export class ChangeLog {
   }
 
   applyBatch(inputs = []) {
-    const operations = inputs.map((input) => input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input));
+    const operations = [];
+    for (const input of inputs) {
+      const operation = canonicalOperation(input);
+      if (operation.normalized === false) {
+        return Object.freeze({ status: 'rejected', reason: operation.error?.message || 'operation-input-invalid', operationId: operation.input?.operationId ?? null, stateDigest: this.digest() });
+      }
+      operations.push(operation);
+    }
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
@@ -275,7 +316,7 @@ export class ChangeLog {
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }))) : [] });
   const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
@@ -291,7 +332,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
   assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
   assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
+  const checkpointOperations = checkpoint.operationIds.map((operationId) => registerCanonicalOperation(createProjectOperation({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })));
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
   const restoreResults = [];
   for (const operation of options.operations || []) {
@@ -317,7 +358,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
 export function mergeOperations(left = [], right = []) {
   const map = new Map();
   for (const input of [...left, ...right]) {
-    const operation = input.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
+    const operation = canonicalOperation(input);
     const existing = map.get(operation.operationId);
     if (existing) {
       // Same ID pinning different content must not first-wins silently (#5397).
