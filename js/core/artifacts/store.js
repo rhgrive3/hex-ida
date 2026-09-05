@@ -43,10 +43,14 @@ function requireArtifactId(value) {
   return value;
 }
 
+function hasCallableHooks(target, names) {
+  return target != null && names.every((name) => typeof target[name] === 'function');
+}
+
 export class ArtifactStore {
   constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
-    if (!backend?.getRaw || !backend?.putAtomic || !backend?.delete || !backend?.capabilities) throw new TypeError('artifact-backend-invalid');
-    if (!hotCache?.get || !hotCache?.put || !hotCache?.delete) throw new TypeError('artifact-hot-cache-invalid');
+    if (!hasCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'])) throw new TypeError('artifact-backend-invalid');
+    if (!hasCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'])) throw new TypeError('artifact-hot-cache-invalid');
     if (!['delete', 'retain'].includes(corruptionPolicy)) throw new TypeError('artifact-corruption-policy-invalid');
     this.backend = backend;
     this.hotCache = hotCache;
