@@ -257,6 +257,12 @@ for (const input of [
   assert.equal(parsed[1].mode, "offset");
   assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
 }
+{
+  const parsed = directOperands.parseOperands("{bogus}, [x0], x1");
+  assert.equal(parsed.length, 3, "malformed brace list must not authorize register post-index folding");
+  assert.equal(parsed[1].mode, "offset");
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
+}
 for (const invalidPostIndex of ["w1", "sp", "xzr"]) {
   const parsed = directOperands.parseOperands(`{v0.16b}, [x0], ${invalidPostIndex}`);
   assert.equal(parsed.length, 3, `${invalidPostIndex} must not be accepted as the Xm post-index form`);
