@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createCorpus } from '../../tools/validation/machine-effects/oracle-corpus.mjs';
@@ -58,10 +61,32 @@ assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree
   report: 'report.json', requireCandidateTree: true,
 });
 
-const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+// This is a verifier rejection test, not release evidence for the checkout.
+// An unrelated branch diff (or moving-main conflict) must not mask the intended
+// incomplete-evidence rejection. Keep real Git identity/cleanliness/scope checks
+// but supply an isolated, explicitly owned two-commit fixture.
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-oracle-report-'));
+function fixtureGit(...args) {
+  const result = spawnSync('git', args, { cwd:fixtureRoot, encoding:'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+try {
+fixtureGit('init', '--quiet', '--initial-branch=main');
+fixtureGit('config', 'user.name', 'Hex oracle verifier fixture');
+fixtureGit('config', 'user.email', 'oracle-fixture@example.invalid');
+const ownedPath = 'tools/validation/machine-effects/fixture.txt';
+fs.mkdirSync(path.dirname(path.join(fixtureRoot, ownedPath)), { recursive:true });
+fs.writeFileSync(path.join(fixtureRoot, ownedPath), 'base\n');
+fixtureGit('add', ownedPath);
+fixtureGit('commit', '--quiet', '-m', 'oracle fixture base');
+const assignedBase = fixtureGit('rev-parse', 'HEAD');
+fs.writeFileSync(path.join(fixtureRoot, ownedPath), 'candidate\n');
+fixtureGit('add', ownedPath);
+fixtureGit('commit', '--quiet', '-m', 'oracle fixture candidate');
+const currentHead = fixtureGit('rev-parse', 'HEAD');
+const candidateTreeSha = fixtureGit('merge-tree', '--write-tree', assignedBase, currentHead);
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(assignedBase, /^[0-9a-f]{40}$/);
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
@@ -184,6 +209,7 @@ forgedBreadth.reportId = sha256Digest(forgedBreadthPayload);
 assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|unjustified-mismatch/);
 
 assert.throws(() => verifyExactHead({
+  cwd:fixtureRoot,
   report,
   expectedHead: currentHead,
   expectedBase: assignedBase,
@@ -191,6 +217,16 @@ assert.throws(() => verifyExactHead({
   requireClean: true,
   requireCandidateTree: true,
 }), /report-incomplete-architectural-evidence/);
+
+fs.writeFileSync(path.join(fixtureRoot, 'unrelated.txt'), 'outside oracle ownership\n');
+assert.throws(() => verifyExactHead({
+  cwd:fixtureRoot, report, expectedHead:currentHead, expectedBase:assignedBase,
+}), /release-working-tree-dirty/);
+fixtureGit('add', 'unrelated.txt');
+fixtureGit('commit', '--quiet', '-m', 'unrelated change must remain forbidden');
+assert.throws(() => verifyExactHead({
+  cwd:fixtureRoot, report, expectedHead:fixtureGit('rev-parse', 'HEAD'), expectedBase:assignedBase,
+}), /release-changed-file-outside-allowlist:unrelated\.txt/);
 
 assert.throws(() => verifyCandidateMergeTree({
   report,
@@ -212,3 +248,6 @@ assert.equal(partialReport.profileSummaries.filter((profile) => profile.gapCount
 assert.equal(partialReport.profileSummaries.find((profile) => profile.profileId === 'x86_64:long-64').gaps[0].status, 'not-integrated');
 
 console.log('machine-effects independent oracle profile/report identity: PASS (4 profiles; A2 preserved)');
+} finally {
+  fs.rmSync(fixtureRoot, { recursive:true, force:true });
+}
