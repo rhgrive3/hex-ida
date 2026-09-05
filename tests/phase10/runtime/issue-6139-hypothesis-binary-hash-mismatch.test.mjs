@@ -57,6 +57,7 @@ test("issue #6139 - hypothesis matching the session hash runs as before", async 
 
   const result = await platform.verifyHypothesis(hypothesis);
   assert.ok(result.cases.length >= 1);
+  assert.ok(result.evidence.length > 0, "the assertion must observe actual evidence");
   assert.equal(result.evidence.every((item) => item.binaryHash === "bin-A"), true);
 });
 
@@ -77,6 +78,7 @@ test("issue #6139 - hypothesis without a hash inherits the session hash", async 
 
   const result = await platform.verifyHypothesis(hypothesis);
   assert.ok(result.cases.length >= 1);
+  assert.ok(result.evidence.length > 0, "the assertion must observe actual evidence");
   assert.equal(result.evidence.every((item) => item.binaryHash === "bin-B"), true);
 });
 
@@ -86,4 +88,26 @@ test("issue #6139 - compileExperiment keeps an explicit hypothesis binding over 
     { binaryHash: "bin-B" },
   );
   assert.equal(experiment.binaryHash, "bin-A");
+});
+
+// CodeRabbit's unbound-session counterexample must exercise the actual factory,
+// whose existing binaryHash || experiment.binaryHash fallback preserves binding.
+test("issue #6139 - unbound session preserves the explicit hypothesis hash in actual evidence", async () => {
+  const platform = new RuntimeAnalysisPlatform({
+    localIO: program([[0x1000, "mov", "x0, #1"], [0x1004, "ret", ""]]),
+    symbolic: false,
+  });
+  const session = await platform.startSession();
+  assert.equal(session.binaryHash, null);
+  const result = await platform.verifyHypothesis({
+    id: "h-bound-unbound-session", binaryHash: "bin-A", functionAddress: 0x1000n,
+    fieldOffset: 0n, fieldSize: 8, initial: 100, argumentIndex: 1, operation: "set",
+  });
+  assert.ok(result.evidence.length > 0, "the actual verifier must publish evidence");
+  for (const item of result.evidence) {
+    assert.equal(item.binaryHash, "bin-A");
+    assert.equal(item.sessionId, session.id);
+    assert.ok(platform.evidence.includes(item));
+  }
+  assert.equal(session.binaryHash, null, "verification must not silently rebind the session");
 });
