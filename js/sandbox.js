@@ -83,14 +83,15 @@ const WORKER_PRELUDE = String.raw`
     }
     try { nativePostMessage(message); } catch {}
   };
-  // Direct user postMessage is fire-and-forget output too; route it through the
-  // same budget instead of letting it bypass print().
-  try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
+  // Direct user postMessage is fire-and-forget output only. Never let a user
+  // supplied object become a trusted worker protocol envelope.
+  const userPostMessage = (value) => sendOutput({ t: 'print', args: [value] });
+  try { Object.defineProperty(globalThis,'postMessage',{value:userPostMessage,writable:false,configurable:false}); } catch {}
 
   const send = (message) => {
     try { nativePostMessage(message); }
     catch (err) {
-      try { postMessage({ t: 'error', error: (err && err.message) || String(err) }); } catch {}
+      try { sendOutput({ t: 'error', error: (err && err.message) || String(err) }); } catch {}
     }
   };
 
@@ -102,10 +103,19 @@ const WORKER_PRELUDE = String.raw`
     if (type !== 'object' || seen.has(value)) return 0;
     seen.add(value);
     let n = 16;
-    const values = Array.isArray(value) ? value : Object.values(value);
-    for (const item of values) {
-      n += measure(item, seen, limit - n);
-      if (n >= limit) break;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        n += measure(item, seen, limit - n);
+        if (n >= limit) break;
+      }
+    } else {
+      const keys = Object.keys(value);
+      for (const key of keys) {
+        n += Math.min(limit - n, key.length * 2);
+        if (n >= limit) break;
+        n += measure(value[key], seen, limit - n);
+        if (n >= limit) break;
+      }
     }
     seen.delete(value);
     return n;
@@ -181,49 +191,64 @@ const WORKER_PRELUDE = String.raw`
     waiting.delete(m.id);
     m.error ? p.reject(new Error(m.error)) : p.resolve(m.value);
   };
-`;
 
-const WORKER_POSTLUDE = String.raw`
-  Promise.resolve(__hexRun()).catch((err) => {
+  const execute = async (entry, mode, index) => {
+    try { delete globalThis.__hexSandboxExecute; } catch {}
+    if (mode === 'discover' || mode === 'plugin') {
+      const module = { exports: {} };
+      entry(registrar, module, module.exports);
+      if (module.exports && typeof module.exports.run === 'function') registrar.plugin(module.exports);
+      if (mode === 'discover') {
+        send({ t: 'done', value: defs.map((d) => ({
+          name: String(d.name || '名前のないプラグイン').slice(0, 80),
+          description: String(d.description || '').slice(0, 200),
+        })) });
+        return;
+      }
+      const def = defs[index];
+      if (!def) throw new Error('プラグイン定義が見つかりません。');
+      const value = await def.run(hex, print);
+      if (value !== undefined) print(value);
+      send({ t: 'done', value: null });
+      return;
+    }
+    const value = await entry(hex, print);
+    if (value !== undefined) print(value);
+    send({ t: 'done', value: null });
+  };
+
+  const executeOnce = (entry, mode, index) => Promise.resolve(execute(entry, mode, index)).catch((err) => {
     send({ t: 'error', error: err && err.message ? err.message : String(err) });
+  });
+  Object.defineProperty(globalThis, '__hexSandboxExecute', {
+    value: executeOnce,
+    writable: false,
+    configurable: true,
   });
 })();
 `;
 
+const WORKER_POSTLUDE = String.raw`
+Promise.resolve(globalThis.__hexSandboxExecute(__hexUserEntry, __hexUserMode, __hexUserIndex)).catch(() => {});
+`;
+
 function workerProgram(source, mode, index) {
   const user = String(source || '');
-  const safeIndex = Math.max(0, Math.trunc(Number(index) || 0));
+  const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
+  const safeMode = mode === 'discover' || mode === 'plugin' ? mode : 'script';
   let body;
-  if (mode === 'discover' || mode === 'plugin') {
+  if (safeMode === 'discover' || safeMode === 'plugin') {
     body = `
-  const __hexRun = async () => {
-    const module = { exports: {} };
-    const factory = (hex, module, exports) => { "use strict";\n${user}\n};
-    factory(registrar, module, module.exports);
-    if (module.exports && typeof module.exports.run === 'function') registrar.plugin(module.exports);
-    if (${JSON.stringify(mode)} === 'discover') {
-      send({ t: 'done', value: defs.map((d) => ({
-        name: String(d.name || '名前のないプラグイン').slice(0, 80),
-        description: String(d.description || '').slice(0, 200),
-      })) });
-      return;
-    }
-    const def = defs[${safeIndex}];
-    if (!def) throw new Error('プラグイン定義が見つかりません。');
-    const value = await def.run(hex, print);
-    if (value !== undefined) print(value);
-    send({ t: 'done', value: null });
-  };
+const __hexUserMode = ${JSON.stringify(safeMode)};
+const __hexUserIndex = ${safeIndex};
+const __hexUserEntry = (hex, module, exports) => { "use strict";\n${user}\n};
 //# sourceURL=hex-user-plugin.js
 `;
   } else {
     body = `
-  const __hexRun = async () => {
-    const body = async (hex, print) => { "use strict";\n${user}\n};
-    const value = await body(hex, print);
-    if (value !== undefined) print(value);
-    send({ t: 'done', value: null });
-  };
+const __hexUserMode = 'script';
+const __hexUserIndex = ${safeIndex};
+const __hexUserEntry = async (hex, print) => { "use strict";\n${user}\n};
 //# sourceURL=hex-user-script.js
 `;
   }
@@ -293,10 +318,19 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   if (type !== 'object' || seen.has(value)) return 0;
   seen.add(value);
   let n = 16;
-  const values = Array.isArray(value) ? value : Object.values(value);
-  for (const item of values) {
-    n += valueSize(item, seen, limit - n);
-    if (n >= limit) break;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      n += valueSize(item, seen, limit - n);
+      if (n >= limit) break;
+    }
+  } else {
+    const keys = Object.keys(value);
+    for (const key of keys) {
+      n += Math.min(limit - n, key.length * 2);
+      if (n >= limit) break;
+      n += valueSize(value[key], seen, limit - n);
+      if (n >= limit) break;
+    }
   }
   seen.delete(value);
   return n;
@@ -315,9 +349,26 @@ function isAbortSignalLike(signal) {
   }
 }
 
+function sandboxIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function sandboxTimeout(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) return null;
+  return Math.max(50, value);
+}
+
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+  const safeIndex = sandboxIndex(index);
+  if (safeIndex == null) {
+    return Promise.resolve({ error: 'プラグイン番号が無効です。' });
+  }
+  const timeoutMs = sandboxTimeout(timeout);
+  if (timeoutMs == null) {
+    return Promise.resolve({ error: '実行時間制限が無効です。' });
   }
 
   return new Promise((resolve) => {
@@ -396,14 +447,14 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
-      Math.max(50, Number(timeout) || 30000)
+      timeoutMs
     );
 
     channel.port1.onmessage = async (e) => {
       if (settled) return;
       const m = e.data || {};
       if (m.t === 'ready') {
-        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index });
+        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index: safeIndex });
       } else if (m.t === 'print') {
         try { out(...(m.args || [])); } catch { /* output must not stop the sandbox */ }
       } else if (m.t === 'budgetExceeded') {
