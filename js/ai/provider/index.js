@@ -101,8 +101,11 @@ export class WorkerAIProvider extends AIProvider {
     try {
       const response = await this.fetchImpl(this.capabilitiesEndpoint, { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
       if (!response?.ok) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
-      const text = await response.text();
-      if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+      // The 64 KiB envelope is a hard read cap, not a post-hoc adoption check:
+      // stop (and cancel) at the limit instead of materializing the whole body
+      // and re-encoding it afterwards. (#5089)
+      const text = await readBoundedCapabilityText(response, MAX_CAPABILITY_BYTES);
+      if (text == null) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       // The top-level configured flag is server capability truth. Merge the
@@ -161,4 +164,47 @@ export class WorkerAIProvider extends AIProvider {
 function deriveCapabilitiesEndpoint(endpoint) {
   const value = String(endpoint || '/api/ai/turn');
   return value.endsWith('/turn') ? `${value.slice(0, -5)}/capabilities` : '/api/ai/capabilities';
+}
+
+const MAX_CAPABILITY_BYTES = 64 * 1024;
+
+/*
+ * Bounded capability-body reader shared in spirit with transport.js
+ * readBoundedText: Content-Length short-circuits before any read, streaming
+ * bodies are byte-counted and cancelled at the limit, and only non-streaming
+ * (test/polyfill) responses fall back to materialize-then-measure. Returns the
+ * decoded text, or null when the body exceeds maxBytes. (#5089)
+ */
+async function readBoundedCapabilityText(response, maxBytes) {
+  const contentLength = Number(response.headers?.get?.('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    try { await response.body?.cancel?.('response-too-large'); } catch { /* best effort */ }
+    return null;
+  }
+  const body = response.body;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    const parts = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+        bytes += chunk.byteLength;
+        if (bytes > maxBytes) {
+          try { await reader.cancel('response-too-large'); } catch { /* best effort */ }
+          return null;
+        }
+        parts.push(decoder.decode(chunk, { stream: true }));
+      }
+      parts.push(decoder.decode());
+      return parts.join('');
+    } finally {
+      try { reader.releaseLock(); } catch { /* already cancelled */ }
+    }
+  }
+  const text = typeof response.text === 'function' ? await response.text() : '';
+  return new TextEncoder().encode(text).byteLength > maxBytes ? null : text;
 }
