@@ -111,9 +111,8 @@ export function widenRange(previous, next) {
  * an interval.
  */
 function signedBounds(widthBits) {
-  const bits = Number(widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 1 || bits > 512) return null;
-  const half = 1n << BigInt(bits - 1);
+  if (typeof widthBits !== 'number' || !Number.isSafeInteger(widthBits) || widthBits <= 1 || widthBits > 512) return null;
+  const half = 1n << BigInt(widthBits - 1);
   return { min: -half, max: half - 1n };
 }
 
@@ -135,7 +134,7 @@ export function addRange(range, delta, widthBits) {
   const min = range.min + d;
   const max = range.max + d;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -149,7 +148,7 @@ export function addRanges(a, b, widthBits) {
   const min = a.min + b.min;
   const max = a.max + b.max;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
