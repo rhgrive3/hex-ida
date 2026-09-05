@@ -1,9 +1,5 @@
 import { AIError } from '../schema.js';
-
-const KIND_CAPABILITY = Object.freeze({
-  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
-  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
-});
+import { proposalCapabilityRequest } from '../proposals.js';
 
 export class ProposalExecutor {
   constructor({ store, capabilityExecutor, app } = {}) {
@@ -18,12 +14,9 @@ export class ProposalExecutor {
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
-      apply: async (item) => {
-        const capability = KIND_CAPABILITY[item.kind];
-        if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${item.kind}`);
-        execution = await this.capabilityExecutor.execute(capability, proposalArguments(item), {
-          authorization: { kind: 'proposal', token: approvalToken, proposalId: item.id },
-        });
+      apply: async (item, authorization) => {
+        const { capability, args } = proposalCapabilityRequest(item);
+        execution = await this.capabilityExecutor.execute(capability, args, { authorization });
         await this.verifyPostcondition(item, execution);
       },
     });
@@ -58,14 +51,6 @@ export class ProposalExecutor {
   }
 }
 
-function proposalArguments(proposal) {
-  const target = targetObject(proposal.target);
-  if (proposal.kind === 'rename' || proposal.kind === 'comment') return { ...target, value: proposal.after };
-  if (proposal.kind === 'type') return { ...target, value: proposal.after };
-  if (proposal.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
-  if (proposal.kind === 'patch') return { ...target, before: byteArray(proposal.before), after: byteArray(proposal.after) };
-  return { ...target, value: proposal.after };
-}
 function targetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
 function findStructField(app, target) {
   const struct = app?.notes?.structs?.find?.((item) => item?.name === String(target.struct || target.name || ''));
