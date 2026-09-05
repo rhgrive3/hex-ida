@@ -1,6 +1,7 @@
 # Forward shared-contract amendment — 2026-09-05
 
-Status: PENDING verification. This document is not a green receipt.
+Status: code amendment VERIFIED; successor activation remains PENDING until
+the separate evidence handoff and unique T058 DONE transition are verified.
 
 The user limited this delivery to Recovery merge and post-merge verification,
 before analysis-roadmap implementation, and explicitly waived physical-device
@@ -52,3 +53,33 @@ Required evidence before activation: focused adversarial regressions; canonical
 preflight suite; independent Luna Max actual-diff review; exact-head CI; code
 and evidence commit identities. After activation, the first actual component
 must pass canonical generation twice and complete runtime checkpoint replay.
+
+## Exact code and independent evidence
+
+- Code commit: `f850024c6ef6c3a99563770c76e593a98b5ac964`.
+- Code tree: `4240836899a94c0491bc0d00846772e2cd165c38`.
+- Base main: `7012c4cc4f0d5c0d8a7ca44c6c5c1edcb080aba1`.
+- Local exact-head preflight: `PREFLIGHT_GREEN`, 59 tasks, 11 handoffs,
+  37 changed paths; verifier SHA-256
+  `4f7a062392387afe79ce6da706d61da458895f4242a8a6eb431fecc3db0ae8a2`.
+- Focused amendment adversarial regression and Phase4 ownership regression
+  passed (the latter 19/19); syntax and diff checks passed.
+- Hosted canonical final-closure regression, production walking skeleton,
+  exact-head and checkpoint verification all passed on the exact code commit:
+  [Final closure preflight 33935598167](https://github.com/rhgrive3/hex-ida/actions/runs/33935598167).
+  Completed 2026-09-05 01:18:19 UTC. A supplementary local canonical run was
+  still running when this evidence was published; no local PASS is claimed.
+- Independent Luna Max reviewed the actual code diff and explicitly verified
+  the exact commit/tree above: no blocking finding.
+- [CodeRabbit exact-code review](https://github.com/rhgrive3/hex-ida/pull/6611#issuecomment-5548394887)
+  found no additional static defect in the amendment. This is an explicit
+  review comment, not the automatic draft-skip status and not main approval.
+- Initial gate digest: `63fb512b688c281f862740411f20df72`.
+- Original foundation digest retained: `17c869290b57aef76a1ee1d68ea32338`.
+- Approved successor ownership digest: `bfc9e2c97114e6f81f2107f07089b5eb`.
+
+This verifies the amendment, not Recovery completion. Required product checks
+still expose the registered T051 AI snapshot exports, T052 collaboration,
+T057 CIL fixture, and other unaccepted component deltas. Those remain required;
+none is waived as historical. Sequence remains zero with no admitted component.
+Physical-device evidence remains `SKIPPED_USER_WAIVER`; Stage B remains unstarted.
