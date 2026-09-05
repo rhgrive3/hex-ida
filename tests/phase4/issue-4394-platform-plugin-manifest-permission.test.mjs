@@ -41,6 +41,24 @@ assert.throws(
 );
 assert.equal(coerced, false, 'permission validation must not coerce structured values');
 
+let permissionsReads = 0;
+const statefulManifest = manifestWithPermissions(undefined);
+Object.defineProperty(statefulManifest, 'permissions', {
+  enumerable: true,
+  get() {
+    permissionsReads += 1;
+    if (permissionsReads <= 3) return { binaryRead: false };
+    return Object.assign(Object.create({}), { binaryRead: true });
+  },
+});
+const statefulNormalized = validatePluginManifest(statefulManifest);
+assert.equal(permissionsReads, 1, 'permissions authority must be snapshotted exactly once');
+assert.equal(
+  statefulNormalized.permissions.binaryRead,
+  false,
+  'later getter values must not replace the validated permissions authority',
+);
+
 assert.equal(
   validatePluginManifest(manifestWithPermissions({ binaryRead: true })).permissions.binaryRead,
   true,

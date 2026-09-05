@@ -65,15 +65,16 @@ export function validatePluginManifest(manifest) {
   parseSemver(manifest.apiVersion);
 
   let permissions = {};
-  if (manifest.permissions != null) {
-    if (!isPlainObject(manifest.permissions)) {
+  const rawPermissions = manifest.permissions;
+  if (rawPermissions != null) {
+    if (!isPlainObject(rawPermissions)) {
       throw new TypeError("plugin-manifest-permissions-invalid");
     }
-    for (const key of Object.keys(manifest.permissions)) {
+    for (const key of Object.keys(rawPermissions)) {
       if (!ALLOWED_PERMISSIONS.has(key)) throw new TypeError(`plugin-manifest-unknown-permission:${key}`);
     }
-    const binaryRead = Object.hasOwn(manifest.permissions, "binaryRead")
-      ? manifest.permissions.binaryRead
+    const binaryRead = Object.hasOwn(rawPermissions, "binaryRead")
+      ? rawPermissions.binaryRead
       : undefined;
     if (binaryRead !== undefined && typeof binaryRead !== "boolean") {
       throw new TypeError("plugin-manifest-permissions-invalid");
