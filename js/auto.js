@@ -268,7 +268,7 @@ export async function autoAnalyze(opts) {
 
   if (memo || hasClasses) {
     for (let i = 0; i < goalOrder.length; i++) {
-      if (cancelled()) { report.notes.push('pin-cancelled'); break; }
+      if (cancelled()) { report.notes.push('pin-cancelled'); report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id))); break; }
       progress({ phase: 'pinpoint', done: i, all });
       if (budget.left <= 0) {
         report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
