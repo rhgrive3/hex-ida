@@ -12,7 +12,7 @@
  */
 
 export const TYPE_CORPUS_ID = 'phase7-type-corpus';
-export const TYPE_CORPUS_VERSION = 1;
+export const TYPE_CORPUS_VERSION = 2;
 
 const machine = (entityId, widthBits, klass = 'integer') => ({
   layer: 'machine', entityId, descriptor: { widthBits, class: klass },
@@ -128,7 +128,23 @@ export const TYPE_CASES = Object.freeze([
       { kind: 'debug-type', origin: 'debug-matched', claim: structural('entity_struct', 8, 4, { name: 'int32' }), debug: true },
     ],
     soft: [],
-    truth: { structural: { offset: 0, sizeBytes: 4 } },
+    truth: {
+      structural: {
+        offset: 0,
+        sizeBytes: 12,
+        memberType: { name: 'int32' },
+        kind: 'struct',
+        members: [
+          { offset: 0, sizeBytes: 4, memberType: { name: 'int32' } },
+          { offset: 8, sizeBytes: 4, memberType: { name: 'int32' } },
+        ],
+        totalSizeBytes: 12,
+        alignBytes: 4,
+        isRecursive: false,
+        recursiveIdentity: null,
+        sccMembers: null,
+      },
+    },
     expectCertain: ['structural'],
     noDebug: { truth: {}, expectCertain: [] },
   },
