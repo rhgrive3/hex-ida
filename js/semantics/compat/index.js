@@ -146,6 +146,10 @@ function bundleTargets(bundle) {
   if (control.fallthrough != null) targets.push(control.fallthrough);
   return targets;
 }
+function conditionalFallthroughTarget(control, instructionId) {
+  if (control.fallthrough != null) return control.fallthrough;
+  return { kind: 'fallthrough-continuation', instructionId };
+}
 function semanticEdgeKind(node, index) {
   if (node.kind === 'branch') return 'branch';
   if (node.kind === 'conditional-branch') return index === 0 ? 'conditional-true' : 'conditional-false';
@@ -161,8 +165,7 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
   const rawTargets = control.targets?.length
     ? [...control.targets]
     : control.target == null ? [] : [control.target];
-  if (control.fallthrough != null) rawTargets.push(control.fallthrough);
-  else rawTargets.push({ kind: 'fallthrough-continuation', instructionId: bundle.instructionId });
+  rawTargets.push(conditionalFallthroughTarget(control, bundle.instructionId));
   const fallthrough = rawTargets[rawTargets.length - 1];
   const fallthroughAddress = targetAddress(fallthrough);
   const resolved = fallthroughAddress != null
@@ -357,6 +360,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const instructionTelemetry = [];
   let completeness = initialCompleteness;
   let unsupportedInstructionCount = 0;
+  const conditionalFalseTargetByBlock = new Map();
 
   function mergeBlock(fragmentBlock) {
     const prior = blocks.get(fragmentBlock.id);
@@ -406,6 +410,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         bundle = validateMachineEffectBundle(bundle, options.machineEffectsOptions ?? {});
         if (bundle.instructionId !== instructionId) fail('semantic-v2-integration-instruction-id-mismatch');
         if (bundle.architectureId !== architectureId) fail('semantic-v2-integration-architecture-id-mismatch');
+      }
+      if (bundle.controlEffect.kind === 'conditional-branch') {
+        const fallthrough = conditionalFallthroughTarget(bundle.controlEffect, bundle.instructionId);
+        const fallthroughAddress = targetAddress(fallthrough);
+        const targetBlock = fallthroughAddress == null ? null : blockByAddress.get(fallthroughAddress);
+        conditionalFalseTargetByBlock.set(block.id, targetBlock?.id ?? null);
       }
       bundles.push(bundle);
 
@@ -481,6 +491,11 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     for (const successor of block.successors) {
       const target = blockByKey.get(successor.to);
       if (!target) fail('semantic-v2-integration-successor-block-not-found');
+      if (successor.kind === 'conditional-false'
+        && (!conditionalFalseTargetByBlock.has(block.id)
+          || conditionalFalseTargetByBlock.get(block.id) !== target.id)) {
+        continue;
+      }
       addSuccessor(block.id, { to: target.id, kind: successor.kind, ...(successor.metadata == null ? {} : { metadata: successor.metadata }) });
     }
   }
