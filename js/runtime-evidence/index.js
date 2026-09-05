@@ -21,11 +21,19 @@ function runtimeEvidenceGroupKey(item) {
   }
   return item && item.id || Symbol('evidence');
 }
+function runtimeEvidenceId(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+    throw new TypeError('runtime evidence id must be a non-empty canonical string');
+  }
+  return value;
+}
 
 export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
+  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}`;
   return {
-    id:input.id || `${traceGroup}:${idPart(input.kind || 'observation')}`,
+    id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
