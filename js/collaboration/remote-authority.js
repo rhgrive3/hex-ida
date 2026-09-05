@@ -82,7 +82,7 @@ function isCanonicalRemoteOperation(operation) {
     || !Array.isArray(operation.causalParents)
     || operation.causalParents.some((parent) => !validRawIdentity(parent))
     || new Set(operation.causalParents).size !== operation.causalParents.length
-    || operation.causalParents.some((parent, index, list) => index > 0 && list[index - 1].localeCompare(parent) > 0)
+    || operation.causalParents.some((parent, index, list) => index > 0 && list[index - 1] > parent)
     || (operation.timestampHint != null && typeof operation.timestampHint !== 'string')
     || (operation.beforeFingerprint != null && typeof operation.beforeFingerprint !== 'string')
     || !isPlainRecord(operation.provenance)) {
