@@ -57,21 +57,27 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope }) {
+  finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope, stores = null }) {
+    // Turn-local stores are passed explicitly so finalization cannot observe a
+    // concurrent turn's rebinding of the shared fields (#6216). Fall back to
+    // the shared fields only for legacy direct callers.
+    const evidenceStore = stores?.evidenceStore ?? this.evidenceStore;
+    const hypothesisStore = stores?.hypothesisStore ?? this.hypothesisStore;
+    const proposalStore = stores?.proposalStore ?? this.proposalStore;
     // The final model call can overlap a workbench binary/project/runtime switch
     // without another tool execution. Re-check the turn binding before any
     // live-context validation (notably suggested action addresses) so finalization
     // cannot mix a snapshotted investigation with the newly visible binary.
     assertLiveBindingsUnchanged(this.localContext, snapshot);
     const requestedEvidence = Array.from(new Set((decision.evidenceIds || []).map(String)));
-    const evidence = requestedEvidence.map((id) => this.evidenceStore.get(id)).filter(Boolean);
-    const missingIds = requestedEvidence.filter((id) => !this.evidenceStore.has(id));
+    const evidence = requestedEvidence.map((id) => evidenceStore.get(id)).filter(Boolean);
+    const missingIds = requestedEvidence.filter((id) => !evidenceStore.has(id));
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
-    const finalEvidence = evidence.length ? evidence : fallbackEvidence(this.evidenceStore, plan);
-    for (const modelHypothesis of decision.hypotheses || []) this.hypothesisStore.upsert(modelHypothesis);
+    const finalEvidence = evidence.length ? evidence : fallbackEvidence(evidenceStore, plan);
+    for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));
-    const hypotheses = hypothesisIds.size ? this.hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : this.hypothesisStore.all();
-    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore: this.evidenceStore, proposalStore: this.proposalStore, addressExists: (address) => addressExistsSync(this.localContext, address) });
+    const hypotheses = hypothesisIds.size ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : hypothesisStore.all();
+    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore, proposalStore, addressExists: (address) => addressExistsSync(this.localContext, address) });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
     if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;

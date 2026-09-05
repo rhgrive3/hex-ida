@@ -114,8 +114,15 @@ for (const entry of HEX_CAPABILITIES.filter((item) => item.runtimeBound)) {
     symbols: { rename: (address, value) => names.set(String(address), `sym:${value}`) },
     viewer: { setSymbols() {} }, updateChrome() {},
   };
-  const executor = new CapabilityExecutor({ catalog: { get: (id) => byId.get(id) || null }, app });
-  const result = await executor.execute('annotation.rename', { address: '4096', value: 'renamed' }, { authorization: { kind: 'proposal', token: '0123456789abcdef' } });
+  // #6221: mutations require a live approval from the trusted store.
+  const { ProposalStore } = await import('../js/ai/proposals.js');
+  const approvalStore = new ProposalStore({ evidenceStore: { has: () => true } });
+  const approvalProposal = approvalStore.create({
+    kind: 'rename', target: { address: '4096' }, before: null, after: 'renamed', evidenceIds: ['e1'],
+  });
+  const { approvalToken } = approvalStore.approve(approvalProposal.id);
+  const executor = new CapabilityExecutor({ catalog: { get: (id) => byId.get(id) || null }, app, proposalStore: approvalStore });
+  const result = await executor.execute('annotation.rename', { address: '4096', value: 'renamed' }, { authorization: { kind: 'proposal', token: approvalToken, proposalId: approvalProposal.id } });
   assert.equal(result.ok, true);
   assert.equal(names.get('4096'), 'sym:renamed');
 }
@@ -123,6 +130,8 @@ for (const entry of HEX_CAPABILITIES.filter((item) => item.runtimeBound)) {
 /* 8. executor turns missing args into invalid_tool_call, never native TypeError */
 {
   const app = { notes: { setName() {} }, symbols: { rename() {} }, viewer: { setSymbols() {} }, updateChrome() {} };
+  // Missing args fail at schema validation before the approval gate, so any
+  // shape-valid authorization reaches the same invalid_tool_call path.
   const executor = new CapabilityExecutor({ catalog: { get: (id) => byId.get(id) || null }, app });
   await assert.rejects(
     () => executor.execute('annotation.rename', {}, { authorization: { kind: 'proposal', token: '0123456789abcdef' } }),

@@ -130,6 +130,8 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   if (options.signal?.aborted) {
     return { escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(), status: analyzerStatus('partial', 'cancelled') };
   }
+  const isCancelled = () => options.signal?.aborted === true;
+  const cancelledResult = () => ({ escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(), status: analyzerStatus('partial', 'cancelled') });
   if (!pointsToRun || pointsToRun.status.completeness === 'unsupported') {
     // Without points-to there is no root vocabulary to reason about. The only
     // sound report is "nothing is proven non-escaping".
@@ -246,14 +248,22 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
 
   // Language and runtime capture providers contribute additional escapes
   // without the generic solver knowing anything about their languages.
+  // Providers are re-entrant external hooks: check cancellation before and
+  // after each invocation so an abort fired inside a provider cannot still
+  // publish complete/nonEscapingRoots (#6212).
   for (const provider of options.captureProviders ?? []) {
-    for (const capture of provider({ ir, cfg, ssa, pointsToRun }) ?? []) {
+    if (isCancelled()) return cancelledResult();
+    const captures = provider({ ir, cfg, ssa, pointsToRun }) ?? [];
+    if (isCancelled()) return cancelledResult();
+    for (const capture of captures) {
       const record_ = createEscapeRecord(capture);
       escapes.push(record_);
       escapedRoots.add(record_.rootKey);
       if (!rootOrigins.has(record_.rootKey)) rootOrigins.set(record_.rootKey, record_.rootOrigin);
     }
+    if (isCancelled()) return cancelledResult();
   }
+  if (isCancelled()) return cancelledResult();
 
   // Transitive containment propagation: if a local container escaped, any root stored into it also escapes.
   const escapeRecordsByRoot = new Map();
@@ -300,7 +310,11 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
    * this function, nothing published it, and the analysis saw every flow. Any
    * unresolved flow at all voids the whole set — a value that may point
    * anywhere could have carried any root out.
+   *
+   * A mid-run abort also voids the set: a cancelled traversal must never
+   * publish strong non-escape proofs (#6212).
    */
+  if (isCancelled()) return cancelledResult();
   const nonEscapingRoots = new Set();
   if (!sawUnresolvedFlow) {
     for (const [rootKey, origin] of rootOrigins) {
@@ -308,6 +322,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   }
 
+  if (isCancelled()) return cancelledResult();
   const pointsToComplete = pointsToRun.status.completeness === 'complete';
   const completeness = pointsToComplete && !sawUnresolvedFlow ? 'complete' : 'partial';
   return {

@@ -12,6 +12,11 @@ export class ProposalStore {
     this.binding = typeof binding === 'function' ? binding : null;
     this.records = new Map();
     this.approvals = new Map();
+    // Tokens consumed by apply() but currently in-flight inside the apply
+    // callback. CapabilityExecutor verifies against both maps so the
+    // legitimate ProposalExecutor path (which calls back inside apply)
+    // still validates after the approval is consumed (#6221).
+    this.inflight = new Map();
     this.audit = [];
   }
 
@@ -68,6 +73,7 @@ export class ProposalStore {
     if (proposal.status !== 'pending' && proposal.status !== 'approved') return proposal;
     proposal.status = 'rejected';
     this.approvals.delete(proposal.id);
+    this.inflight.delete(proposal.id);
     this.audit.push({ type: 'proposal-rejected', proposalId: proposal.id, timestamp: new Date().toISOString() });
     return proposal;
   }
@@ -80,32 +86,37 @@ export class ProposalStore {
     // await. A second caller with the same token can no longer pass validation.
     proposal.status = 'applying';
     this.approvals.delete(proposal.id);
+    this.inflight.set(proposal.id, approvalToken);
     this.audit.push({ type: 'proposal-applying', proposalId: proposal.id, timestamp: new Date().toISOString() });
 
-    if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
-      throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
-    }
-
-    if (fingerprint(currentState) !== proposal.revision) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
-      throw new AIError('tool_failed', 'The proposal target changed after it was created.');
-    }
-    if (typeof apply !== 'function') {
-      proposal.status = 'failed';
-      throw new AIError('tool_failed', 'No mutation adapter is available.');
-    }
     try {
+      if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
+        throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
+      }
+
+      if (fingerprint(currentState) !== proposal.revision) {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
+        throw new AIError('tool_failed', 'The proposal target changed after it was created.');
+      }
+      if (typeof apply !== 'function') {
+        proposal.status = 'failed';
+        throw new AIError('tool_failed', 'No mutation adapter is available.');
+      }
       await apply(proposalExecutionView(proposal));
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
     } catch (error) {
-      proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      if (proposal.status === 'applying') {
+        proposal.status = 'failed';
+        this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      }
       throw error;
+    } finally {
+      this.inflight.delete(proposal.id);
     }
   }
 
@@ -276,13 +287,20 @@ function canonicalIdentity(value, stack = new Set()) {
   stack.add(value);
   try {
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
-    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-      const bytes = value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (value instanceof ArrayBuffer) {
+      let hexText = '';
+      for (const byte of new Uint8Array(value)) hexText += byte.toString(16).padStart(2, '0');
+      return `yArrayBuffer:${JSON.stringify(hexText)}`;
+    }
+    if (ArrayBuffer.isView(value)) {
+      // Typed-array/view kinds carry different element semantics over the same
+      // raw bytes (Uint8Array vs Uint32Array vs Float32Array vs DataView).
+      // The stale-state guard must not alias them to one revision (#6215).
+      const tag = value instanceof DataView ? 'DataView' : (value?.constructor?.name || 'UnknownView');
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      return `y${tag}:${JSON.stringify(hexText)}:${value.byteLength}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.
