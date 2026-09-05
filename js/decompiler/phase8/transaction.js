@@ -290,7 +290,11 @@ function runPassTransactionInternal(state, pass, context = {}, budget = {}, { ch
   // Last check immediately before the only mutation point.  A cancellation
   // that arrives while validating the staged result must not become a commit.
   if (aborted(budget)) return refuse('cancelled-before-commit');
-  const identityInvalid = passContext.resolvedAnalysisIdentity?.valid !== true;
+  // Legacy/direct states that were not seeded from an IR have no semantic
+  // binding to validate. A bound state, however, must carry a valid identity
+  // before any changed fact can publish.
+  const identityInvalid = semanticSnapshotForAnalysis(state) != null
+    && passContext.resolvedAnalysisIdentity?.valid !== true;
   if (identityInvalid && (result.changed || stagedWrites.size > 0)) {
     return refuse('semantic-identity-invalid-before-commit');
   }
@@ -321,25 +325,61 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
 }
 
 /**
- * Run the canonical vertical batch. Individual passes consume the immutable
- * snapshot, and one final raw-vs-snapshot check protects the batch publication.
+ * Run a pass batch as one authoritative transaction. Individual passes commit
+ * only to a private fork so later passes can consume their facts. The raw graph,
+ * cancellation state, and target versions are checked before that fork is
+ * published to the supplied state in one commit.
+ *
  * Direct callers use `runPassTransaction` above and therefore cannot opt out of
  * the per-transaction guard with a caller-controlled context field.
  */
 export function runPassTransactionBatch(state, passes, context = {}, budget = {}) {
+  const before = state.snapshot();
+  const working = forkAnalysisState(state);
+  const passContext = { ...context, analysis:working };
   const outcomes = [];
   const timings = [];
+  let stoppedPassId = null;
   for (const pass of passes) {
     const started = clock();
-    const outcome = runPassTransactionInternal(state, pass, context, budget, { checkSemanticSnapshot:false });
+    const outcome = runPassTransactionInternal(working, pass, passContext, budget, { checkSemanticSnapshot:false });
     timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
     outcomes.push(outcome);
-    if (!outcome.committed && !outcome.stopReason?.startsWith('missing-input:')) break;
+    if (!outcome.committed && !outcome.stopReason?.startsWith('missing-input:')) {
+      stoppedPassId = pass.descriptor.id;
+      break;
+    }
   }
+
+  // Identity can be the most expensive final validation. Cancellation must be
+  // sampled after it, not only before it, so an abort arriving during that work
+  // cannot publish the private fork.
+  const snapshotCurrent = analysisSemanticSnapshotIsCurrent(state, context);
+  let stopReason = stoppedPassId == null ? null : outcomes.at(-1).stopReason;
+  if (stopReason == null && !snapshotCurrent) stopReason = 'semantic-snapshot-changed-before-publication';
+  if (stopReason == null && aborted(budget)) stopReason = 'cancelled-before-publication';
+  if (stopReason == null && !commitAnalysisState(state, working, before)) stopReason = 'analysis-concurrent-change';
+
+  const committed = stopReason == null;
+  // Per-pass commits describe authoritative publication to the API caller, not
+  // writes made only inside the discarded private fork.
+  const publishedOutcomes = committed ? outcomes : outcomes.map((outcome) => {
+    if (!outcome.committed) return outcome;
+    return Object.freeze({
+      committed:false,
+      result:null,
+      invalidated:Object.freeze([]),
+      staged:Object.freeze([]),
+      stopReason,
+    });
+  });
   return Object.freeze({
-    outcomes:Object.freeze(outcomes),
+    committed,
+    stopReason,
+    stoppedPassId,
+    outcomes:Object.freeze(publishedOutcomes),
     timings:Object.freeze(timings),
-    snapshotCurrent:analysisSemanticSnapshotIsCurrent(state, context),
+    snapshotCurrent,
   });
 }
 

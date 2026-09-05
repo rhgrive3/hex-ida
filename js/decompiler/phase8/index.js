@@ -364,6 +364,47 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const observations = {};
   const invalidated = new Set();
   const batch = runPassTransactionBatch(analysis, passes, passContext, budget);
+  if (!batch.committed) {
+    const reason = batch.stopReason ?? 'unknown';
+    if (reason === 'semantic-snapshot-changed-before-publication') {
+      return {
+        ledger: withheldLedger('failed', reason, [{
+          severity: 'error',
+          code: 'phase8.analysis.snapshot-changed',
+          message: 'Phase 8 discarded results because the producer graph changed during analysis.',
+          reason: 'A fresh canonical identity did not match the immutable snapshot consumed by the passes.',
+        }], registryDigest, before),
+        timings: Object.freeze(batch.timings),
+        analysis: authoritative,
+      };
+    }
+    if (reason === 'analysis-concurrent-change') {
+      return {
+        ledger: withheldLedger('failed', reason, [{
+          severity: 'error',
+          code: 'phase8.analysis.concurrent-change',
+          message: 'Phase 8 discarded its private result because authoritative analysis changed during the run.',
+          reason: 'The initial analysis version snapshot no longer matches the commit boundary.',
+        }], registryDigest, before),
+        timings: Object.freeze(batch.timings),
+        analysis: authoritative,
+      };
+    }
+    const cancelled = reason.startsWith('cancelled');
+    const failedPassId = batch.stoppedPassId ?? 'batch-publication';
+    return {
+      ledger: withheldLedger(cancelled ? 'cancelled' : 'failed', cancelled ? reason : `pass-failed:${failedPassId}`, [{
+        severity: cancelled ? 'info' : 'error',
+        code: cancelled ? 'phase8.cancelled' : 'phase8.pass.failed',
+        message: cancelled
+          ? 'Phase 8 was cancelled part way through the pass set.'
+          : `Phase 8 pass failed: ${failedPassId}`,
+        reason,
+      }], registryDigest, before),
+      timings: Object.freeze(batch.timings),
+      analysis: authoritative,
+    };
+  }
   for (const [index, outcome] of batch.outcomes.entries()) {
     const pass = passes[index];
     timings.push(batch.timings[index]);
@@ -428,22 +469,6 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     results.push(outcome.result);
     for (const key of outcome.invalidated) invalidated.add(key);
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
-  }
-
-  // Re-capture the live producer graph once, after every pass but before the
-  // only vertical publication. A pass cannot opt out through caller-controlled
-  // context, and direct transactions already perform the same guard per commit.
-  if (!batch.snapshotCurrent) {
-    return {
-      ledger: withheldLedger('failed', 'semantic-snapshot-changed-before-publication', [{
-        severity: 'error',
-        code: 'phase8.analysis.snapshot-changed',
-        message: 'Phase 8 discarded results because the producer graph changed during analysis.',
-        reason: 'A fresh canonical identity did not match the immutable snapshot consumed by the passes.',
-      }], registryDigest, before),
-      timings: Object.freeze(timings),
-      analysis: authoritative,
-    };
   }
 
   if (!commitAnalysisState(authoritative, analysis, before)) {
