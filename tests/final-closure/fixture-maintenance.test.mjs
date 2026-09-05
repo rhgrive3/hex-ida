@@ -1041,6 +1041,30 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
     ), 'receipt-removed');
   });
 
+  test('T061 distinguishes draft text from corrupted published receipt history', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 't061-draft-history-'));
+    try {
+      runGit(root, ['init', '--quiet']);
+      writeFile(root, INVENTORY_PATH, 'prefanout fixture: inventory draft\n');
+      commit(root, 'inventory predates maintenance protocol');
+      writeFile(root, INVENTORY_PATH, '{"taskHandoffs":{}}\n');
+      const head = commit(root, 'valid inventory without maintenance');
+      assert.equal(verifyT061MaintenanceStructure(root, null, { expectedSha:head }), null);
+    } finally {
+      fs.rmSync(root, { recursive:true, force:true });
+    }
+
+    runGit(fixture.root, ['checkout', '--quiet', '--detach', fixture.publication]);
+    const published = readAt(fixture.root, fixture.publication, INVENTORY_PATH);
+    writeFile(fixture.root, INVENTORY_PATH, 'unreadable after publication\n');
+    commit(fixture.root, 'corrupt published maintenance inventory');
+    writeFile(fixture.root, INVENTORY_PATH, published);
+    const restored = commit(fixture.root, 'restore current inventory after corruption');
+    expectInvalid(() => verifyT061MaintenanceStructure(
+      fixture.root, bundleAt(fixture.root, restored), { expectedSha:restored },
+    ), 'receipt-unreadable');
+  });
+
   test('T061 rejects owner regression after the explicit transfer', () => {
     const reverted = mutatePublication(fixture, 'T061 revert transferred owner', (inventory) => {
       const entry = inventory.entries.find((candidate) => candidate.path === T052_PATH);

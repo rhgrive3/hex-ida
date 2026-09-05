@@ -339,6 +339,9 @@ only the inventory and T061's pending-to-done task record. P is derived from
 first-parent history, avoiding a receipt that embeds its own commit identity.
 Publication detection parses JSON property identity independently of escape
 spelling. Receipt removal, rewriting, reuse, or owner regression is rejected.
+Non-JSON draft versions before the first semantic publication are not
+maintenance records. Any unreadable inventory revision after publication is
+rejected, even when a later revision restores the receipt.
 
 The product retains the preceding checkpoint's `acceptedTaskIds` unchanged and
 records `acceptedMerge`, `checkpointProduct`, `integrationReconciliation`,

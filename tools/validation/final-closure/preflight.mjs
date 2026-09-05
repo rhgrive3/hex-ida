@@ -5263,7 +5263,15 @@ export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {
       if (publication) fail('receipt-removed');
       continue;
     }
-    const recorded = JSON.parse(text)[field];
+    let historicalInventory;
+    try { historicalInventory = JSON.parse(text); }
+    catch {
+      // Before this protocol existed the path may have held draft text. Once
+      // a semantic publication exists, an unreadable revision is corruption.
+      if (publication) fail('receipt-unreadable');
+      continue;
+    }
+    const recorded = historicalInventory?.[field];
     if (recorded == null) {
       if (publication) fail('receipt-removed');
       continue;
