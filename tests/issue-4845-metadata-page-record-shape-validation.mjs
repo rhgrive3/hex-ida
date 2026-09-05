@@ -7,6 +7,7 @@ import {
   isLanguageRecordAuthoritative,
   applyLanguageMetadataTypesToGraph,
   isCanonicalLanguageRecord,
+  languageMetadataFunctionEvidence,
 } from '../js/metadata/provider.js';
 
 console.log('Testing #4845: Language metadata page record shape validation...');
@@ -62,7 +63,44 @@ const mockGraph = {
 applyLanguageMetadataTypesToGraph(mockGraph, result, forgedPage);
 assert.equal(hardConstraints.length, 0);
 
-// 4. Valid record created with createLanguageMetadataRecord works as expected
+// 4. Raw records that merely look canonical cannot smuggle non-canonical evidence provenance into authority.
+const nonCanonicalEvidenceRecord = {
+  kind: 'type',
+  entityId: 'entity-A',
+  name: null,
+  address: null,
+  sizeBytes: null,
+  descriptor: { layer: 'nominal', claim: { name: 'RawType' } },
+  providerId: 'p',
+  providerVersion: '1',
+  ecosystem: 'x',
+  buildIdentity: null,
+  evidenceIds: ['  ev-2  ', 'ev-1', 'ev-1'],
+};
+assert.equal(isCanonicalLanguageRecord(nonCanonicalEvidenceRecord), false);
+assert.equal(isLanguageRecordAuthoritative(result, nonCanonicalEvidenceRecord), false);
+applyLanguageMetadataTypesToGraph(
+  mockGraph,
+  result,
+  createLanguageMetadataPage({ records: [nonCanonicalEvidenceRecord] }),
+);
+assert.equal(hardConstraints.length, 0);
+
+const rawSymbol = {
+  ...nonCanonicalEvidenceRecord,
+  kind: 'symbol',
+  entityId: 'fn-A',
+  address: '0x1000',
+  descriptor: null,
+};
+const rawFunctionEvidence = languageMetadataFunctionEvidence(
+  result,
+  createLanguageMetadataPage({ records: [rawSymbol] }),
+);
+assert.equal(rawFunctionEvidence.length, 1);
+assert.equal(rawFunctionEvidence[0].confidence, 'heuristic');
+
+// 5. Valid record created with createLanguageMetadataRecord works as expected and canonicalizes evidence IDs.
 const validRecord = createLanguageMetadataRecord({
   kind: 'type',
   entityId: 'entity-A',
@@ -70,8 +108,10 @@ const validRecord = createLanguageMetadataRecord({
   providerVersion: '1',
   ecosystem: 'x',
   descriptor: { layer: 'nominal', claim: { name: 'ValidType' } },
+  evidenceIds: ['  ev-2  ', 'ev-1', 'ev-1'],
 });
 
+assert.deepEqual(validRecord.evidenceIds, ['ev-1', 'ev-2']);
 assert.equal(isCanonicalLanguageRecord(validRecord), true);
 assert.equal(isLanguageRecordAuthoritative(result, validRecord), true);
 
@@ -81,5 +121,29 @@ const validPage = createLanguageMetadataPage({
 
 applyLanguageMetadataTypesToGraph(mockGraph, result, validPage);
 assert.equal(hardConstraints.length, 1);
+
+// 6. Creator-branded records remain authoritative under existing matched-partial coverage.
+const partialResult = createLanguageMetadataResult({
+  providerId: 'p',
+  providerVersion: '1',
+  ecosystem: 'x',
+  identity: {
+    verdict: 'matched-partial',
+    providerId: 'p',
+    providerVersion: '1',
+    ecosystem: 'x',
+    expected: 'same',
+    observed: 'same',
+    coverage: { entityIds: ['entity-A'] },
+  },
+  completeness: {
+    present: true,
+    declared: 1,
+    scanned: 1,
+    parsed: 1,
+    complete: true,
+  },
+});
+assert.equal(isLanguageRecordAuthoritative(partialResult, validRecord), true);
 
 console.log('#4845 tests passed successfully.');
