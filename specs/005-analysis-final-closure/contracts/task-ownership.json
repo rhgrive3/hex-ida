@@ -1174,6 +1174,7 @@
         "tests/final-closure/preflight.test.mjs",
         "tests/final-closure/fixture-maintenance.test.mjs",
         "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/data-model.md",
         "specs/005-analysis-final-closure/contracts/task-ownership.json",
         "tests/final-closure/t052/canonical-operation-registry.test.mjs",
         "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md"

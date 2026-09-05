@@ -12,6 +12,8 @@ import {
   emitShadowGateEvidence,
   executeRollingProductGates,
   executeT061MaintenanceGates,
+  validatePreflightContracts,
+  verifyTaskHandoffs,
   verifyT061MaintenanceGates,
   verifyT061MaintenanceStructure,
   verifyT061MaintenanceTransfer,
@@ -31,6 +33,7 @@ const T061_TEST_PATH = 'tests/final-closure/fixture-maintenance.test.mjs';
 const PREFLIGHT_PATH = 'tools/validation/final-closure/preflight.mjs';
 const PREFLIGHT_TEST_PATH = 'tests/final-closure/preflight.test.mjs';
 const T061_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md';
+const DATA_MODEL_PATH = 'specs/005-analysis-final-closure/data-model.md';
 const T061_RECEIPT_SCHEMA = 'hex-final-closure-t061-maintenance-transfer/v1';
 const T061_PRODUCT_SCHEMA = 'hex-final-closure-t061-maintenance-product/v1';
 const T061_MAINTENANCE_PATHS = Object.freeze([
@@ -40,6 +43,7 @@ const T061_MAINTENANCE_PATHS = Object.freeze([
   TASKS_PATH,
   OWNERSHIP_PATH,
   T052_PATH,
+  DATA_MODEL_PATH,
 ]);
 const T061_REQUIRED_COMPONENT_PATHS = Object.freeze([
   PREFLIGHT_PATH,
@@ -47,6 +51,7 @@ const T061_REQUIRED_COMPONENT_PATHS = Object.freeze([
   TASKS_PATH,
   OWNERSHIP_PATH,
   T052_PATH,
+  DATA_MODEL_PATH,
 ]);
 const T049_GENERATED_PATHS = Object.freeze([
   'js/userscript/deployment-identity.generated.js',
@@ -266,6 +271,8 @@ function createFixture() {
   writeFile(root, PREFLIGHT_PATH, `${sourcePreflight}\n// T061 fixture component boundary\n`);
   const sourceFixtureTest = fs.readFileSync(path.join(SOURCE_ROOT, T061_TEST_PATH), 'utf8');
   writeFile(root, T061_TEST_PATH, `${sourceFixtureTest}\n// T061 fixture replay boundary\n`);
+  const sourceDataModel = fs.readFileSync(path.join(SOURCE_ROOT, DATA_MODEL_PATH), 'utf8');
+  writeFile(root, DATA_MODEL_PATH, `${sourceDataModel}\n// T061 maintenance schema fixture\n`);
   writeFile(root, T052_PATH, postimage);
 
   const t061Task = [
@@ -348,6 +355,7 @@ function createFixture() {
     root,
     candidateIdentity: { headSha: generated, treeSha: generatedTree },
     spawn: successfulMaintenanceSpawn,
+    assertCandidateState: (label) => assertEphemeralStateClean(root, label),
   });
   const acceptedMerge = { commitSha: merge, treeSha: acceptedMergeTree };
   const checkpointProduct = { commitSha: generated, treeSha: generatedTree };
@@ -501,6 +509,17 @@ function firstPublicationMutation(fixture, label, mutator, parentSha = fixture.e
   return commit(fixture.root, label);
 }
 
+function firstEscapedReceiptPublication(fixture) {
+  runGit(fixture.root, ['checkout', '--quiet', '--detach', fixture.evidence]);
+  const inventory = JSON.parse(readAt(fixture.root, fixture.publication, INVENTORY_PATH));
+  const tasks = readAt(fixture.root, fixture.publication, TASKS_PATH);
+  const serialized = JSON.stringify(inventory, null, 2)
+    .replace('"stageAMaintenanceTransfer":', '"\\u0073tageAMaintenanceTransfer":');
+  writeFile(fixture.root, INVENTORY_PATH, `${serialized}\n`);
+  writeFile(fixture.root, TASKS_PATH, tasks);
+  return commit(fixture.root, 'T061 escaped-key receipt publication');
+}
+
 function rebindMaintenanceEvidence(fixture, text, identities) {
   let rebound = text;
   rebound = replaceOnce(rebound, `Integration predecessor: ${fixture.integration}`,
@@ -613,6 +632,15 @@ function cloneAt(source, commitSha) {
   return { root, sandbox };
 }
 
+function assertEphemeralStateClean(root, label) {
+  const result = spawnSync(GIT, [
+    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
+  ], { cwd: root, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
+  if (result.status !== 0 || String(result.stdout) !== '') {
+    throw new Error(`t061-maintenance-invalid:runtime-product-mutated:${label}`);
+  }
+}
+
 function successfulMaintenanceSpawn(command, argv) {
   return {
     status: 0,
@@ -644,6 +672,37 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
     assert.equal(result.publication, fixture.publication);
     assert.equal(result.transfer.preimageBlobSha1, PREIMAGE_BLOB_SHA);
     assert.equal(result.transfer.postimageBlobSha1, POSTIMAGE_BLOB_SHA);
+  });
+
+  test('T061 maintenance bridge exempts only the authenticated T046 data-model path', () => {
+    const contract = validatePreflightContracts(bundleAt(fixture.root, fixture.publication));
+    assert.equal(contract.ok, true, contract.errors?.join('\n'));
+    const handoffResult = verifyTaskHandoffs(
+      fixture.root,
+      contract,
+      fixture.publication,
+    );
+    assert.equal(handoffResult.maintenancePublicationCommitSha, fixture.publication);
+
+    const unrelated = contract.taskHandoffResult.inventoryEntries.find(
+      (entry) => entry.ownerTaskId === 'T046' && entry.path !== DATA_MODEL_PATH,
+    );
+    assert.ok(unrelated, 'the fixture must retain an unrelated T046-owned path');
+    for (const repoPath of [DATA_MODEL_PATH, unrelated.path]) {
+      runGit(fixture.root, ['checkout', '--quiet', '--detach', fixture.publication]);
+      fs.appendFileSync(path.join(fixture.root, repoPath), '\n');
+      const mutatedHead = commit(fixture.root, `T061 mutate T046-owned path ${repoPath}`);
+      assert.throws(
+        () => verifyTaskHandoffs(fixture.root, contract, mutatedHead),
+        (error) => {
+          assert.match(
+            String(error?.message),
+            new RegExp(`task-handoff-owned-path-changed:T046:${repoPath}`),
+          );
+          return true;
+        },
+      );
+    }
   });
 
   test('T061 transfer wrapper accepts only the recorded maintenance gate proof', () => {
@@ -683,7 +742,12 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
     for (const { spawn, reason } of cases) {
       const { root, sandbox } = cloneAt(fixture.root, fixture.generated);
       try {
-        expectInvalid(() => executeT061MaintenanceGates({ root, candidateIdentity: identity, spawn }), reason);
+        expectInvalid(() => executeT061MaintenanceGates({
+          root,
+          candidateIdentity: identity,
+          spawn,
+          assertCandidateState: (label) => assertEphemeralStateClean(root, label),
+        }), reason);
       } finally {
         fs.rmSync(sandbox, { recursive: true, force: true });
       }
@@ -697,6 +761,7 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
       expectInvalid(() => executeT061MaintenanceGates({
         root,
         candidateIdentity: { headSha: fixture.generated, treeSha: fixture.generatedTree },
+        assertCandidateState: (label) => assertEphemeralStateClean(root, label),
         spawn: (command, argv) => {
           calls += 1;
           const result = successfulMaintenanceSpawn(command, argv);
@@ -705,6 +770,52 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
         },
       }), 'runtime-product-mutated');
       assert.equal(calls, 1);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('T061 maintenance execution requires candidate-state callback', () => {
+    const { root, sandbox } = cloneAt(fixture.root, fixture.generated);
+    try {
+      let calls = 0;
+      expectInvalid(() => executeT061MaintenanceGates({
+        root,
+        candidateIdentity: { headSha: fixture.generated, treeSha: fixture.generatedTree },
+        spawn: (command, argv) => {
+          calls += 1;
+          return successfulMaintenanceSpawn(command, argv);
+        },
+      }), 'runtime-state-check-required');
+      assert.equal(calls, 0, 'the helper must fail before running a gate without state proof');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('T061 maintenance execution rejects ignored mutation through candidate-state callback', () => {
+    const { root, sandbox } = cloneAt(fixture.root, fixture.generated);
+    try {
+      fs.appendFileSync(path.join(root, '.git', 'info', 'exclude'), '\n.t061-ignored-probe\n');
+      const ignoredPath = path.join(root, '.t061-ignored-probe');
+      let gateCalls = 0;
+      const callbackLabels = [];
+      expectInvalid(() => executeT061MaintenanceGates({
+        root,
+        candidateIdentity: { headSha: fixture.generated, treeSha: fixture.generatedTree },
+        assertCandidateState: (label) => {
+          callbackLabels.push(label);
+          assertEphemeralStateClean(root, label);
+        },
+        spawn: (command, argv) => {
+          gateCalls += 1;
+          if (gateCalls === 1) fs.writeFileSync(ignoredPath, 'ignored mutation\n');
+          return successfulMaintenanceSpawn(command, argv);
+        },
+      }), 'runtime-product-mutated');
+      assert.equal(gateCalls, 1, 'the ignored mutation must stop replay after the first gate');
+      assert.ok(callbackLabels.length >= 2, 'state callback must run before and after gate execution');
+      assert.equal(fs.existsSync(ignoredPath), true);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -914,6 +1025,20 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
       bundleAt(fixture.root, rewritten),
       { expectedSha: rewritten },
     ), 'receipt-rewritten');
+  });
+
+  test('T061 rejects receipt removal after escaped semantic publication', () => {
+    const escapedPublication = firstEscapedReceiptPublication(fixture);
+    const removed = JSON.parse(readAt(fixture.root, escapedPublication, INVENTORY_PATH));
+    delete removed.stageAMaintenanceTransfer;
+    delete removed.taskHandoffs.T061;
+    writeFile(fixture.root, INVENTORY_PATH, `${JSON.stringify(removed, null, 2)}\n`);
+    const removal = commit(fixture.root, 'T061 remove escaped-key receipt');
+    expectInvalid(() => verifyT061MaintenanceStructure(
+      fixture.root,
+      bundleAt(fixture.root, removal),
+      { expectedSha: removal },
+    ), 'receipt-removed');
   });
 
   test('T061 rejects owner regression after the explicit transfer', () => {

@@ -100,6 +100,7 @@ const T061_MAINTENANCE_COMPONENT_CODE_PATHS = Object.freeze([
   'tests/final-closure/preflight.test.mjs',
   'tests/final-closure/fixture-maintenance.test.mjs',
   'specs/005-analysis-final-closure/tasks.md',
+  'specs/005-analysis-final-closure/data-model.md',
   'specs/005-analysis-final-closure/contracts/task-ownership.json',
   T061_MAINTENANCE_TRANSFER_PATH,
 ]);
@@ -5252,12 +5253,6 @@ export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {
   const current = readJsonAt(root, expectedSha, inventoryPath);
   const same = (a, b) => canonicalJson(a) === canonicalJson(b);
   if (bundle?.integrationInventory && !same(bundle.integrationInventory, current)) fail('bundle');
-  if (current[field] == null && git(root, ['log', '--first-parent', '-1', '--format=%H',
-    '-G', `"${field}"`, expectedSha, '--', inventoryPath]) === '') {
-    if (current.taskHandoffs?.T061 && isStageAMaintenanceTask('T061', readJsonAt(root, expectedSha,
-      'specs/005-analysis-final-closure/contracts/task-ownership.json'))) fail('receipt-missing');
-    return null;
-  }
   let receipt = null;
   let publication = null;
   const history = git(root, ['rev-list', '--first-parent', '--reverse', expectedSha,
@@ -5276,6 +5271,13 @@ export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {
     receipt ??= recorded;
     publication ??= sha;
     if (!same(recorded, receipt)) fail('receipt-rewritten');
+  }
+  // JSON escape spellings do not change a receipt's property identity. Only
+  // the parsed first-parent history can prove that no publication occurred.
+  if (!publication && current[field] == null) {
+    if (current.taskHandoffs?.T061 && isStageAMaintenanceTask('T061', readJsonAt(root, expectedSha,
+      'specs/005-analysis-final-closure/contracts/task-ownership.json'))) fail('receipt-missing');
+    return null;
   }
   if (!receipt || !same(receipt, current[field])) fail('receipt-missing');
   if (!exactSet(Object.keys(receipt), ['schemaVersion', 'predecessor', 'successorTaskId',
@@ -5492,13 +5494,16 @@ function t061MaintenanceCommands(root, headSha) {
 
 export function executeT061MaintenanceGates({ root = ROOT, candidateIdentity,
   spawn = spawnSync, environment = process.env, assertCandidateState = null } = {}) {
+  if (typeof assertCandidateState !== 'function') {
+    throw new Error('t061-maintenance-invalid:runtime-state-check-required');
+  }
   const assertState = () => {
     if (git(root, ['rev-parse', 'HEAD']) !== candidateIdentity?.headSha
       || git(root, ['rev-parse', 'HEAD^{tree}']) !== candidateIdentity?.treeSha
       || git(root, ['status', '--porcelain', '--untracked-files=all']) !== '') {
       throw new Error('t061-maintenance-invalid:runtime-product-mutated');
     }
-    assertCandidateState?.('t061-maintenance');
+    assertCandidateState('t061-maintenance');
   };
   assertState();
   const commands = t061MaintenanceCommands(root, candidateIdentity.headSha);
@@ -5647,6 +5652,11 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     }
     if (['T058', 'T060', 'T061'].includes(ownerTaskId) && maintenance?.paths.includes(entry.path)) {
       sealedHead = entry.path === T061_MAINTENANCE_EVIDENCE_PATH ? maintenance.evidence : maintenance.code;
+    }
+    if (ownerTaskId === 'T046'
+      && entry.path === 'specs/005-analysis-final-closure/data-model.md'
+      && maintenance?.paths.includes(entry.path)) {
+      sealedHead = maintenance.code;
     }
     const unchanged = runGit(root, [
       'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
