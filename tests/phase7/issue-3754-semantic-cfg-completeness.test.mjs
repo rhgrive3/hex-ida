@@ -114,6 +114,13 @@ const publicBlocks = partitionPublic([
 assert.equal(publicBlocks.length, 2, 'the public partitioner must preserve sparse block boundaries');
 assert.equal(semanticControlUnknowns(publicBlocks, plugin).length, 1);
 
+const staleBlocks = blocks.map((block, index) => index === 0
+  ? {
+    ...block,
+    successors: [...block.successors, { to: 'block-2000', kind: 'conditional-false' }],
+  }
+  : block);
+
 const result = buildSemanticV2CompatibilityPipeline({
   architecturePlugin: plugin,
   decoderSemanticVersion: 'test-decoder-1',
@@ -121,7 +128,7 @@ const result = buildSemanticV2CompatibilityPipeline({
   sliceId: 'slice_3754_fixture',
   addressWidthBits: 64,
   entryBlockKey: 'block-1000',
-  blocks,
+  blocks: staleBlocks,
 });
 
 assert.equal(result.semanticIr.completeness, 'partial');
