@@ -55,12 +55,17 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'columnWidth', 'prettyColumnWidth', 'theme', 'locale', 'language', 'selection', 'scrollTop', 'highlight',
 ]);
 
-function assertNoPresentationState(config) {
+function assertNoPresentationState(config, seen = new WeakSet()) {
   if (!config || typeof config !== 'object') return;
-  for (const key of Object.keys(config)) {
-    if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase8-artifact-presentation-state-in-key:${key}`);
-    const value = config[key];
-    if (value && typeof value === 'object' && !Array.isArray(value)) assertNoPresentationState(value);
+  if (seen.has(config)) fail('phase8-artifact-options-cycle');
+  seen.add(config);
+  try {
+    for (const key of Object.keys(config)) {
+      if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase8-artifact-presentation-state-in-key:${key}`);
+      assertNoPresentationState(config[key], seen);
+    }
+  } finally {
+    seen.delete(config);
   }
 }
 
