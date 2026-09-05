@@ -151,6 +151,12 @@ export function collectAddresses(value) {
   if (!value || typeof value !== "object") return out;
   for (const [key, item] of Object.entries(value)) {
     if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) out.push(addressText(item));
+    else if (key === "functions" && Array.isArray(item)) {
+      // find_constant / explain_evidence carry explicit candidate lists in
+      // `functions[]`; each entry is an address subject to the scope boundary,
+      // and array recursion alone would only see numeric indices. (#5126)
+      for (const candidate of item) if (typeof candidate === "string" && addressText(candidate)) out.push(addressText(candidate));
+    }
     else if (item && typeof item === "object") out.push(...collectAddresses(item));
   }
   return out;

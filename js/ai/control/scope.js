@@ -103,6 +103,10 @@ function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; 
 function collectAddresses(value, key = '') {
   const out = [];
   if (isAddressKey(key)) {
+    // find_constant / explain_evidence carry explicit candidate lists in
+    // `functions[]`; each element is an address subject to the scope boundary,
+    // not an opaque scalar. (#5126)
+    if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
     if (value != null) out.push(value);
     return out;
   }
@@ -113,9 +117,9 @@ function collectAddresses(value, key = '') {
 }
 function isAddressKey(key) {
   const text = String(key || '');
-  return /^(address|addr|start|end|from|to|target)$/i.test(text)
-    || /_(address|addr|start|end|from|to|target)$/i.test(text)
-    || /(Address|Addr|Start|End|From|To|Target)$/.test(text);
+  return /^(address|addr|start|end|from|to|target|functions)$/i.test(text)
+    || /_(address|addr|start|end|from|to|target|functions)$/i.test(text)
+    || /(Address|Addr|Start|End|From|To|Target|Functions)$/.test(text);
 }
 function inFunction(target, fn) {
   if (fn?.address == null) return false;
