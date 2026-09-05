@@ -3,6 +3,10 @@ import { createX86EffectContext } from './common.js';
 const EXECUTION_ENV = 'sys:x86.execution-environment';
 const CONTROL_DERIVED_STATE = 'sys:x86.control-register-derived-state';
 const DEBUG_DERIVED_STATE = 'sys:x86.debug-register-derived-state';
+const GENERAL_PURPOSE_REGISTER_IDS = Object.freeze([
+  'rax','rcx','rdx','rbx','rsp','rbp','rsi','rdi',
+  'r8','r9','r10','r11','r12','r13','r14','r15',
+]);
 
 function privilegedKind(operand) {
   if (operand?.type !== 'register') return null;
@@ -94,6 +98,28 @@ function expectedShape(encoded) {
   return { kind:'debug-register', privilegedIndex:0 };
 }
 
+function encodedRegisterIdentities(encoded, shape) {
+  const reg = (encoded.modrm >>> 3) & 7;
+  const rm = encoded.modrm & 7;
+  const rex = encoded.rex ?? 0;
+  const rexR = (rex & 0x04) !== 0;
+  const rexB = (rex & 0x01) !== 0;
+  const ordinaryId = GENERAL_PURPOSE_REGISTER_IDS[rm | (rexB ? 8 : 0)];
+
+  if (shape.kind === 'control-register') {
+    if (rexR && reg !== 0) return null;
+    return Object.freeze({ privilegedId:`cr${reg | (rexR ? 8 : 0)}`, ordinaryId });
+  }
+  if (rexR) return null;
+  return Object.freeze({ privilegedId:`dr${reg}`, ordinaryId });
+}
+
+function physicalRegisterId(operand) {
+  return operand?.type === 'register' && typeof operand.register?.physicalId === 'string'
+    ? operand.register.physicalId
+    : null;
+}
+
 export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
   if (family !== 'mov') return null;
@@ -119,6 +145,26 @@ export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
     || privilegedKind(ordinary) != null || Number(privileged.widthBits) !== 64 || Number(ordinary.widthBits) !== 64) {
     return ctx.partial('x86-mov-control-debug-operand-shape-unmodelled', ['registers','faults'], {
       metadata:{ family:'system', operation:'mov', systemRegisterMove:true, encodingValidated:true },
+    });
+  }
+
+  const encodedIdentities = encodedRegisterIdentities(encoded, shape);
+  const structuredPrivilegedId = physicalRegisterId(privileged);
+  const structuredOrdinaryId = physicalRegisterId(ordinary);
+  if (!encodedIdentities
+    || structuredPrivilegedId !== encodedIdentities.privilegedId
+    || structuredOrdinaryId !== encodedIdentities.ordinaryId) {
+    return ctx.partial('x86-mov-control-debug-encoding-operand-mismatch', ['registers','faults'], {
+      metadata:{
+        family:'system',
+        operation:'mov',
+        systemRegisterMove:true,
+        encodingValidated:false,
+        encodedPrivilegedRegister:encodedIdentities?.privilegedId ?? null,
+        encodedGeneralPurposeRegister:encodedIdentities?.ordinaryId ?? null,
+        structuredPrivilegedRegister:structuredPrivilegedId,
+        structuredGeneralPurposeRegister:structuredOrdinaryId,
+      },
     });
   }
 

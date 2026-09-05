@@ -191,6 +191,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
+    if (ordered[index + 1] && addressOf(ordered[index + 1]) !== endOf(instruction)) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
     if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
   }
 
@@ -211,7 +214,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     const targetBlock = target == null ? null : byStart.get(target.toString());
-    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
+    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
       if (fallthroughBlock && (!targetBlock || fallthroughBlock.key !== targetBlock.key)) {
@@ -224,6 +227,31 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     }
   }
   return blocks;
+}
+
+export function semanticControlUnknowns(blocks, architecturePlugin, options = {}) {
+  if (!Array.isArray(blocks)) throw new TypeError('semantic-function-blocks-required');
+  const blockStarts = new Set(blocks.map((block) => BigInt(block.startAddress).toString()));
+  const unknowns = [];
+  for (const block of blocks) {
+    const instruction = block.instructions?.at(-1)?.decoded;
+    if (!instruction) continue;
+    const kind = controlKind(architecturePlugin, instruction);
+    if (kind === 'branch' || kind === 'return' || kind === 'unknown'
+        || isAuthoritativeNoreturnCall(kind, options)) continue;
+    const expectedAddress = endOf(instruction);
+    if (blockStarts.has(expectedAddress.toString())) continue;
+    unknowns.push({
+      reason: 'semantic-cfg-missing-fallthrough',
+      categories: ['control'],
+      detail: {
+        blockKey: block.key,
+        instructionAddress: addressOf(instruction).toString(),
+        expectedAddress: expectedAddress.toString(),
+      },
+    });
+  }
+  return unknowns;
 }
 
 export function semanticAbiAdapter(abiPlugin, options = {}) {
@@ -967,6 +995,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const sliceId = assertRequiredString(input.sliceId, 'slice-id');
   const orderedInstructions = input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
   const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
+  const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
@@ -979,6 +1008,8 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     mode:input.mode ?? defaultMode ?? 'default',
     entryBlockKey:blocks[0].key,
     blocks,
+    completeness: controlUnknowns.length ? 'partial' : 'complete',
+    unknowns: controlUnknowns,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,

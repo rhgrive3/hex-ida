@@ -13,9 +13,12 @@ on:
       - 'js/tools.js'
       - 'js/viewer.js'
       - 'js/graphview.js'
+      - 'js/ai/control/snapshot.js'
+      - 'js/ai/dev/ui/controls.js'
       - 'tests/browser.mjs'
       - 'tests/ui/**'
       - 'tests/ux.mjs'
+      - 'tests/ai-ui-dev-profile.mjs'
       - 'package.json'
       - '.github/workflows/ui-regression.yml'
   workflow_dispatch:

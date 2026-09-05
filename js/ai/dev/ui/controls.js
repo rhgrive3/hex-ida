@@ -39,6 +39,15 @@ export function installDevAgentControls({ panel, session, settings } = {}) {
   panel.update = (...args) => { const result = originalUpdate(...args); render(); return result; };
   const unsubscribeSettings = settings.on(() => render());
   const unsubscribeSession = session.on(() => queueMicrotask(render));
+  // The base panel can finish an asynchronous capability refresh through its
+  // private update closure, bypassing the wrapper above. Keep the Dev-owned
+  // scope projection authoritative when that late render lands. Use the
+  // element's realm so an embedded/opaque document does not mix constructors.
+  const MutationObserverCtor = scopeChip.ownerDocument?.defaultView?.MutationObserver
+    || globalThis.MutationObserver;
+  const scopeObserver = typeof MutationObserverCtor === 'function'
+    ? new MutationObserverCtor(() => render()) : null;
+  scopeObserver?.observe(scopeChip, { childList: true, characterData: true, subtree: true });
 
   const captureScope = (event) => {
     if (session.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return;
@@ -59,7 +68,10 @@ export function installDevAgentControls({ panel, session, settings } = {}) {
     policy.hidden = !inDev;
     for (const button of profile.querySelectorAll('.ai-seg')) setSelected(button, settings.agentProfile);
     for (const button of policy.querySelectorAll('.ai-seg')) setSelected(button, settings.decisionPolicy);
-    if (inDev) scopeChip.textContent = pick('解析範囲: ', 'Analysis scope: ') + devScopeLabel(settings.analysisScope.initial);
+    if (inDev) {
+      const label = pick('解析範囲: ', 'Analysis scope: ') + devScopeLabel(settings.analysisScope.initial);
+      if (scopeChip.textContent !== label) scopeChip.textContent = label;
+    }
     panel.root.dataset.agentProfile = inAgent ? settings.agentProfile : '';
     panel.root.dataset.decisionPolicy = inDev ? settings.decisionPolicy : '';
     panel.root.dataset.analysisScope = inDev ? settings.analysisScope.initial : session.scope;
@@ -72,6 +84,7 @@ export function installDevAgentControls({ panel, session, settings } = {}) {
     destroy() {
       unsubscribeSettings();
       unsubscribeSession();
+      scopeObserver?.disconnect();
       scopeChip.removeEventListener('click', captureScope, true);
       panel.update = originalUpdate;
       profile.remove();
