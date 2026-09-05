@@ -189,7 +189,10 @@ function languageRecordMatchesIdentitySource(identity, record) {
   if (record.providerId !== identity.providerId) return false;
   if (record.providerVersion !== identity.providerVersion) return false;
   if (record.ecosystem !== identity.ecosystem) return false;
-  if (record.buildIdentity != null && identity.observed != null && record.buildIdentity !== identity.observed) return false;
+  if (record.buildIdentity != null) {
+    const identityBuild = identity.observed ?? identity.binaryIdentity;
+    if (identityBuild == null || record.buildIdentity !== identityBuild) return false;
+  }
   return true;
 }
 

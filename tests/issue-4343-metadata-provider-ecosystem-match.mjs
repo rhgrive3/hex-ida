@@ -20,6 +20,17 @@ const result = createLanguageMetadataResult({
   completeness: { complete: true },
 });
 
+const toolchainOnlyResult = createLanguageMetadataResult({
+  identity: createLanguageMetadataIdentity({
+    verdict: 'matched-authoritative',
+    providerId: 'go-metadata',
+    providerVersion: '1.0.0',
+    ecosystem: 'go',
+    toolchainVersion: 'go1.24',
+  }),
+  completeness: { complete: true },
+});
+
 const matchingRecord = createLanguageMetadataRecord({
   kind: 'type',
   entityId: 'go:type:Config',
@@ -47,6 +58,26 @@ const versionMismatchRecord = createLanguageMetadataRecord({
   descriptor: { layer: 'nominal', claim: { name: 'Config' } },
 });
 
+const matchingBuildRecord = createLanguageMetadataRecord({
+  kind: 'type',
+  entityId: 'go:type:BuildMatched',
+  providerId: 'go-metadata',
+  providerVersion: '1.0.0',
+  ecosystem: 'go',
+  buildIdentity: 'bin-A',
+  descriptor: { layer: 'nominal', claim: { name: 'BuildMatched' } },
+});
+
+const mismatchedBuildRecord = createLanguageMetadataRecord({
+  kind: 'type',
+  entityId: 'go:type:BuildMismatch',
+  providerId: 'go-metadata',
+  providerVersion: '1.0.0',
+  ecosystem: 'go',
+  buildIdentity: 'bin-B',
+  descriptor: { layer: 'nominal', claim: { name: 'BuildMismatch' } },
+});
+
 // 1. Matching record is authoritative
 assert.equal(isLanguageRecordAuthoritative(result, matchingRecord), true);
 
@@ -56,14 +87,19 @@ assert.equal(isLanguageRecordAuthoritative(result, foreignRecord), false);
 // 3. Provider version mismatch record must NOT be authoritative
 assert.equal(isLanguageRecordAuthoritative(result, versionMismatchRecord), false);
 
-// 4. In applyLanguageMetadataTypesToGraph, foreign record must not be added as hard constraint
+// 4. Explicit build identity must match the identity's effective binary proof
+assert.equal(isLanguageRecordAuthoritative(result, matchingBuildRecord), true);
+assert.equal(isLanguageRecordAuthoritative(result, mismatchedBuildRecord), false);
+assert.equal(isLanguageRecordAuthoritative(toolchainOnlyResult, mismatchedBuildRecord), false);
+
+// 5. Foreign/mismatched-build records must not be added as hard constraints
 const graphEvents = [];
 const mockGraph = {
   addHardConstraint(c) { graphEvents.push({ type: 'hard', ...c }); },
   addSoftEvidence(e) { graphEvents.push({ type: 'soft', ...e }); },
 };
 
-applyLanguageMetadataTypesToGraph(mockGraph, result, { records: [matchingRecord, foreignRecord] });
+applyLanguageMetadataTypesToGraph(mockGraph, result, { records: [matchingRecord, foreignRecord, mismatchedBuildRecord] });
 assert.equal(graphEvents.filter((e) => e.type === 'hard').length, 1);
 assert.equal(graphEvents.find((e) => e.type === 'hard').claim.entityId, 'go:type:Config');
 
