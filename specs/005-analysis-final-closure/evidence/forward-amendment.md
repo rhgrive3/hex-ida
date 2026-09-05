@@ -83,3 +83,42 @@ still expose the registered T051 AI snapshot exports, T052 collaboration,
 T057 CIL fixture, and other unaccepted component deltas. Those remain required;
 none is waived as historical. Sequence remains zero with no admitted component.
 Physical-device evidence remains `SKIPPED_USER_WAIVER`; Stage B remains unstarted.
+
+## Post-activation fixture isolation and bounded revalidation
+
+The original evidence publication `2d9e8ce8f9e327ab1255367475399bffe2e1b34a`
+and unique T058 transition `52774e4a52e237f1363006a85027460fe963818b`
+remain immutable. Hosted run 33936857373 exposed a synthetic-fixture defect:
+copying live DONE state into an earlier synthetic history made the real
+evidence commit incorrectly appear to be a non-prior handoff. The production
+verifier correctly rejected that history. Synthetic fixtures now load the
+original immutable planning evidence; live production verification stays live.
+
+- Corrective code: `15cce99e5011cfb7b49084b38e69143a8e763dee`.
+- Corrective tree: `35dd09dc50f42848d4306b02764b7e2fcea0206a`.
+- [Exact-code hosted run 33938914813](https://github.com/rhgrive3/hex-ida/actions/runs/33938914813):
+  permanent ownership/invalidation regressions and unchanged production walking
+  skeleton PASS. The exact-head step correctly rejects the old T058 ownership
+  seal while the separate revalidation receipt is absent; the whole run is
+  FAILURE, not release approval. Completed 2026-09-05 02:25:49 UTC.
+- Syntax, diff checks and focused foundation-amendment regression PASS.
+- Independent Luna Max inspected this exact code/tree: PASS, no blocker.
+- [CodeRabbit exact-code review](https://github.com/rhgrive3/hex-ida/pull/6611#issuecomment-5548726963):
+  no additional static defect in fixture isolation, history, ownership or seal
+  boundaries; explicitly not admission or merge approval.
+
+The bounded successor preserves both original T046/T058 handoffs. It accepts
+only the declared linear three-file corrective code history, this append-only
+evidence child, and a separate inventory-only receipt child. Only those four
+successor paths are resealed; other original owned paths retain their seals.
+Permanent negatives reject missing/removed/rewritten receipts, incorrect trees
+and parents, scope expansion, ownership widening and subsequent sealed edits.
+The sole ownership addition is T017's existing exact API-count regression,
+`tests/issue-1809-libc-effect-classification.mjs`, needed for three genuine API
+entries (38 to 41 rows); no family heuristic or semantic threshold is relaxed.
+
+Receipt activation is pending at this evidence publication. Stage A checkpoint
+sequence remains zero; no component is accepted and no main merge is claimed.
+Physical-device tests remain `SKIPPED_USER_WAIVER`, never PASS. Browser and all
+other applicable gates remain required. Delivery stops after Recovery merge
+and post-merge verification, before Stage B.
