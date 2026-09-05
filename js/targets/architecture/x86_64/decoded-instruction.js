@@ -24,6 +24,14 @@ function text(value, code, { empty = false } = {}) {
   return out;
 }
 
+function instructionIdOf(value) {
+  if (value == null) return value;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  const instructionId = value.trim();
+  if (!instructionId) throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  return instructionId;
+}
+
 function detailStatusOf(value, detailAvailable) {
   const status = value == null ? (detailAvailable === true ? 'complete' : 'unavailable') : value;
   if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
@@ -165,7 +173,7 @@ export function createX86DecodedInstruction(input = {}) {
     // publishes a fresh defensive copy.
     get rawBytes() { return rawBytes.slice(); },
     mode,
-    instructionId:input.instructionId,
+    instructionId:instructionIdOf(input.instructionId),
     instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
