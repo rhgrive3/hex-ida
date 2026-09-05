@@ -13,6 +13,14 @@ function addressValue(value) {
 function sameAddress(a,b) { const left=addressValue(a); const right=addressValue(b); return left != null && right != null && left === right; }
 const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });
 function verdictPriority(value) { return VERDICT_PRIORITY[value] ?? 1; }
+function runtimeEvidenceGroupKey(item) {
+  const provenance = item && item.provenance;
+  if (provenance && typeof provenance === 'object') {
+    const raw = provenance.observationGroup ?? provenance.group;
+    if (raw != null) return typeof raw === 'string' && raw.length > 0 && raw.trim() === raw ? raw : null;
+  }
+  return item && item.id || Symbol('evidence');
+}
 
 export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
@@ -128,7 +136,8 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   }
   const groups = new Map();
   for (const item of compatible) {
-    const group = item.provenance && (item.provenance.observationGroup || item.provenance.group) || item.id || Symbol('evidence');
+    const group = runtimeEvidenceGroupKey(item);
+    if (group == null) { ignoredEvidence++; continue; }
     const existing = groups.get(group);
     if (!existing || verdictPriority(item.verdict) > verdictPriority(existing.verdict)) groups.set(group,item);
   }
