@@ -186,12 +186,19 @@ function setStructField(app, args) {
 function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
-  const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
-  app.projectAnnotations.push(record);
+  const id = String(args.id || `annotation:${Date.now()}`);
+  const existingIndex = app.projectAnnotations.findIndex((item) => item?.id === id);
+  const existing = existingIndex >= 0 ? app.projectAnnotations[existingIndex] : null;
+  const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: existing?.createdAt || new Date().toISOString() };
+  if (existingIndex >= 0) app.projectAnnotations[existingIndex] = record;
+  else app.projectAnnotations.push(record);
   app.autoReport ||= { report: { confirmed: [], deep: [] } };
   app.autoReport.report ||= { confirmed: [], deep: [] };
   app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
+  const finding = { ...record, confirmed: true, source: 'project-annotation' };
+  const findingIndex = app.autoReport.report.confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
+  if (findingIndex >= 0) app.autoReport.report.confirmed[findingIndex] = finding;
+  else app.autoReport.report.confirmed.push(finding);
   app.workspace?.autosave?.(); return record;
 }
 
