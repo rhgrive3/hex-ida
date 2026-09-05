@@ -9,6 +9,7 @@ import {
   validateOracleReport,
 } from '../../tools/validation/machine-effects/oracle-report.mjs';
 import {
+  inspectExactHead,
   parseArgs,
   verifyCandidateMergeTree,
   verifyExactHead,
@@ -59,9 +60,9 @@ assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree
 });
 
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'HEAD', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = currentHead;
+const assignedBase = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(assignedBase, /^[0-9a-f]{40}$/);
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
@@ -183,14 +184,20 @@ const { reportId: ignoredReportId, ...forgedBreadthPayload } = forgedBreadth;
 forgedBreadth.reportId = sha256Digest(forgedBreadthPayload);
 assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|unjustified-mismatch/);
 
+const exactHeadInspection = inspectExactHead({ cwd: process.cwd(), baseSha: assignedBase });
+const exactHeadFailure = !exactHeadInspection.clean
+  ? /release-working-tree-dirty/
+  : (!exactHeadInspection.allowlist.valid
+    ? /release-changed-file-outside-allowlist/
+    : /report-incomplete-architectural-evidence/);
 assert.throws(() => verifyExactHead({
   report,
   expectedHead: currentHead,
   expectedBase: assignedBase,
   expectedCandidateTree: candidateTreeSha,
-  requireClean: false,
+  requireClean: true,
   requireCandidateTree: true,
-}), /report-incomplete-architectural-evidence/);
+}), exactHeadFailure);
 
 assert.throws(() => verifyCandidateMergeTree({
   report,
