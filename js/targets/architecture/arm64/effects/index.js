@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { createArm64EffectContext, decodedAbsoluteTargetOf, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -390,9 +390,18 @@ function addressImmediateEncodingFailure(instruction) {
     return `arm64-${mnemonic}-target-operand-unencodable`;
   }
   const address = asBigIntOrNull(instruction?.address);
-  const target = asBigIntOrNull(instruction?.pcRelTarget);
-  if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+  if (address == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  let target = null;
+  if (instruction?.pcRelTarget !== undefined) {
+    if (instruction.pcRelTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = asBigIntOrNull(instruction.pcRelTarget);
+    if (target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  }
+  const operandTarget = decodedAbsoluteTargetOf(targetOperand);
+  if (target == null) {
+    if (operandTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = operandTarget;
+  } else if (operandTarget != null && operandTarget !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
   if (mnemonic === 'adr') {

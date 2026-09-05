@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { createArm64EffectContext, immediateOf } from './common.js';
+import { createArm64EffectContext, decodedAbsoluteTargetOf, immediateOf } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -220,12 +220,21 @@ function validAddressEncoding(instruction, ops) {
   if ((targetOperand?.k !== 'imm' && targetOperand?.k !== 'other')
     || targetOperand?.shift != null || targetOperand?.extend != null) return false;
   const rawAddress = instruction?.address;
-  const rawTarget = instruction?.pcRelTarget ?? immediateOf(targetOperand);
-  if (rawAddress == null || rawTarget == null) return false;
-  let address, target;
+  if (rawAddress == null) return false;
+  let address;
   try { address = BigInt(rawAddress); } catch { return false; }
-  try { target = BigInt(rawTarget); } catch { return false; }
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) return false;
+  let target = null;
+  if (instruction?.pcRelTarget !== undefined) {
+    if (instruction.pcRelTarget == null) return false;
+    try { target = BigInt(instruction.pcRelTarget); } catch { return false; }
+  }
+  const operandTarget = decodedAbsoluteTargetOf(targetOperand);
+  if (target == null) {
+    if (operandTarget == null) return false;
+    target = operandTarget;
+  } else if (operandTarget != null && operandTarget !== target) {
+    return false;
+  }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta >= -(1n << 20n) && delta <= (1n << 20n) - 1n;
