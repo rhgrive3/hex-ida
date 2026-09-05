@@ -169,6 +169,7 @@ function setNote(app, kind, args, after = null) {
   const getter = kind === 'name' ? 'nameOf' : 'comment';
   if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
   const snapshot = noteMutationSnapshot(app.notes, getter, address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', `${kind} annotation adapter cannot provide the snapshot required for atomic persistence.`);
   if (app.notes[method](address, value) === false) {
     const label = kind === 'name' ? 'Name' : 'Comment';
     try {
@@ -190,6 +191,7 @@ function renameSymbol(app, args) {
   const address = BigInt(args.address); const value = String(args.value ?? '');
   if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
   const snapshot = noteMutationSnapshot(app.notes, 'nameOf', address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', 'name annotation adapter cannot provide the snapshot required for atomic persistence.');
   const previousName = snapshot.value;
   if (app.notes.setName(address, value) === false) {
     try {

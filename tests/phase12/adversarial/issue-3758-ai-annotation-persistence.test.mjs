@@ -56,8 +56,16 @@ function installStorage(storage) {
 
 {
   let chromeUpdates = 0;
+  let setCommentCalls = 0;
+  let current = 'before';
   const executor = executorFor({
-    notes: { setComment: () => false },
+    notes: {
+      setComment(_address, next) {
+        setCommentCalls += 1;
+        current = next;
+        return false;
+      },
+    },
     updateChrome: () => { chromeUpdates += 1; },
   });
   await rejectsToolFailed(executor.execute(
@@ -65,6 +73,8 @@ function installStorage(storage) {
     { address: '4096', value: 'approved note' },
     { authorization },
   ));
+  assert.equal(setCommentCalls, 0, 'setter-only comment adapters must fail before mutation when rollback state cannot be captured');
+  assert.equal(current, 'before', 'snapshot-unavailable comment adapters must not retain the rejected mutation');
   assert.equal(chromeUpdates, 0, 'failed comment persistence must not publish a UI success update');
 }
 
@@ -83,6 +93,31 @@ function installStorage(storage) {
     { authorization },
   ));
   assert.equal(symbolRenames, 0, 'failed name persistence must stop before the coupled symbol rename');
+}
+
+{
+  let current = 'before';
+  let setNameCalls = 0;
+  let symbolRenames = 0;
+  const executor = executorFor({
+    notes: {
+      nameOf: () => { throw new Error('snapshot unavailable'); },
+      setName(_address, next) {
+        setNameCalls += 1;
+        current = next;
+        return false;
+      },
+    },
+    symbols: { rename: () => { symbolRenames += 1; } },
+  });
+  await rejectsToolFailed(executor.execute(
+    'annotation.rename',
+    { address: '4096', value: 'after' },
+    { authorization },
+  ));
+  assert.equal(setNameCalls, 0, 'throwing name getters must fail before a stateful setter can mutate');
+  assert.equal(current, 'before', 'throwing name getters must leave the previous state untouched');
+  assert.equal(symbolRenames, 0, 'snapshot failure must stop before the coupled symbol rename');
 }
 
 {
@@ -116,6 +151,7 @@ function installStorage(storage) {
   const app = {
     notes: {
       structs: [],
+      comment: () => 'before',
       setComment: () => true,
       nameOf: () => 'before',
       setName: () => true,
