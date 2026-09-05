@@ -62,4 +62,24 @@ for (const versionLength of [4, 5, 8, 9]) {
   );
 }
 
+{
+  const { bytes, streamHeader } = buildRawMetadata();
+  new DataView(bytes.buffer).setUint32(streamHeader, 0xfffffff0, true);
+  assert.throws(
+    () => parseCil(bytes),
+    /cil-metadata-stream-out-of-bounds/,
+  );
+}
+
+{
+  const { bytes, streamHeader } = buildRawMetadata();
+  const view = new DataView(bytes.buffer);
+  view.setUint32(streamHeader, 0xfffffff0, true);
+  bytes.set(new TextEncoder().encode('#Blob\0'), streamHeader + 8);
+  assert.throws(
+    () => parseCil(bytes),
+    /cil-metadata-stream-out-of-bounds/,
+  );
+}
+
 console.log('[phase11] CIL raw metadata alignment #3819 passed');

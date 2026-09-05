@@ -728,6 +728,7 @@ export function parseCil(bytes, options = {}) {
     const flagsOff = align4(versionEnd);
     checkedRange(u8, flagsOff, 4, 'cil-metadata-stream-header-truncated');
     const streamCount = readU16(view, flagsOff + 2, 'cil-metadata-stream-header-truncated');
+    const metadataSize = u8.length - bsjbOffset;
     let sPos = flagsOff + 4;
     const streams = [];
     for (let s = 0; s < streamCount; s++) {
@@ -742,11 +743,12 @@ export function parseCil(bytes, options = {}) {
       if (sPos >= u8.length) fail('cil-metadata-stream-name-truncated');
       sPos = align4(sPos + 1);
       if (sPos > u8.length) fail('cil-metadata-stream-header-truncated');
+      if (sOffset > metadataSize || sSize > metadataSize - sOffset) fail('cil-metadata-stream-out-of-bounds');
       streams.push({ name: sName, offset: bsjbOffset + sOffset, size: sSize });
     }
 
     const stringStream = streams.find((st) => st.name === '#Strings');
-    if (stringStream && stringStream.offset + stringStream.size <= u8.length) {
+    if (stringStream) {
       strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
     }
   }
