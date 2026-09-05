@@ -191,6 +191,13 @@ function rootKeyOf(target) {
 
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
+  // The `exact` flag is derived, never accepted: a caller-supplied
+  // {min:0n,max:100n,exact:true} would otherwise mint strong NoAlias/MustAlias
+  // answers from a wide range. Re-canonicalize every range on the way in.
+  const rawRange = input.offsetRange ?? null;
+  const offsetRange = rawRange == null
+    ? UNBOUNDED_RANGE
+    : createOffsetRange(rawRange.min ?? null, rawRange.max ?? null);
   const target = {
     addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
@@ -201,7 +208,7 @@ export function createPointsToTarget(input = {}) {
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
       ? String(input.address)
       : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
-    offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
+    offsetRange,
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
   };
