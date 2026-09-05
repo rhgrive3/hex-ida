@@ -46,7 +46,11 @@ const KIND_SET = new Set(PHASE7_ARTIFACT_KINDS);
  */
 export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
   'phase7.alias.region': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions'],
-  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions'],
+  // A2's call transfer resolves exact-singleton callees to their FunctionSummary
+  // `returnProvenance` (see analyzeLocalPointsTo), so the caller's points-to
+  // result is a function of callee summary identity. Keying without it would
+  // let a stale summary keep publishing old roots/offsets as current (FM-15).
+  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions'],
   'phase7.summary.escape': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.interprocedural': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries', 'libraryModel'],
@@ -124,6 +128,34 @@ function assertNoPresentationState(config, seen = new WeakSet()) {
 }
 
 /**
+ * Option namespaces that map one-to-one onto option dependency classes.
+ *
+ * `input.options` historically carried every producer's tuning knobs as one
+ * flat bag, and the whole bag was hashed into the artifact id. That let an
+ * option belonging to a *different* analysis invalidate artifacts whose
+ * declared dependencies it cannot touch (FM-14): points-to tuning churned
+ * alias artifacts, alias tuning churned debug and discovery artifacts.
+ *
+ * The builder therefore keys an option namespace only when the artifact kind
+ * declares that option class, and keys no options at all for kinds that
+ * declare no option class. Unknown flat keys keep their legacy behavior for
+ * option-consuming kinds: silently dropping them would under-key producers
+ * that have no namespace yet (FM-15).
+ */
+const OPTION_CLASS_NAMESPACES = deepFreeze(['aliasOptions', 'pointsToOptions']);
+
+function projectOptionsForDependencyClasses(classes, options) {
+  if (!OPTION_CLASS_NAMESPACES.some((namespace) => classes.includes(namespace))) return {};
+  if (options == null || typeof options !== 'object' || Array.isArray(options)
+    || options instanceof Map || options instanceof Set) return options;
+  const projected = { ...options };
+  for (const namespace of OPTION_CLASS_NAMESPACES) {
+    if (!classes.includes(namespace)) delete projected[namespace];
+  }
+  return projected;
+}
+
+/**
  * Builds the canonical descriptor for one Phase 7 artifact.
  *
  * `upstreamArtifactIds` is the load-bearing field: the ArtifactStore refuses to
@@ -174,7 +206,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
 
-  const options = input.options ?? {};
+  const options = projectOptionsForDependencyClasses(classes, input.options ?? {});
   assertNoPresentationState(options);
 
   return createArtifactDescriptor({
