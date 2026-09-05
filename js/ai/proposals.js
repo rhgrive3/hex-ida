@@ -56,8 +56,8 @@ export class ProposalStore {
   approve(id) {
     const proposal = this.require(id);
     if (proposal.status !== 'pending') throw new AIError('approval_required', 'Only pending proposals can be approved.');
-    proposal.status = 'approved';
     const token = randomToken();
+    proposal.status = 'approved';
     this.approvals.set(proposal.id, token);
     this.audit.push({ type: 'proposal-approved', proposalId: proposal.id, timestamp: new Date().toISOString() });
     return { proposal, approvalToken: token };
