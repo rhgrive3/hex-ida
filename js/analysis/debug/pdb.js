@@ -196,7 +196,6 @@ export function parsePdbInfoStream(bytes) {
     guid: guidString(bytes, 12),
   };
 }
-
 /**
  * DBI header (NewDBIHdr).
  *
@@ -287,12 +286,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
-  while (offset + 4 <= bytes.length && symbols.length < budget.maxRecords) {
+  let recordCount = 0;
+  while (offset + 4 <= bytes.length && recordCount < budget.maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > bytes.length) break;
+    recordCount += 1;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
     // known-kind record must fail closed instead of reading the next record's
