@@ -22,7 +22,15 @@ import { stableDigest } from '../../core/identity/index.js';
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
-import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
+import {
+  analysisSemanticSnapshotIsCurrent,
+  commitAnalysisState,
+  forkAnalysisState,
+  runPassTransaction,
+  runPassTransactionBatch,
+  seedAnalysisState,
+  semanticSnapshotForAnalysis,
+} from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
 import { DCE_PASS, runDcePass } from './dce.js';
@@ -34,7 +42,11 @@ import { PROVIDER_PASS, runProviderPass } from './providers.js';
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
-export { commitAnalysisState, createAnalysisState, forkAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
+export {
+  analysisSemanticSnapshotIsCurrent, commitAnalysisState, createAnalysisState,
+  forkAnalysisState, invalidationFor, runPassTransaction, runPassTransactionBatch,
+  seedAnalysisState, semanticSnapshotForAnalysis, transactionDigest,
+} from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 export {
   cardinality, contains, describeRange, emptyFact, emptyRange, evaluateBinaryFact,
@@ -88,6 +100,40 @@ export const INTERACTIVE_STAGES = Object.freeze(['canonical-facts']);
 // that explicitly provide `timeBudgetMs` still get the documented deadline and
 // cancellation semantics.
 export const PHASE8_DEFAULT_WORK_BUDGET = 1_000_000;
+
+// Capturing the immutable producer graph is part of Phase 8 setup. A finite
+// interactive deadline must not be consumed by an uninterruptible snapshot of
+// a very large, obviously over-budget graph; the conservative answer is an
+// explicit cancellation before any pass starts. Unbounded/standard runs keep
+// the canonical capture path and are still constrained by the identity module's
+// hard reference budget.
+const PHASE8_FINITE_DEADLINE_SNAPSHOT_ENTRIES = 4096;
+
+function snapshotEntryCount(ir) {
+  if (ir == null || typeof ir !== 'object') return 0;
+  let total = 0;
+  try {
+    for (const key of ['blocks', 'values', 'instructions']) {
+      const descriptor = Object.getOwnPropertyDescriptor(ir, key);
+      if (descriptor == null) continue;
+      if (!('value' in descriptor)) return Number.POSITIVE_INFINITY;
+      if (Array.isArray(descriptor.value)) total += descriptor.value.length;
+    }
+    return total;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function snapshotAdmissionExceeded(ir, budget) {
+  if (!Number.isFinite(budget?.timeBudgetMs)) return false;
+  return snapshotEntryCount(ir) > PHASE8_FINITE_DEADLINE_SNAPSHOT_ENTRIES;
+}
+
+function contextSnapshotAdmissionExceeded(context, budget) {
+  try { return snapshotAdmissionExceeded(context?.ir, budget); }
+  catch { return false; }
+}
 
 /**
  * Orders passes within one stage so a producer runs before its consumers.
@@ -223,6 +269,18 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   // them, and a digest over the full registry would make those two ledgers
   // indistinguishable.
   const registryDigest = passRegistryDigest(passes);
+  if (context.analysis == null && contextSnapshotAdmissionExceeded(context, budget)) {
+    return {
+      ledger: withheldLedger('cancelled', 'cancelled-before-start', [{
+        severity: 'info',
+        code: 'phase8.cancelled.snapshot-budget',
+        message: 'Phase 8 was cancelled before snapshot capture because the finite deadline cannot admit the producer graph.',
+        reason: 'The canonical immutable Semantic IR snapshot is bounded setup work; publishing without it would weaken identity and cancellation guarantees.',
+      }], registryDigest, null),
+      timings: Object.freeze([]),
+      analysis: null,
+    };
+  }
   let authoritative;
   try {
     authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
@@ -242,6 +300,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     };
   }
   const before = authoritative.snapshot();
+  const semanticIr = semanticSnapshotForAnalysis(authoritative);
 
   if (aborted(budget)) {
     return {
@@ -250,6 +309,19 @@ export function runPhase8Vertical(context = {}, budget = {}) {
         code: 'phase8.cancelled',
         message: 'Phase 8 was cancelled before any pass started.',
         reason: 'The decompiler budget was already exhausted when the Phase 8 stage was reached.',
+      }], registryDigest, before),
+      timings: Object.freeze([]),
+      analysis: authoritative,
+    };
+  }
+
+  if (semanticIr == null) {
+    return {
+      ledger: withheldLedger('failed', 'analysis-snapshot-unavailable', [{
+        severity: 'error',
+        code: 'phase8.analysis.snapshot-unavailable',
+        message: 'Phase 8 requires one immutable Semantic IR snapshot for identity and execution.',
+        reason: 'The supplied analysis state was not seeded from a captured Semantic IR graph.',
       }], registryDigest, before),
       timings: Object.freeze([]),
       analysis: authoritative,
@@ -274,26 +346,27 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-  // Scalar passes share one identity proof for this isolated, non-mutating
-  // vertical. The identity module itself never caches by object; direct callers
-  // and later runs always re-derive it from the current IR.
-  const needsScalarIdentity = passes.some(({ descriptor }) =>
-    ['phase8.sccp', 'phase8.gvn', 'phase8.induction'].includes(descriptor.id));
-  const resolvedAnalysisIdentity = needsScalarIdentity
-    ? canonicalAnalysisIdentity({ ...context, analysis: authoritative }) : null;
+  // Every pass and the publication guard share one identity proof for the exact
+  // immutable graph consumed by this isolated vertical.
+  const resolvedAnalysisIdentity = canonicalAnalysisIdentity({
+    ...context,
+    analysis: authoritative,
+    ir: semanticIr,
+  });
   const passContext = {
     ...context,
     analysis,
+    ir: semanticIr,
     resolvedAnalysisIdentity,
   };
   const results = [];
   const timings = [];
   const observations = {};
   const invalidated = new Set();
-  for (const pass of passes) {
-    const started = clock();
-    const outcome = runPassTransaction(analysis, pass, passContext, budget);
-    timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
+  const batch = runPassTransactionBatch(analysis, passes, passContext, budget);
+  for (const [index, outcome] of batch.outcomes.entries()) {
+    const pass = passes[index];
+    timings.push(batch.timings[index]);
 
     if (!outcome.committed) {
       const reason = outcome.stopReason ?? 'unknown';
@@ -355,6 +428,22 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     results.push(outcome.result);
     for (const key of outcome.invalidated) invalidated.add(key);
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
+  }
+
+  // Re-capture the live producer graph once, after every pass but before the
+  // only vertical publication. A pass cannot opt out through caller-controlled
+  // context, and direct transactions already perform the same guard per commit.
+  if (!batch.snapshotCurrent) {
+    return {
+      ledger: withheldLedger('failed', 'semantic-snapshot-changed-before-publication', [{
+        severity: 'error',
+        code: 'phase8.analysis.snapshot-changed',
+        message: 'Phase 8 discarded results because the producer graph changed during analysis.',
+        reason: 'A fresh canonical identity did not match the immutable snapshot consumed by the passes.',
+      }], registryDigest, before),
+      timings: Object.freeze(timings),
+      analysis: authoritative,
+    };
   }
 
   if (!commitAnalysisState(authoritative, analysis, before)) {

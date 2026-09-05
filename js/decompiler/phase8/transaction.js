@@ -21,11 +21,56 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
+import {
+  analysisIdentityMatches,
+  canonicalAnalysisIdentity,
+  capturePhase8SemanticSnapshot,
+  phase8SemanticSnapshotMatches,
+} from './analysis-identity.js';
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
+const ANALYSIS_SEMANTIC_SNAPSHOTS = new WeakMap();
+
+function bindSemanticSnapshot(state, rawIr, semanticIr) {
+  ANALYSIS_SEMANTIC_SNAPSHOTS.set(state, Object.freeze({ rawIr, semanticIr }));
+  return state;
+}
+
+/** The immutable Semantic IR consumed by a seeded Phase 8 state. */
+export function semanticSnapshotForAnalysis(state) {
+  return ANALYSIS_SEMANTIC_SNAPSHOTS.get(state)?.semanticIr ?? null;
+}
+
+/**
+ * Verify the live producer graph against the graph consumed by a transaction.
+ *
+ * The raw graph is deliberately retained only as the publication-side witness;
+ * passes consume the private snapshot. A caller cannot opt out with a context
+ * flag: direct transaction callers always reach this check immediately before
+ * the only mutation point.
+ */
+export function analysisSemanticSnapshotIsCurrent(state, context = {}) {
+  const binding = ANALYSIS_SEMANTIC_SNAPSHOTS.get(state);
+  if (binding == null) return true;
+  const { rawIr, semanticIr } = binding;
+  const expected = canonicalAnalysisIdentity({ ...context, analysis:state, ir:semanticIr });
+  const observed = canonicalAnalysisIdentity({ ...context, analysis:state, ir:rawIr });
+  const issued = context.resolvedAnalysisIdentity ?? null;
+  if (issued != null) {
+    if (issued.valid !== true) return phase8SemanticSnapshotMatches(rawIr, semanticIr);
+    return expected.valid && observed.valid
+      && analysisIdentityMatches(expected.identity, issued.identity)
+      && analysisIdentityMatches(observed.identity, issued.identity);
+  }
+  // Explicitly-null identity authority is an unsupported result, but it still
+  // must not publish after the producer graph changed shape.
+  if (!expected.valid && !observed.valid) return phase8SemanticSnapshotMatches(rawIr, semanticIr);
+  return expected.valid && observed.valid
+    && analysisIdentityMatches(observed.identity, expected.identity);
+}
 
 /**
  * The authoritative analysis state.
@@ -87,7 +132,9 @@ export function forkAnalysisState(source) {
   const versions = source.snapshot();
   const initial = {};
   for (const key of ANALYSIS_KEYS) if (versions[key] > 0) initial[key] = source.get(key);
-  return createAnalysisState(initial, versions);
+  const fork = createAnalysisState(initial, versions);
+  const binding = ANALYSIS_SEMANTIC_SNAPSHOTS.get(source);
+  return binding == null ? fork : bindSemanticSnapshot(fork, binding.rawIr, binding.semanticIr);
 }
 
 /**
@@ -143,6 +190,10 @@ function aborted(budget) {
   catch { return true; }
 }
 
+function clock() {
+  return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+}
+
 /**
  * Computes what a committed pass invalidates.
  *
@@ -163,7 +214,7 @@ export function invalidationFor(descriptor, { changed }) {
  * `committed` is false nothing was written and no version moved: the state is
  * exactly what it was before the call.
  */
-export function runPassTransaction(state, pass, context = {}, budget = {}) {
+function runPassTransactionInternal(state, pass, context = {}, budget = {}, { checkSemanticSnapshot = true } = {}) {
   const descriptor = pass.descriptor;
   if (!descriptor || descriptor.contractVersion !== PHASE8_CONTRACT_VERSION) fail('phase8-transaction-descriptor-required');
 
@@ -183,8 +234,23 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
 
   const { area, take } = createStagingArea(descriptor);
   let result;
+  let passContext = context;
   try {
-    result = pass.run(context, budget, area);
+    const semanticIr = semanticSnapshotForAnalysis(state);
+    if (semanticIr != null) {
+      // Pin every direct transaction caller to the same immutable graph used to
+      // seed the state. This prevents a delayed pass from reading a newer live
+      // graph while publishing facts under the older state identity.
+      const resolvedAnalysisIdentity = context.resolvedAnalysisIdentity
+        ?? canonicalAnalysisIdentity({ ...context, analysis:state, ir:semanticIr });
+      passContext = {
+        ...context,
+        analysis:state,
+        ir:semanticIr,
+        resolvedAnalysisIdentity,
+      };
+    }
+    result = pass.run(passContext, budget, area);
   } catch (error) {
     return Object.freeze({
       committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
@@ -224,6 +290,13 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // Last check immediately before the only mutation point.  A cancellation
   // that arrives while validating the staged result must not become a commit.
   if (aborted(budget)) return refuse('cancelled-before-commit');
+  const identityInvalid = passContext.resolvedAnalysisIdentity?.valid !== true;
+  if (identityInvalid && (result.changed || stagedWrites.size > 0)) {
+    return refuse('semantic-identity-invalid-before-commit');
+  }
+  if (checkSemanticSnapshot && !analysisSemanticSnapshotIsCurrent(state, passContext)) {
+    return refuse('semantic-snapshot-changed-before-commit');
+  }
 
   // Commit. Nothing above this line touched authoritative state.
   const invalidated = invalidationFor(descriptor, { changed: result.changed });
@@ -237,6 +310,36 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     invalidated: Object.freeze(actuallyInvalidated),
     staged: Object.freeze([...stagedWrites.keys()].sort()),
     stopReason: null,
+  });
+}
+
+/**
+ * Run one direct transaction with its own stale-producer guard.
+ */
+export function runPassTransaction(state, pass, context = {}, budget = {}) {
+  return runPassTransactionInternal(state, pass, context, budget);
+}
+
+/**
+ * Run the canonical vertical batch. Individual passes consume the immutable
+ * snapshot, and one final raw-vs-snapshot check protects the batch publication.
+ * Direct callers use `runPassTransaction` above and therefore cannot opt out of
+ * the per-transaction guard with a caller-controlled context field.
+ */
+export function runPassTransactionBatch(state, passes, context = {}, budget = {}) {
+  const outcomes = [];
+  const timings = [];
+  for (const pass of passes) {
+    const started = clock();
+    const outcome = runPassTransactionInternal(state, pass, context, budget, { checkSemanticSnapshot:false });
+    timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
+    outcomes.push(outcome);
+    if (!outcome.committed && !outcome.stopReason?.startsWith('missing-input:')) break;
+  }
+  return Object.freeze({
+    outcomes:Object.freeze(outcomes),
+    timings:Object.freeze(timings),
+    snapshotCurrent:analysisSemanticSnapshotIsCurrent(state, context),
   });
 }
 
@@ -278,36 +381,39 @@ export function transactionDigest(outcome) {
  */
 export function seedAnalysisState(ir, upstream = {}) {
   if (!ir || typeof ir !== 'object') return createAnalysisState({});
+  const semanticIr = capturePhase8SemanticSnapshot(ir);
   const seed = {};
   // Recovered types arrive from Phase 7 alongside the IR rather than on it.
   // Seeding them here is the same rule as everything else in this function: the
   // fact is upstream truth, and a Phase 8 pass that needs it must read it rather
   // than grow a second type engine.
   if (upstream.types != null) seed.types = Object.freeze({ recovered: upstream.types });
-  if (Array.isArray(ir.blocks) && ir.blocks.length > 0) {
-    seed.cfg = Object.freeze({ blocks: ir.blocks, entry: ir.entry ?? null, backEdges: ir.backEdges ?? null });
+  if (Array.isArray(semanticIr.blocks) && semanticIr.blocks.length > 0) {
+    seed.cfg = Object.freeze({ blocks: semanticIr.blocks, entry: semanticIr.entry ?? null, backEdges: semanticIr.backEdges ?? null });
   }
-  if (ir.idom != null || ir.dominators != null) {
+  if (semanticIr.idom != null || semanticIr.dominators != null
+      || semanticIr.ipdom != null || semanticIr.immediatePostDominators != null) {
     // Post-dominance travels with dominance: both are views of the same
     // canonical control-flow analysis, and a consumer that has one and not the
     // other ends up deriving the missing half itself.
     seed.dominators = Object.freeze({
-      idom: ir.idom ?? null,
-      dominators: ir.dominators ?? null,
-      ipdom: ir.ipdom ?? ir.immediatePostDominators ?? null,
-      postDominators: ir.postDominators ?? null,
+      idom: semanticIr.idom ?? null,
+      dominators: semanticIr.dominators ?? null,
+      ipdom: semanticIr.ipdom ?? semanticIr.immediatePostDominators ?? null,
+      postDominators: semanticIr.postDominators ?? null,
     });
   }
-  if (ir.loops != null) {
-    seed.loops = Object.freeze({ loops: ir.loops, backEdges: ir.backEdges ?? null });
+  if (semanticIr.loops != null) {
+    seed.loops = Object.freeze({ loops: semanticIr.loops, backEdges: semanticIr.backEdges ?? null });
   }
-  if (Array.isArray(ir.values) && ir.values.length > 0) {
-    seed.ssa = Object.freeze({ values: ir.values, defUse: ir.defUse ?? null });
+  if (Array.isArray(semanticIr.values) && semanticIr.values.length > 0) {
+    seed.ssa = Object.freeze({ values: semanticIr.values, defUse: semanticIr.defUse ?? null });
   }
   // Origins are what every transform record has to point back at. If the IR
   // carries no origin at all, Phase 8 must not claim provenance it cannot show.
-  if (ir.origin != null || (Array.isArray(ir.values) && ir.values.some((value) => value?.origin != null))) {
-    seed.origins = Object.freeze({ functionOrigin: ir.origin ?? null, values: ir.values ?? [] });
+  if (semanticIr.origin != null
+      || (Array.isArray(semanticIr.values) && semanticIr.values.some((value) => value?.origin != null))) {
+    seed.origins = Object.freeze({ functionOrigin: semanticIr.origin ?? null, values: semanticIr.values ?? [] });
   }
-  return createAnalysisState(seed);
+  return bindSemanticSnapshot(createAnalysisState(seed), ir, semanticIr);
 }
