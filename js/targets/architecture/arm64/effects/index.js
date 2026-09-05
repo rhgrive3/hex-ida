@@ -3,6 +3,7 @@ import { liftArm64ControlEffects } from './control.js';
 import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
+import { snapshotArm64ImmediateOperands } from './immediate-authority.js';
 import { liftArm64IntegerEffects } from './integer.js';
 import { liftArm64MemoryEffects } from './memory.js';
 import { liftArm64SimdEffects } from './simd.js';
@@ -467,8 +468,19 @@ function normalizedContext(context = {}) {
 }
 
 export function liftArm64MachineEffects(decoded, context = {}) {
-  const instruction = normalizedInstruction(decoded, context);
+  const normalized = normalizedInstruction(decoded, context);
   const familyContext = normalizedContext(context);
+  const mnemonic = instructionMnemonic(normalized);
+  const rawOps = Array.isArray(normalized?.ops) ? normalized.ops : [];
+  const snapshot = ARM64_SCALAR_IMMEDIATE_AUTHORITY_MNEMONICS.has(mnemonic)
+    ? snapshotArm64ImmediateOperands(normalized, rawOps)
+    : Object.freeze({ instruction:normalized, ops:rawOps });
+  if (!snapshot) {
+    const partial = createArm64EffectContext(normalized, familyContext).partial(
+      `arm64-${mnemonic}-immediate-value-unencodable`, ['registers','flags','memory','other']);
+    return decorateArm64BtiGuardedPageEffects(normalized, partial, familyContext);
+  }
+  const instruction = snapshot.instruction;
   const encodingFailure = structuredEncodingFailure(instruction);
   if (encodingFailure) {
     const partial = createArm64EffectContext(instruction, familyContext).partial(encodingFailure, ['registers','flags','memory','other']);
