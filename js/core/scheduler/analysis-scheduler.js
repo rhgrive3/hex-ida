@@ -424,8 +424,7 @@ export class AnalysisScheduler {
   }
 
   cancel(artifactId, reason=new DOMException('Cancelled','AbortError')) {
-    const id = requireArtifactId(artifactId);
-    const task=this.inflight.get(id); if (!task) return false;
+    const task=this.inflight.get(requireArtifactId(artifactId)); if (!task) return false;
     if (!task.controller.signal.aborted) task.controller.abort(reason);
     return true;
   }

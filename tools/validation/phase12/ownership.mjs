@@ -5,9 +5,42 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const MANIFEST_PATH = path.join(ROOT, 'tools/validation/phase12/ownership.json');
+const CROSS_LANE_LABEL = 'cross-lane-integration';
+const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export function loadManifest(file = MANIFEST_PATH) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+export function githubEvent({
+  env = process.env,
+  readFile = (eventPath) => fs.readFileSync(eventPath, 'utf8'),
+} = {}) {
+  const eventPath = env?.GITHUB_EVENT_PATH;
+  if (!eventPath) return null;
+  try { return JSON.parse(readFile(eventPath)); }
+  catch { return null; }
+}
+
+export function phase12CrossLaneIntegration(event) {
+  const pullRequest = event?.pull_request;
+  const labels = pullRequest?.labels;
+  const repository = event?.repository?.full_name;
+  const headRef = pullRequest?.head?.ref;
+  const baseRef = pullRequest?.base?.ref;
+  const integrationHead = /^(?:recovery|analysis)\/final-closure-[a-z0-9][a-z0-9._/-]*$/.test(
+    String(headRef || ''),
+  ) && !String(headRef).includes('..')
+    && !String(headRef).includes('@{')
+    && !String(headRef).endsWith('/');
+  return baseRef === 'main'
+    && integrationHead
+    && typeof repository === 'string'
+    && REPOSITORY_NAME.test(repository)
+    && pullRequest?.head?.repo?.full_name === repository
+    && pullRequest?.base?.repo?.full_name === repository
+    && Array.isArray(labels)
+    && labels.some((label) => label?.name === CROSS_LANE_LABEL);
 }
 
 export function shouldSkipPhase12Ownership({
@@ -60,7 +93,7 @@ export function validateManifest(manifest = loadManifest()) {
   return errors;
 }
 
-export function validateFiles(files, lane, manifest = loadManifest()) {
+export function validateFiles(files, lane, manifest = loadManifest(), { allowUnowned = false } = {}) {
   const errors = validateManifest(manifest);
   const patterns = manifest.lanes?.[lane];
   if (!patterns) return { ok: false, lane, files: [...files], violations: [...errors, `unknown lane: ${lane}`] };
@@ -72,7 +105,9 @@ export function validateFiles(files, lane, manifest = loadManifest()) {
     if (forbidden) violations.push({ file, category: 'forbidden', detail: 'path is globally forbidden to Phase 12 lanes' });
     else if (generated && !manifest.generatedWriteOwners.includes(lane)) violations.push({ file, category: 'generated', detail: `${lane} may not publish generated output` });
     else if (releaseOnly && !manifest.releaseWriteOwners.includes(lane)) violations.push({ file, category: 'release', detail: `${lane} may not publish release evidence` });
-    else if (!patterns.some((pattern) => matches(file, pattern))) violations.push({ file, category: 'unowned', detail: `${lane} does not own this path` });
+    else if (!patterns.some((pattern) => matches(file, pattern)) && !allowUnowned) {
+      violations.push({ file, category: 'unowned', detail: `${lane} does not own this path` });
+    }
   }
   return { ok: errors.length === 0 && violations.length === 0, lane, files: [...files].map(normalize).filter(Boolean).sort(), violations, manifestErrors: errors };
 }
@@ -83,7 +118,7 @@ function declaredOwners(file, manifest) {
     .map(([lane]) => lane);
 }
 
-export function validateAggregateFiles(files, manifest = loadManifest()) {
+export function validateAggregateFiles(files, manifest = loadManifest(), { allowUnowned = false } = {}) {
   const errors = validateManifest(manifest);
   const violations = [];
   const normalizedFiles = [...new Set([...files].map(normalize).filter(Boolean))].sort();
@@ -98,7 +133,7 @@ export function validateAggregateFiles(files, manifest = loadManifest()) {
       violations.push({ file, category: 'generated', detail: 'no declared generated-output owner covers this path' });
     } else if (releaseOnly && !manifest.releaseWriteOwners.some((lane) => owners.includes(lane))) {
       violations.push({ file, category: 'release', detail: 'no declared release-evidence owner covers this path' });
-    } else if (owners.length === 0) {
+    } else if (owners.length === 0 && !allowUnowned) {
       violations.push({ file, category: 'unowned', detail: 'no declared Phase 12 lane owns this path' });
     }
   }
@@ -111,6 +146,46 @@ function git(args, root = ROOT) {
   return result.stdout.trim();
 }
 
+export function parsePhase12NameStatus(output) {
+  if (!Buffer.isBuffer(output)) throw new TypeError('phase12 ownership: git diff output must be bytes');
+  if (output.length === 0) return [];
+  const tokens = [];
+  let start = 0;
+  for (let index = 0; index < output.length; index += 1) {
+    if (output[index] !== 0) continue;
+    tokens.push(output.subarray(start, index));
+    start = index + 1;
+  }
+  if (start !== output.length) throw new Error('phase12 ownership: git diff output is not NUL terminated');
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const decode = (token) => {
+    if (!Buffer.isBuffer(token)) throw new Error('phase12 ownership: incomplete git diff record');
+    let value;
+    try { value = decoder.decode(token); }
+    catch { throw new Error('phase12 ownership: git diff path is not UTF-8'); }
+    if (value.includes('\ufeff')) throw new Error('phase12 ownership: git diff path is not canonical');
+    return value;
+  };
+  const decodePath = (token) => {
+    const value = decode(token);
+    if (value === '' || value.includes('\\') || /[\u0000-\u001f\u007f]/u.test(value)
+      || value.startsWith('/') || value.split('/').some((part) => part === '.' || part === '..')) {
+      throw new Error('phase12 ownership: git diff path is not canonical');
+    }
+    return value;
+  };
+  const files = [];
+  for (let index = 0; index < tokens.length;) {
+    const status = decode(tokens[index++]);
+    if (!/^(?:[ACDMRTUXB]|[RC][0-9]{1,3})$/.test(status)) {
+      throw new Error(`phase12 ownership: invalid git diff status: ${status}`);
+    }
+    if (/^[RC]/.test(status)) files.push(decodePath(tokens[index++]), decodePath(tokens[index++]));
+    else files.push(decodePath(tokens[index++]));
+  }
+  return [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+}
+
 function exactSha(value, label, root = ROOT) {
   if (!/^[0-9a-f]{40}$/i.test(String(value || ''))) throw new TypeError(`${label} must be an exact commit SHA`);
   const resolved = git(['rev-parse', `${value}^{commit}`], root);
@@ -121,19 +196,13 @@ function exactSha(value, label, root = ROOT) {
 export function inventoryFromGit(baseSha, headSha, root = ROOT) {
   const base = exactSha(baseSha, 'baseSha', root);
   const head = exactSha(headSha, 'headSha', root);
-  const output = git(['diff', '--name-status', `${base}..${head}`], root);
-  if (!output) return [];
-  const files = [];
-  for (const line of output.split('\n')) {
-    const parts = line.trim().split(/\t+/);
-    if (parts.length >= 2) {
-      for (let i = 1; i < parts.length; i++) {
-        const file = normalize(parts[i]);
-        if (file) files.push(file);
-      }
-    }
-  }
-  return [...new Set(files)].sort();
+  const result = spawnSync(
+    'git',
+    ['diff', '--name-status', '-z', '--find-renames', '--find-copies', base, head],
+    { cwd: root, encoding: null, maxBuffer: 32 * 1024 * 1024 },
+  );
+  if (result.status !== 0) throw new Error('phase12 ownership: git diff failed');
+  return parsePhase12NameStatus(result.stdout);
 }
 
 export function inventoryDigest(files) {
@@ -150,8 +219,15 @@ function awaitImportCrypto() {
 import crypto from 'node:crypto';
 const requireCrypto = crypto;
 
-export function runOwnership({ baseSha, headSha, lane, root = ROOT, manifest = loadManifest() }) {
-  const files = inventoryFromGit(baseSha, headSha, root);
+export function runOwnership({
+  baseSha,
+  headSha,
+  lane,
+  root = ROOT,
+  manifest = loadManifest(),
+  inventoryProvider = inventoryFromGit,
+}) {
+  const files = inventoryProvider(baseSha, headSha, root);
   const result = validateFiles(files, lane, manifest);
   if (!result.ok) {
     const error = new Error(`phase12 ownership violations: ${result.violations.map((item) => `${item.category}:${item.file}`).join(', ') || result.manifestErrors.join('; ')}`);
@@ -159,19 +235,30 @@ export function runOwnership({ baseSha, headSha, lane, root = ROOT, manifest = l
     error.result = result;
     throw error;
   }
-  return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
+  return Object.freeze({ ...result, baseSha, headSha, crossLaneIntegration: false, inventoryDigest: inventoryDigest(files) });
 }
 
-export function runAggregateOwnership({ baseSha, headSha, root = ROOT, manifest = loadManifest() }) {
+export function runAggregateOwnership({
+  baseSha,
+  headSha,
+  root = ROOT,
+  manifest = loadManifest(),
+  event,
+  env = process.env,
+  readFile,
+}) {
   const files = inventoryFromGit(baseSha, headSha, root);
-  const result = validateAggregateFiles(files, manifest);
+  const crossLaneIntegration = phase12CrossLaneIntegration(
+    event === undefined ? githubEvent({ env, readFile }) : event,
+  );
+  const result = validateAggregateFiles(files, manifest, { allowUnowned: crossLaneIntegration });
   if (!result.ok) {
     const error = new Error(`phase12 aggregate ownership violations: ${result.violations.map((item) => `${item.category}:${item.file}`).join(', ') || result.manifestErrors.join('; ')}`);
     error.ownershipViolation = true;
     error.result = result;
     throw error;
   }
-  return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
+  return Object.freeze({ ...result, baseSha, headSha, crossLaneIntegration, inventoryDigest: inventoryDigest(files) });
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

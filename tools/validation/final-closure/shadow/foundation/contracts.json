@@ -1,0 +1,156 @@
+{
+  "schemaVersion": "hex-final-closure-shadow-contracts/v1",
+  "contracts": {
+    "t011-stack-return-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T011", "gateId": "t011-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "stack-return-reanchor", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-914-stack-return-reanchor.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t012-value-numbering-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T012", "gateId": "t012-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "range-domain", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-429-range-domain.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t013-scalar-pipeline-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T013", "gateId": "t013-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "phi-choice-evidence", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-3215-phi-choice-evidence.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t014-symbolic-equivalence-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T014", "gateId": "t014-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "bool-model-binding", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-3245-bool-model-binding.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t015-macho-source-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T015", "gateId": "t015-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "macho-slice-parse-reuse", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-2516-macho-slice-parse-reuse.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t016-discovery-rebuild-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T016", "gateId": "t016-independent-verifier", "activationRequired": false,
+      "cases": [
+        {"id": "function-extent-boundary", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-2409-function-extent-boundary.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]},
+        {"id": "rebuild-invalid-output-rejection", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/stage2/rebuild-transaction.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["invalidWriterOutputAccepted", "semanticMismatch"]}
+      ]
+    },
+    "t017-machine-effects-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T017", "gateId": "t017-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "machine-effects-strict-identities", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/machine-effects-strict-identities.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t051-ai-snapshot-binding-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T051", "gateId": "t051-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "ai-snapshot-binary-identity", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/ai-scope-hardening.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t052-collaboration-operation-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T052", "gateId": "t052-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "collaboration-remote-authority-identity", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t053-alias-completeness-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T053", "gateId": "t053-independent-verifier", "activationRequired": false,
+      "cases": [
+        {"id": "alias-summary-completeness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/semantic-v2/repair-storage-class-alias.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]},
+        {"id": "alias-soundness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/negative/alias-soundness.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactNoAlias", "falseExactMustAlias", "semanticMismatch"]}
+      ]
+    },
+    "t054-debug-authority-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T054", "gateId": "t054-independent-verifier", "activationRequired": false,
+      "cases": [
+        {"id": "debug-partial-coverage-authority", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/debug/debug-record-source-binding-3549.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]},
+        {"id": "indirect-control-soundness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/semantic-v2/issue-949-indirect-control.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactIndirectTarget", "semanticMismatch"]}
+      ]
+    },
+    "t055-type-bound-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T055", "gateId": "t055-independent-verifier", "activationRequired": false,
+      "cases": [
+        {"id": "type-constraint-graph-bounds", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/integration/analysis-query-product-adapter-identity-types.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]},
+        {"id": "type-soundness-counterexamples", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/types/c3-01-counterexamples.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactType", "semanticMismatch"]}
+      ]
+    },
+    "t056-cache-accounting-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T056", "gateId": "t056-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "artifact-hot-cache-accounting", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase4/bytesource/cached-cancellation-lifecycle.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["stalePublicationAfterCancel", "semanticMismatch"]}]
+    },
+    "t057-cil-authority-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T057", "gateId": "t057-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "cil-return-shape-authority", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-1142-cil-stack-validation.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t026-competitive-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T026", "gateId": "t026-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "competitive-report", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/competitive-markdown-report.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t027-effects-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T027", "gateId": "t027-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "libc-effect-classification", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-1809-libc-effect-classification.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t028-provenance-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T028", "gateId": "t028-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "call-provenance", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/analyze-call-provenance.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t029-proof-adoption-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T029", "gateId": "t029-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "hypothesis-authority-boundaries", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-3096-hypothesis-authority-boundaries.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t030-structuring-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T030", "gateId": "t030-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "cfg-structuring", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/cfg-structuring.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t031-egraph-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T031", "gateId": "t031-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "rewrite-engine", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/decompiler-rewrite.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t032-solver-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T032", "gateId": "t032-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "fresh-symbol-identity", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/symbol-identity.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t033-symbolic-memory-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T033", "gateId": "t033-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "symbolic-memory", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issues-130-symbolic.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t034-taint-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T034", "gateId": "t034-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "sink-certainty", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/comprehend-sink-certainty.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t035-discovery-completeness-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T035", "gateId": "t035-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "function-starts-soundness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/issue-2389-function-starts-soundness.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t036-binary-source-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T036", "gateId": "t036-independent-verifier", "activationRequired": false,
+      "cases": [{"id": "universal-binary-source", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/universal-binary-source.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]}]
+    },
+    "t045-browser-platform-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1", "taskId": "T045", "gateId": "t045-final-platform-verifier", "activationRequired": false,
+      "cases": [
+        {"id": "browser-platform", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/browser.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["semanticMismatch"]},
+        {"id": "alias-soundness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/negative/alias-soundness.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactNoAlias", "falseExactMustAlias", "semanticMismatch"]},
+        {"id": "indirect-control-soundness", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/semantic-v2/issue-949-indirect-control.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactIndirectTarget", "semanticMismatch"]},
+        {"id": "type-soundness-counterexamples", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase7/types/c3-01-counterexamples.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["falseExactType", "semanticMismatch"]},
+        {"id": "cancellation-publication", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase4/bytesource/cached-cancellation-lifecycle.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["stalePublicationAfterCancel", "semanticMismatch"]},
+        {"id": "rebuild-invalid-output-rejection", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/stage2/rebuild-transaction.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["invalidWriterOutputAccepted", "semanticMismatch"]}
+      ]
+    },
+    "t059-scheduler-strict-id-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1",
+      "taskId": "T059",
+      "gateId": "t059-independent-verifier",
+      "activationRequired": false,
+      "cases": [
+        {
+          "id": "scheduler-id-authority",
+          "projection": {
+            "kind": "process-exit-v1",
+            "argv": [
+              "node",
+              "tests/phase4/scheduler/strict-authority-boundaries.test.mjs"
+            ],
+            "timeoutMs": 60000
+          },
+          "oracleObservation": {
+            "exitCode": 0,
+            "signal": null,
+            "errorCode": null
+          },
+          "failureCounterIds": [
+            "stalePublicationAfterCancel",
+            "semanticMismatch"
+          ]
+        }
+      ]
+    }
+  }
+}

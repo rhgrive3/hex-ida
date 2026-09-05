@@ -41,7 +41,8 @@ export function installDevAgentControls({ panel, session, settings } = {}) {
   const unsubscribeSession = session.on(() => queueMicrotask(render));
   // The base panel can finish an asynchronous capability refresh through its
   // private update closure, bypassing the wrapper above. Keep the Dev-owned
-  // scope projection authoritative when that late render lands.
+  // scope projection authoritative when that late render lands. Use the
+  // element's realm so an embedded/opaque document does not mix constructors.
   const MutationObserverCtor = scopeChip.ownerDocument?.defaultView?.MutationObserver
     || globalThis.MutationObserver;
   const scopeObserver = typeof MutationObserverCtor === 'function'
