@@ -9,6 +9,18 @@ const APPLE_ARM64E_PLATFORMS = new Set([
 ]);
 
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
+function requiredCanonicalId(value, label) {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  const id = value.trim().toLowerCase();
+  if (!id) throw new TypeError(`${label} is required`);
+  return id;
+}
+function optionalIdentity(value, fallback, label) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  if (!value.trim()) throw new TypeError(`${label} is required`);
+  return value;
+}
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
 
 function canonicalCallingConvention(value) {
@@ -27,14 +39,16 @@ function claimedCallingConventions(plugin) {
 
 export class ABIPlugin {
   constructor(definition = {}) {
-    const id = canonicalId(definition.id);
-    if (!id) throw new TypeError('ABI id is required');
-    const architectureId = canonicalId(definition.architectureId);
-    if (!architectureId) throw new TypeError(`ABI ${id} architectureId is required`);
+    const id = requiredCanonicalId(definition.id, 'ABI id');
+    const architectureId = requiredCanonicalId(definition.architectureId, `ABI ${id} architectureId`);
 
     this.id = id;
-    this.semanticVersion = String(definition.semanticVersion || '1');
-    this.semanticIdentity = String(definition.semanticIdentity || `${id}@${this.semanticVersion}`);
+    this.semanticVersion = optionalIdentity(definition.semanticVersion, '1', `ABI ${id} semanticVersion`);
+    this.semanticIdentity = optionalIdentity(
+      definition.semanticIdentity,
+      `${id}@${this.semanticVersion}`,
+      `ABI ${id} semanticIdentity`,
+    );
     this.architectureId = architectureId;
     this.platformPredicate = typeof definition.platformPredicate === 'function'
       ? definition.platformPredicate
