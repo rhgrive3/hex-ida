@@ -132,24 +132,60 @@ export async function scanSourceStrings(image, input, opts = {}) {
   return { results: out, cancelled: false, capped };
 }
 
-function mappedRanges(image, sourceSize, includeExecutable) {
-  const items = image.sections?.length ? image.sections : image.segments || [];
-  const ranges = [];
-  const dedupe = new Set();
-  for (const item of items) {
-    const size = BigInt(item.fileSize ?? 0);
-    const start = BigInt(item.fileOffset ?? 0);
-    if (size <= 0n || start < 0n || start >= sourceSize) continue;
-    if (!includeExecutable && item.perms?.execute) continue;
-    const bounded = size > sourceSize - start ? sourceSize - start : size;
-    if (bounded <= 0n) continue;
-    const key = `${start}:${bounded}`;
-    if (dedupe.has(key)) continue;
-    dedupe.add(key);
-    ranges.push({ start, end: start + bounded, section: item.name || null });
+function normalizeRange(item, sourceSize) {
+  const size = BigInt(item.fileSize ?? 0);
+  const start = BigInt(item.fileOffset ?? 0);
+  if (size <= 0n || start < 0n || start >= sourceSize) return null;
+  const bounded = size > sourceSize - start ? sourceSize - start : size;
+  return bounded > 0n ? { start, end: start + bounded } : null;
+}
+
+function mergeCoverage(ranges) {
+  const sorted = ranges.map((range) => ({ ...range })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0);
+  const out = [];
+  for (const range of sorted) {
+    const last = out[out.length - 1];
+    if (!last || range.start > last.end) out.push(range);
+    else if (range.end > last.end) last.end = range.end;
   }
-  if (!items.length && !ranges.length) ranges.push({ start: 0n, end: sourceSize, section: null });
-  ranges.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+  return out;
+}
+
+function subtractCoverage(range, coverage) {
+  const out = [];
+  let cursor = range.start;
+  for (const covered of coverage) {
+    if (covered.end <= cursor) continue;
+    if (covered.start >= range.end) break;
+    if (covered.start > cursor) out.push({ start: cursor, end: covered.start < range.end ? covered.start : range.end });
+    if (covered.end > cursor) cursor = covered.end < range.end ? covered.end : range.end;
+    if (cursor >= range.end) break;
+  }
+  if (cursor < range.end) out.push({ start: cursor, end: range.end });
+  return out;
+}
+
+function mappedRanges(image, sourceSize, includeExecutable) {
+  const sections = Array.isArray(image.sections) ? image.sections : [];
+  const segments = Array.isArray(image.segments) ? image.segments : [];
+  if (!sections.length && !segments.length) return [{ start: 0n, end: sourceSize, section: null }];
+
+  const sectionRanges = sections.map((item) => ({ item, range: normalizeRange(item, sourceSize) })).filter(({ range }) => range);
+  const sectionCoverage = mergeCoverage(sectionRanges.map(({ range }) => range));
+  const ranges = [];
+
+  for (const { item, range } of sectionRanges) {
+    if (!includeExecutable && item.perms?.execute) continue;
+    ranges.push({ start: range.start, end: range.end, section: item.name || null });
+  }
+  for (const item of segments) {
+    if (!includeExecutable && item.perms?.execute) continue;
+    const range = normalizeRange(item, sourceSize);
+    if (!range) continue;
+    for (const gap of subtractCoverage(range, sectionCoverage)) ranges.push({ ...gap, section: null });
+  }
+
+  ranges.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0);
   return ranges;
 }
 
