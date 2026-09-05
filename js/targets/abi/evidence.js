@@ -197,7 +197,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
   if (typeof input !== 'string' || !input.trim()
     || hidden.canonicalInput !== input
     || hidden.location !== 'register'
-    || !Number.isSafeInteger(Number(hidden.pointerBits)) || Number(hidden.pointerBits) <= 0
+    || positiveInteger(hidden.pointerBits) == null
     || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
     || !sameScalar(hidden.abiId, raw.abiId)
     || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)
