@@ -129,7 +129,7 @@ function executeFramePublicMessages(messages, { advanceClock = false } = {}) {
   return { hostMessages, worker };
 }
 
-async function executeWorker(source, mode = 'script', index = 0) {
+async function executeWorker(source, mode = 'script', index = 0, { rejectUncloneableControl = false } = {}) {
   const rawMessages = [];
   const controlMessages = [];
   const blobs = new Map();
@@ -179,6 +179,12 @@ async function executeWorker(source, mode = 'script', index = 0) {
   const control = {
     onmessage: null,
     postMessage(message) {
+      if (rejectUncloneableControl
+        && message?.t === 'print'
+        && Array.isArray(message.args)
+        && message.args.some((value) => typeof value === 'function')) {
+        throw new Error('DataCloneError');
+      }
       controlMessages.push(message);
     },
     start() {},
@@ -187,6 +193,18 @@ async function executeWorker(source, mode = 'script', index = 0) {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
   return { rawMessages, controlMessages, closed, control };
+}
+
+function loadSandboxOutputSizeContext() {
+  const start = SANDBOX_SOURCE.indexOf('function sandboxOutputSize');
+  const end = SANDBOX_SOURCE.indexOf('\nfunction isAbortSignalLike', start);
+  assert.ok(start >= 0 && end > start, 'host sandbox output measurer must remain extractable');
+  const scope = {};
+  vm.runInNewContext(
+    `const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;\n${SANDBOX_SOURCE.slice(start, end)}\nglobalThis.__sandboxOutputSize = sandboxOutputSize;`,
+    scope,
+  );
+  return scope;
 }
 
 test('user script cannot capture worker-private lexical capabilities', async () => {
@@ -228,6 +246,18 @@ test('plugin factory is isolated too and normal plugin execution still completes
   const print = result.controlMessages.find((m) => m.t === 'print');
   assert.deepEqual(Array.from(print.args), ['undefined:undefined:undefined']);
   assert.ok(result.controlMessages.some((m) => m.t === 'done'));
+});
+
+test('control structured-clone failure reports a fixed error before worker close', async () => {
+  const result = await executeWorker(`
+    print(() => {});
+  `, 'script', 0, { rejectUncloneableControl: true });
+
+  assert.equal(result.closed, true, 'failed control send must still close the worker');
+  assert.ok(
+    result.controlMessages.some((m) => m.t === 'error' && /制御メッセージを送信できません/.test(m.error)),
+    'a clone-safe diagnostic must reach the private channel instead of hanging until host timeout',
+  );
 });
 
 test('frame uses a private MessagePort and independently meters public output', () => {
@@ -293,4 +323,31 @@ test('frame public output envelope is closed', () => {
   ]);
   assert.equal(framed.worker.terminated, true);
   assert.ok(framed.hostMessages.some((m) => m.t === 'error' && /公開出力境界/.test(m.error)));
+});
+
+test('host private-channel output meter fails closed for hidden and unstable payload shapes', () => {
+  assert.match(
+    SANDBOX_SOURCE,
+    /const bytes = sandboxOutputSize\(\{ t: 'print', args: m\.args \}\);/,
+    'host print authority must use the fail-closed sandbox output measurer',
+  );
+
+  const scope = loadSandboxOutputSizeContext();
+  const over = 256 * 1024 + 1;
+  assert.equal(vm.runInNewContext('__sandboxOutputSize(new Map([["k", "v"]]))', scope), over);
+  assert.equal(vm.runInNewContext('__sandboxOutputSize(new Set([1, 2, 3]))', scope), over);
+
+  vm.runInNewContext(`
+    let reads = 0;
+    const value = {};
+    Object.defineProperty(value, 'unstable', {
+      enumerable: true,
+      get() { reads++; return 'x'; },
+    });
+    globalThis.__accessorSize = __sandboxOutputSize(value);
+    globalThis.__accessorReads = reads;
+  `, scope);
+  assert.equal(scope.__accessorSize, over);
+  assert.equal(scope.__accessorReads, 0, 'metering must inspect descriptors without executing user accessors');
+  assert.ok(vm.runInNewContext('__sandboxOutputSize({ ok: [1, "two", true] })', scope) < over);
 });
