@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { PASS_STAGES, runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
+import { capturePhase8SemanticSnapshot } from '../../../js/decompiler/phase8/analysis-identity.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
 import { decompileEntry } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 
@@ -16,6 +17,23 @@ function median(values) {
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
+
+test('raw snapshot cache rechecks frozen collection and date internal state', () => {
+  for (const [make, mutate, read] of [
+    [() => new Map([['key', 1]]), (value) => value.set('key', 2), (value) => value.get('key')],
+    [() => new Set(['before']), (value) => { value.delete('before'); value.add('after'); }, (value) => value.has('after')],
+    [() => new Date(1), (value) => value.setTime(2), (value) => value.getTime()],
+  ]) {
+    const container = make();
+    Object.freeze(container);
+    const ir = { extra:container };
+    const first = capturePhase8SemanticSnapshot(ir);
+    mutate(container);
+    const second = capturePhase8SemanticSnapshot(ir);
+    assert.notEqual(second, first, 'internal-slot mutation must discard the raw snapshot cache');
+    assert.equal(read(second.extra), read(container));
+  }
+});
 
 test('the frozen worst-case scalar identity corpus entry stays inside the optimize-stage budget', (context) => {
   const corpus = loadCorpus();

@@ -304,6 +304,24 @@ const EMPTY_LIST = Object.freeze([]);
  * that a fresh capture still has the same shape.
  */
 const PHASE8_SEMANTIC_SNAPSHOTS = new WeakSet();
+// A producer IR remains mutable, so no digest may be reused without first
+// checking the captured semantic descriptors and collection contents.  The
+// witness is retained only for the lifetime of the raw object/snapshot pair;
+// a mismatch drops the entry and forces a new descriptor-only capture.
+const RAW_SNAPSHOT_CACHE = new WeakMap();
+// Captured graphs are immutable.  Their shape and identity can therefore be
+// reused after the raw producer witness has been checked, while mutable raw
+// graphs still take the strict validation path above.
+const SNAPSHOT_SHAPE_DIGEST_CACHE = new WeakMap();
+const SNAPSHOT_IDENTITY_CACHE = new WeakMap();
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const getReflectOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+const getPrototypeOf = Object.getPrototypeOf;
+const getReflectOwnKeys = Reflect.ownKeys;
+const getOwnPropertyNames = Object.getOwnPropertyNames;
+const getOwnPropertySymbols = Object.getOwnPropertySymbols;
+const getMapSize = getOwnPropertyDescriptor(Map.prototype, 'size').get;
+const getSetSize = getOwnPropertyDescriptor(Set.prototype, 'size').get;
 const SNAPSHOT_MAP_TARGETS = new WeakMap();
 const SNAPSHOT_SET_TARGETS = new WeakMap();
 const SNAPSHOT_DATE_TARGETS = new WeakMap();
@@ -559,6 +577,117 @@ function snapshotChildRole(role, key) {
   return 'generic';
 }
 
+/*
+ * Validate a previously captured raw graph without allocating a second clone or
+ * digest transcript.  This is still a complete descriptor-only observation:
+ * every captured node, own key, schema probe, collection entry and primitive
+ * value is checked.  Capture accepts only enumerable data descriptors and
+ * publishes normalized frozen properties, so writable/configurable flags are
+ * not semantic input. A mutation returns false, which makes the caller discard
+ * the cache and perform the normal fresh capture path.
+ */
+function rawSnapshotMatches(entry) {
+  // The original capture already paid the full text/reference budget.  A
+  // cache hit only compares the same bounded descriptor witness; replacement
+  // primitive values are caught by Object.is and a mismatch goes through a
+  // fresh budgeted capture.  Keep an independent reference counter here so a
+  // hostile Proxy cannot make the validation path unbounded before that retry.
+  let remaining = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences;
+  try {
+    const records = entry.validationRecords;
+    if (records.length > remaining) return false;
+    remaining -= records.length;
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const record = records[recordIndex];
+      const source = record.source;
+      // A deeply frozen producer node cannot change its own descriptor,
+      // prototype, or ordinary child pointer. Object.freeze does not close the
+      // internal slots of Map/Set/Date, so those container kinds stay on the
+      // intrinsic-content validation path below. Mutable descendants remain
+      // separate records and are still checked.
+      if (getPrototypeOf(source) !== record.prototype) return false;
+
+      // Captured ordinary records reject symbols, so the string-only native
+      // path can avoid Reflect.ownKeys' mixed-key allocation. Symbols are
+      // still probed explicitly so a later symbol cannot be hidden behind the
+      // faster path; exotic container kinds retain the complete ownKeys view.
+      const currentKeys = record.kind === 'object'
+        ? getOwnPropertyNames(source)
+        : getReflectOwnKeys(source);
+      if (record.kind === 'object' && getOwnPropertySymbols(source).length !== 0) return false;
+      const expectedKeys = record.relevantReportedKeys;
+      let observedKeyCount = currentKeys.length;
+      if (record.omitRootKeys) {
+        observedKeyCount = 0;
+        for (let keyIndex = 0; keyIndex < currentKeys.length; keyIndex += 1) {
+          const key = currentKeys[keyIndex];
+          if (SNAPSHOT_ROOT_OMIT_KEYS.has(key)) continue;
+          observedKeyCount += 1;
+        }
+      }
+      if (observedKeyCount !== expectedKeys.length) return false;
+      // Snapshot properties are sorted during capture, so source key order is
+      // not semantic. The count catches additions/deletions and the descriptor
+      // probes below catch replacements while still checking Proxy-hidden
+      // schema fields.
+      // Charge the complete descriptor witness once per node. Keeping this
+      // accounting outside the inner loop preserves the same hard cap while
+      // avoiding one closure call for every captured field on the hot path.
+      const descriptorKeys = record.relevantDescriptorKeys;
+      const descriptorValues = record.relevantDescriptorValues;
+      const descriptorPresent = record.relevantDescriptorPresent;
+      const descriptorEnumerable = record.relevantDescriptorEnumerable;
+      const descriptorCost = descriptorKeys.length;
+      if (observedKeyCount > remaining || descriptorCost > remaining - observedKeyCount) return false;
+      remaining -= observedKeyCount + descriptorCost;
+
+      for (let descriptorIndex = 0; descriptorIndex < descriptorCost; descriptorIndex += 1) {
+        const key = descriptorKeys[descriptorIndex];
+        const observed = getReflectOwnPropertyDescriptor(source, key);
+        if (!descriptorPresent[descriptorIndex]) {
+          if (observed !== undefined) return false;
+          continue;
+        }
+        if (observed === undefined || !('value' in observed)
+            || descriptorEnumerable[descriptorIndex] !== observed.enumerable
+            || !Object.is(descriptorValues[descriptorIndex], observed.value)) return false;
+      }
+
+      if (record.kind === 'map') {
+        const map = SNAPSHOT_MAP_TARGETS.get(source) ?? source;
+        const size = getMapSize.call(map);
+        if (size !== record.collectionEntries.length) return false;
+        if (size > remaining) return false;
+        remaining -= size;
+        const entries = Array.from(Map.prototype.entries.call(map));
+        if (entries.length !== record.collectionEntries.length) return false;
+        for (let index = 0; index < entries.length; index += 1) {
+          const [key, value] = entries[index];
+          const [expectedKey, expectedValue] = record.collectionEntries[index];
+          if (!Object.is(key, expectedKey) || !Object.is(value, expectedValue)) return false;
+        }
+      } else if (record.kind === 'set') {
+        const set = SNAPSHOT_SET_TARGETS.get(source) ?? source;
+        const size = getSetSize.call(set);
+        if (size !== record.collectionEntries.length) return false;
+        if (size > remaining) return false;
+        remaining -= size;
+        const values = Array.from(Set.prototype.values.call(set));
+        if (values.length !== record.collectionEntries.length) return false;
+        for (let index = 0; index < values.length; index += 1) {
+          if (!Object.is(values[index], record.collectionEntries[index])) return false;
+        }
+      } else if (record.kind === 'date') {
+        const timestamp = Date.prototype.getTime.call(source);
+        if (!Object.is(timestamp, record.dateValue)) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Capture a graph that Phase 8 may safely execute against.
  *
@@ -573,7 +702,14 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
     throw new TypeError('identity-invalid-semantic-ir');
   }
 
+  const cached = RAW_SNAPSHOT_CACHE.get(ir);
+  if (cached != null) {
+    if (rawSnapshotMatches(cached)) return cached.snapshot;
+    RAW_SNAPSHOT_CACHE.delete(ir);
+  }
+
   const records = new WeakMap();
+  const recordList = [];
   const pendingFreeze = [];
   const budget = workBudget;
   const consumeCaptureWork = budget.consume;
@@ -663,6 +799,8 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         clone,
         propertyTarget,
         kind,
+        prototype,
+        immutable:Object.isFrozen(value),
         reported:new Set(reportedKeys),
         reportedKeys,
         descriptors:new Map(),
@@ -670,14 +808,19 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         defined:new Set(),
         roles:new Set(),
         length:null,
+        dateValue:kind === 'date' ? Date.prototype.getTime.call(value) : null,
+        collectionEntries:null,
         omitRootKeys:role === 'ir',
       };
       records.set(value, record);
+      if (!record.immutable || kind === 'map' || kind === 'set' || kind === 'date') {
+        recordList.push(record);
+      }
       pendingFreeze.push(propertyTarget);
 
       if (kind === 'map') {
         const sourceMap = SNAPSHOT_MAP_TARGETS.get(value) ?? value;
-        const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(sourceMap);
+        const size = getMapSize.call(sourceMap);
         consumeCaptureWork(size);
         // Fix the intrinsic iteration domain before descending. A descriptor
         // trap on a key/value can mutate its source collection; keeping the
@@ -687,17 +830,19 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         if (sourceEntries.length !== size) {
           throw new TypeError('identity-semantic-snapshot-collection-changed');
         }
+        record.collectionEntries = sourceEntries;
         for (const [key, entryValue] of sourceEntries) {
           Map.prototype.set.call(propertyTarget, capture(key), capture(entryValue));
         }
       } else if (kind === 'set') {
         const sourceSet = SNAPSHOT_SET_TARGETS.get(value) ?? value;
-        const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get.call(sourceSet);
+        const size = getSetSize.call(sourceSet);
         consumeCaptureWork(size);
         const sourceValues = Array.from(Set.prototype.values.call(sourceSet));
         if (sourceValues.length !== size) {
           throw new TypeError('identity-semantic-snapshot-collection-changed');
         }
+        record.collectionEntries = sourceValues;
         for (const entryValue of sourceValues) {
           Set.prototype.add.call(propertyTarget, capture(entryValue));
         }
@@ -812,7 +957,46 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   for (let index = pendingFreeze.length - 1; index >= 0; index -= 1) {
     Object.freeze(pendingFreeze[index]);
   }
+  // Frozen plain/array records cannot change their own descriptors, prototype,
+  // or child pointers. Map/Set/Date remain witnesses even when frozen because
+  // Object.freeze does not freeze their internal slots. `recordList` contains
+  // only those mutable or internal-slot records, so no validator bookkeeping is
+  // allocated or traversed for frozen records that never need a source check.
+  const validationRecords = [];
+  for (const record of recordList) {
+    record.relevantReportedKeys = record.omitRootKeys
+      ? record.reportedKeys.filter((key) => !SNAPSHOT_ROOT_OMIT_KEYS.has(key))
+      : record.reportedKeys;
+    const relevantDescriptorKeys = [];
+    const relevantDescriptorValues = [];
+    const relevantDescriptorPresent = [];
+    const relevantDescriptorEnumerable = [];
+    for (const [key, descriptor] of record.descriptors) {
+      if (record.omitRootKeys && SNAPSHOT_ROOT_OMIT_KEYS.has(key)) continue;
+      relevantDescriptorKeys.push(key);
+      relevantDescriptorValues.push(descriptor?.value);
+      relevantDescriptorPresent.push(descriptor != null);
+      relevantDescriptorEnumerable.push(descriptor?.enumerable ?? false);
+    }
+    record.relevantDescriptorKeys = relevantDescriptorKeys;
+    record.relevantDescriptorValues = relevantDescriptorValues;
+    record.relevantDescriptorPresent = relevantDescriptorPresent;
+    record.relevantDescriptorEnumerable = relevantDescriptorEnumerable;
+    Object.freeze(record.relevantReportedKeys);
+    Object.freeze(record.relevantDescriptorKeys);
+    Object.freeze(record.relevantDescriptorValues);
+    Object.freeze(record.relevantDescriptorPresent);
+    Object.freeze(record.relevantDescriptorEnumerable);
+    Object.freeze(record);
+    validationRecords.push(record);
+  }
   PHASE8_SEMANTIC_SNAPSHOTS.add(snapshot);
+  const cacheEntry = Object.freeze({
+    raw:ir,
+    snapshot,
+    validationRecords:Object.freeze(validationRecords),
+  });
+  RAW_SNAPSHOT_CACHE.set(ir, cacheEntry);
   return snapshot;
 }
 
@@ -1803,6 +1987,7 @@ function irShape(ir, workBudget = null) {
       values: valuesDigest,
       sourceValues: values,
       graphDigester: digests.graphDigester,
+      snapshot: ir,
     };
   } catch {
     return null;
@@ -1811,13 +1996,26 @@ function irShape(ir, workBudget = null) {
 
 function irShapeDigest(shaped) {
   if (shaped == null) return null;
-  try { return `shape:${fastJsonGraphDigest(shaped.shape, shaped.graphDigester)}`; }
+  const snapshot = shaped.snapshot;
+  if (isPhase8SemanticSnapshot(snapshot)) {
+    const cached = SNAPSHOT_SHAPE_DIGEST_CACHE.get(snapshot);
+    if (cached != null) return cached;
+  }
+  try {
+    const digest = `shape:${fastJsonGraphDigest(shaped.shape, shaped.graphDigester)}`;
+    if (isPhase8SemanticSnapshot(snapshot)) SNAPSHOT_SHAPE_DIGEST_CACHE.set(snapshot, digest);
+    return digest;
+  }
   catch { return null; }
 }
 
 /** The durable binding for a captured Semantic IR graph. */
 export function phase8SemanticSnapshotShapeDigest(ir) {
   try {
+    if (isPhase8SemanticSnapshot(ir)) {
+      const cached = SNAPSHOT_SHAPE_DIGEST_CACHE.get(ir);
+      if (cached != null) return cached;
+    }
     const workBudget = createIdentityWorkBudget();
     const snapshot = isPhase8SemanticSnapshot(ir)
       ? ir : capturePhase8SemanticSnapshotWithBudget(ir, workBudget);
@@ -1969,6 +2167,18 @@ function shapeBinding(source) {
   return field(source, 'semanticIrShapeDigest', 'semanticIRShapeDigest', 'irShapeDigest', 'canonicalIrDigest', 'shapeDigest');
 }
 
+function hasKnownIdentityFields(source) {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) return false;
+  for (const key of IDENTITY_FIELD_KEYS) {
+    if (Object.hasOwn(source, key)) return true;
+  }
+  return false;
+}
+
+function identitySourcesAreCacheable(sources) {
+  return sources.every((source) => !hasKnownIdentityFields(source));
+}
+
 function sourceIsBoundToShape(source, identity, shapeDigest, values, graphDigester = null) {
   if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
   const explicitBinding = shapeBinding(source);
@@ -2079,6 +2289,15 @@ export function canonicalAnalysisIdentity(context = {}) {
   if (contextIdentitySources == null || contextIdentitySources.some(hasMalformedIdentityFields)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
+  const cachedIdentity = SNAPSHOT_IDENTITY_CACHE.get(ir);
+  if (cachedIdentity != null && identitySourcesAreCacheable(contextIdentitySources)) {
+    return {
+      identity: cachedIdentity.identity,
+      valid: true,
+      reason: null,
+      semanticSnapshot: ir,
+    };
+  }
   const shaped = irShape(ir, workBudget);
   if (shaped == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
   const {
@@ -2118,6 +2337,10 @@ export function canonicalAnalysisIdentity(context = {}) {
       || !sources.every((source) => sameKnownSourceFields(identity, source))
       || !sources.every((source) => sourceIsBoundToShape(source, identity, shapeDigest, values, graphDigester))) {
     return { identity: null, valid: false, reason: 'analysis identity is stale for the Semantic IR' };
+  }
+  if (identitySourcesAreCacheable(contextIdentitySources)
+      && identitySourcesAreCacheable(rootIdentitySources)) {
+    SNAPSHOT_IDENTITY_CACHE.set(ir, Object.freeze({ identity, shapeDigest }));
   }
   return { identity, valid: true, reason: null, semanticSnapshot:ir };
 }

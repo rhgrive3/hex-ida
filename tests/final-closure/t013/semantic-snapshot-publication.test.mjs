@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ANALYSIS_KEYS, createPassDescriptor, createPassResult } from '../../../js/decompiler/phase8/contract.js';
+import { capturePhase8SemanticSnapshot } from '../../../js/decompiler/phase8/analysis-identity.js';
 import {
   createAnalysisState,
   runPassTransaction,
@@ -72,6 +73,37 @@ function assertStateUnchanged(state, before) {
   assert.deepEqual(state.snapshot(), before.versions);
   for (const key of ANALYSIS_KEYS) assert.equal(state.get(key), before.values[key], `${key} value changed`);
 }
+
+test('T013 raw snapshot witness rechecks mutable fields and hidden proxy fields', () => {
+  const target = { id:1, bits:8 };
+  const proxied = new Proxy(target, {
+    ownKeys(object) { return Reflect.ownKeys(object).filter((key) => key !== 'bits'); },
+  });
+  const ir = { values:[proxied], blocks:[], entry:null };
+  const first = capturePhase8SemanticSnapshot(ir);
+  target.bits = 16;
+  const second = capturePhase8SemanticSnapshot(ir);
+  assert.notEqual(second, first);
+  assert.equal(second.values[0].bits, 16);
+
+  const hiddenTarget = { id:2 };
+  const hidden = new Proxy(hiddenTarget, {
+    ownKeys(object) { return Reflect.ownKeys(object).filter((key) => key !== 'bits'); },
+  });
+  const hiddenIr = { values:[hidden], blocks:[], entry:null };
+  const hiddenFirst = capturePhase8SemanticSnapshot(hiddenIr);
+  hiddenTarget.bits = 8;
+  const hiddenSecond = capturePhase8SemanticSnapshot(hiddenIr);
+  assert.notEqual(hiddenSecond, hiddenFirst);
+  assert.equal(hiddenSecond.values[0].bits, 8);
+
+  const accessorIr = { values:[{ id:3, field:1 }], blocks:[], entry:null };
+  capturePhase8SemanticSnapshot(accessorIr);
+  Object.defineProperty(accessorIr.values[0], 'field', {
+    get() { return 1; }, enumerable:true, configurable:true,
+  });
+  assert.throws(() => capturePhase8SemanticSnapshot(accessorIr), /identity-unsupported-semantic-descriptor/);
+});
 
 test('T013 transactions consume the captured graph, not a mutable producer graph', () => {
   const ir = fixture();
