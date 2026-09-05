@@ -15,7 +15,7 @@ export class ContextBroker {
 
   initialAutoScope(snapshot = null) {
     if (snapshot?.selection || this.local.selection) return 'selection';
-    if (snapshot?.currentFunction?.address || this.currentAddress()) return 'function';
+    if (this.currentAddress(snapshot) != null) return 'function';
     return snapshot?.binaryId || this.local.binaryId || this.local.program || this.local.functions ? 'binary' : 'function';
   }
 

@@ -111,9 +111,12 @@ export function createAppRuntimeIO(app) {
 
 async function disposeState(state) {
   if (!state?.platform) return;
-  const current = state.platform.sessions?.current;
-  if (current) {
-    try { await state.platform.sessions.close(current.id); } catch { /* best effort */ }
+  const manager = state.platform.sessions;
+  if (!manager) return;
+  const live = [...(manager.sessions?.values?.() ?? [])];
+  const targets = live.length ? live : (manager.current ? [manager.current] : []);
+  for (const session of targets) {
+    try { await manager.close(session.id); } catch { /* best effort */ }
   }
 }
 

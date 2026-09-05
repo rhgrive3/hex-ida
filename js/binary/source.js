@@ -45,6 +45,10 @@ export function safeNumber(value, label = 'value') {
 
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') {
+    signal.throwIfAborted();
+  }
+  if (signal.reason !== undefined) throw signal.reason;
   const error = new Error('ByteSource read was aborted');
   error.name = 'AbortError';
   error.code = 'ABORT_ERR';
