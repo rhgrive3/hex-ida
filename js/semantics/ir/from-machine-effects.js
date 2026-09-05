@@ -833,7 +833,10 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     return id;
   }
 
-  function ensureControlTargetBlock(target, role) {
+  function ensureControlTargetBlock(target, role, { allowPlaceholder = true } = {}) {
+    const matches = configuredTargetBlocks(target, role);
+    if (matches.length) return ensureControlBlockId(matches[0]);
+    if (!allowPlaceholder) return null;
     return ensureControlBlockId(configuredTargetBlock(target, role));
   }
 
@@ -899,7 +902,23 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         emitUnknownEffects(effect, 'conditional-branch-not-fully-representable', ['control'], { control });
         return;
       }
-      const targets = unique(rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`)));
+      let unresolvedFallthrough = false;
+      const targets = unique(rawTargets.map((target, index) => {
+        const isFallthrough = index === rawTargets.length - 1;
+        const mapped = ensureControlTargetBlock(
+          target,
+          isFallthrough ? 'fallthrough' : `branch-${index}`,
+          { allowPlaceholder: !isFallthrough },
+        );
+        if (isFallthrough && mapped == null) unresolvedFallthrough = true;
+        return mapped;
+      }).filter(Boolean));
+      if (unresolvedFallthrough) {
+        emitUnknownEffects(effect, 'conditional-branch-target-unresolved', ['control'], {
+          control,
+          unresolvedTarget: rawTargets[rawTargets.length - 1],
+        });
+      }
       const nodeId = nodeIdFor(effect, 'conditional-branch-control');
       addNode({
         id: nodeId,
