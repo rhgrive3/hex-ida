@@ -95,7 +95,7 @@ const arithmeticRules = [
     (n,m) => expr.binary('add', m.inner.left, c(u(n.right.value - m.inner.right.value, n.bits), n), n.bits, n.signed, n.source),
     (n,m) => isStable(m.inner.left)),
   binRule('collect-sub-sub-constants', 'algebra', 'sub', (n) => n.left?.kind === 'binary' && n.left.op === 'sub' && isConst(n.left.right) && isConst(n.right) ? { inner:n.left } : null,
-    (n,m) => expr.binary('sub', m.inner.left, c(u(m.inner.right.value + n.right.value, n.bits), n), n.bits, n.signed,n.source),
+    (n,m) => expr.binary('sub', m.inner.left, c(u(m.inner.right.value + n.right.value, n.bits), n), n.bits, n.signed, n.source),
     (n,m) => isStable(m.inner.left)),
   binRule('factor-common-left-add', 'algebra', 'add', (n) => {
     const a=n.left,b=n.right;
