@@ -1,4 +1,5 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
+import { exactLegacySameBlockStackStore } from './legacy-exact-return-repair.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { expr, mapChildren, sourceOf } from './ast/nodes.js';
@@ -11,6 +12,7 @@ import {
 } from '../semantics/memoryssa/queries.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
+export { exactLegacySameBlockStackStore };
 
 function valueOf(arg) { return arg?.value || null; }
 
@@ -154,27 +156,6 @@ function reanchorExactStackReturn(result, opts = {}) {
       evidence:[{ reason:'SSA return stack load re-anchor' }],
     }, { signed:load.signed ?? value?.signed ?? null });
   return result;
-}
-
-export function exactLegacySameBlockStackStore(load, ir) {
-  if (!load?.reachingStore || load.loc?.kind !== 'stack' || !load.loc?.key) return null;
-  const store = load.reachingStore;
-  const loadSize = Number(load.loc?.size);
-  const storeSize = Number(store?.loc?.size);
-  if (!Number.isSafeInteger(loadSize) || loadSize <= 0
-      || !Number.isSafeInteger(storeSize) || storeSize !== loadSize) return null;
-  if (store.op !== 'store' || store.block !== load.block || store.loc?.kind !== 'stack'
-      || store.loc.key !== load.loc.key || store.row == null || load.row == null
-      || Number(store.row) >= Number(load.row)) return null;
-  const block = ir?.blocks?.[load.block];
-  if (!block) return null;
-  for (const inst of block.insts || []) {
-    if (inst === store || inst === load || inst?.row == null) continue;
-    if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
-    if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
-    if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) return null;
-  }
-  return store;
 }
 
 /* Legacy-v1 keeps its historical MemorySSA `reachingStore` pointer. Use that

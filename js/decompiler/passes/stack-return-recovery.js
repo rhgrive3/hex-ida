@@ -210,8 +210,9 @@ function exactReturnLoad(result, root, ret) {
   const load = candidates[0];
   const size = positiveAccessSize(load.loc?.size);
   if (size == null || size > Math.floor(Number.MAX_SAFE_INTEGER / 8) || size * 8 !== bits) return null;
+  if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(ret.row)) return null;
   if (load.block === ret.block) {
-    if (!Number.isSafeInteger(load.row) || !Number.isSafeInteger(ret.row) || load.row >= ret.row) return null;
+    if (load.row >= ret.row) return null;
   } else if (!dominates(result.ir, load.block, ret.block)) {
     return null;
   }
@@ -222,6 +223,7 @@ function storeValue(inst, key, size, values) {
   if (inst?.op !== 'store'
       || inst.loc?.kind !== 'stack'
       || inst.loc?.key !== key
+      || !Number.isSafeInteger(inst.row)
       || positiveAccessSize(inst.loc?.size) !== size) return null;
   let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
@@ -443,6 +445,10 @@ function committedReturnValue(result, root, ret, opts = {}) {
 }
 
 function unsafeBarrier(inst, key) {
+  if (!Number.isSafeInteger(inst?.row)
+      && (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown'
+        || (inst?.op === 'store'
+          && (!inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key)))) return true;
   if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
   if (inst?.op === 'call') {
     // buildMemorySSA has already proven which locations this call can kill.
@@ -455,10 +461,25 @@ function unsafeBarrier(inst, key) {
   return inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function before(ir, block, row) {
+function before(ir, block, row, key) {
   return (ir.instructions || [])
-    .filter((i) => i.block === block && (row == null || i.row < row))
-    .sort((a,b) => (b.row ?? -1) - (a.row ?? -1));
+    .filter((i) => {
+      if (i.block !== block) return false;
+      const malformedBarrier = !Number.isSafeInteger(i.row)
+        && (i.op === 'call' || i.op === 'clobber' || i.op === 'unknown'
+          || (i.op === 'store'
+            && (!i.loc?.key || i.loc?.kind === 'unknown' || i.loc.key === key)));
+      if (malformedBarrier) return true;
+      return row == null || (Number.isSafeInteger(row) && Number.isSafeInteger(i.row) && i.row < row);
+    })
+    .sort((a,b) => {
+      const aMalformed = Number.isSafeInteger(a.row) ? 0 : 1;
+      const bMalformed = Number.isSafeInteger(b.row) ? 0 : 1;
+      if (aMalformed !== bMalformed) return bMalformed - aMalformed;
+      const aRow = Number.isSafeInteger(a.row) ? a.row : -Infinity;
+      const bRow = Number.isSafeInteger(b.row) ? b.row : -Infinity;
+      return bRow - aRow;
+    });
 }
 
 function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, active, depth = 0) {
@@ -467,7 +488,7 @@ function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, act
   if (active.has(token)) return null;
   active.add(token);
   try {
-    for (const inst of before(ir, blockIndex, beforeRow)) {
+    for (const inst of before(ir, blockIndex, beforeRow, key)) {
       const stored = storeValue(inst, key, size, values);
       if (stored) return stored;
       if (unsafeBarrier(inst, key)) return null;
@@ -537,7 +558,8 @@ function rewriteReturn(result, expression, opts, ret) {
 }
 
 function committedStackSpillOnExactReturnPath(result, root, load, size) {
-  for (const inst of before(result.ir, load.block, load.row)) {
+  for (const inst of before(result.ir, load.block, load.row, root.location.key)) {
+    if (!Number.isSafeInteger(inst.row)) return null;
     if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
       if (positiveAccessSize(inst.loc.size) !== size) return null;
       const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));

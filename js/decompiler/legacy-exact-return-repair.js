@@ -12,17 +12,10 @@ function positiveAccessSize(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function exactLegacyStore(result, load, node) {
-  if (load?.op !== 'load' || load.loc?.kind !== 'stack' || load.loc?.key !== node.location?.key) return null;
-  const instructions = result.ir?.instructions || [];
-  if (instructions.filter((candidate) => candidate === load).length !== 1) return null;
-  const sourceIds = (Array.isArray(node.source?.ir) ? node.source.ir : []).filter((id) =>
-    typeof id === 'number' || typeof id === 'string');
-  if (!sourceIds.some((id) => String(id) === String(load.id))) return null;
-
+export function exactLegacySameBlockStackStore(load, ir) {
+  if (!load?.reachingStore || load.op !== 'load' || load.loc?.kind !== 'stack' || !load.loc?.key) return null;
   const store = load.reachingStore;
   if (store?.op !== 'store' || store.loc?.kind !== 'stack' || store.loc.key !== load.loc.key) return null;
-  if (instructions.filter((candidate) => candidate === store).length !== 1) return null;
   if (store.block !== load.block
       || !Number.isSafeInteger(store.row)
       || !Number.isSafeInteger(load.row)
@@ -31,18 +24,34 @@ function exactLegacyStore(result, load, node) {
   const loadSize = positiveAccessSize(load.loc.size);
   if (storeSize == null || storeSize !== loadSize) return null;
 
-  const block = result.ir?.blocks?.[load.block];
+  const block = ir?.blocks?.[load.block];
   if (!block || !Array.isArray(block.insts)
       || block.insts.filter((instruction) => instruction === store).length !== 1
       || block.insts.filter((instruction) => instruction === load).length !== 1) return null;
   for (const inst of block.insts) {
-    if (inst === store || inst === load || typeof inst.row !== 'number') continue;
+    if (inst === store || inst === load) continue;
+    if (!Number.isSafeInteger(inst.row)) {
+      if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown'
+          || (inst.op === 'store' && inst.loc?.key === load.loc.key)) return null;
+      continue;
+    }
     if (inst.row <= store.row || inst.row >= load.row) continue;
     if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
     if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown'
         || inst.loc.key === load.loc.key)) return null;
   }
   return store;
+}
+
+function exactLegacyStore(result, load, node) {
+  if (load?.op !== 'load' || load.loc?.kind !== 'stack' || load.loc?.key !== node.location?.key) return null;
+  const instructions = result.ir?.instructions || [];
+  if (instructions.filter((candidate) => candidate === load).length !== 1) return null;
+  const sourceIds = (Array.isArray(node.source?.ir) ? node.source.ir : []).filter((id) =>
+    typeof id === 'number' || typeof id === 'string');
+  if (!sourceIds.some((id) => String(id) === String(load.id))) return null;
+  if (instructions.filter((candidate) => candidate === load.reachingStore).length !== 1) return null;
+  return exactLegacySameBlockStackStore(load, result.ir);
 }
 
 function exactStoredExpression(result, value, astById, active = new Set()) {

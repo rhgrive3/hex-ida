@@ -10,7 +10,11 @@ import {
   DEFAULT_REWRITE_BUDGET,
   RewriteEngine,
 } from '../../../js/decompiler/rewrite/engine.js';
-import { materializeLegacyExactStackValues } from '../../../js/decompiler/legacy-exact-return-repair.js';
+import {
+  exactLegacySameBlockStackStore as canonicalExactLegacySameBlockStackStore,
+  materializeLegacyExactStackValues,
+} from '../../../js/decompiler/legacy-exact-return-repair.js';
+import { exactLegacySameBlockStackStore } from '../../../js/decompiler/pipeline.js';
 import { recoverExactStackPhiExpressions } from '../../../js/decompiler/passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
 
@@ -97,12 +101,12 @@ function legacyForgedReachingStoreFixture() {
   };
 }
 
-function legacyStaleReachingStoreFixture() {
+function legacyStaleReachingStoreFixture(writerRow = 1) {
   const key = 'stack:sp:e0:-16:s4';
   const oldSource = { id:100 };
   const newSource = { id:101 };
   const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldSource }] };
-  const newerStore = { id:11, op:'store', block:0, row:1, loc:{ kind:'stack', key, size:4 }, args:[{ value:newSource }] };
+  const newerStore = { id:11, op:'store', block:0, row:writerRow, loc:{ kind:'stack', key, size:4 }, args:[{ value:newSource }] };
   const load = { id:12, op:'load', block:0, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:oldStore, args:[] };
   return {
     ir:{ values:[oldSource, newSource, { id:200, def:load }], instructions:[oldStore, newerStore, load], blocks:[
@@ -116,21 +120,22 @@ function legacyStaleReachingStoreFixture() {
   };
 }
 
-function stackReturnWriterFixture(mode) {
+function stackReturnWriterFixture(mode, writerRow = 1) {
   const key = 'stack:sp:e0:-16:s4';
   const oldValue = { id:100 };
   const newValue = { id:101 };
   const oldStore = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldValue }] };
+  const malformedRow = mode === 'malformed-row';
   const middle = mode === 'wrong-width'
     ? { id:11, op:'store', block:0, row:1, address:0x1004n, loc:{ kind:'stack', key, size:8 }, args:[{ value:newValue }] }
-    : { id:12, op:'store', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[{ value:newValue }] };
+    : { id:12, op:'store', block:0, row:malformedRow ? writerRow : 2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[{ value:newValue }] };
   const load = mode === 'wrong-width'
     ? { id:13, op:'load', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[] }
-    : { id:11, op:'load', block:0, row:1, address:0x1004n, loc:{ kind:'stack', key, size:4 }, args:[] };
+    : { id:11, op:'load', block:0, row:malformedRow ? 2 : 1, address:0x1004n, loc:{ kind:'stack', key, size:4 }, args:[] };
   const ret = { id:14, op:'ret', block:0, row:3, address:0x100cn, args:[] };
   const instructions = mode === 'wrong-width'
     ? [oldStore, middle, load, ret]
-    : [oldStore, load, middle, ret];
+    : malformedRow ? [oldStore, middle, load, ret] : [oldStore, load, middle, ret];
   const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
   return {
     semantic:true,
@@ -273,6 +278,26 @@ test('T011 legacy reachingStore metadata cannot skip a newer same-slot writer', 
   assert.equal(expression.kind, 'load');
 });
 
+test('T011 legacy malformed same-slot writer rows fail closed', () => {
+  for (const writerRow of ['1', 1.5, new Number(1)]) {
+    const result = legacyStaleReachingStoreFixture(writerRow);
+    materializeLegacyExactStackValues(result);
+    const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+    assert.equal(expression.kind, 'load', String(writerRow));
+  }
+});
+
+test('T011 pipeline legacy helper cannot skip a newer same-slot writer', () => {
+  assert.equal(exactLegacySameBlockStackStore, canonicalExactLegacySameBlockStackStore);
+  const key = 'stack:sp:e0:-16:s4';
+  const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 } };
+  const newerStore = { id:11, op:'store', block:0, row:1, loc:{ kind:'stack', key, size:4 } };
+  const load = { id:12, op:'load', block:0, row:2, reachingStore:oldStore, loc:{ kind:'stack', key, size:4 } };
+  assert.equal(exactLegacySameBlockStackStore(load, {
+    blocks:[{ index:0, insts:[oldStore, newerStore, load] }],
+  }), null);
+});
+
 test('T011 stack-return fallback stops at the authenticated physical LOAD', () => {
   const result = stackReturnWriterFixture('post-load');
   recoverExactStackReturn(result);
@@ -285,6 +310,15 @@ test('T011 malformed same-slot STORE is a barrier to older stack values', () => 
   recoverExactStackReturn(result);
   assert.equal(result.cAst.body[0].text, 'return local_0;');
   assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 malformed same-slot STORE rows fail closed as barriers', () => {
+  for (const writerRow of ['1', 1.5, new Number(1)]) {
+    const result = stackReturnWriterFixture('malformed-row', writerRow);
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;', String(writerRow));
+    assert.equal(result.metrics.rewrittenExpressions, 0, String(writerRow));
+  }
 });
 
 test('T011 stack-return proof keeps scalar widths and rows type-strict', () => {
