@@ -6,6 +6,35 @@ import { t } from '../../i18n.js';
 const SEARCH_PAGE_LIMIT = 1000;
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 
+export function createSearchPager(queries, snapshot, query) {
+  let offset = 0;
+  let done = false;
+  let completeness = 'complete';
+  return {
+    get hasMore() { return !done; },
+    get completeness() { return completeness; },
+    async next(options = {}) {
+      if (done) return { value:[], completeness, done:true };
+      const currentOffset = offset;
+      const response = await queries.search(snapshot, query, { offset:currentOffset, limit:SEARCH_PAGE_LIMIT }, options);
+      const value = Array.isArray(response?.value) ? response.value : [];
+      if (!Array.isArray(response?.value) || response?.completeness !== 'complete') completeness = 'partial';
+      const page = response?.page;
+      if (!page || !Object.hasOwn(page, 'next')) {
+        completeness = 'partial'; done = true;
+      } else if (page.next === null) {
+        done = true;
+      } else {
+        const expectedNext = currentOffset + value.length;
+        if (!Number.isSafeInteger(page.next) || page.next <= currentOffset || page.next !== expectedNext) {
+          completeness = 'partial'; done = true;
+        } else offset = page.next;
+      }
+      return { value, completeness, done };
+    },
+  };
+}
+
 export function showSearch(app) {
   const region = app.store.get('currentRegion'); if (!region) return;
   let runController = null;
@@ -26,6 +55,14 @@ export function showSearch(app) {
     for (const [key,chip] of chipEls) chip.setAttribute('aria-pressed', String(key === next));
     input.placeholder=t('search.ph.'+next); status.textContent=t('search.help.'+next,{region:region.name});
   }
+  const progressFor = (controller) => (progress) => {
+    if (runController !== controller || controller.signal.aborted || !progress?.all) return;
+    fill.style.width=Math.min(100,Math.round(progress.done/progress.all*100))+'%';
+    status.textContent=t('search.searchingN',{n:progress.hits??0});
+  };
+  const updateStatus = (items, pager) => {
+    status.textContent=!items.length?t('search.none',{region:region.name}):t('search.count',{n:items.length})+(pager.completeness!=='complete'?t('search.capped',{n:items.length}):'');
+  };
   async function run() {
     const text=input.value.trim(); app.store.set({searchQuery:text}); if(!text){toast(t('search.needQuery'));return;}
     if(kind==='addr') { const address=parseAddress(text); if(address==null){toast(t('search.badAddr'));return;} sheet.close(); app.goToAddress(address,{announce:true}); return; }
@@ -39,14 +76,12 @@ export function showSearch(app) {
     } else query.query=text;
     try {
       const snapshot=await app.analysisQueries.snapshot({signal:controller.signal});
-      const response=await app.analysisQueries.search(snapshot,query,{offset:0,limit:SEARCH_PAGE_LIMIT},{
-        signal:controller.signal,
-        onProgress:(progress)=>{if(!progress?.all)return;fill.style.width=Math.min(100,Math.round(progress.done/progress.all*100))+'%';status.textContent=t('search.searchingN',{n:progress.hits??0});},
-      });
+      const pager=createSearchPager(app.analysisQueries,snapshot,query);
+      const response=await pager.next({ signal:controller.signal, onProgress:progressFor(controller) });
       if(controller.signal.aborted)return;
-      const items=response.value||[]; fill.style.width='100%';
-      status.textContent=!items.length?t('search.none',{region:region.name}):t('search.count',{n:items.length})+(response.completeness!=='complete'?t('search.capped',{n:items.length}):'');
-      render(items);
+      const items=response.value; fill.style.width='100%';
+      updateStatus(items,pager);
+      render(items,pager);
     } catch(error) {
       if(!isAbort(error)){status.textContent='';alertDialog(t('search.failed'),userError(error));}
       else status.textContent=t('search.stopped',{n:0});
@@ -54,11 +89,38 @@ export function showSearch(app) {
   }
   function stop(){runController?.abort('search-stopped');runController=null;goBtn.textContent=t('btn.find');status.textContent=t('search.stopped',{n:0});}
   const PAGE=150;
-  function render(items){
-    results.replaceChildren(); let shown=0; const more=tapRow(t('search.more'),{onTap:()=>page()});
-    const page=()=>{more.remove();const frag=document.createDocumentFragment();const end=Math.min(items.length,shown+PAGE);
+  function render(initialItems,pager){
+    const items=[...initialItems];
+    results.replaceChildren(); let shown=0; let loading=false;
+    const more=tapRow(t('search.more'),{onTap:()=>{void page();}});
+    const addMore=()=>{
+      if(shown>=items.length&&!pager.hasMore)return;
+      const remaining=items.length-shown;
+      more.replaceChildren();more.append(el('div',null,t('search.showMore',{n:Math.min(PAGE,remaining||PAGE)})));results.append(more);
+    };
+    const page=async()=>{
+      if(loading)return;
+      more.remove();
+      if(shown>=items.length&&pager.hasMore){
+        if(runController){addMore();return;}
+        const controller=new AbortController(); runController=controller; loading=true; goBtn.textContent=t('btn.stop');
+        try {
+          const response=await pager.next({ signal:controller.signal, onProgress:progressFor(controller) });
+          if(runController!==controller||controller.signal.aborted)return;
+          items.push(...response.value); fill.style.width='100%'; updateStatus(items,pager);
+        } catch(error) {
+          if(runController!==controller)return;
+          if(!isAbort(error)){alertDialog(t('search.failed'),userError(error));addMore();}
+          return;
+        } finally {
+          loading=false;
+          if(runController===controller){runController=null;goBtn.textContent=t('btn.find');}
+        }
+      }
+      const frag=document.createDocumentFragment();const end=Math.min(items.length,shown+PAGE);
       for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{sheet.close();app.viewer.goToRow(item.row,'third');app.viewer.mark(item.row);app.viewer.select(item.row,false);app.store.set({selectedRow:item.row});}}));}
-      results.append(frag);if(shown<items.length){more.replaceChildren();more.append(el('div',null,t('search.showMore',{n:Math.min(PAGE,items.length-shown)})));results.append(more);}};
-    if(items.length)page();
+      results.append(frag);addMore();
+    };
+    if(items.length)void page();
   }
 }
