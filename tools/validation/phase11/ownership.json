@@ -104,7 +104,8 @@
     "tests/compiler-truth/extended.mjs",
     "tests/compiler-truth/language-matrix.mjs",
     "tests/compiler-truth/run-core.mjs",
-    "tests/compiler-truth/run.mjs"
+    "tests/compiler-truth/run.mjs",
+    "tests/machine-effects/independent-oracle-report.test.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",
