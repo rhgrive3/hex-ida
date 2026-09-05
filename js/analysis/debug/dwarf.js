@@ -109,6 +109,12 @@ const ENCODING_CLASS = Object.freeze({
   0x07: 'integer', 0x08: 'integer', 0x0d: 'integer', 0x0e: 'integer',
 });
 
+// Abbreviation parsing is independent of the DIE-record budget. Keep explicit
+// parser-local ceilings so a large `.debug_abbrev` cannot consume unbounded CPU
+// or memory before the first DIE is charged (#3932).
+const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
+const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
+
 class Cursor {
   constructor(bytes, offset = 0) {
     this.bytes = bytes;
@@ -181,27 +187,37 @@ function cstring(bytes, offset) {
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
-/** Parses `.debug_abbrev` into `code -> { tag, hasChildren, attributes }`. */
-function parseAbbrev(bytes, tableOffset) {
+/** Parses one `.debug_abbrev` table with shared per-parse budgets. */
+function parseAbbrev(bytes, tableOffset, state = null) {
   const table = new Map();
-  if (!bytes || tableOffset >= bytes.length) return table;
+  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null };
   const cursor = new Cursor(bytes, tableOffset);
   while (!cursor.eof) {
+    if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
     const code = Number(cursor.uleb());
     if (code === 0) break;
+    if (state) {
+      state.declarations += 1;
+      if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
+    }
     const tag = Number(cursor.uleb());
     const hasChildren = cursor.u8() === 1;
     const attributes = [];
     for (;;) {
+      if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
       const attribute = Number(cursor.uleb());
       const form = Number(cursor.uleb());
       const implicitConst = form === DW_FORM.implicit_const ? cursor.sleb() : null;
       if (attribute === 0 && form === 0) break;
+      if (state) {
+        state.attributes += 1;
+        if (state.attributes > state.maxAttributes) return { table: null, stopReason: 'attribute-budget' };
+      }
       attributes.push({ attribute, form, implicitConst });
     }
     table.set(code, { tag, hasChildren, attributes });
   }
-  return table;
+  return { table, stopReason: null };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -342,23 +358,44 @@ function addrxAddress(index, unit, sections) {
  * is what DW_AT_type references need, and it avoids building a deep object
  * graph for a structure that is already addressed by offset.
  */
-export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
+export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null } = {}) {
   const info = sections.debug_info;
   const diagnostics = [];
   const dies = new Map();
-  if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false };
-  // A missing or malformed record budget must fall back to the default, never
-  // disable the cap: comparisons against undefined/NaN are always false (#5352).
+  if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false, cancelled: false };
+  // Missing or malformed budgets fall back to explicit defaults, never disable
+  // a cap: comparisons against undefined/NaN are always false (#5352, #3932).
   const maxRecords = Number.isSafeInteger(budget?.maxRecords) && budget.maxRecords > 0
     ? budget.maxRecords
     : DEBUG_DEFAULT_BUDGET.maxRecords;
+  const maxAbbrevDeclarations = Number.isSafeInteger(budget?.maxAbbrevDeclarations) && budget.maxAbbrevDeclarations > 0
+    ? budget.maxAbbrevDeclarations
+    : DEFAULT_MAX_ABBREV_DECLARATIONS;
+  const maxAbbrevAttributes = Number.isSafeInteger(budget?.maxAbbrevAttributes) && budget.maxAbbrevAttributes > 0
+    ? budget.maxAbbrevAttributes
+    : DEFAULT_MAX_ABBREV_ATTRIBUTES;
 
   const units = [];
   const cursor = new Cursor(info, 0);
+  const abbrevCache = new Map();
+  const abbrevState = {
+    declarations: 0,
+    attributes: 0,
+    maxDeclarations: maxAbbrevDeclarations,
+    maxAttributes: maxAbbrevAttributes,
+    isCancelled: () => signal?.aborted === true,
+  };
   let recordCount = 0;
   let complete = true;
+  let cancelled = false;
 
   while (cursor.offset + 11 <= info.length) {
+    if (abbrevState.isCancelled()) {
+      diagnostics.push('debug parse cancelled');
+      complete = false;
+      cancelled = true;
+      break;
+    }
     const unitStart = cursor.offset;
     let length = cursor.u32();
     let offsetSize = 4;
@@ -419,7 +456,26 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     }
 
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
-    const abbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset);
+    let abbrev;
+    if (abbrevCache.has(abbrevOffset)) {
+      abbrev = abbrevCache.get(abbrevOffset);
+    } else {
+      const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      if (parsedAbbrev.stopReason != null) {
+        complete = false;
+        if (parsedAbbrev.stopReason === 'cancelled') {
+          diagnostics.push('debug parse cancelled');
+          cancelled = true;
+        } else if (parsedAbbrev.stopReason === 'declaration-budget') {
+          diagnostics.push('abbreviation declaration budget exhausted');
+        } else {
+          diagnostics.push('abbreviation attribute budget exhausted');
+        }
+        break;
+      }
+      abbrev = parsedAbbrev.table;
+      abbrevCache.set(abbrevOffset, abbrev);
+    }
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
       complete = false;
@@ -431,6 +487,13 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     const stack = [];
     let unitComplete = true;
     while (cursor.offset < unitEnd) {
+      if (abbrevState.isCancelled()) {
+        diagnostics.push('debug parse cancelled');
+        complete = false;
+        unitComplete = false;
+        cancelled = true;
+        break;
+      }
       if (recordCount >= maxRecords) {
         diagnostics.push('record budget exhausted');
         complete = false;
@@ -535,6 +598,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     units.push(unit);
     cursor.offset = unitEnd;
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
+    if (cancelled) break;
   }
 
   if (complete && cursor.offset < info.length) {
@@ -542,7 +606,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     complete = false;
   }
 
-  return { dies, units, diagnostics, complete };
+  return { dies, units, diagnostics, complete, cancelled };
 }
 
 function attributeValue(die, attribute) {
@@ -783,26 +847,29 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     }
 
     const normalized = normalizeSections(sections);
-    const parsed = parseDebugInfo(normalized, budget);
+    const parsed = parseDebugInfo(normalized, budget, { signal });
     diagnostics.push(...parsed.diagnostics);
 
     const result = createDebugProviderResult({
       ecosystem: 'dwarf',
       identity: {
-        verdict,
+        // Cancellation is an authority boundary, not merely a partial status.
+        // A matched build must not keep hard-fact authority after parsing stops
+        // before the debug source has been fully validated (#3932).
+        verdict: parsed.cancelled ? 'unsupported' : verdict,
         providerId: this.id,
         providerVersion: this.version,
         expected: expectedIdentity,
         observed: observedIdentity,
-        method,
-        detail,
+        method: parsed.cancelled ? 'cancelled' : method,
+        detail: parsed.cancelled ? 'debug parsing cancelled before completion' : detail,
       },
       sections: Object.keys(normalized).filter((key) => normalized[key] != null),
       counts: { dies: parsed.dies.size, units: parsed.units.length },
       diagnostics,
       status: parsed.complete && diagnostics.length === 0
         ? status('complete', null)
-        : status('partial', 'evidence-missing'),
+        : status('partial', parsed.cancelled ? 'cancelled' : 'evidence-missing'),
     });
     // The parsed forest travels with the result rather than being re-parsed by
     // every reader; it is not part of the frozen contract surface.
