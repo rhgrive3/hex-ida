@@ -6,6 +6,7 @@ import { addrHex } from '../format.js';
 
 const ja = () => (navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
+const STRING_PAGE_SIZE = 200;
 
 function addressText(value) {
   try { return addrHex(typeof value === 'bigint' ? value : BigInt(value)); }
@@ -199,6 +200,32 @@ function linkedController(parentSignal) {
   return controller;
 }
 
+export async function loadCanonicalStrings(queries, snapshot, searchText = '', options = {}) {
+  const value = [];
+  let offset = 0;
+  let completeness = 'complete';
+  let status = null;
+  while (true) {
+    const result = await queries.strings(snapshot, { text:searchText }, { offset, limit:STRING_PAGE_SIZE }, options);
+    const rows = Array.isArray(result?.value) ? result.value : [];
+    value.push(...rows);
+    if (result?.completeness !== 'complete') completeness = 'partial';
+    status = result?.status ?? status;
+    if (options.signal?.aborted) return { value, completeness:'partial', status };
+    const page = result?.page;
+    if (!page || !Object.hasOwn(page, 'next')) {
+      return { value, completeness:'partial', status };
+    }
+    const next = page.next;
+    if (next === null) return { value, completeness, status };
+    const expectedNext = offset + rows.length;
+    if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext) {
+      return { value, completeness:'partial', status };
+    }
+    offset = next;
+  }
+}
+
 function renderCanonicalStrings(app, router, route, meta, queries) {
   const s = screen(text('索引', 'Explorer'), { id:'explorer', subtitle:text('文字列artifactをregion単位で増分検索します。', 'Searches the canonical string artifact incrementally by region.') });
   const controls = h('div', 'ui-explorer-controls');
@@ -228,7 +255,7 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
     host.replaceChildren(loadingState(text('文字列artifactを検索しています…', 'Searching string artifact…')));
     try {
       const snapshot = await queries.snapshot({ signal });
-      const result = await queries.strings(snapshot, { text:search.value.trim() }, { offset:0, limit:200 }, { signal });
+      const result = await loadCanonicalStrings(queries, snapshot, search.value.trim(), { signal });
       if (disposed || signal.aborted) return;
       virtual?.dispose(); virtual = null;
       const items = result.value || [];
