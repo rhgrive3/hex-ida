@@ -710,8 +710,12 @@ export function buildAppleKnowledge({ image = null, binaryIdentity = null, slice
     architecture: identity.architecture,
   };
   const cacheIssued = !!dyldCache && ISSUED_DYLD_CACHES.has(dyldCache);
-  const imageCacheAuthority = imageAuthority?.dyldCache === dyldCache ? imageAuthority.dyldCacheBinding : null;
-  const cacheBinding = imageCacheAuthority ?? (imageAuthority ? null : binding);
+  const imageCacheAuthority = imageAuthority?.dyldCache === dyldCache && imageAuthority.dyldCacheBinding
+    ? { ...imageAuthority.dyldCacheBinding, architecture: imageAuthority.architecture }
+    : null;
+  // An issued cache is not enough to bind it to an issued image: only the
+  // parser-private image/cache association can authorize this cell.
+  const cacheBinding = imageAuthority ? imageCacheAuthority ?? {} : binding;
   const cacheCell = !dyldCache
     ? cell('unknown', null, {}, ['dyld-cache-evidence-missing'], false)
     : !cacheIssued

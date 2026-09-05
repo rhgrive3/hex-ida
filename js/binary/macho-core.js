@@ -211,7 +211,7 @@ function parseThin(bytes, opts) {
   });
   const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal, limits: opts.metadataLimits }));
   Object.defineProperty(metadataBudget, '__machoResidentIdentity', {
-    value: { ...residentIdentity, dyldCacheBinding },
+    value: { ...residentIdentity, architecture: arch, dyldCacheBinding },
     enumerable: false,
     configurable: false,
     writable: false,

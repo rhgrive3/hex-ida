@@ -160,10 +160,10 @@ function machoWithMetadataSection(sectionName, { swiftDescriptor = false } = {})
   return bytes;
 }
 
-function cacheFixture({ overlap = false, mappingCount = 2, truncate = false } = {}) {
+function cacheFixture({ overlap = false, mappingCount = 2, truncate = false, architecture = 'arm64e' } = {}) {
   const bytes = new Uint8Array(truncate ? 128 : 0x280);
   const view = new DataView(bytes.buffer);
-  setAscii(bytes, 0, 'dyld_v1  arm64e', 16);
+  setAscii(bytes, 0, `dyld_v1  ${architecture}`, 16);
   view.setUint32(16, 104, true);
   view.setUint32(20, mappingCount, true);
   view.setUint32(24, 0, true);
@@ -183,6 +183,51 @@ function cacheFixture({ overlap = false, mappingCount = 2, truncate = false } = 
       view.setUint32(164, 3, true);
     }
   }
+  return bytes;
+}
+
+function machoWithFormat4ChainedFixup() {
+  const bytes = new Uint8Array(0x1100);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xfeedfacf, true);
+  view.setUint32(4, 0x0100000c, true);
+  view.setUint32(8, 2, true); // arm64e
+  view.setUint32(12, 2, true);
+  view.setUint32(16, 2, true);
+  view.setUint32(20, 88, true);
+
+  view.setUint32(32, 0x19, true); // LC_SEGMENT_64
+  view.setUint32(36, 72, true);
+  setAscii(bytes, 40, '__DATA', 16);
+  view.setBigUint64(56, 0x1000n, true);
+  view.setBigUint64(64, 0x1000n, true);
+  view.setBigUint64(72, 0x100n, true);
+  view.setBigUint64(80, 0x1000n, true);
+  view.setInt32(92, 3, true); // read/write
+
+  view.setUint32(104, 0x80000034, true); // LC_DYLD_CHAINED_FIXUPS
+  view.setUint32(108, 16, true);
+  view.setUint32(112, 0x80, true);
+  view.setUint32(116, 60, true);
+
+  const fixups = 0x80;
+  view.setUint32(fixups, 0, true); // version
+  view.setUint32(fixups + 4, 28, true); // starts-in-image
+  view.setUint32(fixups + 8, 28, true); // no imports
+  view.setUint32(fixups + 12, 28, true); // no symbols
+  view.setUint32(fixups + 16, 0, true);
+  view.setUint32(fixups + 20, 1, true);
+  view.setUint32(fixups + 24, 0, true);
+  view.setUint32(fixups + 28, 1, true); // one segment
+  view.setUint32(fixups + 32, 8, true); // starts record follows
+  view.setUint32(fixups + 36, 24, true);
+  view.setUint16(fixups + 40, 0x1000, true);
+  view.setUint16(fixups + 42, 4, true); // DYLD_CHAINED_PTR_32_CACHE
+  view.setBigUint64(fixups + 44, 0n, true); // segment offset from image base
+  view.setUint32(fixups + 52, 0, true);
+  view.setUint16(fixups + 56, 1, true);
+  view.setUint16(fixups + 58, 0, true);
+  view.setUint32(0x100, 0x2345, true); // next=0, cache-relative target
   return bytes;
 }
 
@@ -279,6 +324,26 @@ function chainedFixture(raw, pointerFormat, { dyldCache = null } = {}) {
   });
   assert.equal(authoritativeCache.image.metadata.chainedFixups.bindingSitesComplete, true);
   assert.equal(chainedPointerSites(authoritativeCache.image)[0].target, 0x180002345n);
+
+  // Exercise the production Mach-O loader, not only the direct chained-site helper.
+  const productionImage = parseMachO(machoWithFormat4ChainedFixup(), { dyldCache: issuedCache });
+  assert.equal(productionImage.arch, 'arm64e');
+  assert.equal(productionImage.metadata.chainedFixups.bindingSitesComplete, true);
+  assert.equal(chainedPointerSites(productionImage)[0].target, 0x180002345n);
+  assert.equal(machOImageAuthority(productionImage).dyldCache, issuedCache);
+  assert.equal(buildAppleKnowledge({ image: productionImage, dyldCache: issuedCache }).cells.dyldCache.status, 'supported');
+
+  const forgedProductionImage = parseMachO(machoWithFormat4ChainedFixup(), {
+    dyldCache: structuredClone(issuedCache),
+  });
+  assert.equal(forgedProductionImage.metadata.chainedFixups.bindingSitesComplete, false);
+  assert.equal(chainedPointerSites(forgedProductionImage)[0].target, null, 'a forged public cache cannot resolve a production format-4 site');
+
+  const mismatchedCache = parseDyldSharedCache(cacheFixture({ architecture: 'x86_64' }));
+  const mismatchedProductionImage = parseMachO(machoWithFormat4ChainedFixup(), { dyldCache: mismatchedCache });
+  assert.equal(mismatchedProductionImage.metadata.chainedFixups.bindingSitesComplete, false);
+  assert.equal(chainedPointerSites(mismatchedProductionImage)[0].target, null, 'a parser-issued cache for another architecture cannot resolve a format-4 site');
+  assert.notEqual(buildAppleKnowledge({ image: mismatchedProductionImage, dyldCache: mismatchedCache }).cells.dyldCache.status, 'supported');
 }
 
 // arm64e authentication fields stay separate from ordinal/raw/target identity.

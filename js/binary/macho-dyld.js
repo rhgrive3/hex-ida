@@ -346,7 +346,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             dyldCache: image.metadata?.dyldCache ?? null,
             binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
             sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
-            architecture: internalIdentity?.dyldCacheBinding?.architecture ?? null,
+            architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
           });
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (rememberChainedPointerSite(image, address, expectedOff, raw, pointerFormat, d)) {
