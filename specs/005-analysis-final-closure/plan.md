@@ -6,6 +6,19 @@
 
 ## Summary
 
+The 2026-09-05 user amendment limits the active delivery to Stage A through
+T024. Stop before T025/Stage B. Physical-device observations are explicitly
+`SKIPPED_USER_WAIVER`; this supersedes only their prior blocking requirement
+for this delivery, not browser/WebKit or runtime checks and not the historical
+Stage B platform denominator. No physical performance PASS is claimed.
+
+T058 is a reviewed, forward-only shared-contract repair after immutable T046:
+authenticate randomized build envelopes and compare decoded products instead
+of requiring fresh encryption keys/ciphertexts to repeat. T059 reuses the
+existing three-line scheduler ID repair. No previous component was accepted;
+the failed T051 proposed checkpoint must be regenerated and reverified under
+the amended verifier. T046 history and the living PR #6611 are preserved.
+
 Recover the work described by `origin/wip/recovery-handoff-20260904` at
 `84d277a962515031c1bcc4eba0dca4c44c41f0b7` without duplicating work already in
 live `origin/main`, promote the recovered product only with exact candidate and
@@ -394,7 +407,7 @@ failing command and `HEX_TEST_OUTPUT=verbose` when supported.
   registry. Every applicable component has nonempty `owned`, `rolling`, and
   `shadow` argv arrays; the workflow executes them directly without a shell on
   the detached exact synthetic candidate merge commit. T048 may append only
-  fully contracted T058+ rows.
+  fully contracted T060+ rows.
 - `contracts/integration-inventory.json` MUST validate the exact actual
   base-to-candidate path set. Its expected, actual, union, and entry path sets
   are duplicate-free and exactly equal, and each actual path must be allowed by

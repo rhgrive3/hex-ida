@@ -123,6 +123,34 @@
         {"id": "cancellation-publication", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/phase4/bytesource/cached-cancellation-lifecycle.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["stalePublicationAfterCancel", "semanticMismatch"]},
         {"id": "rebuild-invalid-output-rejection", "projection": {"kind": "process-exit-v1", "argv": ["node", "tests/stage2/rebuild-transaction.test.mjs"], "timeoutMs": 60000}, "oracleObservation": {"exitCode": 0, "signal": null, "errorCode": null}, "failureCounterIds": ["invalidWriterOutputAccepted", "semanticMismatch"]}
       ]
+    },
+    "t059-scheduler-strict-id-regression-v1": {
+      "schemaVersion": "hex-final-closure-shadow-contract/v1",
+      "taskId": "T059",
+      "gateId": "t059-independent-verifier",
+      "activationRequired": false,
+      "cases": [
+        {
+          "id": "scheduler-id-authority",
+          "projection": {
+            "kind": "process-exit-v1",
+            "argv": [
+              "node",
+              "tests/phase4/scheduler/strict-authority-boundaries.test.mjs"
+            ],
+            "timeoutMs": 60000
+          },
+          "oracleObservation": {
+            "exitCode": 0,
+            "signal": null,
+            "errorCode": null
+          },
+          "failureCounterIds": [
+            "stalePublicationAfterCancel",
+            "semanticMismatch"
+          ]
+        }
+      ]
     }
   }
 }

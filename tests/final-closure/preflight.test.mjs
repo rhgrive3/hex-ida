@@ -149,7 +149,7 @@ assert.deepEqual(
   valid.checkpointResult.remainingComponentTaskIds,
   [
     'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
-    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057', 'T059',
   ],
   'T051-T057 are frozen Stage A components before any rolling checkpoint',
 );
@@ -256,40 +256,40 @@ function passingShadowProviderResult(command, argv) {
   return { status: 0, stdout: `${JSON.stringify(shadowRawObservation(taskId, gateId))}\n` };
 }
 
-const extendedTasksText = `${tasksText}\n- [ ] T058 [CAMP] Dynamically materialized residual proof
+const extendedTasksText = `${tasksText}\n- [ ] T060 [CAMP] Dynamically materialized residual proof
   - **Contract** — Objective: prove dynamic task coverage. Current evidence: test fixture. Owner/model: SOL Ultra. Risk: MEDIUM. Dependencies: T048. Owned paths: evidence only. Delta: none. Negative counterexample: missing owner. Tests: focused. Integration test: preflight. Completion evidence: fixture. Status: PENDING.\n`;
 const extendedOwnership = structuredClone(ownership);
-extendedOwnership.tasks.T058 = {
+extendedOwnership.tasks.T060 = {
   allowedPaths: [
     'specs/005-analysis-final-closure/evidence/dynamic-residual.md',
-    'tests/final-closure/t058/**',
+    'tests/final-closure/t060/**',
   ],
   forbiddenOverlap: ['production, test, generated-output, and Git ref mutation'],
 };
-extendedOwnership.candidateGates.tasks.T058 = {
-  owned: [{ id: 't058-owned', argv: ['node', 'tests/final-closure/t058/owned.test.mjs'] }],
-  rolling: [{ id: 't058-rolling', argv: ['npm', 'run', 'phase8:test'] }],
-  shadow: [dynamicShadowGate('T058', 't058-shadow', 'tests/issue-914-stack-return-state.mjs')],
+extendedOwnership.candidateGates.tasks.T060 = {
+  owned: [{ id: 't060-owned', argv: ['node', 'tests/final-closure/t060/owned.test.mjs'] }],
+  rolling: [{ id: 't060-rolling', argv: ['npm', 'run', 'phase8:test'] }],
+  shadow: [dynamicShadowGate('T060', 't060-shadow', 'tests/issue-914-stack-return-state.mjs')],
 };
 const extended = validate({ tasksText: extendedTasksText, ownership: extendedOwnership });
 assert.equal(extended.ok, true, extended.errors.join('\n'));
-assert.equal(extended.taskIds.at(-1), 'T058', 'T048 may append a fully contracted T058+ task without weakening T001-T057 ownership');
+assert.equal(extended.taskIds.at(-1), 'T060', 'T048 may append a fully contracted T060+ task without weakening T001-T057 ownership');
 assert.ok(
-  Object.hasOwn(extendedOwnership.candidateGates.tasks.T058.shadow[0], 'contract'),
-  'T058+ is the first dynamic range and must carry a pinned inline shadow contract',
+  Object.hasOwn(extendedOwnership.candidateGates.tasks.T060.shadow[0], 'contract'),
+  'T060+ is the first dynamic range and must carry a pinned inline shadow contract',
 );
 const inactiveDynamicOwnership = structuredClone(extendedOwnership);
-inactiveDynamicOwnership.candidateGates.tasks.T058.shadow = [
-  dynamicShadowGate('T058', 't058-shadow', 'tests/issue-914-stack-return-state.mjs', true),
+inactiveDynamicOwnership.candidateGates.tasks.T060.shadow = [
+  dynamicShadowGate('T060', 't060-shadow', 'tests/issue-914-stack-return-state.mjs', true),
 ];
 assertIncludes(
   validate({ tasksText: extendedTasksText, ownership: inactiveDynamicOwnership }).errors,
-  'candidate-shadow-contract-activation-required:T058',
-  'a T058+ row with no activated integration-owned semantic contract fails closed',
+  'candidate-shadow-contract-activation-required:T060',
+  'a T060+ row with no activated integration-owned semantic contract fails closed',
 );
 assertIncludes(
   validate({
-    tasksText: rewriteDependencies(extendedTasksText, 'T058', 'T046'),
+    tasksText: rewriteDependencies(extendedTasksText, 'T060', 'T046'),
     ownership: extendedOwnership,
   }).errors,
   'tasks-dynamic-t048-dependency-missing',
@@ -516,10 +516,10 @@ for (const side of ['oracle', 'product']) {
   assert.equal(/verdict|hash|counter/i.test(child.stdout), false, 'providers emit raw observations only');
 }
 const tamperedDynamicPin = structuredClone(extendedOwnership);
-tamperedDynamicPin.candidateGates.tasks.T058.shadow[0].contract.cases[0].projection.timeoutMs += 1;
+tamperedDynamicPin.candidateGates.tasks.T060.shadow[0].contract.cases[0].projection.timeoutMs += 1;
 assertIncludes(
   validate({ tasksText: extendedTasksText, ownership: tamperedDynamicPin }).errors,
-  'candidate-shadow-dynamic-pin-invalid:T058',
+  'candidate-shadow-dynamic-pin-invalid:T060',
   'a dynamic contract cannot change without its integration-owned content pin changing',
 );
 const injectedCandidateGate = structuredClone(ownership);
@@ -607,21 +607,21 @@ assert.equal(
   'the explicit T009 dependency on T010 must authorize their ordered path reuse',
 );
 
-const dynamicPairTasksText = `${extendedTasksText}- [ ] T059 [US3] Dynamically materialized sibling implementation
+const dynamicPairTasksText = `${extendedTasksText}- [ ] T061 [US3] Dynamically materialized sibling implementation
   - **Contract** — Objective: prove future overlap coverage. Current evidence: test fixture. Owner/model: Sol. Risk: HIGH. Dependencies: T048. Owned paths: implementation fixture. Delta: none. Negative counterexample: sibling overlap. Tests: focused. Integration test: preflight. Completion evidence: fixture. Status: PENDING.\n`;
 const dynamicOverlapOwnership = structuredClone(extendedOwnership);
-dynamicOverlapOwnership.tasks.T058.allowedPaths = [
+dynamicOverlapOwnership.tasks.T060.allowedPaths = [
   'js/decompiler/future-shared.js',
-  'tests/final-closure/t058/**',
+  'tests/final-closure/t060/**',
 ];
-dynamicOverlapOwnership.tasks.T059 = {
-  allowedPaths: ['js/decompiler/future-shared.js', 'tests/final-closure/t059/**'],
+dynamicOverlapOwnership.tasks.T061 = {
+  allowedPaths: ['js/decompiler/future-shared.js', 'tests/final-closure/t061/**'],
   forbiddenOverlap: ['all sibling implementation lanes'],
 };
-dynamicOverlapOwnership.candidateGates.tasks.T059 = {
-  owned: [{ id: 't059-owned', argv: ['node', 'tests/final-closure/t059/owned.test.mjs'] }],
-  rolling: [{ id: 't059-rolling', argv: ['npm', 'run', 'phase8:test'] }],
-  shadow: [dynamicShadowGate('T059', 't059-shadow', 'tests/issue-429-exception-state.mjs')],
+dynamicOverlapOwnership.candidateGates.tasks.T061 = {
+  owned: [{ id: 't061-owned', argv: ['node', 'tests/final-closure/t061/owned.test.mjs'] }],
+  rolling: [{ id: 't061-rolling', argv: ['npm', 'run', 'phase8:test'] }],
+  shadow: [dynamicShadowGate('T061', 't061-shadow', 'tests/issue-429-exception-state.mjs')],
 };
 assertIncludes(
   validate({ tasksText: dynamicPairTasksText, ownership: dynamicOverlapOwnership }).errors,
@@ -1176,6 +1176,24 @@ function restoreImmutablePerformanceSource(origin) {
   git(SOURCE_ROOT, ['push', '--force', origin, `${IMMUTABLE_SYM01_COMMIT}:${IMMUTABLE_SYM01_REF}`]);
 }
 
+function originalFoundationInventory(inventory) {
+  const original = structuredClone(inventory);
+  const newPaths = new Set([
+    'tests/final-closure/foundation-amendment.test.mjs',
+    'tests/phase4/ownership/integration-contract-repair.test.mjs',
+    'specs/005-analysis-final-closure/evidence/forward-amendment.md',
+  ]);
+  original.entries = original.entries.flatMap((entry) => {
+    if (entry.ownerTaskId !== 'T058') return [entry];
+    if (newPaths.has(entry.path)) return [];
+    return [{ ...entry, ownerTaskId: entry.path === 'specs/005-analysis-final-closure/spec.md' ? 'T003' : 'T046' }];
+  });
+  for (const key of ['expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths']) {
+    original[key] = original.entries.map(({ path }) => path);
+  }
+  return original;
+}
+
 function bindHandoffsToCommit(inventory, headSha, treeSha) {
   for (const handoff of Object.values(inventory.taskHandoffs)) {
     handoff.headSha = headSha;
@@ -1479,27 +1497,27 @@ function evidenceBlock(name, value) {
   dynamicCoverage.findings.find((row) => row.findingId === 'HEX-C1-01').durableDisposition = null;
   dynamicCoverage.source.matrixSha256 = createHash('sha256').update(dynamicMatrixText).digest('hex');
   dynamicCoverage.tasks.push({
-    taskId: 'T058',
+    taskId: 'T060',
     findingId: 'HEX-C1-01',
     implementationAction: 'IMPLEMENT',
   });
-  const dynamicTasksText = `${coverageTasksText}\n- [ ] T058 dynamic fixture\n  - **Contract** — Objective: fixture. Status: PENDING.\n`;
+  const dynamicTasksText = `${coverageTasksText}\n- [ ] T060 dynamic fixture\n  - **Contract** — Objective: fixture. Status: PENDING.\n`;
   const dynamicResult = validateCoverage({
     coverage: dynamicCoverage,
     fixtureTasksText: dynamicTasksText,
-    taskIds: [...EXPECTED_TASK_IDS, 'T058'],
+    taskIds: [...EXPECTED_TASK_IDS, 'T060'],
     matrixText: dynamicMatrixText,
   });
   assert.deepEqual(dynamicResult.errors, []);
-  assert.ok(dynamicResult.result.implementationTaskIds.includes('T058'));
+  assert.ok(dynamicResult.result.implementationTaskIds.includes('T060'));
 
   const duplicateOwnerCoverage = structuredClone(dynamicCoverage);
-  duplicateOwnerCoverage.tasks.find((row) => row.taskId === 'T058').findingId = 'HEX-C0-01';
+  duplicateOwnerCoverage.tasks.find((row) => row.taskId === 'T060').findingId = 'HEX-C0-01';
   assertIncludes(
     validateCoverage({
       coverage: duplicateOwnerCoverage,
       fixtureTasksText: dynamicTasksText,
-      taskIds: [...EXPECTED_TASK_IDS, 'T058'],
+      taskIds: [...EXPECTED_TASK_IDS, 'T060'],
       matrixText: dynamicMatrixText,
     }).errors,
     'stage-b-residual-coverage-finding-owner-duplicate',
@@ -1508,18 +1526,18 @@ function evidenceBlock(name, value) {
 
   const superfluousDynamicCoverage = structuredClone(terminalCoverage);
   superfluousDynamicCoverage.tasks.push({
-    taskId: 'T058',
+    taskId: 'T060',
     findingId: 'HEX-C1-01',
     implementationAction: 'NO_EDIT',
   });
   assertIncludes(
     validateCoverage({
       coverage: superfluousDynamicCoverage,
-      fixtureTasksText: rewriteTaskStatus(dynamicTasksText, 'T058', 'DONE'),
-      taskIds: [...EXPECTED_TASK_IDS, 'T058'],
+      fixtureTasksText: rewriteTaskStatus(dynamicTasksText, 'T060', 'DONE'),
+      taskIds: [...EXPECTED_TASK_IDS, 'T060'],
     }).errors,
     'stage-b-residual-coverage-superfluous-dynamic-no-edit',
-    'T048 cannot append a needless T058+ task for an already-terminal finding',
+    'T048 cannot append a needless T060+ task for an already-terminal finding',
   );
 
   const decoyT048Text = rewriteTaskBlock(tasksText, 'T048', (block) => block.replace(
@@ -1623,6 +1641,70 @@ function replaceEvidenceBlock(source, name, value) {
   return `${source.slice(0, start)}${replacement}${source.slice(end + 4)}`;
 }
 
+const CHECKPOINT_RUNTIME_FIXTURE_PLAINTEXT = 'export const checkpointRuntimeFixture = true;\n';
+const CHECKPOINT_RUNTIME_FIXTURE_CONTENT_HASH = createHash('sha256')
+  .update(CHECKPOINT_RUNTIME_FIXTURE_PLAINTEXT)
+  .digest('hex');
+const CHECKPOINT_RUNTIME_FIXTURE_BUILD_ID = CHECKPOINT_RUNTIME_FIXTURE_CONTENT_HASH.slice(0, 24);
+
+function randomizedCheckpointGeneratorSource() {
+  return `
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+
+const plaintext = Buffer.from(${JSON.stringify(CHECKPOINT_RUNTIME_FIXTURE_PLAINTEXT)}, 'utf8');
+const contentHash = createHash('sha256').update(plaintext).digest('hex');
+const buildId = contentHash.slice(0, 24);
+const releaseState = JSON.parse(await readFile('userscript/release-version.json', 'utf8'));
+const template = await readFile('userscript/hex.user.template.js');
+const runtimeVersion = \`2.2.0.\${releaseState.serial}\`;
+const aad = \`hex-runtime:\${buildId}:\${runtimeVersion}\`;
+const contentKey = randomBytes(32);
+const iv = randomBytes(12);
+const cipher = createCipheriv('aes-256-gcm', contentKey, iv);
+cipher.setAAD(Buffer.from(aad, 'utf8'));
+const compressed = gzipSync(plaintext, { level: 9 });
+const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
+const ciphertextHash = createHash('sha256').update(ciphertext).digest('hex');
+const assetPath = \`/.runtime/runtime.\${buildId}.bin\`;
+const manifest = {
+  buildId,
+  runtimeVersion,
+  ciphertextHash,
+  contentHash,
+  iv: iv.toString('base64url'),
+  aad,
+  compression: 'gzip',
+  assetPath,
+  byteLength: ciphertext.length,
+};
+await Promise.all([
+  rm('.runtime-build', { recursive: true, force: true }),
+  rm('dist', { recursive: true, force: true }),
+]);
+await Promise.all([
+  mkdir('.runtime-build', { recursive: true }),
+  mkdir('dist/.runtime', { recursive: true }),
+  mkdir('dist/assets', { recursive: true }),
+  mkdir('dist/userscript', { recursive: true }),
+]);
+await Promise.all([
+  writeFile('.runtime-build/embedded-assets.js', 'export const FIXTURE_ASSETS=true;\\n'),
+  writeFile('.runtime-build/runtime-secrets.js', \`export const RUNTIME_BUILD=Object.freeze(\${JSON.stringify({
+    manifest,
+    contentKey: contentKey.toString('base64url'),
+    signingKey: randomBytes(32).toString('base64url'),
+  })});\\n\`),
+  writeFile(\`dist\${assetPath}\`, ciphertext),
+  writeFile('dist/runtime-manifest.json', JSON.stringify((({ assetPath: _assetPath, ...value }) => value)(manifest), null, 2)),
+  writeFile('dist/assets/loader.fixture.js', \`export const buildId=\${JSON.stringify(buildId)};\\n\`),
+  writeFile('dist/userscript/hex.user.template.js', template),
+  writeFile('dist/index.html', '<!doctype html><title>checkpoint fixture</title>\\n'),
+]);
+`;
+}
+
 function createRollingCheckpointFixture(acceptedTaskIds, {
   componentWritesGenerated = false,
   moveMainBeforeSecond = false,
@@ -1634,7 +1716,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
   git(sandbox, ['config', 'user.email', 'preflight@example.invalid']);
   write(sandbox, 'base.txt', 'base\n');
   copySourcePath(sandbox, '.gitignore');
-  write(sandbox, 'scripts/build-userscript.mjs', '// deterministic checkpoint fixture generator\n');
+  write(sandbox, 'scripts/build-userscript.mjs', randomizedCheckpointGeneratorSource());
   copySourcePath(sandbox, 'js/core/identity/index.js');
   write(sandbox, 'tests/phase8/run.mjs', '// deterministic rolling-gate fixture\n');
   write(sandbox, 'tests/rolling-pass.mjs', '// deterministic rolling npm-script fixture\n');
@@ -1669,7 +1751,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
   write(sandbox, 'userscript/release-version.json', `${JSON.stringify({
     serial: 1,
     releaseIdentity: '0'.repeat(64),
-    buildId: '0'.repeat(24),
+    buildId: CHECKPOINT_RUNTIME_FIXTURE_BUILD_ID,
   }, null, 2)}\n`);
   const baseSha = commitAll(sandbox, 'checkpoint base');
   let advancedMainSha = null;
@@ -1759,11 +1841,26 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     'specs/005-analysis-final-closure/contracts/integration-inventory.json',
     `${JSON.stringify(inventory, null, 2)}\n`,
   );
+  write(sandbox, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(originalFoundationInventory(inventory), null, 2)}\n`);
   const t046TransitionSha = commitAll(sandbox, 'T046 activation transition');
+  write(sandbox, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(inventory, null, 2)}\n`);
+  const amendedPublicationSha = commitAll(sandbox, 'publish explicit forward ownership');
+  inventory.taskHandoffs.T058 = {
+    headSha: amendedPublicationSha,
+    treeSha: git(sandbox, ['rev-parse', `${amendedPublicationSha}^{tree}`]),
+    evidencePath: 'specs/005-analysis-final-closure/evidence/forward-amendment.md',
+  };
+  fixtureTasksText = rewriteTaskStatus(fixtureTasksText, 'T058', 'DONE');
+  write(sandbox, 'specs/005-analysis-final-closure/tasks.md', fixtureTasksText);
+  write(sandbox, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(inventory, null, 2)}\n`);
+  const foundationTransitionSha = commitAll(sandbox, 'T058 forward amendment activation');
   const rows = [];
   const evidenceCommitShas = [];
   const componentHeadShas = [];
-  let integrationParentSha = t046TransitionSha;
+  let integrationParentSha = foundationTransitionSha;
   let latestMainSha = baseSha;
   for (let index = 0; index < acceptedTaskIds.length; index += 1) {
     const taskId = acceptedTaskIds[index];
@@ -1808,7 +1905,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
     ]);
     git(sandbox, ['checkout', '--detach', acceptedMergeCommitSha]);
     const releaseIdentity = stableDigest([taskId, acceptedMergeCommitSha]).padEnd(64, '0');
-    const buildId = stableDigest([taskId, candidateMergeTreeSha]).slice(0, 24);
+    const buildId = CHECKPOINT_RUNTIME_FIXTURE_BUILD_ID;
     write(
       sandbox,
       'js/userscript/deployment-identity.generated.js',
@@ -1891,7 +1988,7 @@ function createRollingCheckpointFixture(acceptedTaskIds, {
       mainReconciliation: {
         schemaVersion: 'hex-final-closure-main-reconciliation/v1',
         mode: mainReconciliationMode,
-        previousEvidenceSha: index === 0 ? t046TransitionSha : evidenceCommitShas[index - 1],
+        previousEvidenceSha: index === 0 ? foundationTransitionSha : evidenceCommitShas[index - 1],
         currentMainSha: latestMainSha,
         integrationHeadSha: integrationParentSha,
         integrationHeadTreeSha: git(sandbox, ['rev-parse', `${integrationParentSha}^{tree}`]),
@@ -1975,6 +2072,28 @@ function validateRollingCheckpointFixture(fixture, {
   });
 }
 
+function readCheckpointRuntimeBuild(root) {
+  const source = fs.readFileSync(
+    path.join(root, '.runtime-build/runtime-secrets.js'),
+    'utf8',
+  ).trim();
+  const prefix = 'export const RUNTIME_BUILD=Object.freeze(';
+  return JSON.parse(source.slice(prefix.length, -2));
+}
+
+function writeCheckpointRuntimeBuild(root, runtimeBuild) {
+  write(
+    root,
+    '.runtime-build/runtime-secrets.js',
+    `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify(runtimeBuild)});\n`,
+  );
+}
+
+function writeCheckpointPublicManifest(root, manifest) {
+  const { assetPath: _assetPath, ...publicManifest } = manifest;
+  write(root, 'dist/runtime-manifest.json', `${JSON.stringify(publicManifest, null, 2)}\n`);
+}
+
 function exerciseCheckpointRegressions() {
   const secondComponent = createRollingCheckpointFixture(['T011', 'T012']);
   try {
@@ -1983,7 +2102,7 @@ function exerciseCheckpointRegressions() {
     assert.equal(valid.checkpointResult.checkpoint.sequence, 2);
     assert.deepEqual(valid.checkpointResult.remainingComponentTaskIds, [
       'T013', 'T014', 'T015', 'T016', 'T017',
-      'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+      'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057', 'T059',
     ]);
     assert.deepEqual(
       secondComponent.ledger.checkpoints[1].rollingProductGates.taskIds,
@@ -2009,13 +2128,18 @@ function exerciseCheckpointRegressions() {
     assert.equal(exactCheckpoint.sequence, 2, 'a valid second component checkpoint is accepted');
     const latestRow = secondComponent.ledger.checkpoints.at(-1);
     const runtimeCalls = [];
+    const generatedRuntimeBuilds = [];
     const runtime = verifyCheckpointRuntimeEvidence({
       root: secondComponent.sandbox,
       result: valid,
       integrationHeadSha: secondComponent.evidenceCommitShas.at(-1),
       spawn(command, argv, options) {
         runtimeCalls.push([command, ...argv]);
-        return spawnSync(command, argv, options);
+        const child = spawnSync(command, argv, options);
+        if (child.status === 0 && argv[0] === 'scripts/build-userscript.mjs') {
+          generatedRuntimeBuilds.push(readCheckpointRuntimeBuild(options.cwd));
+        }
+        return child;
       },
     });
     assert.equal(runtime.verdict, 'CHECKPOINT_RUNTIME_GREEN');
@@ -2024,6 +2148,32 @@ function exerciseCheckpointRegressions() {
       runtimeCalls.filter((argv) => argv[1] === 'scripts/build-userscript.mjs').length,
       2,
       'the canonical generator is rerun twice against the exact checkpoint product',
+    );
+    assert.equal(generatedRuntimeBuilds.length, 2);
+    for (const field of ['contentKey', 'signingKey']) {
+      assert.equal(
+        generatedRuntimeBuilds[0][field] === generatedRuntimeBuilds[1][field],
+        false,
+        `the actual generator must refresh ${field} while retaining the decoded product`,
+      );
+    }
+    for (const field of ['iv', 'ciphertextHash']) {
+      assert.equal(
+        generatedRuntimeBuilds[0].manifest[field]
+          === generatedRuntimeBuilds[1].manifest[field],
+        false,
+        `the actual generator must refresh ${field} while retaining the decoded product`,
+      );
+    }
+    assert.equal(
+      generatedRuntimeBuilds[0].manifest.contentHash,
+      generatedRuntimeBuilds[1].manifest.contentHash,
+      'different valid ciphertext/key pairs are accepted only for the same decoded runtime',
+    );
+    assert.equal(
+      generatedRuntimeBuilds[0].manifest.buildId,
+      generatedRuntimeBuilds[1].manifest.buildId,
+      'different valid ciphertext/key pairs retain the same build identity',
     );
     const realRuntime = verifyCheckpointRuntimeEvidence({
       root: secondComponent.sandbox,
@@ -2036,6 +2186,112 @@ function exerciseCheckpointRegressions() {
       'a sequence>0 checkpoint must execute its real generator, rolling gate, oracle, and verifier processes',
     );
     assert.match(realRuntime.runtimeEphemeralIdentity, /^[0-9a-f]{64}$/);
+
+    const runtimeBuildMutationSpawn = (mutator, targetBuild = 1) => {
+      let generation = 0;
+      return (command, argv, options) => {
+        const child = spawnSync(command, argv, options);
+        if (child.status === 0 && argv[0] === 'scripts/build-userscript.mjs') {
+          generation += 1;
+          if (generation === targetBuild) mutator(options.cwd);
+        }
+        return child;
+      };
+    };
+    for (const [label, mutator, expected] of [
+      [
+        'ciphertext',
+        (runtimeRoot) => {
+          const runtimeBuild = readCheckpointRuntimeBuild(runtimeRoot);
+          const ciphertextPath = path.join(
+            runtimeRoot,
+            'dist',
+            runtimeBuild.manifest.assetPath.slice(1),
+          );
+          const ciphertext = fs.readFileSync(ciphertextPath);
+          ciphertext[0] ^= 0xff;
+          fs.writeFileSync(ciphertextPath, ciphertext);
+        },
+        /checkpoint-runtime-build-ciphertext-hash-mismatch/,
+      ],
+      [
+        'content key',
+        (runtimeRoot) => {
+          const runtimeBuild = readCheckpointRuntimeBuild(runtimeRoot);
+          runtimeBuild.contentKey = Buffer.alloc(32, 0xa5).toString('base64url');
+          writeCheckpointRuntimeBuild(runtimeRoot, runtimeBuild);
+        },
+        /checkpoint-runtime-build-decryption-failed/,
+      ],
+      [
+        'manifest AAD',
+        (runtimeRoot) => {
+          const runtimeBuild = readCheckpointRuntimeBuild(runtimeRoot);
+          runtimeBuild.manifest.aad = `${runtimeBuild.manifest.aad}:corrupt`;
+          writeCheckpointRuntimeBuild(runtimeRoot, runtimeBuild);
+          writeCheckpointPublicManifest(runtimeRoot, runtimeBuild.manifest);
+        },
+        /checkpoint-runtime-build-aad-invalid/,
+      ],
+      [
+        'decoded content identity',
+        (runtimeRoot) => {
+          const runtimeBuild = readCheckpointRuntimeBuild(runtimeRoot);
+          const hash = runtimeBuild.manifest.contentHash;
+          const replacement = hash[24] === 'f' ? 'e' : 'f';
+          runtimeBuild.manifest.contentHash = `${hash.slice(0, 24)}${replacement}${hash.slice(25)}`;
+          writeCheckpointRuntimeBuild(runtimeRoot, runtimeBuild);
+          writeCheckpointPublicManifest(runtimeRoot, runtimeBuild.manifest);
+        },
+        /checkpoint-runtime-build-content-hash-mismatch/,
+      ],
+    ]) {
+      assert.throws(
+        () => verifyCheckpointRuntimeEvidence({
+          root: secondComponent.sandbox,
+          result: valid,
+          integrationHeadSha: secondComponent.evidenceCommitShas.at(-1),
+          spawn: runtimeBuildMutationSpawn(mutator),
+        }),
+        expected,
+        `a corrupt ${label} must fail independent runtime-build validation`,
+      );
+    }
+    assert.throws(
+      () => verifyCheckpointRuntimeEvidence({
+        root: secondComponent.sandbox,
+        result: valid,
+        integrationHeadSha: secondComponent.evidenceCommitShas.at(-1),
+        spawn: runtimeBuildMutationSpawn((runtimeRoot) => {
+          fs.appendFileSync(path.join(runtimeRoot, 'dist/index.html'), '<!-- drift -->\n');
+        }, 2),
+      }),
+      /checkpoint-runtime-build-noncrypto-output-mismatch:2/,
+      'a second valid cryptographic build cannot hide drift in any other generated output file',
+    );
+    let completedGenerations = 0;
+    let mutatedAfterGate = false;
+    assert.throws(
+      () => verifyCheckpointRuntimeEvidence({
+        root: secondComponent.sandbox,
+        result: valid,
+        integrationHeadSha: secondComponent.evidenceCommitShas.at(-1),
+        spawn(command, argv, options) {
+          const child = spawnSync(command, argv, options);
+          if (child.status === 0 && argv[0] === 'scripts/build-userscript.mjs') {
+            completedGenerations += 1;
+          } else if (child.status === 0
+            && completedGenerations === 2
+            && !mutatedAfterGate) {
+            mutatedAfterGate = true;
+            fs.appendFileSync(path.join(options.cwd, 'dist/index.html'), '<!-- gate drift -->\n');
+          }
+          return child;
+        },
+      }),
+      /checkpoint-runtime-rolling-failed:2:checkpoint-runtime-ephemeral-mutated:2:/,
+      'the full second-build snapshot remains immutable across every non-generator gate command',
+    );
     assert.throws(
       () => verifyCheckpointRuntimeEvidence({
         root: secondComponent.sandbox,
@@ -2528,7 +2784,7 @@ function exerciseCheckpointRegressions() {
 
   const completeStage = createRollingCheckpointFixture([
     'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
-    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+    'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057', 'T059',
   ]);
   try {
     const terminalInventory = structuredClone(completeStage.inventory);
@@ -2696,7 +2952,12 @@ function createOperationalFixture() {
       : Buffer.from(`fixture for ${repoPath}\n`);
     write(candidate, repoPath, content);
   }
-  const headSha = commitAll(candidate, 'candidate');
+  write(candidate, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(originalFoundationInventory(tempInventory), null, 2)}\n`);
+  const originalTransitionSha = commitAll(candidate, 'original foundation transition');
+  write(candidate, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(tempInventory, null, 2)}\n`);
+  const headSha = commitAll(candidate, 'candidate amendment publication');
   git(candidate, ['push', '-u', 'origin', integrationInventory.integrationRef]);
   git(candidate, ['push', 'origin', `HEAD:refs/pull/7/head`]);
   return {
@@ -2705,6 +2966,7 @@ function createOperationalFixture() {
     candidate,
     baseSha,
     headSha,
+    originalTransitionSha,
     handoffSha,
     handoffTreeSha,
     inventory: tempInventory,
@@ -2759,8 +3021,20 @@ function createStageBOperationalFixture() {
     }
     copySourcePath(original, repoPath);
   }
+  write(original, 'specs/005-analysis-final-closure/contracts/integration-inventory.json', `${JSON.stringify(originalFoundationInventory(stageAInventory), null, 2)}\n`);
+  const originalFoundationSha = commitAll(original, 'stage A original foundation');
   write(original, 'specs/005-analysis-final-closure/contracts/integration-inventory.json', `${JSON.stringify(stageAInventory, null, 2)}\n`);
-  const stageACandidateHeadSha = commitAll(original, 'stage A candidate');
+  const amendedPublicationSha = commitAll(original, 'stage A forward ownership publication');
+  stageAInventory.taskHandoffs.T058 = {
+    headSha: amendedPublicationSha,
+    treeSha: git(original, ['rev-parse', `${amendedPublicationSha}^{tree}`]),
+    evidencePath: 'specs/005-analysis-final-closure/evidence/forward-amendment.md',
+  };
+  const amendedStageATasks = rewriteTaskStatus(rewriteTaskStatus(tasksText, 'T046', 'DONE'), 'T058', 'DONE');
+  write(original, 'specs/005-analysis-final-closure/tasks.md', amendedStageATasks);
+  write(original, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(stageAInventory, null, 2)}\n`);
+  const stageACandidateHeadSha = commitAll(original, 'stage A forward amendment');
   const stageACandidateTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
   const stageACandidateMergeTreeSha = git(original, [
     'merge-tree', '--write-tree', stageACandidateBaseSha, stageACandidateHeadSha,
@@ -2833,7 +3107,7 @@ function createStageBOperationalFixture() {
   const stageAPostEvidenceSha = commitAll(original, 'record Stage A post-merge evidence');
   const stageAPostEvidenceTreeSha = git(original, ['rev-parse', 'HEAD^{tree}']);
 
-  const stageBaseTasks = rewriteTaskStatus(tasksText, 'T046', 'DONE');
+  const stageBaseTasks = amendedStageATasks;
   const stageBaseInventory = structuredClone(stageAInventory);
   const baseSha = stageAPostEvidenceSha;
   git(original, ['push', 'origin', 'main']);
@@ -3089,9 +3363,18 @@ function publishSubstitutedT025MatrixFixture(fixture) {
 
 function createComponentFixture() {
   const fixture = createOperationalFixture();
-  const integrationTasks = rewriteTaskStatus(tasksText, 'T046', 'DONE');
+  const integrationTasks = rewriteTaskStatus(rewriteTaskStatus(tasksText, 'T046', 'DONE'), 'T058', 'DONE');
   const integrationInventoryFixture = structuredClone(fixture.inventory);
-  const integrationHeadSha = fixture.headSha;
+  integrationInventoryFixture.taskHandoffs.T058 = {
+    headSha: fixture.headSha,
+    treeSha: git(fixture.candidate, ['rev-parse', `${fixture.headSha}^{tree}`]),
+    evidencePath: 'specs/005-analysis-final-closure/evidence/forward-amendment.md',
+  };
+  write(fixture.candidate, 'specs/005-analysis-final-closure/tasks.md', integrationTasks);
+  write(fixture.candidate, 'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    `${JSON.stringify(integrationInventoryFixture, null, 2)}\n`);
+  const integrationHeadSha = commitAll(fixture.candidate, 'activate forward amendment before component');
+  git(fixture.candidate, ['push', 'origin', fixture.inventory.integrationRef]);
 
   const componentRef = 'component/final-closure-t011-stack-return';
   git(fixture.candidate, ['switch', '-c', componentRef]);
@@ -3249,7 +3532,7 @@ try {
   assert.equal(report.mergeTreeSha, report.treeSha);
   assert.equal(
     report.taskHandoffIdentity.canonicalT046TransitionCommitSha,
-    operational.headSha,
+    operational.originalTransitionSha,
     'the operational fixture must preserve the immutable T046 seal after the source ledger is DONE',
   );
   assert.match(report.verifierIdentity.sha256, /^[0-9a-f]{64}$/);

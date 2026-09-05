@@ -6,6 +6,14 @@
 
 **Status**: Draft
 
+**Active delivery amendment (2026-09-05, user authority)**: This session ends
+after Stage A is merged and post-merge verified (T024), before any Stage B work.
+The user explicitly waived physical-device testing for this delivery. Record
+those observations as `SKIPPED_USER_WAIVER`, never as PASS or simulated physical
+proof. Browser/WebKit, runtime identity, semantic, CI, generated-output and
+post-merge gates remain required. Historical Stage B scope and platform locks
+remain preserved, pending a later resumption; this is not full roadmap closure.
+
 **Input**: User description: "Recover all verified work from the 2026-09-04 handoff, merge and verify it on main, then reconcile and close every authoritative analysis-improvement finding with exact evidence."
 
 ## User Scenarios & Testing *(mandatory)*
