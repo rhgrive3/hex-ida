@@ -54,14 +54,19 @@ export class RuntimeProviderPlatform {
     this.current = session;
     const originalClose = session.close.bind(session);
     let closed = false;
+    let closing = null;
     session.close = async () => {
       if (closed) return;
-      closed = true;
-      try { await originalClose(); }
-      finally {
+      if (closing) return closing;
+      const attempt = (async () => {
+        await originalClose();
+        closed = true;
         if (this.sessions.get(session.runtimeSessionId) === session) this.sessions.delete(session.runtimeSessionId);
         if (this.current === session) this.current = null;
-      }
+      })();
+      closing = attempt;
+      try { return await attempt; }
+      finally { if (closing === attempt) closing = null; }
     };
     return session;
   }
@@ -89,8 +94,6 @@ export class RuntimeProviderPlatform {
     for (const session of [...this.sessions.values()]) {
       try { await session.close(); } catch {}
     }
-    this.sessions.clear();
-    this.current = null;
   }
 }
 
