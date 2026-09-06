@@ -7,6 +7,7 @@ import { addrHex } from '../format.js';
 const ja = () => (navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 const CLAIM_PAGE_SIZE = 500;
+const STRING_PAGE_SIZE = 200;
 
 function addressText(value) {
   try { return addrHex(typeof value === 'bigint' ? value : BigInt(value)); }
@@ -49,6 +50,43 @@ export async function loadCanonicalClaims(queries, snapshot, detailId = null, op
     const expectedNext = offset + rows.length;
     if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext) {
       return { value, completeness:'partial' };
+    }
+    offset = next;
+  }
+}
+
+export async function loadCanonicalStrings(queries, snapshot, filter = {}, options = {}) {
+  const value = [];
+  let offset = 0;
+  let completeness = 'complete';
+  let status = null;
+  while (true) {
+    const result = await queries.strings(snapshot, filter, { offset, limit:STRING_PAGE_SIZE }, options);
+    const rows = Array.isArray(result?.value) ? result.value : null;
+    if (!rows) return { value, completeness:'partial', status:result?.status || status };
+    value.push(...rows);
+    status = result?.status || status;
+    if (result?.completeness !== 'complete') completeness = 'partial';
+    if (options.signal?.aborted) return { value, completeness:'partial', status };
+    const page = result?.page;
+    if (!page || !Object.hasOwn(page, 'next')) {
+      return { value, completeness:'partial', status };
+    }
+    const expectedNext = offset + rows.length;
+    const total = page.total;
+    const totalValid = total === null || (Number.isSafeInteger(total) && total >= expectedNext);
+    if (page.offset !== offset || page.limit !== STRING_PAGE_SIZE || page.returned !== rows.length || !totalValid) {
+      return { value, completeness:'partial', status };
+    }
+    const next = page.next;
+    if (next === null) {
+      if (result?.completeness === 'complete' && total !== expectedNext) {
+        return { value, completeness:'partial', status };
+      }
+      return { value, completeness, status };
+    }
+    if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext || (total !== null && next >= total)) {
+      return { value, completeness:'partial', status };
     }
     offset = next;
   }
@@ -253,10 +291,11 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
     queryController?.abort('query-replaced');
     queryController = linkedController(meta.signal);
     const signal = queryController.signal;
+    const filter = { text:search.value.trim() };
     host.replaceChildren(loadingState(text('文字列artifactを検索しています…', 'Searching string artifact…')));
     try {
       const snapshot = await queries.snapshot({ signal });
-      const result = await queries.strings(snapshot, { text:search.value.trim() }, { offset:0, limit:200 }, { signal });
+      const result = await loadCanonicalStrings(queries, snapshot, filter, { signal });
       if (disposed || signal.aborted) return;
       virtual?.dispose(); virtual = null;
       const items = result.value || [];
