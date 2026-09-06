@@ -72,10 +72,20 @@ export async function loadCanonicalStrings(queries, snapshot, filter = {}, optio
     if (!page || !Object.hasOwn(page, 'next')) {
       return { value, completeness:'partial', status };
     }
-    const next = page.next;
-    if (next === null) return { value, completeness, status };
     const expectedNext = offset + rows.length;
-    if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext) {
+    const total = page.total;
+    const totalValid = total === null || (Number.isSafeInteger(total) && total >= expectedNext);
+    if (page.offset !== offset || page.limit !== STRING_PAGE_SIZE || page.returned !== rows.length || !totalValid) {
+      return { value, completeness:'partial', status };
+    }
+    const next = page.next;
+    if (next === null) {
+      if (result?.completeness === 'complete' && total !== expectedNext) {
+        return { value, completeness:'partial', status };
+      }
+      return { value, completeness, status };
+    }
+    if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext || (total !== null && next >= total)) {
       return { value, completeness:'partial', status };
     }
     offset = next;

@@ -62,6 +62,30 @@ for (const malformedPage of [
   assert.equal(result.completeness, 'partial', 'malformed continuation must never claim a complete result set');
 }
 
+for (const pageOverride of [
+  { offset:1 },
+  { limit:199 },
+  { returned:199 },
+  { total:199 },
+  { total:401, next:null },
+]) {
+  const calls = [];
+  const queries = {
+    async strings(_snapshot, _filter, page) {
+      calls.push(page.offset);
+      return {
+        value:rows(200),
+        completeness:'complete',
+        page:{ offset:page.offset, limit:page.limit, returned:200, total:200, next:null, ...pageOverride },
+      };
+    },
+  };
+  const result = await loadCanonicalStrings(queries, { id:'contradictory-page' }, {});
+  assert.deepEqual(calls, [0], 'contradictory page envelope must stop before another query');
+  assert.equal(result.value.length, 200, 'already returned rows remain usable when page metadata contradicts the response');
+  assert.equal(result.completeness, 'partial', 'contradictory offset/limit/returned/total/next metadata must fail closed');
+}
+
 {
   const calls = [];
   const queries = {
