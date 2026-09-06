@@ -1,6 +1,6 @@
 import { TraceRingBuffer } from '../trace/ring-buffer.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { encodeWireValue } from '../debug/remote-protocol.js';
+import { decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
 
 let nextSession = 1;
 
@@ -12,10 +12,40 @@ function sessionSafe(value) {
   }
 }
 
+function wireSafeTraceEvent(value) {
+  try { return decodeWireValue(encodeWireValue(value)); }
+  catch { return null; }
+}
+
 function eventEpoch(value) {
   if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
+function traceEventEpochAuthority(value) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+    return { explicit:false, materialize:false, epoch:null, value:null };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'epoch');
+    if (descriptor?.enumerable) {
+      return { explicit:true, materialize:false, epoch:null, value:null };
+    }
+    const rawEpoch = descriptor
+      ? Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? descriptor.value
+        : Reflect.get(value, 'epoch')
+      : Reflect.get(value, 'epoch');
+    if (rawEpoch == null) {
+      return { explicit:false, materialize:false, epoch:null, value:null };
+    }
+    const epoch = eventEpoch(rawEpoch);
+    if (epoch == null) return null;
+    return { explicit:true, materialize:true, epoch, value:rawEpoch };
+  } catch {
+    return null;
+  }
 }
 
 function debugSessionId(value) {
@@ -79,9 +109,24 @@ export class DebugSession {
   acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
     if (event) {
-      const epoch = event.epoch != null ? eventEpoch(event.epoch) : eventEpoch(sourceEpoch);
+      const epochAuthority = traceEventEpochAuthority(event);
+      if (epochAuthority == null) return false;
+      const safeEvent = wireSafeTraceEvent(event);
+      if (safeEvent == null) return false;
+      let epoch;
+      if (epochAuthority.materialize) {
+        if (!safeEvent || typeof safeEvent !== 'object' || Array.isArray(safeEvent)) return false;
+        Object.defineProperty(safeEvent,'epoch',{value:epochAuthority.value,enumerable:true,writable:true,configurable:true});
+        epoch = epochAuthority.epoch;
+      } else {
+        const hasSafeEpoch = safeEvent && typeof safeEvent === 'object'
+          && Object.prototype.hasOwnProperty.call(safeEvent, 'epoch');
+        if (epochAuthority.explicit && !hasSafeEpoch) return false;
+        const safeEpoch = hasSafeEpoch ? safeEvent.epoch : null;
+        epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
+      }
       if (epoch == null || epoch !== this.epoch) return false;
-      this.traces.push(event);
+      this.traces.push(safeEvent);
     }
     return true;
   }
