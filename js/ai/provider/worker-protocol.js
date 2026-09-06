@@ -85,7 +85,15 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
   const call = steps.find((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
   if (!call) throw new Error('The model did not return a complete function call.');
-  const name = String(call.name || call.function?.name || '');
+  // Model tool-call names are identity authority: only a primitive non-empty
+  // string may reach submit_hex_result/allowedTools dispatch. String() would
+  // launder structured values (e.g. ['submit_hex_result'] → 'submit_hex_result')
+  // past the schema boundary (#6165). Only undefined/true omission permits
+  // fallback to provider-specific call.function?.name; an explicit null or
+  // invalid primitive stays on call.name and fails validation.
+  const rawName = call.name !== undefined ? call.name : (call.function?.name ?? null);
+  if (typeof rawName !== 'string' || !rawName) throw new Error('The model returned an invalid function name.');
+  const name = rawName;
   let args = call.arguments ?? call.input ?? call.function?.arguments ?? {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { throw new Error('The model returned malformed function arguments.'); } }
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
@@ -100,7 +108,12 @@ export function normalizeAIInteraction(value, allowedTools) {
 export function normalizeRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
   const question = boundedText(value.question, MAX_QUESTION_CHARS).trim(); if (!question) throw new HttpError(422, 'missing_question', 'A non-empty question is required.');
-  const thinkingLevel = value.thinkingLevel == null ? 'high' : String(value.thinkingLevel); if (!THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
+  // thinkingLevel drives provider generation_config. Only a primitive string
+  // may reach the enum check: String() would launder ['high'] into the
+  // canonical reasoning level (#6149). null/undefined keeps the 'high' default.
+  const rawThinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel;
+  if (typeof rawThinkingLevel !== 'string' || !THINKING_LEVELS.has(rawThinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
+  const thinkingLevel = rawThinkingLevel;
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
@@ -112,9 +125,13 @@ export function normalizeCurrentFunction(value) {
   const address = boundedText(value.address, 80).trim(), assembly = boundedText(value.assembly, 120000).trim();
   if (!address || !assembly) throw new HttpError(422, 'missing_function', 'Current function address and assembly are required.');
   const rawMeta = isObject(value.assemblyMeta) ? value.assemblyMeta : {};
-  const nonNegativeInt = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback; };
+  // assemblyMeta counts are truncation/completeness evidence authority for the
+  // legacy system prompt. Only primitive safe non-negative integers may become
+  // canonical counts: Number() would launder ['100'] → 100, '100' → 100 and
+  // true/false → 1/0 into that authority (#6167).
+  const nonNegativeInt = (v, fallback = 0) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : fallback);
   const totalInstructions = nonNegativeInt(rawMeta.totalInstructions), includedInstructions = nonNegativeInt(rawMeta.includedInstructions);
-  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: rawMeta.startRow == null ? null : nonNegativeInt(rawMeta.startRow), endRow: rawMeta.endRow == null ? null : nonNegativeInt(rawMeta.endRow), truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
+  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: typeof rawMeta.startRow === 'number' && Number.isSafeInteger(rawMeta.startRow) && rawMeta.startRow >= 0 ? rawMeta.startRow : null, endRow: typeof rawMeta.endRow === 'number' && Number.isSafeInteger(rawMeta.endRow) && rawMeta.endRow >= 0 ? rawMeta.endRow : null, truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
 }
 
 export function promptWorkbench(context) {
@@ -125,5 +142,9 @@ export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
 export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }
-export function finiteConfidence(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
+// Final-result confidence is model-output schema authority (finalResultTool
+// declares type:'number', 0..1). Only a primitive finite number may become
+// canonical confidence: Number() would launder '0.9', ['0.9'] and true into
+// calibrated confidence and hide the schema violation downstream (#6142).
+export function finiteConfidence(value) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined; }
 export function isObject(value) { return value != null && typeof value === 'object' && !Array.isArray(value); }

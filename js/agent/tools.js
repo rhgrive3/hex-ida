@@ -30,7 +30,13 @@ function parseInteger(value, name = 'value', { nonNegative = false } = {}) {
     } else if (typeof value === 'string') {
       const text = value.trim();
       if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new Error('invalid-string');
-      out = BigInt(text);
+      // BigInt(string) rejects signed prefixed hex ('+0x10'/'-0x10') even
+      // though this grammar accepts it, so the sign is applied separately
+      // after converting the unsigned literal (#6169).
+      const negative = text.startsWith('-');
+      const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+      const parsed = BigInt(unsigned);
+      out = negative ? -parsed : parsed;
     } else throw new Error('invalid-type');
     if (nonNegative && out < 0n) throw new Error('negative');
     return out;

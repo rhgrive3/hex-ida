@@ -1,4 +1,5 @@
 import { AIError } from '../schema.js';
+import { validateSchema } from '../validation.js';
 
 const KIND_CAPABILITY = Object.freeze({
   rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
@@ -6,6 +7,13 @@ const KIND_CAPABILITY = Object.freeze({
 });
 const NOTE_BACKED_KINDS = new Set(['rename', 'comment', 'type', 'struct-field']);
 const NOTE_READY_TIMEOUT_MS = 10_000;
+
+// Canonical patch-byte contract shared with CapabilityExecutor's strict
+// byteArray() validation: Array/Uint8Array of primitive integers 0..255 only.
+// ProposalExecutor used to map elements through Number() here, which laundered
+// numeric strings, booleans and nulls into canonical bytes before the strict
+// executor boundary could reject them (#6171).
+const PATCH_BYTE_FIELD = Object.freeze({ type: 'array', items: { type: 'integer', minimum: 0, maximum: 255 } });
 
 export class ProposalExecutor {
   constructor({ store, capabilityExecutor, app } = {}) {
@@ -53,7 +61,10 @@ export class ProposalExecutor {
 
   async verifyPostcondition(proposal, execution) {
     if (proposal.kind === 'patch') {
-      if (!execution || !same(execution.after, proposal.after)) throw new AIError('tool_failed', 'Patch postcondition does not match the approved bytes.');
+      // Canonical byte identity: the executed bytes and the approved bytes must
+      // both satisfy the same strict byte contract before comparison (#6171).
+      const after = byteArray(proposal.after);
+      if (!execution || !same(execution.after, Array.from(byteArray(execution.after) && after))) throw new AIError('tool_failed', 'Patch postcondition does not match the approved bytes.');
       return;
     }
     const live = await this.currentState({ ...proposal, before: proposal.after });
@@ -104,7 +115,14 @@ function findStructField(app, target) {
   return struct?.fields?.find?.((item) => Number(item?.offset) === Number(target.offset)) || null;
 }
 function findProjectAnnotation(app, target) { return app?.projectAnnotations?.find?.((item) => item?.id === String(target.id || ''))?.value ?? null; }
-function byteArray(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function byteArray(value) {
+  if (!(Array.isArray(value) || value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  }
+  const checked = validateSchema(Array.from(value), PATCH_BYTE_FIELD);
+  if (!checked.ok) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Array.from(value);
+}
 function same(a, b) { return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b)); }
 function containsValue(actual, expected) {
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
