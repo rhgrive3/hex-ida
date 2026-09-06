@@ -9,6 +9,18 @@ const APPLE_ARM64E_PLATFORMS = new Set([
 ]);
 
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
+function requiredCanonicalId(value, label) {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  const id = value.trim().toLowerCase();
+  if (!id) throw new TypeError(`${label} is required`);
+  return id;
+}
+function optionalIdentity(value, fallback, label) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  if (!value.trim()) throw new TypeError(`${label} is required`);
+  return value;
+}
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
 
 function canonicalCallingConvention(value) {
@@ -27,14 +39,16 @@ function claimedCallingConventions(plugin) {
 
 export class ABIPlugin {
   constructor(definition = {}) {
-    const id = canonicalId(definition.id);
-    if (!id) throw new TypeError('ABI id is required');
-    const architectureId = canonicalId(definition.architectureId);
-    if (!architectureId) throw new TypeError(`ABI ${id} architectureId is required`);
+    const id = requiredCanonicalId(definition.id, 'ABI id');
+    const architectureId = requiredCanonicalId(definition.architectureId, `ABI ${id} architectureId`);
 
     this.id = id;
-    this.semanticVersion = String(definition.semanticVersion || '1');
-    this.semanticIdentity = String(definition.semanticIdentity || `${id}@${this.semanticVersion}`);
+    this.semanticVersion = optionalIdentity(definition.semanticVersion, '1', `ABI ${id} semanticVersion`);
+    this.semanticIdentity = optionalIdentity(
+      definition.semanticIdentity,
+      `${id}@${this.semanticVersion}`,
+      `ABI ${id} semanticIdentity`,
+    );
     this.architectureId = architectureId;
     this.platformPredicate = typeof definition.platformPredicate === 'function'
       ? definition.platformPredicate
@@ -166,7 +180,23 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   if (id) {
     const explicit = abiPlugin(id);
     if (!explicit || explicit.id === 'unknown') return explicit;
-    return abiPluginClaimsCallingConvention(explicit, callingConvention) ? explicit : abiPlugin('unknown');
+    if (!abiPluginClaimsCallingConvention(explicit, callingConvention)) return abiPlugin('unknown');
+    // An explicit id selects the profile, not a waiver of target identity:
+    // the plugin must still match the target architecture (with the
+    // established arm64e->arm64 exception) and any given platform.
+    const arch = canonicalId(architecture);
+    if (arch && explicit.architectureId !== arch && !(arch === 'arm64e' && explicit.architectureId === 'arm64')) {
+      return abiPlugin('unknown');
+    }
+    const platformId = canonicalId(platform);
+    if (platformId) {
+      let matches = false;
+      try {
+        matches = explicit.platformPredicate({ architecture: arch || explicit.architectureId, platform: platformId });
+      } catch { matches = false; }
+      if (!matches) return abiPlugin('unknown');
+    }
+    return explicit;
   }
   const arch = canonicalId(architecture);
   const platformId = canonicalId(platform);
