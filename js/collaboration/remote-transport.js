@@ -114,6 +114,7 @@ export class RemoteCanonicalHttpTransport {
   #verifiedBindingBytes = 0;
   #maxVerifiedBindings;
   #maxVerifiedBindingBytes;
+  #disposed = false;
 
   constructor({
     endpoint,
@@ -144,14 +145,16 @@ export class RemoteCanonicalHttpTransport {
     this.#maxVerifiedBindingBytes = maxVerifiedBindingBytes;
     this.verifierIdentity = REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY;
     this.verifyTransportProof = (proof, envelope) => {
+      if (this.#disposed
+        || proof?.authenticated !== true
+        || proof?.confidentiality !== 'verified'
+        || proof?.integrity !== 'verified') return false;
       const proofIdentity = String(proof?.proofIdentity || '');
       const entry = this.#verifiedBindings.get(proofIdentity);
       if (!entry || entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))) return false;
       this.#verifiedBindings.delete(proofIdentity);
       this.#verifiedBindings.set(proofIdentity, entry);
-      return proof?.authenticated === true
-        && proof?.confidentiality === 'verified'
-        && proof?.integrity === 'verified';
+      return true;
     };
   }
 
@@ -174,11 +177,13 @@ export class RemoteCanonicalHttpTransport {
   }
 
   dispose() {
+    this.#disposed = true;
     this.#verifiedBindings.clear();
     this.#verifiedBindingBytes = 0;
   }
 
   async authorizeEnvelope(input = {}) {
+    if (this.#disposed) throw new Error('remote-transport-disposed');
     const provisional = createRemoteCollaborationEnvelope({ ...input, transportProof:{ authenticated:false, confidentiality:'unverified', integrity:'unverified' } });
     if (provisional.egress?.userAuthorized !== true) throw new Error('remote-transport-egress-authorization-required');
     if (provisional.egress?.rawBinaryBytes === true) throw new Error('remote-transport-raw-binary-egress-forbidden');
@@ -203,7 +208,9 @@ export class RemoteCanonicalHttpTransport {
     const signature = fromBase64(result.signature, 'remote-transport-response-signature-invalid');
     const verified = await subtle().verify({ name:'Ed25519' }, this.serverVerificationKey, signature, textEncoder.encode(stableStringify(signed)));
     if (!verified) throw new Error('remote-transport-response-signature-rejected');
+    if (this.#disposed) throw new Error('remote-transport-disposed');
     const proofIdentity = `remote-transport-proof:${await sha256(textEncoder.encode(`${stableStringify(signed)}:${base64(signature)}`))}`;
+    if (this.#disposed) throw new Error('remote-transport-disposed');
     this.#rememberVerifiedBinding(proofIdentity, canonicalBinding);
     return createRemoteCollaborationEnvelope({
       ...input,
