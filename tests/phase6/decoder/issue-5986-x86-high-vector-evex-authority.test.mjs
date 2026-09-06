@@ -10,7 +10,7 @@ function register(registerId, widthBits, access = 'read', registerCode = 1) {
   return { type:'register', registerId, registerCode, widthBits, access };
 }
 
-function vectorInstruction({ family, rawBytes, vector = null, operands }) {
+function vectorInstruction({ family, rawBytes, legacy = [], vector = null, operands }) {
   instructionCode += 1;
   return createX86DecodedInstruction({
     address:0x598600n + BigInt(instructionCode),
@@ -29,7 +29,7 @@ function vectorInstruction({ family, rawBytes, vector = null, operands }) {
       operands,
       implicitReads:[],
       implicitWrites:[],
-      prefixes:{ legacy:[], rex:null, vector },
+      prefixes:{ legacy, rex:null, vector },
     },
   });
 }
@@ -95,6 +95,7 @@ assertHighVectorFailsClosed(vectorInstruction({
 assertHighVectorFailsClosed(vectorInstruction({
   family:'pxor',
   rawBytes:[0x66, 0x0f, 0xef, 0xc1],
+  legacy:[0x66],
   operands:[
     register('xmm16', 128, 'read-write'),
     register('xmm1', 128),
