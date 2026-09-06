@@ -204,21 +204,44 @@ export class AnalysisScheduler {
     return new Promise((resolve,reject)=>{
       let settled=false;
       const listeners=[];
-      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
-        if (settled) return;
+      const detach=(orphaned=false)=>{
+        if (settled) return false;
         settled=true;
         removeSignalListeners(listeners);
         task.consumerCount--; this.activeConsumers--;
-        if (cancelled) this.metrics.cancelledConsumers++;
         if (orphaned&&task.consumerCount===0&&!task.settled&&!task.controller.signal.aborted) {
           this.metrics.orphanCancellations++;
           task.controller.abort(new DOMException('No active consumers','AbortError'));
         }
+        return true;
+      };
+      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
+        if (!detach(orphaned)) return;
+        if (cancelled) this.metrics.cancelledConsumers++;
         fn(value);
+      };
+      const awaitPublishOutcome=(signal)=>{
+        const orphaned=signal!==task.controller.signal;
+        if (!detach(orphaned)) return;
+        task.promise.then(
+          resolve,
+          ()=>{
+            this.metrics.cancelledConsumers++;
+            reject(abortError(signal));
+          },
+        );
+      };
+      const handleAbort=(signal)=>{
+        if (task.phase==='completed') return;
+        if (task.phase==='publish'&&(signal===task.controller.signal||task.consumerCount===1)) {
+          awaitPublishOutcome(signal);
+          return;
+        }
+        finish(reject,abortError(signal),true);
       };
       try {
         for (const signal of active) {
-          const listener=()=>finish(reject,abortError(signal),true);
+          const listener=()=>handleAbort(signal);
           listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
           if (settled) break;
         }
@@ -230,7 +253,7 @@ export class AnalysisScheduler {
       if (settled) { task.promise.catch(()=>{}); return; }
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
-      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
+      if (abortedAfterRegistration) handleAbort(abortedAfterRegistration);
     });
   }
 
