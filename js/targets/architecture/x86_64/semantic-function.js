@@ -4,8 +4,8 @@ import {
   semanticAbiAdapter,
 } from '../../../analysis/semantic-function.js';
 import { X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION } from './semantic-function-contract.js';
+import { hasReceiverRevalidatedX86Row } from './runtime-provenance.js';
 
-const CAPSTONE_STRUCTURED_ABI = 'capstone-5-wasm32-x86-detail/v1';
 let decoderRevalidationWorker = null;
 let decoderRevalidationSequence = 1;
 const decoderRevalidationPending = new Map();
@@ -14,23 +14,11 @@ function isDedicatedWorkerRealm() {
   return typeof WorkerGlobalScope !== 'undefined' && globalThis instanceof WorkerGlobalScope;
 }
 
-function decoderAdapter() {
-  const adapter = globalThis.HexX86CapstoneStructured;
-  return adapter?.ABI?.contractVersion === CAPSTONE_STRUCTURED_ABI
-    && typeof adapter?.hasRuntimeProvenance === 'function'
-    ? adapter
-    : null;
-}
-
 export function x86SemanticFunctionRequiresDecoderRevalidation(input = {}) {
   if (String(input.architecture ?? 'x86_64') !== 'x86_64') return false;
   const rows = input.instructions;
-  const adapter = decoderAdapter();
-  if (!adapter || !Array.isArray(rows) || rows.length === 0) return true;
-  return !rows.every((row) => {
-    try { return adapter.hasRuntimeProvenance(row) === true; }
-    catch { return false; }
-  });
+  if (!Array.isArray(rows) || rows.length === 0) return true;
+  return !rows.every((row) => hasReceiverRevalidatedX86Row(row));
 }
 
 function revalidationAbortError(reason) {
