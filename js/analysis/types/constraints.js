@@ -174,8 +174,9 @@ export function createHardConstraint(input = {}) {
   // cannot state a hard fact no matter how confident it sounds.
   if (!HARD_ORIGINS.has(origin)) fail(`hard-constraint-origin-not-authoritative:${origin}`);
 
-  const abiProfile = input.abiProfile ?? input.claim?.descriptor?.abiProfile ?? null;
-  if (abiProfile != null && typeof abiProfile === 'string' && abiProfile.startsWith('unsupported')) {
+  const rawAbiProfile = input.abiProfile ?? input.claim?.descriptor?.abiProfile ?? null;
+  const abiProfile = rawAbiProfile == null ? null : strictNonEmpty(rawAbiProfile, 'abi-profile-invalid');
+  if (abiProfile != null && abiProfile.startsWith('unsupported')) {
     fail(`abi-profile-unsupported:${abiProfile}`);
   }
 
@@ -186,7 +187,7 @@ export function createHardConstraint(input = {}) {
     evidenceIds: idList(input.evidenceIds, 'hard-constraint-invalid-evidence-ids'),
     providerVersion: input.providerVersion == null ? null : String(input.providerVersion),
     buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
-    abiProfile: abiProfile == null ? null : String(abiProfile),
+    abiProfile,
   });
 }
 
