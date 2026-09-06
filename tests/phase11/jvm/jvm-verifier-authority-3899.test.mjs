@@ -88,6 +88,15 @@ async function validate(bytes, { withImageContext = false } = {}) {
   assert.ok(report.errors.some((error) => error.code === 'jvm-return-type-mismatch'));
 }
 
+// Reference-sensitive throw verification stays partial until Throwable assignability is proven.
+{
+  const report = await validate(mutateCode((bytes, code) => {
+    bytes.set([0x01, 0xbf, 0xb1, 0xb1, 0xb1, 0xb1], code); // aconst_null; athrow
+  }));
+  assert.equal(report.status, 'partial');
+  assert.equal(report.completeness.specValidation, 'partial');
+}
+
 // Unsupported semantic/verifier coverage stays explicit partial, never fake valid.
 {
   const report = await validate(mutateCode((bytes, code) => {
