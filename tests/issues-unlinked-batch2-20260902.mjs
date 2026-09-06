@@ -35,26 +35,40 @@ import test from 'node:test';
 // #3313 — request.received fires once per external request.
 {
   const { AnalysisScheduler } = await import('../js/core/scheduler/analysis-scheduler.js');
+  const { createArtifactDescriptor } = await import('../js/core/artifacts/contracts.js');
+  const descriptor = (producerId, upstreamArtifactIds = []) => createArtifactDescriptor({
+    binaryId: 'scheduler-regression-bin', artifactKind: 'analysis', producerId, producerVersion: '1',
+    versions: { loader: 'n/a', architectureSemantic: 'n/a', abiSemantic: 'n/a', semanticSchema: '1.0.0' },
+    upstreamArtifactIds, originRefs: [],
+  });
+  const dependencyDescriptor = descriptor('dep');
+  const parentDescriptor = descriptor('parent', [dependencyDescriptor.artifactId]);
   const events = [];
   const store = { async get() { return { status: 'miss' }; }, async publish() { return { status: 'stored' }; } };
   const scheduler = new AnalysisScheduler({ store, onEvent: (e) => events.push(e) });
   await scheduler.request({
-    descriptor: { artifactId: 'parent', upstreamArtifactIds: ['dep'] },
-    dependencies: [{ descriptor: { artifactId: 'dep', upstreamArtifactIds: [] }, async produce() { return {}; } }],
+    descriptor: parentDescriptor,
+    dependencies: [{ descriptor: dependencyDescriptor, async produce() { return {}; } }],
     async produce() { return {}; },
   });
   const received = events.filter((e) => e.type === 'request.received').map((e) => e.artifactId);
-  assert.deepEqual(received, ['parent'], 'dependency recursion must not re-announce request.received');
+  assert.deepEqual(received, [parentDescriptor.artifactId], 'dependency recursion must not re-announce request.received');
 }
 
 // #3312 — lifecycle envelope carries version/running/queued.
 {
   const { AnalysisScheduler } = await import('../js/core/scheduler/analysis-scheduler.js');
+  const { createArtifactDescriptor } = await import('../js/core/artifacts/contracts.js');
   const events = [];
   const store = { async get() { return { status: 'miss' }; }, async publish() { return { status: 'stored' }; } };
   const scheduler = new AnalysisScheduler({ store, onEvent: (e) => events.push(e) });
+  const descriptor = createArtifactDescriptor({
+    binaryId: 'scheduler-regression-bin', artifactKind: 'analysis', producerId: 'lifecycle', producerVersion: '1',
+    versions: { loader: 'n/a', architectureSemantic: 'n/a', abiSemantic: 'n/a', semanticSchema: '1.0.0' },
+    upstreamArtifactIds: [], originRefs: [],
+  });
   await scheduler.request({
-    descriptor: { artifactId: 'a', upstreamArtifactIds: [] },
+    descriptor,
     async produce() { return {}; },
   });
   for (const event of events) {
