@@ -149,6 +149,10 @@ for (const [name, mutate] of structuredCases) {
   assert.throws(() => createStage2ProfileEvidence(malformed), TypeError, name);
 }
 
+const emptyProfileId = clone(validInput);
+emptyProfileId.items[targetId].profileIds = ['', ...emptyProfileId.items[targetId].profileIds];
+assert.throws(() => createStage2ProfileEvidence(emptyProfileId), TypeError, 'empty profileIds element');
+
 const providerMalformed = clone(validInput);
 providerMalformed.items['S2-A7-NATIVE'].providerProfileIds = providerMalformed.items['S2-A7-NATIVE'].providerProfileIds.map((value) => [value]);
 assert.throws(() => createStage2ProfileEvidence(providerMalformed), TypeError, 'providerProfileIds');
@@ -160,6 +164,14 @@ assert.throws(() => createStage2DenominatorLock(malformedDenominator, {
   resolveInventoryIdentity: inventoryIdentity,
   resolveDenominatorUnitIds: denominatorUnits,
 }), TypeError, 'denominator profiles');
+
+const emptyDenominatorUnit = clone(denominatorInput);
+emptyDenominatorUnit.items[targetId].unitIds = ['', ...emptyDenominatorUnit.items[targetId].unitIds];
+assert.throws(() => createStage2DenominatorLock(emptyDenominatorUnit, {
+  scope: SCOPE,
+  resolveInventoryIdentity: inventoryIdentity,
+  resolveDenominatorUnitIds: denominatorUnits,
+}), TypeError, 'empty denominator unitId');
 
 assert.throws(() => createStage2DenominatorLock(denominatorInput, {
   scope: { ...SCOPE, scopeVersion: ['1'] },
