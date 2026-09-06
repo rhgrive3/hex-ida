@@ -3,11 +3,31 @@ import { createManagedImageId, createManagedModuleId } from '../shared/identity.
 
 function fail(code){throw new TypeError(code);}
 function checkedRange(limit,offset,size,code){if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(size)||offset<0||size<0||offset>limit||size>limit-offset)fail(code);}
-export function probeJvm(bytes){if(!bytes||bytes.length<10)return{supported:false,confidence:0,reason:'too-small'};const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);if(u8[0]===0xca&&u8[1]===0xfe&&u8[2]===0xba&&u8[3]===0xbe){const minor=(u8[4]<<8)|u8[5],major=(u8[6]<<8)|u8[7];return{supported:true,confidence:1,formatVersion:`class-${major}.${minor}`,vmSpecEdition:`java-se-${major>=45?major-44:major}`};}return{supported:false,confidence:0,reason:'invalid-magic'};}
+const JVM_CLASS_VERSIONS = new Map([
+  [45, { vmSpecEdition: 'java-se-1', maxMinor: 3 }],
+  [46, { vmSpecEdition: 'java-se-2', maxMinor: 0 }],
+  [47, { vmSpecEdition: 'java-se-3', maxMinor: 0 }],
+  [48, { vmSpecEdition: 'java-se-4', maxMinor: 0 }],
+  [49, { vmSpecEdition: 'java-se-5', maxMinor: 0 }],
+  [50, { vmSpecEdition: 'java-se-6', maxMinor: 0 }],
+  [51, { vmSpecEdition: 'java-se-7', maxMinor: 0 }],
+  [52, { vmSpecEdition: 'java-se-8', maxMinor: 0 }],
+  [53, { vmSpecEdition: 'java-se-9', maxMinor: 0 }],
+  [54, { vmSpecEdition: 'java-se-10', maxMinor: 0 }],
+  [55, { vmSpecEdition: 'java-se-11', maxMinor: 0 }],
+  [56, { vmSpecEdition: 'java-se-12', maxMinor: 0 }],
+  [57, { vmSpecEdition: 'java-se-13', maxMinor: 0 }],
+  [58, { vmSpecEdition: 'java-se-14', maxMinor: 0 }],
+  [59, { vmSpecEdition: 'java-se-15', maxMinor: 0 }],
+  [60, { vmSpecEdition: 'java-se-16', maxMinor: 0 }],
+  [61, { vmSpecEdition: 'java-se-17', maxMinor: 0 }],
+]);
+function classVersionInfo(major,minor){const version=JVM_CLASS_VERSIONS.get(major);if(!version||!Number.isInteger(minor)||minor<0||minor>version.maxMinor)return null;return version;}
+export function probeJvm(bytes){if(!bytes||bytes.length<10)return{supported:false,confidence:0,reason:'too-small'};const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);if(u8[0]!==0xca||u8[1]!==0xfe||u8[2]!==0xba||u8[3]!==0xbe)return{supported:false,confidence:0,reason:'invalid-magic'};const minor=(u8[4]<<8)|u8[5],major=(u8[6]<<8)|u8[7],formatVersion=`class-${major}.${minor}`,version=classVersionInfo(major,minor);if(!version)return{supported:false,confidence:0.95,reason:'unsupported-version',formatVersion};return{supported:true,confidence:1,formatVersion,vmSpecEdition:version.vmSpecEdition};}
 function decodeMutf8(bytes){let pos=0,chars=[];while(pos<bytes.length){const b1=bytes[pos++];if((b1&0x80)===0)chars.push(String.fromCharCode(b1));else if((b1&0xe0)===0xc0){const b2=bytes[pos++];chars.push(String.fromCharCode(((b1&0x1f)<<6)|(b2&0x3f)));}else if((b1&0xf0)===0xe0){const b2=bytes[pos++],b3=bytes[pos++];chars.push(String.fromCharCode(((b1&0x0f)<<12)|((b2&0x3f)<<6)|(b3&0x3f)));}}return chars.join('');}
 
 export function parseJvm(bytes,options={}){
-  const probe=probeJvm(bytes);if(!probe.supported)fail('jvm-unsupported-binary');const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);const view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);const ensure=(o,s,c='jvm-truncated-class')=>checkedRange(u8.length,o,s,c);ensure(0,10,'jvm-truncated-header');
+  const probe=probeJvm(bytes);if(!probe.supported)fail(probe.reason==='unsupported-version'?'jvm-unsupported-version':'jvm-unsupported-binary');const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);const view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);const ensure=(o,s,c='jvm-truncated-class')=>checkedRange(u8.length,o,s,c);ensure(0,10,'jvm-truncated-header');
   const minorVersion=view.getUint16(4,false),majorVersion=view.getUint16(6,false),cpCount=view.getUint16(8,false);const constantPool=[null];let pos=10;
   for(let i=1;i<cpCount;i++){if(pos>=u8.length)fail('jvm-truncated-constant-pool');const tag=u8[pos++];switch(tag){
     case 1:{ensure(pos,2,'jvm-truncated-cp-utf8');const len=view.getUint16(pos,false);pos+=2;ensure(pos,len,'jvm-truncated-cp-utf8');constantPool.push({tag:1,value:decodeMutf8(u8.subarray(pos,pos+len))});pos+=len;break;}
