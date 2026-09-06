@@ -51,6 +51,13 @@ apiContract('strspn', { id:'libc_string', cat:'string', ret:null, effect:'read' 
 
 process.stdout.write(`API classification: ${passed} regressions ok\n`);
 
+// These API-family regressions are part of the authoritative `npm test`
+// denominator because package.json executes this owner runner directly.
+await import('./issue-6178-basename-effect-classification.mjs');
+await import('./issue-6182-security-framework-crypto-classification.mjs');
+await import('./issue-6189-accelerate-vimage-classification.mjs');
+await import('./issue-4625-extra-api-table-immutability.mjs');
+
 // Keep all decompiler/runtime regressions inside `npm run check` without
 // changing package.json or the shared CI workflow.
 await import('./decompile-cfg.mjs');
