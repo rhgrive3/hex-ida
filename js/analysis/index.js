@@ -24,6 +24,8 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
+import { MEMORY_SSA_BUILD_VERSION } from '../semantics/memoryssa/build.js';
+import { MEMORY_SSA_CONTRACT_VERSION } from '../semantics/memoryssa/contract.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
   reachingMemoryDefinition,
@@ -87,6 +89,33 @@ export function createAnalysisSurface({
     stopReason,
   });
 
+  // Public MemorySSA queries must enforce the same dependency identity floor as
+  // the A2 boundary. A serialized snapshot is optional on canonical artifacts,
+  // but when present it is authoritative and must describe this surface.
+  function memorySsaQueryBindingIsCurrent() {
+    if (!memorySsa || typeof memorySsa !== 'object' || Array.isArray(memorySsa)) return false;
+    const binding = solverOptions.memorySsaBinding;
+    if (!binding || binding.completeness !== 'complete') return false;
+    if (typeof memorySsa.functionId !== 'string'
+        || typeof ir?.functionId !== 'string'
+        || memorySsa.functionId !== ir.functionId) return false;
+    if (binding.functionId != null
+        && (typeof binding.functionId !== 'string' || binding.functionId !== ir.functionId)) return false;
+    if (memorySsa.snapshotId != null
+        && (typeof memorySsa.snapshotId !== 'string' || memorySsa.snapshotId !== snapshotId)) return false;
+    if (binding.snapshotId !== snapshotId) return false;
+    if (memorySsa.contractVersion !== MEMORY_SSA_CONTRACT_VERSION) return false;
+    if (memorySsa.buildVersion !== MEMORY_SSA_BUILD_VERSION) return false;
+    if (binding.memorySsaBuildVersion != null
+        && (typeof binding.memorySsaBuildVersion !== 'string'
+            || binding.memorySsaBuildVersion !== memorySsa.buildVersion)) return false;
+    if (binding.semanticIrVersion != null
+        && (typeof binding.semanticIrVersion !== 'string'
+            || typeof ir?.contractVersion !== 'string'
+            || binding.semanticIrVersion !== ir.contractVersion)) return false;
+    return true;
+  }
+
   /** Alias relation with proof and completeness. */
   function alias(leftRegion, rightRegion, context = {}) {
     return solver.alias(leftRegion, rightRegion, context);
@@ -94,7 +123,7 @@ export function createAnalysisSurface({
 
   /** The reaching memory definition for one load, with its status. */
   function reachingMemoryDef(useOrId) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { definition: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     const definition = reachingMemoryDefinition(memorySsa, useOrId);
@@ -109,7 +138,7 @@ export function createAnalysisSurface({
 
   /** The evidence path between a memory source and a sink. */
   function explainMemoryPath(useOrId, pathOptions = {}) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { path: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     return { path: explainMemoryPathQuery(memorySsa, useOrId, pathOptions), status: status('complete') };
