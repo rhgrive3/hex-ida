@@ -44,6 +44,8 @@ test('x86 flag state crosses bundles and emitted condition booleans choose the r
     for (const [left, right] of [[7n, 5n], [5n, 7n], [5n, 5n]]) {
       const result = executeBranch(family, left, right);
       assert.equal(result.status, 'returned', `${family} must return`);
+      assert.equal(result.pc, predicate(left, right) ? 0x1014n : 0x100cn,
+        `${family}(${left}, ${right}) must reach the selected return arm`);
       assert.equal(result.registers.get('rax'), predicate(left, right) ? left : right,
         `${family}(${left}, ${right}) must follow its emitted flag condition`);
       assert.equal(result.flags.get('RFLAGS.ZF'), left === right ? 1n : 0n);
