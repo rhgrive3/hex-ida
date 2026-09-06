@@ -281,14 +281,50 @@ function setStructField(app, args) {
 
 function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
+  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+
+  const previousProjectAnnotations = app.projectAnnotations;
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
+  const projectAnnotations = app.projectAnnotations;
+  const projectAnnotationsLength = projectAnnotations.length;
+
+  const previousAutoReport = app.autoReport;
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
+  const autoReport = app.autoReport;
+  const previousReport = autoReport.report;
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
+  const report = autoReport.report;
+  const previousConfirmed = report.confirmed;
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
+  const confirmed = report.confirmed;
+  const confirmedLength = confirmed.length;
+
+  const rollback = () => {
+    if (Array.isArray(previousProjectAnnotations)) previousProjectAnnotations.length = projectAnnotationsLength;
+    else app.projectAnnotations = previousProjectAnnotations;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
+    else if (Array.isArray(previousConfirmed)) previousConfirmed.length = confirmedLength;
+    else report.confirmed = previousConfirmed;
+  };
+
   const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
-  app.projectAnnotations.push(record);
-  app.autoReport ||= { report: { confirmed: [], deep: [] } };
-  app.autoReport.report ||= { confirmed: [], deep: [] };
-  app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
-  app.workspace?.autosave?.(); return record;
+  projectAnnotations.push(record);
+  confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
+  let saved;
+  try {
+    saved = app.workspace.autosave();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
 }
 
 async function previewPatch(app, args) {
