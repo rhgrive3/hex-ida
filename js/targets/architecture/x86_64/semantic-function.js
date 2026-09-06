@@ -5,22 +5,117 @@ import {
 } from '../../../analysis/semantic-function.js';
 import { X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION } from './semantic-function-contract.js';
 
+const CAPSTONE_STRUCTURED_ABI = 'capstone-5-wasm32-x86-detail/v1';
+let decoderRevalidationWorker = null;
+let decoderRevalidationSequence = 1;
+const decoderRevalidationPending = new Map();
+
+function isDedicatedWorkerRealm() {
+  return typeof WorkerGlobalScope !== 'undefined' && globalThis instanceof WorkerGlobalScope;
+}
+
+function decoderAdapter() {
+  const adapter = globalThis.HexX86CapstoneStructured;
+  return adapter?.ABI?.contractVersion === CAPSTONE_STRUCTURED_ABI
+    && typeof adapter?.hasRuntimeProvenance === 'function'
+    ? adapter
+    : null;
+}
+
+export function x86SemanticFunctionRequiresDecoderRevalidation(input = {}) {
+  if (String(input.architecture ?? 'x86_64') !== 'x86_64') return false;
+  const rows = input.instructions;
+  const adapter = decoderAdapter();
+  if (!adapter || !Array.isArray(rows) || rows.length === 0) return true;
+  return !rows.every((row) => {
+    try { return adapter.hasRuntimeProvenance(row) === true; }
+    catch { return false; }
+  });
+}
+
+function revalidationAbortError(reason) {
+  if (reason instanceof Error) return reason;
+  const error = new Error('x86-semantic-function-decoder-revalidation-cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function rejectDecoderRevalidation(error) {
+  for (const pending of decoderRevalidationPending.values()) pending.reject(error);
+  decoderRevalidationPending.clear();
+  try { decoderRevalidationWorker?.terminate?.(); } catch { /* best effort */ }
+  decoderRevalidationWorker = null;
+}
+
+function decoderWorker() {
+  if (decoderRevalidationWorker) return decoderRevalidationWorker;
+  if (typeof Worker !== 'function') throw new Error('x86-semantic-function-decoder-revalidation-unavailable');
+  const worker = new Worker(new URL('./semantic-revalidation-worker.js', import.meta.url));
+  worker.onmessage = (event) => {
+    const message = event.data;
+    const pending = decoderRevalidationPending.get(message?.id);
+    if (!pending) return;
+    decoderRevalidationPending.delete(message.id);
+    if (message.ok === true) pending.resolve(message.result);
+    else pending.reject(new Error(message?.error || 'x86-semantic-function-decoder-revalidation-failed'));
+  };
+  const failed = (event) => rejectDecoderRevalidation(
+    event?.error instanceof Error ? event.error : new Error(event?.message || 'x86-semantic-function-decoder-revalidation-worker-failed'),
+  );
+  worker.onerror = failed;
+  worker.onmessageerror = failed;
+  decoderRevalidationWorker = worker;
+  return worker;
+}
+
+function analyzeViaDecoderRevalidation(input, options = {}) {
+  if (options.signal?.aborted) return Promise.reject(revalidationAbortError(options.signal.reason));
+  const worker = decoderWorker();
+  const id = decoderRevalidationSequence++;
+  return new Promise((resolve, reject) => {
+    const cleanup = () => options.signal?.removeEventListener?.('abort', abort);
+    const settle = (fn) => (value) => { cleanup(); fn(value); };
+    const abort = () => {
+      if (!decoderRevalidationPending.delete(id)) return;
+      try { worker.postMessage({ t:'cancel', id }); } catch { /* local rejection is authoritative */ }
+      cleanup();
+      reject(revalidationAbortError(options.signal?.reason));
+    };
+    decoderRevalidationPending.set(id, { resolve:settle(resolve), reject:settle(reject) });
+    options.signal?.addEventListener?.('abort', abort, { once:true });
+    try {
+      worker.postMessage({ t:'semanticFunction', id, input, priority:'current' });
+    } catch (error) {
+      decoderRevalidationPending.delete(id);
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
 /**
  * x86-64 entry point for the shared semantic-function route.
  *
  * Phase 5 introduced this module as the only caller of the shared pipeline.
  * Phase 6 moved the driver itself to js/analysis/semantic-function.js so that
  * RISC-V64 travels the identical code, and this file remains the stable x86
- * seam: it supplies the x86 defaults (architecture id and analysis version) and
- * nothing else.
+ * seam: it supplies x86 defaults and, in the platform Worker realm, restores
+ * decoder authority by independently re-decoding transported rows before the
+ * shared pipeline can mint exact MachineEffects.
  */
 export { X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION as SEMANTIC_FUNCTION_ANALYSIS_VERSION };
 export { partitionDecodedFunction, semanticAbiAdapter };
 
 export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
-  return analyzeSharedSemanticFunction({
+  const normalized = {
     ...input,
     architecture: input.architecture ?? 'x86_64',
     analysisVersion: input.analysisVersion ?? X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
-  }, options);
+  };
+  if (String(normalized.architecture) === 'x86_64'
+      && isDedicatedWorkerRealm()
+      && x86SemanticFunctionRequiresDecoderRevalidation(normalized)) {
+    return analyzeViaDecoderRevalidation(normalized, options);
+  }
+  return analyzeSharedSemanticFunction(normalized, options);
 }

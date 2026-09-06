@@ -182,6 +182,7 @@
       mnemonic,
       opStr,
       rawBytes,
+      origin:options.origin ?? null,
       architecture:'x86_64',
       mode:String(options.mode || 'long-64'),
       decoderContractVersion:'x86-64-decoded-instruction/v1',

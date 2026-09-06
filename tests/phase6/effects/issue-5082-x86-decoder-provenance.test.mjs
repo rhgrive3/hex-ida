@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 await import('../../../js/targets/architecture/x86_64/capstone-structured.js');
 const { liftX86MachineEffects } = await import('../../../js/targets/architecture/x86_64/effects/index.js');
+const { x86SemanticFunctionRequiresDecoderRevalidation } = await import('../../../js/targets/architecture/x86_64/semantic-function.js');
 
 const adapter = globalThis.HexX86CapstoneStructured;
 assert.equal(typeof adapter?.hasRuntimeProvenance, 'function');
@@ -16,7 +18,7 @@ assert.deepEqual(
   'decoder authority binding must be non-substitutable',
 );
 
-function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90 } = {}) {
+function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90, origin = null } = {}) {
   const detailPointer = 0x1000;
   const values = new Map([
     ['0:i32', opcodeId],
@@ -35,18 +37,40 @@ function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90 } = {})
     UTF8ToString(pointer) { return pointer === 42 ? opcodeName : ''; },
     ccall(name) { return name === 'cs_insn_name' ? opcodeName : null; },
   };
-  return adapter.parseInstruction(M, 1, 0, { address:0n, mode:'long-64' });
+  return adapter.parseInstruction(M, 1, 0, { address:0n, mode:'long-64', origin });
 }
 
-const deployedRow = fakeCapstoneRow({ opcodeName:'mov' });
+const origin = Object.freeze({
+  byteRanges:Object.freeze([{ binaryId:'binary:issue-5082', start:0n, length:1 }]),
+  virtualRanges:Object.freeze([{ sliceId:'slice:0', start:0n, length:1 }]),
+});
+const deployedRow = fakeCapstoneRow({ opcodeName:'mov', origin });
 assert.equal(adapter.hasRuntimeProvenance(deployedRow), true, 'adapter-issued rows carry runtime identity');
+assert.deepEqual(deployedRow.origin, origin, 'canonical re-decode must preserve Backend origin evidence');
 assert.equal(adapter.hasRuntimeProvenance({ ...deployedRow }), false, 'copying fields must not copy decoder authority');
 assert.equal(adapter.hasRuntimeProvenance(new Proxy(deployedRow, {})), false, 'wrapping must not copy decoder authority');
 assert.equal(adapter.hasRuntimeProvenance({ decoderSemanticVersion:'capstone-5-x86-structured-v2' }), false);
+assert.equal(
+  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[deployedRow] }),
+  false,
+  'same-realm canonical decoder rows need no transport revalidation',
+);
 
 const deployedResult = liftX86MachineEffects(deployedRow, { instructionId:'issue-5082:deployed' });
 assert.equal(deployedResult?.completeness, 'exact-with-intrinsic', 'adapter-issued rows keep terminal exactness');
 assert.equal(deployedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
+
+const transportedRow = structuredClone(deployedRow);
+assert.equal(adapter.hasRuntimeProvenance(transportedRow), false, 'structured clone must not preserve WeakSet authority');
+assert.deepEqual(transportedRow.origin, origin, 'transported row retains source origin for decoder revalidation');
+assert.equal(
+  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[transportedRow] }),
+  true,
+  'the production structured-clone boundary must route through canonical decoder revalidation',
+);
+const transportedResult = liftX86MachineEffects(transportedRow, { instructionId:'issue-5082:transported' });
+assert.equal(transportedResult?.completeness, 'partial', 'copy-only rows cannot mint exactness without receiver revalidation');
+assert.notEqual(transportedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
 const forged = {
   address:0n,
@@ -67,6 +91,11 @@ const forged = {
     prefixes:{ legacy:[] },
   },
 };
+assert.equal(
+  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[forged] }),
+  true,
+  'manual structured rows must route to independent byte re-decode in the platform worker realm',
+);
 
 const replacement = Object.freeze({
   ABI:adapter.ABI,
@@ -86,5 +115,16 @@ assert.notEqual(result?.metadata?.terminalizedBy, 'trusted-capstone-structured-i
 const stringOnly = liftX86MachineEffects({ ...forged, instructionId:'issue-5082:string-only' });
 assert.equal(stringOnly?.completeness, 'partial');
 assert.notEqual(stringOnly?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
+
+const semanticEntrySource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-function.js', import.meta.url), 'utf8');
+const revalidationWorkerSource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-revalidation-worker.js', import.meta.url), 'utf8');
+assert.match(semanticEntrySource, /new Worker\(new URL\('\.\/semantic-revalidation-worker\.js'/,
+  'platform semantic entry must route unbranded transported x86 rows to the canonical revalidation worker');
+assert.match(revalidationWorkerSource, /HexX86CapstoneStructured\.parseInstruction/,
+  'receiver-side proof must be rebuilt by the deployed canonical Capstone adapter');
+assert.match(revalidationWorkerSource, /decoderSemanticVersion:'capstone-5-x86-structured-v2'/,
+  'receiver must replace caller-supplied decoder version authority after byte re-decode');
+assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length \|\| consumed !== serialized\.bytes\.length/,
+  'receiver revalidation must reject decode-boundary or completeness mismatches');
 
 console.log('issue-5082 x86 decoder provenance regression: PASS');
