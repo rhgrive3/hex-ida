@@ -204,19 +204,31 @@ function withoutCallPrototype(instruction) {
 }
 
 function guardedProviderOptions(options = {}, state) {
-  if (!options || typeof options !== 'object' || typeof options.callPrototypeFor !== 'function') return options;
-  const provider = options.callPrototypeFor;
-  return {
-    ...options,
-    callPrototypeFor(...args) {
-      const prototype = provider.apply(options, args);
-      if (!strictPrototype(prototype)) {
-        state.invalid = true;
-        return null;
-      }
-      return prototype;
-    },
+  if (!options || typeof options !== 'object') return options;
+  const providerEntry = ownDataValue(options, 'callPrototypeFor');
+  if (providerEntry.accessor) {
+    state.invalid = true;
+    return sanitizedClassifierOptions(options);
+  }
+  const guarded = safeEnumerableDataCopy(options);
+  if (!providerEntry.present) {
+    guarded.callPrototypeFor = null;
+    return guarded;
+  }
+  const provider = providerEntry.value;
+  if (typeof provider !== 'function') {
+    guarded.callPrototypeFor = provider;
+    return guarded;
+  }
+  guarded.callPrototypeFor = function guardedCallPrototypeFor(...args) {
+    const prototype = provider.apply(options, args);
+    if (!strictPrototype(prototype)) {
+      state.invalid = true;
+      return null;
+    }
+    return prototype;
   };
+  return guarded;
 }
 
 function invalidReturnClassification() {
