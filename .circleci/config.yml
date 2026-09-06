@@ -202,6 +202,74 @@ jobs:
               exit 1
             fi
 
+  universal-platform-verify:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Detect universal-platform impact
+          command: |
+            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/(binary/|bytesource/|architecture/|targets/|semantics/|analysis/|decompiler/|ir[^/]*\.js$|dataflow[^/]*\.js$|controlflow\.js$|blocks\.js$|analyze\.js$|backend\.js$)|js/platform/(capability-maturity\.js$|capstone-disasm-worker\.js$)|capstone\.js$|capstone\.wasm$|tests/universal-binary[^/]*\.mjs$|tests/binary-platform\.mjs$|tests/capability-maturity\.mjs$|tests/issue-495-elf-relocation-budget\.mjs$|tests/issue-513-elf-symbol-budget\.mjs$|tools/benchmark/|scripts/fetch-real-fixtures\.mjs$|package\.json$|package-lock\.json$|\.github/workflows/universal-platform\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_UNIVERSAL_PLATFORM=$run_it" >> "$BASH_ENV"
+      - run:
+          name: Install dependencies
+          command: |
+            if [ "$RUN_UNIVERSAL_PLATFORM" != 'true' ]; then exit 0; fi
+            npm ci --no-audit --no-fund
+      - run:
+          name: Run universal verification suites
+          command: |
+            if [ "$RUN_UNIVERSAL_PLATFORM" != 'true' ]; then exit 0; fi
+            set -uo pipefail
+            failures=()
+            node tests/capability-maturity.mjs || failures+=(capability-maturity)
+            node tests/issue-495-elf-relocation-budget.mjs || failures+=(elf-relocation-budget)
+            node tests/issue-513-elf-symbol-budget.mjs || failures+=(elf-symbol-budget)
+            npm run binary:test || failures+=(binary)
+            npm run binary:gate || failures+=(binary-gate)
+            if [ "${#failures[@]}" -ne 0 ]; then
+              printf 'Universal validation failed: %s\n' "${failures[*]}" >&2
+              exit 1
+            fi
+
+  universal-platform-benchmark:
+    docker:
+      - image: cimg/node:22.23
+    resource_class: medium
+    environment:
+      HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+      HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+      HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
+    steps:
+      - checkout
+      - run:
+          name: Detect universal benchmark impact
+          command: |
+            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/(binary/|bytesource/|architecture/|targets/|semantics/|analysis/|decompiler/|ir[^/]*\.js$|dataflow[^/]*\.js$|controlflow\.js$|blocks\.js$|analyze\.js$|backend\.js$)|js/platform/(capability-maturity\.js$|capstone-disasm-worker\.js$)|capstone\.js$|capstone\.wasm$|tests/universal-binary[^/]*\.mjs$|tests/binary-platform\.mjs$|tests/capability-maturity\.mjs$|tests/issue-495-elf-relocation-budget\.mjs$|tests/issue-513-elf-symbol-budget\.mjs$|tools/benchmark/|scripts/fetch-real-fixtures\.mjs$|package\.json$|package-lock\.json$|\.github/workflows/universal-platform\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            echo "export RUN_UNIVERSAL_BENCHMARK=$run_it" >> "$BASH_ENV"
+      - run:
+          name: Fetch and verify pinned real fixtures
+          command: |
+            if [ "$RUN_UNIVERSAL_BENCHMARK" != 'true' ]; then exit 0; fi
+            npm run fixtures:fetch
+            npm run fixtures:check
+      - run:
+          name: Run reproducible binary benchmark
+          command: |
+            if [ "$RUN_UNIVERSAL_BENCHMARK" != 'true' ]; then exit 0; fi
+            set -o pipefail
+            npm --silent run binary:benchmark | tee universal-platform-benchmark.json
+      - run:
+          name: Deterministic work regression gate
+          command: |
+            if [ "$RUN_UNIVERSAL_BENCHMARK" != 'true' ]; then exit 0; fi
+            node tools/benchmark/compare.mjs --binary=universal-platform-benchmark.json
+      - store_artifacts:
+          path: universal-platform-benchmark.json
+          destination: universal-platform-benchmark.json
+
 workflows:
   ci:
     jobs:
@@ -211,3 +279,7 @@ workflows:
       - ai-eval-contract
       - phase7-ownership
       - phase8-ownership
+      - universal-platform-verify
+      - universal-platform-benchmark:
+          requires:
+            - universal-platform-verify
