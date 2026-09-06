@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
+import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -79,6 +80,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const funcType = wasmModule.types[typeIdx];
   if (!funcType) fail('wasm-invalid-function-type-index');
   const codeBody = wasmModule.codeBodies[internalIdx];
+  const memoryContext = createWasmMemoryValidationContext(wasmModule);
   const bytecode = codeBody.bytecode;
   const drafts = [];
   let pos = 0;
@@ -281,18 +283,20 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       }
       case 0x28: case 0x29: case 0x2a: case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: {
-        const ar = decodeUleb128(bytecode, pos); pos = ar.nextOffset; const or = decodeUleb128(bytecode, pos); pos = or.nextOffset;
+        const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
+        const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const bits = (opcode === 0x29 || opcode === 0x2b) ? 64 : 32; const byteWidth = opcode === 0x2c || opcode === 0x2d ? 1 : opcode === 0x2e || opcode === 0x2f ? 2 : bits / 8;
         mnemonic = opcode === 0x28 ? 'i32.load' : opcode === 0x29 ? 'i64.load' : opcode === 0x2a ? 'f32.load' : opcode === 0x2b ? 'f64.load' : 'load';
-        consumedValues.push({ id: 'addr', bits: 32 }); consume(1); producedValues.push({ bits }); produce(1); memoryEffects.push({ space: 'linear-memory', byteWidth, offset: or.value, align: ar.value, isWrite: false });
-        possibleExceptions.push({ kind: 'linear-memory-oob', condition: `effectiveAddress+${byteWidth}>memorySize` });
+        consumedValues.push({ id: 'addr', bits: 32 }); consume(1); producedValues.push({ bits }); produce(1); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: false });
+        possibleExceptions.push({ kind: 'linear-memory-oob', memoryIndex: memory.memoryIndex, condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
       }
       case 0x36: case 0x37: case 0x38: case 0x39: case 0x3a: case 0x3b: {
-        const ar = decodeUleb128(bytecode, pos); pos = ar.nextOffset; const or = decodeUleb128(bytecode, pos); pos = or.nextOffset;
+        const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
+        const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const bits = (opcode === 0x37 || opcode === 0x39) ? 64 : 32; const byteWidth = opcode === 0x3a ? 1 : opcode === 0x3b ? 2 : bits / 8;
-        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store'; consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', byteWidth, offset: or.value, align: ar.value, isWrite: true });
-        possibleExceptions.push({ kind: 'linear-memory-oob', condition: `effectiveAddress+${byteWidth}>memorySize` });
+        mnemonic = opcode === 0x36 ? 'i32.store' : opcode === 0x37 ? 'i64.store' : 'store'; consumedValues.push({ id: 'val', bits }, { id: 'addr', bits: 32 }); consume(2); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: true });
+        possibleExceptions.push({ kind: 'linear-memory-oob', memoryIndex: memory.memoryIndex, condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
       }
       case 0x41: { const r = decodeSleb128(bytecode, pos); pos = r.nextOffset; mnemonic = 'i32.const'; producedValues.push({ bits: 32, constant: r.value }); produce(1); break; }
