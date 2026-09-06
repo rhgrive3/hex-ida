@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -7,7 +8,6 @@ import { createAnalysisScopeRequest, createDevAnalysisScopeRequest, toLegacyAnal
 import { DEV_RUN_IDENTITY_FIELDS, DEV_RUN_STATUS, transitionDevRun } from '../../js/ai/dev/run/dev-run.js';
 import { DEV_SUPERVISOR_PROTOCOL, DEV_SUPERVISOR_DECISION_TYPES, validateDevSupervisorDecision, parseDevSupervisorDecision } from '../../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
-import { DEV_EVENT_TYPE } from '../../js/ai/dev/events/dev-events.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 import { ScopeController, SCOPE_ORDER } from '../../js/ai/control/scope.js';
@@ -85,7 +85,7 @@ await check('dev-run-state', () => {
   assert.equal(run.chatgptProjectContext, null);
   ({ run } = supervisor.applyDecision(run, { type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }));
   assert.equal(run.status, 'ACTIVE');
-  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: [DEV_EVENT_TYPE.WORKER_COMPLETED], reason: 'wait' }));
+  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['worker.completed'], reason: 'wait' }));
   assert.equal(run.status, 'WAITING_EVENT');
   ({ run } = supervisor.applyDecision(run, { type: 'human', question: 'Security boundary?', blocking: true }));
   assert.equal(run.status, 'WAITING_HUMAN');
@@ -142,6 +142,30 @@ await check('standard-agent-scope-regression', () => {
   const locked = new ScopeController(snapshot, 'function');
   assert.equal(locked.expandTo('binary', 'must stay locked'), false);
   assert.equal(locked.effectiveScope, 'function');
+});
+
+
+function staticModuleSpecifiers(source) {
+  const matches = [];
+  for (const pattern of [
+    /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm,
+    /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+    /^\s*export\s+(?:\*\s+as\s+(?:[A-Za-z_$][\w$]*|['"][^'"]+['"])|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+  ]) {
+    for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
+  }
+  return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
+}
+
+await check('dev-context-packet-dependency-boundary', () => {
+  const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
+  assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
+  assert.doesNotMatch(source, /\bimport\s*\(/, 'context packet must not gain dynamic import authority');
+  assert.deepEqual(
+    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';\nexport * as storage from '../storage.js';"),
+    ['./side-effect.js', './re-export.js', '../storage.js'],
+  );
+  assert.match("void import('./dynamic.js')", /\bimport\s*\(/);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');

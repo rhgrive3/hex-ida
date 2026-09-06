@@ -8,6 +8,7 @@ import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs
 import {
   validateX86Long64IntegerDecodedCase,
   validateX86Long64IntegerDenominator,
+  x86Long64IntegerCaseDisposition,
   x86Long64IntegerEncodingCases,
 } from '../../tools/validation/machine-effects/x86-long64-integer-denominator.mjs';
 
@@ -54,17 +55,26 @@ assert.equal(identity.denominatorId, 'x86_64:long-64:effect-family:integer:v1');
 assert.equal(identity.encodingCaseCount, 57294);
 assert.equal(identity.integerOwnedCaseCount, 56666);
 assert.equal(identity.memoryDelegationCaseCount, 628);
+assert.deepEqual(identity.caseDispositionCounts, {
+  'defined-positive': 56780,
+  'must-reject': 512,
+  unsupported: 2,
+});
 assert.deepEqual(identity.operandWidths, [8,16,32,64]);
 
-test('finite long-64 integer denominator decodes completely and every integer-owned case lifts non-partially', async () => {
+test('finite long-64 integer denominator preserves the full partition and fail-closed ownership', async () => {
   const session = await createCapstoneX86Session();
   let integerOwned = 0;
   let memoryDelegated = 0;
+  let definedPositive = 0;
+  let mustReject = 0;
+  let unsupported = 0;
   let count = 0;
   try {
     for (const candidate of x86Long64IntegerEncodingCases()) {
       const decoded = one(session, [...candidate.bytes], 0x100000n + BigInt(count * 16));
       assert.equal(validateX86Long64IntegerDecodedCase(candidate, decoded), true, candidate.id);
+      const disposition = x86Long64IntegerCaseDisposition(candidate);
 
       if (candidate.owner === 'memory') {
         // This component records the canonical boundary rather than duplicating
@@ -73,12 +83,38 @@ test('finite long-64 integer denominator decodes completely and every integer-ow
         assert.ok(direct, `integer boundary missing for ${candidate.id}`);
         assert.equal(direct.completeness, 'partial', `memory form was accidentally implemented in integer lane: ${candidate.id}`);
         assert.match(partialReason(direct), /memory-form-deferred/, candidate.id);
+        if (disposition === 'unsupported') {
+          const routed = liftX86MachineEffects({ ...decoded, instructionId:`x86-int-den:routed-reject:${candidate.id}` });
+          assert.equal(routed.completeness, 'partial', `unsupported memory row was promoted by public dispatcher: ${candidate.id}`);
+          assert.match(partialReason(routed), /extension-width-invalid/, candidate.id);
+          assert.equal(routed.operations.length, 0, candidate.id);
+          unsupported++;
+        }
+        else {
+          assert.equal(disposition, 'defined-positive', candidate.id);
+          definedPositive++;
+        }
         memoryDelegated++;
+      } else if (disposition === 'must-reject') {
+        assert.equal(candidate.owner, 'integer', candidate.id);
+        const direct = liftX86IntegerEffects({ ...decoded, instructionId:`x86-int-den:reject:${candidate.id}` });
+        assert.ok(direct, `integer rejection boundary missing for ${candidate.id}`);
+        assert.equal(direct.completeness, 'partial', `unsupported register width became definite: ${candidate.id}`);
+        assert.match(partialReason(direct), /operand-shape-unmodelled/, candidate.id);
+        assert.equal(direct.operations.length, 0, candidate.id);
+        const routed = liftX86MachineEffects({ ...decoded, instructionId:`x86-int-den:routed-reject:${candidate.id}` });
+        assert.equal(routed.completeness, 'partial', `unsupported register row was promoted by public dispatcher: ${candidate.id}`);
+        assert.match(partialReason(routed), /operand-shape-unmodelled/, candidate.id);
+        assert.equal(routed.operations.length, 0, candidate.id);
+        mustReject++;
+        integerOwned++;
       } else {
+        assert.equal(disposition, 'defined-positive', candidate.id);
         const bundle = liftX86MachineEffects({ ...decoded, instructionId:`x86-int-den:${candidate.id}` });
         assert.ok(bundle, `integer effect ownership escaped: ${candidate.id}`);
         assert.notEqual(bundle.completeness, 'partial', `${candidate.id}:${partialReason(bundle) || 'partial'}`);
         assert.ok(['integer','flags'].includes(bundle.metadata?.family), `unexpected effect owner ${bundle.metadata?.family}: ${candidate.id}`);
+        definedPositive++;
         integerOwned++;
       }
       count++;
@@ -89,15 +125,14 @@ test('finite long-64 integer denominator decodes completely and every integer-ow
   assert.equal(count, identity.encodingCaseCount);
   assert.equal(integerOwned, identity.integerOwnedCaseCount);
   assert.equal(memoryDelegated, identity.memoryDelegationCaseCount);
+  assert.deepEqual({ 'defined-positive':definedPositive, 'must-reject':mustReject, unsupported }, identity.caseDispositionCounts);
 });
 
 test('MOV extension operand-size states preserve partial-register and 32-bit write semantics', async () => {
   const session = await createCapstoneX86Session();
   try {
-    for (const [bytes, family, fromBits, toBits, physical, policy] of [
-      [[0x66,0x0f,0xb7,0xc3], 'movzx', 16,16,'rax','preserve-unaffected'],
-      [[0x66,0x0f,0xbf,0xc3], 'movsx', 16,16,'rax','preserve-unaffected'],
-      [[0x66,0x63,0xc3], 'movsxd', 16,16,'rax','preserve-unaffected'],
+    for (const [bytes, family, fromBits, toBits, physical, policy, decoderSourceWidthBits = null] of [
+      [[0x66,0x63,0xc3], 'movsxd', 16,16,'rax','preserve-unaffected',32],
       [[0x63,0xc3], 'movsxd', 32,32,'rax','zero-extend-32'],
       [[0x48,0x63,0xc3], 'movsxd', 32,64,'rax','replace'],
     ]) {
@@ -107,9 +142,22 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
       assert.notEqual(bundle.completeness, 'partial');
       assert.equal(bundle.metadata.fromBits, fromBits);
       assert.equal(bundle.metadata.toBits, toBits);
+      assert.equal(bundle.metadata.decoderSourceWidthBits ?? null, decoderSourceWidthBits);
       const [write] = writes(bundle, physical);
       assert.ok(write, `${family} ${toBits} physical write`);
       assert.equal(write.metadata.writePolicy, policy);
+    }
+
+    for (const [bytes, family] of [
+      [[0x66,0x0f,0xb7,0xc3], 'movzx'],
+      [[0x66,0x0f,0xbf,0xc3], 'movsx'],
+    ]) {
+      const decoded = one(session, bytes);
+      assert.equal(decoded.instructionFamily, family);
+      const bundle = liftX86IntegerEffects({ ...decoded, instructionId:`reject:${family}:16-to-16` });
+      assert.equal(bundle.completeness, 'partial');
+      assert.match(partialReason(bundle), new RegExp(`${family}-operand-shape-unmodelled`));
+      assert.equal(bundle.operations.length, 0);
     }
 
     const highByte = effect(session,[0x88,0xdc],'partial:ah'); // mov ah, bl

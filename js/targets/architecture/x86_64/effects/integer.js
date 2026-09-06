@@ -39,14 +39,21 @@ const ROTATES = new Set(['rol','ror']);
 const MULTIPLY = new Set(['mul','imul']);
 const DIVIDE = new Set(['div','idiv']);
 const WIDTHS = new Set([8,16,32,64]);
+const LEA_DESTINATION_WIDTHS = new Set([16,32,64]);
+const LEA_DESTINATION_KINDS = new Set(['gp','stack-pointer']);
 
 function supportedWidth(widthBits) { return WIDTHS.has(Number(widthBits)); }
 function hasMemory(operands) { return operands.some((operand) => operand?.type === 'memory'); }
 function registerOrImmediate(operand) { return operand?.type === 'register' || operand?.type === 'immediate'; }
-function hasLegacyPrefix(instruction, byte) {
-  return [...(instruction?.detail?.prefixes?.legacy || [])].includes(byte);
+function validLeaDestination(operand) {
+  return operand?.type === 'register'
+    && LEA_DESTINATION_WIDTHS.has(operand.widthBits)
+    && LEA_DESTINATION_KINDS.has(operand.register?.kind);
 }
-function validExtendShape(family, destinationWidthBits, sourceWidthBits, instruction = null) {
+function registerSourceWidthMatches(destination, source) {
+  return source?.type !== 'register' || source.widthBits === destination?.widthBits;
+}
+function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   const destinationWidth = Number(destinationWidthBits);
   const sourceWidth = Number(sourceWidthBits);
   if (!supportedWidth(destinationWidth) || !supportedWidth(sourceWidth)) return false;
@@ -56,8 +63,7 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits, instruc
   }
   if (family === 'movzx' || family === 'movsx') {
     return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && [32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && destinationWidth === 16 && hasLegacyPrefix(instruction, 0x66));
+      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
   }
   return false;
 }
@@ -125,7 +131,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (MOVES.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial('x86-mov-operand-shape-unmodelled', ['registers']);
     }
     const value = ctx.readOperand(source, destination.widthBits);
@@ -134,26 +141,42 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (EXTENDS.has(family)) {
-    let sourceWidthBits = source?.widthBits;
-    if (family === 'movsxd' && destination?.widthBits === 16 && sourceWidthBits === 32) {
-      const prefixes = ctx.instruction.detail.prefixes;
-      const capstone16BitWidthQuirk = hasLegacyPrefix(ctx.instruction, 0x66)
-        && ((prefixes.rex ?? 0) & 0x08) === 0;
-      if (capstone16BitWidthQuirk) sourceWidthBits = 16;
+    if (destination?.type !== 'register' || source?.type !== 'register') {
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers'], {
+        metadata:{ encodingValidated:false },
+      });
     }
-    if (destination?.type !== 'register' || source?.type !== 'register'
-      || !validExtendShape(family, destination.widthBits, sourceWidthBits, ctx.instruction)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers']);
+    const decoderSourceWidthBits = Number(source.widthBits);
+    const destinationWidthBits = Number(destination.widthBits);
+    const movsxd16DecoderQuirk = family === 'movsxd'
+      && destinationWidthBits === 16
+      && decoderSourceWidthBits === 32
+      && [...(ctx.instruction.detail?.prefixes?.legacy || [])].includes(0x66)
+      && ((ctx.instruction.detail?.prefixes?.rex ?? 0) & 0x08) === 0;
+    const sourceWidthBits = movsxd16DecoderQuirk ? 16 : decoderSourceWidthBits;
+    if (!validExtendShape(family, destinationWidthBits, sourceWidthBits)) {
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const raw = ctx.readOperand(source, sourceWidthBits);
     if (!raw) return ctx.partial(`x86-${family}-source-unmodelled`, ['registers']);
-    const extended = ctx.coerce(raw, sourceWidthBits, destination.widthBits, EXTENDS.get(family));
+    const extended = ctx.coerce(raw, sourceWidthBits, destinationWidthBits, EXTENDS.get(family));
     if (!ctx.writeRegister(destination, extended)) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers']);
-    return ctx.finish({ family:'integer', metadata:{ operation:family, fromBits:sourceWidthBits, toBits:destination.widthBits } });
+    return ctx.finish({
+      family:'integer',
+      metadata:{
+        operation:family,
+        fromBits:sourceWidthBits,
+        toBits:destinationWidthBits,
+        ...(movsxd16DecoderQuirk ? { decoderSourceWidthBits } : {}),
+      },
+    });
   }
 
   if (ARITHMETIC.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readRegister(destination);
@@ -197,7 +220,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (LOGICAL.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readRegister(destination);
@@ -219,7 +243,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (family === 'cmp' || family === 'test') {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readOperand(destination, destination.widthBits);
@@ -303,12 +328,16 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     let right;
     let form;
     if (ctx.operands.length === 2) {
-      if (source?.type !== 'register') return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags']);
+      if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source)) {
+        return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags']);
+      }
       left = ctx.readRegister(destination);
       right = ctx.readOperand(source, destination.widthBits, { signed:true });
       form = 'two-operand';
     } else {
-      if (source?.type !== 'register' || third?.type !== 'immediate') return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags']);
+      if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source) || third?.type !== 'immediate') {
+        return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags']);
+      }
       left = ctx.readOperand(source, destination.widthBits, { signed:true });
       right = ctx.readOperand(third, destination.widthBits, { signed:true });
       form = 'three-operand';
@@ -350,7 +379,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
 
   if (family.startsWith('cmov')) {
     const code = ctx.instruction.detail.conditionCode ?? family.slice(4);
-    if (destination?.type !== 'register' || source?.type !== 'register' || ctx.operands.length !== 2 || ![16,32,64].includes(destination.widthBits)) {
+    if (destination?.type !== 'register' || source?.type !== 'register' || ctx.operands.length !== 2
+      || ![16,32,64].includes(destination.widthBits) || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const condition = emitX86Condition(ctx, code);
@@ -370,7 +400,7 @@ export function liftX86LeaEffects(instruction, context = {}) {
   if (String(instruction?.instructionFamily || '').toLowerCase() !== 'lea') return null;
   const ctx = createX86EffectContext(instruction, context);
   const [destination, source] = ctx.operands;
-  if (destination?.type !== 'register' || source?.type !== 'memory') return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other']);
+  if (!validLeaDestination(destination) || source?.type !== 'memory') return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other']);
   const address = materializeX86Address(ctx, source);
   if (!address || !ctx.writeRegister(destination, address)) return ctx.partial('x86-lea-address-unmodelled', ['registers','other']);
   return ctx.finish({ family:'integer', metadata:{ operation:'lea', semanticMemoryAccess:false, address:source.memory } });
