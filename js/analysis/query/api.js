@@ -69,7 +69,7 @@ function preserveKnownQueryLimitContinuation(result) {
   const page = result?.page;
   const queryLimited = result?.status?.reason === "query-limit"
     || result?.status?.truncationReason === "query-limit";
-  if (!queryLimited || page?.next != null) return result;
+  if (result?.completeness !== "partial" || !queryLimited || page?.next != null) return result;
   const offset = safeNonNegativeInteger(page?.offset);
   const returned = safeNonNegativeInteger(page?.returned);
   if (offset == null || returned == null || returned === 0) return result;
