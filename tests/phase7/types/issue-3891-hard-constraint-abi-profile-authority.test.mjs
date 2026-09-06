@@ -24,14 +24,10 @@ function hard(input = {}) {
 }
 
 test('issue #3891 rejects unsupported ABI profiles before hard authority is minted', () => {
-  assert.throws(
-    () => hard({ claimAbiProfile: 'unsupported-demo' }),
-    /abi-profile-unsupported:unsupported-demo/,
-  );
-  assert.throws(
-    () => hard({ abiProfile: 'unsupported-demo' }),
-    /abi-profile-unsupported:unsupported-demo/,
-  );
+  for (const abiProfile of ['unsupported-demo', ' unsupported-demo ']) {
+    assert.throws(() => hard({ claimAbiProfile: abiProfile }), /abi-profile-unsupported:unsupported-demo/);
+    assert.throws(() => hard({ abiProfile }), /abi-profile-unsupported:unsupported-demo/);
+  }
 });
 
 test('issue #3891 rejects structured and non-string ABI profile authority', () => {
@@ -44,18 +40,27 @@ test('issue #3891 rejects structured and non-string ABI profile authority', () =
   ];
 
   for (const abiProfile of malformed) {
-    assert.throws(
-      () => hard({ claimAbiProfile: abiProfile }),
-      /abi-profile-invalid/,
-    );
-    assert.throws(
-      () => hard({ abiProfile }),
-      /abi-profile-invalid/,
-    );
+    assert.throws(() => hard({ claimAbiProfile: abiProfile }), /abi-profile-invalid/);
+    assert.throws(() => hard({ abiProfile }), /abi-profile-invalid/);
   }
 
   assert.throws(() => hard({ claimAbiProfile: '' }), /abi-profile-invalid/);
   assert.throws(() => hard({ claimAbiProfile: '   ' }), /abi-profile-invalid/);
+});
+
+test('issue #3891 validates nested authority even when a top-level profile is present', () => {
+  assert.throws(
+    () => hard({ abiProfile: 'aapcs64-v1', claimAbiProfile: ['aapcs64-v1'] }),
+    /abi-profile-invalid/,
+  );
+  assert.throws(
+    () => hard({ abiProfile: 'aapcs64-v1', claimAbiProfile: 'unsupported-demo' }),
+    /abi-profile-unsupported:unsupported-demo/,
+  );
+  assert.throws(
+    () => hard({ abiProfile: 'aapcs64-v1', claimAbiProfile: 'sysv-amd64-v1' }),
+    /abi-profile-conflict/,
+  );
 });
 
 test('issue #3891 never invokes caller-controlled ABI profile coercion hooks', () => {
@@ -67,18 +72,24 @@ test('issue #3891 never invokes caller-controlled ABI profile coercion hooks', (
   };
 
   assert.throws(() => hard({ claimAbiProfile: abiProfile }), /abi-profile-invalid/);
+  assert.throws(() => hard({ abiProfile }), /abi-profile-invalid/);
   assert.equal(coercions, 0);
 });
 
-test('issue #3891 preserves canonical supported primitive ABI profiles', () => {
-  const fromClaim = hard({ claimAbiProfile: 'aapcs64-v1' });
+test('issue #3891 stores one canonical supported profile in constraint and ABI claim', () => {
+  const fromClaim = hard({ claimAbiProfile: '  aapcs64-v1  ' });
   assert.equal(fromClaim.abiProfile, 'aapcs64-v1');
   assert.equal(fromClaim.claim.descriptor.abiProfile, 'aapcs64-v1');
 
-  const fromConstraint = hard({ abiProfile: 'sysv-amd64-v1' });
+  const fromConstraint = hard({ abiProfile: '  sysv-amd64-v1  ' });
   assert.equal(fromConstraint.abiProfile, 'sysv-amd64-v1');
-  assert.equal(fromConstraint.claim.descriptor.abiProfile, undefined);
+  assert.equal(fromConstraint.claim.descriptor.abiProfile, 'sysv-amd64-v1');
+
+  const fromBoth = hard({ abiProfile: ' aapcs64-v1 ', claimAbiProfile: 'aapcs64-v1' });
+  assert.equal(fromBoth.abiProfile, 'aapcs64-v1');
+  assert.equal(fromBoth.claim.descriptor.abiProfile, 'aapcs64-v1');
 
   const absent = hard();
   assert.equal(absent.abiProfile, null);
+  assert.equal(absent.claim.descriptor.abiProfile, undefined);
 });
