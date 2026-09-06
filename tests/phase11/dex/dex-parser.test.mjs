@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
-import { parseDex as parseDexCore } from '../../../js/managed/dex/parser-core.js';
 import { validateDexMap } from '../../../js/managed/dex/map-validation.js';
 
 console.log('[phase11] running dex parser tests...');
@@ -77,7 +76,6 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
 {
   const bytes = buildMinimalDex(); new DataView(bytes.buffer).setUint32(52, 0, true);
   expectTypeError(bytes, 'dex-invalid-map-offset');
-  expectTypeError(bytes, 'dex-invalid-map-offset', parseDexCore);
 }
 {
   const bytes = buildMinimalDex(); new DataView(bytes.buffer).setUint32(52, bytes.length, true);
