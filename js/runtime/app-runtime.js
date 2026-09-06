@@ -113,10 +113,31 @@ export function createAppRuntimeIO(app) {
 }
 
 async function disposeState(state) {
-  if (!state?.platform) return;
-  const current = state.platform.sessions?.current;
-  if (current) {
-    try { await state.platform.sessions.close(current.id); } catch { /* best effort */ }
+  const manager = state?.platform?.sessions;
+  if (!manager) return;
+  // Canonical dispose-all: an old platform owns up to maxSessions live
+  // sessions. Closing only `current` orphans the other live session on the
+  // old I/O/context. Prefer closeAll when the manager provides it.
+  if (typeof manager.closeAll === 'function') {
+    try { await manager.closeAll(); } catch { /* best effort */ }
+    return;
+  }
+  const live = manager.sessions instanceof Map
+    ? [...manager.sessions.values()]
+    : (manager.current ? [manager.current] : []);
+  const seen = new Set();
+  for (const session of live) {
+    const id = session?.id ?? session?.runtimeSessionId ?? null;
+    if (id != null) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    try {
+      if (id != null && typeof manager.close === 'function') await manager.close(id);
+      else if (typeof manager.closeSession === 'function' && id != null) await manager.closeSession(id);
+      else if (typeof session?.disconnect === 'function') await session.disconnect();
+      else if (typeof session?.close === 'function') await session.close();
+    } catch { /* best effort: one failure must not stop remaining cleanup */ }
   }
 }
 
