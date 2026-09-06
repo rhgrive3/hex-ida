@@ -17,6 +17,10 @@ test('generated userscript ownership survives retirement of Phase 2/5 campaign w
   assert.match(GENERATED_SYNC, /git diff --exit-code --/);
   assert.match(GENERATED_SYNC, /userscript\/hex\.user\.template\.js/);
   assert.match(GENERATED_SYNC, /userscript\/release-version\.json/);
-  assert.doesNotMatch(GENERATED_SYNC, /deployment-identity\.generated\.js/,
-    'Cloudflare-owned deployment identity must not be treated as local userscript output');
+  assert.match(GENERATED_SYNC, /git restore --source=HEAD --worktree -- js\/userscript\/deployment-identity\.generated\.js/,
+    'Cloudflare-owned deployment identity must be restored after the local userscript build');
+  const canonicalDiff = GENERATED_SYNC.match(/git diff --exit-code -- userscript\/hex\.user\.template\.js userscript\/release-version\.json/)?.[0] ?? '';
+  assert.ok(canonicalDiff, 'canonical generated-output diff must remain explicit');
+  assert.doesNotMatch(canonicalDiff, /deployment-identity\.generated\.js/,
+    'Cloudflare-owned deployment identity must not be part of the local generated-output transaction');
 });
