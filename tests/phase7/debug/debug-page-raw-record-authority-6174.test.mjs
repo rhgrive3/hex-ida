@@ -80,6 +80,7 @@ test('issue #6174: constructor-invalid raw records cannot reach hard authority',
   const result = makeResult();
   const valid = canonicalRecord();
   const malformed = [
+    { label: 'undefined descriptor', record: { ...valid, descriptor: undefined } },
     { label: 'object evidence id', record: { ...valid, evidenceIds: [{}] } },
     { label: 'blank evidence id', record: { ...valid, evidenceIds: [''] } },
     { label: 'structured address', record: { ...valid, address: ['0x1000'] } },
