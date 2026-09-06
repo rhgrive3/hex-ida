@@ -9,6 +9,7 @@ const cpClass=(index)=>[7,(index>>>8)&255,index&255];
 const cpString=(index)=>[8,(index>>>8)&255,index&255];
 const cpNameAndType=(name,descriptor)=>[12,(name>>>8)&255,name&255,(descriptor>>>8)&255,descriptor&255];
 const cpFieldref=(owner,nat)=>[9,(owner>>>8)&255,owner&255,(nat>>>8)&255,nat&255];
+const cpMethodref=(owner,nat)=>[10,(owner>>>8)&255,owner&255,(nat>>>8)&255,nat&255];
 const cpMethodHandle=(kind,index)=>[15,kind,(index>>>8)&255,index&255];
 const cpMethodType=(descriptor)=>[16,(descriptor>>>8)&255,descriptor&255];
 const cpDynamic=(tag,bootstrap,nat)=>[tag,(bootstrap>>>8)&255,bootstrap&255,(nat>>>8)&255,nat&255];
@@ -34,11 +35,19 @@ mustReject([...base,utf8('x'),cpClass(5),cpNameAndType(5,6)]);
 mustReject([...base,cpLong(),cpString(6)]);
 mustReject([...base,cpMethodHandle(0,2)]);
 mustReject([...base,cpMethodHandle(1,2)]);
+mustReject([...base,utf8('run'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(8,8)],/jvm-invalid-cp-methodhandle-target-name/);
+mustReject([...base,utf8('<init>'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(5,8)],/jvm-invalid-cp-methodhandle-target-name/);
+mustReject([...base,utf8('<clinit>'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(6,8)],/jvm-invalid-cp-methodhandle-target-name/);
 mustReject([...base,cpMethodType(0)]);
 mustReject([...base,cpDynamic(17,0,0)]);
 mustReject([...base,cpDynamic(18,0,0)]);
 mustReject([...base,cpModule(19,0)]);
 mustReject([...base,cpModule(20,0)]);
+
+for(const [name,kind] of [['run',5],['<init>',8]]){
+  const validHandle=[...base,utf8(name),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(kind,8)];
+  assert.doesNotThrow(()=>parseJvm(buildClass(validHandle)),`valid MethodHandle kind ${kind} target name ${name}`);
+}
 
 const valid=[
   ...base,
