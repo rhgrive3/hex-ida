@@ -84,12 +84,17 @@ test('xrefs can traverse successive merged query-limited pages without losing th
   assert.deepEqual(seen, rows.map((row) => row.id));
 });
 
-test('xrefs does not invent continuation without positive query-limit evidence', async () => {
+test('xrefs does not invent continuation without a partial query-limited page', async () => {
   for (const result of [
     {
       value:[{ site:0x1000n }],
       page:{ offset:0, limit:2, returned:1, total:1, next:null },
-      status:{ completeness:'complete', reason:null, paged:true },
+      status:{ completeness:'complete', reason:'query-limit', paged:true },
+    },
+    {
+      value:[{ site:0x1000n }],
+      page:{ offset:0, limit:2, returned:1, total:1, next:null },
+      status:{ completeness:'truncated', reason:'query-limit', paged:true },
     },
     {
       value:[{ site:0x1000n }],
