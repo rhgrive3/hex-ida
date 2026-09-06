@@ -153,8 +153,9 @@ test('indirect JMP/CALL with a non-VSIB vector memory index fails closed', () =>
 
 test('INT requires one bounded 8-bit immediate vector', () => {
   const valid = lift('int', [imm(0x80, 8)], { length:2, rawBytes:[0xcd,0x80] });
-  assert.equal(valid.completeness, 'exact');
-  assert.equal(valid.possibleFaults[0].detail.vector, 0x80);
+  assert.equal(valid.completeness, 'partial');
+  assert.equal(valid.unknownEffects.reason, 'x86-int-delivery-state-unmodelled');
+  assert.equal(valid.unknownEffects.detail.vector, 0x80);
   for (const operands of [[], [reg('rax')], [imm(0x100, 8)], [imm(-1, 8)], [imm(1, 16)], [imm(1, 8), imm(2, 8)]]) {
     const bundle = lift('int', operands);
     assert.equal(bundle.completeness, 'partial');
