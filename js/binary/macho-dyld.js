@@ -409,6 +409,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     image.warnings.push(`${source}: ${message}`);
   };
+  const validDylibOrdinal = () => {
+    if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (libOrdinal > 0 && libOrdinal > libraryCount) { fail(`dylib ordinal ${libOrdinal} exceeds dependency count ${libraryCount}`); return false; }
+    return true;
+  };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
     const seg = segments[segIndex];
@@ -416,6 +422,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (!validDylibOrdinal()) return;
     if (threadedTable) {
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
@@ -467,9 +474,18 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
       break;
-    } else if (op === 0x10) libOrdinal = imm;
-    else if (op === 0x20) { const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); }
-    else if (op === 0x30) libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+    } else if (op === 0x10) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm;
+    }
+    else if (op === 0x20) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value);
+    }
+    else if (op === 0x30) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+    }
     else if (op === 0x40) {
       const x = rawCString(r, p, end);
       // The symbol C-string is a variable-length cost: charge its raw bytes to
