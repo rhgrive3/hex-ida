@@ -36,7 +36,7 @@ function base64ToBytes(text) {
     const binary = atob(text);
     if (btoa(binary) !== String(text)) throw new Error('non-canonical');
     const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(0);
     return out;
   } catch {
     throw new DebugAdapterError('malformed-packet', 'invalid base64 byte payload');
@@ -186,9 +186,20 @@ export function validateRemotePacket(packet) {
 
 function defaultMonotonicNow() {
   try {
-    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
-  } catch { /* fall through to wall clock */ }
-  return Date.now();
+    const perf = globalThis.performance;
+    if (typeof perf?.now === 'function') {
+      const now = perf.now();
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* try the next monotonic source */ }
+  try {
+    const hrtime = globalThis.process?.hrtime;
+    if (typeof hrtime?.bigint === 'function') {
+      const now = Number(hrtime.bigint()) / 1e6;
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* fail closed below */ }
+  throw new DebugAdapterError('monotonic-clock-unavailable', 'a monotonic clock is required for remote event rate limiting');
 }
 
 export class RemoteProtocolClient {
