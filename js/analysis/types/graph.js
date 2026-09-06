@@ -270,9 +270,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
 
     const calculatedSizeWire = structuralIntegerWire(calculatedSize);
     const maxAlignWire = structuralIntegerWire(maxAlign);
-    const baseDescriptor = updatedMembers[0] ?? descriptors[0];
+    const aggregateDescriptor = descriptors.find((descriptor) => descriptor.offset == null) ?? {};
     const structDescriptor = {
-      ...baseDescriptor,
+      ...aggregateDescriptor,
       kind: 'struct',
       members: updatedMembers,
       sizeBytes: calculatedSizeWire,
