@@ -38,7 +38,11 @@ function rejectDecoderRevalidation(error) {
 function decoderWorker() {
   if (decoderRevalidationWorker) return decoderRevalidationWorker;
   if (typeof Worker !== 'function') throw new Error('x86-semantic-function-decoder-revalidation-unavailable');
-  const worker = new Worker(new URL('./semantic-revalidation-worker.js', import.meta.url));
+  const configured = globalThis.__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__;
+  const workerURL = typeof configured === 'string' && configured
+    ? configured
+    : new URL('./semantic-revalidation-worker.js', import.meta.url);
+  const worker = new Worker(workerURL);
   worker.onmessage = (event) => {
     const message = event.data;
     const pending = decoderRevalidationPending.get(message?.id);
