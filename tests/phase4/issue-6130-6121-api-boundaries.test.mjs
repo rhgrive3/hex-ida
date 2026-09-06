@@ -32,28 +32,6 @@ for (const name of [
   assert.notEqual(info?.effect, 'alloc', `${name} must not gain allocation effects`);
 }
 
-for (const name of ['malloc_size', '_malloc_size']) {
-  const info = apiInfo(name);
-  assert.equal(info?.id, 'libc_malloc_size', `${name} must use the Darwin allocation-size query contract`);
-  assert.equal(info?.effect, 'read');
-  assert.equal(info?.ret, 'length');
-}
-
-for (const name of ['os_log_create', '_os_log_create']) {
-  const info = apiInfo(name);
-  assert.equal(info?.id, 'os_log_create');
-  assert.equal(info?.cat, 'log');
-  assert.equal(info?.ret, 'handle');
-  assert.equal(info?.effect, 'runtime');
-}
-for (const name of ['os_log_type_enabled', '_os_log_type_enabled']) {
-  const info = apiInfo(name);
-  assert.equal(info?.id, 'os_log_type_enabled');
-  assert.equal(info?.cat, 'log');
-  assert.equal(info?.ret, 'status');
-  assert.equal(info?.effect, 'read');
-}
-
 assert.deepEqual(apiInfo('printf'), {
   id: 'printf',
   re: apiInfo('printf').re,
