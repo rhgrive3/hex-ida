@@ -441,3 +441,20 @@ through T049 before T018 can close the recovery matrix.
 
 - [ ] T064 [US1] Independently verify the completed producer/identity/publication route and frozen performance contract after T013 handoff per FR-014/015/017/018/025 (partial; HIGH).
   - **Contract** — Objective: Verify the complete producer, identity, publication, and rollback route after its canonical owners finish the repair. Current evidence: T064 has only a proposed verification subtree and no accepted producer behavior, performance run, or independent semantic oracle. Owner/model: A separate verifier owner reviews T063 and T013 handoffs; T013 retains transaction and performance ownership. Risk: HIGH. Dependencies: T062, T063, and T013. Owned paths: tests/final-closure/t064/**. Delta: Exercise actual invalid-evidence, accessor, stale-generation, cancellation, malformed-authority, exhausted-budget, rollback, legacy, v2, and measured-boundary cases against the completed product without changing production sources or frozen performance rows. Negative counterexample: A shape-only registry assertion, source string match, stale receipt, or producer-local result substitutes for actual product behavior or promotes T013 before its own handoff. Tests: Independent behavioral cases at the real consumer boundary plus the unchanged Phase 8 performance profile with its original fixture identities and three-repetition median. Integration test: Accepted T049 T063 checkpoint, exact T013 handoff, T049 T064 checkpoint, and current-product runtime replay; the accepted T064 receipt gates T018 only. Completion evidence: Exact clean head and tree, actual behavioral and performance observations, unchanged denominators, independent review, and a complete T049 receipt; no T013 completion or T018 status promotion in this draft. Status: PENDING.
+
+### Convergence registration handoff (inactive documentation successor)
+
+- T061's exact accepted maintenance receipt precedes T062 registration.
+- T062 requires complete independently bound oracle content. Registration is
+  `REGISTERED`; a separate run may be `NONPASS` with semantic/acceptance flags false.
+  Product PASS is not a registration prerequisite.
+- Exact T011/T017 handoffs precede T063. The T011 query supplement preserves the
+  frozen owner row and historical governance prefixes; it does not require product
+  source to be append-only and cannot transfer the query path to T063/T064.
+- The accepted T049 T011 row is an exact evidence precondition before T063,
+  distinct from the later accepted T049 T063 product checkpoint.
+- T063 product acceptance requires its real canonical gates and applicable PO
+  findings resolved. T013 follows T063; T064 follows T013 and gates T018 only.
+
+This appendix adds no task or static dependency and changes no checkbox,
+registration, ownership activation, accepted receipt, or product status.

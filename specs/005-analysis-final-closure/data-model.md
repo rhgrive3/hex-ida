@@ -386,3 +386,29 @@ reinserted, or followed by unrelated prose.
 The maintenance executor records the canonical runtime ephemeral manifest,
 including ignored paths, before and after every gate. The required candidate
 state callback remains an additional assertion for runtime invariants.
+
+## Registration result and T011 supplement identities (inactive successor)
+
+Registration state and independent run result are separate fields. Keep the existing
+`UNREGISTERED`/`REGISTERED` vocabulary; do not add a combined registration/result
+enum. A registered complete oracle may bind a `NONPASS` product result with both
+`semanticPass` and `acceptance` false. Actual product acceptance remains a later
+canonical gate decision.
+
+The T011 supplement authenticates the unchanged base ownership file SHA-256
+`e1e9b14bbc674e27b146d5e35adc2a52854140b0482c6c1014b700b0801b9932`
+and the canonical T011 row SHA-256
+`8d3394f32ae81bed9729592d1b92d57c7587757c8e5d7e5934a5f7145770db3e`.
+The row digest uses UTF-8 JSON with recursively sorted object keys, compact
+separators, preserved array order, and no trailing newline. It covers the complete
+`allowedPaths` and `forbiddenOverlap` row, avoiding an ambiguous prose path count.
+
+The forward record adds only `js/semantics/memoryssa/queries.js` to T011 and binds
+its source preimage/postimage blobs, reviewed handoff head/tree, actual path
+inventory, tests, and the accepted T062 receipt. Append-only applies to governance
+history and the ownership supplement, not to the contents of the query source file.
+
+The required pre-T063 T049 T011 row binds its sequence, `acceptedTaskId=T011`,
+evidence commit/blob/tree, accepted merge commit/tree, checkpoint product identity,
+and receipt digest. It is distinct from the later T049 T063 checkpoint. No value
+may be supplied as a self-described or hash-only placeholder at admission.

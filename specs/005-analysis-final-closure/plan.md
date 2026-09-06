@@ -482,3 +482,26 @@ rolling and independent-shadow proof. E3 appends evidence; P2 adds only its
 separate receipt to the inventory. The next component bridges P2 and runtime
 verification selects G2. Exact-head CI remains mandatory; original handoffs
 and the original T060 activation identity are never rewritten.
+
+## Convergence registration and owner handoff (inactive successor)
+
+The registration transaction follows the accepted exact T061 maintenance receipt.
+It authenticates the predecessor, complete independent oracle content, and forward
+ownership extension through the canonical preflight and component/checkpoint paths.
+Registration remains `REGISTERED`; oracle run `NONPASS` is a separate result and
+cannot satisfy a product checkpoint. Unknown product behavior stays unaccepted.
+
+T011/T017 handoffs precede T063. An accepted T049 row with `acceptedTaskId=T011`
+must bind the T011 query handoff before T063 admission. This is an evidence
+precondition, not a new static dependency on T049. The later accepted T049 T063
+checkpoint is a separate row. T013 follows that T063 checkpoint, and T064 follows
+T013; T064's checkpoint gates T018 only.
+
+The T011 supplement preserves the exact frozen owner row and adds only the query
+path through the effective ownership extension. It does not rewrite the base
+registry or require an append-only product source implementation. All changed
+source blobs, tests, candidate tree, and disjoint component inventories must be
+bound by the reviewed handoff before admission.
+
+The five synchronized documentation appendices are inactive. They change no
+production source, registry, inventory, registration state, or accepted checkpoint.

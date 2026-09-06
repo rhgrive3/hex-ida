@@ -319,3 +319,22 @@ instruction semantics; ABI/type providers own ABI placement/layout; transforms
 retain provenance and invalidation dependencies; runtime evidence never overwrites
 static truth. Malformed input, bounds violations, and non-convergence produce a
 structured rejection or explicit unknown, not exact publication.
+
+## Convergence checkpoint admission (inactive successor)
+
+A T062 receipt certifies complete independent oracle registration. A bound run
+result of `NONPASS` is permitted before implementation and retains
+`semanticPass=false` and `acceptance=false`; it is not a product checkpoint.
+T049 T063/T064 checkpoints require actual product gate PASS and resolution of
+applicable PO-001 through PO-004 findings.
+
+Before T063 admission, require the exact accepted T049 T011 handoff row, including
+sequence, task identity, evidence commit/blob/tree, accepted merge commit/tree,
+checkpoint product identity, and receipt digest. Do not confuse that row with the
+later T049 T063 row or add a static T049 dependency cycle. T064 remains after T013
+and its accepted checkpoint gates T018 only.
+
+Every consumer uses the authenticated base-plus-extension ownership bundle. The
+query path remains T011-owned under its forward supplement; frozen ownership and
+historical task/ledger prefixes remain unchanged. Product source may receive its
+reviewed in-scope correction. No historical receipt or task status is changed here.

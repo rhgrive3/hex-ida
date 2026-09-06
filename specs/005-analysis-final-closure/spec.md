@@ -161,3 +161,29 @@ As a Hex user, I need analysis improvements to increase justified precision with
 - External proof that cannot be produced in this environment remains a real blocker unless an authorized external runner supplies identity-bound evidence; it is never replaced by a weaker proxy.
 - Concurrent unrelated issue work is not mutated by this campaign and is treated as an overlap constraint when it touches owned paths.
 - A pull request is a campaign pull request only after its exact number and ownership role are recorded in `tasks.md`; discovery of an unrelated open pull request does not make it campaign-owned.
+
+## Stage A convergence registration contract (inactive successor)
+
+T062 authenticates a complete independent oracle before registering it. Registration
+uses the existing `REGISTERED` state; an independently bound run may report
+`NONPASS`, `semanticPass=false`, and `acceptance=false` before product implementation.
+A complete oracle must bind its source, fixtures, runner, reviewer, independence,
+cases, commands, and observed result content. Product PASS is not a registration
+prerequisite. T063/T064 acceptance still requires actual product behavior and
+resolution of the applicable PO-001 through PO-004 findings.
+
+The order is T061 accepted maintenance receipt → T062 registration → exact
+T011/T017 handoffs → T063 implementation and accepted checkpoint → T013 handoff
+→ T064 independent behavior/performance checkpoint → T018. T064 does not gate T013.
+
+The unassigned `js/semantics/memoryssa/queries.js` path may be added only to T011
+through an authenticated forward ownership supplement. Historical governance
+prefixes and the frozen registry remain unchanged. This restriction does not make
+product source append-only: the reviewed canonical query implementation may change
+existing functions within the admitted path. T063/T064 cannot acquire that path.
+Canonical query delegation, the global canonical stop, and disjoint MAY proof remain
+required; a separate target-only acceptance path remains prohibited.
+
+This committed draft does not register an oracle, admit a component, activate a
+gate, or change a task status. Activation requires the exact accepted T061 receipt
+and the independently reviewed T062 transaction.
