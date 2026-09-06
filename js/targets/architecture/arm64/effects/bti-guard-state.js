@@ -24,6 +24,14 @@ function deepCopyEvidence(value) {
   return value;
 }
 
+function parseGuardedField(val) {
+  if (val === undefined || val === null) return { present:false };
+  if (val === true || val === 'guarded') return { present:true, kind:'guarded', bool:true };
+  if (val === false || val === 'unguarded') return { present:true, kind:'unguarded', bool:false };
+  if (val === 'unknown') return { present:true, kind:'unknown', bool:null };
+  return { present:true, kind:'malformed', bool:null, raw:val };
+}
+
 export function normalizeArm64BtiGuardedPageState(input = null) {
   if (typeof input === 'boolean') {
     return Object.freeze({
@@ -39,17 +47,43 @@ export function normalizeArm64BtiGuardedPageState(input = null) {
       state:'unknown', mappedPageGuarded:null, source:'not-observed', evidence:null, loaderPolicy:null,
     });
   }
-  const raw = input.mappedPageGuarded ?? input.guarded ?? input.state;
+
+  const fMapped = parseGuardedField(input.mappedPageGuarded);
+  const fGuarded = parseGuardedField(input.guarded);
+  const fGuardedPage = parseGuardedField(input.guardedPage);
+  const fState = parseGuardedField(input.state);
+
+  const presentFields = [fMapped, fGuarded, fGuardedPage, fState].filter((f) => f.present);
+  const hasMalformed = presentFields.some((f) => f.kind === 'malformed');
+  const hasGuarded = presentFields.some((f) => f.kind === 'guarded');
+  const hasUnguarded = presentFields.some((f) => f.kind === 'unguarded');
+
   let state = 'unknown';
   let mappedPageGuarded = null;
-  if (raw === true || raw === 'guarded') { state = 'guarded'; mappedPageGuarded = true; }
-  else if (raw === false || raw === 'unguarded') { state = 'unguarded'; mappedPageGuarded = false; }
+  let conflict = false;
+  let conflictReason = null;
+
+  if (hasMalformed) {
+    conflict = true;
+    conflictReason = 'malformed-guarded-page-state-alias';
+  } else if (hasGuarded && hasUnguarded) {
+    conflict = true;
+    conflictReason = 'conflicting-guarded-page-state-aliases';
+  } else if (hasGuarded) {
+    state = 'guarded';
+    mappedPageGuarded = true;
+  } else if (hasUnguarded) {
+    state = 'unguarded';
+    mappedPageGuarded = false;
+  }
+
   return Object.freeze({
     state,
     mappedPageGuarded,
-    source:String(input.source || input.mappedPageGuardedSource || 'execution-context'),
+    source:String(input.source || input.mappedPageGuardedSource || (conflict ? 'conflicting-execution-context' : 'execution-context')),
     evidence:deepCopyEvidence(input.evidence ?? input.mappingEvidence ?? null),
     loaderPolicy:deepCopyEvidence(input.loaderPolicy ?? input.elfPolicy ?? null),
+    ...(conflict ? { conflict:true, conflictReason } : {}),
   });
 }
 
@@ -293,12 +327,12 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
     completeness:'partial',
     unknownEffects:{
       categories:['control','faults'],
-      reason:'bti-mapped-page-guarded-state-unresolved',
-      detail:{ loaderPolicy:guardState.loaderPolicy },
+      reason:guardState.conflict ? 'bti-mapped-page-guarded-state-conflict' : 'bti-mapped-page-guarded-state-unresolved',
+      detail:{ loaderPolicy:guardState.loaderPolicy, ...(guardState.conflictReason ? { conflictReason:guardState.conflictReason } : {}) },
     },
     metadata:{
       btiGuardedPage:guardState,
-      btiCheck:'conditional-on-unknown-page-guard-state',
+      btiCheck:guardState.conflict ? 'conflicting-page-guard-state' : 'conditional-on-unknown-page-guard-state',
       loaderPolicyDoesNotImplyMappedState:true,
     },
   }));

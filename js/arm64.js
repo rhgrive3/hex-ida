@@ -152,7 +152,7 @@ cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp l
 cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
-cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
+cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi paciaz pacibz autiaz autibz ldraa ldrab', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
@@ -172,7 +172,7 @@ export function categoryOf(mn) {
   const direct = CATEGORY.get(b);
   if (direct) return direct;
   if (ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
-  if (/^b\./.test(b)) return 'flow';
+  if (/^(?:b|bc)\./.test(b)) return 'flow';
   if (/^f/.test(b)) return 'float';
   return '';
 }
@@ -1133,7 +1133,7 @@ HANDLERS.retaa = HANDLERS.ret;
 HANDLERS.retab = HANDLERS.ret;
 
 function condBranch(o, ops, base, addr, c) {
-  const cond = base.slice(2);
+  const cond = base.startsWith('bc.') ? base.slice(3) : base.slice(2);
   const ci = condInfo(cond);
   const at = ops[0] && ops[0].value;
   o.title = J('条件つきジャンプ', 'Conditional branch');
@@ -1604,7 +1604,7 @@ HANDLERS['.byte'] = (o, ops, base, addr, c) => {
 /* ── 名前で拾いきれないものを、接頭辞で拾う ─────────────── */
 
 function familyHandler(base) {
-  if (/^b\.[a-z]{2}$/.test(base)) return condBranch;
+  if (/^(?:b|bc)\.[a-z]{2}$/.test(base)) return condBranch;
   if (/^(braa|brab|braaz|brabz)$/.test(base)) return HANDLERS.br;
   if (/^(blraa|blrab|blraaz|blrabz)$/.test(base)) return HANDLERS.blr;
   if (/^ld/.test(base)) return loadStore(true);
