@@ -317,6 +317,7 @@ export class InvestigationService {
     this.#syncEpoch();
     if (generation === this.cacheGeneration
       && Object.is(epoch, this.cacheEpoch)
+      && Object.is(context?.snapshotId, this.pinSnapshotId)
       && analysisBindingCurrent(this.app, context?.binding)) return;
     const error = new Error('investigation-analysis-binding-changed');
     error.code = 'ANALYSIS_SNAPSHOT_STALE';

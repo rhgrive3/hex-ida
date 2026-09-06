@@ -200,6 +200,75 @@ test('#4062 stale pinpoint completion cannot republish an old snapshot after the
     'new epoch pin identity must remain unchanged after stale completion');
 });
 
+test('#4062 same-epoch stale pinpoint completion cannot republish an inactive snapshot', async () => {
+  const pinStarted = deferred();
+  const pinGate = deferred();
+  const region = { id:'text', exec:true, vmAddr:0n, size:0x100n, section:'__text' };
+  const cls = {
+    name:'Player', instanceSize:0x20, superName:null, methods:[],
+    ivars:[{ name:'hp', offset:0x8, size:4, type:null }],
+  };
+  const fields = {
+    classCount:1,
+    classes:new Map([[cls.name, cls]]),
+    classInfo:(name) => name === cls.name ? cls : null,
+  };
+  const app = basicApp(7);
+  app.fields = fields;
+  app.store = { get:(key) => key === 'regions' ? [region] : null };
+  let accessCalls = 0;
+  app.backend.fieldAccessMany = () => {
+    accessCalls++;
+    if (accessCalls === 1) {
+      pinStarted.resolve();
+      return pinGate.promise;
+    }
+    return Promise.resolve(new Map());
+  };
+  const service = new InvestigationService(app);
+  service.prepareGoal = async (goal) => {
+    const snapshotId = goal.id === 'hp' ? 'snapshot-A' : 'snapshot-B';
+    return {
+      snapshot:{ snapshotId },
+      snapshotId,
+      strings:[],
+      program:null,
+      shapes:null,
+      symbols:null,
+      fields,
+      region,
+      metadata:{ complete:true, reasons:[] },
+      goal,
+      binding:captureAnalysisBinding(app, { fields }),
+      completeness:{ complete:true, reasons:[] },
+    };
+  };
+
+  const staleGoal = { id:'hp', text:'hp', expects:{ numeric:true, store:true, compare:true } };
+  const stale = service.investigate(staleGoal);
+  await pinStarted.promise;
+
+  const currentGoal = { id:'current-no-match', text:'definitely no field match', expects:{} };
+  const current = await service.investigate(currentGoal);
+  const staleKey = 'snapshot-A:hp:hp';
+  const currentKey = 'snapshot-B:current-no-match:definitely no field match';
+  assert.equal(app.backend.gen, 7, 'same-epoch interleave must not rely on epoch invalidation');
+  assert.equal(service.pinCache.has(currentKey), true,
+    'snapshot B must publish before snapshot A pinpoint resumes');
+
+  pinGate.resolve(new Map());
+  await assert.rejects(stale, (error) => error?.code === 'ANALYSIS_SNAPSHOT_STALE',
+    'inactive snapshot A must fail before republishing into snapshot B cache');
+  assert.equal(service.pinCache.has(staleKey), false,
+    'inactive snapshot A key must not be republished in the same epoch');
+  assert.equal(service.pinCache.has(currentKey), true,
+    'stale A completion must not evict the active snapshot B pin');
+  assert.strictEqual(service.pinCache.get(currentKey), current.pin,
+    'active snapshot B pin identity must remain unchanged after A resumes');
+  assert.ok([...service.pinCache.keys()].every((key) => key.startsWith('snapshot-B:')),
+    'pin cache must contain only active snapshot B identities');
+});
+
 test('#4062 pin cache releases prior snapshots while preserving entries within the active snapshot', async () => {
   const app = basicApp(7);
   const service = new InvestigationService(app);
