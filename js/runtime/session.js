@@ -30,7 +30,7 @@ export class DebugSession {
     this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
-    this.refreshErrors={modules:null,threads:null}; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    this.refreshErrors={modules:null,threads:null}; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null;
   }
   async connect(options = {}) {
     if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
@@ -108,12 +108,18 @@ export class DebugSession {
   }
   async disconnect() {
     if(this.closed)return;
-    this.closed=true; this.cancelAll('disconnected'); if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} } this._unsubscribe=null;
-    try{await this.adapter.disconnect();}finally{
-      this.connected=false;
-      const onClosed=this._onClosed; this._onClosed=null;
-      if(onClosed) { try { onClosed(this); } catch {} }
+    if(this._disconnecting)return this._disconnecting;
+    this.cancelAll('disconnected');
+    const attempt=(async()=>{ await this.adapter.disconnect(); })();
+    this._disconnecting=attempt;
+    try{
+      await attempt;
+      if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      this._unsubscribe=null; this.connected=false; this.closed=true;
     }
+    finally{ if(this._disconnecting===attempt) this._disconnecting=null; }
+    const onClosed=this._onClosed; this._onClosed=null;
+    if(onClosed) { try { onClosed(this); } catch {} }
   }
 }
 
@@ -139,7 +145,8 @@ export class DebugSessionManager {
   }
   async close(id){
     const s=this.get(id);if(!s)return false;
-    try{await s.disconnect();}finally{this._sessionClosed(s);}
+    await s.disconnect();
+    this._sessionClosed(s);
     return true;
   }
 }

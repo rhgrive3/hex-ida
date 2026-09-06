@@ -83,6 +83,7 @@ export class RuntimeProviderSession {
     this.closed = false;
     this.controllers = new Set();
     this._close = typeof close === 'function' ? close : null;
+    this._closing = null;
   }
 
   setState(next) {
@@ -118,13 +119,17 @@ export class RuntimeProviderSession {
 
   async close() {
     if (this.closed) return;
+    if (this._closing) return this._closing;
     this.setState('closing');
     this.cancelAll('runtime-session-closing');
-    try { if (this._close) await this._close(this); }
-    finally {
+    const attempt = (async () => {
+      if (this._close) await this._close(this);
       this.closed = true;
       this.state = 'closed';
-    }
+    })();
+    this._closing = attempt;
+    try { return await attempt; }
+    finally { if (this._closing === attempt) this._closing = null; }
   }
 }
 
@@ -261,12 +266,17 @@ export class DebugAdapterRuntimeProvider {
       Number.isSafeInteger(adapterEpoch) && adapterEpoch >= 0 ? adapterEpoch + 1 : 1,
     );
     let session;
+    let disconnectPending = false;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        try { if (this.adapter.connected) await this.adapter.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (disconnectPending || this.adapter.connected) {
+          disconnectPending = true;
+          await this.adapter.disconnect();
+          disconnectPending = false;
+        }
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     session.epoch = nextSessionEpoch;
