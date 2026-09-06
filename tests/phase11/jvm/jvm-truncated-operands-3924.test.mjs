@@ -4,14 +4,14 @@ import { liftJvmMethod as liftJvmMethodCore } from '../../../js/managed/jvm/lift
 
 const CODE_OFFSET = 0x180;
 
-function makeClass(bytes, { offset = CODE_OFFSET } = {}) {
+function makeClass(bytes, { offset = CODE_OFFSET, omitOffset = false } = {}) {
   const code = {
     maxStack: 4,
     maxLocals: 2,
     bytecode: Uint8Array.from(bytes),
     exceptionTable: [],
   };
-  if (offset !== undefined) code.offset = offset;
+  if (!omitOffset) code.offset = offset;
   return {
     moduleId: 'managed-mod:test:jvm',
     vmSpecEdition: 'java-se-17',
@@ -75,9 +75,9 @@ assertMalformed([0xb9, 0x00, 0x01, 0x01], 0xb9); // invokeinterface
   assert.equal(fn.bundles[2].completeness, 'exact');
 }
 
-// The core lifter follows the wrapper's default when Code.offset is omitted.
+// The core lifter defaults an omitted Code.offset to zero.
 {
-  const fn = liftJvmMethodCore(0, makeClass([0xb1], { offset: undefined }));
+  const fn = liftJvmMethodCore(0, makeClass([0xb1], { omitOffset: true }));
   assert.equal(fn.bundles[0].origin.byteRanges[0].start, '0');
   assert.equal(fn.bundles[0].origin.byteRanges[0].end, '1');
 }
