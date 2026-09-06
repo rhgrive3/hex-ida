@@ -20,17 +20,22 @@ function assertFence(decoded, { predecessor, successor, fenceMode }) {
   assert.equal(decoded.fenceMode, fenceMode);
 }
 
+test('RISC-V FENCE preserves canonical normal fence semantics', () => {
+  assertFence(decodeWord(0x0330000f), {
+    predecessor:0b0011,
+    successor:0b0011,
+    fenceMode:0,
+  });
+});
+
 test('RISC-V FENCE ignores reserved rd and rs1 fields for forward compatibility', () => {
-  assertFence(decodeWord(0x0330008f), {
-    predecessor:0b0011,
-    successor:0b0011,
-    fenceMode:0,
-  });
-  assertFence(decodeWord(0x0330800f), {
-    predecessor:0b0011,
-    successor:0b0011,
-    fenceMode:0,
-  });
+  for (const word of [0x0330008f, 0x0330800f, 0x0330808f]) {
+    assertFence(decodeWord(word), {
+      predecessor:0b0011,
+      successor:0b0011,
+      fenceMode:0,
+    });
+  }
 });
 
 test('RISC-V FENCE normalizes unsupported fm values to ordinary fence semantics', () => {
