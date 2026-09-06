@@ -681,6 +681,11 @@ function rawSnapshotMatches(entry, workBudget) {
             || observed.enumerable !== (expectedFlags === 3)) return false;
         const expectedValue = descriptorValues[descriptorIndex];
         const observedValue = observed.value;
+        // Array length is the one non-enumerable descriptor admitted by
+        // capture. Its own key remains present when a sparse array grows or
+        // shrinks without changing any indexed own key, so the descriptor
+        // value itself is part of the freshness witness.
+        if (expectedFlags !== 3 && !Object.is(expectedValue, observedValue)) return false;
         // Semantic capture rejects NaN, so strict equality covers the common
         // primitive/reference case. Retain Object.is only for signed zero and
         // the unequal fallback, preserving the exact value contract cheaply.

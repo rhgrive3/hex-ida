@@ -194,6 +194,18 @@ test('T013 raw snapshot witness rechecks mutable fields and hidden proxy fields'
     get() { return 1; }, enumerable:true, configurable:true,
   });
   assert.throws(() => capturePhase8SemanticSnapshot(accessorIr), /identity-unsupported-semantic-descriptor/);
+
+  // Sparse arrays can change length while retaining the same own-key domain
+  // (`length` only). The non-enumerable length descriptor is still semantic
+  // snapshot input and must invalidate the cached graph.
+  const sparse = [];
+  sparse.length = 4;
+  const sparseIr = { extra:sparse };
+  const sparseFirst = capturePhase8SemanticSnapshot(sparseIr);
+  sparse.length = 8;
+  const sparseSecond = capturePhase8SemanticSnapshot(sparseIr);
+  assert.notEqual(sparseSecond, sparseFirst);
+  assert.equal(sparseSecond.extra.length, 8);
 });
 
 test('T013 transactions consume the captured graph, not a mutable producer graph', () => {
