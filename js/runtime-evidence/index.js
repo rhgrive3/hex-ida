@@ -19,7 +19,13 @@ function runtimeEvidenceGroupKey(item) {
     const raw = provenance.observationGroup ?? provenance.group;
     if (raw != null) return typeof raw === 'string' && raw.length > 0 && raw.trim() === raw ? raw : null;
   }
-  return item && item.id || Symbol('evidence');
+  // No-group fallback accepts only canonical primitive non-empty strings as
+  // group authority. Malformed ids (arrays, objects, padded/empty strings)
+  // return null so the caller counts them as ignored evidence instead of
+  // minting one independence group per distinct Array instance (or worse,
+  // collapsing distinct instances through String() coercion).
+  const id = item && item.id;
+  return typeof id === 'string' && id.length > 0 && id.trim() === id ? id : null;
 }
 function runtimeEvidenceId(value, fallback) {
   if (value == null) return fallback;

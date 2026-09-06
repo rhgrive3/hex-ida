@@ -55,3 +55,28 @@ test('P10.9 empty or padded explicit string ids fail closed instead of falling b
     );
   }
 });
+
+test('P10.9 malformed no-group evidence ids are ignored, never double-counted', async () => {
+  const { fuseStaticDynamic } = await import('../../../js/runtime-evidence/index.js');
+  const common = {
+    source: 'runtime',
+    binaryHash: 'hash-4327',
+    function: '0x1000',
+    verdict: 'supported',
+    confidence: 0.9,
+  };
+  // Two distinct Array instances stringify to the same text: without a
+  // canonical-primitive gate they would either collapse into one group or
+  // mint two independence groups and double-count support.
+  const result = fuseStaticDynamic(
+    { binaryHash: 'hash-4327', functionAddress: '0x1000', confidence: 0.5 },
+    [
+      { ...common, id: ['same'], provenance: {} },
+      { ...common, id: ['same'], provenance: {} },
+    ],
+  );
+  assert.equal(result.support, 0);
+  assert.equal(result.contradictions, 0);
+  assert.equal(result.runtimeGroups, 0);
+  assert.equal(result.ignoredEvidence, 2);
+});
