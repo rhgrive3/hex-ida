@@ -5,6 +5,7 @@ importScripts('./capstone-structured.js', '../../../../capstone.js');
 const MAX_DECODE_BYTES = 1024 * 1024;
 let decoderPromise = null;
 let semanticModulePromise = null;
+let provenanceModulePromise = null;
 let processing = false;
 const queue = [];
 const cancelledIds = new Set();
@@ -97,6 +98,8 @@ async function revalidateAndAnalyze(message) {
   }
   const serialized = serializedRows(message.input);
   const { M, handle, outputPointer } = await decoder();
+  provenanceModulePromise ||= import('./runtime-provenance.js');
+  const { markReceiverRevalidatedX86Row } = await provenanceModulePromise;
   if (cancelledIds.has(message.id)) return null;
   const buffer = M._malloc(15);
   const instructions = [];
@@ -124,7 +127,7 @@ async function revalidateAndAnalyze(message) {
         if (!sameBytes(decoded.rawBytes, expected.bytes)) {
           throw new Error('x86-semantic-function-decoder-revalidation-byte-mismatch');
         }
-        instructions.push(decoded);
+        instructions.push(markReceiverRevalidatedX86Row(decoded));
       } finally {
         if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
       }
