@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/analysis-scheduler.js';
+import { SchedulerCycleError, SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/analysis-scheduler.js';
 import { descriptor, scheduler } from './helpers.mjs';
 
 function nodeRequest(desc, dependencies=[], counter=null) {
@@ -118,6 +118,32 @@ function nodeRequest(desc, dependencies=[], counter=null) {
   await assert.rejects(s.request(request),(error)=>error?.code==='artifact-descriptor-noncanonical');
   assert.equal(s.stats().producerInvocations,0);
   assert.equal(s.stats().dagEdges,0);
+}
+
+// A canonical descriptor cannot authorize an undeclared self-dependency.
+{
+  const {scheduler:s}=scheduler();
+  const self=descriptor('canonical-self-cycle');
+  const request=nodeRequest(self);
+  request.dependencies=[request];
+  await assert.rejects(s.request(request),(error)=>error instanceof SchedulerDependencyIdentityError);
+  assert.equal(s.stats().producerInvocations,0);
+  assert.equal(s.stats().dagEdges,0);
+}
+
+// The DAG cycle guard remains active for canonical requests if a retained
+// graph edge would close a cycle. Seed that corrupt prior edge explicitly;
+// do not manufacture an unbranded descriptor to reach the internal guard.
+{
+  const {scheduler:s}=scheduler();
+  const a=descriptor('retained-cycle-a');
+  const b=descriptor('retained-cycle-b',[a]);
+  s.dag.set(a.artifactId,Object.freeze([b.artifactId]));
+  await assert.rejects(s.request(nodeRequest(b,[nodeRequest(a)])),(error)=>
+    error instanceof SchedulerCycleError&&error.code==='artifact-dependency-cycle'
+    &&error.path.join(' -> ')===`${b.artifactId} -> ${a.artifactId} -> ${b.artifactId}`);
+  assert.equal(s.stats().producerInvocations,0);
+  assert.ok(s.stats().cycleChecks>=1);
 }
 
 // Dependency producer failure is distinct and blocks parent production.
