@@ -154,6 +154,13 @@ await check('dev-context-packet-dependency-boundary', () => {
     ['./side-effect.js', './re-export.js'],
   );
   assert.equal(parser.hasDynamicImport("void import/* comment */('./dynamic.js')"), true);
+  for (const separator of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    assert.equal(
+      parser.hasDynamicImport(`// benign${separator}void import('./dynamic.js')`),
+      true,
+      `dynamic import after ${JSON.stringify(separator)} must remain visible`,
+    );
+  }
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
