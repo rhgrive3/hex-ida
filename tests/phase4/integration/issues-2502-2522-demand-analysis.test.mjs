@@ -6,6 +6,7 @@ import { parseMachOSource, clearMachOSourceCache } from '../../../js/binary/inde
 import { makeFatMachOFixture } from '../../universal-binary.mjs';
 import { __demandDrivenInternalsForTests } from '../../../js/analysis/demand-driven-runtime.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
+import { createSearchPager, createSearchRunLifecycle } from '../../../js/ui/panels/search.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const source = (name) => fs.readFileSync(path.join(root, name), 'utf8');
@@ -88,8 +89,10 @@ function testCanonicalWiring() {
     'empty and filtered Product function views must share the canonical query path');
 
   const search = source('js/ui/panels/search.js');
-  assert.match(search, /analysisQueries\.search/, 'standard Search panel must use AnalysisQueryAPI.search');
-  assert.match(search, /runController\?\.abort\('search-sheet-closed'\)/, 'Search close must abort its consumer');
+  assert.match(search, /createSearchPager\(app\.analysisQueries,snapshot,query\)/,
+    'standard Search panel must inject AnalysisQueryAPI into its pager');
+  assert.match(search, /onClose:\(\)\s*=>\s*runs\.cancel\('search-sheet-closed'\)/,
+    'Search close must cancel the active consumer lifecycle');
 
   for (const name of [
     'patch-product-explorer-2505.yml',
@@ -102,8 +105,38 @@ function testCanonicalWiring() {
   }
 }
 
+async function testSearchPanelQueryAndCancellation() {
+  const calls = [];
+  const queries = {
+    async search(...args) {
+      calls.push(args);
+      return { value:[{ addr:1n, text:'hit' }], completeness:'complete', page:{ next:null } };
+    },
+  };
+  const snapshot = Object.freeze({ snapshotId:'search-regression' });
+  const query = Object.freeze({ regionId:'r', kind:'text', query:'needle', from:0 });
+  const pager = createSearchPager(queries, snapshot, query);
+  const signal = new AbortController().signal;
+  const page = await pager.next({ signal });
+  assert.equal(page.done, true);
+  assert.equal(page.completeness, 'complete');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], snapshot);
+  assert.equal(calls[0][1], query);
+  assert.deepEqual(calls[0][2], { offset:0, limit:1000 });
+  assert.equal(calls[0][3].signal, signal);
+
+  const runs = createSearchRunLifecycle();
+  const controller = runs.start();
+  assert.ok(controller);
+  assert.equal(runs.cancel('search-sheet-closed'), controller);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason, 'search-sheet-closed');
+}
+
 await testMachOSelectedSliceSingleFlight();
 testRecognitionInputIdentity();
 testInvestigationDependencyPlan();
 testCanonicalWiring();
+await testSearchPanelQueryAndCancellation();
 console.log('issues-2502-2522-demand-analysis: PASS');
