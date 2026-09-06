@@ -1,4 +1,4 @@
-import { x86RegisterDescriptor } from '../architecture/x86_64/registers.js';
+import { normalizeX86RegisterName, x86RegisterDescriptor } from '../architecture/x86_64/registers.js';
 
 /*
  * Shared ABI evidence contract.
@@ -700,10 +700,28 @@ function sameCanonicalStackMirror(left, right) {
     && left?.canonicalStackMirror === true;
 }
 
+function decoderOnlyX86PhysicalDescriptor(register) {
+  const normalized = normalizeX86RegisterName(register);
+  const match = /^(xmm|ymm)(1[6-9]|2[0-9]|3[01])$/.exec(normalized);
+  if (!match) return null;
+  const index = Number(match[2]);
+  return Object.freeze({
+    physicalId:`ymm${index}`,
+    physicalBits:256,
+    lsb:0,
+    viewBits:match[1] === 'xmm' ? 128 : 256,
+  });
+}
+
 function registerPhysicalSpans(register, laneBits = null, laneOffsetBits = 0) {
   if (typeof register !== 'string' || !register.trim()) return [];
   const rawName = register.trim();
-  const descriptor = x86RegisterDescriptor(rawName);
+  // XMM/YMM16-31 intentionally remain decoder-only in the ISA effect model,
+  // but ABI evidence still has to reject overlapping claims against their
+  // physical YMM/ZMM storage.  Keep that physical-only authority local to the
+  // trust-boundary validator instead of re-exposing those views as modeled
+  // architectural registers.
+  const descriptor = x86RegisterDescriptor(rawName) || decoderOnlyX86PhysicalDescriptor(rawName);
   if (!descriptor || descriptor.dynamicView) {
     return [{ physicalId:`raw:${rawName}`, start:0, end:1 }];
   }

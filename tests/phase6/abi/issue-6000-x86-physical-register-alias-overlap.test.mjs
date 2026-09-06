@@ -18,6 +18,10 @@ for (const [left, right] of [
   ['xmm0', 'zmm0'],
   ['ymm0', 'zmm0'],
   ['rax', 'eax'],
+  ['xmm16', 'ymm16'],
+  ['xmm16', 'zmm16'],
+  ['ymm16', 'zmm16'],
+  ['%XMM31', '%ymm31'],
 ]) {
   assert.equal(abiPhysicalIntervalsValid({
     arguments:[scalarRegister(0, left), scalarRegister(1, right)],
@@ -29,6 +33,11 @@ assert.equal(abiPhysicalIntervalsValid({
   arguments:[scalarRegister(0, 'xmm0', 128), scalarRegister(1, 'xmm1', 128)],
   stackArguments:[],
 }), true, 'independent XMM physical registers remain valid');
+
+assert.equal(abiPhysicalIntervalsValid({
+  arguments:[scalarRegister(0, 'xmm16', 128), scalarRegister(1, 'ymm17', 256)],
+  stackArguments:[],
+}), true, 'independent decoder-only high vector registers remain valid');
 
 assert.equal(abiPhysicalIntervalsValid({
   arguments:[scalarRegister(0, 'x0'), scalarRegister(1, 'x1')],
