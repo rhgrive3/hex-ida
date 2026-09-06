@@ -6,8 +6,23 @@ const MASK64 = 0xffffffffffffffffn;
 
 function optionalProgressCallback(value) {
   if (typeof value !== 'function') return null;
-  const source = Function.prototype.toString.call(value);
-  return /^\s*class(?:\s|\{)/.test(source) ? null : value;
+  try {
+    const prototype = Reflect.getOwnPropertyDescriptor(value, 'prototype');
+    let constructible = true;
+    try {
+      Reflect.construct(Function, [], value);
+    } catch {
+      constructible = false;
+    }
+    // Avoid invoking constructor-only callbacks just to classify them: that would
+    // either run user code early or force us to swallow real callback exceptions.
+    // Ordinary functions have a writable own prototype; non-constructible
+    // functions (arrows/methods) are safe to invoke directly.
+    if (constructible && (!prototype || prototype.writable !== true)) return null;
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 function throwIfAborted(signal) {

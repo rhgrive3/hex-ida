@@ -8,7 +8,13 @@ const expectedFnv = await hashByteSource(source(), { chunkSize: 2 });
 const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 
 class ProgressCallback {}
-for (const onProgress of [undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'), ProgressCallback, class {}]) {
+class WrappedProgressCallback {}
+const proxyWrappedClass = new Proxy(WrappedProgressCallback, {});
+const boundClass = WrappedProgressCallback.bind(null);
+for (const onProgress of [
+  undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'),
+  ProgressCallback, class {}, proxyWrappedClass, boundClass,
+]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
 }
@@ -47,6 +53,15 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
   options.onProgress.call = null;
   assert.equal(await hash(source(), options), hash === hashByteSource ? expectedFnv : expectedTree);
   assert.deepEqual(events, expectedProgress);
+
+  const proxiedEvents = [];
+  const proxiedOptions = { chunkSize: 2 };
+  proxiedOptions.onProgress = new Proxy(function onProgress(value) {
+    assert.equal(this, proxiedOptions);
+    proxiedEvents.push(value);
+  }, {});
+  assert.equal(await hash(source(), proxiedOptions), hash === hashByteSource ? expectedFnv : expectedTree);
+  assert.deepEqual(proxiedEvents, expectedProgress, 'ordinary callable proxies remain valid callbacks');
 
   const callbackError = new Error('progress callback failure');
   await assert.rejects(
