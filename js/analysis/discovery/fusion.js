@@ -223,10 +223,6 @@ function fuseExtent(evidence) {
  */
 export function fuseFunctionCandidates(evidence, options = {}) {
   if (!Array.isArray(evidence)) throw new TypeError('discovery-fusion-evidence-invalid');
-  // Validate and canonicalize before sorting. Comparators are not validation
-  // boundaries: malformed plugin records must fail closed deterministically
-  // instead of invoking methods on attacker-controlled field shapes.
-  const canonical = evidence.map((item) => canonicalEvidence(item));
   // Budget values are analysis-coverage authorities. Only primitive positive
   // safe-integer numbers may define one; structured values must not coerce via
   // the comparison operators' ToNumber (['1'] -> 1, true -> 1).
@@ -254,6 +250,10 @@ export function fuseFunctionCandidates(evidence, options = {}) {
     return { candidates: [], status: status('partial', 'cancelled') };
   }
 
+  // Validate and canonicalize before sorting. Comparators are not validation
+  // boundaries: malformed plugin records must fail closed deterministically
+  // instead of invoking methods on attacker-controlled field shapes.
+  const canonical = evidence.map((item) => canonicalEvidence(item));
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {
