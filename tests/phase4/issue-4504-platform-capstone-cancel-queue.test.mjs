@@ -134,6 +134,7 @@ async function waitFor(predicate, message) {
   // B(id=7) arrives. The bare id cannot address a generation, so B must be
   // rejected at entry instead of queueing behind A where a cancel for one
   // generation would hit the other.
+  // Rejection keeps the subsequent bare cancellation unambiguous: only A is live.
   const worker = createWorkerHarness();
 
   worker.send(request(7)); // A becomes active while module init is deferred
