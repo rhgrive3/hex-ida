@@ -17,6 +17,12 @@ function selectorAddressKey(address) {
   return /^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? BigInt(text).toString() : null;
 }
 
+function isCallableResolverHook(value) {
+  if (typeof value !== 'function') return false;
+  try { return !/^class(?:\s|\{)/.test(Function.prototype.toString.call(value)); }
+  catch { return false; }
+}
+
 export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] } = {}) {
   const byAddress = new Map();
   const bySelector = new Map();
@@ -59,13 +65,13 @@ export function resolveSelectorStub({ address, symbol = null, symbolFor = null, 
     if (old) { old.confidence = Math.max(old.confidence, confidence); old.sources.push(source); }
     else candidates.push({ selector, confidence, sources: [source] });
   };
-  const sym = symbol || (typeof symbolFor === 'function' && address != null ? symbolFor(address) : null);
+  const sym = symbol || (isCallableResolverHook(symbolFor) && address != null ? symbolFor(address) : null);
   add(selectorFromSymbol(sym), 'stub symbol', 0.99);
   const addressKey = selectorAddressKey(address);
   if (selectorIndex && addressKey != null) {
     for (const e of selectorIndex.byAddress.get(addressKey) || []) add(e.selector, e.source, e.source === 'message-stub' ? 0.96 : 0.9);
   }
-  if (typeof selectorFor === 'function' && address != null) add(selectorFor(address), 'selector resolver', 0.9);
+  if (isCallableResolverHook(selectorFor) && address != null) add(selectorFor(address), 'selector resolver', 0.9);
   candidates.sort((a, b) => b.confidence - a.confidence || a.selector.localeCompare(b.selector));
   return {
     address: address ?? null,

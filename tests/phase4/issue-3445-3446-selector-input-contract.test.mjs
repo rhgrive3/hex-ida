@@ -15,9 +15,20 @@ assert.equal(validIndex.count, 3);
 assert.equal(resolveSelectorStub({ address: 16, selectorIndex: validIndex }).selector, 'indexed:');
 assert.equal(resolveSelectorStub({ address: 32, selectorIndex: validIndex }).selector, 'stubbed:');
 assert.equal(resolveSelectorStub({ address: 48, selectorIndex: validIndex }).selector, 'fixed:');
+const mixedIndex = buildSelectorIndex({
+  selectorRefs: {},
+  stubs: [{ addr: 96, selector: 'mixedStub:' }],
+  fixups: [{ addr: 112, selector: 'mixedFixup:' }],
+});
+assert.equal(mixedIndex.count, 2);
+assert.equal(resolveSelectorStub({ address: 96, selectorIndex: mixedIndex }).selector, 'mixedStub:');
+assert.equal(resolveSelectorStub({ address: 112, selectorIndex: mixedIndex }).selector, 'mixedFixup:');
 const fallback = resolveSelectorStub({ address: 16, symbolFor: true, selectorFor: {}, selectorIndex: validIndex });
 assert.equal(fallback.selector, 'indexed:');
 assert.equal(fallback.ambiguous, false);
+class InvalidResolverHook {}
+assert.equal(resolveSelectorStub({ address: 64, symbolFor: InvalidResolverHook }).selector, null);
+assert.equal(resolveSelectorStub({ address: 80, selectorFor: InvalidResolverHook }).selector, null);
 let symbolCalls = 0;
 const symbolHook = resolveSelectorStub({ address: 64, symbolFor(address) { symbolCalls++; assert.equal(address, 64); return '_objc_msgSend$symbolHook:'; } });
 assert.equal(symbolCalls, 1);
