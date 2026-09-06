@@ -88,8 +88,12 @@ function testCanonicalWiring() {
     'empty and filtered Product function views must share the canonical query path');
 
   const search = source('js/ui/panels/search.js');
-  assert.match(search, /analysisQueries\.search/, 'standard Search panel must use AnalysisQueryAPI.search');
-  assert.match(search, /runController\?\.abort\('search-sheet-closed'\)/, 'Search close must abort its consumer');
+  assert.match(search, /const response = await queries\.search\(snapshot, query/,
+    'Search pager must issue the canonical AnalysisQueryAPI.search call');
+  assert.match(search, /createSearchPager\(app\.analysisQueries,snapshot,query\)/,
+    'standard Search panel must bind the pager to app.analysisQueries');
+  assert.match(search, /runs\.cancel\('search-sheet-closed'\)/,
+    'Search close must cancel its consumer through the owned lifecycle');
 
   for (const name of [
     'patch-product-explorer-2505.yml',
