@@ -13,7 +13,7 @@
 import { h, uiButton } from '../../ui/primitives.js';
 import { menu } from '../../ui.js';
 import { conversationTitle } from './conversations.js';
-import { findProvider, selectionForProvider } from './model-picker.js';
+import { findProvider, selectionForModel, selectionForProvider } from './model-picker.js';
 
 const MAX_LISTED = 10;
 
@@ -122,7 +122,7 @@ export function openModelMenu({ button, session, capabilities, ja = true, onChan
       const note = model.available === false ? (ja ? '（利用不可）' : ' (unavailable)') : '';
       items.push({
         label: (isCurrent ? '✓ ' : '') + model.label + note,
-        action: () => { session.setSelection({ provider: provider.id, model: model.id }); onChange(); },
+        action: () => { session.setSelection(selectionForModel(capabilities, provider.id, model.id, selection)); onChange(); },
       });
     }
   }

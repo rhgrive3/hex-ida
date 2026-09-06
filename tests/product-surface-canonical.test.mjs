@@ -147,3 +147,89 @@ test('classification query joins global recognition with semantic refinement', a
   assert.ok(result.value.evidence.includes('state-writes'));
   assert.equal(result.value.refinement.from, 'UNKNOWN');
 });
+
+test('claims reject a never-bound stale report instead of rebinding it to the current snapshot', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }], truncated:false };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S2', analysisEpoch:2 }) },
+    autoReport:{ report:reportS1, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const snapshotS2 = await query.snapshot();
+  const result = await query.claims(snapshotS2, {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'unsupported');
+  assert.deepEqual(result.value, []);
+  assert.equal(result.status.reason, 'claim-report-snapshot-mismatch');
+});
+
+test('claims reject when only the wrapper snapshot identity disagrees', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }] };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S2', analysisEpoch:2 }) },
+    autoReport:{ report:{ findings:reportS1.findings }, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.claims(await query.snapshot(), {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'unsupported');
+  assert.deepEqual(result.value, []);
+});
+
+test('claims still serve a report whose identity matches the current snapshot', async () => {
+  const reportS1 = { snapshotId:'S1', findings:[{ id:'old', title:'S1 finding', verdict:'confirmed' }] };
+  const app = baseApp({
+    analysisQueries:{ snapshot:async () => ({ snapshotId:'S1', analysisEpoch:1 }) },
+    autoReport:{ report:reportS1, snapshotId:'S1' },
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.claims(await query.snapshot(), {}, { offset:0, limit:20 });
+  assert.equal(result.completeness, 'complete');
+  assert.equal(result.value.length, 1);
+  assert.equal(result.value[0].snapshotId, 'S1');
+});
+
+test('string query ignores a non-function progress observer instead of throwing', async () => {
+  const regions = [{ id:'r1', section:'__cstring', size:16n, cstrings:true }];
+  const seen = [];
+  const app = baseApp({
+    store:store({ sliceIndex:0, regions, currentRegion:regions[0], architecture:'arm64' }),
+    backend:{
+      gen:0,
+      strings(_request, onProgress) {
+        seen.push(typeof onProgress);
+        if (typeof onProgress === 'function') onProgress({ done:1, all:1 });
+        return Promise.resolve({ complete:true, scannedBytes:4, results:[{ addr:0n, text:'test' }] });
+      },
+    },
+  });
+  const query = createProductSurfaceQueries(app);
+  for (const observer of [true, {}, [], 'progress', 1]) {
+    const result = await query.strings(SNAPSHOT, {}, { offset:0, limit:20 }, { onProgress:observer });
+    assert.equal(result.value.length, 1, `observer ${String(observer)} must not fail the scan`);
+  }
+  assert.ok(seen.every((kind) => kind !== 'function'), 'no callback may be built from a non-function');
+  const fresh = baseApp({
+    store:store({ sliceIndex:0, regions, currentRegion:regions[0], architecture:'arm64' }),
+    backend:{
+      gen:0,
+      strings(_request, onProgress) {
+        seen.push(typeof onProgress);
+        if (typeof onProgress === 'function') onProgress({ done:1, all:1 });
+        return Promise.resolve({ complete:true, scannedBytes:4, results:[{ addr:0n, text:'test' }] });
+      },
+    },
+  });
+  const withFn = await createProductSurfaceQueries(fresh).strings(SNAPSHOT, {}, { offset:0, limit:20 }, { onProgress:() => {} });
+  assert.equal(withFn.value.length, 1);
+  assert.ok(seen.includes('function'), 'a real function observer is still wired through');
+});
+
+test('classification never joins a structured recognition address to a function', async () => {
+  const app = baseApp({
+    recognition:{ records:[{ address:['4096'], classification:'PURCHASE', confidence:1, evidence:['forged'] }] },
+    analyzeFunctionAt:async () => null,
+  });
+  const query = createProductSurfaceQueries(app);
+  const result = await query.classification(SNAPSHOT, 4096n);
+  assert.equal(result.value.base, null);
+  assert.equal(result.value.classification, 'UNKNOWN');
+});

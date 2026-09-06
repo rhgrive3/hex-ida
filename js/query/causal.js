@@ -95,7 +95,18 @@ export function functionPaths(program, from, to, opts) {
   const maxPaths = boundedOption(opts && opts.maxPaths, 8, 1, 32);
   const maxVisited = boundedOption(opts && opts.maxVisited, 10000, 16, 20000);
   const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
-  if (!program || from == null || to == null) return result;
+  if (!program) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['program-unavailable'];
+    return result;
+  }
+  if (from == null || to == null) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['invalid-endpoint'];
+    return result;
+  }
 
   const reasons = new Set();
   const q = [[from]];
@@ -114,9 +125,17 @@ export function functionPaths(program, from, to, opts) {
       reasons.add('function-range-error');
       range = null;
     }
+    // Unknown end means "unknown body", never "from here to EOF" — the same
+    // contract rank.js applies. Callee evidence is valid only for an exact,
+    // bounded containing function; expanding an unbounded head would claim
+    // later functions' call sites as this function's callees (issue #6308).
+    if (!range || range.end == null) {
+      reasons.add('function-range-unknown');
+      continue;
+    }
     let callees = [];
     try {
-      callees = program.calleesOf(head, range && range.end, 201) || [];
+      callees = program.calleesOf(head, range.end, 201) || [];
     } catch {
       reasons.add('callee-query-error');
       callees = [];
