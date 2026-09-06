@@ -96,6 +96,7 @@ export async function executeTurn(input = {}, options = {}) {
       try {
         ensureRunning(signal, started, turnTimeoutMs);
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
@@ -104,6 +105,7 @@ export async function executeTurn(input = {}, options = {}) {
             isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = this.evidenceStore.ingestPlan(plan);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
@@ -203,11 +205,17 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // Live-binding violations must never become a fallback decision.
+        // The inner catch runs caller-supplied onActivity synchronously, so a
+        // drift detected at the planner boundary could otherwise be masked by
+        // restoring the bindings before the final guard. Latch fail-closed.
+        if (normalized.type === 'scope_violation') throw normalized;
         limitReason = normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
 
+      assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
       const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
       await this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer });
