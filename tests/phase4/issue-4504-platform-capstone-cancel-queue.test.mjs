@@ -63,6 +63,7 @@ function createWorkerHarness() {
   return {
     posts,
     resolveModule() { moduleReady.resolve(fakeCapstoneModule()); },
+    rejectModule(error = new Error('module-init-failed')) { moduleReady.reject(error); },
     send(data) { self.onmessage({ data }); },
   };
 }
@@ -167,6 +168,33 @@ async function waitFor(predicate, message) {
     () => worker.posts.some((message) => message.ok === true && message.id === 7),
     'id reuse after settle must remain valid',
   );
+}
+
+{
+  // Rejection must release the live-id generation exactly like successful or
+  // cancelled decode completion. MCapstone stays rejected in this harness, so
+  // both requests fail initialization; the second must fail for initialization,
+  // not because the first request left a duplicate-live-id marker behind.
+  const worker = createWorkerHarness();
+  worker.send(request(23));
+  worker.rejectModule();
+  await waitFor(
+    () => worker.posts.length === 1,
+    'module initialization rejection must settle the first request',
+  );
+  assert.equal(worker.posts[0].id, 23);
+  assert.equal(worker.posts[0].ok, false);
+  assert.match(worker.posts[0].error || '', /Capstone disassembler initialization/);
+
+  worker.send(request(23));
+  await waitFor(
+    () => worker.posts.length === 2,
+    'request id must be reusable after decode initialization rejection',
+  );
+  assert.equal(worker.posts[1].id, 23);
+  assert.equal(worker.posts[1].ok, false);
+  assert.match(worker.posts[1].error || '', /Capstone disassembler initialization/);
+  assert.doesNotMatch(worker.posts[1].error || '', /duplicate live request id/);
 }
 
 console.log('issue-4504 platform capstone cancellation queue: PASS');
