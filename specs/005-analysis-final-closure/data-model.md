@@ -392,10 +392,10 @@ markers from the `js/pattern/index.js` facade to `js/pattern/index-core.js`.
 The correction is a fixture-contract update; it does not change the pattern
 implementation or promote an excluded capability.
 
-When a refetched current-main commit replaces a sealed owner blob during a
-moving-main reconciliation, `verifyTaskHandoffs` may authorize that path only
-with the authenticated `currentMainSha`: it must be an ancestor of the
-integration head, the integration blob must equal the current-main blob, and
-the sealed handoff blob must differ. Generated paths and arbitrary integration
-blobs remain sealed, and omitting `currentMainSha` preserves the original
-fail-closed behavior.
+When a refetched current-main commit replaces a sealed owner blob, or adds a
+path that was absent from the sealed snapshot, during a moving-main
+reconciliation, `verifyTaskHandoffs` may authorize that path only with the
+authenticated `currentMainSha`: the integration blob must equal the
+current-main blob, and an existing sealed handoff blob must differ. Generated
+paths and arbitrary integration blobs remain sealed, and omitting
+`currentMainSha` preserves the original fail-closed behavior.

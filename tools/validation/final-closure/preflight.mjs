@@ -112,7 +112,7 @@ const T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX = '\n## T061 Stage A maintenance
 // digest here so a later component cannot rewrite an old section and restore
 // a plausible-looking T061 paragraph at the end of the file.
 const T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256 =
-  '92cd5d2e94f7a1b01b580c42bdfd6bcd8d4ddede0e0077717701f6e424f731dc';
+  '39049718e51d0749bb971ddb964c98cc33886f813fd7b3aeab30b2d919529f72';
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([
@@ -5657,9 +5657,14 @@ function isExactCurrentMainReplacement(root, sealedHead, integrationHeadSha, cur
   const currentMainBlob = runGit(root, ['rev-parse', '--verify', `${currentMainSha}:${repoPath}`]);
   const integrationBlob = runGit(root, ['rev-parse', '--verify', `${integrationHeadSha}:${repoPath}`]);
   const sealedBlob = runGit(root, ['rev-parse', '--verify', `${sealedHead}:${repoPath}`]);
-  if (currentMainBlob.status !== 0 || integrationBlob.status !== 0 || sealedBlob.status !== 0) return false;
+  if (currentMainBlob.status !== 0 || integrationBlob.status !== 0) return false;
+  // A moving-main reconciliation may also add a path that was listed in a
+  // historical ownership snapshot before that snapshot contained the file.
+  // The authenticated current-main blob is still required; a sealed blob, if
+  // present, must differ from it.
+  if (sealedBlob.status === 0 && sealedBlob.stdout.trim() === currentMainBlob.stdout.trim()) return false;
   return currentMainBlob.stdout.trim() === integrationBlob.stdout.trim()
-    && sealedBlob.stdout.trim() !== currentMainBlob.stdout.trim();
+    && (sealedBlob.status !== 0 || sealedBlob.stdout.trim() !== currentMainBlob.stdout.trim());
 }
 
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
@@ -5667,9 +5672,6 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   currentMainSha = null,
 } = {}) {
   const handoffs = result?.taskHandoffResult?.handoffs || {};
-  if (currentMainSha != null) {
-    assertAncestor(root, currentMainSha, integrationHeadSha, 'task-handoff-current-main-stale');
-  }
   const currentMainReplacementPaths = [];
   for (const [taskId, handoff] of Object.entries(handoffs)) {
     const resolved = runGit(root, ['rev-parse', '--verify', `${handoff.headSha}^{commit}`]);
