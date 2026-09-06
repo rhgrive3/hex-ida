@@ -187,27 +187,12 @@ jobs:
           SHA: ${{ steps.identity.outputs.sha }}
           TREE: ${{ steps.identity.outputs.tree }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           run_id="exact-${SHA:0:16}"
-          diagnostic_log="$(mktemp)"
-          set +e
           node tools/validation/stage2/profile-evidence-collector.mjs \
             --commit "$SHA" \
             --tree "$TREE" \
-            --run-id "$run_id" >"$diagnostic_log" 2>&1
-          status=$?
-          set -e
-          if [[ "$status" -ne 0 ]]; then
-            mkdir -p reports/stage2
-            diagnostic="$(grep -E 'profile-proof-(command-failed|command-marker-missing|prerequisites-incomplete):' "$diagnostic_log" | tail -n 1 || true)"
-            if [[ -z "$diagnostic" ]]; then
-              diagnostic='stage2-profile-evidence-failed-without-classifier'
-            fi
-            printf '%s\n' "$diagnostic" | tee reports/stage2/profile-evidence-failure.txt
-            printf '### Stage 2 profile first failure\n\n`%s`\n' "$diagnostic" >> "$GITHUB_STEP_SUMMARY"
-            exit "$status"
-          fi
-          rm -f "$diagnostic_log"
+            --run-id "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "profile_path=reports/stage2/profile-evidence-runs/$run_id/profile-evidence.json" >> "$GITHUB_OUTPUT"
 
