@@ -53,11 +53,6 @@ jobs:
             if (!parts.includes(command)) throw new Error(`npm check layout changed; missing ${command}`);
           }
 
-          // Queue pressure is the limiting resource in this repository. Keep the
-          // one very long Phase 8 proof isolated, keep Phase 4/5 on their frozen
-          // compiler lane, and pack the remaining short/medium checks into two
-          // serial lanes. This cuts the recurring check matrix from eight runner
-          // jobs to four without removing, caching, or weakening any proof.
           const reserved = new Set(required);
           const coreContracts = parts.filter((command) => !reserved.has(command));
           if (!coreContracts.length) throw new Error('npm check must contain core contract commands');
@@ -110,9 +105,6 @@ jobs:
             throw new Error(`npm-check shard plan must execute each top-level command exactly once (expected=${expected}, actual=${actual})`);
           }
 
-          // Keep matrix properties scalar. Commands are transported as a JSON
-          // string and decoded inside the job, avoiding nested matrix-value
-          // behavior while retaining the exact plan checked above.
           const include = lanes.map(({ coverageCommands, runCommands, ...lane }) => ({
             ...lane,
             commandsJson: JSON.stringify(runCommands),
@@ -148,8 +140,6 @@ jobs:
         id: install
         run: npm ci --no-audit --no-fund
 
-      # Phase 5's real-byte verification corpus is intentionally pinned to
-      # Clang/LLD 18. Keep only the lane containing Phase 4/5 on that provider.
       - name: Install the frozen Phase 5 toolchain
         if: matrix.frozenToolchain == 'true'
         run: |
@@ -180,37 +170,94 @@ jobs:
         if: matrix.runsInvariant == 'true'
         env:
           HEX_INVARIANT_BASE_REF: refs/remotes/origin/main
-        run: node tools/validation/invariant-pr-baseline.mjs
+          HEX_CHECK_LANE: ${{ matrix.name }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p reports/invariant-diagnostic
+          log="reports/invariant-diagnostic/${HEX_CHECK_LANE}-proof.log"
+          node tools/validation/invariant-pr-baseline.mjs >"$log" 2>&1
+          status=$?
+          if [[ "$status" -ne 0 ]]; then
+            DIAG_LOG="$log" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const log = process.env.DIAG_LOG;
+          const lines = fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean);
+          const pattern = /first divergence|\bFAIL\b|Assertion|Error:|ERR_|expected|actual|mismatch|regression/i;
+          const selected = lines.filter((line) => pattern.test(line)).slice(0, 24);
+          fs.writeFileSync(log.replace(/\.log$/, '.json'), JSON.stringify({
+            kind: 'invariant-proof',
+            lines: selected.length ? selected : lines.slice(-24),
+          }, null, 2) + '\n');
+          NODE
+          fi
+          rm -f "$log"
+          exit "$status"
 
       - name: Run all remaining exact check commands and aggregate failures
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           HEX_CHECK_COMMANDS_JSON: ${{ matrix.commandsJson }}
+          HEX_CHECK_LANE: ${{ matrix.name }}
         shell: bash
         run: |
           node --input-type=module <<'NODE'
           import { spawnSync } from 'node:child_process';
+          import fs from 'node:fs';
+          import path from 'node:path';
 
           const commands = JSON.parse(process.env.HEX_CHECK_COMMANDS_JSON || '[]');
           if (!Array.isArray(commands) || commands.length === 0) throw new Error('check-lane-empty');
+          const lane = process.env.HEX_CHECK_LANE || 'unknown';
+          const dir = 'reports/invariant-diagnostic';
+          fs.mkdirSync(dir, { recursive: true });
           const failures = [];
-          for (const command of commands) {
-            console.log(`::group::${command}`);
+          const extract = (file) => {
+            const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
+            const pattern = /not ok|\bFAIL\b|Assertion|Error:|ERR_|expected|actual|mismatch|first divergence|failed/i;
+            const selected = lines.filter((line) => pattern.test(line)).slice(0, 32);
+            return selected.length ? selected : lines.slice(-32);
+          };
+
+          for (let index = 0; index < commands.length; index += 1) {
+            const command = commands[index];
+            const log = path.join(dir, `${lane}-${index}.log`);
+            const fd = fs.openSync(log, 'w');
             const result = spawnSync(command, {
               shell: true,
-              stdio: 'inherit',
+              stdio: ['ignore', fd, fd],
               env: process.env,
             });
-            console.log('::endgroup::');
+            fs.closeSync(fd);
             if (result.error || result.status !== 0) {
-              failures.push({ command, status: result.status, error: result.error?.message ?? null });
+              failures.push({
+                command,
+                status: result.status,
+                error: result.error?.message ?? null,
+                lines: extract(log),
+              });
             }
+            fs.rmSync(log, { force: true });
           }
           if (failures.length) {
-            console.error(`Exact check lane failures: ${JSON.stringify(failures)}`);
+            fs.writeFileSync(path.join(dir, `${lane}-commands.json`), JSON.stringify({ lane, failures }, null, 2) + '\n');
+            console.error(`Exact check lane failures: ${failures.map(({ command, status }) => `${command}=${status}`).join(', ')}`);
             process.exit(1);
           }
           NODE
+
+      - name: Upload invariant failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: invariant-diagnostic-${{ matrix.name }}
+          path: reports/invariant-diagnostic/*.json
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Post diagnostic marker
+        if: failure()
+        run: echo "Invariant diagnostic captured for ${{ matrix.name }}"
 
   invariant-gates:
     name: invariant-gates
