@@ -618,6 +618,12 @@ function rawSnapshotMatches(entry, workBudget) {
       const descriptorKeys = record.relevantDescriptorKeys;
       const descriptorValues = record.relevantDescriptorValues;
       const descriptorFlags = record.relevantDescriptorFlags;
+      // The expected own-key work is prepaid in validationCost. Charge only
+      // an observed surplus here so a hostile Proxy cannot allocate and scan
+      // an unbounded key domain before the mismatch is rejected.
+      if (currentKeys.length > record.reportedKeyCount) {
+        workBudget.consume(currentKeys.length - record.reportedKeyCount);
+      }
       const descriptorCost = descriptorKeys.length;
       if (record.omitRootKeys) {
         let expectedKeyIndex = 0;
@@ -681,11 +687,6 @@ function rawSnapshotMatches(entry, workBudget) {
             || observed.enumerable !== (expectedFlags === 3)) return false;
         const expectedValue = descriptorValues[descriptorIndex];
         const observedValue = observed.value;
-        // Array length is the one non-enumerable descriptor admitted by
-        // capture. Its own key remains present when a sparse array grows or
-        // shrinks without changing any indexed own key, so the descriptor
-        // value itself is part of the freshness witness.
-        if (expectedFlags !== 3 && !Object.is(expectedValue, observedValue)) return false;
         // Semantic capture rejects NaN, so strict equality covers the common
         // primitive/reference case. Retain Object.is only for signed zero and
         // the unequal fallback, preserving the exact value contract cheaply.
@@ -697,6 +698,9 @@ function rawSnapshotMatches(entry, workBudget) {
       if (record.kind === 'map') {
         const map = SNAPSHOT_MAP_TARGETS.get(source) ?? source;
         const size = getMapSize.call(map);
+        if (size > record.collectionEntries.length) {
+          workBudget.consume(size - record.collectionEntries.length);
+        }
         if (size !== record.collectionEntries.length) return false;
         const entries = Array.from(Map.prototype.entries.call(map));
         if (entries.length !== record.collectionEntries.length) return false;
@@ -708,6 +712,9 @@ function rawSnapshotMatches(entry, workBudget) {
       } else if (record.kind === 'set') {
         const set = SNAPSHOT_SET_TARGETS.get(source) ?? source;
         const size = getSetSize.call(set);
+        if (size > record.collectionEntries.length) {
+          workBudget.consume(size - record.collectionEntries.length);
+        }
         if (size !== record.collectionEntries.length) return false;
         const values = Array.from(Set.prototype.values.call(set));
         if (values.length !== record.collectionEntries.length) return false;
@@ -1028,7 +1035,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget, {
     Object.freeze(record.relevantDescriptorKeys);
     Object.freeze(record.relevantDescriptorValues);
     Object.freeze(record.relevantDescriptorFlags);
-    validationCost += record.relevantReportedKeys.length + relevantDescriptorKeys.length;
+    validationCost += record.reportedKeys.length + relevantDescriptorKeys.length;
     if (record.kind === 'map') validationCost += record.collectionEntries.length * 2;
     else if (record.kind === 'set') validationCost += record.collectionEntries.length;
     // Retain only the witness used on a cache hit. Capture's descriptor maps,
@@ -1038,6 +1045,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget, {
       prototype: record.prototype,
       kind: record.kind,
       omitRootKeys: record.omitRootKeys,
+      reportedKeyCount: record.reportedKeys.length,
       relevantReportedKeys: record.relevantReportedKeys,
       relevantDescriptorKeys: record.relevantDescriptorKeys,
       relevantDescriptorValues: record.relevantDescriptorValues,
