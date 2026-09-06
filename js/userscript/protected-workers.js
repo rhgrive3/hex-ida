@@ -55,20 +55,18 @@ export function installProtectedWorkers() {
     }
     if (local && path === PLATFORM_WORKER) {
       const semanticURL = urls.get(X86_REVALIDATION_WORKER);
-      if (!semanticURL) {
-        worker.terminate();
-        throw new Error('protected x86 semantic revalidation worker asset is unavailable');
-      }
-      const wasmBinary = wasmBytes.slice(0);
-      try {
-        worker.postMessage({
-          t:NESTED_WORKER_BOOTSTRAP,
-          semanticURL,
-          wasmBinary,
-        }, [wasmBinary]);
-      } catch (error) {
-        worker.terminate();
-        throw new Error(`protected nested worker bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+      if (semanticURL) {
+        const wasmBinary = wasmBytes.slice(0);
+        try {
+          worker.postMessage({
+            t:NESTED_WORKER_BOOTSTRAP,
+            semanticURL,
+            wasmBinary,
+          }, [wasmBinary]);
+        } catch (error) {
+          worker.terminate();
+          throw new Error(`protected nested worker bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+        }
       }
     }
     return worker;
