@@ -144,27 +144,34 @@ await check('standard-agent-scope-regression', () => {
   assert.equal(locked.effectiveScope, 'function');
 });
 
+const MODULE_TRIVIA_SOURCE = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]|$))*`;
+
 function staticModuleSpecifiers(source) {
   const matches = [];
   for (const pattern of [
-    /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm,
-    /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-    /^\s*export\s+(?:\*\s+as\s+(?:[A-Za-z_$][\w$]*|['"][^'"]+['"])|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}import${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]\s*;?`, 'gm'),
+    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}import${MODULE_TRIVIA_SOURCE}(?!['"(])[\s\S]*?\bfrom${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]`, 'gm'),
+    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}export${MODULE_TRIVIA_SOURCE}(?:\*|\{)[\s\S]*?\bfrom${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]`, 'gm'),
   ]) {
     for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
   }
   return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
 }
 
-const DYNAMIC_IMPORT_PATTERN = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]|$))*\(/;
+const DYNAMIC_IMPORT_PATTERN = new RegExp(String.raw`\bimport${MODULE_TRIVIA_SOURCE}\(`);
 
 await check('dev-context-packet-dependency-boundary', () => {
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
   assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
   assert.doesNotMatch(source, DYNAMIC_IMPORT_PATTERN, 'context packet must not gain dynamic import authority');
   assert.deepEqual(
-    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';\nexport * as storage from '../storage.js';"),
-    ['./side-effect.js', './re-export.js', '../storage.js'],
+    staticModuleSpecifiers([
+      "/* lead */ import /* dependency */ './side-effect.js';",
+      "import /* dependency */ { value } from './network.js';",
+      "export /* dependency */ { value } /* link */ from './re-export.js';",
+      "export /* dependency */ * as storage from '../storage.js';",
+    ].join('\n')),
+    ['./side-effect.js', './network.js', './re-export.js', '../storage.js'],
   );
   assert.match("void import('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
   assert.match("void import /* dependency */ ('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
