@@ -203,7 +203,8 @@ export class TraceProvider {
     const normalized = this.recording.events.map((event, index) => normalizedEventFromRecord(event, context, index));
     const explicitDropped = sumDroppedEventCounts(normalized);
     const hasExplicitDrop = normalized.some((event) => event.kind === 'gap' || event.kind === 'dropped-events');
-    if (this.recording.dropped > 0 && hasExplicitDrop && explicitDropped !== this.recording.dropped) {
+    const hasExplicitDroppedCount = normalized.some((event) => event.kind === 'dropped-events');
+    if (this.recording.dropped > 0 && hasExplicitDroppedCount && explicitDropped !== this.recording.dropped) {
       throw new DebugAdapterError('trace-invalid-dropped-count', `recording dropped count (${this.recording.dropped}) disagrees with explicit dropped events total (${explicitDropped})`);
     }
     if (this.recording.dropped > 0 && !hasExplicitDrop) {

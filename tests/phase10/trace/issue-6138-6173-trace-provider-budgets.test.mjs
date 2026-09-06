@@ -62,6 +62,20 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
     (error) => error?.code === 'trace-invalid-dropped-count',
   );
 
+  const gapOnly = new TraceProvider(recording(
+    [{ kind:'gap', payload:{ reason:'sampling' } }],
+    { dropped:4 },
+  ));
+  const gapOnlySession = await gapOnly.openSession({ sessionNonce:'gap-only' });
+  const gapOnlyBatch = (await gapOnlySession.facets.trace.events({ batchSize:1 }).next()).value;
+  const gapOnlyReplay = await gapOnlySession.facets.trace.replay();
+  assert.deepEqual(gapOnlySession.normalizedEvents.map((event) => event.kind), ['gap']);
+  assert.equal(gapOnlyBatch.dropped, 0);
+  assert.equal(gapOnlyReplay.dropped, 0);
+  assert.equal(gapOnlyBatch.completeness, 'truncated');
+  assert.equal(gapOnlyReplay.completeness, 'truncated');
+  await gapOnlySession.close();
+
   const agreement = new TraceProvider(recording(
     [{ kind:'dropped-events', payload:{ dropped:3 } }],
     { dropped:3 },
