@@ -29,7 +29,7 @@ import {
   reachingMemoryDefinition,
 } from '../semantics/memoryssa/queries.js';
 
-export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.0.0';
+export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.1.0';
 
 /**
  * Creates the analysis surface for one function's semantic artifacts.
@@ -136,11 +136,13 @@ export function createAnalysisSurface({
    * Answers `mayWrite` conservatively whenever the summary cannot prove
    * otherwise, which is what keeps an incomplete summary from reading as pure.
    */
-  function memoryEffects({ regionId = null } = {}) {
+  function memoryEffects({ regionId = null, region = null } = {}) {
     const { summary } = functionSummary();
     if (!summary) return { mayWrite: true, summary: null, status: status('partial', 'evidence-missing') };
+    const regionIdentityMismatch = region != null && regionId != null
+      && (typeof regionId !== 'string' || region?.id !== regionId.trim());
     return {
-      mayWrite: summaryMayWriteRegion(summary, regionId),
+      mayWrite: regionIdentityMismatch ? true : summaryMayWriteRegion(summary, region ?? regionId),
       reads: summary.memoryReadRegions,
       writes: summary.memoryWriteRegions,
       unknownCalls: summary.unknownCallEffects,
