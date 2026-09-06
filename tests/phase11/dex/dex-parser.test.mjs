@@ -110,5 +110,27 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
   view.setUint16(stringData, 0x7777, true);
   expectTypeError(bytes, 'dex-unsupported-map-item-type');
 }
+for (const type of [0x1002, 0x1003]) {
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const item = MAP_OFF + 4 + 6 * 12;
+  view.setUint16(item, type, true);
+  view.setUint32(item + 8, 0x101, true);
+  expectTypeError(bytes, 'dex-invalid-map-item-alignment');
+}
+{
+  const bytes = new Uint8Array(0x70);
+  expectTypeError(bytes, 'dex-unsupported-binary');
+}
+{
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
+  bytes.set([0x30, 0x34, 0x31], 4);
+  view.setUint32(52, 0, true);
+  expectTypeError(bytes, 'dex-unsupported-binary');
+}
+{
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
+  view.setUint32(40, 0x78563412, true);
+  view.setUint32(52, 0, true);
+  expectTypeError(bytes, 'dex-reverse-endian-unsupported');
+}
 
 console.log('  ok dex parser tests passed');
