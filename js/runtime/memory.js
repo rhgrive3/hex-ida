@@ -53,6 +53,7 @@ export class MemoryRegion {
     this.name = spec.name == null ? null : String(spec.name).slice(0, 256);
     this.permissions = normalizePermissions(spec.permissions);
     this.objectId = spec.objectId == null ? null : String(spec.objectId).slice(0, 256);
+    Object.freeze(this);
   }
   contains(address, size = 1) {
     const a = asAddress(address); const n = BigInt(strictSize(size, 1, MAX_REGION_SIZE, 'memory size'));
