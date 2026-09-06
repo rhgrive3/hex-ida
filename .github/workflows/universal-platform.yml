@@ -94,6 +94,24 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: npm run binary:gate
+      - name: Publish minimal universal outcome evidence
+        if: ${{ !cancelled() }}
+        env:
+          CONTRACTS: ${{ steps.contracts.outcome }}
+          BINARY: ${{ steps.binary.outcome }}
+          BINARY_GATE: ${{ steps.binary_gate.outcome }}
+        shell: bash
+        run: |
+          printf '{"contracts":"%s","binary":"%s","binaryGate":"%s"}\n' "$CONTRACTS" "$BINARY" "$BINARY_GATE" > universal-outcomes.json
+          cat universal-outcomes.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload minimal universal outcome evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-outcomes
+          path: universal-outcomes.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Require all universal verification suites
         if: ${{ !cancelled() }}
         env:
