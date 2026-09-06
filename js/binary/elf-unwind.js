@@ -390,13 +390,8 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     };
   } catch (e) {
     if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
-    budget?.partial?.(
-      'eh-frame-header:decode',
-      `.eh_frame_hdr decode failed: ${e.message}`,
-    );
     warn(image, e.message);
   }
-
 }
 
 function decodeEhValue(r, p0, enc, ctx, end = r.length) {
