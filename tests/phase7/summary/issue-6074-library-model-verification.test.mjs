@@ -66,10 +66,26 @@ test('6074: evidenced model still applies', () => {
   );
 });
 
-test('6074: knowledge-only model still applies', () => {
+test('6074: knowledge-only model keeps the fallback', () => {
+  // Bare control booleans are not effect evidence: without an evidenced
+  // effect dimension the broad unknown-call fallback must stay.
   const summary = solvedWith({ noreturn: false, mayThrow: true });
   assert.ok(
+    summary.unknownCallEffects.some((effect) => effect.reason === 'library-model-missing'),
+    'control booleans alone must not cancel the fallback',
+  );
+});
+
+test('6074: escape-only model applies and propagates escapes', () => {
+  const summary = solvedWith({
+    escapes: [{ kind: 'return-escape', target: 'ext:ret' }],
+  });
+  assert.ok(
     !summary.unknownCallEffects.some((effect) => effect.reason === 'library-model-missing'),
-    'definite control knowledge is verifiable evidence',
+    'evidenced escape model must not raise library-model-missing',
+  );
+  assert.ok(
+    summary.escapes.some((escape) => escape?.target === 'ext:ret'),
+    'model escapes must propagate to the caller summary',
   );
 });

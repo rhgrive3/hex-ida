@@ -44,9 +44,11 @@ export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
 function fail(code) { throw new TypeError(code); }
 
 // A library model is authoritative only when it carries verifiable effect
-// evidence: effect regions, definite control knowledge, or escapes. An
-// unverified (empty, malformed-shape) object must not cancel the
-// unknown-call fallback (P7-INV-004: missing evidence is never purity).
+// evidence: non-empty effect regions or escapes with valid array shape.
+// Bare control booleans (`{ noreturn:false }` alone) prove nothing about
+// effects, so they must not cancel the unknown-call fallback (P7-INV-004:
+// missing evidence is never purity). An unverified (empty, malformed-shape)
+// object keeps the broad fallback.
 function isVerifiedLibraryModel(model) {
   if (!model || typeof model !== 'object') return false;
   for (const key of ['memoryReadRegions', 'memoryWriteRegions', 'escapes']) {
@@ -55,9 +57,7 @@ function isVerifiedLibraryModel(model) {
   const reads = model.memoryReadRegions ?? [];
   const writes = model.memoryWriteRegions ?? [];
   const escapes = model.escapes ?? [];
-  if (reads.length > 0 || writes.length > 0 || escapes.length > 0) return true;
-  return model.noreturn === true || model.noreturn === false
-    || model.mayThrow === true || model.mayThrow === false;
+  return reads.length > 0 || writes.length > 0 || escapes.length > 0;
 }
 
 /**
@@ -381,8 +381,11 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       if (isVerifiedLibraryModel(model) && !locals.has(target)) {
         // A library model applies only where the binary does not define the
         // callee, so it can never override contradictory binary evidence.
+        // All evidenced dimensions propagate: reads, writes, escapes, and
+        // control facts together, never a bare boolean alone.
         reads.push(model.memoryReadRegions ?? []);
         writes.push(model.memoryWriteRegions ?? []);
+        escapes.push(...(model.escapes ?? []));
         noreturn.push(model.noreturn ?? 'unknown');
         mayThrow.push(model.mayThrow ?? 'unknown');
         continue;
@@ -410,6 +413,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       if (isVerifiedLibraryModel(model) && !locals.has(candidate)) {
         reads.push(model.memoryReadRegions ?? []);
         writes.push(model.memoryWriteRegions ?? []);
+        escapes.push(...(model.escapes ?? []));
         noreturn.push(model.noreturn ?? 'unknown');
         mayThrow.push(model.mayThrow ?? 'unknown');
         continue;
