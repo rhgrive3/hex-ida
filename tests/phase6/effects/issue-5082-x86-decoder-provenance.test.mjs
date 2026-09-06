@@ -50,9 +50,9 @@ const origin = Object.freeze({
   virtualRanges:Object.freeze([{ sliceId:'slice:0', start:0n, length:1 }]),
 });
 
-// The exact counterexample from the review: public parseInstruction() remains a
-// useful structured parser, but fake/caller-controlled M can never mint the
-// receiver-only terminal authority, even if it claims MOV for NOP bytes.
+// Exact review counterexample: public parseInstruction() remains a useful
+// structured parser, but fake/caller-controlled M can never mint receiver-only
+// terminal authority, even if it claims MOV for NOP bytes.
 const fakeParsedMov = fakeCapstoneRow({ opcodeName:'mov', byte:0x90, origin });
 assert.deepEqual(fakeParsedMov.origin, origin);
 assert.equal(hasReceiverRevalidatedX86Row(fakeParsedMov), false);
@@ -130,9 +130,15 @@ const semanticEntrySource = await readFile(new URL('../../../js/targets/architec
 const revalidationWorkerSource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-revalidation-worker.js', import.meta.url), 'utf8');
 const structuredParserSource = await readFile(new URL('../../../js/targets/architecture/x86_64/capstone-structured.js', import.meta.url), 'utf8');
 const provenanceSource = await readFile(new URL('../../../js/targets/architecture/x86_64/runtime-provenance.js', import.meta.url), 'utf8');
+const protectedWorkersSource = await readFile(new URL('../../../js/userscript/protected-workers.js', import.meta.url), 'utf8');
+const userscriptBuildSource = await readFile(new URL('../../../scripts/build-userscript.mjs', import.meta.url), 'utf8');
 
-assert.match(semanticEntrySource, /new Worker\(new URL\('\.\/semantic-revalidation-worker\.js'/,
-  'platform semantic entry must route transported x86 rows to the canonical revalidation worker');
+assert.match(semanticEntrySource, /__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__/,
+  'protected runtime may inject only the dedicated receiver worker URL');
+assert.match(semanticEntrySource, /new URL\('\.\/semantic-revalidation-worker\.js', import\.meta\.url\)/,
+  'ordinary web builds keep the source-relative receiver worker route');
+assert.match(semanticEntrySource, /const worker = new Worker\(workerURL\)/,
+  'transported x86 rows must route to the selected canonical receiver worker');
 assert.match(semanticEntrySource, /hasReceiverRevalidatedX86Row/,
   'only the receiver-private WeakSet may bypass a second revalidation');
 assert.match(semanticEntrySource, /addEventListener\?\.\('abort', abort, \{ once:true \}\);\s*if \(signal\?\.aborted\)/,
@@ -141,8 +147,11 @@ assert.match(semanticEntrySource, /addEventListener\?\.\('abort', abort, \{ once
 assert.doesNotMatch(structuredParserSource, /RUNTIME_PROVENANCE|publishDecodedRow|hasRuntimeProvenance/,
   'public structured parser must contain no terminal-authority mint path');
 assert.match(provenanceSource, /REVALIDATION_WORKER_PATH = '\/js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
+assert.match(provenanceSource, /PROTECTED_LOGICAL_PATH = 'js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
 assert.match(provenanceSource, /pathname\.endsWith\(REVALIDATION_WORKER_PATH\)/,
-  'authority minting is restricted to the deployed receiver worker URL realm');
+  'ordinary-web authority minting is restricted to the deployed receiver worker URL realm');
+assert.match(provenanceSource, /__HEX_PROTECTED_WORKER_LOGICAL_PATH__ === PROTECTED_LOGICAL_PATH/,
+  'protected blob workers require the integrity-bound logical receiver identity');
 
 const initAt = revalidationWorkerSource.indexOf('const M = await MCapstone(');
 const verifyAt = revalidationWorkerSource.indexOf('HexX86CapstoneStructured.verifyVersion(M)');
@@ -158,5 +167,19 @@ assert.doesNotMatch(revalidationWorkerSource, /decoder-revalidation-noncontiguou
   'receiver revalidation must not invent whole-function contiguity');
 assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length/,
   'receiver revalidation rejects decode-count incompleteness');
+
+assert.match(userscriptBuildSource, /BUNDLED_CLASSIC_ENTRIES = \['js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'\]/,
+  'protected runtime build must package the receiver worker as a standalone integrity-bound asset');
+assert.match(userscriptBuildSource, /bundleInlinedClassic\(entry, inlineImports\(entry, sources\)\)/,
+  'receiver dynamic ESM dependencies and classic Capstone scripts must be bundled into the protected worker blob');
+assert.match(protectedWorkersSource, /X86_REVALIDATION_WORKER = 'js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
+assert.match(protectedWorkersSource, /CAPSTONE_CLASSIC_WORKERS = new Set\([\s\S]*X86_REVALIDATION_WORKER/,
+  'protected receiver worker must receive the integrity-bound Capstone WASM bootstrap');
+assert.match(protectedWorkersSource, /semanticURL,\s*wasmBinary/,
+  'platform worker bootstrap must carry both the receiver blob URL and a private WASM copy');
+assert.match(protectedWorkersSource, /e\.stopImmediatePropagation\(\)/,
+  'protected bootstrap control messages must not fall through into application worker protocol');
+assert.match(protectedWorkersSource, /__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__/,
+  'platform blob worker must install the protected receiver URL before semantic traffic');
 
 console.log('issue-5082 x86 decoder provenance regression: PASS');
