@@ -147,6 +147,32 @@ function debugRecordMatchesIdentitySource(identity, record) {
   return true;
 }
 
+export function isCanonicalDebugRecord(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+  if (!Array.isArray(record.evidenceIds)) return false;
+
+  try {
+    // Reuse the constructor as the validation oracle so the authoritative path
+    // cannot drift into a weaker copy of the record contract. Then require the
+    // normalization-sensitive fields to already be in constructor output form;
+    // raw records that merely *can* be coerced are not canonical authority.
+    const canonical = createDebugRecord(record);
+    if (canonical.kind !== record.kind) return false;
+    if (canonical.entityId !== record.entityId) return false;
+    if (canonical.name !== (record.name ?? null)) return false;
+    if (canonical.address !== (record.address ?? null)) return false;
+    if (canonical.sizeBytes !== (record.sizeBytes ?? null)) return false;
+    if (canonical.providerId !== record.providerId) return false;
+    if (canonical.providerVersion !== record.providerVersion) return false;
+    if (canonical.buildIdentity !== (record.buildIdentity ?? null)) return false;
+    if (canonical.evidenceIds.length !== record.evidenceIds.length) return false;
+    return canonical.evidenceIds.every((value, index) => value === record.evidenceIds[index]);
+  } catch {
+    return false;
+  }
+}
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  *
@@ -158,6 +184,7 @@ function debugRecordMatchesIdentitySource(identity, record) {
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record || !debugRecordMatchesIdentitySource(identity, record)) return false;
+  if (!isCanonicalDebugRecord(record)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -332,34 +359,48 @@ export function applyDebugTypesToGraph(graph, result, page) {
   const applied = { hard: 0, soft: 0, skipped: 0 };
   for (const record of page.records ?? []) {
     if (record.kind !== 'type') { applied.skipped += 1; continue; }
-    const claim = {
-      layer: record.descriptor?.layer ?? 'nominal',
-      entityId: record.entityId,
-      descriptor: record.descriptor?.claim ?? record.descriptor,
-    };
-    if (isDebugRecordAuthoritative(result, record)) {
-      graph.addHardConstraint({
-        kind: 'debug-type',
-        origin: 'debug-matched',
-        claim,
-        evidenceIds: record.evidenceIds,
-        providerVersion: record.providerVersion,
-        buildIdentity: record.buildIdentity,
+    const claims = [
+      {
+        layer: record.descriptor?.layer ?? 'nominal',
+        entityId: record.entityId,
+        descriptor: record.descriptor?.claim ?? record.descriptor,
+      },
+    ];
+    if (record.descriptor?.machine != null && typeof record.descriptor.machine === 'object') {
+      claims.push({
+        layer: 'machine',
+        entityId: record.entityId,
+        descriptor: record.descriptor.machine,
       });
-      applied.hard += 1;
+    }
+
+    if (isDebugRecordAuthoritative(result, record)) {
+      for (const claim of claims) {
+        graph.addHardConstraint({
+          kind: 'debug-type',
+          origin: 'debug-matched',
+          claim,
+          evidenceIds: record.evidenceIds,
+          providerVersion: record.providerVersion,
+          buildIdentity: record.buildIdentity,
+        });
+        applied.hard += 1;
+      }
       continue;
     }
     // Unmatched or uncovered debug data is still information — it just has no
     // authority. It enters as soft evidence so it can never overrule a hard
     // constraint or reach certainty on its own.
-    graph.addSoftEvidence({
-      kind: 'signature-candidate',
-      origin: 'debug-unmatched',
-      weight: 0.3,
-      claim,
-      evidenceIds: record.evidenceIds,
-    });
-    applied.soft += 1;
+    for (const claim of claims) {
+      graph.addSoftEvidence({
+        kind: 'signature-candidate',
+        origin: 'debug-unmatched',
+        weight: 0.3,
+        claim,
+        evidenceIds: record.evidenceIds,
+      });
+      applied.soft += 1;
+    }
   }
   return applied;
 }
