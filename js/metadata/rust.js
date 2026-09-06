@@ -283,6 +283,17 @@ function parseV0Type(str, state, depth = 0) {
   return parseV0Path(str, state, depth + 1);
 }
 
+/** Parse the Rust v0 `impl-path = disambiguator? path` production. */
+function parseV0ImplPath(str, state, depth = 0) {
+  if (state.pos < str.length && str[state.pos] === 's') {
+    state.pos++;
+    const dis = parseV0Base62(str, state.pos);
+    if (!dis) return null;
+    state.pos = dis.nextPos;
+  }
+  return parseV0Path(str, state, depth);
+}
+
 function parseV0Path(str, state, depth = 0) {
   if (state.pos >= str.length) return null;
   if (depth > state.maxDepth) {
@@ -316,14 +327,15 @@ function parseV0Path(str, state, depth = 0) {
   }
 
   if (tag === 'M') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    const implPath = parseV0ImplPath(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
     return null;
   }
 
   if (tag === 'X') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    const implPath = parseV0ImplPath(str, state, depth + 1);
+    if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
     const traitPath = parseV0Path(str, state, depth + 1);
     return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
@@ -440,13 +452,28 @@ function v0SuffixParses(s, pos, maxDepth) {
   }
 }
 
+/** Normalize the canonical legacy prefix and its single Mach-O decoration. */
+export function stripLegacyRustPrefix(text) {
+  if (typeof text !== 'string') return null;
+  if (text.startsWith('__ZN')) return text.slice(2);
+  if (text.startsWith('_ZN')) return text.slice(1);
+  if (text.startsWith('ZN')) return text;
+  return null;
+}
+
+/** Recognize supported Rust symbol prefixes without coercing metadata. */
+export function isRustCandidateSymbol(text) {
+  if (typeof text !== 'string') return false;
+  return text.startsWith('_R') || text.startsWith('__R') || stripLegacyRustPrefix(text) != null;
+}
+
 /**
- * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
+ * Demangles a Rust legacy symbol, including the single Mach-O decoration.
  */
 export function demangleRustLegacy(symbol) {
   const original = String(symbol || '');
-  const s = original.replace(/^_/, '');
-  if (!s.startsWith('ZN')) {
+  const s = stripLegacyRustPrefix(original);
+  if (s == null) {
     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
   }
 
@@ -494,6 +521,9 @@ export function demangleRustLegacy(symbol) {
   if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
+  if (i !== s.length) {
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
+  }
 
   const demangled = components.join('::');
   return {
@@ -515,7 +545,7 @@ export function demangleRustSymbol(symbol) {
   if (text.startsWith('_R') || text.startsWith('__R')) {
     return demangleRustV0(text);
   }
-  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
+  if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
     if (leg.parsed) return leg;
   }
@@ -600,9 +630,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     let unreadable = 0;
     let invalidEntries = 0;
 
-    const isRustCandidateName = (name) =>
-      typeof name === 'string' &&
-      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+    const isRustCandidateName = isRustCandidateSymbol;
 
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);
