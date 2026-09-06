@@ -89,6 +89,22 @@ const T060_REVALIDATION_CODE_PATHS = Object.freeze([
   'specs/005-analysis-final-closure/plan.md',
 ]);
 export const STAGE_A_MAINTENANCE_TASK_IDS = Object.freeze(['T061']);
+// T062-T064 are a forward-only Stage A convergence extension.  Their
+// ownership rows and (when eventually admitted) component gates live in the
+// separately bound stage-a-convergence contract; the frozen task-ownership
+// registry is never rewritten by this extension.
+export const STAGE_A_CONVERGENCE_GOVERNANCE_TASK_IDS = Object.freeze(['T062']);
+export const STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS = Object.freeze(['T063', 'T064']);
+export const STAGE_A_CONVERGENCE_TASK_IDS = Object.freeze([
+  ...STAGE_A_CONVERGENCE_GOVERNANCE_TASK_IDS,
+  ...STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS,
+]);
+const STAGE_A_CONVERGENCE_CONTRACT_PATH =
+  'specs/005-analysis-final-closure/contracts/stage-a-convergence.json';
+const STAGE_A_CONVERGENCE_OWNERSHIP_EXTENSION_SCHEMA =
+  'hex-final-closure-task-ownership-extension/v1';
+const STAGE_A_CONVERGENCE_ORACLE_SCHEMA =
+  'hex-final-closure-stage-a-convergence-oracle/v1';
 export const T061_MAINTENANCE_TRANSFER_FIELD = 'stageAMaintenanceTransfer';
 export const T061_MAINTENANCE_TRANSFER_SCHEMA_VERSION = 'hex-final-closure-t061-maintenance-transfer/v1';
 export const T061_MAINTENANCE_PRODUCT_SCHEMA_VERSION = 'hex-final-closure-t061-maintenance-product/v1';
@@ -485,6 +501,14 @@ function isStageAMaintenanceTask(taskId, ownership) {
     && ownership?.tasks?.[taskId]?.maintenanceClass === 'STAGE_A_MAINTENANCE';
 }
 
+function isStageAConvergenceTask(taskId) {
+  return STAGE_A_CONVERGENCE_TASK_IDS.includes(taskId);
+}
+
+function isStageAConvergenceComponentTask(taskId) {
+  return STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.includes(taskId);
+}
+
 function dependencyErrors(blocks, taskIds, ownership = null) {
   const errors = [];
   const dependencies = dependencyMap(blocks);
@@ -523,6 +547,7 @@ function dependencyErrors(blocks, taskIds, ownership = null) {
   for (const taskId of taskIds) visit(taskId);
   for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) > RESERVED_TASK_COUNT)) {
     if (!isStageAMaintenanceTask(taskId, ownership)
+      && !isStageAConvergenceTask(taskId)
       && !transitivelyDepends(taskId, 'T048', dependencies)) {
       errors.push(`tasks-dynamic-t048-dependency-missing:${taskId}`);
     }
@@ -1258,7 +1283,9 @@ export function validateStageBApplicability({
   const componentTaskIds = taskIds.filter((taskId) => {
     const number = Number(taskId.slice(1));
     return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId)
-      || (number > RESERVED_TASK_COUNT && !isStageAMaintenanceTask(taskId, ownership));
+      || (number > RESERVED_TASK_COUNT
+        && !isStageAMaintenanceTask(taskId, ownership)
+        && !isStageAConvergenceTask(taskId));
   });
   const tasks = Array.isArray(coverage.tasks) ? coverage.tasks : [];
   const coverageTaskIds = tasks.map((row) => row?.taskId);
@@ -1561,7 +1588,8 @@ function validateStageBEvidence({
 
 function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = null, ownership = null) {
   if (campaignStage === 'STAGE_A') {
-    return taskIds.filter((taskId) => STAGE_A_COMPONENT_TASK_IDS.includes(taskId));
+    return taskIds.filter((taskId) => STAGE_A_COMPONENT_TASK_IDS.includes(taskId)
+      || isStageAConvergenceComponentTask(taskId));
   }
   if (campaignStage === 'STAGE_B') {
     if (stageBApplicability?.required === true) {
@@ -1572,7 +1600,9 @@ function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = nul
     return taskIds.filter((taskId) => {
       const number = Number(taskId.slice(1));
       return (number >= 26 && number <= 36) || number === 45
-        || (number > RESERVED_TASK_COUNT && !isStageAMaintenanceTask(taskId, ownership));
+        || (number > RESERVED_TASK_COUNT
+          && !isStageAMaintenanceTask(taskId, ownership)
+          && !isStageAConvergenceTask(taskId));
     });
   }
   return [];
@@ -2220,7 +2250,8 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
     });
   }
   const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > RESERVED_TASK_COUNT
-    && !isStageAMaintenanceTask(taskId, ownership));
+    && !isStageAMaintenanceTask(taskId, ownership)
+    && !isStageAConvergenceTask(taskId));
   const componentTaskIds = [...INITIAL_COMPONENT_TASK_IDS, ...dynamicTaskIds];
   const shadowPolicy = registry?.shadowEvidence;
   const shadowAuthorityDefinition = validateShadowAuthorityDefinition({
@@ -2277,9 +2308,442 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
   });
 }
 
-export function validatePreflightContracts({
+const STAGE_A_CONVERGENCE_EXPECTED_KEYS = Object.freeze([
+  'schemaVersion', 'status', 'route', 'campaignStage', 'identity', 'predecessor',
+  'taskClasses', 'dependencies', 'pathAssignments', 'ownershipExtension',
+  'candidateGates', 'retainedOwnerDigests', 'closureRules', 'registration',
+  'activation', 'immutableHistory',
+]);
+const STAGE_A_CONVERGENCE_PREDECESSOR_KEYS = Object.freeze([
+  'headSha', 'treeSha', 'tasksPrefixSha256', 'draftTasksSha256', 'ownershipSha256',
+  'integrationInventorySha256', 'closureLedgerSha256',
+  'frozenFoundationOwnershipDigest', 'frozenInitialCandidateGateDigest',
+  'acceptedCheckpoint', 'tasksPrefixCodeUnits', 'tasksPrefixByteLength',
+]);
+const STAGE_A_CONVERGENCE_EXTENSION_KEYS = Object.freeze([
+  'schemaVersion', 'basePath', 'baseSha256', 'appendOnly', 'tasks', 'candidateGates',
+]);
+const STAGE_A_CONVERGENCE_TASK_ROW_KEYS = Object.freeze(['allowedPaths', 'forbiddenOverlap']);
+const STAGE_A_CONVERGENCE_GATE_KEYS = Object.freeze(['status', 'requiredTaskIds', 'tasks', 'reason']);
+const STAGE_A_CONVERGENCE_EXPECTED_PATHS = Object.freeze({
+  T062: Object.freeze([
+    STAGE_A_CONVERGENCE_CONTRACT_PATH,
+    'tests/final-closure/t062/**',
+    'specs/005-analysis-final-closure/evidence/stage-a-convergence-governance.md',
+  ]),
+  T063: Object.freeze([
+    'js/architecture/compat/ir-core-arm64-aapcs64-v1.js',
+    'js/semantics/compat/index.js',
+    'js/ir-core.js',
+    'js/ir-public-base.js',
+    'js/semantics/ir/function.js',
+    'js/decompiler/pipeline-core.js',
+    'tests/final-closure/t063/**',
+  ]),
+  T064: Object.freeze(['tests/final-closure/t064/**']),
+});
+const STAGE_A_CONVERGENCE_EXPECTED_DEPENDENCIES = Object.freeze({
+  // T009 historically owns the broad specs subtree.  T062 serializes its
+  // reuse so the new contract/evidence paths do not create a concurrent
+  // ownership collision.
+  T062: Object.freeze(['T009', 'T061']),
+  T063: Object.freeze(['T062', 'T011', 'T017']),
+  T064: Object.freeze(['T062', 'T063', 'T013']),
+});
+const STAGE_A_CONVERGENCE_EXPECTED_CLASSES = Object.freeze({
+  T062: Object.freeze({
+    class: 'STAGE_A_CONVERGENCE_GOVERNANCE',
+    role: 'governance',
+    stageB: false,
+    requiresT048: false,
+    checkpoint: false,
+    receipt: 'separate-governance-receipt',
+  }),
+  T063: Object.freeze({
+    class: 'STAGE_A_CONVERGENCE_COMPONENT',
+    role: 'producer-implementation',
+    stageB: false,
+    requiresT048: false,
+    checkpoint: true,
+    receipt: 'T049-component-checkpoint',
+  }),
+  T064: Object.freeze({
+    class: 'STAGE_A_CONVERGENCE_COMPONENT',
+    role: 'post-handoff-verification',
+    stageB: false,
+    requiresT048: false,
+    checkpoint: true,
+    receipt: 'T049-component-checkpoint-gates-T018',
+  }),
+});
+const STAGE_A_CONVERGENCE_ORACLE_REASON =
+  'No independently specified actual producer behavioral oracle is admitted in this draft; shape-only governance tests cannot certify T063 or T064.';
+
+export function canonicalStageAConvergenceDigest(stageAConvergence) {
+  if (!stageAConvergence || typeof stageAConvergence !== 'object'
+    || Array.isArray(stageAConvergence)) return null;
+  const unsigned = structuredClone(stageAConvergence);
+  delete unsigned.identity;
+  return sha256Text(canonicalJson(unsigned));
+}
+
+/**
+ * Materialize a forward ownership extension without changing the frozen
+ * task-ownership JSON object.  The returned object is only a validation view;
+ * publication still requires the T046 successor to bind the extension bytes.
+ */
+export function materializeStageAConvergenceOwnership({ ownership, stageAConvergence, errors = [] }) {
+  const baseTasks = ownership?.tasks && typeof ownership.tasks === 'object'
+    && !Array.isArray(ownership.tasks) ? ownership.tasks : {};
+  const merged = { ...(ownership || {}), tasks: { ...baseTasks } };
+  const extension = stageAConvergence?.ownershipExtension;
+  if (!extension || typeof extension !== 'object' || Array.isArray(extension)) {
+    errors.push('stage-a-convergence-ownership-extension-missing');
+    return merged;
+  }
+  const extensionTasks = extension.tasks;
+  if (extensionTasks && typeof extensionTasks === 'object' && !Array.isArray(extensionTasks)) {
+    for (const [taskId, row] of Object.entries(extensionTasks)) {
+      if (Object.hasOwn(baseTasks, taskId)) {
+        errors.push(`stage-a-convergence-ownership-extension-rewrites-existing:${taskId}`);
+        continue;
+      }
+      merged.tasks[taskId] = row;
+    }
+  }
+  return merged;
+}
+
+function validateStageAConvergenceOracleRegistration(candidateGates, errors) {
+  if (candidateGates?.status === 'UNREGISTERED') {
+    if (!exactSet(Object.keys(candidateGates), STAGE_A_CONVERGENCE_GATE_KEYS)
+      || !exactSet(candidateGates.requiredTaskIds, STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS)
+      || !candidateGates.tasks
+      || typeof candidateGates.tasks !== 'object'
+      || Array.isArray(candidateGates.tasks)
+      || Object.keys(candidateGates.tasks).length !== 0
+      || candidateGates.reason !== STAGE_A_CONVERGENCE_ORACLE_REASON) {
+      errors.push('stage-a-convergence-unregistered-gate-contract-invalid');
+    }
+    return false;
+  }
+  if (candidateGates?.status !== 'REGISTERED') {
+    errors.push('stage-a-convergence-gate-status-invalid');
+    return false;
+  }
+  const expectedKeys = [...STAGE_A_CONVERGENCE_GATE_KEYS, 'oracleSpecification'];
+  if (!exactSet(Object.keys(candidateGates), expectedKeys)) {
+    if (exactSet(Object.keys(candidateGates), STAGE_A_CONVERGENCE_GATE_KEYS)) {
+      errors.push('stage-a-convergence-actual-oracle-unspecified');
+    } else {
+      errors.push('stage-a-convergence-registered-gate-contract-invalid');
+    }
+    return false;
+  }
+  if (!exactSet(candidateGates.requiredTaskIds, STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS)
+    || !candidateGates.tasks
+    || typeof candidateGates.tasks !== 'object'
+    || Array.isArray(candidateGates.tasks)
+    || !exactSet(Object.keys(candidateGates.tasks), STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS)) {
+    errors.push('stage-a-convergence-registered-gate-contract-invalid');
+    return false;
+  }
+  const oracle = candidateGates.oracleSpecification;
+  if (!oracle
+    || !exactSet(Object.keys(oracle), [
+      'schemaVersion', 'kind', 'actualProductBehavior', 'independentVerifier',
+      'cases', 'commandBindings',
+    ])
+    || oracle.schemaVersion !== STAGE_A_CONVERGENCE_ORACLE_SCHEMA
+    || oracle.kind !== 'actual-product-behavior-v1'
+    || oracle.actualProductBehavior !== true
+    || oracle.independentVerifier !== true
+    || !Array.isArray(oracle.cases)
+    || oracle.cases.length < 2
+    || oracle.cases.some((row) => !row
+      || !exactSet(Object.keys(row), ['id', 'taskId', 'negativeCounterexample', 'observes'])
+      || typeof row.id !== 'string'
+      || !STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.includes(row.taskId)
+      || typeof row.negativeCounterexample !== 'string'
+      || row.negativeCounterexample.trim() === ''
+      || !Array.isArray(row.observes)
+      || row.observes.length === 0)
+    || !oracle.commandBindings
+    || typeof oracle.commandBindings !== 'object'
+    || Array.isArray(oracle.commandBindings)
+    || !exactSet(Object.keys(oracle.commandBindings), STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS)
+    || STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.some((taskId) => {
+      const binding = oracle.commandBindings[taskId];
+      return !binding
+        || !exactSet(Object.keys(binding), ['owned', 'rolling', 'shadow'])
+        || ['owned', 'rolling', 'shadow'].some((kind) => {
+          const argv = binding[kind];
+          return !Array.isArray(argv)
+            || argv.length < 2
+            || argv.some((entry) => !validCandidateGateArg(entry));
+        });
+    })) {
+    errors.push('stage-a-convergence-actual-oracle-unspecified');
+    return false;
+  }
+  return true;
+}
+
+export function validateStageAConvergence({
+  stageAConvergence,
   tasksText,
   ownership,
+  ownershipText = null,
+  taskIds = null,
+  requireActive = true,
+  errors = [],
+}) {
+  const errorCountBefore = errors.length;
+  const contract = stageAConvergence;
+  if (!contract || typeof contract !== 'object' || Array.isArray(contract)) {
+    errors.push('stage-a-convergence-contract-missing');
+    return Object.freeze({ valid: false, active: false, ownership });
+  }
+  if (!exactSet(Object.keys(contract), STAGE_A_CONVERGENCE_EXPECTED_KEYS)) {
+    errors.push('stage-a-convergence-contract-shape-invalid');
+  }
+  if (contract.schemaVersion !== 'hex-final-closure-stage-a-convergence/v1'
+    || contract.route !== 'CANONICAL_OWNER_POST_HANDOFF_T064'
+    || contract.campaignStage !== 'STAGE_A'
+    || !['UNPUBLISHED_DRAFT', 'ACTIVE'].includes(contract.status)) {
+    errors.push('stage-a-convergence-contract-header-invalid');
+  }
+  if (!contract.identity
+    || !exactSet(Object.keys(contract.identity), ['algorithm', 'sha256'])
+    || contract.identity.algorithm !== 'sha256-canonical-json-without-identity-v1'
+    || !validSha256(contract.identity.sha256)
+    || contract.identity.sha256 !== canonicalStageAConvergenceDigest(contract)) {
+    errors.push('stage-a-convergence-identity-invalid');
+  }
+
+  const predecessor = contract.predecessor;
+  if (!predecessor || typeof predecessor !== 'object' || Array.isArray(predecessor)
+    || !exactSet(Object.keys(predecessor), STAGE_A_CONVERGENCE_PREDECESSOR_KEYS)
+    || !validSha1(predecessor.headSha)
+    || !validSha1(predecessor.treeSha)
+    || !validSha256(predecessor.tasksPrefixSha256)
+    || !validSha256(predecessor.draftTasksSha256)
+    || !validSha256(predecessor.ownershipSha256)
+    || !validSha256(predecessor.integrationInventorySha256)
+    || !validSha256(predecessor.closureLedgerSha256)
+    || !/^[0-9a-f]{32}$/.test(String(predecessor.frozenFoundationOwnershipDigest || ''))
+    || predecessor.frozenFoundationOwnershipDigest !== FROZEN_FOUNDATION_OWNERSHIP_DIGEST
+    || !/^[0-9a-f]{32}$/.test(String(predecessor.frozenInitialCandidateGateDigest || ''))
+    || predecessor.frozenInitialCandidateGateDigest !== FROZEN_INITIAL_CANDIDATE_GATE_DIGEST
+    || !Number.isSafeInteger(predecessor.tasksPrefixCodeUnits)
+    || predecessor.tasksPrefixCodeUnits < 0
+    || !Number.isSafeInteger(predecessor.tasksPrefixByteLength)
+    || predecessor.tasksPrefixByteLength < 0) {
+    errors.push('stage-a-convergence-predecessor-invalid');
+  } else {
+    const taskSource = String(tasksText || '');
+    const prefix = taskSource.slice(0, predecessor.tasksPrefixCodeUnits);
+    if (sha256Text(prefix) !== predecessor.tasksPrefixSha256
+      || Buffer.byteLength(prefix) !== predecessor.tasksPrefixByteLength) {
+      errors.push('stage-a-convergence-task-prefix-mismatch');
+    }
+    if (sha256Text(taskSource) !== predecessor.draftTasksSha256) {
+      errors.push('stage-a-convergence-task-append-mismatch');
+    }
+  }
+  if (ownershipText == null) {
+    errors.push('stage-a-convergence-base-registry-bytes-missing');
+  } else if (sha256Text(String(ownershipText)) !== predecessor?.ownershipSha256) {
+    errors.push('stage-a-convergence-base-registry-digest-mismatch');
+  }
+
+  const materializationErrors = [];
+  const effectiveOwnership = materializeStageAConvergenceOwnership({
+    ownership,
+    stageAConvergence: contract,
+    errors: materializationErrors,
+  });
+  errors.push(...materializationErrors);
+  const routeTaskDependencies = dependencyMap(taskBlocks(tasksText));
+  const extension = contract.ownershipExtension;
+  if (!extension
+    || !exactSet(Object.keys(extension), STAGE_A_CONVERGENCE_EXTENSION_KEYS)
+    || extension.schemaVersion !== STAGE_A_CONVERGENCE_OWNERSHIP_EXTENSION_SCHEMA
+    || extension.basePath !== 'specs/005-analysis-final-closure/contracts/task-ownership.json'
+    || !validSha256(extension.baseSha256)
+    || extension.baseSha256 !== predecessor?.ownershipSha256
+    || extension.appendOnly !== true
+    || !extension.tasks
+    || typeof extension.tasks !== 'object'
+    || Array.isArray(extension.tasks)
+    || !exactSet(Object.keys(extension.tasks), STAGE_A_CONVERGENCE_TASK_IDS)
+    || !extension.candidateGates
+    || !exactSet(Object.keys(extension.candidateGates), ['status', 'tasks', 'reason'])
+    || extension.candidateGates.status !== 'UNREGISTERED'
+    || !extension.candidateGates.tasks
+    || Object.keys(extension.candidateGates.tasks).length !== 0
+    || extension.candidateGates.reason !== STAGE_A_CONVERGENCE_ORACLE_REASON) {
+    errors.push('stage-a-convergence-ownership-extension-invalid');
+  }
+  for (const taskId of STAGE_A_CONVERGENCE_TASK_IDS) {
+    const extensionRow = extension?.tasks?.[taskId];
+    const expectedPaths = STAGE_A_CONVERGENCE_EXPECTED_PATHS[taskId];
+    const assignment = contract.pathAssignments?.[taskId];
+    if (!extensionRow
+      || !exactSet(Object.keys(extensionRow), STAGE_A_CONVERGENCE_TASK_ROW_KEYS)
+      || !Array.isArray(extensionRow.allowedPaths)
+      || !exactSet(extensionRow.allowedPaths, expectedPaths)
+      || extensionRow.allowedPaths.some((repoPath) => !validAllowPattern(repoPath))
+      || !Array.isArray(extensionRow.forbiddenOverlap)
+      || extensionRow.forbiddenOverlap.length === 0
+      || extensionRow.forbiddenOverlap.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+      errors.push(`stage-a-convergence-owner-row-invalid:${taskId}`);
+      continue;
+    }
+    if (canonicalJson(effectiveOwnership.tasks?.[taskId]) !== canonicalJson(extensionRow)) {
+      errors.push(`stage-a-convergence-owner-row-not-materialized:${taskId}`);
+    }
+    if (!assignment
+      || !exactSet(Object.keys(assignment), STAGE_A_CONVERGENCE_TASK_ROW_KEYS)
+      || canonicalJson(assignment.allowedPaths) !== canonicalJson(extensionRow.allowedPaths)
+      || canonicalJson(assignment.forbiddenOverlap) !== canonicalJson(extensionRow.forbiddenOverlap)) {
+      errors.push(`stage-a-convergence-path-assignment-row-invalid:${taskId}`);
+    }
+    if (ownership?.tasks?.[taskId] != null) {
+      errors.push(`stage-a-convergence-owner-row-rewrites-existing:${taskId}`);
+    }
+    for (let index = 0; index < expectedPaths.length; index += 1) {
+      const repoPath = expectedPaths[index];
+      const owners = Object.entries(effectiveOwnership.tasks || {})
+        .filter(([, row]) => (row?.allowedPaths || []).some((pattern) => pathAllowed(repoPath, [pattern])))
+        .map(([ownerTaskId]) => ownerTaskId);
+      const concurrentOwners = owners.filter((ownerTaskId) => ownerTaskId !== taskId
+        && !transitivelyDepends(taskId, ownerTaskId, routeTaskDependencies));
+      if (!owners.includes(taskId) || concurrentOwners.length > 0) {
+        errors.push(`stage-a-convergence-owner-path-not-exclusive:${taskId}:${repoPath}`);
+      }
+    }
+  }
+
+  if (canonicalJson(contract.taskClasses) !== canonicalJson(STAGE_A_CONVERGENCE_EXPECTED_CLASSES)) {
+    errors.push('stage-a-convergence-task-classes-invalid');
+  }
+  if (!exactSet(Object.keys(contract.dependencies || {}), STAGE_A_CONVERGENCE_TASK_IDS)) {
+    errors.push('stage-a-convergence-dependency-task-set-invalid');
+  }
+  const blocks = taskBlocks(tasksText);
+  const parsedTaskIds = blocks
+    .map((block) => block.match(/^- \[[ x]\] (T\d{3})\b/m)?.[1])
+    .filter(Boolean);
+  const effectiveTaskIds = Array.isArray(taskIds) ? taskIds : parsedTaskIds;
+  const taskDependencies = dependencyMap(blocks);
+  for (const taskId of STAGE_A_CONVERGENCE_TASK_IDS) {
+    const expectedDependencies = STAGE_A_CONVERGENCE_EXPECTED_DEPENDENCIES[taskId];
+    if (!exactSet(contract.dependencies?.[taskId], expectedDependencies)
+      || !exactSet(taskDependencies.get(taskId), expectedDependencies)
+      || !effectiveTaskIds.includes(taskId)) {
+      errors.push(`stage-a-convergence-dependency-invalid:${taskId}`);
+    }
+    const block = blocks.find((candidate) => new RegExp(`^- \\[ \\] ${taskId}\\b`, 'm').test(candidate));
+    if (!block || taskStatusMap([block]).get(taskId) !== 'PENDING') {
+      errors.push(`stage-a-convergence-task-status-invalid:${taskId}`);
+    }
+  }
+  if (taskDependencies.get('T013')?.includes('T064')) {
+    errors.push('stage-a-convergence-t064-static-dependency-on-t013');
+  }
+  if (taskDependencies.get('T018')?.includes('T064')) {
+    errors.push('stage-a-convergence-t064-static-dependency-on-t018');
+  }
+  if (!exactSet(taskDependencies.get('T049'), ['T046', 'T058', 'T060', 'T061'])) {
+    errors.push('stage-a-convergence-t049-static-dependencies-changed');
+  }
+  if (!exactSet(taskDependencies.get('T018'), [
+    'T011', 'T012', 'T013', 'T014', 'T015', 'T016', 'T017',
+    'T049', 'T051', 'T052', 'T053', 'T054', 'T055', 'T056', 'T057',
+  ])) {
+    errors.push('stage-a-convergence-t018-static-dependencies-changed');
+  }
+  if (canonicalJson(contract.pathAssignments?.T062?.allowedPaths)
+      !== canonicalJson(STAGE_A_CONVERGENCE_EXPECTED_PATHS.T062)
+    || canonicalJson(contract.pathAssignments?.T063?.allowedPaths)
+      !== canonicalJson(STAGE_A_CONVERGENCE_EXPECTED_PATHS.T063)
+    || canonicalJson(contract.pathAssignments?.T064?.allowedPaths)
+      !== canonicalJson(STAGE_A_CONVERGENCE_EXPECTED_PATHS.T064)) {
+    errors.push('stage-a-convergence-path-assignment-invalid');
+  }
+  if (stableDigest(Object.fromEntries(['T011', 'T012', 'T013', 'T017']
+    .map((taskId) => [taskId, ownership?.tasks?.[taskId]])))
+      !== contract.retainedOwnerDigests?.T011_T012_T013_T017) {
+    errors.push('stage-a-convergence-retained-owner-digest-invalid');
+  }
+  const requiredRegistrationPaths = [
+    'tools/validation/final-closure/preflight.mjs',
+    'tests/final-closure/preflight.test.mjs',
+    'specs/005-analysis-final-closure/contracts/task-ownership.json',
+    'specs/005-analysis-final-closure/contracts/integration-inventory.json',
+    'specs/005-analysis-final-closure/spec.md',
+    'specs/005-analysis-final-closure/plan.md',
+    'specs/005-analysis-final-closure/data-model.md',
+    'specs/005-analysis-final-closure/contracts/closure-ledger.md',
+    'specs/005-analysis-final-closure/tasks.md',
+  ];
+  const requiredRegistrationActions = [
+    'register-T062-T063-T064-task-classes-through-an-append-only-extension',
+    'retain-candidate-gates-unregistered-until-an-independent-actual-product-oracle-is-specified',
+    'exclude-convergence-tasks-from-Stage-B-and-T048-dynamic-rule',
+    'include-T063-T064-in-Stage-A-checkpoint-component-set',
+    'bind-T063-admission-to-exact-T011-and-T017-handoffs',
+    'bind-T013-admission-to-accepted-T063-checkpoint',
+    'bind-T064-activation-to-exact-T013-handoff',
+    'bind-T018-closure-to-accepted-T064-checkpoint',
+    'preserve-all-frozen-history-and-digests',
+  ];
+  if (!contract.registration
+    || contract.registration.requiredOwner !== 'T046-or-reviewed-exact-successor'
+    || !exactSet(contract.registration.requiredPaths, requiredRegistrationPaths)
+    || !exactSet(contract.registration.requiredActions, requiredRegistrationActions)) {
+    errors.push('stage-a-convergence-registration-rules-invalid');
+  }
+  if (!contract.closureRules
+    || contract.closureRules.checkpointOwner !== 'T049'
+    || contract.closureRules.t013Admission !== 'requires-an-accepted-T063-producer-checkpoint-but-never-T064'
+    || contract.closureRules.t018Admission !== 'requires-an-accepted-T064-checkpoint-after-T013-handoff'
+    || !exactSet(contract.closureRules.t064MayNotGate, ['T013'])
+    || !exactSet(contract.closureRules.staticTaskDependencyAdditions, [])
+    || !exactSet(contract.closureRules.t049StaticDependencyAdditions, [])) {
+    errors.push('stage-a-convergence-closure-rules-invalid');
+  }
+  if (!contract.immutableHistory
+    || Object.entries(contract.immutableHistory).some(([, value]) => value !== true)) {
+    errors.push('stage-a-convergence-immutable-history-invalid');
+  }
+  const candidateGateRegistered = validateStageAConvergenceOracleRegistration(
+    contract.candidateGates,
+    errors,
+  );
+  if (contract.status === 'UNPUBLISHED_DRAFT' && candidateGateRegistered) {
+    errors.push('stage-a-convergence-draft-gates-must-be-unregistered');
+  }
+  if (contract.status === 'ACTIVE' && !candidateGateRegistered) {
+    errors.push('stage-a-convergence-active-oracle-not-admitted');
+  }
+  if (requireActive && (!candidateGateRegistered || contract.status !== 'ACTIVE')) {
+    errors.push('stage-a-convergence-candidate-gates-unregistered');
+  }
+  return Object.freeze({
+    valid: errors.length === errorCountBefore,
+    active: contract.status === 'ACTIVE' && candidateGateRegistered,
+    candidateGateRegistered,
+    ownership: effectiveOwnership,
+  });
+}
+
+export function validatePreflightContracts({
+  tasksText,
+  ownership: baseOwnership,
+  ownershipText = null,
+  stageAConvergence = null,
   integrationInventory,
   platformLocks,
   performanceLocks,
@@ -2301,6 +2765,13 @@ export function validatePreflightContracts({
   expectedBaseSha = null,
 }) {
   const errors = [];
+  const ownership = stageAConvergence
+    ? materializeStageAConvergenceOwnership({
+      ownership: baseOwnership,
+      stageAConvergence,
+      errors,
+    })
+    : baseOwnership;
   const blocks = taskBlocks(tasksText);
   const parsedTaskIds = blocks.map((block) => block.match(/^- \[[ x]\] (T\d{3})\b/m)?.[1]).filter(Boolean);
   const taskIds = [...parsedTaskIds].sort();
@@ -2410,6 +2881,17 @@ export function validatePreflightContracts({
     shadowAuthority,
     errors,
   });
+  const stageAConvergenceResult = taskIds.some(isStageAConvergenceTask)
+    ? validateStageAConvergence({
+      stageAConvergence,
+      tasksText,
+      ownership: baseOwnership,
+      ownershipText,
+      taskIds,
+      requireActive: true,
+      errors,
+    })
+    : null;
   const checkpointResult = validateCheckpointContract({
     integrationInventory,
     inventoryResult,
@@ -2550,6 +3032,7 @@ export function validatePreflightContracts({
     taskHandoffResult,
     stageBApplicability,
     candidateGateResult,
+    stageAConvergenceResult,
     originalWorkspaceLock,
   });
 }
@@ -5775,6 +6258,14 @@ function contractBundle(root, commitSha = null) {
     ? fs.readFileSync(path.join(root, relativePath), 'utf8')
     : readTextAt(root, commitSha, relativePath));
   const json = (relativePath) => JSON.parse(text(relativePath));
+  const stageAConvergenceText = readOptionalText(
+    root,
+    STAGE_A_CONVERGENCE_CONTRACT_PATH,
+    commitSha,
+  );
+  const stageAConvergence = stageAConvergenceText == null
+    ? null
+    : JSON.parse(stageAConvergenceText);
   const integrationInventory = json('specs/005-analysis-final-closure/contracts/integration-inventory.json');
   const t025Handoff = integrationInventory?.taskHandoffs?.T025;
   const roadmapMatrixPath = 'specs/005-analysis-final-closure/evidence/roadmap-matrix.md';
@@ -5790,6 +6281,8 @@ function contractBundle(root, commitSha = null) {
   return Object.freeze({
     tasksText: text('specs/005-analysis-final-closure/tasks.md'),
     ownership: json('specs/005-analysis-final-closure/contracts/task-ownership.json'),
+    ownershipText: text('specs/005-analysis-final-closure/contracts/task-ownership.json'),
+    stageAConvergence,
     integrationInventory,
     platformLocks: json('specs/005-analysis-final-closure/contracts/final-platform-locks.json'),
     performanceLocks: json('specs/005-analysis-final-closure/contracts/performance-locks.json'),
