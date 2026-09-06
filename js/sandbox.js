@@ -634,9 +634,11 @@ function normalizeSandboxIndex(mode, index) {
   return typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : null;
 }
 
+const MAX_TIMER_DELAY = 2_147_483_647;
+
 function normalizeSandboxTimeout(timeout) {
   if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0) return null;
-  return Math.max(50, timeout);
+  return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
 }
 
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
