@@ -91,13 +91,16 @@ const EXTRA_API_TABLE = [
   { id:'libc_sort', re:/^_?(?:qsort|mergesort)$/, cat:'memory', args:null, ret:null, effect:'write' },
   { id:'libc_io_runtime', re:/^_?(?:perror|close\$NOCANCEL)$/, cat:'io', args:null, ret:null, effect:'io' },
   { id:'libc_posix_memalign', re:/^_?posix_memalign$/, cat:'memory', args:null, ret:null, effect:'write' },
-  // Darwin malloc_size inspects an existing allocation; it does not allocate.
+  // Darwin malloc_size is an allocator-introspection query, not an allocator.
+  // Keep it distinct from malloc so callers cannot infer allocation effects.
   { id:'libc_malloc_size', re:/^_?malloc_size$/, cat:'memory', args:['ptr'], ret:'length', effect:'read' },
   { id:'libc_difftime', re:/^_?difftime$/, cat:'runtime', args:null, ret:'number', effect:'pure' },
   // reallocf allocates a new heap buffer and frees the original one on
   // allocation failure, so it keeps the allocation contract with a heap return.
   { id:'libc_reallocf', re:/^_?reallocf$/, cat:'memory', args:null, ret:'heap', effect:'alloc' },
   { id:'libc_runtime', re:/^_?(?:atexit|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
+  // os_log_create creates a logging handle; os_log_type_enabled only queries
+  // whether the configured handle/type is enabled. Neither emits a log record.
   { id:'os_log_create', re:/^_?os_log_create$/, cat:'log', args:['subsystem','category'], ret:'handle', effect:'runtime' },
   { id:'os_log_type_enabled', re:/^_?os_log_type_enabled$/, cat:'log', args:['log','type'], ret:'status', effect:'read' },
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },

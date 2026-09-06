@@ -67,6 +67,30 @@ assert.deepEqual(apiInfo('printf'), {
 assert.deepEqual(apiInfo('fprintf').args, ['stream', 'format']);
 assert.equal(apiInfo('fprintf').formatArg, 1);
 
+for (const name of ['malloc_size', '_malloc_size']) {
+  const info = apiInfo(name);
+  assert.equal(info?.id, 'libc_malloc_size', `${name} must use the allocator-introspection contract`);
+  assert.deepEqual(info?.args, ['ptr']);
+  assert.equal(info?.ret, 'length');
+  assert.equal(info?.effect, 'read');
+}
+
+for (const name of ['os_log_create', '_os_log_create']) {
+  const info = apiInfo(name);
+  assert.equal(info?.id, 'os_log_create', `${name} must use the logging-handle contract`);
+  assert.deepEqual(info?.args, ['subsystem', 'category']);
+  assert.equal(info?.ret, 'handle');
+  assert.equal(info?.effect, 'runtime');
+}
+
+for (const name of ['os_log_type_enabled', '_os_log_type_enabled']) {
+  const info = apiInfo(name);
+  assert.equal(info?.id, 'os_log_type_enabled', `${name} must use the log-enabled query contract`);
+  assert.deepEqual(info?.args, ['log', 'type']);
+  assert.equal(info?.ret, 'status');
+  assert.equal(info?.effect, 'read');
+}
+
 for (const name of [
   'malloc', '_malloc', 'calloc', 'valloc',
   '_Znwm', '_Znam',
