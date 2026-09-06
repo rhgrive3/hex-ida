@@ -19,6 +19,46 @@ function validateInterventionDraft(ledger, input) {
   return record;
 }
 
+function registerCallOptions(callOptions) {
+  if (callOptions === null) {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (typeof callOptions !== 'object') {
+    return { threadId: callOptions, parentInterventionIds: [] };
+  }
+
+  let prototype;
+  let descriptors;
+  try {
+    prototype = Object.getPrototypeOf(callOptions);
+    descriptors = Object.getOwnPropertyDescriptors(callOptions);
+  } catch {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new DebugAdapterError('runtime-invalid-register-call-options', 'register write options must be a plain data object');
+  }
+
+  const ownData = (key) => {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, key)) return undefined;
+    const descriptor = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('runtime-invalid-register-call-options', `register write option ${key} must be a data property`);
+    }
+    return descriptor.value;
+  };
+  return {
+    threadId: ownData('threadId'),
+    parentInterventionIds: ownData('parentInterventionIds') ?? [],
+  };
+}
+
 function moduleBindingKey(module, index) {
   return module?.bindingKey ?? module?.moduleKey ?? module?.id ?? module?.uuid ?? module?.name ?? `module:${index}`;
 }
@@ -122,18 +162,16 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
-        const threadId = callOptions && typeof callOptions === 'object'
-          ? callOptions.threadId
-          : callOptions;
+        const normalizedCallOptions = registerCallOptions(callOptions);
         const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
           target: { register: String(name) },
           requestedChange: { value },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          parentInterventionIds: normalizedCallOptions.parentInterventionIds,
         });
-        const raw = await this.adapter.writeRegister(name, value, threadId);
+        const raw = await this.adapter.writeRegister(name, value, normalizedCallOptions.threadId);
         const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
@@ -194,7 +232,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
 
     const originalClose = session.close.bind(session);
     session.close = async () => {
-      if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
+      if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {}
       unsubscribe = null;
       return originalClose();
     };

@@ -53,6 +53,46 @@ assert.equal(
   'legacy scalar threadId remains supported by the compatibility facet',
 );
 
+const writesBeforeMalformed = writes.length;
+const interventionsBeforeMalformed = session.facets.debugger.interventions.all().length;
+const inheritedOptions = Object.create({
+  threadId: 'thread-from-prototype',
+  parentInterventionIds: [first.intervention.interventionId],
+});
+await assert.rejects(
+  session.facets.debugger.writeRegister('x4', 5n, inheritedOptions),
+  (error) => error?.code === 'runtime-invalid-register-call-options',
+  'prototype-bearing options must fail closed before transport or ledger mutation',
+);
+assert.equal(writes.length, writesBeforeMalformed);
+assert.equal(session.facets.debugger.interventions.all().length, interventionsBeforeMalformed);
+
+await assert.rejects(
+  session.facets.debugger.writeRegister('x5', 6n, null),
+  (error) => error?.code === 'runtime-invalid-register-call-options',
+  'null options must fail predictably before transport or ledger mutation',
+);
+assert.equal(writes.length, writesBeforeMalformed);
+assert.equal(session.facets.debugger.interventions.all().length, interventionsBeforeMalformed);
+
+let accessorReads = 0;
+const accessorOptions = {};
+Object.defineProperty(accessorOptions, 'threadId', {
+  enumerable: true,
+  get() {
+    accessorReads += 1;
+    return 'thread-from-accessor';
+  },
+});
+await assert.rejects(
+  session.facets.debugger.writeRegister('x6', 7n, accessorOptions),
+  (error) => error?.code === 'runtime-invalid-register-call-options',
+  'accessor-backed options must fail closed without invoking caller code',
+);
+assert.equal(accessorReads, 0);
+assert.equal(writes.length, writesBeforeMalformed);
+assert.equal(session.facets.debugger.interventions.all().length, interventionsBeforeMalformed);
+
 await session.close();
 
 console.log('runtime debugger register thread routing #4642: PASS');
