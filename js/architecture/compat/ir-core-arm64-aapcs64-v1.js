@@ -1712,11 +1712,15 @@ export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
   let entries = irCache.get(model);
   if (!entries) { entries = new Map(); irCache.set(model, entries); }
-  const key = irConfigurationKey(opts);
-  if (entries.has(key)) return entries.get(key);
+  // Cache identity generation must not break the never-throw contract:
+  // unserializable prototype metadata (BigInt, cycles) simply bypasses the
+  // cache instead of leaking a TypeError.
+  let key = null;
+  try { key = irConfigurationKey(opts); } catch { key = null; }
+  if (key != null && entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (ir != null) entries.set(key, ir);
+  if (ir != null && key != null) entries.set(key, ir);
   return ir;
 }
 

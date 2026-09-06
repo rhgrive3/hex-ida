@@ -54,10 +54,25 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
     const type = receiverType.replace(/\s*\*+\s*$/, '');
     const chain = new Set();
+    let hierarchyComplete = true;
     let cur = type, guard = 0;
     while (cur && guard++ < 64 && !chain.has(cur)) {
       chain.add(cur);
-      cur = objcIndex.classes?.get(cur)?.superName || null;
+      const cls = objcIndex.classes?.get(cur);
+      if (!cls) { hierarchyComplete = false; break; }
+      cur = cls.superName || null;
+    }
+    if (cur) hierarchyComplete = false;
+    if (!hierarchyComplete) {
+      return {
+        resolved: null,
+        candidates,
+        confidence: candidates.length ? 0.55 : 0,
+        reason: candidates.length
+          ? 'receiver class hierarchy is unavailable or incomplete; IMP candidates are inconclusive'
+          : 'IMP not found in parsed metadata',
+        partial: true,
+      };
     }
     candidates = candidates.filter((m) => chain.has(m.className));
   }

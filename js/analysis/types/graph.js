@@ -737,17 +737,70 @@ export function createTypeResult(input = {}) {
   });
 }
 
+class ReadOnlyResultMap {
+  #map;
+
+  constructor(entries) {
+    this.#map = new Map(entries);
+    Object.freeze(this);
+  }
+
+  get size() {
+    return this.#map.size;
+  }
+
+  get(key) {
+    return this.#map.get(key);
+  }
+
+  has(key) {
+    return this.#map.has(key);
+  }
+
+  entries() {
+    return this.#map.entries();
+  }
+
+  keys() {
+    return this.#map.keys();
+  }
+
+  values() {
+    return this.#map.values();
+  }
+
+  [Symbol.iterator]() {
+    return this.#map[Symbol.iterator]();
+  }
+
+  forEach(callback, thisArg) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    for (const [key, value] of this.#map) callback.call(thisArg, value, key, this);
+  }
+
+  set() {
+    throw new TypeError('TypeGraphResult.results is read-only');
+  }
+
+  delete() {
+    throw new TypeError('TypeGraphResult.results is read-only');
+  }
+
+  clear() {
+    throw new TypeError('TypeGraphResult.results is read-only');
+  }
+}
+
+// Preserve the established Map-compatible public surface without giving callers
+// a real Map internal slot that intrinsic mutators can target.
+Object.setPrototypeOf(ReadOnlyResultMap.prototype, Map.prototype);
+Object.freeze(ReadOnlyResultMap.prototype);
+
 export function createTypeGraphResult(input = {}) {
   const status = input.status;
   if (!status) fail('type-graph-result-status-required');
   const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
-  const readOnlyMap = new Map();
-  for (const [key, value] of rawMap) {
-    readOnlyMap.set(key, value);
-  }
-  readOnlyMap.set = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.delete = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.clear = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  const readOnlyMap = new ReadOnlyResultMap(rawMap);
 
   return Object.freeze({
     schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,

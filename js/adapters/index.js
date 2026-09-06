@@ -9,8 +9,17 @@ import { STACK_TOP } from '../emu.js';
 const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
-function cloneRegisters(emu) {
-  const out = {};
+// Execution budgets measure elapsed time, so they must use a monotonic
+// clock. Date.now() can jump on NTP/manual/VM correction and would delay or
+// fast-fire run timeouts.
+function defaultMonotonicNow() {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  } catch { /* fall through to wall clock */ }
+  return Date.now();
+}
+
+function cloneRegisters(emu) {  const out = {};
   for (let i = 0; i <= 30; i++) out[`x${i}`] = emu.get(`x${i}`);
   out.sp = emu.sp; out.pc = emu.pc; return out;
 }
@@ -257,7 +266,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
-    const started = Date.now();
+    const monotonicNow = typeof options.monotonicNow === 'function' ? options.monotonicNow : defaultMonotonicNow;
     const onAbort = () => {
       run.cancelled = true;
       run.sandbox.emulator.stopped = 'cancelled';
@@ -269,11 +278,15 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
+    let started;
     try {
+      // The initial clock sample is inside the cleanup boundary: an injected
+      // clock that throws on first read must not leak the active run.
+      started = monotonicNow();
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
-        else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
+        else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
@@ -373,8 +386,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       data = Uint8Array.from(source);
     }
     if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+    // Validate the address before the empty-write fast path: a 0-byte write
+    // must not launder an invalid address into a success result.
+    const start = asAddress(address);
     if (!data.length) return { written:0 };
-    const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
+    memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
       for (let i=0;i<data.length;i+=8) {

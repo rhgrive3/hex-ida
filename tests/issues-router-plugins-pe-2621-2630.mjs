@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { ProductRouter, createChildTaskScope } from '../js/ui/router.js';
-import { PluginHost } from '../js/plugins.js';
+import { PluginHost, pluginManifestDigest } from '../js/plugins.js';
 import { ByteView } from '../js/binary/reader.js';
 import { parseTlsDirectory } from '../js/binary/pe-loader.js';
 
@@ -102,15 +102,18 @@ try {
     await host.ready;
 
     // Pre-seed v3 manifest into localStorage
+    const fastSource = 'hex.plugin({ name: "FastPlugin", description: "demo" });';
+    const fastDefinitions = [
+      { index: 0, name: 'FastPlugin', description: 'demo' },
+    ];
     const v3Data = [
       {
         v: 3,
         installationId: 'test-uuid-1',
-        source: 'hex.plugin({ name: "FastPlugin", description: "demo" });',
+        source: fastSource,
         origin: 'test',
-        definitions: [
-          { index: 0, name: 'FastPlugin', description: 'demo' },
-        ],
+        definitions: fastDefinitions,
+        digest: pluginManifestDigest(fastSource, fastDefinitions),
         enabledIndexes: [0],
       },
     ];
