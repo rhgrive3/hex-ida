@@ -63,7 +63,8 @@ function record(value) {
 
 function sameScalar(left, right) {
   if (left == null || right == null) return left == null && right == null;
-  return String(left) === String(right);
+  if (typeof left !== typeof right) return false;
+  return (typeof left === 'string' || typeof left === 'number') && left === right;
 }
 
 function sameProfile(left, right) {
@@ -196,7 +197,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
   if (typeof input !== 'string' || !input.trim()
     || hidden.canonicalInput !== input
     || hidden.location !== 'register'
-    || !Number.isSafeInteger(Number(hidden.pointerBits)) || Number(hidden.pointerBits) <= 0
+    || positiveInteger(hidden.pointerBits) == null
     || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
     || !sameScalar(hidden.abiId, raw.abiId)
     || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)
@@ -325,6 +326,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   const physicalStackRanges = [];
   let cursor = 0;
   let coveredBits = 0;
+  let previousRegisterLane = null;
 
   for (let index = 0; index < rawPieces.length; index++) {
     const piece = rawPieces[index];
@@ -334,11 +336,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     const hasRegister = typeof rawReg === 'string' && rawReg.trim().length > 0;
     const hasStack = rawStackOffset != null;
     if (hasRegister === hasStack) return null;
-    if (hasRegister) {
-      if (declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
-      if (pieceRegisters.has(String(rawReg))) return null;
-      pieceRegisters.add(String(rawReg));
-    }
+    if (hasRegister && declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
     const stackOffset = hasStack ? offsetValue(rawStackOffset) : null;
     if (hasStack && stackOffset == null) return null;
 
@@ -352,6 +350,19 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     if (!Object.hasOwn(piece, 'abiClass')) return null;
     const abiClass = piece.abiClass;
     if (typeof abiClass !== 'string' || !abiClass.trim()) return null;
+    const normalizedAbiClass = abiClass.trim().toUpperCase();
+    if (hasRegister) {
+      const register = String(rawReg);
+      if (normalizedAbiClass === 'SSEUP') {
+        if (!previousRegisterLane
+          || previousRegisterLane.register !== register
+          || !['SSE','SSEUP'].includes(previousRegisterLane.abiClass)) return null;
+      } else if (pieceRegisters.has(register)) return null;
+      pieceRegisters.add(register);
+      previousRegisterLane = { register, abiClass:normalizedAbiClass };
+    } else {
+      previousRegisterLane = null;
+    }
 
     if (hasStack) {
       // A stack destination is a physical byte range, not just a scalar

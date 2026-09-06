@@ -60,6 +60,9 @@ function asBytes(value, label = 'read result') {
 
 function effectiveMaxReadLength(requested, parentLimit = null) {
   if (requested == null) return parentLimit ?? DEFAULT_MAX_READ_LENGTH;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new ByteSourceLimitError('maxReadLength must be a positive safe integer');
+  }
   if (parentLimit == null) return requested;
   return Math.min(requested, parentLimit);
 }
@@ -160,7 +163,9 @@ export class SubrangeByteSource extends ByteSource {
 
 class DelegatingByteSource extends ByteSource {
   constructor(source, options = {}) {
-    const parentLimit = Number.isSafeInteger(source.maxReadLength) && source.maxReadLength > 0 ? source.maxReadLength : null;
+    const parentLimit = source.maxReadLength == null
+      ? null
+      : effectiveMaxReadLength(source.maxReadLength);
     super(source.size, { maxReadLength: effectiveMaxReadLength(options.maxReadLength, parentLimit) });
     this.delegate = source;
   }

@@ -20,6 +20,22 @@ assert.ok(Object.isFrozen(support.payload));
 assert.throws(() => { support.payload.value = 'changed'; }, TypeError, 'evidence must be immutable');
 assert.doesNotThrow(() => JSON.stringify(support), 'evidence must be serialization-safe');
 
+// #3582: optional binary identity must use the same canonical non-empty string boundary as evidence identity generation.
+for (const binaryId of ['', '   ', 7, {}, []]) {
+  assert.throws(
+    () => createEvidenceNode({ id:'ev-invalid-binary', family:'RuntimeEvidence', binaryId }),
+    /evidence-invalid-binary-id/,
+  );
+  assert.throws(
+    () => createClaimNode({ id:'claim-invalid-binary', targetEntityIds:['entity-a'], semanticKind:'identity', binaryId }),
+    /evidence-invalid-binary-id/,
+  );
+}
+assert.equal(createEvidenceNode({ id:'ev-trimmed-binary', family:'RuntimeEvidence', binaryId:' bin-A ' }).binaryId, 'bin-A');
+assert.equal(createClaimNode({ id:'claim-trimmed-binary', targetEntityIds:['entity-a'], semanticKind:'identity', binaryId:' bin-A ' }).binaryId, 'bin-A');
+assert.equal(createEvidenceNode({ id:'ev-null-binary', family:'RuntimeEvidence' }).binaryId, null);
+assert.equal(createClaimNode({ id:'claim-null-binary', targetEntityIds:['entity-a'], semanticKind:'identity', binaryId:null }).binaryId, null);
+
 const confidenceOnly = createClaimNode({
   id:'claim-confidence-only', family:'Claim', targetEntityIds:['entity-a'], semanticKind:'purpose', confidence:1, verdict:'confirmed', completeness:'complete',
 });

@@ -34,11 +34,23 @@ function droppedCount(value) {
   return n;
 }
 
+function collectionField(value, field) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new DebugAdapterError('trace-invalid-recording', `trace ${field} must be an array`);
+  }
+  return value;
+}
+
 function normalizeRecording(recording = {}, options = {}) {
   if (!recording || typeof recording !== 'object' || Array.isArray(recording)) throw new DebugAdapterError('trace-invalid-recording', 'trace recording must be an object');
   const maxEvents = boundedInteger(options.maxEvents, 100000, 1, 1000000, 'maxEvents');
   const maxBytes = boundedInteger(options.maxBytes, 64 * 1024 * 1024, 4096, 256 * 1024 * 1024, 'maxBytes');
-  const events = Array.isArray(recording.events) ? recording.events : Array.isArray(recording.trace?.events) ? recording.trace.events : [];
+  const events = recording.events != null
+    ? collectionField(recording.events, 'events')
+    : recording.trace?.events != null
+      ? collectionField(recording.trace.events, 'trace.events')
+      : [];
   if (events.length > maxEvents) throw new DebugAdapterError('resource-limit', `trace recording exceeds event limit (${maxEvents})`);
   if (stableStringify(recording).length * 2 > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
   const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
@@ -53,9 +65,9 @@ function normalizeRecording(recording = {}, options = {}) {
     architecture: recording.architecture ?? null,
     platform: recording.platform ?? null,
     processKey: recording.processKey ?? null,
-    modules: ownedClone(Array.isArray(recording.modules) ? recording.modules : []),
+    modules: ownedClone(collectionField(recording.modules, 'modules')),
     events: ownedClone(events),
-    interventions: ownedClone(Array.isArray(recording.interventions) ? recording.interventions : []),
+    interventions: ownedClone(collectionField(recording.interventions, 'interventions')),
     dropped,
     completeness: truncated ? 'truncated' : required(recording.completeness ?? 'bounded', 'trace-invalid-completeness', 'trace completeness must be a non-empty string'),
     sourceProvenance: ownedClone(recording.sourceProvenance ?? recording.provenance ?? null),
@@ -133,9 +145,9 @@ export class TraceProvider {
       // imported trace is external input: only canonical non-empty string
       // evidence IDs count toward proven static identity, and `unresolved`
       // must not be promoted to `resolved` by array length alone.
-      const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-      const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0
-        && identityEvidenceIds.every((id) => typeof id === 'string' && id.trim().length > 0);
+      const rawEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+      const identityEvidenceIds = rawEvidenceIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
+      const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0 && identityEvidenceIds.length === rawEvidenceIds.length;
       const hasProvenStaticIdentity = module.binaryId != null
         && (module.identityState === 'exact' || (module.identityState === 'resolved' && hasCanonicalIdentityEvidence) || hasCanonicalIdentityEvidence);
       session.modules.load({
