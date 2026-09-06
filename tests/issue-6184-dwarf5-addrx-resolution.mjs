@@ -48,7 +48,7 @@ function debugAddrSection(entries, {
 }
 
 /** One CU whose subprogram DIE uses `form` for DW_AT_low_pc with raw value `rawIndex`. */
-function buildUnit({ form, raw, addrBase = 8, version = 5, dwarf64 = false, addressSize = 4 }) {
+function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, version = 5, dwarf64 = false, addressSize = 4 }) {
   const cuName = 't.c';
   const fnName = 'fn';
   const hasAddrBase = addrBase != null;
@@ -60,6 +60,7 @@ function buildUnit({ form, raw, addrBase = 8, version = 5, dwarf64 = false, addr
     0x02, DW_TAG_subprogram, 0x00,
     DW_AT_name, DW_FORM_string,
     DW_AT_low_pc, form,
+    ...(highForm == null ? [] : [DW_AT_high_pc, highForm]),
     0x00, 0x00,
     0x00,
   ]);
@@ -90,6 +91,7 @@ function buildUnit({ form, raw, addrBase = 8, version = 5, dwarf64 = false, addr
     payload.push(addressSize);
   }
   payload.push(...die, ...(Array.isArray(raw) ? raw : [raw]));
+  if (highForm != null) payload.push(...(Array.isArray(highRaw) ? highRaw : [highRaw]));
 
   const info = [];
   const bodyLength = payload.length;
@@ -231,6 +233,34 @@ for (const [form, encoded] of [
   const records = provider.symbols(result, {}).records;
   const fn = records.find((r) => r.descriptor.isFunction);
   assert.equal(fn.address, null);
+  assert.equal(fn.descriptor.complete, false);
+  assert.equal(result.status.completeness, 'partial');
+}
+
+// 10a. An address-class high_pc cannot publish a size when low_pc is unresolved.
+// Both endpoints are required before an absolute-address range becomes authority.
+{
+  const provider = new DwarfDebugInfoProvider();
+  const { debug_info, debug_abbrev } = buildUnit({
+    form: 0x29,
+    raw: 5,
+    highForm: 0x29,
+    highRaw: 0,
+  });
+  const image = {
+    snapshotId: 'snap',
+    identity: {},
+    debugSections: {
+      debug_info,
+      debug_abbrev,
+      debug_addr: debugAddrSection([ADDRESS]),
+    },
+  };
+  const result = provider.probe(image);
+  const records = provider.symbols(result, {}).records;
+  const fn = records.find((r) => r.descriptor.isFunction);
+  assert.equal(fn.address, null);
+  assert.equal(fn.sizeBytes, null);
   assert.equal(fn.descriptor.complete, false);
   assert.equal(result.status.completeness, 'partial');
 }

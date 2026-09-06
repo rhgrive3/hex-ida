@@ -875,7 +875,9 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? Number(BigInt(highPc) - BigInt(lowPc ?? 0n))
+          ? lowPc == null
+            ? null
+            : Number(BigInt(highPc) - BigInt(lowPc))
           : Number(highPc);
       return createDebugRecord({
         kind: 'symbol',
