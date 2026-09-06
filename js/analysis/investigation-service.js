@@ -217,14 +217,34 @@ function assertAnalysisBinding(app, binding) {
   error.stale = true;
   throw error;
 }
+function rankedCandidateAddress(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function typedRankedCandidates(ranked, context) {
   const candidates = Array.from(ranked?.candidates || [], (candidate, index) => {
-    const address = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
-    const evidenceIds = [...new Set((candidate?.reasons || []).flatMap((reason) => [reason?.evidenceId, reason?.id].filter(Boolean)).map(String))];
+    const rawAddress = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
+    const address = rankedCandidateAddress(rawAddress);
+    const invalidAddress = rawAddress != null && address === undefined;
+    const evidenceIds = [...new Set((candidate?.reasons || [])
+      .flatMap((reason) => [reason?.evidenceId, reason?.id])
+      .filter((value) => typeof value === 'string' && value.length > 0))];
     return Object.freeze({
       ...candidate,
-      candidateId:`${context.snapshotId}:candidate:${address == null ? index : BigInt(address).toString(16)}`,
-      entityId:address == null ? null : `function:${BigInt(address).toString(16)}`,
+      candidateId:invalidAddress
+        ? `${context.snapshotId}:candidate:invalid:${index}`
+        : `${context.snapshotId}:candidate:${address == null ? index : address.toString(16)}`,
+      entityId:invalidAddress || address == null ? null : `function:${address.toString(16)}`,
       verdict:candidate?.verdict ?? VERDICT.NONE,
       evidenceIds,
       completeness:context.completeness.complete ? 'complete' : 'partial',
