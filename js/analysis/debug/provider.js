@@ -183,6 +183,9 @@ export function isCanonicalDebugRecord(record) {
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
   if (!identity || !record || !debugRecordMatchesIdentitySource(identity, record)) return false;
+  // Omission is also mismatch: when the identity observes a build, the
+  // record must carry that same build identity to claim authority.
+  if (identity.observed != null && record.buildIdentity !== identity.observed) return false;
   if (!isCanonicalDebugRecord(record)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
