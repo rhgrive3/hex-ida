@@ -7,6 +7,7 @@ import { createAnalysisScopeRequest, createDevAnalysisScopeRequest, toLegacyAnal
 import { DEV_RUN_IDENTITY_FIELDS, DEV_RUN_STATUS, transitionDevRun } from '../../js/ai/dev/run/dev-run.js';
 import { DEV_SUPERVISOR_PROTOCOL, DEV_SUPERVISOR_DECISION_TYPES, validateDevSupervisorDecision, parseDevSupervisorDecision } from '../../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
+import { DEV_EVENT_TYPE } from '../../js/ai/dev/events/dev-events.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 import { ScopeController, SCOPE_ORDER } from '../../js/ai/control/scope.js';
@@ -84,7 +85,7 @@ await check('dev-run-state', () => {
   assert.equal(run.chatgptProjectContext, null);
   ({ run } = supervisor.applyDecision(run, { type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }));
   assert.equal(run.status, 'ACTIVE');
-  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['ci.completed'], reason: 'wait' }));
+  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: [DEV_EVENT_TYPE.WORKER_COMPLETED], reason: 'wait' }));
   assert.equal(run.status, 'WAITING_EVENT');
   ({ run } = supervisor.applyDecision(run, { type: 'human', question: 'Security boundary?', blocking: true }));
   assert.equal(run.status, 'WAITING_HUMAN');
