@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createArtifactDescriptor } from '../../../js/core/artifacts/contracts.js';
 import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
 
 function deferred() {
@@ -17,7 +18,15 @@ async function waitState(scheduler, artifactId, state, turns = 1000) {
 }
 
 function descriptor(name) {
-  return Object.freeze({ artifactId: `artifact_${name}`, upstreamArtifactIds: [] });
+  return createArtifactDescriptor({
+    binaryId:'bin_phase4_scheduler_3813',
+    artifactKind:'phase4-scheduler-completeness-fixture',
+    producerId:'issue-3813-regression',
+    producerVersion:'1',
+    versions:{ loader:'fixture-1' },
+    relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
+    config:{ name },
+  });
 }
 
 class NoCacheStore {
