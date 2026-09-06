@@ -92,7 +92,22 @@ function ownDataValue(record, key) {
 
 function safeEnumerableDataCopy(value) {
   if (!value || typeof value !== 'object') return {};
-  try { return { ...value }; } catch { return {}; }
+  const copy = {};
+  try {
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !('value' in descriptor)) continue;
+      Object.defineProperty(copy, key, {
+        configurable:true,
+        enumerable:true,
+        writable:true,
+        value:descriptor.value,
+      });
+    }
+  } catch {
+    return {};
+  }
+  return copy;
 }
 
 function strictInteger(value) {
@@ -204,19 +219,31 @@ function withoutCallPrototype(instruction) {
 }
 
 function guardedProviderOptions(options = {}, state) {
-  if (!options || typeof options !== 'object' || typeof options.callPrototypeFor !== 'function') return options;
-  const provider = options.callPrototypeFor;
-  return {
-    ...options,
-    callPrototypeFor(...args) {
-      const prototype = provider.apply(options, args);
-      if (!strictPrototype(prototype)) {
-        state.invalid = true;
-        return null;
-      }
-      return prototype;
-    },
+  if (!options || typeof options !== 'object') return options;
+  const providerEntry = ownDataValue(options, 'callPrototypeFor');
+  if (providerEntry.accessor) {
+    state.invalid = true;
+    return sanitizedClassifierOptions(options);
+  }
+  const guarded = safeEnumerableDataCopy(options);
+  if (!providerEntry.present) {
+    guarded.callPrototypeFor = null;
+    return guarded;
+  }
+  const provider = providerEntry.value;
+  if (typeof provider !== 'function') {
+    guarded.callPrototypeFor = provider;
+    return guarded;
+  }
+  guarded.callPrototypeFor = function guardedCallPrototypeFor(...args) {
+    const prototype = provider.apply(options, args);
+    if (!strictPrototype(prototype)) {
+      state.invalid = true;
+      return null;
+    }
+    return prototype;
   };
+  return guarded;
 }
 
 function invalidReturnClassification() {
