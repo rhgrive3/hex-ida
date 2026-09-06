@@ -3,6 +3,8 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  parseExceptionFunctions as parseExceptionFunctionsCore,
+  parseLoadConfig as parseLoadConfigCore,
 } from './pe-loader-core.js';
 
 export {
@@ -10,17 +12,18 @@ export {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
-  parseImports,
-  parseExceptionFunctions,
   parseBaseRelocations,
-  parseCoffSymbols,
   directory,
   peMachineName,
   resolveCoffSectionName,
-  parseDelayImports,
   parseTlsDirectory,
-  parseLoadConfig,
 } from './pe-loader-core.js';
+
+export {
+  parseImports,
+  parseCoffSymbols,
+  parseDelayImports,
+} from './pe-loader-string-budget.js';
 
 // The delegated core keeps these existing trust-boundary implementations. Keep
 // their source-contract markers discoverable for the repository's regression
@@ -34,21 +37,53 @@ function ensureBudget(image, budget) {
   return budget || createPEMetadataBudget(image);
 }
 
+export function parseLoadConfig(r, dir, image, sharedBudget = null) {
+  if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
+  const budget = ensureBudget(image, sharedBudget);
+  const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (head) {
+    const internalSize = r.u32(head.start);
+    if (internalSize > dir.size) {
+      budget.partial(
+        'load-config:size-mismatch',
+        `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
+      );
+    }
+  }
+  return parseLoadConfigCore(r, dir, image, budget);
+}
+
+export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
+  if (!dir || !dir.rva || !dir.size) {
+    return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+  }
+  const recordSize = machine === 0x8664
+    ? 12
+    : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+  if (recordSize && dir.size % recordSize !== 0 && mappedFileSpanForRva(image, dir.rva, dir.size)) {
+    const budget = ensureBudget(image, sharedBudget);
+    budget.partial(
+      'exception:directory-record-remainder',
+      `PE exception directory size ${dir.size} is not a multiple of ${recordSize}`,
+    );
+    return parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  }
+  return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+}
+
 function mappedCStringAtRva(r, image, rva, budget, label) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range) { budget.partial(`${label}:unmapped-string`, `Ignored ${label} string outside a file-backed mapping`); return ''; }
   const maxByStringBudget = Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1);
   const max = Math.min(1 << 16, range.end - range.start, maxByStringBudget);
   if (max <= 0) return '';
-  // ByteView.cstring() tolerates a missing NUL and returns the whole span, so
-  // it would accept unterminated bytes as canonical metadata (#2187).
   const nulAt = r.slice(range.start, max).indexOf(0);
   if (nulAt < 0) {
     budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its mapped span`);
     return '';
   }
   const value = r.cstring(range.start, max);
-  const inputBytes = Math.min(max, value.length + 1);
+  const inputBytes = nulAt + 1;
   if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
@@ -56,14 +91,14 @@ function mappedCStringAtRva(r, image, rva, budget, label) {
 function mappedCStringAtOffset(r, start, end, budget, label) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= end || end > r.length) return '';
   const max = Math.min(1 << 16, end-start, Math.max(1, Math.floor(budget.remainingStringBytes/2)+1));
-  // Same contract as mappedCStringAtRva: no NUL inside the span -> not a string.
   const nulAt = r.slice(start, max).indexOf(0);
   if (nulAt < 0) {
     budget.partial(`${label}:unterminated-string`, `Ignored ${label} string without a NUL terminator inside its span`);
     return '';
   }
   const value = r.cstring(start,max);
-  if (!budget.take({ inputBytes:Math.min(max,value.length+1), stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
+  const inputBytes = nulAt + 1;
+  if (!budget.take({ inputBytes, stringBytes:value.length*2, operations:1, estimatedHeapBytes:value.length*2+32 }, `${label}-string`)) return '';
   return value;
 }
 
@@ -119,4 +154,3 @@ export function parseExports(r, dir, image, sharedBudget = null) {
     const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name:publicNames[0],source:'export',confidence:0.95}));
   }
 }
-
