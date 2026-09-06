@@ -1,5 +1,6 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
+import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -146,8 +147,10 @@ export class AnalysisScheduler {
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
     let artifactId;
-    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
-    catch (error) { return Promise.reject(error); }
+    try {
+      artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
+      assertCanonicalArtifactDescriptor(descriptor);
+    } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
     const priority = priorityValue(request.priority);
