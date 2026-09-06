@@ -116,7 +116,7 @@ function terminalize(instruction, ownerId, result, context, provenanceSource) {
     result?.metadata?.encodingValidated === false
     || result?.metadata?.exactWideAtomicClaim === false
     || result?.metadata?.structuredImplicitAccumulatorMissing === true
-    || STRUCTURED_FAIL_CLOSED_REASON.test(reason)
+    || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))
   )) return result;
 
   // Exact-with-intrinsic terminalization is an authority escalation. Version
