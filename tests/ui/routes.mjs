@@ -1,3 +1,4 @@
+import './issue-4873-search-pagination.mjs';
 import './issue-2519-product-evidence-consumer.test.mjs';
 import './issue-2601-pinpoint-architecture-query.mjs';
 import './issue-2596-range-copy-variable-width.mjs';
