@@ -281,14 +281,73 @@ function setStructField(app, args) {
 
 function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
+  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+
+  const previousProjectAnnotations = app.projectAnnotations;
+  const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
-  const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
-  app.projectAnnotations.push(record);
-  app.autoReport ||= { report: { confirmed: [], deep: [] } };
-  app.autoReport.report ||= { confirmed: [], deep: [] };
-  app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
-  app.workspace?.autosave?.(); return record;
+  const projectAnnotations = app.projectAnnotations;
+
+  const previousAutoReport = app.autoReport;
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
+  const autoReport = app.autoReport;
+  const previousReport = autoReport.report;
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
+  const report = autoReport.report;
+  const previousConfirmed = report.confirmed;
+  const confirmedSnapshot = Array.isArray(previousConfirmed) ? previousConfirmed.slice() : null;
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
+  const confirmed = report.confirmed;
+
+  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762). Existing
+  // append-only duplicates are collapsed only after full array snapshots are
+  // captured so failed persistence can restore the exact prior state.
+  const id = String(args.id || `annotation:${Date.now()}`);
+  const existingIndex = projectAnnotations.findIndex((item) => item?.id === id);
+  const previousRecord = existingIndex >= 0 ? projectAnnotations[existingIndex] : undefined;
+  const findingIndex = confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
+
+  const rollback = () => {
+    if (Array.isArray(previousProjectAnnotations)) {
+      previousProjectAnnotations.splice(0, previousProjectAnnotations.length, ...projectAnnotationsSnapshot);
+    } else app.projectAnnotations = previousProjectAnnotations;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
+    else if (Array.isArray(previousConfirmed)) {
+      previousConfirmed.splice(0, previousConfirmed.length, ...confirmedSnapshot);
+    } else report.confirmed = previousConfirmed;
+  };
+
+  const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: previousRecord?.createdAt || new Date().toISOString() };
+  if (existingIndex >= 0) {
+    projectAnnotations[existingIndex] = record;
+    for (let index = projectAnnotations.length - 1; index > existingIndex; index--) {
+      if (projectAnnotations[index]?.id === id) projectAnnotations.splice(index, 1);
+    }
+  } else projectAnnotations.push(record);
+
+  const finding = { ...record, confirmed: true, source: 'project-annotation' };
+  if (findingIndex >= 0) {
+    confirmed[findingIndex] = finding;
+    for (let index = confirmed.length - 1; index > findingIndex; index--) {
+      if (confirmed[index]?.source === 'project-annotation' && confirmed[index]?.id === id) confirmed.splice(index, 1);
+    }
+  } else confirmed.push(finding);
+
+  let saved;
+  try {
+    saved = app.workspace.autosave();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
 }
 
 async function previewPatch(app, args) {
