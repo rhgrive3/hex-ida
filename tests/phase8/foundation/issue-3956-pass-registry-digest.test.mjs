@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   PROVIDER_PASS,
+  createProvider,
   passRegistryDigest,
   phase8Passes,
+  runPhase8Vertical,
 } from '../../../js/decompiler/phase8/index.js';
 
 function provider(id, { version = '1.0.0', interfaceVersion = 1, kinds = ['idiom'] } = {}) {
@@ -56,4 +58,35 @@ test('provider registry changes do not invalidate stage sets without the provide
   const after = [provider('phase8.provider.alpha', { version: '2.0.0' })];
 
   assert.equal(passRegistryDigest(passes, before), passRegistryDigest(passes, after));
+});
+
+test('duplicate provider ids fail closed before registry identity or execution can diverge', () => {
+  let executions = 0;
+  const first = createProvider({
+    id: 'phase8.provider.same',
+    version: '1.0.0',
+    kinds: ['idiom'],
+    refine() { executions += 1; return []; },
+  });
+  const second = createProvider({
+    id: 'phase8.provider.same',
+    version: '2.0.0',
+    kinds: ['idiom'],
+    refine() { executions += 1; return []; },
+  });
+
+  for (const providers of [[first, second], [second, first]]) {
+    assert.throws(
+      () => passRegistryDigest([providerPass], providers),
+      { name: 'TypeError', message: 'phase8-provider-id-duplicate:phase8.provider.same' },
+      'duplicate provider ids must not produce a reusable registry identity',
+    );
+    assert.throws(
+      () => runPhase8Vertical({ providers }),
+      { name: 'TypeError', message: 'phase8-provider-id-duplicate:phase8.provider.same' },
+      'the vertical must reject the same duplicate registry before any provider can execute',
+    );
+  }
+
+  assert.equal(executions, 0, 'duplicate providers must fail closed before refinement starts');
 });

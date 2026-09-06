@@ -135,7 +135,7 @@ export function phase8Passes({ stages = null } = {}) {
 }
 
 function providerRegistryMaterial(providers) {
-  return [...providers]
+  const material = [...providers]
     .map((provider) => ({
       id: provider.id,
       version: provider.version,
@@ -144,7 +144,15 @@ function providerRegistryMaterial(providers) {
     }))
     .sort((left, right) => left.id.localeCompare(right.id)
       || String(left.version).localeCompare(String(right.version))
+      || String(left.interfaceVersion).localeCompare(String(right.interfaceVersion))
       || left.kinds.join(',').localeCompare(right.kinds.join(',')));
+
+  for (let index = 1; index < material.length; index += 1) {
+    if (material[index - 1].id === material[index].id) {
+      throw new TypeError(`phase8-provider-id-duplicate:${material[index].id}`);
+    }
+  }
+  return material;
 }
 
 /**
