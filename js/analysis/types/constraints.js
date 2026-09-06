@@ -86,6 +86,7 @@ const LAYER_SET = new Set(TYPE_LAYERS);
 const HARD_SET = new Set(HARD_CONSTRAINT_KINDS);
 const SOFT_SET = new Set(SOFT_EVIDENCE_KINDS);
 const ORIGIN_SET = new Set(CONSTRAINT_ORIGINS);
+const NUMERIC_DESCRIPTOR_FIELDS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -116,6 +117,93 @@ function toBigInt(val, fallback = 0n) {
     return BigInt(val);
   }
   try { return BigInt(val); } catch { return null; }
+}
+
+function canonicalInteger(val) {
+  if (typeof val === 'bigint') return val;
+  if (typeof val === 'number') return Number.isSafeInteger(val) ? BigInt(val) : null;
+  if (typeof val !== 'string' || !val.trim()) return null;
+  try { return BigInt(val.trim()); } catch { return null; }
+}
+
+function snapshotDescriptor(descriptor) {
+  const seen = new WeakMap();
+  const active = new WeakSet();
+  const visit = (value) => {
+    if (value == null || typeof value !== 'object') return value;
+    if (active.has(value)) fail('type-claim-descriptor-cycle');
+    if (seen.has(value)) return seen.get(value);
+
+    let isArray;
+    let descriptors;
+    try {
+      isArray = Array.isArray(value);
+      descriptors = Object.getOwnPropertyDescriptors(value);
+    } catch {
+      fail('type-claim-descriptor-invalid');
+    }
+
+    const out = isArray ? [] : {};
+    seen.set(value, out);
+    active.add(value);
+    try {
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (isArray && key === 'length') continue;
+        const property = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+          fail('type-claim-descriptor-accessor');
+        }
+        Object.defineProperty(out, key, { ...property, value: visit(property.value) });
+      }
+      if (isArray) {
+        const length = descriptors.length;
+        if (!length || !Object.prototype.hasOwnProperty.call(length, 'value')) {
+          fail('type-claim-descriptor-invalid');
+        }
+        Object.defineProperty(out, 'length', length);
+      }
+    } finally {
+      active.delete(value);
+    }
+    return out;
+  };
+  return visit(descriptor);
+}
+
+function canonicalDescriptorMaterial(layer, descriptor) {
+  if (layer === 'nominal' || descriptor == null || typeof descriptor !== 'object') return descriptor;
+  const seen = new WeakMap();
+  const visit = (value, field = null) => {
+    if (field != null && NUMERIC_DESCRIPTOR_FIELDS.has(field)) {
+      const integer = canonicalInteger(value);
+      if (integer != null) return integer;
+    }
+    if (value == null || typeof value !== 'object') return value;
+    if (seen.has(value)) return seen.get(value);
+    const out = Array.isArray(value) ? [] : {};
+    seen.set(value, out);
+    for (const [key, child] of Object.entries(value)) {
+      Object.defineProperty(out, key, {
+        value: visit(child, key),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  };
+  return visit(descriptor);
+}
+
+function numericValuesDiffer(left, right) {
+  const a = canonicalInteger(left);
+  const b = canonicalInteger(right);
+  if (a != null && b != null) return a !== b;
+  return left !== right;
+}
+
+function canonicalDescriptorString(layer, descriptor) {
+  return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
 function validateDescriptor(layer, descriptor) {
@@ -154,14 +242,15 @@ function validateDescriptor(layer, descriptor) {
 export function createTypeClaim(input = {}) {
   const layer = strictNonEmpty(input.layer, 'type-claim-layer-required');
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
+  const descriptor = input.descriptor ?? null;
+  if (descriptor == null) fail('type-claim-descriptor-required');
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: input.descriptor ?? null,
+    descriptor: snapshotDescriptor(descriptor),
   };
-  if (claim.descriptor == null) fail('type-claim-descriptor-required');
   validateDescriptor(layer, claim.descriptor);
-  claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: claim.descriptor });
+  claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
   return deepFreeze(claim);
 }
 
@@ -234,17 +323,17 @@ function memberTypesConflict(aType, bType) {
   }
 
   if (aKind === 'array' || bKind === 'array') {
-    if (aType.strideBytes != null && bType.strideBytes != null && aType.strideBytes !== bType.strideBytes) return true;
-    if (aType.length != null && bType.length != null && aType.length !== bType.length) return true;
+    if (aType.strideBytes != null && bType.strideBytes != null && numericValuesDiffer(aType.strideBytes, bType.strideBytes)) return true;
+    if (aType.length != null && bType.length != null && numericValuesDiffer(aType.length, bType.length)) return true;
     if (aType.elementType != null && bType.elementType != null && memberTypesConflict(aType.elementType, bType.elementType)) return true;
     return false;
   }
 
   if (aType.name != null && bType.name != null && aType.name !== bType.name) return true;
-  if (aType.widthBits != null && bType.widthBits != null && aType.widthBits !== bType.widthBits) return true;
+  if (aType.widthBits != null && bType.widthBits != null && numericValuesDiffer(aType.widthBits, bType.widthBits)) return true;
   if (aType.signed != null && bType.signed != null && aType.signed !== bType.signed) return true;
 
-  return stableStringify(aType) !== stableStringify(bType);
+  return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
 }
 
 /**
@@ -268,7 +357,7 @@ export function claimsConflict(left, right) {
   if (left.layer === 'machine') {
     // Different widths for the same access are a genuine contradiction; a
     // different class at the same width is too (an integer is not a pointer).
-    if (a.widthBits != null && b.widthBits != null && a.widthBits !== b.widthBits) return true;
+    if (a.widthBits != null && b.widthBits != null && numericValuesDiffer(a.widthBits, b.widthBits)) return true;
     if (a.class != null && b.class != null && a.class !== b.class) return true;
     if (a.addressSpace != null && b.addressSpace != null && a.addressSpace !== b.addressSpace) return true;
     return false;
@@ -277,8 +366,8 @@ export function claimsConflict(left, right) {
     if (a.location != null && b.location != null && a.location !== b.location) return true;
     if (a.passingClass != null && b.passingClass != null && a.passingClass !== b.passingClass) return true;
     if (a.abiProfile != null && b.abiProfile != null && a.abiProfile !== b.abiProfile) return true;
-    if (a.sizeBytes != null && b.sizeBytes != null && a.sizeBytes !== b.sizeBytes) return true;
-    if (a.alignBytes != null && b.alignBytes != null && a.alignBytes !== b.alignBytes) return true;
+    if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+    if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
     return false;
   }
   if (left.layer === 'structural') {
@@ -289,8 +378,8 @@ export function claimsConflict(left, right) {
       return true;
     }
     // Check total size or alignment mismatch
-    if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && a.sizeBytes !== b.sizeBytes) return true;
-    if (a.alignBytes != null && b.alignBytes != null && a.alignBytes !== b.alignBytes && a.offset == null && b.offset == null) return true;
+    if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+    if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
 
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
@@ -302,10 +391,10 @@ export function claimsConflict(left, right) {
       return false;
     }
     if (a.members != null && b.members != null) {
-      return stableStringify(a.members) !== stableStringify(b.members);
+      return canonicalDescriptorString('structural', a.members) !== canonicalDescriptorString('structural', b.members);
     }
-    if (a.offset != null && b.offset != null && a.offset === b.offset) {
-      return stableStringify(a) !== stableStringify(b);
+    if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
+      return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);
     }
     return false;
   }
