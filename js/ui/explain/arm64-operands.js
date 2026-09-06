@@ -106,6 +106,16 @@ function parseMem(text) {
   return mem;
 }
 
+function isPostIndexRegister(op) {
+  return op?.k === "reg" && op.cls === "gp" && op.bits === 64 &&
+    Number.isInteger(op.num) && op.num >= 0 && op.num <= 30;
+}
+
+function isStructureRegisterList(op) {
+  return op?.k === "list" && op.regs.length >= 1 && op.regs.length <= 4 &&
+    op.regs.every((reg) => reg.k === "reg" && reg.cls === "vec");
+}
+
 /**
  * Capstone の operand 文字列を配列にする。
  * 直前のオペランドに掛かる shift/extend は、そのオペランドの .shift に畳み込む。
@@ -147,13 +157,27 @@ export function parseOperands(str) {
   }
   // 後置インデックス: "[x1], #8" は 2 つに割れているので戻す。
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].k === "mem" && out[i].mode === "offset" && out[i].disp == null &&
-        out[i].index == null && out[i + 1].k === "imm" && !out[i].text.endsWith("!")) {
+    const mem = out[i];
+    const next = out[i + 1];
+    if (mem.k !== "mem" || mem.mode !== "offset" || mem.disp != null ||
+        mem.index != null || mem.text.endsWith("!")) continue;
+    if (next.k === "imm") {
       // 直後が即値で、かつ元の文字列で "]" のあとにコンマが来ていた場合のみ。
-      out[i].writebackDisp = out[i + 1];
-      out[i].addressDisp = null;
-      out[i].disp = null;
-      out[i].mode = "post";
+      mem.writebackDisp = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
+      out.splice(i + 1, 1);
+      continue;
+    }
+    // parseOperands() has no mnemonic. Restrict register post-index folding to
+    // the valid AdvSIMD structure-register-list shape so unrelated "mem, reg"
+    // forms and malformed brace lists remain fail-closed (#4105).
+    if (i > 0 && isStructureRegisterList(out[i - 1]) && isPostIndexRegister(next)) {
+      mem.writebackReg = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
       out.splice(i + 1, 1);
     }
   }
