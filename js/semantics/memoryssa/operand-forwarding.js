@@ -360,7 +360,7 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
     artifactDigest: memorySsa.canonicalDigest,
     useId: String(use.id),
     definitionId: String(definition.id),
-    contributingDefinitionIds: [String(definition.id)],
+    contributingDefinitionIds: Object.freeze([String(definition.id)]),
     loadSourceEntityId: String(use.sourceEntityId),
     storedSourceEntityId: String(definition.sourceEntityId),
     storedValueId,
