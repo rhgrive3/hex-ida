@@ -1,5 +1,6 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
+import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -146,8 +147,10 @@ export class AnalysisScheduler {
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
     let artifactId;
-    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
-    catch (error) { return Promise.reject(error); }
+    try {
+      artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
+      assertCanonicalArtifactDescriptor(descriptor);
+    } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
     const priority = priorityValue(request.priority);
@@ -424,12 +427,13 @@ export class AnalysisScheduler {
   }
 
   cancel(artifactId, reason=new DOMException('Cancelled','AbortError')) {
-    const task=this.inflight.get(String(artifactId)); if (!task) return false;
+    const id = requireArtifactId(artifactId);
+    const task=this.inflight.get(id); if (!task) return false;
     if (!task.controller.signal.aborted) task.controller.abort(reason);
     return true;
   }
 
-  dependencyIds(artifactId) { return this.dag.get(String(artifactId))||Object.freeze([]); }
-  state(artifactId) { return this.states.get(String(artifactId))||'unknown'; }
+  dependencyIds(artifactId) { return this.dag.get(requireArtifactId(artifactId))||Object.freeze([]); }
+  state(artifactId) { return this.states.get(requireArtifactId(artifactId))||'unknown'; }
   stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
 }
