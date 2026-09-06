@@ -1,11 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
-
-function fail(code) { throw new TypeError(code); }
-
-function checkedRange(limit, offset, size, code) {
-  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
-}
+import { validateDexMap } from './map-validation.js';
+import { checkedRange, fail } from './validation-utils.js';
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
@@ -161,6 +157,10 @@ export function parseDex(bytes, options = {}) {
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
 
+  // Validate the complete map topology before decoding payloads, while preserving
+  // established payload-specific error authority for malformed variable-size items.
+  validateDexMap(u8, { validateVariableItems: false });
+
   const strings = [];
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;
@@ -251,6 +251,8 @@ export function parseDex(bytes, options = {}) {
     }
     classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,directMethods,virtualMethods});
   }
+
+  validateDexMap(u8);
 
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
   return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,rawBytes:u8});
