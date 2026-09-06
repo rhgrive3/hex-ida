@@ -41,6 +41,35 @@ test('structural field merge keeps member-only metadata off the aggregate root',
   );
 });
 
+test('offset-less structural-field metadata cannot be promoted onto the aggregate root', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-3906-offsetless-field' });
+  graph.addHardConstraint({
+    kind: 'structural-field',
+    origin: 'binary-evidence',
+    claim: {
+      layer: 'structural',
+      entityId: 'S',
+      descriptor: {
+        sizeBytes: 4,
+        fieldName: 'ghost',
+        memberType: { kind: 'integer', widthBits: 32 },
+      },
+    },
+  });
+  addField(graph, 'S', { offset: 4, fieldName: 'b' });
+
+  const descriptor = descriptorOf(graph, 'S');
+  assert.equal(descriptor.sizeBytes, 8);
+  assert.equal(descriptor.totalSizeBytes, 8);
+  assert.equal(Object.hasOwn(descriptor, 'offset'), false);
+  assert.equal(Object.hasOwn(descriptor, 'fieldName'), false);
+  assert.equal(Object.hasOwn(descriptor, 'memberType'), false);
+  assert.deepEqual(
+    descriptor.members.map((member) => ({ offset: member.offset, fieldName: member.fieldName })),
+    [{ offset: 4, fieldName: 'b' }],
+  );
+});
+
 test('aggregate identity does not depend on which field was inserted first', () => {
   const forward = new TypeConstraintGraph({ snapshotId: 'issue-3906-order-forward' });
   addField(forward, 'S', { offset: 0, fieldName: 'a' });
