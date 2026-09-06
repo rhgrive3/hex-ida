@@ -10,6 +10,57 @@ export const GENERATED_OUTPUT_MODE = Object.freeze({
   EPHEMERAL: 'ephemeral',
 });
 
+// Generated files the release integration lane may publish automatically.
+// Anything else is source and must never ride along in an automated sync.
+export const CANONICAL_GENERATED_OUTPUT_PATHS = Object.freeze([
+  'userscript/hex.user.template.js',
+  'userscript/release-version.json',
+]);
+
+const RELEASE_CONTEXTS = Object.freeze(['main', 'release']);
+const CANONICAL_OUTPUT_PATH_SET = new Set(CANONICAL_GENERATED_OUTPUT_PATHS);
+
+function normalizeRepoPath(value) {
+  let normalized = String(value).replaceAll('\\', '/');
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized;
+}
+
+/*
+ * A write-capable generated-output sync is permitted only on an explicit
+ * release branch and only when every changed path is canonical generated
+ * output. Deleted generated files and source-side build effects fail closed.
+ */
+export function resolveCanonicalGeneratedOutputCommit({
+  eventName = '',
+  refName = '',
+  changedPaths = [],
+  deletedPaths = [],
+} = {}) {
+  const event = String(eventName || '');
+  const branch = String(refName || '');
+  const permitted = RELEASE_CONTEXTS.includes(branch)
+    && (event === 'push' || event === 'workflow_dispatch');
+  const changed = Object.freeze([
+    ...new Set((Array.isArray(changedPaths) ? changedPaths : [])
+      .map(normalizeRepoPath)
+      .filter(Boolean)),
+  ]);
+  const deletions = Object.freeze([
+    ...new Set((Array.isArray(deletedPaths) ? deletedPaths : [])
+      .map(normalizeRepoPath)
+      .filter((file) => CANONICAL_OUTPUT_PATH_SET.has(file))),
+  ]);
+  const offList = Object.freeze(changed.filter((file) => !CANONICAL_OUTPUT_PATH_SET.has(file)));
+  return Object.freeze({
+    permitted,
+    canCommit: permitted && offList.length === 0 && deletions.length === 0 && changed.length > 0,
+    offList,
+    deletions,
+    paths: Object.freeze(changed.filter((file) => CANONICAL_OUTPUT_PATH_SET.has(file))),
+  });
+}
+
 const INTEGRATION_PREFIXES = Object.freeze([
   'dev-agent-hardening/integration/',
 ]);
