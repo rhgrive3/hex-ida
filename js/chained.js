@@ -190,6 +190,14 @@ function parseImportNames(raw) {
 
 function sign21(v) { return (v & 0x100000) ? v - 0x200000 : v; }
 
+function stubInterveningPreservesBase(w, baseReg) {
+  if (w === 0xd503201f) return true; // NOP.
+  if (((w & 0xffe0ffe0) >>> 0) === 0xaa0003e0) {
+    return (w & 31) !== baseReg; // MOV Xd, Xm (ORR alias).
+  }
+  return false;
+}
+
 /** Decode the GOT slot loaded by a conventional arm64 Mach-O stub. */
 function stubSlot(code, off, pc, stubSize) {
   const dv = new DataView(code.buffer, code.byteOffset, code.byteLength);
@@ -207,9 +215,19 @@ function stubSlot(code, off, pc, stubSize) {
     }
     if (page != null && ((w & 0xffc00000) >>> 0) === 0xf9400000) {
       const rn = (w >>> 5) & 31;
-      if (rn !== baseReg) continue;
-      const imm12 = (w >>> 10) & 0xfff;
-      return page + BigInt(imm12 * 8);
+      if (rn === baseReg) {
+        const imm12 = (w >>> 10) & 0xfff;
+        return page + BigInt(imm12 * 8);
+      }
+      if ((w & 31) === baseReg) {
+        page = null;
+        baseReg = -1;
+      }
+      continue;
+    }
+    if (page != null && !stubInterveningPreservesBase(w, baseReg)) {
+      page = null;
+      baseReg = -1;
     }
   }
   return null;
