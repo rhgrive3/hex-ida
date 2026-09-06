@@ -192,6 +192,14 @@ function unionKnowledge(values) {
   return values.some((value) => value === true);
 }
 
+const REPLACEABLE_LOCAL_CALL_REASONS = new Set([
+  'summary-missing',
+  'summary-stale',
+  'summary-incomplete',
+  'summary-cancelled',
+  'library-model-missing',
+]);
+
 /**
  * Solves interprocedural summaries for the components reachable from `roots`.
  *
@@ -431,7 +439,8 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   }
 
   const retainedLocalUnknowns = local.unknownCallEffects.filter(
-    (unknown) => !resolvedLocalCallSites.has(unknown.callSiteId),
+    (unknown) => !REPLACEABLE_LOCAL_CALL_REASONS.has(unknown.reason)
+      || !resolvedLocalCallSites.has(unknown.callSiteId),
   );
   unknowns.unshift(...retainedLocalUnknowns);
 
