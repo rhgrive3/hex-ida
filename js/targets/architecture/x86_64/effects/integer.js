@@ -63,7 +63,7 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   }
   if (family === 'movzx' || family === 'movsx') {
     return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
+      || (sourceWidth === 16 && [16,32,64].includes(destinationWidth));
   }
   return false;
 }
@@ -142,9 +142,7 @@ export function liftX86IntegerEffects(instruction, context = {}) {
 
   if (EXTENDS.has(family)) {
     if (destination?.type !== 'register' || source?.type !== 'register') {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers'], {
-        metadata:{ encodingValidated:false },
-      });
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers']);
     }
     const decoderSourceWidthBits = Number(source.widthBits);
     const destinationWidthBits = Number(destination.widthBits);
@@ -155,9 +153,7 @@ export function liftX86IntegerEffects(instruction, context = {}) {
       && ((ctx.instruction.detail?.prefixes?.rex ?? 0) & 0x08) === 0;
     const sourceWidthBits = movsxd16DecoderQuirk ? 16 : decoderSourceWidthBits;
     if (!validExtendShape(family, destinationWidthBits, sourceWidthBits)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers'], {
-        metadata:{ encodingValidated:false },
-      });
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers']);
     }
     const raw = ctx.readOperand(source, sourceWidthBits);
     if (!raw) return ctx.partial(`x86-${family}-source-unmodelled`, ['registers']);
