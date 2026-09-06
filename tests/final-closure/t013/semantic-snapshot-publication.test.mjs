@@ -97,6 +97,32 @@ test('T013 cached snapshots compare the complete current property set', () => {
   }
 });
 
+test('T013 cache key membership covers symbols and intrinsic-container properties', () => {
+  for (const target of [new Map(), new Set(), new Date(0)]) {
+    Object.defineProperty(target, 'a', {
+      value:1, enumerable:true, configurable:true, writable:true,
+    });
+    const ir = { extra:target };
+    const first = capturePhase8SemanticSnapshot(ir);
+    delete target.a;
+    Object.defineProperty(target, 'b', {
+      value:2, enumerable:true, configurable:true, writable:true,
+    });
+    const second = capturePhase8SemanticSnapshot(ir);
+    assert.notEqual(second, first, 'custom container own-key replacement must discard the cache');
+    assert.equal(Object.hasOwn(second.extra, 'a'), false);
+    assert.equal(second.extra.b, 2);
+  }
+
+  const symbol = Symbol('late-semantic-key');
+  const symbolTarget = { a:1 };
+  const symbolIr = { extra:symbolTarget };
+  capturePhase8SemanticSnapshot(symbolIr);
+  delete symbolTarget.a;
+  symbolTarget[symbol] = 2;
+  assert.throws(() => capturePhase8SemanticSnapshot(symbolIr), /identity-symbol-semantic-metadata/);
+});
+
 test('T013 cache validation cannot hide a reentrant ownKeys mutation', () => {
   const makeGraph = () => {
     const target = { id:1, bits:8, origin:{ instructionIds:['v'] } };
