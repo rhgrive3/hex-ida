@@ -7,6 +7,8 @@ export const REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY = 'oracle:S2-P12-COLLA
 
 const textEncoder = new TextEncoder();
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
+const DEFAULT_MAX_VERIFIED_BINDINGS = 256;
+const DEFAULT_MAX_VERIFIED_BINDING_BYTES = 4 * 1024 * 1024;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -109,12 +111,27 @@ function signedResponsePayload(response) {
 
 export class RemoteCanonicalHttpTransport {
   #verifiedBindings = new Map();
-  constructor({ endpoint, serverVerificationKey, sessionEncryptionKey, serverKeyId, fetchImpl = globalThis.fetch, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES } = {}) {
+  #verifiedBindingBytes = 0;
+  #maxVerifiedBindings;
+  #maxVerifiedBindingBytes;
+
+  constructor({
+    endpoint,
+    serverVerificationKey,
+    sessionEncryptionKey,
+    serverKeyId,
+    fetchImpl = globalThis.fetch,
+    maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    maxVerifiedBindings = DEFAULT_MAX_VERIFIED_BINDINGS,
+    maxVerifiedBindingBytes = DEFAULT_MAX_VERIFIED_BINDING_BYTES,
+  } = {}) {
     this.endpoint = required(endpoint, 'remote-transport-endpoint-required');
     if (!/^https:\/\//i.test(this.endpoint) && !/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost)(?::\d+)?(?:\/|$)/i.test(this.endpoint)) {
       throw new TypeError('remote-transport-confidential-endpoint-required');
     }
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new TypeError('remote-transport-response-budget-invalid');
+    if (!Number.isSafeInteger(maxVerifiedBindings) || maxVerifiedBindings < 1) throw new TypeError('remote-transport-proof-cache-count-invalid');
+    if (!Number.isSafeInteger(maxVerifiedBindingBytes) || maxVerifiedBindingBytes < 1) throw new TypeError('remote-transport-proof-cache-bytes-invalid');
     if (!serverVerificationKey || serverVerificationKey.type !== 'public' || serverVerificationKey.algorithm?.name !== 'Ed25519') throw new TypeError('remote-transport-ed25519-key-required');
     if (!sessionEncryptionKey || sessionEncryptionKey.type !== 'secret' || sessionEncryptionKey.algorithm?.name !== 'AES-GCM') throw new TypeError('remote-transport-aes-gcm-key-required');
     if (typeof fetchImpl !== 'function') throw new TypeError('remote-transport-fetch-required');
@@ -123,14 +140,42 @@ export class RemoteCanonicalHttpTransport {
     this.serverKeyId = required(serverKeyId, 'remote-transport-server-key-id-required');
     this.fetchImpl = fetchImpl;
     this.maxResponseBytes = maxResponseBytes;
+    this.#maxVerifiedBindings = maxVerifiedBindings;
+    this.#maxVerifiedBindingBytes = maxVerifiedBindingBytes;
     this.verifierIdentity = REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY;
     this.verifyTransportProof = (proof, envelope) => {
       const proofIdentity = String(proof?.proofIdentity || '');
+      const entry = this.#verifiedBindings.get(proofIdentity);
+      if (!entry || entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))) return false;
+      this.#verifiedBindings.delete(proofIdentity);
+      this.#verifiedBindings.set(proofIdentity, entry);
       return proof?.authenticated === true
         && proof?.confidentiality === 'verified'
-        && proof?.integrity === 'verified'
-        && this.#verifiedBindings.get(proofIdentity) === stableStringify(remoteCanonicalTransportBinding(envelope));
+        && proof?.integrity === 'verified';
     };
+  }
+
+  #rememberVerifiedBinding(proofIdentity, canonicalBinding) {
+    const retainedBytes = textEncoder.encode(proofIdentity).byteLength + textEncoder.encode(canonicalBinding).byteLength;
+    if (retainedBytes > this.#maxVerifiedBindingBytes) throw new Error('remote-transport-proof-binding-budget-exceeded');
+    const previous = this.#verifiedBindings.get(proofIdentity);
+    if (previous) {
+      this.#verifiedBindingBytes -= previous.bytes;
+      this.#verifiedBindings.delete(proofIdentity);
+    }
+    this.#verifiedBindings.set(proofIdentity, { binding:canonicalBinding, bytes:retainedBytes });
+    this.#verifiedBindingBytes += retainedBytes;
+    while (this.#verifiedBindings.size > this.#maxVerifiedBindings || this.#verifiedBindingBytes > this.#maxVerifiedBindingBytes) {
+      const oldest = this.#verifiedBindings.entries().next().value;
+      if (!oldest) break;
+      this.#verifiedBindings.delete(oldest[0]);
+      this.#verifiedBindingBytes -= oldest[1].bytes;
+    }
+  }
+
+  dispose() {
+    this.#verifiedBindings.clear();
+    this.#verifiedBindingBytes = 0;
   }
 
   async authorizeEnvelope(input = {}) {
@@ -159,7 +204,7 @@ export class RemoteCanonicalHttpTransport {
     const verified = await subtle().verify({ name:'Ed25519' }, this.serverVerificationKey, signature, textEncoder.encode(stableStringify(signed)));
     if (!verified) throw new Error('remote-transport-response-signature-rejected');
     const proofIdentity = `remote-transport-proof:${await sha256(textEncoder.encode(`${stableStringify(signed)}:${base64(signature)}`))}`;
-    this.#verifiedBindings.set(proofIdentity, canonicalBinding);
+    this.#rememberVerifiedBinding(proofIdentity, canonicalBinding);
     return createRemoteCollaborationEnvelope({
       ...input,
       transportProof:{ authenticated:true, confidentiality:'verified', integrity:'verified', proofIdentity },
