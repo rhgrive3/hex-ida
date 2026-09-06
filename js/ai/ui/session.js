@@ -347,8 +347,9 @@ export class AiSession {
     this.trim();
     conversation.busy = true;
     conversation.updatedAt = Date.now();
-    conversation.controller = typeof AbortController === 'function' ? new AbortController() : null;
-    const signal = conversation.controller ? conversation.controller.signal : null;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    conversation.controller = controller;
+    const signal = controller ? controller.signal : null;
     this.emit({ type: 'turn', turn, conversation });
 
     const onActivity = (event) => {
@@ -384,8 +385,10 @@ export class AiSession {
         turn.error = String((error && error.message) || error || 'unknown-error');
       }
     } finally {
-      if (conversation.controller && conversation.controller.signal === signal) conversation.controller = null;
-      conversation.busy = false;
+      if (conversation.controller === controller) {
+        conversation.controller = null;
+        conversation.busy = false;
+      }
       conversation.updatedAt = Date.now();
       this.scheduleSave();
       this.emit({ type: 'settled', turn, conversation });
