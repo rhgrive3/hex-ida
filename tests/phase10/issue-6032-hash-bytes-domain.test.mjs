@@ -9,18 +9,18 @@ import { hashBytes } from '../../js/platform/hash.js';
   assert.match(fromArray, /^[0-9a-f]{16}$/);
 }
 
+const rejectsInvalidByte = (value) => {
+  assert.throws(
+    () => hashBytes([value]),
+    (error) => error instanceof TypeError && /integer 0\.\.255/.test(error.message),
+  );
+};
+
 // String elements must not coerce to byte values.
-assert.throws(() => hashBytes(['1']), /integer 0\.\.255/);
-// Domain violations are rejected.
-assert.throws(() => hashBytes([-1]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([256]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([1.5]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([NaN]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([Infinity]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([true]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([null]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([undefined]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([[1]]), /integer 0\.\.255/);
-assert.throws(() => hashBytes([{}]), /integer 0\.\.255/);
+rejectsInvalidByte('1');
+// Domain violations are rejected with the public TypeError contract.
+for (const value of [-1, 256, 1.5, NaN, Infinity, true, null, undefined, [1], {}]) {
+  rejectsInvalidByte(value);
+}
 
 console.log('issue-6032 hashBytes byte-domain tests passed');
