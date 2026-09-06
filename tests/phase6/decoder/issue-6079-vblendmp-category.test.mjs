@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyEvexCategory } from '../js/targets/architecture/x86_64/effects/extended-state-evex.js';
+import { classifyEvexCategory } from '../../../js/targets/architecture/x86_64/effects/extended-state-evex.js';
 
 test('6079: VBLENDMP* are opmask selects, not FP computations', () => {
   assert.equal(classifyEvexCategory('vblendmps'), 'simd');

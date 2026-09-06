@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createX86DecodedInstruction } from '../js/targets/architecture/x86_64/decoded-instruction.js';
+import { createX86DecodedInstruction } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 
 function nop(overrides = {}) {
   return {

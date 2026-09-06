@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';
-import { strictAddressInput } from '../js/targets/architecture/arm64/effects/common.js';
+import { liftArm64MachineEffects } from '../../../js/targets/architecture/arm64/effects/index.js';
+import { strictAddressInput } from '../../../js/targets/architecture/arm64/effects/common.js';
 
 test('6059: strict parser accepts canonical inputs only', () => {
   assert.equal(strictAddressInput(4096n), 4096n);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createX86DecodedInstruction } from '../js/targets/architecture/x86_64/decoded-instruction.js';
-import { dispatchX86MachineEffects } from '../js/targets/architecture/x86_64/effects/index.js';
+import { createX86DecodedInstruction } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
+import { dispatchX86MachineEffects } from '../../../js/targets/architecture/x86_64/effects/index.js';
 
 function mov(overrides = {}) {
   return {

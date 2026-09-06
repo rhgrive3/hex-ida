@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createX86DecodedInstruction } from '../js/targets/architecture/x86_64/decoded-instruction.js';
-import { liftX86ControlEffects } from '../js/targets/architecture/x86_64/effects/control.js';
+import { createX86DecodedInstruction } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
+import { liftX86ControlEffects } from '../../../js/targets/architecture/x86_64/effects/control.js';
 
 function decoded({ family, mnemonic, rawBytes, operands }) {
   return createX86DecodedInstruction({

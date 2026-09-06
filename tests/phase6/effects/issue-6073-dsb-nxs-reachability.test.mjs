@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liftArm64MachineEffects } from '../js/targets/architecture/arm64/effects/index.js';
+import { liftArm64MachineEffects } from '../../../js/targets/architecture/arm64/effects/index.js';
 
 let caseId = 0;
 function lift(mnemonic, text) {
