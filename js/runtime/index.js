@@ -4,32 +4,74 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function invalidExternalSignal() {
+  return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+}
+
 function validateExternalSignal(externalSignal) {
-  if (externalSignal == null) return;
-  if ((typeof externalSignal !== 'object' && typeof externalSignal !== 'function')
-    || typeof externalSignal.addEventListener !== 'function'
-    || typeof externalSignal.removeEventListener !== 'function') {
-    throw new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+  if (externalSignal == null) return null;
+  if (typeof externalSignal !== 'object' && typeof externalSignal !== 'function') throw invalidExternalSignal();
+  let addEventListener;
+  let removeEventListener;
+  let aborted;
+  let reason;
+  try {
+    addEventListener = externalSignal.addEventListener;
+    removeEventListener = externalSignal.removeEventListener;
+    aborted = externalSignal.aborted;
+    if (aborted) reason = externalSignal.reason;
+  } catch {
+    throw invalidExternalSignal();
   }
+  if (typeof addEventListener !== 'function' || typeof removeEventListener !== 'function') throw invalidExternalSignal();
+  return {
+    signal:externalSignal,
+    addEventListener,
+    removeEventListener,
+    aborted:!!aborted,
+    reason:reason ?? 'cancelled',
+  };
 }
 
 function operationController(session, externalSignal) {
-  validateExternalSignal(externalSignal);
+  const authority = validateExternalSignal(externalSignal);
   const controller = session.controller();
   let listener = null;
-  if (externalSignal != null) {
-    if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
-    else {
-      listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
-      externalSignal.addEventListener('abort', listener, { once:true });
-      if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
+  try {
+    if (authority) {
+      if (authority.aborted) controller.abort(authority.reason);
+      else {
+        listener = () => {
+          let reason = 'cancelled';
+          try { reason = authority.signal.reason ?? 'cancelled'; } catch {}
+          controller.abort(reason);
+        };
+        Reflect.apply(authority.addEventListener, authority.signal, ['abort', listener, { once:true }]);
+        let aborted;
+        try { aborted = authority.signal.aborted; } catch { throw invalidExternalSignal(); }
+        if (aborted) listener();
+      }
     }
+  } catch (error) {
+    if (authority && listener) {
+      try { Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]); } catch {}
+    }
+    session.releaseController(controller);
+    if (error instanceof DebugAdapterError && error.code === 'invalid-signal') throw error;
+    throw invalidExternalSignal();
   }
   return {
     signal:controller.signal,
     release() {
-      if (externalSignal != null && listener) externalSignal.removeEventListener('abort',listener);
-      session.releaseController(controller);
+      let detachError = null;
+      try {
+        if (authority && listener) Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
+      } catch {
+        detachError = invalidExternalSignal();
+      } finally {
+        session.releaseController(controller);
+      }
+      if (detachError) throw detachError;
     }
   };
 }

@@ -51,6 +51,70 @@ test('runtime operations reject malformed signals before allocating a session co
   assert.equal(session.controllers.size, 0);
 });
 
+test('runtime signal setup is failure-atomic and snapshots listener authority (#4300)', async () => {
+  {
+    const { platform, session } = await fixture();
+    let removes = 0;
+    const signal = {
+      aborted:false,
+      addEventListener() { throw new Error('attach-failed'); },
+      removeEventListener() { removes += 1; },
+    };
+    await assert.rejects(platform.traceFunction(0x1000n, { signal }), invalidSignalError);
+    assert.equal(removes, 1, 'failed attachment should best-effort detach a partially installed listener');
+    assert.equal(session.controllers.size, 0);
+  }
+
+  {
+    const { platform, session } = await fixture();
+    let addReads = 0;
+    let removeReads = 0;
+    const signal = {
+      aborted:false,
+      get addEventListener() {
+        addReads += 1;
+        return addReads === 1 ? function add(_type, listener) { listener(); } : null;
+      },
+      get removeEventListener() {
+        removeReads += 1;
+        return removeReads === 1 ? function remove() {} : null;
+      },
+    };
+    await assert.rejects(platform.traceFunction(0x1000n, { signal }), /cancelled/);
+    assert.equal(addReads, 1);
+    assert.equal(removeReads, 1);
+    assert.equal(session.controllers.size, 0);
+  }
+
+  {
+    const { platform, session } = await fixture();
+    let abortedReads = 0;
+    const signal = {
+      get aborted() {
+        abortedReads += 1;
+        if (abortedReads === 1) return false;
+        throw new Error('aborted-failed');
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    await assert.rejects(platform.traceFunction(0x1000n, { signal }), invalidSignalError);
+    assert.equal(abortedReads, 2);
+    assert.equal(session.controllers.size, 0);
+  }
+
+  {
+    const { platform, session } = await fixture();
+    const signal = {
+      aborted:false,
+      addEventListener(_type, listener) { listener(); },
+      removeEventListener() { throw new Error('detach-failed'); },
+    };
+    await assert.rejects(platform.traceFunction(0x1000n, { signal }), invalidSignalError);
+    assert.equal(session.controllers.size, 0);
+  }
+});
+
 test('valid AbortSignal pre-abort and in-flight abort keep controller cleanup semantics (#4300)', async () => {
   {
     const { platform, session } = await fixture();
