@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAnalysisSnapshot } from '../../js/core/identity/snapshot.js';
+import { createAnalysisSnapshot } from '../../../js/core/identity/snapshot.js';
 
 const input = {
   binaryId: 'binary-A', projectRevision: '7', analysisEpoch: '11',

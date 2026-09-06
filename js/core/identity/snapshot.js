@@ -46,6 +46,7 @@ export function createDeterminismMetadata(input = {}) {
   });
 }
 
+/** Derive immutable analysis-state identity and verify any ID supplied by an importer. */
 export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
   const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');

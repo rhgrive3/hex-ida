@@ -51,6 +51,7 @@ function exactJson(value) {
   return jsonSafe(value);
 }
 
+/** Normalize a half-open file range; a present binary reference must be a nonempty identity. */
 function byteRange(range) {
   if (!range || typeof range !== 'object') fail('origin-invalid-byte-range');
   const start = bigintValue(range.start ?? range.offset, 'origin-invalid-byte-range');
@@ -64,6 +65,7 @@ function byteRange(range) {
   };
 }
 
+/** Normalize a half-open virtual range without inventing absent image or slice identities. */
 function virtualRange(range) {
   if (!range || typeof range !== 'object') fail('origin-invalid-virtual-range');
   const start = canonicalAddress(range.start ?? range.address);

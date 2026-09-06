@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createOriginSet, mergeOriginSets, createTransformRecord } from '../../js/core/identity/origin.js';
+import { createOriginSet, mergeOriginSets, createTransformRecord } from '../../../js/core/identity/origin.js';
 
 const cases = [
   { list: 'byteRanges', field: 'binaryId', range: { offset: 0n, length: 4n }, code: 'origin-invalid-byte-range' },
