@@ -138,6 +138,19 @@ export function parseCoffSymbols(reader, pointer, count, image, sharedBudget = n
     return parseCoffSymbolsCore(reader, pointer, count, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
+  const tableBytes = count * 18;
+  const stringBase = Number.isSafeInteger(pointer) && Number.isSafeInteger(tableBytes)
+    ? pointer + tableBytes
+    : null;
+  if (Number.isSafeInteger(stringBase) && stringBase >= 0 && stringBase + 4 <= reader.length) {
+    const stringSize = reader.u32(stringBase);
+    if (stringSize < 4) {
+      context.budget.partial(
+        'coff:string-table-size',
+        `PE COFF string table size ${stringSize} is smaller than 4`,
+      );
+    }
+  }
   return parseCoffSymbolsCore(context.reader, pointer, count, image, context.budget);
 }
 
