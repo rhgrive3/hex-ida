@@ -283,6 +283,17 @@ function parseV0Type(str, state, depth = 0) {
   return parseV0Path(str, state, depth + 1);
 }
 
+/** Parse the Rust v0 `impl-path = disambiguator? path` production. */
+function parseV0ImplPath(str, state, depth = 0) {
+  if (state.pos < str.length && str[state.pos] === 's') {
+    state.pos++;
+    const dis = parseV0Base62(str, state.pos);
+    if (!dis) return null;
+    state.pos = dis.nextPos;
+  }
+  return parseV0Path(str, state, depth);
+}
+
 function parseV0Path(str, state, depth = 0) {
   if (state.pos >= str.length) return null;
   if (depth > state.maxDepth) {
@@ -316,14 +327,15 @@ function parseV0Path(str, state, depth = 0) {
   }
 
   if (tag === 'M') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    const implPath = parseV0ImplPath(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
     return null;
   }
 
   if (tag === 'X') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    const implPath = parseV0ImplPath(str, state, depth + 1);
+    if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
     const traitPath = parseV0Path(str, state, depth + 1);
     return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
@@ -508,6 +520,9 @@ export function demangleRustLegacy(symbol) {
 
   if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
+  }
+  if (i !== s.length) {
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
   }
 
   const demangled = components.join('::');
