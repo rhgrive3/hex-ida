@@ -11,6 +11,8 @@ export const ARM64_ARCHITECTURE_ID = 'arm64';
 export const ARM64_MODE = 'a64';
 export const ARM64_INSTRUCTION_BYTES = 4n;
 
+const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
+
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
 }
@@ -119,6 +121,9 @@ function registerDescriptor(op) {
 
 export function createArm64EffectContext(instruction, options = {}) {
   const mnemonic = instructionMnemonic(instruction);
+  const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
+    && Array.isArray(instruction?.ops)
+    && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
   const instructionId = String(instruction?.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('arm64-effects-instruction-id-required');
   const mode = String(instruction?.mode || ARM64_MODE);
@@ -260,6 +265,7 @@ export function createArm64EffectContext(instruction, options = {}) {
   }
 
   function readOperand(op, targetBits = instructionBits(op)) {
+    if (hasUnsupportedRegisterExtend) return null;
     if (!op) return null;
     if (op.k === 'imm') {
       const value = immediateOf(op);

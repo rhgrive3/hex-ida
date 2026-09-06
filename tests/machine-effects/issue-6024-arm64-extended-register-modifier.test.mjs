@@ -81,6 +81,14 @@ for (const ambiguous of [
   assert.equal(bundle.operations.length, 0, 'conflicting modifier authorities must fail before definite operations');
 }
 
+const invalidMulExtend = lift('mul', gp(2,64,{ extend:{ op:'sxtx', amount:1 } }), 'mul-invalid-extend');
+assert.equal(invalidMulExtend.completeness, 'partial');
+assert.equal(invalidMulExtend.operations.length, 0, 'non-ADD/SUB extend must fail before definite operations');
+
+const plainMul = lift('mul', gp(2,64), 'plain-mul');
+assert.equal(plainMul.completeness, 'exact', plainMul.unknownEffects?.reason);
+assert.equal(valueOps(plainMul, 'mul').length, 1);
+
 const plain = lift('add', gp(2,64), 'plain-x-register');
 assert.equal(plain.completeness, 'exact', plain.unknownEffects?.reason);
 assert.equal(plain.metadata?.family, 'integer');
