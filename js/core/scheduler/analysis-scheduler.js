@@ -416,7 +416,7 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       this.states.set(task.artifactId,'cancelled');
-      const phase = task.phase === 'producer' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
       this.#emit('job.cancelled', task, { phase });
       return;
     }
