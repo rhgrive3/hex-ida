@@ -29,7 +29,7 @@ function exhaustRelocationWithOddOperations() {
   for (let i = 0; i < 2048 && ok; i++) ok = budget.step(2);
   assert.equal(ok, false);
   assert.equal(budget.stopped, true);
-  assert.match(budget.reason, /decode time exceeded/);
+  assert.match(budget.reason, /decode time exceeds/);
   assert.equal(budget.snapshot().operations, 4097);
 }
 
@@ -70,7 +70,7 @@ function largeCrossingsStillSample() {
   });
   relocationNow = 2;
   assert.equal(relocation.step(5000), false);
-  assert.match(relocation.reason, /decode time exceeded/);
+  assert.match(relocation.reason, /decode time exceeds/);
 
   const realNow = Date.now;
   let peNow = 0;
