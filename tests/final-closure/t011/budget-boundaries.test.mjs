@@ -387,6 +387,7 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
     extra:{ committedPhiSnapshot:true }, dst:{ id:'committed_dest' } };
   const spilled = { id:'spilled_value', bits:32, def:snapshot };
   const stackStore = { id:502, op:'store', block:0, row:2, address:0x5000n,
+    semanticNodeId:'n_store', sourceEntityId:'n_store',
     loc:{ kind:'stack', key, size:4 },
     memDef:{ definitionId:canonicalLoad.memoryForwarding.contributingDefinitionIds[0] },
     args:[{ value:spilled }] };
@@ -404,6 +405,29 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
       semantic:{ op:'return', expression:rootExpression }, source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] } }] },
     rewriteProof:[], metrics:{ rewrittenExpressions:0 },
   };
+}
+
+function committedReturnViewFixture(kind = 'zext') {
+  const result = committedReturnFixture();
+  const registerLoad = result.ir.instructions.find((instruction) => instruction.id === 501);
+  const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+  const loaded = { id:'view_loaded', bits:32, def:registerLoad };
+  const widen = { id:504, op:'mov', sub:'zext', block:0, row:3, args:[{ value:loaded }] };
+  const viewInstructions = [widen];
+  let returned = { id:'return_view', reg:'x0', bits:64, def:widen };
+  if (kind === 'lossy') {
+    const wide = { id:'view_wide', bits:64, def:widen };
+    const narrowDef = { id:505, op:'mov', sub:'trunc', block:0, row:3, args:[{ value:wide }] };
+    const narrow = { id:'view_narrow', bits:16, def:narrowDef };
+    const finalDef = { id:506, op:'mov', sub:'zext', block:0, row:3, args:[{ value:narrow }] };
+    returned = { id:'return_view', reg:'x0', bits:32, def:finalDef };
+    viewInstructions.push(narrowDef, finalDef);
+  }
+  result.ir.values = [returned];
+  result.ir.instructions = [...result.ir.instructions, ...viewInstructions];
+  result.ir.blocks[0].insts = result.ir.instructions;
+  result.ir.blocks[0].endRow = ret.row;
+  return result;
 }
 
 function detachedNestedLoadFixture() {
@@ -788,6 +812,59 @@ test('T011 committed forwarding requires a physical stack LOAD with matching wid
     recoverExactStackReturn(ambiguous, { legacyAArch64:true, deterministicTransforms:true });
     assert.equal(ambiguous.cAst.body[0].text, 'return local_0;', JSON.stringify(options));
     assert.equal(ambiguous.metrics.rewrittenExpressions, 0, JSON.stringify(options));
+  }
+});
+
+test('T011 committed forwarding authenticates the complete published state-view chain', () => {
+  const exact = committedReturnViewFixture('zext');
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  const lossy = committedReturnViewFixture('lossy');
+  recoverExactStackReturn(lossy, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(lossy.cAst.body[0].text, 'return local_0;');
+  assert.equal(lossy.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 committed forwarding requires live definition order and intervening-effect authority', () => {
+  const baseline = committedReturnFixture();
+  recoverExactStackReturn(baseline, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(baseline.cAst.body[0].text, 'return secret;');
+  assert.equal(baseline.metrics.rewrittenExpressions, 1);
+
+  const stalePlainFields = committedReturnFixture();
+  const staleLoad = stalePlainFields.ir.instructions.find((instruction) => instruction.id === 501);
+  delete staleLoad.memoryForwarding;
+  delete staleLoad.memoryForwardingContext;
+  staleLoad.memUse = {
+    kind:'store', key:'stack:sp:e0:-16:s4', aliasRelation:'must', unknownAlias:false,
+    effectSummary:{ relation:'must', role:'write', broad:false, sourceKind:'store' },
+    proof:{ aliasRelation:'must', kind:'must-alias-memory-write' }, definitionId:'detached-definition',
+    inst:stalePlainFields.ir.instructions.find((instruction) => instruction.id === 502),
+  };
+  recoverExactStackReturn(stalePlainFields, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(stalePlainFields.cAst.body[0].text, 'return local_0;');
+  assert.equal(stalePlainFields.metrics.rewrittenExpressions, 0);
+
+  for (const mutation of ['unknown-call', 'unknown-store', 'store-after-load']) {
+    const result = committedReturnFixture();
+    const direct = result.ir.instructions.find((instruction) => instruction.id === 502);
+    const load = result.ir.instructions.find((instruction) => instruction.id === 501);
+    const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+    delete load.memoryForwarding;
+    const unknown = mutation === 'unknown-call'
+      ? { id:507, op:'call', block:0, row:3, args:[] }
+      : { id:508, op:'store', block:0, row:3,
+        loc:{ kind:'unknown', key:'unknown:other', size:4 }, args:[{ value:{ id:'unknown-value' } }] };
+    if (mutation === 'store-after-load') direct.row = load.row + 1;
+    else result.ir.instructions.splice(2, 0, unknown);
+    result.ir.blocks[0].insts = result.ir.instructions;
+    ret.row = Math.max(ret.row, load.row + 2);
+    result.ir.blocks[0].endRow = ret.row;
+    recoverExactStackReturn(result, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', mutation);
+    assert.equal(result.metrics.rewrittenExpressions, 0, mutation);
   }
 });
 

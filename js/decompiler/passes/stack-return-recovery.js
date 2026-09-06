@@ -7,6 +7,7 @@ import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
+import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
@@ -747,22 +748,39 @@ function exactViewTrace(value, active = new Set()) {
     if (!args.ok || args.value.length !== 1) break;
     const sub = fieldValue(def, 'sub') ?? null;
     const extra = fieldValue(def, 'extra');
-    const exactIdentity = sub == null || sub === 'copy' || sub === 'bitcast'
-      || fieldValue(extra, 'stateRead') === true || fieldValue(extra, 'stateWrite') === true;
-    if (!exactIdentity && !EXACT_VIEW_MOV_SUBS.has(sub)) break;
+    if (!EXACT_VIEW_MOV_SUBS.has(sub)) break;
     const source = valueOf(args.value[0]);
     const sourceId = idKey(fieldValue(source, 'id'));
     if (!source || sourceId == null || active.has(sourceId)) break;
-    if (sub === 'trunc' || sub === 'zext') {
-      const sourceBits = fieldValue(source, 'bits');
-      const currentBits = fieldValue(current, 'bits');
-      if (!validBits(sourceBits) || !validBits(currentBits)) return null;
-      steps.push(`${sub}:${sourceBits}>${currentBits}`);
-    }
+    const sourceBits = fieldValue(source, 'bits');
+    const currentBits = fieldValue(current, 'bits');
+    if (!validBits(sourceBits) || !validBits(currentBits)) return null;
+    steps.push({
+      sub, sourceBits, currentBits,
+      stateProjection:fieldValue(extra, 'stateRead') === true || fieldValue(extra, 'stateWrite') === true,
+    });
     active.add(sourceId);
     current = source;
   }
   return { root: current, bits:valueBits.present ? valueBits.value : 0, steps };
+}
+
+function viewStepKey(step) {
+  return `${step?.sub ?? ''}:${step?.sourceBits ?? ''}>${step?.currentBits ?? ''}:${step?.stateProjection === true}`;
+}
+
+function viewTracePreservesPublishedWidth(trace, bits) {
+  if (!trace || !validBits(bits) || !validBits(trace.bits) || trace.bits < bits
+      || !Array.isArray(trace.steps)) return false;
+  for (const step of trace.steps) {
+    if (!validBits(step?.sourceBits) || !validBits(step?.currentBits)
+        || step.sourceBits < bits || step.currentBits < bits) return false;
+    if (step.sub === 'trunc' && step.currentBits > step.sourceBits) return false;
+    if (step.sub === 'zext' && step.currentBits < step.sourceBits) return false;
+    if ((step.sub === 'copy' || step.sub === 'bitcast' || step.sub == null)
+        && step.sourceBits !== step.currentBits && step.stateProjection !== true) return false;
+  }
+  return true;
 }
 
 function storedViewProjectsValue(stored, expected, store) {
@@ -787,7 +805,7 @@ function storedViewProjectsValue(stored, expected, store) {
   if (widthBits > 0 && storedBits !== widthBits) return false;
   if (a.steps.length < b.steps.length) return false;
   const suffix = a.steps.slice(a.steps.length - b.steps.length);
-  return suffix.every((step, index) => step === b.steps[index]);
+  return suffix.every((step, index) => viewStepKey(step) === viewStepKey(b.steps[index]));
 }
 
 function committedStoreBarrier(inst, key, control) {
@@ -1027,7 +1045,276 @@ function canonicalReturnRegister(result, root, opts = {}) {
   return null;
 }
 
-function exactCommittedMemoryUse(load, key, bits, instructions, control) {
+function canonicalInstructionSourceId(instruction) {
+  const direct = fieldValue(instruction, 'semanticNodeId') ?? fieldValue(instruction, 'sourceEntityId');
+  if (direct != null) return idKey(direct);
+  const extra = fieldValue(instruction, 'extra');
+  return idKey(fieldValue(extra, 'semanticNodeId') ?? fieldValue(extra, 'sourceEntityId'));
+}
+
+function canonicalAccessRecord(artifact, entityId, regionId, entityKind, sourceKind, role, bits, control) {
+  const metadataField = arrayField(artifact, 'accessMetadata');
+  const bindingField = arrayField(artifact, 'canonicalAccessBindings');
+  if (!metadataField.ok || !bindingField.ok || metadataField.value.length === 0
+      || metadataField.value.length !== bindingField.value.length) return null;
+  let metadata = null;
+  let binding = null;
+  for (let index = 0; index < metadataField.value.length; index++) {
+    if (control?.isAborted?.()) return null;
+    const candidate = metadataField.value[index];
+    const candidateId = idKey(fieldValue(candidate, 'memorySsaEntityId'));
+    if (candidateId !== entityId || fieldValue(candidate, 'regionId') !== regionId) continue;
+    if (metadata) return null;
+    metadata = candidate;
+    const candidateBinding = bindingField.value[index];
+    if (idKey(fieldValue(candidateBinding, 'memorySsaEntityId')) !== entityId
+        || fieldValue(candidateBinding, 'regionId') !== regionId) return null;
+    binding = candidateBinding;
+  }
+  if (!metadata || !binding
+      || fieldValue(metadata, 'entityKind') !== entityKind
+      || fieldValue(metadata, 'sourceKind') !== sourceKind
+      || fieldValue(metadata, 'role') !== role
+      || fieldValue(metadata, 'broad') !== false
+      || fieldValue(metadata, 'aliasRelation') !== 'must'
+      || !validRow(fieldValue(metadata, 'order'))
+      || fieldValue(binding, 'entityKind') !== entityKind
+      || fieldValue(binding, 'sourceKind') !== sourceKind
+      || fieldValue(binding, 'role') !== role
+      || fieldValue(binding, 'broad') !== false
+      || fieldValue(binding, 'aliasRelation') !== 'must'
+      || fieldValue(binding, 'order') !== fieldValue(metadata, 'order')
+      || !nonEmptyString(fieldValue(binding, 'bindingDigest'))) return null;
+  const sourceEntityId = idKey(fieldValue(metadata, 'sourceEntityId'));
+  const bindingSourceEntityId = idKey(fieldValue(binding, 'sourceEntityId'));
+  if (sourceEntityId == null || sourceEntityId !== bindingSourceEntityId) return null;
+  const nodeId = fieldValue(metadata, 'nodeId');
+  if (nodeId != null && idKey(nodeId) !== sourceEntityId) return null;
+  const memory = fieldValue(metadata, 'memory');
+  if (!memory || typeof memory !== 'object' || Array.isArray(memory)
+      || fieldValue(memory, 'widthBits') !== bits) return null;
+  return { metadata, binding, sourceEntityId, order:fieldValue(metadata, 'order') };
+}
+
+function liveCommittedMemoryAuthority(load, direct, bits, instructions, control, ir) {
+  const contextField = ownData(load, 'memoryForwardingContext');
+  if (!contextField.present || !contextField.valid) return null;
+  const context = contextField.value;
+  if (!context || typeof context !== 'object' || Array.isArray(context)
+      || fieldValue(context, 'consumerId') !== 'semantic-memoryssa-forwarding'
+      || fieldValue(context, 'purpose') !== 'canonical-load-value') return null;
+  const artifact = fieldValue(context, 'artifact');
+  try {
+    if (!isCanonicalMemorySsaProducerArtifact(artifact)) return null;
+  } catch {
+    return null;
+  }
+  const artifactDigest = fieldValue(artifact, 'canonicalDigest');
+  const contextDigest = fieldValue(context, 'artifactDigest');
+  const snapshotId = fieldValue(artifact, 'snapshotId');
+  if (!nonEmptyString(artifactDigest) || contextDigest !== artifactDigest
+      || !nonEmptyString(snapshotId) || fieldValue(context, 'snapshotId') !== snapshotId) return null;
+
+  const loadSourceEntityId = canonicalInstructionSourceId(load);
+  const useId = idKey(fieldValue(context, 'useId'));
+  const contextSourceEntityId = idKey(fieldValue(context, 'sourceEntityId'));
+  const contextNodeId = idKey(fieldValue(context, 'nodeId'));
+  const contextEntityId = idKey(fieldValue(context, 'entityId'));
+  const contextRegionId = fieldValue(context, 'regionId');
+  if (loadSourceEntityId == null || useId == null || contextSourceEntityId !== loadSourceEntityId
+      || contextNodeId !== loadSourceEntityId || contextEntityId !== useId
+      || !nonEmptyString(contextRegionId)) return null;
+
+  const usesField = arrayField(artifact, 'uses');
+  const definitionsField = arrayField(artifact, 'definitions');
+  const linksField = arrayField(artifact, 'useDefLinks');
+  const defUseField = arrayField(artifact, 'defUseLinks');
+  const statesField = arrayField(artifact, 'blockStates');
+  if (!usesField.ok || !definitionsField.ok || !linksField.ok || !defUseField.ok || !statesField.ok) return null;
+  let use = null;
+  for (const candidate of usesField.value) {
+    if (control?.isAborted?.()) return null;
+    if (idKey(fieldValue(candidate, 'id')) !== useId) continue;
+    if (use) return null;
+    use = candidate;
+  }
+  if (!use || idKey(fieldValue(use, 'sourceEntityId')) !== loadSourceEntityId
+      || fieldValue(use, 'regionId') !== contextRegionId
+      || fieldValue(use, 'aliasRelation') !== 'must') return null;
+  const definitionId = idKey(fieldValue(use, 'reachingDefinitionId'));
+  if (definitionId == null) return null;
+  let definition = null;
+  for (const candidate of definitionsField.value) {
+    if (control?.isAborted?.()) return null;
+    if (idKey(fieldValue(candidate, 'id')) !== definitionId) continue;
+    if (definition) return null;
+    definition = candidate;
+  }
+  if (!definition || fieldValue(definition, 'kind') !== 'memory-def'
+      || fieldValue(definition, 'regionId') !== contextRegionId
+      || fieldValue(definition, 'aliasRelation') !== 'must') return null;
+  const summary = fieldValue(definition, 'effectSummary');
+  const proof = fieldValue(definition, 'proof');
+  if (!summary || fieldValue(summary, 'relation') !== 'must'
+      || fieldValue(summary, 'role') !== 'write'
+      || fieldValue(summary, 'broad') !== false
+      || fieldValue(summary, 'sourceKind') !== 'store'
+      || !proof || fieldValue(proof, 'aliasRelation') !== 'must'
+      || fieldValue(proof, 'kind') !== 'must-alias-memory-write') return null;
+  const previousField = ownData(definition, 'previousDefinitionIds');
+  if (!previousField.present || !previousField.valid || !Array.isArray(previousField.value)
+      || previousField.value.length !== 1 || idKey(previousField.value[0]) == null) return null;
+
+  let useLink = null;
+  for (const link of linksField.value) {
+    if (control?.isAborted?.()) return null;
+    if (idKey(fieldValue(link, 'useId')) !== useId) continue;
+    if (useLink) return null;
+    useLink = link;
+  }
+  if (!useLink || idKey(fieldValue(useLink, 'definitionId')) !== definitionId
+      || fieldValue(useLink, 'regionId') !== contextRegionId
+      || fieldValue(useLink, 'aliasRelation') !== 'must') return null;
+  let defUse = null;
+  for (const link of defUseField.value) {
+    if (control?.isAborted?.()) return null;
+    if (idKey(fieldValue(link, 'definitionId')) !== definitionId) continue;
+    if (defUse) return null;
+    defUse = link;
+  }
+  const defUseIds = arrayField(defUse, 'useIds');
+  if (!defUse || !defUseIds.ok) return null;
+  let linkedUse = false;
+  for (const candidate of defUseIds.value) {
+    if (control?.isAborted?.()) return null;
+    if (idKey(candidate) === useId) {
+      linkedUse = true;
+      break;
+    }
+  }
+  if (!linkedUse) return null;
+
+  const useAccess = canonicalAccessRecord(artifact, useId, contextRegionId, 'use', 'load', 'read', bits, control);
+  const definitionAccess = canonicalAccessRecord(artifact, definitionId, contextRegionId,
+    'definition', 'store', 'write', bits, control);
+  if (!useAccess || !definitionAccess || definitionAccess.order >= useAccess.order) return null;
+  const useBlockId = fieldValue(use, 'blockId');
+  if (!nonEmptyString(useBlockId)) return null;
+  let useState = null;
+  for (const state of statesField.value) {
+    if (control?.isAborted?.()) return null;
+    if (fieldValue(state, 'blockId') !== useBlockId) continue;
+    if (useState) return null;
+    useState = state;
+  }
+  const stateExit = arrayField(useState, 'exit');
+  if (!useState || !stateExit.ok) return null;
+  let exitState = null;
+  for (const state of stateExit.value) {
+    if (control?.isAborted?.()) return null;
+    if (fieldValue(state, 'regionId') !== contextRegionId) continue;
+    if (exitState) return null;
+    exitState = state;
+  }
+  if (!exitState || idKey(fieldValue(exitState, 'definitionId')) !== definitionId) return null;
+
+  const loadUse = fieldValue(load, 'memUse');
+  if (!loadUse || fieldValue(loadUse, 'inst') !== direct
+      || idKey(fieldValue(loadUse, 'definitionId')) !== definitionId) return null;
+  let directCount = 0;
+  let loadCount = 0;
+  for (const candidate of instructions) {
+    if (control?.isAborted?.()) return null;
+    if (candidate === direct) directCount += 1;
+    if (candidate === load) loadCount += 1;
+  }
+  if (directCount !== 1 || loadCount !== 1) return null;
+  const directDefinition = fieldValue(direct, 'memDef');
+  if (idKey(fieldValue(directDefinition, 'definitionId')) !== definitionId) return null;
+  const directSourceEntityId = canonicalInstructionSourceId(direct);
+  const definitionSourceEntityId = definitionAccess.sourceEntityId;
+  if (directSourceEntityId == null || directSourceEntityId !== definitionSourceEntityId) return null;
+  const directRow = fieldValue(direct, 'row');
+  const loadRow = fieldValue(load, 'row');
+  const directBlock = fieldValue(direct, 'block');
+  const loadBlock = fieldValue(load, 'block');
+  if (!validRow(directRow) || !validRow(loadRow) || !validBlock(directBlock) || !validBlock(loadBlock)) return null;
+  if (directBlock === loadBlock) {
+    if (directRow >= loadRow) return null;
+  } else if (!dominates(ir, directBlock, loadBlock, control)) {
+    return null;
+  }
+
+  const metadataField = arrayField(artifact, 'accessMetadata');
+  if (!metadataField.ok) return null;
+  for (const metadata of metadataField.value) {
+    if (control?.isAborted?.()) return null;
+    if (fieldValue(metadata, 'regionId') !== contextRegionId
+        || fieldValue(metadata, 'entityKind') !== 'definition'
+        || fieldValue(metadata, 'role') !== 'write') continue;
+    const order = fieldValue(metadata, 'order');
+    if (!validRow(order)) return null;
+    if (order > definitionAccess.order && order < useAccess.order) return null;
+  }
+
+  const sourceMetadata = (sourceEntityId) => {
+    const records = [];
+    for (const metadata of metadataField.value) {
+      if (control?.isAborted?.()) return null;
+      if (idKey(fieldValue(metadata, 'sourceEntityId')) === sourceEntityId) records.push(metadata);
+    }
+    return records;
+  };
+  if (directBlock === loadBlock) {
+    for (const candidate of instructions) {
+      if (control?.isAborted?.()) return null;
+      if (candidate === direct || candidate === load) continue;
+      if (fieldValue(candidate, 'block') !== directBlock) continue;
+      const row = fieldValue(candidate, 'row');
+      if (!validRow(row) || row <= directRow || row >= loadRow) continue;
+      const op = fieldValue(candidate, 'op');
+      if (op !== 'store' && op !== 'call' && op !== 'clobber' && op !== 'unknown') continue;
+      const sourceEntityId = canonicalInstructionSourceId(candidate);
+      const records = sourceEntityId == null ? null : sourceMetadata(sourceEntityId);
+      if (!records || records.length === 0) return null;
+      if (op === 'clobber' || op === 'unknown') return null;
+      if (op === 'store') {
+        const descriptor = memoryMutationDescriptor(candidate);
+        if (!descriptor || descriptor.broad) return null;
+        let hasStoreBinding = false;
+        for (const metadata of records) {
+          if (control?.isAborted?.()) return null;
+          if (fieldValue(metadata, 'sourceKind') === 'store'
+              && fieldValue(metadata, 'role') === 'write') {
+            hasStoreBinding = true;
+            break;
+          }
+        }
+        if (!hasStoreBinding) return null;
+      } else {
+        let hasCallBinding = false;
+        for (const metadata of records) {
+          if (control?.isAborted?.()) return null;
+          if (fieldValue(metadata, 'sourceKind') === 'call') {
+            hasCallBinding = true;
+            break;
+          }
+        }
+        if (!hasCallBinding) return null;
+      }
+      for (const metadata of records) {
+        if (control?.isAborted?.()) return null;
+        if (fieldValue(metadata, 'regionId') !== contextRegionId
+            || fieldValue(metadata, 'entityKind') !== 'definition'
+            || fieldValue(metadata, 'role') !== 'write') continue;
+        if (fieldValue(metadata, 'aliasRelation') !== 'no') return null;
+      }
+    }
+  }
+  return { definitionId, useId };
+}
+
+function exactCommittedMemoryUse(load, key, bits, instructions, control, ir) {
   const useField = ownData(load, 'memUse');
   if (!useField.present || !useField.valid) return null;
   const use = useField.value;
@@ -1050,6 +1337,7 @@ function exactCommittedMemoryUse(load, key, bits, instructions, control) {
   const directLocation = fieldValue(direct, 'loc');
   if (fieldValue(directLocation, 'kind') !== 'stack' || fieldValue(directLocation, 'key') !== key
       || positiveAccessSize(fieldValue(directLocation, 'size')) * 8 !== bits) return null;
+  if (!liveCommittedMemoryAuthority(load, direct, bits, instructions, control, ir)) return null;
   let matches = 0;
   let matched = null;
   for (const candidate of instructions) {
@@ -1094,6 +1382,7 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
   const reachingDefinition = fieldValue(reaching, 'def');
   const traced = reachingDefinition && fieldValue(reachingDefinition, 'op') === 'load'
     ? { root:reaching } : exactViewTrace(reaching);
+  if (!traced || (traced.steps?.length > 0 && !viewTracePreservesPublishedWidth(traced, rootBits))) return null;
   const load = fieldValue(fieldValue(traced, 'root'), 'def');
   const loadLocation = fieldValue(load, 'loc');
   const loadSize = positiveAccessSize(fieldValue(loadLocation, 'size'));
@@ -1120,7 +1409,7 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
   if (!instructions.ok) return null;
   const committedForwarding = exactForwarding
     ? forwarding
-    : exactCommittedMemoryUse(load, rootKey, rootBits, instructions.value, control);
+    : exactCommittedMemoryUse(load, rootKey, rootBits, instructions.value, control, result.ir);
   if (!committedForwarding) return null;
   const contributingField = ownData(committedForwarding, 'contributingDefinitionIds');
   if (!contributingField.present || !contributingField.valid || !Array.isArray(contributingField.value)) return null;
