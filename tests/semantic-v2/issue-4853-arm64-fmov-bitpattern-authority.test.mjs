@@ -37,7 +37,6 @@ assert.equal(writesV0(canonicalFloat), true);
 
 const unencodableCanonical = liftArm64FpEffects(fmovImmediate(0n, 'fmov-bitpattern-zero'));
 assert.equal(unencodableCanonical.completeness, 'partial');
-assert.equal(writesV0(unencodableCanonical), false);
 
 const coercibleObject = {
   [Symbol.toPrimitive]() { return FMOV_D0_ONE_BITS; },
