@@ -314,8 +314,8 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
   const view = providerView(analysis);
 
   const abortedNow = () => {
-    try { return typeof budget.shouldAbort === 'function' && budget.shouldAbort() === true;
-    } catch { return true; }
+    try { return typeof budget.shouldAbort === 'function' && budget.shouldAbort() === true; }
+    catch { return true; }
   };
 
   const hints = [];
