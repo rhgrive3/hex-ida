@@ -1,5 +1,8 @@
 import { createRiscv64DecodedInstruction } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { liftRiscv64MachineEffects } from '../../../js/targets/architecture/riscv64/effects/index.js';
+import {
+  evaluateX86ArithmeticFlags,
+} from '../../../js/targets/architecture/x86_64/effects/flags.js';
 
 export const MASK64 = (1n << 64n) - 1n;
 export const u64 = (value) => BigInt.asUintN(64, BigInt(value));
@@ -38,17 +41,136 @@ function widthOf(value) {
   return Number(value?.widthBits || 64);
 }
 
+const X86_ARCHITECTURE_ID = 'x86_64';
+const X86_BOOLEAN_OPCODES = new Set([
+  'not-bool', 'and-bool', 'or-bool', 'equal-bool', 'xor-bool', 'extract-bit', 'is-zero',
+]);
+const X86_CMP_FLAGS = Object.freeze(['CF', 'PF', 'AF', 'ZF', 'SF', 'OF']);
+const X86_INC_FLAGS = Object.freeze(['PF', 'AF', 'ZF', 'SF', 'OF']);
+
+function isX86Bundle(bundle) { return bundle?.architectureId === X86_ARCHITECTURE_ID; }
+
+function flagStateFrom(initialFlags = {}) {
+  if (initialFlags instanceof Map) return initialFlags;
+  return new Map(Object.entries(initialFlags || {}).map(([id, value]) => [id, BigInt(value)]));
+}
+
+function x86FlagId(operation) {
+  const flagId = operation?.flag?.flagId;
+  if (typeof flagId !== 'string' || !flagId.startsWith('RFLAGS.')) {
+    throw new Error('unsupported x86 flag identity');
+  }
+  return flagId;
+}
+
+function x86FlagBit(value, flagId) {
+  const bit = BigInt(value);
+  if (bit !== 0n && bit !== 1n) throw new Error(`unsupported x86 non-boolean flag value ${flagId}`);
+  return bit;
+}
+
+function sameList(actual, expected) {
+  return Array.isArray(actual)
+    && actual.length === expected.length
+    && actual.every((value, index) => value === expected[index]);
+}
+
+function requireX86IntrinsicContract(operation, expectedFlags, expectedInputs) {
+  const metadata = operation?.metadata || {};
+  const summary = operation?.effectSummary;
+  if (metadata.summaryContractVersion !== 'x86-intrinsic-summary/v1'
+    || metadata.exactArchitecturalSummary !== true
+    || !sameList(metadata.flags, expectedFlags)
+    || !summary
+    || !Array.isArray(summary.inputs)
+    || summary.inputs.length !== expectedInputs
+    || !Array.isArray(summary.outputs)
+    || summary.outputs.length !== expectedFlags.length
+    || summary.outputs.some((value) => value?.kind !== 'temporary')) {
+    throw new Error(`unsupported x86 intrinsic contract ${operation?.intrinsicId || '<missing>'}`);
+  }
+  return { metadata, summary };
+}
+
+function writeX86IntrinsicOutputs(flagNames, flagValues, summary, write) {
+  for (const [index, flag] of flagNames.entries()) {
+    const value = flagValues[flag];
+    if (value === 'undefined' || value === 'unchanged' || value == null) {
+      throw new Error(`unsupported x86 intrinsic output ${flag}`);
+    }
+    write(summary.outputs[index], BigInt(value));
+  }
+}
+
+function evaluateX86Intrinsic(operation, read, write) {
+  const intrinsicId = String(operation?.intrinsicId || '');
+  let expectedFlags;
+  let expectedInputs;
+  let evaluated;
+  let inputs;
+  let summary;
+  let metadata;
+
+  if (intrinsicId === 'x86.flags.cmp') {
+    expectedFlags = X86_CMP_FLAGS;
+    expectedInputs = 3;
+    ({ metadata, summary } = requireX86IntrinsicContract(operation, expectedFlags, expectedInputs));
+    inputs = summary.inputs.map(read);
+    evaluated = evaluateX86ArithmeticFlags('cmp', inputs[0], inputs[1], metadata.widthBits);
+    if (evaluated.result !== inputs[2]) throw new Error('x86 intrinsic result disagrees with cmp value');
+  } else if (intrinsicId === 'x86.flags.inc') {
+    expectedFlags = X86_INC_FLAGS;
+    expectedInputs = 2;
+    ({ metadata, summary } = requireX86IntrinsicContract(operation, expectedFlags, expectedInputs));
+    inputs = summary.inputs.map(read);
+    evaluated = evaluateX86ArithmeticFlags('inc', inputs[0], 1n, metadata.widthBits);
+    if (evaluated.result !== inputs[1]) throw new Error('x86 intrinsic result disagrees with inc value');
+  } else {
+    throw new Error(`unsupported x86 intrinsic ${intrinsicId || '<missing>'}`);
+  }
+
+  writeX86IntrinsicOutputs(expectedFlags, evaluated, summary, write);
+}
+
+function booleanInput(value, opcode) {
+  if (value !== 0n && value !== 1n) throw new Error(`unsupported non-boolean input for ${opcode}`);
+  return value;
+}
+
+function evaluateX86BooleanOpcode(opcode, inputs, operation) {
+  switch (opcode) {
+    case 'not-bool': return booleanInput(inputs[0], opcode) === 0n ? 1n : 0n;
+    case 'and-bool': return booleanInput(inputs[0], opcode) & booleanInput(inputs[1], opcode);
+    case 'or-bool': return booleanInput(inputs[0], opcode) | booleanInput(inputs[1], opcode);
+    case 'equal-bool': return booleanInput(inputs[0], opcode) === booleanInput(inputs[1], opcode) ? 1n : 0n;
+    case 'xor-bool': return booleanInput(inputs[0], opcode) ^ booleanInput(inputs[1], opcode);
+    case 'is-zero': return inputs[0] === 0n ? 1n : 0n;
+    case 'extract-bit': {
+      const bit = Number(operation?.metadata?.bit);
+      const widthBits = Number(operation?.metadata?.widthBits ?? widthOf(operation?.inputs?.[0]));
+      if (!Number.isInteger(bit) || !Number.isInteger(widthBits) || bit < 0 || bit >= widthBits) {
+        throw new Error('unsupported x86 extract-bit contract');
+      }
+      return (inputs[0] >> BigInt(bit)) & 1n;
+    }
+    default: throw new Error(`unsupported x86 boolean opcode ${opcode}`);
+  }
+}
+
 /**
- * A minimal evaluator for the MachineEffects vocabulary the RV64 lifter emits.
+ * A minimal evaluator for the generic MachineEffects vocabulary, with an
+ * explicit x86_64 flag/intrinsic subset for subject-level value checks.
  *
  * It knows nothing about RISC-V: it interprets generic operations only. That is
  * the point. Comparing its result against an independent, ISA-derived reference
  * model checks that the *lifted effects* compute what the instruction computes,
  * rather than checking the lifter against itself.
  */
-export function evaluateBundle(bundle, initialRegisters = {}, memory = new Map()) {
+export function evaluateBundle(bundle, initialRegisters = {}, memory = new Map(), { flags: initialFlags = new Map() } = {}) {
   const registers = new Map(Object.entries(initialRegisters).map(([id, value]) => [id, u64(value)]));
   const temporaries = new Map();
+  const flags = flagStateFrom(initialFlags);
+  const x86 = isX86Bundle(bundle);
 
   const read = (value) => {
     if (value == null) throw new Error('missing operand');
@@ -83,6 +205,24 @@ export function evaluateBundle(bundle, initialRegisters = {}, memory = new Map()
       continue;
     }
     if (operation.kind === 'barrier') continue;
+    if (operation.kind === 'flag-read') {
+      if (!x86) throw new Error(`unsupported operation kind ${operation.kind}`);
+      const flagId = x86FlagId(operation);
+      if (!flags.has(flagId)) throw new Error(`unresolved x86 flag ${flagId}`);
+      write(operation.value, x86FlagBit(flags.get(flagId), flagId));
+      continue;
+    }
+    if (operation.kind === 'flag-write') {
+      if (!x86) throw new Error(`unsupported operation kind ${operation.kind}`);
+      const flagId = x86FlagId(operation);
+      flags.set(flagId, x86FlagBit(read(operation.value), flagId));
+      continue;
+    }
+    if (operation.kind === 'intrinsic') {
+      if (!x86) throw new Error(`unsupported operation kind ${operation.kind}`);
+      evaluateX86Intrinsic(operation, read, write);
+      continue;
+    }
     if (operation.kind !== 'value') throw new Error(`unsupported operation kind ${operation.kind}`);
 
     const output = operation.outputs[0];
@@ -115,11 +255,14 @@ export function evaluateBundle(bundle, initialRegisters = {}, memory = new Map()
       case 'icmp.sge': result = signedInput(0) >= signedInput(1) ? 1n : 0n; break;
       case 'icmp.ult': result = inputs[0] < inputs[1] ? 1n : 0n; break;
       case 'icmp.uge': result = inputs[0] >= inputs[1] ? 1n : 0n; break;
-      default: throw new Error(`unsupported opcode ${opcode}`);
+      default:
+        if (!x86 || !X86_BOOLEAN_OPCODES.has(opcode)) throw new Error(`unsupported opcode ${opcode}`);
+        result = evaluateX86BooleanOpcode(opcode, inputs, operation);
+        break;
     }
     write(output, result);
   }
-  return { registers, temporaries };
+  return { registers, temporaries, flags };
 }
 
 /** Deterministic pseudo-random 64-bit values, seeded so failures reproduce exactly. */
@@ -134,11 +277,12 @@ export function* sampleValues(seed = 1n, count = 24) {
 }
 
 /**
- * Execute a whole lifted RV64 function.
+ * Execute a whole lifted function.
  *
  * This is the layer that turns "the pipeline completed" into "the semantics are
  * right". It interprets only the generic MachineEffects vocabulary and the
- * generic control-effect contract -- it knows no RISC-V -- and follows the
+ * generic control-effect contract -- it knows no ISA beyond the explicit x86
+ * flag contracts above -- and follows the
  * control effects the lifter produced. Comparing its result against the
  * behaviour of the C source the corpus was compiled from is a genuine
  * source-level oracle: neither side is the implementation under test.
@@ -153,20 +297,22 @@ export function executeFunction(bundlesByAddress, {
   memory = new Map(),
   entryAddress,
   maxSteps = 20000,
+  flags: initialFlags = new Map(),
 } = {}) {
   const state = new Map(Object.entries(registers).map(([id, value]) => [id, u64(value)]));
+  const flags = flagStateFrom(initialFlags);
   let pc = BigInt(entryAddress);
   let steps = 0;
 
   while (steps < maxSteps) {
     steps += 1;
     const bundle = bundlesByAddress.get(pc.toString());
-    if (!bundle) return { status: 'no-bundle', pc, steps, registers: state, memory };
+    if (!bundle) return { status: 'no-bundle', pc, steps, registers: state, flags, memory };
     if (bundle.completeness !== 'exact' && bundle.completeness !== 'exact-with-intrinsic') {
-      return { status: `non-exact:${bundle.completeness}`, pc, steps, registers: state, memory };
+      return { status: `non-exact:${bundle.completeness}`, pc, steps, registers: state, flags, memory };
     }
 
-    const result = evaluateBundle(bundle, Object.fromEntries(state), memory);
+    const result = evaluateBundle(bundle, Object.fromEntries(state), memory, { flags });
     for (const [id, value] of result.registers) state.set(id, value);
 
     const control = bundle.controlEffect;
@@ -180,29 +326,29 @@ export function executeFunction(bundlesByAddress, {
       return null;
     };
 
-    if (control.kind === 'return') return { status: 'returned', pc, steps, registers: state, memory };
+    if (control.kind === 'return') return { status: 'returned', pc, steps, registers: state, flags, memory };
     if (control.kind === 'fallthrough') { pc += BigInt(instructionLengthOf(bundle)); continue; }
     if (control.kind === 'branch' || control.kind === 'indirect') {
       // An indirect transfer is followable exactly when its target value is
       // computable from the state we have -- which, with the image mapped into
       // memory, includes real jump tables.
       const target = resolve(control.target);
-      if (target == null) return { status: `unresolved-${control.kind}-target`, pc, steps, registers: state, memory };
+      if (target == null) return { status: `unresolved-${control.kind}-target`, pc, steps, registers: state, flags, memory };
       pc = target;
       continue;
     }
     if (control.kind === 'conditional-branch') {
       const conditionId = control.condition?.temporaryId;
       const taken = conditionId == null ? null : result.temporaries.get(conditionId);
-      if (taken == null) return { status: 'unresolved-condition', pc, steps, registers: state, memory };
+      if (taken == null) return { status: 'unresolved-condition', pc, steps, registers: state, flags, memory };
       const target = taken === 1n ? resolve(control.target) : resolve(control.fallthrough);
-      if (target == null) return { status: 'unresolved-branch-target', pc, steps, registers: state, memory };
+      if (target == null) return { status: 'unresolved-branch-target', pc, steps, registers: state, flags, memory };
       pc = target;
       continue;
     }
-    return { status: `unfollowable-control:${control.kind}`, pc, steps, registers: state, memory };
+    return { status: `unfollowable-control:${control.kind}`, pc, steps, registers: state, flags, memory };
   }
-  return { status: 'step-budget-exhausted', pc, steps, registers: state, memory };
+  return { status: 'step-budget-exhausted', pc, steps, registers: state, flags, memory };
 }
 
 function instructionLengthOf(bundle) {
