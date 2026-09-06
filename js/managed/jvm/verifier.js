@@ -87,7 +87,7 @@ function mergeStackKind(left, right) {
   const joinedTop = leftCategory === 2 ? 'top2' : 'top1';
   if (left === joinedTop || right === joinedTop) return { compatible: true, kind: joinedTop };
   const unknown = leftCategory === 2 ? 'unknown2' : 'unknown1';
-  if (left === unknown || right === unknown) return { compatible: true, kind: joinedTop };
+  if (left === unknown || right === unknown) return { compatible: true, kind: unknown };
   return { compatible: false, kind: null };
 }
 

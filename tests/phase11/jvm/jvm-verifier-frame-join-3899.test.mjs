@@ -5,10 +5,10 @@ function bundle(bytecodeOffset, opcode, controlEffects = []) {
   return { bytecodeOffset, opcode, completeness: 'exact', controlEffects };
 }
 
-function decoded({ bundles, codeLength, maxStack = 2, maxLocals = 2 }) {
+function decoded({ bundles, codeLength, maxStack = 2, maxLocals = 2, descriptor = '()V' }) {
   return {
     metadata: {
-      descriptor: '()V',
+      descriptor,
       accessFlags: 0x0008,
       methodName: 'm',
       hasCode: true,
@@ -99,4 +99,46 @@ function decoded({ bundles, codeLength, maxStack = 2, maxLocals = 2 }) {
   }));
   assert.equal(report.status, 'invalid');
   assert.ok(report.errors.some((error) => error.code === 'jvm-incompatible-frame-merge'));
+}
+
+// Unresolved category-1 CP types stay unresolved through a same-category merge, so later use remains partial rather than invalid.
+{
+  const report = verifyJvmMethod(decoded({
+    descriptor: '()I',
+    maxStack: 1,
+    maxLocals: 0,
+    codeLength: 11,
+    bundles: [
+      bundle(0, 0x03),
+      bundle(1, 0x99, [{ kind: 'conditional-branch', targetOffset: 9 }]),
+      bundle(4, 0x12),
+      bundle(6, 0xa7, [{ kind: 'branch', targetOffset: 10 }]),
+      bundle(9, 0x03),
+      bundle(10, 0xac, [{ kind: 'return' }]),
+    ],
+  }));
+  assert.equal(report.status, 'partial');
+  assert.equal(report.errors.length, 0);
+  assert.ok(report.warnings.some((warning) => warning.code === 'ldc-type-resolution:4'));
+}
+
+// The same rule applies to category-2 CP values.
+{
+  const report = verifyJvmMethod(decoded({
+    descriptor: '()J',
+    maxStack: 2,
+    maxLocals: 0,
+    codeLength: 12,
+    bundles: [
+      bundle(0, 0x03),
+      bundle(1, 0x99, [{ kind: 'conditional-branch', targetOffset: 10 }]),
+      bundle(4, 0x14),
+      bundle(7, 0xa7, [{ kind: 'branch', targetOffset: 11 }]),
+      bundle(10, 0x09),
+      bundle(11, 0xad, [{ kind: 'return' }]),
+    ],
+  }));
+  assert.equal(report.status, 'partial');
+  assert.equal(report.errors.length, 0);
+  assert.ok(report.warnings.some((warning) => warning.code === 'ldc2-type-resolution:4'));
 }
