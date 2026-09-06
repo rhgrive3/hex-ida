@@ -103,6 +103,7 @@ export class EvidenceStore {
     this.recordOrder = new Map();
     this.statusIds = new Map(EVIDENCE_STATUSES.map((status) => [status, []]));
     this.nextRecordOrder = 0;
+    this.nextSourcePayloadOrder = 0;
     this.sourcePayloads = new Map();
     this.observationStore = options.observationStore || null;
     for (const evidence of initial) this.add(evidence);
@@ -141,6 +142,7 @@ export class EvidenceStore {
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 
     let sourceRef = normalizeSourceRef(input.sourceRef);
+    let createdLocalId = null;
     if (!sourceRef && input.sourceData != null) {
       if (this.observationStore) {
         const stored = this.observationStore.put({
@@ -152,8 +154,9 @@ export class EvidenceStore {
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
-        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size]).slice(0, 32)}`;
+        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, this.nextSourcePayloadOrder++]).slice(0, 32)}`;
         this.sourcePayloads.set(localId, input.sourceData);
+        createdLocalId = localId;
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
     }
@@ -186,12 +189,25 @@ export class EvidenceStore {
 
     const previous = this.records.get(id);
     if (previous?.status === 'verified') {
+      if (createdLocalId) this.sourcePayloads.delete(createdLocalId);
       if (!sameSemanticRecord(previous, record)) return previous;
       return previous;
     }
     if (!this.recordOrder.has(id)) this.recordOrder.set(id, this.nextRecordOrder++);
     this.records.set(id, { ...previous, ...record });
     const storedRecord = this.records.get(id);
+    const previousSourceId = previous?.sourceRef?.evidenceSourceId ?? null;
+    const nextSourceId = storedRecord?.sourceRef?.evidenceSourceId ?? null;
+    if (previousSourceId && previousSourceId !== nextSourceId) {
+      let stillReferenced = false;
+      for (const item of this.records.values()) {
+        if (item.sourceRef?.evidenceSourceId === previousSourceId) {
+          stillReferenced = true;
+          break;
+        }
+      }
+      if (!stillReferenced) this.sourcePayloads.delete(previousSourceId);
+    }
     this._indexStatus(id, previous?.status || null, storedRecord?.status || null);
     if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);
     return storedRecord;

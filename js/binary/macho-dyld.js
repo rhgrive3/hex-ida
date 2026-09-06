@@ -556,7 +556,10 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
         if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported: importedX.text || null, source: 'exports-trie' });
+          const imported = importedX.text || null;
+          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
         } else {
           const exportKind = flags & 0x03;
           if (exportKind === 3) {

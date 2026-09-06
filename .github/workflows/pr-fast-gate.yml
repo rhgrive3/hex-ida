@@ -1,0 +1,48 @@
+name: PR fast gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact commit SHA to verify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-fast-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert exact target SHA
+        env:
+          TARGET_SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Syntax and source contracts
+        run: npm run lint
+      - name: Module boundary contracts
+        run: npm run module-boundaries:test
+      - name: Evidence writer contracts
+        run: npm run evidence-writers:test
+      - name: Core identity and evidence contracts
+        run: npm run core:test
+      - name: CI development-mode contract
+        run: node tests/ci-development-mode.mjs
