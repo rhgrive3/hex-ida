@@ -43,6 +43,16 @@ function base64ToBytes(text) {
   }
 }
 
+function rejectUnknownWireTag(value) {
+  if (
+    Object.prototype.hasOwnProperty.call(value, WIRE_TAG) &&
+    value[WIRE_TAG] !== BIGINT_TAG &&
+    value[WIRE_TAG] !== BYTES_TAG
+  ) {
+    throw new DebugAdapterError('malformed-packet', 'unknown remote wire value type');
+  }
+}
+
 export function encodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -81,6 +91,7 @@ export function decodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (Array.isArray(value)) return value.map((v) => decodeWireValue(v, depth + 1));
   if (!value || typeof value !== 'object') return value;
+  rejectUnknownWireTag(value);
   if (value[WIRE_TAG] === BIGINT_TAG) {
     if (
       Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
@@ -118,6 +129,7 @@ function validateValue(value, depth = 0) {
   if (value && typeof value === 'object') {
     const proto = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+    rejectUnknownWireTag(value);
     const keys = Object.keys(value);
     if (keys.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
     for (const key of keys) {
@@ -137,10 +149,23 @@ function validateValue(value, depth = 0) {
   if (value == null || typeof value === 'boolean') return;
   throw new DebugAdapterError('malformed-packet', 'remote packet contains a non-wire value');
 }
-
 function validateEpoch(packet) {
   if (packet.type === 'hello') return;
   if (!Number.isSafeInteger(packet.epoch) || packet.epoch < 0) throw new DebugAdapterError('malformed-packet', 'packet epoch must be a non-negative safe integer');
+}
+
+function validateResponse(packet) {
+  if (packet.type !== 'response') return;
+  const hasResult = Object.prototype.hasOwnProperty.call(packet, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(packet, 'error');
+  if (hasResult === hasError) {
+    throw new DebugAdapterError('malformed-packet', 'response must contain exactly one of result or error');
+  }
+  if (!hasError) return;
+  const error = packet.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error) || Object.prototype.hasOwnProperty.call(error, WIRE_TAG)) {
+    throw new DebugAdapterError('malformed-packet', 'response error must be a plain error object');
+  }
 }
 
 export function validateRemotePacket(packet) {
@@ -155,6 +180,7 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  validateResponse(packet);
   return packet;
 }
 
@@ -214,7 +240,11 @@ export class RemoteProtocolClient {
     if (typeof method !== 'string' || !method || method.length > 128) return Promise.reject(new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string'));
     if (BLOCKED_METHODS.test(method)) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
-    if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason ?? 'cancelled')));
+    const signal = options.signal ?? null;
+    if (signal != null && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) {
+      return Promise.reject(new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible'));
+    }
+    if (signal?.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(signal.reason ?? 'cancelled')));
     const id = this._allocateId();
     const epoch = options.epoch == null ? this.epoch : options.epoch;
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
@@ -223,7 +253,7 @@ export class RemoteProtocolClient {
     catch (error) { return Promise.reject(error); }
     const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method, params };
     return new Promise((resolve,reject) => {
-      const pending = { resolve, reject, timer:null, epoch, method, signal:options.signal || null, abortHandler:null };
+      const pending = { resolve, reject, timer:null, epoch, method, signal, abortHandler:null };
       pending.timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);
@@ -269,7 +299,7 @@ export class RemoteProtocolClient {
     if (packet.type === 'event') {
       const now=Date.now();
       if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(packet);
+      const bytes=jsonByteSize(wire);
       if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
         this.droppedEvents++;
         if (this.droppedEvents === 1) {

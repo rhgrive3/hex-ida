@@ -54,6 +54,7 @@ export const FAIL_CLOSED_STOP_REASONS = Object.freeze([
   'timeout',
   'budget-exhausted',
   'memory-limit',
+  'iteration-limit',
   'dependency-missing',
   'dependency-mismatch',
 ]);

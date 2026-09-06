@@ -42,8 +42,10 @@ export const X86_PRIVILEGED_REGISTER_DESCRIPTORS = Object.freeze(descriptors);
 export const X86_PRIVILEGED_PHYSICAL_REGISTERS = Object.freeze(physical);
 
 export function x86PrivilegedRegisterDescriptor(value) {
-  const name = String(typeof value === 'object'
-    ? (value?.registerId ?? value?.id ?? value?.name ?? value?.text ?? '')
-    : value ?? '').trim().toLowerCase().replace(/^%/, '');
+  const candidate = value !== null && typeof value === 'object'
+    ? (value.registerId ?? value.id ?? value.name ?? value.text)
+    : value;
+  if (typeof candidate !== 'string') return null;
+  const name = candidate.trim().toLowerCase().replace(/^%/, '');
   return byId.get(name) || null;
 }

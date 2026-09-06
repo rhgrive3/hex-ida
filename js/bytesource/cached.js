@@ -12,24 +12,6 @@ function throwIfCancelled(signal) {
   if (signal?.aborted) throw new ByteSourceCancelledError();
 }
 
-function waitForConsumer(promise, signal) {
-  if (!signal) return promise;
-  throwIfCancelled(signal);
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener?.('abort', onAbort);
-      fn(value);
-    };
-    const onAbort = () => finish(reject, new ByteSourceCancelledError());
-    signal.addEventListener?.('abort', onAbort, { once: true });
-    if (signal.aborted) onAbort();
-    promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
-  });
-}
-
 export class CachedByteSource extends ByteSource {
   constructor(input, options = {}) {
     const source = asByteSource(input, options.source || {});
@@ -62,7 +44,7 @@ export class CachedByteSource extends ByteSource {
       const absolute = start + BigInt(done);
       const pageIndex = absolute / BigInt(this.pageSize);
       const pageOffset = Number(absolute % BigInt(this.pageSize));
-      const page = await waitForConsumer(this.#page(pageIndex), options.signal);
+      const page = await this.#page(pageIndex, options.signal);
       throwIfCancelled(options.signal);
       if (pageOffset >= page.length) break;
       const take = Math.min(page.length - pageOffset, range.length - done);
@@ -79,7 +61,7 @@ export class CachedByteSource extends ByteSource {
     return bytes;
   }
 
-  async #page(pageIndex) {
+  async #page(pageIndex, signal) {
     const key = pageIndex.toString();
     const cached = this.cache.get(key);
     if (cached) {
@@ -88,24 +70,76 @@ export class CachedByteSource extends ByteSource {
       this.cache.set(key, cached);
       return cached;
     }
+
     this.stats.misses++;
-    let promise = this.inflight.get(key);
-    if (!promise) {
+    let entry = this.inflight.get(key);
+    if (!entry) {
       const offset = pageIndex * BigInt(this.pageSize);
       const remaining = this.size - offset;
       const length = Number(remaining < BigInt(this.pageSize) ? remaining : BigInt(this.pageSize));
       const generation = this.generation;
-      promise = (async () => {
-        const bytes = await this.source.readExactly(offset, length);
+      entry = {
+        controller: new AbortController(),
+        waiters: 0,
+        settled: false,
+        discard: false,
+        promise: null,
+      };
+      entry.promise = (async () => {
+        const bytes = await this.source.readExactly(offset, length, { signal: entry.controller.signal });
         this.stats.backendBytesRead += bytes.byteLength;
-        if (generation === this.generation) this.#remember(key, bytes);
+        if (!entry.discard && generation === this.generation) this.#remember(key, bytes);
         return bytes;
       })().finally(() => {
-        if (this.inflight.get(key) === promise) this.inflight.delete(key);
+        entry.settled = true;
+        if (this.inflight.get(key) === entry) this.inflight.delete(key);
       });
-      this.inflight.set(key, promise);
+      this.inflight.set(key, entry);
     }
-    return promise;
+
+    return this.#waitForPage(key, entry, signal);
+  }
+
+  #waitForPage(key, entry, signal) {
+    throwIfCancelled(signal);
+    entry.waiters++;
+    let detached = false;
+    const detach = () => {
+      if (detached) return;
+      detached = true;
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      if (entry.waiters !== 0 || entry.settled || entry.discard) return;
+      entry.discard = true;
+      if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      entry.controller.abort();
+    };
+
+    if (!signal) {
+      return entry.promise.finally(detach);
+    }
+
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = (fn, value) => {
+        if (finished) return;
+        finished = true;
+        signal.removeEventListener?.('abort', onAbort);
+        detach();
+        fn(value);
+      };
+      const onAbort = () => finish(reject, new ByteSourceCancelledError());
+      try {
+        signal.addEventListener?.('abort', onAbort, { once: true });
+      } catch (error) {
+        finish(reject, error);
+        return;
+      }
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    });
   }
 
   #remember(key, bytes) {
@@ -126,6 +160,10 @@ export class CachedByteSource extends ByteSource {
 
   clear() {
     this.generation++;
+    for (const entry of this.inflight.values()) {
+      entry.discard = true;
+      entry.controller.abort();
+    }
     this.cache.clear();
     this.inflight.clear();
     this.cachedBytes = 0;

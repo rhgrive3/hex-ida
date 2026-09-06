@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Re-dispatch blocked exact-head checks
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const owner = context.repo.owner;
@@ -82,7 +82,7 @@ jobs:
               }
 
               if (!resolved.size) {
-                core.info(`workflow_run ${trigger.id || 'unknown'} has no open PR target; nothing to recover.`);
+                core.info(`workflow_run ${trigger.id || 'unknown'} has no open same-repository PR target; nothing to recover.`);
               }
               return [...resolved.values()];
             }

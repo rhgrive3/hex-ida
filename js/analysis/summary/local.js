@@ -388,8 +388,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       // A callee summary can be exact only after the call-site target universe
       // itself is proven. A non-exhaustive singleton must not take this branch.
       statuses.push(resolved.status);
-      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
-      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect, source: 'proven-summary' })));
+      // Consuming an identity-matched callee summary authorizes folding its
+      // effects in, not re-grading their authority: each effect keeps the
+      // source it was built with, so a library-model or abi-rule fact cannot
+      // be laundered into proven-summary by one composition step.
+      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
+      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
       for (const unknown of resolved.unknownCallEffects) {
         // Keep the originating call site. Composing a path prefix here would
         // make the effect set grow every time a summary is recomposed, which is
@@ -422,15 +426,18 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
-    const nonExhaustiveIndirect = targetProof.kind === 'indirect' && !targetProof.exhaustive;
+    const nonExhaustiveTargets = targetProof.kind !== 'unknown' && !targetProof.exhaustive;
+    const nonExhaustiveIndirect = targetProof.kind === 'indirect' && nonExhaustiveTargets;
 
-    if (!complete || !readOk || !writeOk || nonExhaustiveIndirect) {
+    if (!complete || !readOk || !writeOk || nonExhaustiveTargets) {
       unknownCallEffects.push(createUnknownCallEffect({
         callSiteId: node.id,
         reason: identityMismatch
           ? 'summary-stale'
           : nonExhaustiveIndirect
           ? 'indirect-incomplete-target-set'
+          : nonExhaustiveTargets
+          ? 'unresolved-target'
           : targets.length ? 'summary-missing' : 'unresolved-target',
         targetEntityIds: targets,
         evidenceIds: evidenceOf(node),
@@ -451,7 +458,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         exhaustive: targetProof.exhaustive,
         evidenceIds: evidenceOf(node),
       });
-    } else if (targets.length) {
+    } else if (targets.length && targetProof.exhaustive) {
       directCalls.push({
         callSiteId: node.id, targetEntityIds: targets,
         summaryId: null, effectSource: source,

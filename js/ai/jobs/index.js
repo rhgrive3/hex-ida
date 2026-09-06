@@ -5,7 +5,7 @@ export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
     if (!runtime || typeof runtime.turn !== 'function') throw new TypeError('AgentJobManager requires an AIRuntime');
     this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, 32); this.maxElapsedMs = bounded(maxElapsedMs, 1000, 4 * 60 * 60 * 1000);
-    this.jobs = new Map(); this.creatingIds = new Set();
+    this.jobs = new Map(); this.creatingIds = new Set(); this.runningJobIds = new Set(); this.loadingPromises = new Map();
   }
 
   async create(input = {}) {
@@ -52,47 +52,62 @@ export class AgentJobManager {
 
   async runSlice(jobOrId, options = {}) {
     const job = await this.require(jobOrId);
-    if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
-    if (job.status === 'running') throw new Error('Agent job already has an active slice');
-    if (hardLimit(job)) {
+    const id = job.id;
+    if (this.runningJobIds.has(id)) throw new Error('Agent job already has an active slice');
+    this.runningJobIds.add(id);
+    try {
+      if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
+      if (job.status === 'running') throw new Error('Agent job already has an active slice');
+      if (hardLimit(job)) {
+        const prevStatus = job.status;
+        job.status = 'hard-limit';
+        job.updatedAt = new Date().toISOString();
+        try {
+          await this.save(job);
+        } catch (saveError) {
+          job.status = prevStatus;
+          throw saveError;
+        }
+        return checkpoint(job);
+      }
       const prevStatus = job.status;
-      job.status = 'hard-limit';
-      job.updatedAt = new Date().toISOString();
+      job.status = 'running';
       try {
         await this.save(job);
       } catch (saveError) {
         job.status = prevStatus;
         throw saveError;
       }
-      return checkpoint(job);
-    }
-    const prevStatus = job.status;
-    job.status = 'running';
-    try {
-      await this.save(job);
-    } catch (saveError) {
-      job.status = prevStatus;
-      throw saveError;
-    }
-    try {
-      const result = await this.runtime.turn({
-        ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
-        sessionId: job.sessionId, conversationId: job.conversationId,
-        provider: job.provider, model: job.model, reasoning: job.reasoning,
-      }, options);
+      let result;
+      try {
+        result = await this.runtime.turn({
+          ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
+          sessionId: job.sessionId, conversationId: job.conversationId,
+          provider: job.provider, model: job.model, reasoning: job.reasoning,
+        }, options);
+      } catch (error) {
+        job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
+        job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
+        job.updatedAt = new Date().toISOString();
+        try {
+          await this.save(job);
+        } catch {}
+        throw error;
+      }
       mergeResult(job, result);
       if (!result?.limits?.exhausted) job.status = 'complete';
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
-      job.updatedAt = new Date().toISOString(); await this.save(job); return checkpoint(job);
-    } catch (error) {
-      job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
-      job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
       job.updatedAt = new Date().toISOString();
       try {
         await this.save(job);
-      } catch {}
-      throw error;
+      } catch (saveError) {
+        job.unresolvedWork = unique([...job.unresolvedWork, `checkpoint-save-failed:${String(saveError?.message || saveError)}`]).slice(-32);
+        throw saveError;
+      }
+      return checkpoint(job);
+    } finally {
+      this.runningJobIds.delete(id);
     }
   }
 
@@ -104,10 +119,44 @@ export class AgentJobManager {
   list() { return [...this.jobs.values()].map(checkpoint); }
 
   async require(value) {
-    if (value && typeof value === 'object') return value;
-    const job = await this.get(value); if (!job) throw new Error(`Unknown agent job: ${value}`); return job;
+    let id;
+    if (value && typeof value === 'object') {
+      id = value.id;
+    } else {
+      id = value;
+    }
+    if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
+    let job = await this.get(id);
+    if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
+      this.jobs.set(id, value);
+      job = value;
+    }
+    if (!job) throw new Error(`Unknown agent job: ${id}`);
+    return job;
   }
-  async load(id) { const value = await this.persistence?.load?.(id); if (value?.version === CHECKPOINT_VERSION) { this.jobs.set(id, value); return value; } return null; }
+  async load(id) {
+    if (typeof id !== 'string' || !id) return null;
+    if (this.loadingPromises.has(id)) return this.loadingPromises.get(id);
+    const promise = (async () => {
+      let value;
+      try {
+        value = await this.persistence?.load?.(id);
+      } catch {
+        return null;
+      }
+      if (validateCheckpoint(value, id)) {
+        this.jobs.set(id, value);
+        return value;
+      }
+      return null;
+    })();
+    this.loadingPromises.set(id, promise);
+    try {
+      return await promise;
+    } finally {
+      this.loadingPromises.delete(id);
+    }
+  }
   async save(job) { await this.persistence?.save?.(checkpoint(job)); }
 }
 
@@ -116,7 +165,7 @@ function mergeResult(job, result) {
   job.effectiveScope = result?.scope?.effective || job.effectiveScope;
   job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => identityString(item?.id)).filter(Boolean)]);
   job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => identityString(item?.id)).filter(Boolean)]);
-  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result' || item.type === 'tool-start').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
+  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
@@ -144,6 +193,24 @@ function compactResult(result) { return { answer: result?.answer || '', confiden
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
 function bounded(value, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : min; }
+const VALID_STATUSES = new Set(['ready', 'running', 'checkpointed', 'complete', 'failed', 'hard-limit']);
+function isValidNumber(n, min = 0) { return typeof n === 'number' && Number.isFinite(n) && n >= min; }
+function validateCheckpoint(value, expectedId = null) {
+  if (!value || typeof value !== 'object') return false;
+  if (value.version !== CHECKPOINT_VERSION) return false;
+  if (typeof value.id !== 'string' || !value.id) return false;
+  if (expectedId !== null && value.id !== expectedId) return false;
+  if (!VALID_STATUSES.has(value.status)) return false;
+  if (typeof value.goal !== 'string' || !value.goal) return false;
+  const bu = value.budgetUsage;
+  if (!bu || typeof bu !== 'object') return false;
+  if (!isValidNumber(bu.slices) || !isValidNumber(bu.modelCalls) || !isValidNumber(bu.toolCalls) || !isValidNumber(bu.elapsedMs) || !isValidNumber(bu.contextBytes)) return false;
+  const lim = value.limits;
+  if (!lim || typeof lim !== 'object') return false;
+  if (!isValidNumber(lim.maxSlices, 1) || !isValidNumber(lim.maxElapsedMs, 1000)) return false;
+  if (!Array.isArray(value.evidenceIds) || !Array.isArray(value.hypothesisIds) || !Array.isArray(value.completedTools) || !Array.isArray(value.continuationRefs) || !Array.isArray(value.unresolvedWork)) return false;
+  return true;
+}
 function autoJobId() { return `agent_job_${Date.now().toString(36)}_${randomId()}`; }
 function randomId() {
   const bytes = new Uint8Array(6);
@@ -157,7 +224,7 @@ function randomId() {
 function safeRequest(input) {
   const out = {};
   for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
-  return out;
+  return checkpoint(out);
 }
 
 export function createAgentJobManager(options) { return new AgentJobManager(options); }

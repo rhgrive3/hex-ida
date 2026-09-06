@@ -1,6 +1,20 @@
 // Regressions for the second unlinked-issue batch: one block per issue number.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createArtifactDescriptor } from '../js/core/artifacts/contracts.js';
+
+function schedulerDescriptor(name, upstreamArtifactIds = []) {
+  return createArtifactDescriptor({
+    binaryId:'bin_unlinked_scheduler_regression',
+    artifactKind:`scheduler-regression-${name}`,
+    producerId:'issues-unlinked-batch2',
+    producerVersion:'1',
+    versions:{ loader:'fixture-1' },
+    relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
+    config:{ name },
+    upstreamArtifactIds,
+  });
+}
 
 // #3308 — autoAnalyze callbacks callable-only; #3286 budgets primitive numbers.
 {
@@ -38,13 +52,15 @@ import test from 'node:test';
   const events = [];
   const store = { async get() { return { status: 'miss' }; }, async publish() { return { status: 'stored' }; } };
   const scheduler = new AnalysisScheduler({ store, onEvent: (e) => events.push(e) });
+  const dependency = schedulerDescriptor('3313-dependency');
+  const parent = schedulerDescriptor('3313-parent', [dependency.artifactId]);
   await scheduler.request({
-    descriptor: { artifactId: 'parent', upstreamArtifactIds: ['dep'] },
-    dependencies: [{ descriptor: { artifactId: 'dep', upstreamArtifactIds: [] }, async produce() { return {}; } }],
+    descriptor: parent,
+    dependencies: [{ descriptor: dependency, async produce() { return {}; } }],
     async produce() { return {}; },
   });
   const received = events.filter((e) => e.type === 'request.received').map((e) => e.artifactId);
-  assert.deepEqual(received, ['parent'], 'dependency recursion must not re-announce request.received');
+  assert.deepEqual(received, [parent.artifactId], 'dependency recursion must not re-announce request.received');
 }
 
 // #3312 — lifecycle envelope carries version/running/queued.
@@ -54,7 +70,7 @@ import test from 'node:test';
   const store = { async get() { return { status: 'miss' }; }, async publish() { return { status: 'stored' }; } };
   const scheduler = new AnalysisScheduler({ store, onEvent: (e) => events.push(e) });
   await scheduler.request({
-    descriptor: { artifactId: 'a', upstreamArtifactIds: [] },
+    descriptor: schedulerDescriptor('3312-lifecycle'),
     async produce() { return {}; },
   });
   for (const event of events) {
@@ -241,6 +257,29 @@ import test from 'node:test';
   assert.match(openEntry, /args:\['path','flags'\]/, 'open(2) table must not claim a definite mode argument');
   const openatEntry = source.match(/\{ id:'openat',[^}]*\}/)?.[0] ?? '';
   assert.match(openatEntry, /args:\['dirfd','path','flags'\]/);
+}
+
+// #3427 — InvestigationService scheduler priority is string-only authority.
+{
+  const { InvestigationService, __investigationInternalsForTests } = await import('../js/analysis/investigation-service.js');
+  const { priorityOf } = __investigationInternalsForTests;
+  for (const value of ['user-blocking', 'user-visible', 'background']) {
+    assert.equal(priorityOf({ priority:value }), value, `canonical priority ${value} must be preserved`);
+  }
+  for (const value of [['user-blocking'], ['background'], {}, 2, true, false, null, undefined, 'unknown']) {
+    assert.equal(priorityOf({ priority:value }), 'user-visible', `malformed priority ${String(value)} must use fallback`);
+  }
+
+  const observed = [];
+  const app = {
+    symbols: {},
+    codeRegion: () => ({ id:'text', vmAddr:0n, size:4n, exec:true }),
+    ensureFunctions: async (_region, options) => { observed.push(options.priority); return {}; },
+  };
+  const service = new InvestigationService(app);
+  await service.discoverFunctions({ priority:['user-blocking'] });
+  await service.discoverFunctions({ priority:'background' });
+  assert.deepEqual(observed, ['user-visible', 'background'], 'discoverFunctions must forward only canonical scheduler priorities');
 }
 
 console.log('unlinked batch2 regressions: PASS');
