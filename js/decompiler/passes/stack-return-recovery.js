@@ -3,11 +3,13 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import { stableStringify } from '../../core/identity/index.js';
 import {
   canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryOperandForwarding,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
-import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
+import { isCanonicalExactStackOperandIdentity } from '../../semantics/memoryssa/operand-forwarding.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
@@ -1052,266 +1054,181 @@ function canonicalInstructionSourceId(instruction) {
   return idKey(fieldValue(extra, 'semanticNodeId') ?? fieldValue(extra, 'sourceEntityId'));
 }
 
-function canonicalAccessRecord(artifact, entityId, regionId, entityKind, sourceKind, role, bits, control) {
+function canonicalProjectionEffectIsNoAlias(candidate, artifact, regionId, control) {
+  const op = fieldValue(candidate, 'op');
+  if (op !== 'store' && op !== 'call') return false;
+  if (op === 'store') {
+    const descriptor = memoryMutationDescriptor(candidate);
+    if (!descriptor || descriptor.broad) return false;
+  }
+  const sourceEntityId = canonicalInstructionSourceId(candidate);
   const metadataField = arrayField(artifact, 'accessMetadata');
-  const bindingField = arrayField(artifact, 'canonicalAccessBindings');
-  if (!metadataField.ok || !bindingField.ok || metadataField.value.length === 0
-      || metadataField.value.length !== bindingField.value.length) return null;
-  let metadata = null;
-  let binding = null;
-  for (let index = 0; index < metadataField.value.length; index++) {
-    if (control?.isAborted?.()) return null;
-    const candidate = metadataField.value[index];
-    const candidateId = idKey(fieldValue(candidate, 'memorySsaEntityId'));
-    if (candidateId !== entityId || fieldValue(candidate, 'regionId') !== regionId) continue;
-    if (metadata) return null;
-    metadata = candidate;
-    const candidateBinding = bindingField.value[index];
-    if (idKey(fieldValue(candidateBinding, 'memorySsaEntityId')) !== entityId
-        || fieldValue(candidateBinding, 'regionId') !== regionId) return null;
-    binding = candidateBinding;
-  }
-  if (!metadata || !binding
-      || fieldValue(metadata, 'entityKind') !== entityKind
-      || fieldValue(metadata, 'sourceKind') !== sourceKind
-      || fieldValue(metadata, 'role') !== role
-      || fieldValue(metadata, 'broad') !== false
-      || fieldValue(metadata, 'aliasRelation') !== 'must'
-      || !validRow(fieldValue(metadata, 'order'))
-      || fieldValue(binding, 'entityKind') !== entityKind
-      || fieldValue(binding, 'sourceKind') !== sourceKind
-      || fieldValue(binding, 'role') !== role
-      || fieldValue(binding, 'broad') !== false
-      || fieldValue(binding, 'aliasRelation') !== 'must'
-      || fieldValue(binding, 'order') !== fieldValue(metadata, 'order')
-      || !nonEmptyString(fieldValue(binding, 'bindingDigest'))) return null;
-  const sourceEntityId = idKey(fieldValue(metadata, 'sourceEntityId'));
-  const bindingSourceEntityId = idKey(fieldValue(binding, 'sourceEntityId'));
-  if (sourceEntityId == null || sourceEntityId !== bindingSourceEntityId) return null;
-  const nodeId = fieldValue(metadata, 'nodeId');
-  if (nodeId != null && idKey(nodeId) !== sourceEntityId) return null;
-  const memory = fieldValue(metadata, 'memory');
-  if (!memory || typeof memory !== 'object' || Array.isArray(memory)
-      || fieldValue(memory, 'widthBits') !== bits) return null;
-  return { metadata, binding, sourceEntityId, order:fieldValue(metadata, 'order') };
-}
-
-function liveCommittedMemoryAuthority(load, direct, bits, instructions, control, ir) {
-  const contextField = ownData(load, 'memoryForwardingContext');
-  if (!contextField.present || !contextField.valid) return null;
-  const context = contextField.value;
-  if (!context || typeof context !== 'object' || Array.isArray(context)
-      || fieldValue(context, 'consumerId') !== 'semantic-memoryssa-forwarding'
-      || fieldValue(context, 'purpose') !== 'canonical-load-value') return null;
-  const artifact = fieldValue(context, 'artifact');
+  if (sourceEntityId == null || !metadataField.ok || metadataField.value.length === 0) return false;
+  let sourceRecords = 0;
+  let targetDefinitionRecords = 0;
+  let targetWrite = false;
+  const expectedSourceKind = op === 'store' ? 'store' : 'call';
+  const candidateOriginValue = fieldValue(candidate, 'origin');
+  if (!candidateOriginValue || typeof candidateOriginValue !== 'object' || Array.isArray(candidateOriginValue)) return false;
+  let candidateOrigin;
   try {
-    if (!isCanonicalMemorySsaProducerArtifact(artifact)) return null;
+    candidateOrigin = stableStringify(candidateOriginValue);
   } catch {
-    return null;
+    return false;
   }
-  const artifactDigest = fieldValue(artifact, 'canonicalDigest');
-  const contextDigest = fieldValue(context, 'artifactDigest');
-  const snapshotId = fieldValue(artifact, 'snapshotId');
-  if (!nonEmptyString(artifactDigest) || contextDigest !== artifactDigest
-      || !nonEmptyString(snapshotId) || fieldValue(context, 'snapshotId') !== snapshotId) return null;
-
-  const loadSourceEntityId = canonicalInstructionSourceId(load);
-  const useId = idKey(fieldValue(context, 'useId'));
-  const contextSourceEntityId = idKey(fieldValue(context, 'sourceEntityId'));
-  const contextNodeId = idKey(fieldValue(context, 'nodeId'));
-  const contextEntityId = idKey(fieldValue(context, 'entityId'));
-  const contextRegionId = fieldValue(context, 'regionId');
-  if (loadSourceEntityId == null || useId == null || contextSourceEntityId !== loadSourceEntityId
-      || contextNodeId !== loadSourceEntityId || contextEntityId !== useId
-      || !nonEmptyString(contextRegionId)) return null;
-
-  const usesField = arrayField(artifact, 'uses');
-  const definitionsField = arrayField(artifact, 'definitions');
-  const linksField = arrayField(artifact, 'useDefLinks');
-  const defUseField = arrayField(artifact, 'defUseLinks');
-  const statesField = arrayField(artifact, 'blockStates');
-  if (!usesField.ok || !definitionsField.ok || !linksField.ok || !defUseField.ok || !statesField.ok) return null;
-  let use = null;
-  for (const candidate of usesField.value) {
-    if (control?.isAborted?.()) return null;
-    if (idKey(fieldValue(candidate, 'id')) !== useId) continue;
-    if (use) return null;
-    use = candidate;
-  }
-  if (!use || idKey(fieldValue(use, 'sourceEntityId')) !== loadSourceEntityId
-      || fieldValue(use, 'regionId') !== contextRegionId
-      || fieldValue(use, 'aliasRelation') !== 'must') return null;
-  const definitionId = idKey(fieldValue(use, 'reachingDefinitionId'));
-  if (definitionId == null) return null;
-  let definition = null;
-  for (const candidate of definitionsField.value) {
-    if (control?.isAborted?.()) return null;
-    if (idKey(fieldValue(candidate, 'id')) !== definitionId) continue;
-    if (definition) return null;
-    definition = candidate;
-  }
-  if (!definition || fieldValue(definition, 'kind') !== 'memory-def'
-      || fieldValue(definition, 'regionId') !== contextRegionId
-      || fieldValue(definition, 'aliasRelation') !== 'must') return null;
-  const summary = fieldValue(definition, 'effectSummary');
-  const proof = fieldValue(definition, 'proof');
-  if (!summary || fieldValue(summary, 'relation') !== 'must'
-      || fieldValue(summary, 'role') !== 'write'
-      || fieldValue(summary, 'broad') !== false
-      || fieldValue(summary, 'sourceKind') !== 'store'
-      || !proof || fieldValue(proof, 'aliasRelation') !== 'must'
-      || fieldValue(proof, 'kind') !== 'must-alias-memory-write') return null;
-  const previousField = ownData(definition, 'previousDefinitionIds');
-  if (!previousField.present || !previousField.valid || !Array.isArray(previousField.value)
-      || previousField.value.length !== 1 || idKey(previousField.value[0]) == null) return null;
-
-  let useLink = null;
-  for (const link of linksField.value) {
-    if (control?.isAborted?.()) return null;
-    if (idKey(fieldValue(link, 'useId')) !== useId) continue;
-    if (useLink) return null;
-    useLink = link;
-  }
-  if (!useLink || idKey(fieldValue(useLink, 'definitionId')) !== definitionId
-      || fieldValue(useLink, 'regionId') !== contextRegionId
-      || fieldValue(useLink, 'aliasRelation') !== 'must') return null;
-  let defUse = null;
-  for (const link of defUseField.value) {
-    if (control?.isAborted?.()) return null;
-    if (idKey(fieldValue(link, 'definitionId')) !== definitionId) continue;
-    if (defUse) return null;
-    defUse = link;
-  }
-  const defUseIds = arrayField(defUse, 'useIds');
-  if (!defUse || !defUseIds.ok) return null;
-  let linkedUse = false;
-  for (const candidate of defUseIds.value) {
-    if (control?.isAborted?.()) return null;
-    if (idKey(candidate) === useId) {
-      linkedUse = true;
-      break;
+  for (const metadata of metadataField.value) {
+    if (control?.isAborted?.()) return false;
+    if (idKey(fieldValue(metadata, 'sourceEntityId')) !== sourceEntityId) continue;
+    const metadataOriginValue = fieldValue(metadata, 'origin');
+    if (!metadataOriginValue || typeof metadataOriginValue !== 'object' || Array.isArray(metadataOriginValue)) return false;
+    let metadataOrigin;
+    try {
+      metadataOrigin = stableStringify(metadataOriginValue);
+    } catch {
+      return false;
+    }
+    // A source id by itself is only a name. The immutable origin must still
+    // identify the same canonical operation in the mutable v1 projection.
+    if (metadataOrigin !== candidateOrigin) return false;
+    if (fieldValue(metadata, 'sourceKind') !== expectedSourceKind
+        || !['use', 'definition'].includes(fieldValue(metadata, 'entityKind'))
+        || !['read', 'write'].includes(fieldValue(metadata, 'role'))) return false;
+    sourceRecords += 1;
+    if (fieldValue(metadata, 'regionId') !== regionId) continue;
+    // Reads from an intervening call do not mutate the reaching definition.
+    // Only canonical definition rows can be a write barrier for this proof.
+    if (fieldValue(metadata, 'entityKind') !== 'definition') continue;
+    targetDefinitionRecords += 1;
+    if (fieldValue(metadata, 'aliasRelation') !== 'no') return false;
+    if (fieldValue(metadata, 'broad') !== false) return false;
+    if ((op === 'store' && fieldValue(metadata, 'sourceKind') === 'store')
+        || (op === 'call' && fieldValue(metadata, 'sourceKind') === 'call')) {
+      if (fieldValue(metadata, 'role') === 'write') targetWrite = true;
     }
   }
-  if (!linkedUse) return null;
+  return sourceRecords > 0
+    && (op === 'call' ? targetDefinitionRecords === 0 || targetWrite : targetDefinitionRecords > 0 && targetWrite);
+}
 
-  const useAccess = canonicalAccessRecord(artifact, useId, contextRegionId, 'use', 'load', 'read', bits, control);
-  const definitionAccess = canonicalAccessRecord(artifact, definitionId, contextRegionId,
-    'definition', 'store', 'write', bits, control);
-  if (!useAccess || !definitionAccess || definitionAccess.order >= useAccess.order) return null;
-  const useBlockId = fieldValue(use, 'blockId');
-  if (!nonEmptyString(useBlockId)) return null;
-  let useState = null;
-  for (const state of statesField.value) {
-    if (control?.isAborted?.()) return null;
-    if (fieldValue(state, 'blockId') !== useBlockId) continue;
-    if (useState) return null;
-    useState = state;
+function reachableBlock(ir, start, target, control) {
+  if (!validBlock(start) || !validBlock(target)) return false;
+  if (start === target) return true;
+  const blocksField = arrayField(ir, 'blocks');
+  if (!blocksField.ok || start >= blocksField.value.length || target >= blocksField.value.length) return false;
+  const seen = new Set([start]);
+  const pending = [start];
+  while (pending.length) {
+    if (control?.isAborted?.()) return false;
+    const current = pending.pop();
+    const successorsField = ownData(blocksField.value[current], 'succ');
+    if (!successorsField.present || !successorsField.valid || !Array.isArray(successorsField.value)) return false;
+    for (const successor of successorsField.value) {
+      if (control?.isAborted?.()) return false;
+      if (!validBlock(successor) || successor >= blocksField.value.length) return false;
+      if (successor === target) return true;
+      if (!seen.has(successor)) {
+        seen.add(successor);
+        pending.push(successor);
+      }
+    }
   }
-  const stateExit = arrayField(useState, 'exit');
-  if (!useState || !stateExit.ok) return null;
-  let exitState = null;
-  for (const state of stateExit.value) {
-    if (control?.isAborted?.()) return null;
-    if (fieldValue(state, 'regionId') !== contextRegionId) continue;
-    if (exitState) return null;
-    exitState = state;
-  }
-  if (!exitState || idKey(fieldValue(exitState, 'definitionId')) !== definitionId) return null;
+  return false;
+}
 
-  const loadUse = fieldValue(load, 'memUse');
-  if (!loadUse || fieldValue(loadUse, 'inst') !== direct
-      || idKey(fieldValue(loadUse, 'definitionId')) !== definitionId) return null;
-  let directCount = 0;
-  let loadCount = 0;
-  for (const candidate of instructions) {
-    if (control?.isAborted?.()) return null;
-    if (candidate === direct) directCount += 1;
-    if (candidate === load) loadCount += 1;
-  }
-  if (directCount !== 1 || loadCount !== 1) return null;
-  const directDefinition = fieldValue(direct, 'memDef');
-  if (idKey(fieldValue(directDefinition, 'definitionId')) !== definitionId) return null;
-  const directSourceEntityId = canonicalInstructionSourceId(direct);
-  const definitionSourceEntityId = definitionAccess.sourceEntityId;
-  if (directSourceEntityId == null || directSourceEntityId !== definitionSourceEntityId) return null;
+function physicalMemoryIntervalMatches(load, direct, proof, context, instructions, control, ir) {
   const directRow = fieldValue(direct, 'row');
   const loadRow = fieldValue(load, 'row');
   const directBlock = fieldValue(direct, 'block');
   const loadBlock = fieldValue(load, 'block');
-  if (!validRow(directRow) || !validRow(loadRow) || !validBlock(directBlock) || !validBlock(loadBlock)) return null;
+  if (!validRow(directRow) || !validRow(loadRow)
+      || !validBlock(directBlock) || !validBlock(loadBlock)) return false;
   if (directBlock === loadBlock) {
-    if (directRow >= loadRow) return null;
+    if (directRow >= loadRow) return false;
   } else if (!dominates(ir, directBlock, loadBlock, control)) {
+    return false;
+  }
+  let directCount = 0;
+  let loadCount = 0;
+  const artifact = fieldValue(context, 'artifact');
+  const definitionId = idKey(fieldValue(proof, 'definitionId'));
+  const regionId = fieldValue(context, 'regionId') ?? fieldValue(proof, 'regionId');
+  if (!artifact || definitionId == null || !nonEmptyString(regionId)) return false;
+  for (const candidate of instructions) {
+    if (control?.isAborted?.()) return false;
+    const op = fieldValue(candidate, 'op');
+    const candidateIsLoad = op === 'load';
+    const candidateIsMutation = op === 'store' || op === 'call' || op === 'clobber' || op === 'unknown';
+    if (candidate === direct) directCount += 1;
+    if (candidate === load) loadCount += 1;
+    if (!candidateIsLoad && !candidateIsMutation) continue;
+    const row = fieldValue(candidate, 'row');
+    const block = fieldValue(candidate, 'block');
+    // Every current physical memory operation participates in the readpoint
+    // check. Malformed rows and equal-row mutations cannot be skipped as
+    // metadata; a peer LOAD has no write effect to order.
+    if (!validRow(row) || !validBlock(block)) return false;
+    if (candidate !== direct && candidate !== load && candidateIsMutation
+        && (row === directRow || row === loadRow)) return false;
+    if (candidate === direct || candidate === load) continue;
+
+    let onInterval = false;
+    if (directBlock === loadBlock) {
+      onInterval = block === directBlock && row >= directRow && row <= loadRow;
+    } else if (reachableBlock(ir, directBlock, block, control)
+        && reachableBlock(ir, block, loadBlock, control)) {
+      if (block === directBlock) onInterval = row >= directRow;
+      else if (block === loadBlock) onInterval = row <= loadRow;
+      else onInterval = true;
+    }
+    if (!onInterval || candidateIsLoad) continue;
+    if (op !== 'store' && op !== 'call') return false;
+    if (!canonicalProjectionEffectIsNoAlias(candidate, artifact, regionId, control)) return false;
+  }
+  return directCount === 1 && loadCount === 1;
+}
+
+function canonicalCommittedOperandProof(load, direct, use, bits, definitionId, control) {
+  const loadExtra = fieldValue(load, 'extra');
+  const proof = fieldValue(load, 'memoryOperandForwarding')
+    ?? fieldValue(loadExtra, 'memoryOperandForwarding')
+    ?? fieldValue(load, 'memoryForwarding')
+    ?? fieldValue(loadExtra, 'memoryForwarding');
+  const context = fieldValue(load, 'memoryForwardingContext')
+    ?? fieldValue(loadExtra, 'memoryForwardingContext');
+  const artifact = fieldValue(context, 'artifact');
+  const loadSourceEntityId = canonicalInstructionSourceId(load);
+  const directSourceEntityId = canonicalInstructionSourceId(direct);
+  const regionId = fieldValue(use, 'regionId') ?? fieldValue(context, 'regionId');
+  if (!proof || !context || !artifact || loadSourceEntityId == null || directSourceEntityId == null
+      || !nonEmptyString(regionId)) return null;
+  const expected = {
+    useId: fieldValue(context, 'useId'),
+    definitionId,
+    loadSourceEntityId,
+    storedSourceEntityId: directSourceEntityId,
+    regionId,
+    widthBits: bits,
+  };
+  const projectionMatches = () => idKey(fieldValue(proof, 'loadSourceEntityId')) === loadSourceEntityId
+    && idKey(fieldValue(proof, 'storedSourceEntityId')) === directSourceEntityId
+    && idKey(fieldValue(proof, 'regionId') ?? fieldValue(proof, 'loadRegionId')) === regionId
+    && Number(fieldValue(proof, 'widthBits')) === bits;
+  try {
+    const queryContext = canonicalMemoryForwardingContextForLoad(proof, load, context);
+    if (projectionMatches() && isCanonicalExactMemoryOperandForwarding(proof, queryContext)) {
+      return { proof, context, artifact };
+    }
+  } catch {
+    // The direct stack-operand producer has its own canonical binding gate.
+  }
+  try {
+    if (isCanonicalExactStackOperandIdentity(proof, artifact, expected)) {
+      return { proof, context, artifact };
+    }
+  } catch {
     return null;
   }
-
-  const metadataField = arrayField(artifact, 'accessMetadata');
-  if (!metadataField.ok) return null;
-  for (const metadata of metadataField.value) {
-    if (control?.isAborted?.()) return null;
-    if (fieldValue(metadata, 'regionId') !== contextRegionId
-        || fieldValue(metadata, 'entityKind') !== 'definition'
-        || fieldValue(metadata, 'role') !== 'write') continue;
-    const order = fieldValue(metadata, 'order');
-    if (!validRow(order)) return null;
-    if (order > definitionAccess.order && order < useAccess.order) return null;
-  }
-
-  const sourceMetadata = (sourceEntityId) => {
-    const records = [];
-    for (const metadata of metadataField.value) {
-      if (control?.isAborted?.()) return null;
-      if (idKey(fieldValue(metadata, 'sourceEntityId')) === sourceEntityId) records.push(metadata);
-    }
-    return records;
-  };
-  if (directBlock === loadBlock) {
-    for (const candidate of instructions) {
-      if (control?.isAborted?.()) return null;
-      if (candidate === direct || candidate === load) continue;
-      if (fieldValue(candidate, 'block') !== directBlock) continue;
-      const row = fieldValue(candidate, 'row');
-      if (!validRow(row) || row <= directRow || row >= loadRow) continue;
-      const op = fieldValue(candidate, 'op');
-      if (op !== 'store' && op !== 'call' && op !== 'clobber' && op !== 'unknown') continue;
-      const sourceEntityId = canonicalInstructionSourceId(candidate);
-      const records = sourceEntityId == null ? null : sourceMetadata(sourceEntityId);
-      if (!records || records.length === 0) return null;
-      if (op === 'clobber' || op === 'unknown') return null;
-      if (op === 'store') {
-        const descriptor = memoryMutationDescriptor(candidate);
-        if (!descriptor || descriptor.broad) return null;
-        let hasStoreBinding = false;
-        for (const metadata of records) {
-          if (control?.isAborted?.()) return null;
-          if (fieldValue(metadata, 'sourceKind') === 'store'
-              && fieldValue(metadata, 'role') === 'write') {
-            hasStoreBinding = true;
-            break;
-          }
-        }
-        if (!hasStoreBinding) return null;
-      } else {
-        let hasCallBinding = false;
-        for (const metadata of records) {
-          if (control?.isAborted?.()) return null;
-          if (fieldValue(metadata, 'sourceKind') === 'call') {
-            hasCallBinding = true;
-            break;
-          }
-        }
-        if (!hasCallBinding) return null;
-      }
-      for (const metadata of records) {
-        if (control?.isAborted?.()) return null;
-        if (fieldValue(metadata, 'regionId') !== contextRegionId
-            || fieldValue(metadata, 'entityKind') !== 'definition'
-            || fieldValue(metadata, 'role') !== 'write') continue;
-        if (fieldValue(metadata, 'aliasRelation') !== 'no') return null;
-      }
-    }
-  }
-  return { definitionId, useId };
+  return null;
 }
 
 function exactCommittedMemoryUse(load, key, bits, instructions, control, ir) {
@@ -1327,9 +1244,9 @@ function exactCommittedMemoryUse(load, key, bits, instructions, control, ir) {
       || fieldValue(effectSummary, 'role') !== 'write'
       || fieldValue(effectSummary, 'broad') !== false
       || fieldValue(effectSummary, 'sourceKind') !== 'store') return null;
-  const proof = fieldValue(use, 'proof');
-  if (fieldValue(proof, 'aliasRelation') !== 'must'
-      || fieldValue(proof, 'kind') !== 'must-alias-memory-write') return null;
+  const useProof = fieldValue(use, 'proof');
+  if (fieldValue(useProof, 'aliasRelation') !== 'must'
+      || fieldValue(useProof, 'kind') !== 'must-alias-memory-write') return null;
   const definitionId = idKey(fieldValue(use, 'definitionId'));
   if (definitionId == null) return null;
   const direct = fieldValue(use, 'inst');
@@ -1337,22 +1254,17 @@ function exactCommittedMemoryUse(load, key, bits, instructions, control, ir) {
   const directLocation = fieldValue(direct, 'loc');
   if (fieldValue(directLocation, 'kind') !== 'stack' || fieldValue(directLocation, 'key') !== key
       || positiveAccessSize(fieldValue(directLocation, 'size')) * 8 !== bits) return null;
-  if (!liveCommittedMemoryAuthority(load, direct, bits, instructions, control, ir)) return null;
-  let matches = 0;
-  let matched = null;
-  for (const candidate of instructions) {
-    if (control?.isAborted?.()) return null;
-    const candidateId = idKey(fieldValue(candidate, 'id'));
-    const candidateDefinition = idKey(fieldValue(fieldValue(candidate, 'memDef'), 'definitionId'))
-      ?? idKey(fieldValue(fieldValue(candidate, 'extra'), 'memoryDefinitionId'));
-    if (candidate === direct || candidateDefinition === definitionId) {
-      if (fieldValue(candidate, 'op') !== 'store') return null;
-      matches += 1;
-      matched = candidate;
-      if (candidateId == null) return null;
-    }
-  }
-  if (matches !== 1 || matched !== direct) return null;
+  const canonicalProof = canonicalCommittedOperandProof(load, direct, use, bits, definitionId, control);
+  if (!canonicalProof) return null;
+  const proof = canonicalProof.proof;
+  const contributingField = ownData(proof, 'contributingDefinitionIds');
+  if (!contributingField.present || !contributingField.valid
+      || !Array.isArray(contributingField.value) || contributingField.value.length !== 1
+      || idKey(contributingField.value[0]) !== definitionId) return null;
+  const directDefinition = fieldValue(direct, 'memDef');
+  if (idKey(fieldValue(directDefinition, 'definitionId')) !== definitionId) return null;
+  if (!physicalMemoryIntervalMatches(load, direct, proof, canonicalProof.context,
+    instructions, control, ir)) return null;
   return { contributingDefinitionIds:[definitionId] };
 }
 

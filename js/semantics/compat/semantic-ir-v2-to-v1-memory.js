@@ -343,6 +343,18 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         const preservesCompatibilityLoad = valueDependsOnProjectedPhi(forwardedValue)
           || storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId)
           || !hasProjectedConsumerBeyondLoad(source);
+        // A join/PHI value is intentionally kept as a physical LOAD so the
+        // decompiler can project its committed source lvalue later.  Preserve
+        // the canonical producer proof on that LOAD, but publish it only when
+        // one MemorySSA use owns the projected instruction; a single v1 object
+        // cannot carry distinct proofs for multiple region rows.
+        if (loadUseCounts.get(source) === 1 && operandProof?.exact === true) {
+          source.memoryOperandForwarding = operandProof;
+          source.extra = {
+            ...source.extra,
+            memoryOperandForwarding: operandProof,
+          };
+        }
         if (loadUseCounts.get(source) === 1
             && forwardedValue && !preservesCompatibilityLoad
             && String(source.dst?.semanticValueId ?? source.dst?.sourceSemanticValueId ?? '') !== '') {

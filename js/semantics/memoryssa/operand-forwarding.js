@@ -17,6 +17,11 @@ import { isCanonicalMemorySsaProducerArtifact } from './build.js';
  */
 
 const semanticIndexCache = new WeakMap();
+// A direct operand proof is published as an immutable object and retained in
+// this private binding table.  Compatibility projections may carry the proof
+// across the v2 -> v1 boundary, but a copied or fabricated proof must never be
+// accepted by a downstream consumer as canonical producer output.
+const operandProofBindings = new WeakMap();
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -117,21 +122,13 @@ function semanticIndexFor(memorySsa, ir) {
     const values = new Map(ir.values.map((value) => [String(value?.id ?? ''), value]));
     if (!nodes.has('') && !values.has('')) {
       const useCounts = new Map();
-      const explicitIncomingTargets = new Set();
-      const callBlocks = new Set();
       for (const node of ir.nodes) {
-        const blockId = String(node?.blockId ?? '');
-        if (blockId && node?.kind === 'call') callBlocks.add(blockId);
         for (const input of node?.inputs ?? []) {
           const inputId = String(input ?? '');
           if (inputId) useCounts.set(inputId, (useCounts.get(inputId) ?? 0) + 1);
         }
-        for (const successor of node?.targets ?? []) {
-          const target = String(successor ?? '');
-          if (target && target !== blockId) explicitIncomingTargets.add(target);
-        }
       }
-      index = Object.freeze({ nodes, values, useCounts, explicitIncomingTargets, callBlocks });
+      index = Object.freeze({ nodes, values, useCounts });
     }
   }
   byIr.set(ir, index);
@@ -154,6 +151,22 @@ function metadataFor(memorySsa, id) {
   return rows.length === 1 ? rows[0] : null;
 }
 
+function rangesDisjoint(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftParts = left.split('\u0000');
+  const rightParts = right.split('\u0000');
+  if (leftParts.length !== 3 || rightParts.length !== 3 || leftParts[0] !== rightParts[0]) return false;
+  try {
+    const leftStart = BigInt(leftParts[1]);
+    const leftEnd = BigInt(leftParts[2]);
+    const rightStart = BigInt(rightParts[1]);
+    const rightEnd = BigInt(rightParts[2]);
+    return leftEnd <= rightStart || rightEnd <= leftStart;
+  } catch {
+    return false;
+  }
+}
+
 function coverageFor(memorySsa, use) {
   if (!Array.isArray(memorySsa.byteCoverage)) return null;
   const rows = memorySsa.byteCoverage.filter((item) => String(item?.useId ?? '') === String(use.id));
@@ -171,18 +184,56 @@ function coverageFor(memorySsa, use) {
       || !uniqueBy(aliases, (item) => String(item?.regionId ?? ''))) return null;
   const regionIds = new Set(memorySsa.regions.map((region) => String(region?.id ?? '')));
   if (regionIds.has('') || aliases.some((item) => !regionIds.has(String(item?.regionId ?? ''))
-      || !['must', 'no'].includes(String(item?.aliasRelation ?? '')))) return null;
-  const relevant = aliases.filter((item) => item.aliasRelation !== 'no');
-  if (relevant.length !== 1
-      || relevant[0].aliasRelation !== 'must'
-      || String(relevant[0].regionId) !== String(use.regionId)) return null;
+      || !['must', 'may', 'no'].includes(String(item?.aliasRelation ?? '')))) return null;
+  const loadRange = rangeKey(coverage.loadRange);
+  if (!loadRange) return null;
+  const targetAliases = aliases.filter((item) => String(item.regionId) === String(use.regionId));
+  if (targetAliases.length !== 1 || targetAliases[0].aliasRelation !== 'must') return null;
 
   const states = coverage.regionStates;
-  if (!Array.isArray(states) || states.length !== 1) return null;
-  const state = states[0];
-  if (String(state?.regionId ?? '') !== String(use.regionId)
-      || String(state?.definitionId ?? '') !== String(use.reachingDefinitionId ?? '')
-      || state?.aliasRelation !== 'must') return null;
+  if (!Array.isArray(states) || states.length === 0
+      || !uniqueBy(states, (item) => String(item?.regionId ?? ''))) return null;
+  let targetState = null;
+  for (const state of states) {
+    const stateRegionId = String(state?.regionId ?? '');
+    if (!stateRegionId || !regionIds.has(stateRegionId)
+        || !['must', 'may'].includes(String(state?.aliasRelation ?? ''))) return null;
+    if (stateRegionId === String(use.regionId)) {
+      if (targetState) return null;
+      targetState = state;
+      continue;
+    }
+    // A region-level MAY relation does not by itself identify a byte overlap.
+    // The canonical definition range may discharge that uncertainty only for
+    // an ordinary precise store whose bytes are disjoint from this load.
+    const definitionMetadata = metadataFor(memorySsa, state.definitionId);
+    const definitionRange = rangeKey(definitionMetadata?.byteRange);
+    const definitionRangeProof = rangeKey(definitionMetadata?.rangeProof?.range);
+    const definition = memorySsa.definitions
+      ?.find((item) => String(item?.id ?? '') === String(state.definitionId ?? '')) ?? null;
+    if (state.aliasRelation !== 'may'
+        || !definitionMetadata
+        || !definition
+        || String(definition.regionId ?? '') !== stateRegionId
+        || definition.aliasRelation !== 'may'
+        || !['may-alias-clobber', 'memory-def'].includes(String(definition.kind ?? ''))
+        || definitionMetadata.entityKind !== 'definition'
+        || definitionMetadata.sourceKind !== 'store'
+        || definitionMetadata.role !== 'write'
+        || definitionMetadata.broad !== false
+        || definitionMetadata.aliasRelation !== 'may'
+        || !Number.isSafeInteger(state.order)
+        || state.order !== definitionMetadata.order
+        || definitionRangeProof !== definitionRange
+        || !rangesDisjoint(definitionRange, loadRange)) return null;
+  }
+  const targetDefinitionMetadata = metadataFor(memorySsa, use.reachingDefinitionId);
+  if (!targetState
+      || String(targetState.definitionId ?? '') !== String(use.reachingDefinitionId ?? '')
+      || targetState.aliasRelation !== 'must'
+      || !targetDefinitionMetadata
+      || !Number.isSafeInteger(targetState.order)
+      || targetState.order !== targetDefinitionMetadata.order) return null;
   return coverage;
 }
 
@@ -191,20 +242,7 @@ function semanticValueUseCount(index, valueId) {
   return target ? index?.useCounts?.get(target) ?? 0 : 0;
 }
 
-function semanticBlockMayBeJoin(index, blockId) {
-  const target = String(blockId ?? '');
-  if (!target || !index) return true;
-  // Semantic IR intentionally does not encode every fallthrough edge in
-  // node.targets. Therefore even one explicit incoming edge cannot prove a
-  // single-predecessor block: the layout predecessor may also fall through.
-  // Without a complete predecessor relation, exact operand identity must fail
-  // closed. A block with no explicit incoming edge can have at most the one
-  // omitted layout fallthrough predecessor and is not a join on this evidence.
-  return index.explicitIncomingTargets.has(target);
-}
-
-function semanticPublicationHasCallRisk(ir, storeNode, loadNode, index) {
-  if (!index) return true;
+function semanticPublicationHasCallRisk(ir, storeNode, loadNode) {
   const storeBlockId = String(storeNode?.blockId ?? '');
   const loadBlockId = String(loadNode?.blockId ?? '');
   if (!storeBlockId || !loadBlockId) return true;
@@ -218,12 +256,11 @@ function semanticPublicationHasCallRisk(ir, storeNode, loadNode, index) {
     return storeBlockId !== String(ir.entryBlockId ?? '');
   }
 
-  // Canonical Semantic IR node order is identity order, not execution order.
-  // Therefore the presence of any call in the same block is enough to make the
-  // spill/load publication interval unprovable here. Fail closed rather than
-  // infer an execution interval from array position; CFG-aware recovery owns
-  // any stronger proof.
-  return index.callBlocks.has(storeBlockId);
+  // Same-block calls are covered by the canonical byte/region proof checked by
+  // the caller. It records complete target coverage and proves every other
+  // region, including unknown call partitions, does not alias the exact stack
+  // range. Semantic IR node order is not execution order.
+  return false;
 }
 
 export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
@@ -309,19 +346,13 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   // while forwarding a value with no semantic consumer cannot improve truth.
   if (semanticValueUseCount(semanticIndex, outputValueId) === 0) return null;
 
-  // A spill emitted directly in a CFG join can carry a scalar-SSA PHI chosen by
-  // the compatibility projector. Replacing the later LOAD with that raw value
-  // too early exposes the synthetic local_phi instead of allowing the existing
-  // committed-field projection to recover the source-level lvalue. Stay
-  // conservative at joins; the canonical MemorySSA/reachingStore remains intact.
-  if (semanticBlockMayBeJoin(semanticIndex, storeNode.blockId)) return null;
+  // A join/PHI store and an intervening call remain safe here only when the
+  // canonical coverage above proves the exact bytes and region states. The
+  // compatibility projector decides whether the scalar value may be exposed
+  // directly; its committed-return consumer retains the LOAD when needed.
+  if (semanticPublicationHasCallRisk(ir, storeNode, loadNode)) return null;
 
-  // Calls are publication boundaries. Without canonical in-block execution
-  // order, any same-block call makes the interval unprovable; cross-block
-  // forwarding is restricted above to exact canonical entry spills.
-  if (semanticPublicationHasCallRisk(ir, storeNode, loadNode, semanticIndex)) return null;
-
-  return Object.freeze({
+  const proof = Object.freeze({
     status: 'exact',
     exact: true,
     proofKind: 'canonical-memoryssa-direct-stack-operand-identity',
@@ -329,6 +360,7 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
     artifactDigest: memorySsa.canonicalDigest,
     useId: String(use.id),
     definitionId: String(definition.id),
+    contributingDefinitionIds: [String(definition.id)],
     loadSourceEntityId: String(use.sourceEntityId),
     storedSourceEntityId: String(definition.sourceEntityId),
     storedValueId,
@@ -339,4 +371,36 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
     range: loadMetadata.byteRange,
     semanticIrDigest: memorySsa.identity.semanticIrDigest,
   });
+  operandProofBindings.set(proof, Object.freeze({
+    artifact: memorySsa,
+    useId: String(use.id),
+    definitionId: String(definition.id),
+  }));
+  return proof;
+}
+
+/*
+ * Validate only the producer binding of a published direct-operand proof.
+ * MemorySSA exactness is established by forwardExactStackOperandIdentity;
+ * this gate prevents a compatibility projection from substituting a cloned
+ * object or rebinding the proof to another physical access.  Physical
+ * instruction/range checks remain with the consuming decompiler pass.
+ */
+export function isCanonicalExactStackOperandIdentity(proof, memorySsa, expected = {}) {
+  if (!record(proof) || !isCanonicalMemorySsaProducerArtifact(memorySsa)) return false;
+  const binding = operandProofBindings.get(proof);
+  if (!binding || binding.artifact !== memorySsa
+      || proof.status !== 'exact'
+      || proof.exact !== true
+      || proof.proofKind !== 'canonical-memoryssa-direct-stack-operand-identity'
+      || proof.completeness !== 'complete'
+      || String(proof.useId ?? '') !== binding.useId
+      || String(proof.definitionId ?? '') !== binding.definitionId) return false;
+  const matches = (key, value) => value == null || String(proof[key] ?? '') === String(value);
+  return matches('useId', expected.useId)
+    && matches('definitionId', expected.definitionId)
+    && matches('loadSourceEntityId', expected.loadSourceEntityId)
+    && matches('storedSourceEntityId', expected.storedSourceEntityId)
+    && matches('regionId', expected.regionId)
+    && (expected.widthBits == null || Number(proof.widthBits) === Number(expected.widthBits));
 }

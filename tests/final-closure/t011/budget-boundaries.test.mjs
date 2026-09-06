@@ -31,6 +31,7 @@ import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { validateSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createMemoryRegionRef } from '../../../js/semantics/memoryssa/contract.js';
 import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { forwardExactStackOperandIdentity } from '../../../js/semantics/memoryssa/operand-forwarding.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 
 function coerciveValue(counter) {
@@ -306,7 +307,7 @@ function committedSpillReturnFixture() {
   return result;
 }
 
-function committedReturnFixture({ registerKind = 'stack', registerSize = 4, registerRow = 3 } = {}) {
+function committedReturnFixture({ registerKind = 'stack', registerSize = 4, registerRow = 3, operandProof = false } = {}) {
   const origin = (id, address = 0x3000n) => ({
     instructionIds:[id], virtualRanges:[{ start:address, end:address + 4n }],
   });
@@ -349,10 +350,15 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
   const canonicalCfg = createSemanticCfg({
     functionId:canonicalIr.functionId, entryBlockId:'b0', blocks:[{ id:'b0', successors:[] }],
   });
-  const region = createMemoryRegionRef({
-    id:'r_global', kind:'global-absolute', binaryId:'binary_fixture', address:'0x4000', widthBits:32,
-    origin:origin('region', 0x4000n),
-  });
+  const region = operandProof
+    ? createMemoryRegionRef({
+      id:'r_stack', kind:'stack-fixed', functionId:canonicalIr.functionId, offset:'-16', widthBits:32,
+      origin:origin('region', 0x4000n),
+    })
+    : createMemoryRegionRef({
+      id:'r_global', kind:'global-absolute', binaryId:'binary_fixture', address:'0x4000', widthBits:32,
+      origin:origin('region', 0x4000n),
+    });
   const identity = {
     binaryId:'binary_fixture', sliceId:'slice_fixture', functionId:canonicalIr.functionId,
     semanticIrId:'ir_fixture', scalarSsaId:'ssa_fixture', memorySsaId:'mssa_fixture', snapshotId:'snapshot_fixture',
@@ -371,6 +377,10 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
   const projected = projectSemanticIrV2ToLegacyV1(rawIr, { memorySsa });
   const canonicalLoad = projected.instructions.find((instruction) => instruction.op === 'load');
   assert.ok(canonicalLoad?.memoryForwarding?.status === 'exact');
+  const directOperandProof = operandProof
+    ? forwardExactStackOperandIdentity(memorySsa, memorySsa.uses.find((use) => use.sourceEntityId === 'n_load'), canonicalIr)
+    : null;
+  if (operandProof) assert.ok(directOperandProof?.exact === true);
 
   const key = 'stack:sp:e0:-16:s4';
   const rootLoad = { id:500, op:'load', block:0, row:1, address:0x5004n,
@@ -391,6 +401,15 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
     loc:{ kind:'stack', key, size:4 },
     memDef:{ definitionId:canonicalLoad.memoryForwarding.contributingDefinitionIds[0] },
     args:[{ value:spilled }] };
+  if (operandProof) {
+    const canonicalStore = projected.instructions.find((instruction) => instruction.op === 'store');
+    registerLoad.memoryForwarding = { status:'unknown', exact:false, reason:'test-direct-operand-route', completeness:'partial' };
+    registerLoad.memoryOperandForwarding = directOperandProof;
+    registerLoad.extra = { memoryOperandForwarding:directOperandProof };
+    registerLoad.memoryAliasRelation = 'must';
+    registerLoad.memUse = { ...canonicalLoad.memUse, key, inst:stackStore };
+    stackStore.origin = canonicalStore?.origin ?? null;
+  }
   const ret = { id:503, op:'ret', block:0, row:4, address:0x5010n, args:[] };
   const registerValue = { id:'return_reg', reg:'x0', bits:32, def:registerLoad };
   const rootExpression = expr.load({ kind:'stack', key }, 32, { row:rootLoad.row, address:rootLoad.address, ir:rootLoad.id });
@@ -407,8 +426,8 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
   };
 }
 
-function committedReturnViewFixture(kind = 'zext') {
-  const result = committedReturnFixture();
+function committedReturnViewFixture(kind = 'zext', operandProof = false) {
+  const result = committedReturnFixture({ operandProof });
   const registerLoad = result.ir.instructions.find((instruction) => instruction.id === 501);
   const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
   const loaded = { id:'view_loaded', bits:32, def:registerLoad };
@@ -827,6 +846,18 @@ test('T011 committed forwarding authenticates the complete published state-view 
   assert.equal(lossy.metrics.rewrittenExpressions, 0);
 });
 
+test('T011 canonical operand forwarding survives an authenticated widening view', () => {
+  const exact = committedReturnViewFixture('zext', true);
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  const lossy = committedReturnViewFixture('lossy', true);
+  recoverExactStackReturn(lossy, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(lossy.cAst.body[0].text, 'return local_0;');
+  assert.equal(lossy.metrics.rewrittenExpressions, 0);
+});
+
 test('T011 committed forwarding requires live definition order and intervening-effect authority', () => {
   const baseline = committedReturnFixture();
   recoverExactStackReturn(baseline, { legacyAArch64:true, deterministicTransforms:true });
@@ -862,6 +893,49 @@ test('T011 committed forwarding requires live definition order and intervening-e
     result.ir.blocks[0].insts = result.ir.instructions;
     ret.row = Math.max(ret.row, load.row + 2);
     result.ir.blocks[0].endRow = ret.row;
+    recoverExactStackReturn(result, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', mutation);
+    assert.equal(result.metrics.rewrittenExpressions, 0, mutation);
+  }
+});
+
+test('T011 committed forwarding consumes the canonical operand proof at the live physical readpoint', () => {
+  const baseline = committedReturnFixture({ operandProof:true });
+  recoverExactStackReturn(baseline, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(baseline.cAst.body[0].text, 'return secret;');
+  assert.equal(baseline.metrics.rewrittenExpressions, 1);
+
+  for (const mutation of ['unknown-call', 'equal-row', 'malformed-row', 'store-after-load', 'cross-block-unknown']) {
+    const result = committedReturnFixture({ operandProof:true });
+    const direct = result.ir.instructions.find((instruction) => instruction.id === 502);
+    const load = result.ir.instructions.find((instruction) => instruction.id === 501);
+    const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+    if (mutation === 'cross-block-unknown') {
+      const effect = { id:507, op:'call', block:1, row:3, args:[] };
+      load.block = 1;
+      load.row = 4;
+      ret.block = 1;
+      ret.row = 5;
+      result.ir.instructions.splice(2, 0, effect);
+      result.ir.blocks = [
+        { index:0, startRow:0, endRow:2, pred:[], succ:[1], insts:result.ir.instructions.slice(0, 2) },
+        { index:1, startRow:3, endRow:ret.row, pred:[0], succ:[], insts:[effect, load, ret] },
+      ];
+      result.ir.idom = [-1, 0];
+    } else if (mutation === 'store-after-load') {
+      direct.row = load.row + 1;
+      ret.row = load.row + 2;
+    } else {
+      const effect = {
+        id:507, op:mutation === 'unknown-call' ? 'call' : 'unknown', block:0,
+        row:mutation === 'equal-row' ? direct.row : mutation === 'malformed-row' ? '3' : direct.row + 1, args:[],
+      };
+      result.ir.instructions.splice(2, 0, effect);
+    }
+    if (mutation !== 'cross-block-unknown') {
+      result.ir.blocks[0].endRow = ret.row;
+      result.ir.blocks[0].insts = result.ir.instructions;
+    }
     recoverExactStackReturn(result, { legacyAArch64:true, deterministicTransforms:true });
     assert.equal(result.cAst.body[0].text, 'return local_0;', mutation);
     assert.equal(result.metrics.rewrittenExpressions, 0, mutation);
