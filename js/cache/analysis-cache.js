@@ -178,7 +178,8 @@ export class AnalysisCache {
     if (this.memory) { this.memory.delete(key); return; }
     try {
       const db = await this.#db();
-      await requestPromise(db.transaction('entries', 'readwrite').objectStore('entries').delete(key));
+      const tx = db.transaction('entries', 'readwrite');
+      await transactionMutationPromise(tx, tx.objectStore('entries').delete(key));
     } catch (error) { this.#fallback(error).delete(key); }
   }
 
@@ -223,7 +224,8 @@ export class AnalysisCache {
     if (this.memory) { this.memory.clear(); return; }
     try {
       const db = await this.#db();
-      await requestPromise(db.transaction('entries', 'readwrite').objectStore('entries').clear());
+      const tx = db.transaction('entries', 'readwrite');
+      await transactionMutationPromise(tx, tx.objectStore('entries').clear());
     } catch (error) { this.#fallback(error).clear(); }
   }
 
@@ -245,7 +247,11 @@ export class AnalysisCache {
   }
 
   async #idbGet(key) { const db = await this.#db(); return requestPromise(db.transaction('entries', 'readonly').objectStore('entries').get(key)); }
-  async #idbPut(record) { const db = await this.#db(); await requestPromise(db.transaction('entries', 'readwrite').objectStore('entries').put(record)); }
+  async #idbPut(record) {
+    const db = await this.#db();
+    const tx = db.transaction('entries', 'readwrite');
+    await transactionMutationPromise(tx, tx.objectStore('entries').put(record));
+  }
 }
 
 function requestPromise(request) {
@@ -253,6 +259,15 @@ function requestPromise(request) {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error('IndexedDB request failed'));
   });
+}
+
+function transactionMutationPromise(transaction, request) {
+  const completion = new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed'));
+    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+  });
+  return Promise.all([requestPromise(request), completion]).then(() => undefined);
 }
 
 function fallbackClone(value, seen = new WeakMap()) {
