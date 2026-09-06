@@ -168,15 +168,19 @@ assert.doesNotMatch(revalidationWorkerSource, /decoder-revalidation-noncontiguou
 assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length/,
   'receiver revalidation rejects decode-count incompleteness');
 
-assert.match(userscriptBuildSource, /BUNDLED_CLASSIC_ENTRIES = \['js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'\]/,
-  'protected runtime build must package the receiver worker as a standalone integrity-bound asset');
+assert.match(userscriptBuildSource, /OPTIONAL_BUNDLED_CLASSIC_ENTRIES = \['js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'\]/,
+  'protected runtime may package the receiver worker as an optional integrity-bound asset');
+assert.match(userscriptBuildSource, /existingOptionalEntries\(OPTIONAL_BUNDLED_CLASSIC_ENTRIES\)/,
+  'the userscript infrastructure parent must remain build-safe before the x86 receiver file exists');
 assert.match(userscriptBuildSource, /bundleInlinedClassic\(entry, inlineImports\(entry, sources\)\)/,
   'receiver dynamic ESM dependencies and classic Capstone scripts must be bundled into the protected worker blob');
 assert.match(protectedWorkersSource, /X86_REVALIDATION_WORKER = 'js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
 assert.match(protectedWorkersSource, /CAPSTONE_CLASSIC_WORKERS = new Set\([\s\S]*X86_REVALIDATION_WORKER/,
   'protected receiver worker must receive the integrity-bound Capstone WASM bootstrap');
+assert.match(protectedWorkersSource, /const semanticURL = urls\.get\(X86_REVALIDATION_WORKER\);\s*if \(semanticURL\)/,
+  'platform bootstrap must remain a no-op until the optional x86 receiver asset exists');
 assert.match(protectedWorkersSource, /semanticURL,\s*wasmBinary/,
-  'platform worker bootstrap must carry both the receiver blob URL and a private WASM copy');
+  'platform worker bootstrap must carry both the receiver blob URL and a private WASM copy when present');
 assert.match(protectedWorkersSource, /e\.stopImmediatePropagation\(\)/,
   'protected bootstrap control messages must not fall through into application worker protocol');
 assert.match(protectedWorkersSource, /__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__/,
