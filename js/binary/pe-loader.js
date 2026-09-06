@@ -3,6 +3,7 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  parseBaseRelocations as parseBaseRelocationsCore,
 } from './pe-loader-core.js';
 
 export {
@@ -12,7 +13,6 @@ export {
   mappedFileSpanForRva,
   parseImports,
   parseExceptionFunctions,
-  parseBaseRelocations,
   parseCoffSymbols,
   directory,
   peMachineName,
@@ -32,6 +32,15 @@ export {
 
 function ensureBudget(image, budget) {
   return budget || createPEMetadataBudget(image);
+}
+
+export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
+  const budget = ensureBudget(image, sharedBudget);
+  const warningStart = image.warnings.length;
+  parseBaseRelocationsCore(r, dir, image, machine, budget);
+  if (image.warnings.slice(warningStart).some((warning) => warning.includes('Ignored reserved/unsupported PE base relocation type'))) {
+    budget.partial('relocations:unsupported-type');
+  }
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {
