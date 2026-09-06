@@ -330,27 +330,14 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
       }
 
       if (btype === 0) {
-        const fault = Object.freeze({
-          kind:'branch-target-exception',
-          condition:Object.freeze({
-            kind:'bti-incompatible',
-            btype:0,
-            landingPadKind:'pacixsp',
-          }),
-          detail:Object.freeze({
-            guardedPageState:'guarded',
-            landingPadKind:'pacixsp',
-            incomingBtype:0,
-          }),
-        });
         return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
           operations:bundle.operations,
-          possibleFaults:[...bundle.possibleFaults, fault],
+          possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
           completeness:bundle.completeness,
           unknownEffects:bundle.unknownEffects,
           metadata:{
             btiGuardedPage:guardState,
-            btiCheck:'incompatible-branch-target',
+            btiCheck:'skipped-zero-btype',
             landingPadKind:'pacixsp',
             incomingBtype:0,
           },
