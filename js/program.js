@@ -332,14 +332,21 @@ export class ProgramIndex {
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
     limit = queryLimit(limit, 200);
-    const seen = new Map();
-    const refs = this.refSitesTo(addr, span, Math.max(0, limit * 4));
-    let queryLimited = refs.complete !== true;
-    for (const r of refs) {
-      const fn = this.functionStartOf(r.site), key = fn != null ? fn.toString() : 's' + r.site.toString();
+    const order = this._refToOrder(), seen = new Map();
+    let i = lowerBound(this.refTo, order, addr), queryLimited = false;
+    const hi = addr + (span > 0n ? span : 1n);
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.refTo[k] >= hi) break;
+      const site = this.refFrom[k], fn = this.functionStartOf(site);
+      const key = fn != null ? fn.toString() : 's' + site.toString();
       if (!seen.has(key)) {
-        if (seen.size >= limit) { queryLimited = true; break; }
-        seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 });
+        if (seen.size >= limit) {
+          queryLimited = true;
+          if (seen.size === 0) break;
+          continue;
+        }
+        seen.set(key, { addr: fn, site, kind: this.refKind[k], count: 0 });
       }
       seen.get(key).count++;
     }
