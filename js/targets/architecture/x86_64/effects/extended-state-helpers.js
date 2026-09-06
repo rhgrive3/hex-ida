@@ -6,7 +6,7 @@ export const X87_FAMILIES = new Set([
   'fadd','faddp','fiadd','fsub','fsubp','fisub','fsubr','fsubrp','fisubr',
   'fmul','fmulp','fimul','fdiv','fdivp','fidiv','fdivr','fdivrp','fidivr',
   'fcom','fcomp','fcompp','fucom','fucomp','fucompp','ficom','ficomp','ftst','fxam',
-  'fcomi','fcompi','fucomi','fucompi',
+  'fcomi','fcomip','fucomi','fucomip',
   'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
   'fcos','fsin','fsincos','fptan','fpatan','fxtract',
   'fxch','fnstcw','fstcw','fldcw','fnstsw','fstsw','fwait','wait',
@@ -17,7 +17,7 @@ export const X87_FAMILIES = new Set([
   'fninit','finit','fnclex','fclex','fnop','fdisi8087_nop','feni8087_nop','fsetpm',
 ]);
 export const X87_RFLAGS_FAMILIES = new Set([
-  'fcomi','fcomip','fucomi','fucompi',
+  'fcomi','fcomip','fucomi','fucomip',
   'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
 ]);
 

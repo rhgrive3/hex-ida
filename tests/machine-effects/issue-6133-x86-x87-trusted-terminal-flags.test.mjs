@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createCapstoneX86Session } from "../phase5/helpers/capstone-session.mjs";
 import { createX86DecodedInstruction } from "../../js/targets/architecture/x86_64/decoded-instruction.js";
 import { liftX86MachineEffects } from "../../js/targets/architecture/x86_64/effects/index.js";
-import { isX87Instruction, X87_FAMILIES } from "../../js/targets/architecture/x86_64/effects/extended-state-helpers.js";
+import { isX87Instruction, isX87RflagsInstruction, X87_FAMILIES } from "../../js/targets/architecture/x86_64/effects/extended-state-helpers.js";
 
 const capstone = await createCapstoneX86Session();
 
@@ -84,6 +84,30 @@ try {
     assert.ok(fcomiSummary.registersWritten.includes("x86.x87.environment"), "fcomi must write x86.x87.environment");
     assert.ok(fcomiSummary.registersWritten.some(r => r.startsWith("rflags.")), "fcomi must write rflags");
     assert.ok(!fcomiSummary.registersWritten.some(r => r.startsWith("fpsw.")), "fcomi must NOT write fpsw");
+
+    // Canonical Capstone x87 compare families must stay in the RFLAGS domain.
+    // FUCOMIP (DF E9) is the #6133 counterexample: a misspelled finite-set
+    // identity used to reinterpret its EFLAGS union as FPSW.C* evidence.
+    for (const [bytes, mnem] of [
+      [[0xdf, 0xe9], "fucomip"],
+      [[0xdf, 0xf1], "fcomip"],
+      [[0xdb, 0xe9], "fucomi"],
+    ]) {
+      const decoded = createX86DecodedInstruction(capstone.decode(bytes, 0x5050n)[0]);
+      assert.equal(decoded.mnemonic, mnem);
+      assert.equal(decoded.instructionFamily, mnem, `${mnem} must retain the canonical Capstone family`);
+      assert.ok(X87_FAMILIES.has(mnem), `${mnem} must be present in the finite x87 family set`);
+      assert.ok(isX87Instruction(decoded, mnem), `${mnem} must be recognized as x87`);
+      assert.ok(isX87RflagsInstruction(decoded, mnem), `${mnem} must stay in the RFLAGS domain`);
+      assert.equal(decoded.detail?.flagsKind, "eflags", `${mnem} flagsKind must be eflags`);
+
+      const effects = liftX86MachineEffects(decoded, { instructionId: `test:${mnem}` });
+      assert.ok(effects);
+      assert.equal(effects.completeness, "exact-with-intrinsic");
+      const summary = effects.operations[0].effectSummary;
+      assert.ok(summary.registersWritten.some(r => r.startsWith("rflags.")), `${mnem} must write rflags`);
+      assert.ok(!summary.registersWritten.some(r => r.startsWith("fpsw.")), `${mnem} must NOT project EFLAGS into fpsw`);
+    }
 
     // fcmovbe st(0), st(1): DA D1
     const fcmovbe = createX86DecodedInstruction(capstone.decode([0xda, 0xd1], 0x5100n)[0]);
