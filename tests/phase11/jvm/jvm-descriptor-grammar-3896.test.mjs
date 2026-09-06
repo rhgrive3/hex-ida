@@ -13,8 +13,11 @@ assert.equal(typedMethod.parameters.length, 2);
 assert.equal(typedMethod.parameters[0].tag, 'J');
 assert.equal(typedMethod.parameters[1].kind, 'array');
 assert.equal(typedMethod.returnType, null);
+assert.doesNotThrow(() => parseJvmMethodDescriptor(`(${'I'.repeat(255)})V`));
+assert.throws(() => parseJvmMethodDescriptor(`(${'I'.repeat(256)})V`), /jvm-invalid-method-descriptor/);
+assert.throws(() => parseJvmMethodDescriptor(`(${'J'.repeat(128)})V`), /jvm-invalid-method-descriptor/);
 
-function buildDescriptorClass({ fieldDescriptor = null, methodDescriptor = null } = {}) {
+function buildDescriptorClass({ fieldDescriptor = null, methodDescriptor = null, methodAccessFlags = 0x0401 } = {}) {
   const bytes = [];
   const u1 = (value) => bytes.push(value & 0xff);
   const u2 = (value) => { u1(value >>> 8); u1(value); };
@@ -64,7 +67,7 @@ function buildDescriptorClass({ fieldDescriptor = null, methodDescriptor = null 
 
   u2(methodDescriptor == null ? 0 : 1);
   if (methodDescriptor != null) {
-    u2(0x0401); // public abstract
+    u2(methodAccessFlags);
     u2(methodNameIndex); u2(methodDescriptorIndex); u2(0);
   }
 
@@ -72,12 +75,12 @@ function buildDescriptorClass({ fieldDescriptor = null, methodDescriptor = null 
   return Uint8Array.from(bytes);
 }
 
-for (const descriptor of ['I', 'Ljava/lang/String;', '[[I', '[Ljava/lang/Object;']) {
+for (const descriptor of ['I', 'Ljava/lang/String;', '[[I', '[Ljava/lang/Object;', 'Lpkg/$Inner;']) {
   const parsed = parseJvm(buildDescriptorClass({ fieldDescriptor: descriptor }));
   assert.equal(parsed.fields[0].descriptor, descriptor);
 }
 
-for (const descriptor of ['V', 'Ljava/lang/String', '[V', 'I;', `${'['.repeat(256)}I`]) {
+for (const descriptor of ['V', 'Ljava/lang/String', '[V', 'I;', `${'['.repeat(256)}I`, 'Lfoo.bar;', 'Lfoo[bar;', 'L/foo;', 'Lfoo//bar;', 'Lfoo/;']) {
   assert.throws(
     () => parseJvm(buildDescriptorClass({ fieldDescriptor: descriptor })),
     /jvm-invalid-field-descriptor/,
@@ -90,12 +93,26 @@ for (const descriptor of ['()V', '([Ljava/lang/String;I)V', '(JD)Ljava/lang/Obje
   assert.equal(parsed.methods[0].descriptor, descriptor);
 }
 
-for (const descriptor of ['I', '()', '([V)V', '(V)V', '(I)Vx', '(()V', `(${'['.repeat(256)}I)V`]) {
+for (const descriptor of ['I', '()', '([V)V', '(V)V', '(I)Vx', '(()V', `(${'['.repeat(256)}I)V`, `(${'I'.repeat(256)})V`, `(${'J'.repeat(128)})V`]) {
   assert.throws(
     () => parseJvm(buildDescriptorClass({ methodDescriptor: descriptor })),
     /jvm-invalid-method-descriptor/,
     `method descriptor should be rejected: ${descriptor}`,
   );
 }
+
+const instance254 = `(${'I'.repeat(254)})V`;
+assert.equal(parseJvm(buildDescriptorClass({ methodDescriptor: instance254 })).methods[0].descriptor, instance254);
+const explicit255 = `(${'I'.repeat(255)})V`;
+assert.throws(
+  () => parseJvm(buildDescriptorClass({ methodDescriptor: explicit255 })),
+  /jvm-invalid-method-descriptor/,
+  'instance method must include implicit this in the 255-unit limit',
+);
+assert.equal(
+  parseJvm(buildDescriptorClass({ methodDescriptor: explicit255, methodAccessFlags: 0x0109 })).methods[0].descriptor,
+  explicit255,
+  'static/native method may use all 255 explicit parameter units',
+);
 
 console.log('  ok JVM descriptor grammar #3896 tests passed');

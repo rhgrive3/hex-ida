@@ -2,6 +2,18 @@ const BASE_TYPES = new Set(['B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z']);
 
 function fail(code) { throw new TypeError(code); }
 
+function isValidInternalClassName(className) {
+  if (className.length === 0) return false;
+  for (const segment of className.split('/')) {
+    if (segment.length === 0 || segment.includes('.') || segment.includes(';') || segment.includes('[')) return false;
+  }
+  return true;
+}
+
+function parameterSlotWidth(type) {
+  return type.kind === 'base' && (type.tag === 'J' || type.tag === 'D') ? 2 : 1;
+}
+
 function parseFieldType(descriptor, start, code) {
   if (typeof descriptor !== 'string' || start >= descriptor.length) fail(code);
   const tag = descriptor[start];
@@ -9,9 +21,11 @@ function parseFieldType(descriptor, start, code) {
   if (tag === 'L') {
     const end = descriptor.indexOf(';', start + 1);
     if (end <= start + 1) fail(code);
+    const className = descriptor.slice(start + 1, end);
+    if (!isValidInternalClassName(className)) fail(code);
     return {
       next: end + 1,
-      type: Object.freeze({ kind: 'object', className: descriptor.slice(start + 1, end) }),
+      type: Object.freeze({ kind: 'object', className }),
     };
   }
   if (tag === '[') {
@@ -43,9 +57,12 @@ export function parseJvmMethodDescriptor(descriptor) {
   const code = 'jvm-invalid-method-descriptor';
   if (typeof descriptor !== 'string' || descriptor[0] !== '(') fail(code);
   let pos = 1;
+  let parameterSlots = 0;
   const parameters = [];
   while (pos < descriptor.length && descriptor[pos] !== ')') {
     const parsed = parseFieldType(descriptor, pos, code);
+    parameterSlots += parameterSlotWidth(parsed.type);
+    if (parameterSlots > 255) fail(code);
     parameters.push(parsed.type);
     pos = parsed.next;
   }
