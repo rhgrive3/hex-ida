@@ -48,8 +48,7 @@ test('T052 canonical operation identity is private and structurally unforgeable'
 
   const invalid = canonicalizeProjectOperation({ ...forged, action: 'add' });
   assert.equal(isCanonicalProjectOperation(invalid), false);
-  assert.equal(invalid.normalized, false);
-  assert.equal(invalid.error?.message, 'operation-action-unsupported');
+  assert.equal(invalid, null, 'the current canonical helper publishes no authority on invalid input');
 });
 
 test('T052 every public operation ingress canonicalizes raw current-schema values', () => {
@@ -80,17 +79,23 @@ test('T052 malformed and unsupported raw operations fail closed without mutation
   const log = new ChangeLog({ projectIdentity: base.projectIdentity });
   const malformed = rawOperation('op:missing-target');
   delete malformed.targetEntityId;
-  const malformedResult = log.applyOperation(malformed);
-  assert.equal(malformedResult.status, 'rejected');
-  assert.equal(malformedResult.reason, 'operation-target-entity-required');
+  assert.throws(
+    () => log.applyOperation(malformed),
+    (error) => error instanceof TypeError && error.message === 'operation-target-entity-required',
+  );
   assert.deepEqual(log.appliedOperationIds(), []);
   assert.deepEqual(log.snapshot().facts, {});
 
-  const badParents = log.applyOperation(rawOperation('op:bad-parents', { causalParents: 'op:parent' }));
-  assert.equal(badParents.status, 'rejected');
-  assert.equal(badParents.reason, 'operation-causal-parents-invalid');
+  assert.throws(
+    () => log.applyOperation(rawOperation('op:bad-parents', { causalParents: 'op:parent' })),
+    (error) => error instanceof TypeError && error.message === 'operation-causal-parents-invalid',
+  );
+  assert.deepEqual(log.appliedOperationIds(), []);
+  assert.deepEqual(log.snapshot().facts, {});
+  assert.equal(log.pending.size, 0);
 
   const unsupported = rawOperation('op:add', { action: 'add' });
+  const beforeUnsupported = log.digest();
   assert.throws(
     () => createProjectOperation(unsupported),
     (error) => error instanceof TypeError && error.message === 'operation-action-unsupported',
@@ -100,10 +105,9 @@ test('T052 malformed and unsupported raw operations fail closed without mutation
     {
       status: 'rejected',
       reason: 'operation-action-unsupported',
-      operationId: 'op:add',
-      stateDigest: log.digest(),
     },
   );
+  assert.equal(log.digest(), beforeUnsupported, 'unsupported actions cannot mutate canonical state');
   assert.equal(log.applyBatch([unsupported]).reason, 'operation-action-unsupported');
   assert.throws(() => orderOperations([unsupported]), /operation-action-unsupported/);
   assert.throws(() => mergeOperations([unsupported]), /operation-action-unsupported/);
@@ -203,8 +207,7 @@ test('T052 constructor rejects malformed, colliding, and mismatched hydration', 
       projectIdentity: base.projectIdentity,
       pending: [['op:different-key', rawOperation('op:hydrated-key')]],
     }),
-    (error) => error instanceof TypeError
-      && /(?:operation|changelog)-pending-id-mismatch/.test(error.message),
+    (error) => error instanceof TypeError && error.message === 'changelog-pending-id-mismatch',
   );
 
   assert.throws(
