@@ -245,11 +245,12 @@ export function createRuntimeObservation(input = {}) {
     sequence,
     observedAt,
     kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
-    payload: clone(input.payload ?? null),
+    payload: freezeObservationValue(clone(input.payload ?? null)),
     authority: 'runtime-evidence',
   };
-  return deepFreeze({ ...observation, observationId: observationIdentity(observation) });
+  return freezeObservationValue(deepFreeze({ ...observation, observationId: observationIdentity(observation) }));
 }
+
 
 export function validateRuntimeObservation(bindingInput, observation, options = {}) {
   const binding = canonicalBinding(bindingInput || {}, { throwOnError: false });
@@ -269,30 +270,73 @@ export function validateRuntimeObservation(bindingInput, observation, options = 
   return { ok: true, binding, observation };
 }
 
+function freezeObservationValue(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [k, v] of value.entries()) {
+      freezeObservationValue(k, seen);
+      freezeObservationValue(v, seen);
+    }
+    Object.defineProperty(value, 'set', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'delete', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'clear', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    return Object.freeze(value);
+  }
+  if (value instanceof Set) {
+    for (const v of value.values()) {
+      freezeObservationValue(v, seen);
+    }
+    Object.defineProperty(value, 'add', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'delete', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'clear', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    return Object.freeze(value);
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    return value;
+  }
+  for (const child of Object.values(value)) {
+    freezeObservationValue(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+
 export class RuntimeAuthorityTracker {
+  #observations;
+
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
-    this.observations = [];
+    this.#observations = [];
+  }
+
+  get observations() {
+    return this.#observations.map((obs) => deepFreeze(freezeObservationValue(clone(obs))));
   }
 
   accept(input) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
     let observation;
     try {
-      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA ? input : createRuntimeObservation({ ...input, binding: this.binding });
+      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA
+        ? deepFreeze(freezeObservationValue(clone(input)))
+        : createRuntimeObservation({ ...input, binding: this.binding });
     } catch (error) {
       return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
     }
+
     const checked = validateRuntimeObservation(this.binding, observation, { minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     this.lastSequence = observation.sequence;
-    this.observations.push(observation);
-    if (this.observations.length > this.maxObservations) this.observations.shift();
+    this.#observations.push(observation);
+    if (this.#observations.length > this.maxObservations) this.#observations.shift();
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
+
 
   authorizeMutation(input = {}) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
