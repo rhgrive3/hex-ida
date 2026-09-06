@@ -234,14 +234,28 @@ export class AnalysisCache {
     if (this._db) return this._db;
     this._db = await new Promise((resolve, reject) => {
       let req;
-      try { req = this.indexedDB.open(this.dbName, 1); } catch (error) { reject(error); return; }
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      try { req = this.indexedDB.open(this.dbName, 1); } catch (error) { fail(error); return; }
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('entries')) db.createObjectStore('entries', { keyPath: 'key' });
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
-      req.onblocked = () => reject(new Error('IndexedDB open blocked'));
+      req.onsuccess = () => {
+        const db = req.result;
+        if (settled) {
+          try { db?.close?.(); } catch { /* best effort */ }
+          return;
+        }
+        settled = true;
+        resolve(db);
+      };
+      req.onerror = () => fail(req.error || new Error('IndexedDB open failed'));
+      req.onblocked = () => fail(new Error('IndexedDB open blocked'));
     });
     return this._db;
   }
