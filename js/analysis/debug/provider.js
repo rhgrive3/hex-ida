@@ -171,7 +171,6 @@ export function isCanonicalDebugRecord(record) {
     return false;
   }
 }
-}
 
 /**
  * True only when one record is explicitly covered by a partial identity.
