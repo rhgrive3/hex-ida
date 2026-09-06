@@ -92,3 +92,34 @@ test('P10 DebugSession retains captured epoch behavior for untagged safe events 
   assert.equal(session.acceptEvent({ type:'branch', pc:'0x4008' },2), true);
   assert.deepEqual(session.traces.snapshot().events.map((event)=>event.pc),['0x4008']);
 });
+
+test('P10 DebugSession preserves hidden explicit epoch authority across wire snapshotting (#3909)', () => {
+  const session = new DebugSession(adapterFixture(), { id:'wire-hidden-epoch' });
+  assert.equal(session.newEpoch(),2);
+
+  const stale = { type:'branch', pc:'0x5000' };
+  Object.defineProperty(stale,'epoch',{value:1,enumerable:false});
+  assert.equal(session.acceptEvent(stale,2),false);
+
+  const current = { type:'branch', pc:'0x5004' };
+  Object.defineProperty(current,'epoch',{value:2,enumerable:false});
+  assert.equal(session.acceptEvent(current,1),true);
+
+  let epochReads = 0;
+  const stateful = { type:'branch', pc:'0x5008' };
+  Object.defineProperty(stateful,'epoch',{
+    enumerable:false,
+    get() {
+      epochReads += 1;
+      return epochReads === 1 ? 2 : 1;
+    },
+  });
+  assert.equal(session.acceptEvent(stateful,1),true);
+  assert.equal(epochReads,1);
+
+  const retained = session.traces.snapshot().events;
+  assert.deepEqual(retained.map((event)=>event.pc),['0x5004','0x5008']);
+  assert.deepEqual(retained.map((event)=>event.epoch),[2,2]);
+  assert.doesNotThrow(() => session.serialize());
+  assert.doesNotThrow(() => session.replayShape());
+});

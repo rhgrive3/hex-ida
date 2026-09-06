@@ -23,6 +23,31 @@ function eventEpoch(value) {
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
+function traceEventEpochAuthority(value) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+    return { explicit:false, materialize:false, epoch:null, value:null };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'epoch');
+    if (descriptor?.enumerable) {
+      return { explicit:true, materialize:false, epoch:null, value:null };
+    }
+    const rawEpoch = descriptor
+      ? Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? descriptor.value
+        : Reflect.get(value, 'epoch')
+      : Reflect.get(value, 'epoch');
+    if (rawEpoch == null) {
+      return { explicit:false, materialize:false, epoch:null, value:null };
+    }
+    const epoch = eventEpoch(rawEpoch);
+    if (epoch == null) return null;
+    return { explicit:true, materialize:true, epoch, value:rawEpoch };
+  } catch {
+    return null;
+  }
+}
+
 function debugSessionId(value) {
   if (value == null) return `debug:${nextSession++}`;
   if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
@@ -84,11 +109,22 @@ export class DebugSession {
   acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
     if (event) {
+      const epochAuthority = traceEventEpochAuthority(event);
+      if (epochAuthority == null) return false;
       const safeEvent = wireSafeTraceEvent(event);
       if (safeEvent == null) return false;
-      const epoch = safeEvent && typeof safeEvent === 'object' && safeEvent.epoch != null
-        ? eventEpoch(safeEvent.epoch)
-        : eventEpoch(sourceEpoch);
+      let epoch;
+      if (epochAuthority.materialize) {
+        if (!safeEvent || typeof safeEvent !== 'object' || Array.isArray(safeEvent)) return false;
+        Object.defineProperty(safeEvent,'epoch',{value:epochAuthority.value,enumerable:true,writable:true,configurable:true});
+        epoch = epochAuthority.epoch;
+      } else {
+        const hasSafeEpoch = safeEvent && typeof safeEvent === 'object'
+          && Object.prototype.hasOwnProperty.call(safeEvent, 'epoch');
+        if (epochAuthority.explicit && !hasSafeEpoch) return false;
+        const safeEpoch = hasSafeEpoch ? safeEvent.epoch : null;
+        epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
+      }
       if (epoch == null || epoch !== this.epoch) return false;
       this.traces.push(safeEvent);
     }
