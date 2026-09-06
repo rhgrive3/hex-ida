@@ -21,12 +21,15 @@ assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, true, 64), null);
 assert.equal(evaluateNZCVCondition({ toString: () => 'sub' }, 'eq', 1n, 1n, 64), null);
 assert.equal(evaluateNZCVCondition('sub', { toString: () => 'eq' }, 1n, 1n, 64), null);
 
-// 2. Structured width never promotes to canonical flag width.
+// 2. Invalid explicit width never promotes to canonical flag width; only omission defaults to 64.
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, '32'), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, true), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, 1.5), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, 0), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, 128), null);
+assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, null), null);
+assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, ''), null);
+assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n), true);
 
 // 3. Unknown producer/condition stay fail-closed.
 assert.equal(evaluateNZCVCondition('rubbish', 'eq', 1n, 1n, 64), null);
@@ -48,13 +51,15 @@ assert.equal(evaluateNZCVCondition('add', 'ge', 0x7fffffffn, 1n, 32), true);
 assert.equal(evaluateNZCVCondition('and', 'mi', 0x80n, 0xffn, 8), true);
 assert.equal(evaluateNZCVCondition('and', 'cs', 0x80n, 0xffn, 8), false);
 
-// 6. Builder refuses structured metadata without producing definite AST.
+// 6. Builder refuses structured or explicit-invalid metadata without producing definite AST.
 const a32 = expr.variable('a', 32, null);
 const b32 = expr.variable('b', 32, null);
 assert.equal(buildNZCVConditionExpression(['sub'], 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', ['eq'], a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, ['32']), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, '32'), null);
+assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, null), null);
+assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, ''), null);
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 
@@ -67,6 +72,8 @@ assert.equal(addEq.kind, 'compare');
 // 7. Render helper shares the typed boundary.
 assert.equal(renderNZCVCondition('sub', 'eq', ['a'], 'b', 32), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ['32']), null);
+assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', null), null);
+assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ''), null);
 assert.equal(renderNZCVCondition(['sub'], 'eq', 'a', 'b', 32), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', 32), '(uint32_t)a == (uint32_t)b');
 assert.equal(renderNZCVCondition('sub', 'hs', 'a', 'b', 32), '(uint32_t)a >= (uint32_t)b');
