@@ -77,10 +77,16 @@ function validateType(type, depth = 0, names = new Set()) {
   if (type.kind === 'named') { if (!names.has(type.name)) fail(`pattern-type-unknown:${type.name}`); return; }
   if (type.kind === 'struct') { const fields = list(type.fields); if (!fields.length || fields.length > 10_000) fail('pattern-struct-fields-invalid'); for (const field of fields) { if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field.name)) fail('pattern-field-name-invalid'); validateType(field.type, depth + 1, names); if (field.when) validateExpression(field.when); } return; }
   if (type.kind === 'array') {
-    if (type.count == null || typeof type.count === 'boolean') fail('pattern-array-count-invalid');
-    if (typeof type.count === 'object') validateExpression(type.count);
-    if (typeof type.count === 'number' && (!Number.isSafeInteger(type.count) || type.count < 0)) fail('pattern-array-count-invalid');
-    if (typeof type.count === 'string' && !/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
+    const countType = typeof type.count;
+    if (countType === 'number') {
+      if (!Number.isSafeInteger(type.count) || type.count < 0) fail('pattern-array-count-invalid');
+    } else if (countType === 'string') {
+      if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
+    } else if (type.count && countType === 'object' && !Array.isArray(type.count)) {
+      validateExpression(type.count);
+    } else {
+      fail('pattern-array-count-invalid');
+    }
     validateType(type.element, depth + 1, names); return;
   }
   if (type.kind === 'pointer' || type.kind === 'offset') { if (typeof type.space !== 'string' || !type.space) fail('pattern-address-space-required'); validateType(type.target, depth + 1, names); return; }
@@ -95,7 +101,15 @@ export function typeCheckPattern(parsed) {
   const input = parsed?.ast ? parsed : parsePattern(parsed);
   const ast = input.ast;
   const structs = ast.kind === 'module' ? list(ast.structs) : [ast];
-  const names = new Set(structs.filter((item) => item.kind === 'struct' && item.name).map((item) => item.name));
+  // Named types form one namespace: the evaluator resolves duplicates
+  // last-wins, so accepting them here would let definition order silently
+  // decide the canonical layout of a shared type name.
+  const names = new Set();
+  for (const item of structs) {
+    if (item.kind !== 'struct' || !item.name) continue;
+    if (names.has(item.name)) fail(`pattern-duplicate-struct:${item.name}`);
+    names.add(item.name);
+  }
   for (const item of structs) { if (item.kind !== 'struct') fail('pattern-root-must-be-struct'); validateType(item, 0, names); }
   if (ast.kind === 'module' && ast.root != null && !names.has(ast.root)) fail('pattern-module-root-unknown');
   return deepFreeze(input);

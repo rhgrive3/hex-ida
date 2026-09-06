@@ -37,18 +37,51 @@ function boundedCount(scan, countKey, ...arrays) {
   return Math.max(0, Math.min(requested, ...arrays.map((x) => x?.length || 0)));
 }
 
+function strictLimit(value, fallback) {
+  if (value === undefined) return fallback;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return fallback;
+}
+
 /** Merge independently scanned executable regions without losing provenance. */
 export function mergeProgramScans(scans = [], options = {}) {
-  const limits = { ...PROGRAM_MERGE_LIMITS, ...(options.limits || {}) };
-  const ordered = (scans || []).filter((x) => x && !x.cancelled).slice().sort((a,b) => {
+  const callsLimit = strictLimit(options?.limits?.calls, PROGRAM_MERGE_LIMITS.calls);
+  const refsLimit = strictLimit(options?.limits?.refs, PROGRAM_MERGE_LIMITS.refs);
+  const kindWordsLimit = strictLimit(options?.limits?.kindWords, PROGRAM_MERGE_LIMITS.kindWords);
+  const inputScans = (scans || []).filter(Boolean);
+  const ordered = inputScans.filter((x) => !x.cancelled).slice().sort((a,b) => {
     const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
     return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
   });
   const expectedRegionsSpecified = Array.isArray(options.regions);
   const expectedRegions = (expectedRegionsSpecified ? options.regions : []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
   const reasons = [...(options.reasons || [])];
+  for (const scan of inputScans) if (scan.cancelled) reasons.push(`${scan.regionId || 'region'}:cancelled`);
   const scannedIds = new Set(ordered.map((x) => x.regionId).filter((x) => x != null));
-  for (const region of expectedRegions) if (region.id != null && !scannedIds.has(region.id)) reasons.push(`program-region-unscanned:${region.id}`);
+  for (const region of expectedRegions) {
+    let matched = false;
+    if (region.id != null) {
+      matched = scannedIds.has(region.id);
+    } else {
+      matched = ordered.some((s) => BigInt(s.vmAddr ?? 0) === region.vmAddr);
+    }
+    if (!matched) {
+      reasons.push(region.id != null ? `program-region-unscanned:${region.id}` : `program-region-unscanned:0x${region.vmAddr.toString(16)}`);
+    }
+  }
+  if (expectedRegionsSpecified) {
+    for (const scan of ordered) {
+      const sId = scan.regionId ?? null;
+      const sAddr = BigInt(scan.vmAddr ?? 0);
+      const matched = expectedRegions.some((r) => {
+        if (sId != null && r.id != null) return sId === r.id;
+        return r.vmAddr === sAddr;
+      });
+      if (!matched) {
+        reasons.push(sId != null ? `program-unexpected-region:${sId}` : `program-unexpected-region:0x${sAddr.toString(16)}`);
+      }
+    }
+  }
   for (const scan of ordered) {
     if (scan.unsupported) reasons.push('unsupported-program-analysis');
     if (scan.completeness?.complete === false || scan.complete === false) {
@@ -59,8 +92,8 @@ export function mergeProgramScans(scans = [], options = {}) {
 
   const callAvailable = ordered.reduce((n,s) => n + boundedCount(s,'callCount',s.callFrom,s.callTo),0);
   const refAvailable = ordered.reduce((n,s) => n + boundedCount(s,'refCount',s.refFrom,s.refTo,s.refKind),0);
-  const callCap = Math.max(0, Math.min(Number(limits.calls)||0, callAvailable));
-  const refCap = Math.max(0, Math.min(Number(limits.refs)||0, refAvailable));
+  const callCap = Math.max(0, Math.min(callsLimit, callAvailable));
+  const refCap = Math.max(0, Math.min(refsLimit, refAvailable));
   const callFrom=new BigUint64Array(callCap), callTo=new BigUint64Array(callCap);
   const refFrom=new BigUint64Array(refCap), refTo=new BigUint64Array(refCap), refKind=new Uint8Array(refCap);
   let ci=0, ri=0;
@@ -73,7 +106,7 @@ export function mergeProgramScans(scans = [], options = {}) {
   if (callAvailable > callCap) reasons.push('global-call-edge-budget');
   if (refAvailable > refCap) reasons.push('global-reference-budget');
 
-  let remainingKinds=Math.max(0,Number(limits.kindWords)||0), words=0, kindsCovered=0;
+  let remainingKinds=Math.max(0, kindWordsLimit), words=0, kindsCovered=0;
   const kindRegions=[];
   for (const scan of ordered) {
     const regionWords=Math.max(0,Number(scan.words)||0), src=scan.kinds || new Uint8Array(0);
@@ -103,7 +136,7 @@ export function mergeProgramScans(scans = [], options = {}) {
     complete, truncated:!complete,
     completeness:{ complete, reasons:uniqueReasons, regionCount:ordered.length,
       expectedRegionCount:expectedRegionsSpecified ? expectedRegions.length : null,
-      limits:{calls:callCap,refs:refCap,kindWords:Number(limits.kindWords)||0} },
+      limits:{calls:callCap,refs:refCap,kindWords:kindWordsLimit} },
   };
 }
 
@@ -132,6 +165,12 @@ function queryLimit(value, fallback) {
   return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
 }
 
+function transportCount(value, fallback, field) {
+  if (value == null) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${field}-invalid`);
+  return value;
+}
+
 export class ProgramIndex {
   constructor(scan, symbols, region) {
     const s = scan || {};
@@ -144,8 +183,8 @@ export class ProgramIndex {
     const rawRefFrom = s.refFrom || new BigUint64Array(0);
     const rawRefTo = s.refTo || new BigUint64Array(0);
     const rawRefKind = s.refKind || new Uint8Array(0);
-    const callCount = Math.min(Number.isSafeInteger(s.callCount) ? s.callCount : rawCallFrom.length, rawCallFrom.length, rawCallTo.length);
-    const refCount = Math.min(Number.isSafeInteger(s.refCount) ? s.refCount : rawRefFrom.length, rawRefFrom.length, rawRefTo.length, rawRefKind.length);
+    const callCount = Math.min(transportCount(s.callCount, rawCallFrom.length, 'program-call-count'), rawCallFrom.length, rawCallTo.length);
+    const refCount = Math.min(transportCount(s.refCount, rawRefFrom.length, 'program-ref-count'), rawRefFrom.length, rawRefTo.length, rawRefKind.length);
     this.callFrom = rawCallFrom.subarray(0, callCount);
     this.callTo = rawCallTo.subarray(0, callCount);
     this.refFrom = rawRefFrom.subarray(0, refCount);
@@ -169,7 +208,7 @@ export class ProgramIndex {
     ])];
     this.completeness = {
       ...(suppliedCompleteness || {}),
-      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete !== false : (!this.callsCapped && !this.refsCapped)),
+      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete === true : (!this.callsCapped && !this.refsCapped)),
       reasons,
     };
     this.queryIncompleteReason = this.unsupported ? 'unsupported-program-analysis'

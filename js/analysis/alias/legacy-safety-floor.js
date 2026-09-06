@@ -32,6 +32,16 @@ function storageClass(region) {
   return text || null;
 }
 
+function addressSpaceString(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
+function physicalAddressSpace(region) {
+  return addressSpaceString(region?.addressSpace);
+}
+
 function provenStackExternalSeparation(a, b) {
   const classes = new Set([storageClass(a), storageClass(b)]);
   return classes.has('function-local-stack') && classes.has('external-entry-memory');
@@ -68,8 +78,10 @@ export function aliasMemoryRegions(a, b) {
       return intervalRelation(toBigInt(a.offset), widthBytes(a), toBigInt(b.offset), widthBytes(b));
     }
     if (a.kind === 'tls' || a.kind === 'io' || a.kind === 'physical-space') {
-      if (!a.addressSpace || !b.addressSpace) return 'unknown';
-      if (a.addressSpace !== b.addressSpace) return 'no';
+      const spaceA = physicalAddressSpace(a);
+      const spaceB = physicalAddressSpace(b);
+      if (!spaceA || !spaceB) return 'unknown';
+      if (spaceA !== spaceB) return 'no';
       if (a.rootIdentity == null || b.rootIdentity == null) return 'unknown';
       if (stableStringify(a.rootIdentity) !== stableStringify(b.rootIdentity)) return 'unknown';
       const wa = widthBytes(a), wb = widthBytes(b);
@@ -87,7 +99,9 @@ export function aliasMemoryRegions(a, b) {
   if (pair.has('stack-fixed') && pair.has('rooted-offset') && provenStackExternalSeparation(a, b)) return 'no';
 
   const physicalKinds = new Set(['tls', 'io', 'physical-space']);
-  if (physicalKinds.has(a.kind) && physicalKinds.has(b.kind) && a.addressSpace && b.addressSpace && a.addressSpace !== b.addressSpace) {
+  const spaceA = physicalAddressSpace(a);
+  const spaceB = physicalAddressSpace(b);
+  if (physicalKinds.has(a.kind) && physicalKinds.has(b.kind) && spaceA && spaceB && spaceA !== spaceB) {
     return 'no';
   }
   return 'may';
@@ -105,7 +119,7 @@ export function unknownStoreClobbersRegion(storeRegion, targetRegion) {
 
 function regionAddressSpace(region) {
   if (!region) return null;
-  if (region.kind === 'tls' || region.kind === 'io' || region.kind === 'physical-space') return region.addressSpace ?? null;
+  if (region.kind === 'tls' || region.kind === 'io' || region.kind === 'physical-space') return physicalAddressSpace(region);
   if (region.kind === 'stack-fixed' || region.kind === 'global-absolute' || region.kind === 'rooted-offset') return 'memory';
   return null;
 }
@@ -116,7 +130,9 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope === 'unknown') return 'may';
   if (memoryWrite.scope === 'all') {
     const targetSpace = regionAddressSpace(targetRegion);
-    const spaces = Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
+    const rawSpaces = Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
+    const spaces = rawSpaces.map(addressSpaceString);
+    if (spaces.some((space) => space == null)) return 'may';
     if (targetSpace && spaces.length && !spaces.includes(targetSpace)) return 'no';
     return 'may';
   }

@@ -50,7 +50,7 @@ export const FUNCTION_VIEWS = Object.freeze([
     ja: 'アセンブリを見る', en: 'Open the assembly',
     hintJa: '元の命令列そのもの', hintEn: 'The instructions themselves',
   },
-]);
+].map((item) => Object.freeze(item)));
 
 const VIEW_MAP = new Map(FUNCTION_VIEWS.map((item) => [item.id, item]));
 
@@ -112,10 +112,13 @@ export function openFunctionView(view, { router, legacy = {}, address } = {}) {
   if (!view || !view.available) return false;
   const target = address == null ? view.address : addressOf(address);
   if (target == null) return false;
-  if (router && typeof router.navigate === 'function' && view.route) {
+  const route = address == null
+    ? view.route
+    : VIEW_MAP.get(view.id)?.route?.replace(':address', target);
+  if (router && typeof router.navigate === 'function' && route) {
     try {
-      const navigated = router.navigate(view.route);
-      return navigated !== false || router.current?.fullPath === view.route;
+      const navigated = router.navigate(route);
+      return navigated !== false || router.current?.fullPath === route;
     } catch {
       return false;
     }

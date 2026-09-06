@@ -32,17 +32,19 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
   e: 'str',
   f: 'f32',
   h: 'u8',
-  i: 'i32',
-  j: 'u64',
+  i: 'isize',
+  j: 'usize',
   l: 'i32',
   m: 'u32',
   n: 'i128',
   o: 'u128',
   p: '_',
-  s: 'isize',
-  t: 'usize',
+  s: 'i16',
+  t: 'u16',
   u: '()',
   v: '...',
+  x: 'i64',
+  y: 'u64',
   z: '!',
 });
 
@@ -69,6 +71,76 @@ function parseV0Base62(str, pos) {
 }
 
 /**
+ * Decodes a Punycode string (RFC 3492) as used in Rust v0 mangling.
+ * In Rust v0, the delimiter is '_' instead of '-'.
+ */
+function decodePunycode(input) {
+  const base = 36;
+  const tmin = 1;
+  const tmax = 26;
+  const skew = 38;
+  const damp = 700;
+  const initialBias = 72;
+  const initialN = 128;
+
+  function adapt(delta, numpoints, firsttime) {
+    let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
+    d += Math.floor(d / numpoints);
+    let k = 0;
+    while (d > Math.floor(((base - tmin) * tmax) / 2)) {
+      d = Math.floor(d / (base - tmin));
+      k += base;
+    }
+    return k + Math.floor(((base - tmin + 1) * d) / (d + skew));
+  }
+
+  const output = [];
+  let n = initialN;
+  let i = 0;
+  let bias = initialBias;
+
+  const delimIndex = input.lastIndexOf('_');
+  let pos = 0;
+  if (delimIndex !== -1) {
+    for (let j = 0; j < delimIndex; j++) {
+      const code = input.charCodeAt(j);
+      if (code >= 0x80) return null;
+      output.push(String.fromCharCode(code));
+    }
+    pos = delimIndex + 1;
+  }
+
+  while (pos < input.length) {
+    const oldi = i;
+    let w = 1;
+    let k = base;
+    while (true) {
+      if (pos >= input.length) return null;
+      const c = input.charCodeAt(pos++);
+      let digit = -1;
+      if (c >= 0x30 && c <= 0x39) digit = c - 0x30 + 26;
+      else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61;
+      else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41;
+      else return null;
+
+      i += digit * w;
+      const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+      if (digit < t) break;
+      w *= (base - t);
+      k += base;
+    }
+    const outLen = output.length + 1;
+    bias = adapt(i - oldi, outLen, oldi === 0);
+    n += Math.floor(i / outLen);
+    if (n > 0x10ffff) return null;
+    i = i % outLen;
+    output.splice(i, 0, String.fromCodePoint(n));
+    i++;
+  }
+  return output.join('');
+}
+
+/**
  * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
  */
 function parseV0Identifier(str, pos) {
@@ -82,19 +154,84 @@ function parseV0Identifier(str, pos) {
     p = dis.nextPos;
   }
 
+  let isUnicode = false;
+  if (p < str.length && str[p] === 'u') {
+    isUnicode = true;
+    p++;
+  }
+
   // Length integer
   const lenMatch = str.slice(p).match(/^(\d+)/);
   if (!lenMatch) return null;
   const len = Number(lenMatch[1]);
   p += lenMatch[1].length;
+  if (p < str.length && str[p] === '_') {
+    p++;
+  }
 
   if (p + len > str.length) return null;
-  const ident = str.slice(p, p + len);
+  const rawIdent = str.slice(p, p + len);
+  let identifier = rawIdent;
+  if (isUnicode) {
+    try {
+      const decoded = decodePunycode(rawIdent);
+      if (decoded === null) return null;
+      identifier = decoded;
+    } catch {
+      return null;
+    }
+  }
+
   return {
-    identifier: ident,
+    identifier,
     isDisambiguated,
     nextPos: p + len,
   };
+}
+
+/**
+ * Parses a Rust v0 const value (`<type> <const-data> | p | <backref>`), where
+ * `<const-data>` is `[n] <hex>* _` and `p` is a standalone placeholder.
+ */
+function parseV0Const(str, state, depth = 0) {
+  if (state.pos >= str.length || depth > 32) return null;
+  if (str[state.pos] === 'p') {
+    state.pos++;
+    return '_';
+  }
+  if (str[state.pos] === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Const(str, refState, depth + 1);
+  }
+  const constType = parseV0Type(str, state, depth + 1);
+  if (!constType) return null;
+  let isNegative = false;
+  if (state.pos < str.length && str[state.pos] === 'n') {
+    isNegative = true;
+    state.pos++;
+  }
+  let hexStr = '';
+  while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
+    hexStr += str[state.pos++];
+  }
+  if (state.pos >= str.length || str[state.pos] !== '_') {
+    return null;
+  }
+  state.pos++; // consume '_'
+  if (hexStr === '') {
+    return '0';
+  }
+  try {
+    const val = BigInt('0x' + hexStr);
+    return isNegative ? `-${val.toString()}` : val.toString();
+  } catch {
+    return null;
+  }
 }
 
 function parseV0Type(str, state, depth = 0) {
@@ -110,11 +247,38 @@ function parseV0Type(str, state, depth = 0) {
   }
   if (c === 'R' || c === 'Q') {
     state.pos++;
-    return `&${parseV0Type(str, state, depth + 1) || ''}`;
+    if (state.pos < str.length && str[state.pos] === 'L') {
+      state.pos++;
+      const lt = parseV0Base62(str, state.pos);
+      if (!lt) return null;
+      state.pos = lt.nextPos;
+    }
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'R' ? `&${inner}` : `&mut ${inner}`;
   }
   if (c === 'P' || c === 'O') {
     state.pos++;
-    return `*${parseV0Type(str, state, depth + 1) || ''}`;
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'P' ? `*const ${inner}` : `*mut ${inner}`;
+  }
+  if (c === 'A') {
+    state.pos++;
+    const elemType = parseV0Type(str, state, depth + 1);
+    if (!elemType) return null;
+    const len = parseV0Const(str, state, depth + 1);
+    if (len === null) return null;
+    return `[${elemType}; ${len}]`;
+  }
+  if (c === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Type(str, refState, depth + 1);
   }
   return parseV0Path(str, state, depth + 1);
 }
@@ -142,14 +306,20 @@ function parseV0Path(str, state, depth = 0) {
     const ident = parseV0Identifier(str, state.pos);
     if (!ident) return parent;
     state.pos = ident.nextPos;
-    return `${parent}::${ident.identifier}`;
+    let name = ident.identifier;
+    if (!name) {
+      if (ns === 'C') name = '{closure}';
+      else if (ns === 'S') name = '{shim}';
+      else name = `{${ns}}`;
+    }
+    return `${parent}::${name}`;
   }
 
   if (tag === 'M') {
     const implPath = parseV0Path(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
-    return `<${typeName || implPath || 'impl'}>`;
+    return null;
   }
 
   if (tag === 'X') {
@@ -161,12 +331,38 @@ function parseV0Path(str, state, depth = 0) {
 
   if (tag === 'I') {
     const base = parseV0Path(str, state, depth + 1);
+    if (!base) return null;
+    const args = [];
     let gCount = 0;
-    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 16) {
-      parseV0Type(str, state, depth + 1);
+    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 32) {
+      if (str[state.pos] === 'L') {
+        state.pos++;
+        const lt = parseV0Base62(str, state.pos);
+        if (!lt) return null;
+        state.pos = lt.nextPos;
+      } else if (str[state.pos] === 'K') {
+        state.pos++;
+        const c = parseV0Const(str, state, depth + 1);
+        if (c === null) return null;
+        args.push(c);
+      } else {
+        const t = parseV0Type(str, state, depth + 1);
+        if (!t) return null;
+        args.push(t);
+      }
     }
-    if (state.pos < str.length && str[state.pos] === 'E') state.pos++;
-    return base;
+    if (state.pos >= str.length || str[state.pos] !== 'E') return null;
+    state.pos++;
+    return args.length > 0 ? `${base}<${args.join(', ')}>` : base;
+  }
+
+  if (tag === 'B') {
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Path(str, refState, depth + 1);
   }
 
   const ident = parseV0Identifier(str, state.pos - 1);

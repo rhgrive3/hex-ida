@@ -9,6 +9,7 @@ import {
 import { ArtifactHotCache } from './hot-cache.js';
 import { createArtifactBackend } from './backends.js';
 import {
+  artifactHotEntrySize,
   canonicalStoredRecord,
   normalizeStoredPayloadBytes,
   validateStoredArtifact,
@@ -24,6 +25,9 @@ const INCOMPATIBLE_CODES = new Set([
   'artifact-record-identity-mismatch',
   'artifact-storage-envelope-schema-mismatch',
 ]);
+const UPSTREAM_VALID = 'valid';
+const UPSTREAM_INVALID = 'invalid';
+const UPSTREAM_BUDGET_EXHAUSTED = 'budget-exhausted';
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -118,8 +122,6 @@ export class ArtifactStore {
     aborted(options.signal);
     this.metrics.requests++;
 
-    // Retrying on a local mutation epoch prevents a get/delete or get/publish
-    // race from repopulating the hot cache with an older state after mutation.
     for (;;) {
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
@@ -129,15 +131,15 @@ export class ArtifactStore {
         try {
           const payloadBytes = normalizeStoredPayloadBytes(cached.payloadBytes);
           const record = canonicalStoredRecord(cached.record);
-          // Cached bytes are still validated on every hit. The cache is not a
-          // semantic authority and callers never receive the retained object.
           const validated = validateStoredArtifact({ record, payload:payloadBytes }, {
             artifactId,
             descriptor,
             allowIncomplete:options.allowIncomplete,
           });
-          if (!(await this.#upstreamsValid(validated.record, options))) {
+          const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+          if (upstreamStatus !== UPSTREAM_VALID) {
             if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
+            if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, 'hot');
             return this.#staleDependency(artifactId, 'hot', validated.record, validated.payloadBytes);
           }
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
@@ -171,15 +173,17 @@ export class ArtifactStore {
           allowIncomplete:options.allowIncomplete,
         });
         this.metrics.readBytes += validated.payloadBytes.byteLength;
-        if (!(await this.#upstreamsValid(validated.record, options))) {
+        const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+        if (upstreamStatus !== UPSTREAM_VALID) {
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
+          if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, source);
           return this.#staleDependency(artifactId, source, validated.record, validated.payloadBytes);
         }
         if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
         this.hotCache.put(
           artifactId,
           { record:validated.record, payloadBytes:validated.payloadBytes },
-          validated.payloadBytes.byteLength,
+          artifactHotEntrySize(validated.record, validated.payloadBytes),
         );
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
@@ -195,41 +199,42 @@ export class ArtifactStore {
   }
 
   async #upstreamsValid(record, options, context = null) {
-    if (options.verifyUpstreams === false) return true;
+    if (options.verifyUpstreams === false) return UPSTREAM_VALID;
     const ctx = context || {
       activePath: new Set(),
       validated: new Set(),
-      maxNodes: Number.isSafeInteger(options.maxNodes) ? options.maxNodes : 10000,
+      maxNodes: Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000,
       nodesVisited: 0,
     };
     const currentId = requireArtifactId(record.artifactId);
-    if (ctx.activePath.has(currentId)) return false;
+    if (ctx.activePath.has(currentId)) return UPSTREAM_INVALID;
     ctx.activePath.add(currentId);
     try {
       for (const upstreamId of record.upstreamArtifactIds || []) {
         aborted(options.signal);
-        if (ctx.activePath.has(upstreamId)) return false;
+        if (ctx.activePath.has(upstreamId)) return UPSTREAM_INVALID;
         if (ctx.validated.has(upstreamId)) continue;
-        if (++ctx.nodesVisited > ctx.maxNodes) return false;
+        if (++ctx.nodesVisited > ctx.maxNodes) return UPSTREAM_BUDGET_EXHAUSTED;
 
         let raw;
         try { this.metrics.reads++; raw = await this.backend.getRaw(upstreamId); }
         catch (error) { this.metrics.storageFailures++; throw error; }
-        if (!raw) return false;
+        if (!raw) return UPSTREAM_INVALID;
         try {
           const validated = validateStoredArtifact(raw, { artifactId:upstreamId });
           this.metrics.readBytes += validated.payloadBytes.byteLength;
-          if (!(await this.#upstreamsValid(validated.record, options, ctx))) return false;
+          const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
+          if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
           ctx.validated.add(upstreamId);
         } catch (error) {
           if (error instanceof ArtifactCorruptionError) {
             this.metrics.validationFailures++;
-            return false;
+            return UPSTREAM_INVALID;
           }
           throw error;
         }
       }
-      return true;
+      return UPSTREAM_VALID;
     } finally {
       ctx.activePath.delete(currentId);
     }
@@ -243,15 +248,17 @@ export class ArtifactStore {
         if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
           return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
         }
-        // Malformed rows without enough identity to compare are retained rather
-        // than risking deletion of a newer cross-context publication. They are
-        // still permanently fail-closed on reads.
         return false;
       } catch (error) {
         this.metrics.storageFailures++;
         throw error;
       }
     });
+  }
+
+  #verificationBudgetMiss(artifactId, source) {
+    this.metrics.misses++;
+    return { status:'miss', source, artifactId, reason:'verification-budget-exhausted' };
   }
 
   async #staleDependency(artifactId, source, record, payloadBytes) {
@@ -320,8 +327,6 @@ export class ArtifactStore {
       if (options.signal?.aborted) {
         this.metrics.cancelledPublishes++;
         this.hotCache.delete(artifactId);
-        // A duplicate means a complete artifact predated this cancelled
-        // publication. Never delete that pre-existing CAS entry.
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -335,9 +340,6 @@ export class ArtifactStore {
       let canonicalPayloadBytes;
       let returnedPayload;
       try {
-        // On a duplicate publication the backend's existing immutable bytes are
-        // authoritative. This keeps hot results identical to close/reopen even
-        // when non-key creation metadata differs between producers.
         canonicalRecord = canonicalStoredRecord(writeResult?.record ?? record);
         canonicalPayloadBytes = normalizeStoredPayloadBytes(writeResult?.payload ?? payloadBytes);
         const storedView = { record:canonicalRecord, payload:canonicalPayloadBytes };
@@ -352,8 +354,6 @@ export class ArtifactStore {
         returnedPayload = validated.payload;
       } catch (error) {
         this.hotCache.delete(artifactId);
-        // No failed publication may survive as a future hit. Do not remove a
-        // pre-existing duplicate because this caller did not create it.
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -363,12 +363,10 @@ export class ArtifactStore {
         throw error;
       }
 
-      // Do not cache the decoded payload object: callers may mutate return
-      // values, while retained CAS bytes must remain immutable.
       this.hotCache.put(
         artifactId,
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
-        canonicalPayloadBytes.byteLength,
+        artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
       );
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;

@@ -110,8 +110,6 @@ export class EvidenceStore {
 
   restorePersistedConfirmed(initial = []) {
     for (const evidence of Array.isArray(initial) ? initial : []) {
-      // Only the runtime-owned persisted-confirmed path may restore deterministic
-      // verification authority. Ordinary constructor/add callers remain untrusted.
       this.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
     }
     return this;
@@ -154,8 +152,6 @@ export class EvidenceStore {
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
-        // Same reasoning as the record id below: this is a Map key, so a 32-bit
-        // collision would overwrite a stored payload rather than add one.
         const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size]).slice(0, 32)}`;
         this.sourcePayloads.set(localId, input.sourceData);
         sourceRef = { evidenceSourceId: localId, path: '$' };
@@ -166,12 +162,6 @@ export class EvidenceStore {
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ]));
-    // The automatic id is a permanent record key: proposals, verification and
-    // navigation all resolve evidence through it, and `add()` merges into an
-    // existing key. A 32-bit hash is not enough to carry that — distinct
-    // identities collided in practice (#1302), silently folding the second
-    // record into the first and losing evidence. This is the same 128-bit
-    // digest the symbolic evidence graph already derives its ids from.
     if (input.id && typeof input.id !== 'string') return null;
     const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
@@ -195,8 +185,6 @@ export class EvidenceStore {
     if (input.navigation) record.navigation = jsonSafe(input.navigation);
 
     const previous = this.records.get(id);
-    // Verified evidence is immutable. A model cannot recycle a verified id for
-    // different semantic content or a different binary/revision binding.
     if (previous?.status === 'verified') {
       if (!sameSemanticRecord(previous, record)) return previous;
       return previous;
@@ -209,8 +197,6 @@ export class EvidenceStore {
     return storedRecord;
   }
 
-  /* Verification authority is private local state. Tool names, model prose,
-     status strings and supplied evidence ids never grant verified authority. */
   ingest(toolName, result, { verifier = false, sourceRef = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
@@ -254,10 +240,6 @@ export class EvidenceStore {
 
   ingestPlan(plan) {
     const out = [];
-    // Deterministic-verification authority (#3344): identity comparisons use
-    // exact typed equality. A structured value must not alias its primitive
-    // lookalike through String() coercion, or a different candidate could
-    // launder verified evidence authority.
     const exactIdentity = (value) => {
       if (value == null) return null;
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return `${typeof value}:${value}`;
@@ -341,8 +323,8 @@ export class EvidenceStore {
     return this.sourcePayloads.get(record.sourceRef.evidenceSourceId) ?? null;
   }
 
-  has(id) { return this.records.has(String(id)); }
-  get(id) { return this.records.get(String(id)) || null; }
+  has(id) { return typeof id === 'string' && id.length > 0 ? this.records.has(id) : false; }
+  get(id) { return typeof id === 'string' && id.length > 0 ? (this.records.get(id) || null) : null; }
   all() { return Array.from(this.records.values()); }
   pinned(ids) { return (ids || []).map((id) => this.get(id)).filter(Boolean); }
   hasAddress(value) {
