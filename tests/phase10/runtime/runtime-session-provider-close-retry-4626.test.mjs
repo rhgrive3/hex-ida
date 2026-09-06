@@ -9,15 +9,34 @@ class FlakyDisconnectAdapter {
     this.kind = 'flaky';
     this.capabilities = { connect: true, disconnect: true, threads: false, modules: false };
     this.connected = false;
+    this.connectAttempts = 0;
     this.disconnectAttempts = 0;
     this.failures = failures;
     this.epoch = 1;
+    this.listeners = new Set();
   }
-  async connect() { this.connected = true; return { ok: true }; }
+  async connect() { this.connectAttempts++; this.connected = true; return { ok: true }; }
+  onEvent(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  emit(event) { for (const listener of [...this.listeners]) listener(event); }
   async disconnect() {
     this.disconnectAttempts++;
     if (this.disconnectAttempts <= this.failures) throw new Error('transient adapter disconnect failure');
     this.connected = false;
+    return { ok: true };
+  }
+}
+
+class DisconnectStateBeforeFailureAdapter extends FlakyDisconnectAdapter {
+  constructor() { super(); this.failures = 1; }
+  async disconnect() {
+    this.disconnectAttempts++;
+    this.connected = false;
+    if (this.disconnectAttempts <= this.failures) {
+      throw new Error('transient adapter disconnect failure after transport teardown');
+    }
     return { ok: true };
   }
 }
@@ -33,14 +52,24 @@ test('P10 DebugSession.disconnect commits closed only after adapter disconnect s
 
   await assert.rejects(session.disconnect(), /transient adapter disconnect failure/);
   assert.equal(adapter.disconnectAttempts, 1);
+  assert.equal(session.connected, true, 'failed disconnect must retain connected state until backend succeeds');
   assert.equal(session.closed, false, 'failed disconnect must remain retryable');
   assert.equal(observed.length, 0, 'failed disconnect must not fire onClosed');
+  assert.equal(adapter.listeners.size, 1, 'failed disconnect must retain the live event subscription');
+  adapter.emit({ type: 'module-load', epoch: session.epoch, marker: 'after-failed-disconnect' });
+  assert.equal(session.traces.snapshot().events.at(-1)?.marker, 'after-failed-disconnect',
+    'live adapter events must remain observable after a transient disconnect failure');
+  const reused = await session.connect();
+  assert.equal(reused.reused, true, 'failed disconnect must not make connect register a second backend connection');
+  assert.equal(adapter.connectAttempts, 1);
 
   await session.disconnect();
   assert.equal(adapter.disconnectAttempts, 2);
+  assert.equal(session.connected, false);
   assert.equal(session.closed, true);
   assert.equal(observed.length, 1);
   assert.equal(adapter.connected, false);
+  assert.equal(adapter.listeners.size, 0, 'successful disconnect must release the event subscription');
   assert.equal(await session.disconnect(), undefined, 'successful disconnect remains idempotent');
   assert.equal(adapter.disconnectAttempts, 2);
 });
@@ -64,6 +93,7 @@ test('P10 DebugSession.disconnect single-flights concurrent disconnects (#4626)'
   await Promise.all([first, second]);
   assert.equal(entered, 1);
   assert.equal(adapter.disconnectAttempts, 1);
+  assert.equal(session.connected, false);
   assert.equal(session.closed, true);
 });
 
@@ -123,6 +153,24 @@ test('P10 compat provider retains activeSession when adapter disconnect fails (#
 
   await session.close();
   assert.equal(adapter.disconnectAttempts, 2);
+  assert.equal(session.closed, true);
+  assert.equal(provider.activeSession, null);
+});
+
+test('P10 compat provider retries disconnect even when failed attempt already cleared connected (#4626)', async () => {
+  const adapter = new DisconnectStateBeforeFailureAdapter();
+  const provider = wrapDebugAdapterAsRuntimeProvider(adapter, { id: 'compat-4626-state-before-failure' });
+  const session = await provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'n2' });
+  assert.equal(adapter.connected, true);
+
+  await assert.rejects(session.close(), /transient adapter disconnect failure after transport teardown/);
+  assert.equal(adapter.disconnectAttempts, 1);
+  assert.equal(adapter.connected, false, 'adapter may report disconnected before cleanup acknowledgement succeeds');
+  assert.equal(session.closed, false, 'failed compat close must remain retryable');
+  assert.equal(provider.activeSession, session, 'failed compat close must retain activeSession');
+
+  await session.close();
+  assert.equal(adapter.disconnectAttempts, 2, 'retry must re-enter backend disconnect despite connected=false');
   assert.equal(session.closed, true);
   assert.equal(provider.activeSession, null);
 });
