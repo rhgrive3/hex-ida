@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -89,28 +89,29 @@ function hasAccessorProperty(owner, key) {
     && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function');
 }
 
-function scanForAccessors(value, depth, seen) {
+function isSharedMemory(value) {
+  if (typeof SharedArrayBuffer === 'undefined') return false;
+  if (value instanceof SharedArrayBuffer) return true;
+  return ArrayBuffer.isView(value) && value.buffer instanceof SharedArrayBuffer;
+}
+
+function scanForSnapshotUnsafeValues(value, depth, seen) {
   if (value == null || typeof value !== 'object') return true;
+  if (isSharedMemory(value)) return false;
   if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return false;
   if (seen.has(value)) return true;
   seen.add(value);
   if (Object.getOwnPropertySymbols(value).length > 0) return false;
   for (const key of Object.keys(value)) {
     if (hasAccessorProperty(value, key)) return false;
-    if (!scanForAccessors(value[key], depth + 1, seen)) return false;
+    if (!scanForSnapshotUnsafeValues(value[key], depth + 1, seen)) return false;
   }
   return true;
 }
 
-// Untrusted remote envelopes must be captured once into an owned snapshot.
-// Accessor-backed or symbol-keyed authority fields are fail-closed rejected:
-// a stateful getter could otherwise present one value to validation and a
-// different one to authorization or ChangeLog application (validation/use
-// TOCTOU). Every downstream consumer reads only this frozen snapshot, cloned
-// faithfully so validated values equal applied values without coercion.
 function snapshotRemoteEnvelope(envelope) {
   if (!isPlainRecord(envelope)) return null;
-  if (!scanForAccessors(envelope, 0, new Set())) return null;
+  if (!scanForSnapshotUnsafeValues(envelope, 0, new Set())) return null;
   let snapshot;
   try {
     snapshot = structuredClone(envelope);
@@ -122,31 +123,11 @@ function snapshotRemoteEnvelope(envelope) {
 }
 
 function isCanonicalRemoteOperation(operation) {
-  if (!isPlainRecord(operation) || operation.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return false;
-  if (!validRawIdentity(operation.operationId)
-    || !validRawIdentity(operation.projectIdentity)
-    || !validRawIdentity(operation.targetEntityId)
-    || !validRawIdentity(operation.factKind)
-    || (operation.binaryIdentity != null && !validRawIdentity(operation.binaryIdentity))
-    || (operation.authorIdentity != null && !validRawIdentity(operation.authorIdentity))
-    || (operation.deviceIdentity != null && !validRawIdentity(operation.deviceIdentity))
-    || typeof operation.action !== 'string'
-    || !['set', 'remove', 'resolve', 'resurrect'].includes(operation.action)
-    || !Array.isArray(operation.causalParents)
-    || operation.causalParents.some((parent) => !validRawIdentity(parent))
-    || new Set(operation.causalParents).size !== operation.causalParents.length
-    || operation.causalParents.some((parent, index, list) => index > 0 && list[index - 1] > parent)
-    || (operation.timestampHint != null && typeof operation.timestampHint !== 'string')
-    || (operation.beforeFingerprint != null && typeof operation.beforeFingerprint !== 'string')
-    || !isPlainRecord(operation.provenance)) {
-    return false;
-  }
-  try {
-    const canonical = createProjectOperation(operation);
-    return stableDigest(operation) === stableDigest(canonical);
-  } catch {
-    return false;
-  }
+  if (!isPlainRecord(operation)) return false;
+  const canonical = canonicalizeProjectOperation(operation);
+  return canonical != null
+    && isCanonicalProjectOperation(canonical)
+    && stableDigest(operation) === stableDigest(canonical);
 }
 
 function authorized(permissions, operation) {
@@ -231,9 +212,9 @@ export class RemoteCollaborationGate {
 
   validate(envelope) {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
+    VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
     const snap = snapshotRemoteEnvelope(envelope);
     if (!snap) return { ok: false, reason: 'remote-envelope-shape-invalid' };
-    VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
     if (!this.supportedEnvelopeSchemas.has(snap.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
     if (!this.supportedOperationSchemas.has(snap.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
     if (!validRawIdentity(snap.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
@@ -246,9 +227,6 @@ export class RemoteCollaborationGate {
     if ((snap.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (snap.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
     if (!validSequence(snap.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
-    // Replay authority rests on `messageId`, so untrusted ingress must verify
-    // its raw shape itself: a missing or structured value would otherwise be
-    // accepted as a Set key (compared by object identity) or skipped entirely.
     if (!validMessageId(snap.messageId)) return { ok: false, reason: 'remote-message-id-invalid' };
     if (typeof snap.envelopeId !== 'string' || snap.envelopeId !== envelopeIdentity(snap)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
     if (this.revokedActors.has(snap.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
@@ -285,9 +263,6 @@ export class RemoteCollaborationGate {
     return { ok: true };
   }
 
-  // The exact owned snapshot captured during validation. Delivery paths must
-  // apply these frozen operations — never the caller-owned raw envelope — so
-  // validated state and used state cannot diverge.
   validatedSnapshot(envelope) {
     return VALIDATED_REMOTE_SNAPSHOTS.get(envelope) ?? null;
   }
@@ -338,8 +313,10 @@ export class RemoteCollaborationChannel {
   async send(envelope) {
     const checked = this.gate.validate(envelope);
     if (!checked.ok) return { status: 'rejected', reason: checked.reason };
-    await this.transport.send(envelope);
-    return { status: 'sent', envelopeId: envelope.envelopeId };
+    const snap = this.gate.validatedSnapshot(envelope);
+    if (!snap) return { status: 'rejected', reason: 'remote-ingress-snapshot-required' };
+    await this.transport.send(snap);
+    return { status: 'sent', envelopeId: snap.envelopeId };
   }
 
   receive(envelope) {
