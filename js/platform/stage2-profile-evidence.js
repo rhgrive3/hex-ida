@@ -32,6 +32,16 @@ const VALID_PROFILE_RECORDS = new WeakMap();
 const VALID_CAPABILITY_PROOFS = new WeakSet();
 
 function sorted(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function strictString(value, code) {
+  if (value == null) return '';
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+function strictSortedStrings(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new TypeError(code);
+  return sorted(value);
+}
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
 function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
 function isCanonicalStringArray(value, { allowEmpty = true } = {}) {
@@ -51,8 +61,14 @@ function providerProfileAllowed(itemId, value) {
 function isRecord(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function hasOwn(value, key) { return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key); }
 function evidenceMap(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [String(key), String(item || '')]));
+  if (value == null) return {};
+  if (!isRecord(value)) throw new TypeError('stage2-profile-unit-evidence-map-invalid');
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'string') throw new TypeError(`stage2-profile-unit-evidence-type-invalid:${key}`);
+    out[key] = item;
+  }
+  return out;
 }
 function payload(record) {
   return {
@@ -86,7 +102,10 @@ function denominatorLockPayload(lock) {
 }
 function denominatorLockHash(lock) { return `stage2-denominator-lock:${stableDigest(denominatorLockPayload(lock))}`; }
 function expectedInventoryHash(id, refs, resolveInventoryIdentity) {
-  const identities = refs.map((ref) => [ref, String(resolveInventoryIdentity(ref, id) || '')]);
+  const identities = refs.map((ref) => [
+    ref,
+    strictString(resolveInventoryIdentity(ref, id), `stage2-denominator-inventory-identity-type-invalid:${id}:${ref}`),
+  ]);
   if (identities.some(([, value]) => !value)) throw new TypeError('stage2-denominator-inventory-ref-unresolved');
   return `stage2-denominator-inventory:${stableDigest(identities)}`;
 }
@@ -98,9 +117,9 @@ export function createStage2DenominatorLock(input = {}, { scope, resolveInventor
   const items = {};
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const source = hasOwn(input.items, id) ? input.items[id] || {} : {};
-    const profiles = sorted(source.profiles);
-    const unitIds = sorted(source.unitIds);
-    const inventoryRefs = sorted(source.inventoryRefs);
+    const profiles = strictSortedStrings(source.profiles, `stage2-denominator-profiles-type-invalid:${id}`);
+    const unitIds = strictSortedStrings(source.unitIds, `stage2-denominator-units-type-invalid:${id}`);
+    const inventoryRefs = strictSortedStrings(source.inventoryRefs, `stage2-denominator-inventory-refs-type-invalid:${id}`);
     const item = {
       id: `stage2-denominator:${id}:v1`,
       profiles: Object.freeze(profiles),
@@ -108,12 +127,13 @@ export function createStage2DenominatorLock(input = {}, { scope, resolveInventor
       inventoryRefs: Object.freeze(inventoryRefs),
       inventoryHash: expectedInventoryHash(id, inventoryRefs, resolveInventoryIdentity),
     };
-    if (!same(unitIds, sorted(resolveDenominatorUnitIds(id, inventoryRefs)))) throw new TypeError(`stage2-denominator-unit-set-mismatch:${id}`);
+    const resolvedUnitIds = strictSortedStrings(resolveDenominatorUnitIds(id, inventoryRefs), `stage2-denominator-resolved-units-type-invalid:${id}`);
+    if (!same(unitIds, resolvedUnitIds)) throw new TypeError(`stage2-denominator-unit-set-mismatch:${id}`);
     items[id] = deepFreeze({ ...item, lockHash: denominatorItemHash(item) });
   }
   const lock = {
     schemaVersion: STAGE2_DENOMINATOR_LOCK_SCHEMA,
-    scopeVersion: String(scope.scopeVersion || ''),
+    scopeVersion: strictString(scope.scopeVersion, 'stage2-denominator-scope-version-type-invalid'),
     scopeLockHash: scopeLockHash(scope),
     items: deepFreeze(items),
   };
@@ -145,7 +165,7 @@ export function validateStage2DenominatorLock(lock, { scope, resolveInventoryIde
       if (!unitIds.some((unitId) => unitId.startsWith(`${profile}:`))) failures.push(`${id}:denominator-profile-units-missing:${profile}`);
     }
     let expectedUnits = [];
-    try { expectedUnits = sorted(resolveDenominatorUnitIds(id, inventoryRefs)); }
+    try { expectedUnits = strictSortedStrings(resolveDenominatorUnitIds(id, inventoryRefs), `stage2-denominator-resolved-units-type-invalid:${id}`); }
     catch { failures.push(`${id}:denominator-unit-set-unresolved`); }
     if (!same(unitIds, expectedUnits)) failures.push(`${id}:denominator-unit-set-mismatch`);
     if (inventoryRefs.length === 0 || inventoryRefs.length !== (Array.isArray(item.inventoryRefs) ? item.inventoryRefs.length : -1)) failures.push(`${id}:denominator-inventory-refs-invalid`);
@@ -164,26 +184,26 @@ export function createStage2ProfileEvidence(input = {}) {
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const source = input.items?.[id] || {};
     items[id] = deepFreeze({
-      profileIds: Object.freeze(sorted(source.profileIds)),
-      candidateCommitSha: String(source.candidateCommitSha || '').toLowerCase(),
-      candidateTreeSha: String(source.candidateTreeSha || '').toLowerCase(),
-      denominatorId: String(source.denominatorId || ''),
-      denominatorLockHash: String(source.denominatorLockHash || '').toLowerCase(),
-      coveredUnitIds: Object.freeze(sorted(source.coveredUnitIds)),
+      profileIds: Object.freeze(strictSortedStrings(source.profileIds, `stage2-profile-ids-type-invalid:${id}`)),
+      candidateCommitSha: strictString(source.candidateCommitSha, `stage2-profile-candidate-commit-type-invalid:${id}`).toLowerCase(),
+      candidateTreeSha: strictString(source.candidateTreeSha, `stage2-profile-candidate-tree-type-invalid:${id}`).toLowerCase(),
+      denominatorId: strictString(source.denominatorId, `stage2-profile-denominator-id-type-invalid:${id}`),
+      denominatorLockHash: strictString(source.denominatorLockHash, `stage2-profile-denominator-lock-type-invalid:${id}`).toLowerCase(),
+      coveredUnitIds: Object.freeze(strictSortedStrings(source.coveredUnitIds, `stage2-profile-covered-units-type-invalid:${id}`)),
       unitEvidence: deepFreeze(evidenceMap(source.unitEvidence)),
-      realFixtureIdentities: Object.freeze(sorted(source.realFixtureIdentities)),
-      negativeTestIdentities: Object.freeze(sorted(source.negativeTestIdentities)),
-      evidenceIdentities: Object.freeze(sorted(source.evidenceIdentities)),
-      providerProfileIds: Object.freeze(sorted(source.providerProfileIds)),
-      implementationIdentity: String(source.implementationIdentity || ''),
-      independentOracleIdentities: Object.freeze(sorted(source.independentOracleIdentities)),
+      realFixtureIdentities: Object.freeze(strictSortedStrings(source.realFixtureIdentities, `stage2-profile-real-fixture-identities-type-invalid:${id}`)),
+      negativeTestIdentities: Object.freeze(strictSortedStrings(source.negativeTestIdentities, `stage2-profile-negative-test-identities-type-invalid:${id}`)),
+      evidenceIdentities: Object.freeze(strictSortedStrings(source.evidenceIdentities, `stage2-profile-evidence-identities-type-invalid:${id}`)),
+      providerProfileIds: Object.freeze(strictSortedStrings(source.providerProfileIds, `stage2-profile-provider-ids-type-invalid:${id}`)),
+      implementationIdentity: strictString(source.implementationIdentity, `stage2-profile-implementation-identity-type-invalid:${id}`),
+      independentOracleIdentities: Object.freeze(strictSortedStrings(source.independentOracleIdentities, `stage2-profile-oracle-identities-type-invalid:${id}`)),
     });
   }
   const record = {
     schemaVersion: STAGE2_PROFILE_EVIDENCE_SCHEMA,
-    commitSha: String(input.commitSha || '').toLowerCase(),
-    treeSha: String(input.treeSha || '').toLowerCase(),
-    generatedAt: String(input.generatedAt || ''),
+    commitSha: strictString(input.commitSha, 'stage2-profile-commit-type-invalid').toLowerCase(),
+    treeSha: strictString(input.treeSha, 'stage2-profile-tree-type-invalid').toLowerCase(),
+    generatedAt: strictString(input.generatedAt, 'stage2-profile-generated-at-type-invalid'),
     items: deepFreeze(items),
   };
   return deepFreeze({ ...record, evidenceId: identity(record) });
