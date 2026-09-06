@@ -7,24 +7,31 @@
  *   boolean or object alias a canonical identity and merge unrelated evidence.
  */
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
-function canonicalIdentity(v) {
-  if (typeof v === 'bigint') return v >= 0n ? v : null;
+function canonicalIdentity(v, { allowBigInt = false } = {}) {
+  if (allowBigInt && typeof v === 'bigint') return v >= 0n ? v : null;
   if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
   return null;
 }
-function canonicalList(values) {
+function canonicalList(values, options = {}) {
   if (values == null) return [];
   const list = Array.isArray(values) ? values : [values];
   const out = [];
   for (const v of list) {
-    const canonical = canonicalIdentity(v);
+    const canonical = canonicalIdentity(v, options);
     if (canonical !== null && !out.some((z) => z === canonical)) out.push(canonical);
   }
   return out;
 }
 export function sourceOf(source = null) {
   if (!source) return { addresses: [], rows: [], ir: [], ssaDefs: [], ssaUses: [], evidence: [] };
-  return { addresses: canonicalList(source.addresses ?? source.address), rows: canonicalList(source.rows ?? source.row), ir: canonicalList(source.ir ?? source.irId), ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef), ssaUses: canonicalList(source.ssaUses ?? source.ssaUse), evidence: freezeArray(source.evidence) };
+  return {
+    addresses: canonicalList(source.addresses ?? source.address, { allowBigInt: true }),
+    rows: canonicalList(source.rows ?? source.row),
+    ir: canonicalList(source.ir ?? source.irId),
+    ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef),
+    ssaUses: canonicalList(source.ssaUses ?? source.ssaUse),
+    evidence: freezeArray(source.evidence),
+  };
 }
 export function mergeSource(...sources) {
   const out = sourceOf();
