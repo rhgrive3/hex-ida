@@ -250,16 +250,38 @@ export async function verifyBoundedEquivalence({
   else if (pExpr) pExpr = replaceSymbols(pExpr, symbolReplacements);
 
   // 3. Form difference condition: beforeExpr != afterExpr
-  // Sort match check
+  // Sort match check: incompatible sorts are a query incompatibility, never a
+  // witnessed refutation. The vacuous-proof guard applies here as well, so
+  // contradictory preconditions must not mint REFUTED with a fake SAT status.
   if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width && beforeExpr.sort.width !== afterExpr.sort.width)) {
+    const pCheckSort = await checkPreconditionsConsistency(pExpr, activeSession, options);
+    if (!pCheckSort.consistent) {
+      const inconsistent = pCheckSort.status === SOLVER_STATUS.UNSAT;
+      return Object.freeze({
+        verdict: VERDICT.UNKNOWN,
+        claimKind: CLAIM_KIND.EQUIVALENT,
+        reasonCode: inconsistent ? 'inconsistent-preconditions' : (pCheckSort.reason || 'unresolved-preconditions'),
+        proofStatement: inconsistent
+          ? 'Equivalence cannot be proved or refuted: claim preconditions are contradictory (vacuous proof rejected)'
+          : `Equivalence preconditions could not be resolved (${pCheckSort.status})`,
+        solverStatus: pCheckSort.status,
+        preconditionConsistency: pCheckSort,
+        assumptions: Object.freeze(combinedAssumptions),
+        completeness: createCompleteness({ queryScope: COMPLETENESS_STATUS.PARTIAL }),
+        queryHash: null,
+        query: null,
+        solverResult: null,
+        evidence: null,
+      });
+    }
     return Object.freeze({
-      verdict: VERDICT.REFUTED,
+      verdict: VERDICT.UNKNOWN,
       claimKind: CLAIM_KIND.EQUIVALENT,
       reasonCode: 'sort-width-mismatch',
       proofStatement: `Equivalence targets have incompatible sorts (before: ${beforeExpr.sort.kind}${beforeExpr.sort.width || ''}, after: ${afterExpr.sort.kind}${afterExpr.sort.width || ''})`,
-      solverStatus: SOLVER_STATUS.SAT,
+      solverStatus: SOLVER_STATUS.UNSUPPORTED,
       assumptions: Object.freeze(combinedAssumptions),
-      completeness: createCompleteness(),
+      completeness: createCompleteness({ queryScope: COMPLETENESS_STATUS.PARTIAL }),
       queryHash: null,
       query: null,
       solverResult: null,
@@ -284,12 +306,23 @@ export async function verifyBoundedEquivalence({
     if (statuses.includes(COMPLETENESS_STATUS.PARTIAL)) return COMPLETENESS_STATUS.PARTIAL;
     return COMPLETENESS_STATUS.COMPLETE;
   };
+  const downgradeForUnmodeled = (status) =>
+    status === COMPLETENESS_STATUS.COMPLETE ? COMPLETENESS_STATUS.PARTIAL : status;
+  // Fail-closed: declared observable memoryRegions are recorded in proof scope
+  // but no canonical before/after memory-state comparison is encoded in the
+  // difference query (output-only diff). The memory/query-scope dimensions
+  // must therefore never report complete while regions are declared.
+  const hasDeclaredMemoryScope = Array.isArray(memoryRegions) && memoryRegions.length > 0;
   const completeness = createCompleteness({
     translation: allUnknowns > 0 || allUnsupported.length > 0 ? COMPLETENESS_STATUS.UNSUPPORTED : mergeCompleteness('translation'),
     controlFlow: mergeCompleteness('controlFlow'),
-    memoryEffects: mergeCompleteness('memoryEffects'),
+    memoryEffects: hasDeclaredMemoryScope
+      ? downgradeForUnmodeled(mergeCompleteness('memoryEffects'))
+      : mergeCompleteness('memoryEffects'),
     pathCoverage: mergeCompleteness('pathCoverage'),
-    queryScope: mergeCompleteness('queryScope'),
+    queryScope: hasDeclaredMemoryScope
+      ? downgradeForUnmodeled(mergeCompleteness('queryScope'))
+      : mergeCompleteness('queryScope'),
   });
 
   const query = createVerificationQuery({

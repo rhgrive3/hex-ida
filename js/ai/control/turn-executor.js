@@ -9,7 +9,7 @@ import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
   ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
-  remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
+  remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
@@ -38,7 +38,8 @@ export async function executeTurn(input = {}, options = {}) {
     }
     const budget = aiBudget(request.mode, budgetOverrides);
     const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
-    const started = Date.now(), activity = [], observations = [];
+    const monotonicNow = resolveMonotonicClock(options.clock, options.monotonicNow, options.now);
+    const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
@@ -55,7 +56,7 @@ export async function executeTurn(input = {}, options = {}) {
     };
 
     try {
-      ensureRunning(signal, started, turnTimeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
       const snapshot = createTurnSnapshot(this.localContext, request);
       const intent = request.intent || routeIntent(request.goal, snapshot);
       request.intent = intent;
@@ -65,7 +66,7 @@ export async function executeTurn(input = {}, options = {}) {
       const snapshotContext = createSnapshotContext(this.localContext, snapshot, scopeController);
 
       let session = request.sessionId ? await this.sessionStore.get(request.sessionId) : null;
-      ensureRunning(signal, started, turnTimeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
       if (session && !sessionMatchesSnapshot(session, snapshot)) {
         throw new AIError('scope_violation', 'The requested AI session belongs to a different binary or project.');
       }
@@ -94,14 +95,14 @@ export async function executeTurn(input = {}, options = {}) {
       addActivity({ type: 'turn-start', label: request.mode === 'agent' ? '調査を開始' : '質問を解析', intent, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, snapshotId: snapshot.id });
 
       try {
-        ensureRunning(signal, started, turnTimeoutMs);
+        ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
             maxSearchResults: request.maxSearchResults || 40,
             timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
-            isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
+            isCancelled: () => !!signal?.aborted || monotonicNow() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
           const plannedEvidence = this.evidenceStore.ingestPlan(plan);
@@ -116,12 +117,12 @@ export async function executeTurn(input = {}, options = {}) {
         if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
         else {
           if (typeof this.provider.prepareCapabilities === 'function') {
-            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs)) });
-            ensureRunning(signal, started, turnTimeoutMs);
+            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs, monotonicNow)) });
+            ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
           }
           const seenCalls = new Map(); let repairs = 0;
           while (modelCalls < budget.maxModelCalls) {
-            ensureRunning(signal, started, turnTimeoutMs);
+            ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
             const maxTools = Math.max(1, Math.min(10, Number(caps.maxTools || 10)));
@@ -152,7 +153,7 @@ export async function executeTurn(input = {}, options = {}) {
                 intent, task: request.task || null, messages, context: built.context, tools,
               }, {
                 signal,
-                ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs) } : {}),
+                ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs, monotonicNow) } : {}),
               });
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
@@ -169,7 +170,7 @@ export async function executeTurn(input = {}, options = {}) {
               const normalized = normalizeError(error, signal);
               const repairable = normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call';
               if (repairable && repairs === 0 && modelCalls < budget.maxModelCalls) {
-                const repairRemainingMs = Number.isFinite(turnTimeoutMs) ? remainingTime(started, turnTimeoutMs) : null;
+                const repairRemainingMs = Number.isFinite(turnTimeoutMs) ? remainingTime(started, turnTimeoutMs, monotonicNow) : null;
                 if (repairRemainingMs == null || repairRemainingMs >= MIN_MODEL_REPAIR_REMAINING_MS) {
                   repairs++;
                   observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
