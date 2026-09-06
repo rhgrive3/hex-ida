@@ -248,11 +248,19 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const passes = phase8Passes({ stages: enabledStages });
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
-  // produced under a different refinement registry.
-  const providers = context.opts?.phase8Providers === false
+  // produced under a different refinement registry. Snapshot the selected set
+  // once so a stateful providers accessor cannot change execution after digest.
+  const configuredProviders = context.opts?.phase8Providers === false
     ? []
     : (context.providers ?? REGISTERED_PROVIDERS);
+  const providers = Object.freeze([...configuredProviders]);
   const registryDigest = passRegistryDigest(passes, providers);
+  const contextDescriptors = Object.getOwnPropertyDescriptors(context);
+  delete contextDescriptors.providers;
+  const providerContext = Object.create(Object.getPrototypeOf(context), {
+    ...contextDescriptors,
+    providers: { value: providers, enumerable: true, configurable: true },
+  });
   let authoritative;
   try {
     authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
@@ -310,9 +318,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const needsScalarIdentity = passes.some(({ descriptor }) =>
     ['phase8.sccp', 'phase8.gvn', 'phase8.induction'].includes(descriptor.id));
   const resolvedAnalysisIdentity = needsScalarIdentity
-    ? canonicalAnalysisIdentity({ ...context, analysis: authoritative }) : null;
+    ? canonicalAnalysisIdentity({ ...providerContext, analysis: authoritative }) : null;
   const passContext = {
-    ...context,
+    ...providerContext,
     analysis,
     resolvedAnalysisIdentity,
   };

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   PROVIDER_PASS,
+  createAnalysisState,
   createProvider,
   passRegistryDigest,
   phase8Passes,
@@ -89,4 +90,57 @@ test('duplicate provider ids fail closed before registry identity or execution c
   }
 
   assert.equal(executions, 0, 'duplicate providers must fail closed before refinement starts');
+});
+
+test('vertical snapshots provider authority once for digest and execution', () => {
+  const executions = [];
+  const first = createProvider({
+    id: 'phase8.provider.snapshot-a',
+    version: '1.0.0',
+    kinds: ['idiom'],
+    refine() { executions.push('a'); return []; },
+  });
+  const second = createProvider({
+    id: 'phase8.provider.snapshot-b',
+    version: '1.0.0',
+    kinds: ['idiom'],
+    refine() { executions.push('b'); return []; },
+  });
+  const analysis = createAnalysisState({
+    cfg: {},
+    ssa: {},
+    induction: { loops: [] },
+    aggregates: { regions: [] },
+    structuredRegions: {
+      edgesByConstruct: {},
+      edgeCount: 0,
+      residualGotoCount: 0,
+      constraintEdgeCount: 0,
+      regions: [],
+    },
+  });
+  let providerReads = 0;
+  const context = {
+    enabledStages: ['providers'],
+    analysis,
+    get providers() {
+      providerReads += 1;
+      return providerReads === 1 ? [first] : [second];
+    },
+  };
+
+  const outcome = runPhase8Vertical(context);
+  const expectedDigest = passRegistryDigest([providerPass], [first]);
+  const providerFacts = outcome.analysis.get('providerHints');
+
+  assert.equal(providerReads, 1, 'provider authority must be read exactly once per vertical');
+  assert.equal(outcome.ledger.published, true);
+  assert.equal(outcome.ledger.registryDigest, expectedDigest,
+    'published identity must describe the provider snapshot that actually ran');
+  assert.deepEqual(executions, ['a'], 'only the provider from the snapshotted registry may execute');
+  assert.deepEqual(
+    providerFacts.providers.map(({ id, version }) => ({ id, version })),
+    [{ id: first.id, version: first.version }],
+    'published provider material must use the same provider snapshot as the digest',
+  );
 });
