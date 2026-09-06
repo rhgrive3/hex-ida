@@ -40,12 +40,14 @@ assert.match(mainSyncWorkflow, /^permissions:\n  contents: read$/m);
 assert.doesNotMatch(mainSyncWorkflow, /^permissions:\n  contents: write$/m);
 assert.match(mainSyncWorkflow, /persist-credentials: false/);
 assert.match(mainSyncWorkflow, /npm run userscript:build/);
+assert.match(mainSyncWorkflow, /git ls-files --error-unmatch --[\s\\]+userscript\/hex\.user\.template\.js[\s\\]+userscript\/release-version\.json/);
 assert.match(mainSyncWorkflow, /git diff --exit-code -- userscript\/hex\.user\.template\.js userscript\/release-version\.json/);
 assert.doesNotMatch(mainSyncWorkflow, /sync-generated-userscript\.mjs --rebuild/, 'main workflow must never direct-push generated output');
 
 const readOnlySyncWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-sync.yml'), 'utf8');
 assert.match(readOnlySyncWorkflow, /^permissions:\n  contents: read$/m);
 assert.match(readOnlySyncWorkflow, /steps\.generated-policy\.outputs\.mode == 'enforce'/);
+assert.match(readOnlySyncWorkflow, /git ls-files --error-unmatch --[\s\\]+userscript\/hex\.user\.template\.js[\s\\]+userscript\/release-version\.json/);
 assert.match(readOnlySyncWorkflow, /git diff --exit-code -- userscript\/hex\.user\.template\.js userscript\/release-version\.json/);
 assert.doesNotMatch(readOnlySyncWorkflow, /published by the push-only Generated userscript main sync workflow/);
 
@@ -93,6 +95,22 @@ try {
   sh(work, ['add', '-A']);
   sh(work, ['-c', 'user.name=tester', '-c', 'user.email=tester@example.invalid', 'commit', '-m', 'seed']);
   sh(work, ['push', '-u', 'origin', 'HEAD:refs/heads/main']);
+
+  // A committed deletion can be recreated as an untracked file by the build.
+  // The old exact-diff gate then reports clean, so tracked-file authority must
+  // fail closed before the diff can accept the transaction.
+  const deletedOutputWork = path.join(sandbox, 'deleted-output');
+  sh(sandbox, ['clone', origin, 'deleted-output']);
+  sh(deletedOutputWork, ['rm', '--', RELEASE]);
+  sh(deletedOutputWork, ['-c', 'user.name=tester', '-c', 'user.email=tester@example.invalid', 'commit', '-m', 'delete canonical output']);
+  const rebuildDeletedOutput = spawnSync(process.execPath, ['scripts/build-userscript.mjs'], { cwd: deletedOutputWork, encoding: 'utf8' });
+  assert.equal(rebuildDeletedOutput.status, 0, rebuildDeletedOutput.stderr);
+  sh(deletedOutputWork, ['restore', '--', TEMPLATE]);
+  const legacyExactDiff = spawnSync('git', ['diff', '--exit-code', '--', TEMPLATE, RELEASE], { cwd: deletedOutputWork, encoding: 'utf8' });
+  assert.equal(legacyExactDiff.status, 0, 'legacy exact diff must demonstrate the untracked-output blind spot');
+  const trackedOutputGuard = spawnSync('git', ['ls-files', '--error-unmatch', '--', TEMPLATE, RELEASE], { cwd: deletedOutputWork, encoding: 'utf8' });
+  assert.notEqual(trackedOutputGuard.status, 0, 'recreated-but-untracked canonical output must fail closed');
+  assert.match(sh(deletedOutputWork, ['status', '--porcelain', '--untracked-files=all']), /\?\? userscript\/release-version\.json/);
 
   function runSync(refName, args = []) {
     return spawnSync(process.execPath, ['scripts/sync-generated-userscript.mjs', ...args], {

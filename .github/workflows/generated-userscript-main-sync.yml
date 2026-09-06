@@ -54,6 +54,13 @@ jobs:
         run: npm run userscript:build
       - name: Restore deployment-only build identity
         run: git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
+      - name: Require canonical generated outputs to remain tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- \
+            userscript/hex.user.template.js \
+            userscript/release-version.json >/dev/null
       - name: Require main generated outputs to be canonical
         shell: bash
         run: |

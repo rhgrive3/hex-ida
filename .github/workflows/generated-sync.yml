@@ -80,6 +80,14 @@ jobs:
             printf '%s\n' "$unexpected" >&2
             exit 1
           fi
+      - name: Require canonical generated outputs to remain tracked
+        if: steps.generated-policy.outputs.mode == 'enforce'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- \
+            userscript/hex.user.template.js \
+            userscript/release-version.json >/dev/null
       - name: Require release-transaction generated outputs to match source
         if: steps.generated-policy.outputs.mode == 'enforce'
         run: git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
