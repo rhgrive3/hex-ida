@@ -49,7 +49,7 @@ test('semantic-function rejects unsupported builtin instruction endianness befor
   for (const architecture of ['arm64', 'arm64e', 'x86_64', 'riscv64']) {
     assert.throws(
       () => analyzeDecodedSemanticFunction({ instructions:[], architecture, instructionEndianness:'big' }),
-      new RegExp(`^TypeError: semantic-function-unsupported-instruction-endianness:big$`),
+      { name:'TypeError', message:'semantic-function-unsupported-instruction-endianness:big' },
       architecture,
     );
   }
@@ -60,7 +60,7 @@ test('instruction and data endianness checks do not collapse into one another', 
     () => analyzeDecodedSemanticFunction({
       instructions:[], architecture:'x86_64', instructionEndianness:'little', dataEndianness:'big',
     }),
-    /^TypeError: semantic-function-unsupported-memory-endianness:big$/,
+    { name:'TypeError', message:'semantic-function-unsupported-memory-endianness:big' },
   );
 });
 
