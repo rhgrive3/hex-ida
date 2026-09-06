@@ -55,7 +55,10 @@ export function runPhase6Tests(argv = process.argv.slice(2), { root = DIRECTORY 
   if (child.stderr) process.stderr.write(child.stderr);
   if (child.stdout) process.stdout.write(child.stdout);
   if (child.error) throw child.error;
-  if (child.status !== 0) throw new Error(`phase6: test runner failed with status ${child.status ?? 'signal'}`);
+  if (child.status !== 0) {
+    if (child.stdout) process.stderr.write(`\n[phase6-diagnostic]\n${child.stdout}`);
+    throw new Error(`phase6: test runner failed with status ${child.status ?? 'signal'}`);
+  }
   console.log(`phase6: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ''})`);
   return Object.freeze({ selected: selected.length, total: all.length, group });
 }
