@@ -6,7 +6,7 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed','skipdata']);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
@@ -26,9 +26,17 @@ function text(value, code, { empty = false } = {}) {
 }
 
 function detailStatusOf(value, detailAvailable) {
-  const status = value == null ? (detailAvailable === true ? 'complete' : 'unavailable') : value;
+  if (value == null) return detailAvailable === true ? 'complete' : 'unavailable';
+  const status = value;
   if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
     throw new TypeError('x86-decoded-instruction-invalid-detail-status');
+  }
+  // detailStatus is the single authority, but an explicitly passed boolean
+  // detailAvailable that contradicts it is malformed evidence, not a default
+  // to override: complete/true and unavailable/false are the only coherent
+  // pairs (non-complete statuses imply unavailable detail).
+  if (typeof detailAvailable === 'boolean' && (detailAvailable === true) !== (status === 'complete')) {
+    throw new TypeError('x86-decoded-instruction-detail-availability-contradiction');
   }
   return status;
 }
@@ -178,8 +186,19 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  // This constructor only mints x86_64 records. A foreign architecture
+  // identity (or two disagreeing ones) is a contradictory record, not a
+  // defaultable field.
+  for (const key of ['architecture', 'architectureId']) {
+    const value = input[key];
+    if (value != null && String(value).trim().toLowerCase() !== 'x86_64') {
+      throw new TypeError('x86-decoded-instruction-architecture-mismatch');
+    }
+  }
   const result = {
     ...input,
+    architecture: 'x86_64',
+    architectureId: 'x86_64',
     contractVersion,
     decoderSemanticVersion:text(input.decoderSemanticVersion ?? X86_DECODER_SEMANTIC_VERSION, 'x86-decoder-semantic-version-required'),
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
@@ -191,7 +210,13 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:input.instructionId,
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    // Capstone SKIPDATA records carry instruction id 0 by contract
+    // (cs_insn.id is 0 in Skipdata mode). The zero code is admitted only
+    // for skipdata records and must be exactly 0; every other record keeps
+    // the historical min:1 domain.
+    instructionCode:detailStatus === 'skipdata'
+      ? integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:0, max:0 })
+      : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
     detailStatus,

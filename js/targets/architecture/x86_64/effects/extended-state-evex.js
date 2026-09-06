@@ -62,6 +62,10 @@ export function classifyEvexCategory(name) {
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
     return 'simd';
   }
+  // VBLENDMPS/VBLENDMPD select vector elements under an opmask and perform
+  // no floating-point computation (SDM: SIMD Floating-Point Exceptions None),
+  // so they must not attract MXCSR dependencies or #XM candidates.
+  if (/^vblendmp[sd]$/.test(lower)) return 'simd';
   return 'fp';
 }
 
