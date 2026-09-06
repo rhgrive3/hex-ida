@@ -4,6 +4,7 @@ import { parseProgramDynamic } from '../../js/binary/elf-dynamic.js';
 
 const DT_NEEDED = 1n;
 const DT_NULL = 0n;
+const DT_DEBUG = 21n;
 
 function image() {
   return {
@@ -39,7 +40,8 @@ function fixture(entries, bits, trailingBytes = 0) {
 
 for (const bits of [32, 64]) {
   const label = `ELF${bits}`;
-  const { bytes } = fixture([[DT_NEEDED, 0n], [DT_NULL, 0n]], bits);
+  // Keep this complete termination fixture independent of string-table metadata.
+  const { bytes } = fixture([[DT_DEBUG, 0n], [DT_NULL, 0n]], bits);
   const parsed = image();
   const result = parseProgramDynamic(new ByteView(bytes), [{ type: 2, offset: 0n, filesz: BigInt(bytes.length) }], parsed, bits);
   assert.equal(result.parsed, true, `${label} terminated table remains parseable`);
