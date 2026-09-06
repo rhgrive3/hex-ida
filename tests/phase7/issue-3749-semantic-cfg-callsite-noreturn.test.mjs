@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { partitionDecodedFunction } from '../../js/analysis/semantic-function.js';
-import { partitionDecodedFunction as partitionDecodedFunctionBase } from '../../js/analysis/semantic-function-base.js';
+import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
+import { decompileSemantic } from '../../js/decompiler/semantic.js';
+import { ABIPlugin, registerABIPlugin } from '../../js/targets/abi/index.js';
+import {
+  createSemanticCallPrototypeAuthority,
+  partitionDecodedFunction as partitionBase,
+  semanticAbiAdapter,
+  semanticControlUnknowns,
+} from '../../js/analysis/semantic-function-base.js';
+import { partitionDecodedFunction as partitionPublic } from '../../js/analysis/semantic-function.js';
 
 const partitions = [
-  ['public', partitionDecodedFunction],
-  ['base', partitionDecodedFunctionBase],
+  ['public', partitionPublic],
+  ['base', partitionBase],
 ];
 
 function decoded(entries) {
@@ -31,7 +40,7 @@ function blockAt(blocks, address) {
 }
 
 for (const [route, partition] of partitions) {
-  test(`${route}: per-call resolver terminates only the direct call bound to noreturn evidence`, () => {
+  test(`${route}: per-call resolver terminates only the call bound to noreturn evidence`, () => {
     const fatalTarget = 0x1000n;
     const normalTarget = 0x2000n;
     const seen = [];
@@ -65,7 +74,7 @@ for (const [route, partition] of partitions) {
     assert.deepEqual(blocks[0].instructions.map(({ decoded:instruction }) => instruction.address), [0n, 4n]);
   });
 
-  test(`${route}: indirect calls can bind noreturn evidence by callsite identity`, () => {
+  test(`${route}: indirect calls bind resolver evidence by callsite identity`, () => {
     const blocks = partition(decoded([
       [0, 'call'],
       [4, 'return'],
@@ -110,7 +119,7 @@ for (const [route, partition] of partitions) {
     assert.equal(multiple.length, 1, 'function-global prototype must not mark unrelated calls noreturn');
   });
 
-  test(`${route}: resolver is evaluated once per callsite so CFG passes consume one stable authority`, () => {
+  test(`${route}: resolver is evaluated once per callsite inside CFG construction`, () => {
     let calls = 0;
     const blocks = partition(decoded([
       [0, 'call', 0x1000n],
@@ -125,3 +134,180 @@ for (const [route, partition] of partitions) {
     assert.equal(blocks.length, 2);
   });
 }
+
+const addressTarget = (value) => ({
+  kind:'absolute-address',
+  value:`0x${BigInt(value).toString(16)}`,
+  widthBits:64,
+});
+const testRegister = { kind:'register', registerId:'state0', widthBits:32 };
+const integrationPlugin = Object.freeze({
+  id:'x86_64',
+  semanticVersion:'issue-3749-test-semantics-1',
+  fixedInstructionSize:4,
+  classifyControlFlow(instruction) { return instruction.kind; },
+  directControlTarget(instruction) { return instruction.target; },
+  liftExact(instruction) {
+    const base = {
+      instructionId:instruction.instructionId,
+      architectureId:'x86_64',
+      mode:instruction.mode,
+      possibleFaults:[],
+      origin:instruction.origin,
+    };
+    if (instruction.kind === 'call') return createMachineEffectBundle({
+      ...base,
+      operations:[],
+      controlEffect:{ kind:'call', target:addressTarget(instruction.target) },
+      completeness:'exact',
+    });
+    if (instruction.kind === 'work') return createMachineEffectBundle({
+      ...base,
+      operations:[
+        {
+          id:`${instruction.instructionId}:state-write`,
+          kind:'register-write',
+          register:testRegister,
+          value:{ kind:'bitvector', widthBits:32, value:String(instruction.value ?? 1) },
+        },
+        {
+          id:`${instruction.instructionId}:memory-write`,
+          kind:'memory-write',
+          access:{
+            space:'memory',
+            addressExpr:{ kind:'bitvector', widthBits:64, value:String(0x5000 + Number(instruction.address)) },
+            widthBits:32,
+            endian:'little',
+          },
+          value:{ kind:'bitvector', widthBits:32, value:String(instruction.value ?? 1) },
+        },
+      ],
+      controlEffect:{ kind:'fallthrough' },
+      completeness:'exact',
+    });
+    if (instruction.kind === 'return') return createMachineEffectBundle({
+      ...base,
+      operations:[],
+      controlEffect:{ kind:'return' },
+      completeness:'exact',
+    });
+    return null;
+  },
+});
+
+const abiSeenPrototypes = [];
+const integrationAbi = registerABIPlugin(new ABIPlugin({
+  id:'issue-3749-shared-authority-test',
+  semanticVersion:'1',
+  semanticIdentity:'issue-3749-shared-authority-test@1',
+  architectureId:'x86_64',
+  platformPredicate:() => true,
+  classifyArguments(instruction) {
+    abiSeenPrototypes.push(instruction.callPrototype);
+    return {
+      srcs:[],
+      arguments:[],
+      stackArguments:[],
+      stackArgsUnknown:false,
+      stackArgsMayContainPointers:false,
+      completeness:'exact',
+      partial:false,
+      evidence:'issue-3749-test',
+    };
+  },
+  classifyCallReturn:() => null,
+  classifyFunctionReturn:() => null,
+}));
+
+test('issue 3749 integration: CFG and ABI consume one cached callsite prototype through SSA/MemorySSA/decompiler', () => {
+  abiSeenPrototypes.length = 0;
+  const returningPrototype = Object.freeze({ noreturn:false, returnType:'void', args:[] });
+  const fatalPrototype = Object.freeze({ noreturn:true, returnType:'void', args:[] });
+  const globalPrototype = Object.freeze({ noreturn:true, returnType:'void', args:[] });
+  const instructions = decoded([
+    [0, 'call', 0x1000n],
+    [4, 'work'],
+    [8, 'call', 0x2000n],
+    [12, 'work'],
+    [16, 'return'],
+  ]).map((instruction, index) => ({ ...instruction, value:index + 1 }));
+  let resolverCalls = 0;
+  const callsites = instructions.filter((instruction) => instruction.kind === 'call').map((instruction) => ({
+    instruction,
+    address:instruction.address,
+    target:instruction.target,
+  }));
+  const authority = createSemanticCallPrototypeAuthority(callsites, {
+    callPrototype:globalPrototype,
+    callPrototypeFor(target, call) {
+      resolverCalls += 1;
+      if (target === 0x1000n) {
+        assert.equal(call.address, 0n);
+        return returningPrototype;
+      }
+      if (target === 0x2000n) {
+        assert.equal(call.address, 8n);
+        return fatalPrototype;
+      }
+      return null;
+    },
+  });
+
+  const cfgOptions = { callPrototypeAuthority:authority };
+  const blocks = partitionBase(instructions, integrationPlugin, cfgOptions);
+  assert.equal(resolverCalls, 2, 'CFG resolves every callsite exactly once');
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blockAt(blocks, 0).instructions.map(({ decoded:instruction }) => instruction.address), [0n, 4n, 8n]);
+  assert.deepEqual(blockAt(blocks, 0).successors, [], 'fatal second call terminates the live block');
+  assert.deepEqual(blockAt(blocks, 12).instructions.map(({ decoded:instruction }) => instruction.address), [12n, 16n]);
+  const unknowns = semanticControlUnknowns(blocks, integrationPlugin, cfgOptions);
+  assert.equal(resolverCalls, 2, 'control-completeness pass must reuse the cached authority');
+
+  const abiAdapter = semanticAbiAdapter(integrationAbi, {
+    architecture:'x86_64',
+    platform:'linux',
+  }, { callPrototypeAuthority:authority });
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin:integrationPlugin,
+    decoderSemanticVersion:'issue-3749-decoder-1',
+    binaryId:'issue-3749-binary',
+    sliceId:'issue-3749-slice',
+    addressWidthBits:64,
+    mode:'test',
+    entryBlockKey:blocks[0].key,
+    blocks,
+    completeness:unknowns.length ? 'partial' : 'complete',
+    unknowns,
+    abiAdapter,
+  }, { abiAdapter });
+
+  assert.equal(resolverCalls, 2, 'ABI projection must consume the exact cached resolver results');
+  assert.deepEqual(abiSeenPrototypes, [returningPrototype, fatalPrototype]);
+  assert.ok(pipeline.ssa.definitions.length > 0, 'focused route must execute scalar SSA');
+  assert.ok(pipeline.memorySsa.definitions.length > 0, 'focused route must execute MemorySSA');
+  assert.equal(pipeline.cfg.blocks[0].successors.length, 0, 'noreturn topology must survive canonical CFG construction');
+
+  const maximumRow = Math.max(...pipeline.legacyV1.instructions.map((instruction) => instruction.row));
+  const model = {
+    name:'issue_3749_pipeline',
+    instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => ({
+      row,
+      address:BigInt(row * 4),
+      size:4,
+      mn:'nop',
+      ops:'',
+    })),
+    switches:[],
+  };
+  const decompiler = decompileSemantic(model, {
+    ir:pipeline.legacyV1,
+    abiAdapter,
+    decoderSemanticVersion:'issue-3749-decoder-1',
+    binaryId:'issue-3749-binary',
+    sliceId:'issue-3749-slice',
+    addr:0n,
+    name:model.name,
+  });
+  assert.ok(decompiler?.semantic, 'focused route must reach the shared semantic decompiler');
+  assert.equal(resolverCalls, 2, 'decompiler reuse must not re-evaluate call prototype authority');
+});
