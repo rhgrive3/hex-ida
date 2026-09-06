@@ -20,10 +20,19 @@ const DW_FORM_data4 = 0x06;
 
 const ADDRESS = 0x12345678n;
 
-/** `.debug_addr`: DWARF32 header (unit_length, version=5, addr_size, seg_size) + entries. */
-function debugAddrSection(entries, { addressSize = 4, dwarf64 = false } = {}) {
+/** `.debug_addr`: DWARF32/64 contribution header plus address entries. */
+function debugAddrSection(entries, {
+  addressSize = 4,
+  dwarf64 = false,
+  version = 5,
+  segmentSelectorSize = 0,
+  segmentSelector = 0n,
+} = {}) {
   const body = [];
   for (const entry of entries) {
+    for (let i = 0; i < segmentSelectorSize; i += 1) {
+      body.push(Number((segmentSelector >> BigInt(8 * i)) & 0xffn));
+    }
     for (let i = 0; i < addressSize; i += 1) body.push(Number((entry >> BigInt(8 * i)) & 0xffn));
   }
   const length = body.length + 2 + 1 + 1;
@@ -31,8 +40,8 @@ function debugAddrSection(entries, { addressSize = 4, dwarf64 = false } = {}) {
   if (dwarf64) bytes.push(0xff, 0xff, 0xff, 0xff, length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, (length >>> 24) & 0xff, 0, 0, 0, 0);
   else bytes.push(length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, (length >>> 24) & 0xff);
   bytes.push(
-    0x05, 0x00,          // version 5
-    addressSize, 0x00,   // address_size, segment_selector_size
+    version & 0xff, (version >>> 8) & 0xff,
+    addressSize, segmentSelectorSize,
     ...body,
   );
   return Uint8Array.from(bytes);
@@ -235,6 +244,48 @@ for (const [form, encoded] of [
   const subprogram = [...parsed.dies.values()].find((die) => die.tag === DW_TAG_subprogram);
   assert.equal(subprogram.attributes.get(DW_AT_low_pc).value, ADDRESS);
   assert.equal(parsed.complete, true);
+}
+
+function assertAddrxRejected(debugAddr, { addrBase = 8 } = {}) {
+  const parsed = parseDebugInfo({
+    ...buildUnit({ form: 0x29, raw: 0, addrBase }),
+    debug_addr: debugAddr,
+  });
+  assert.equal(parsed.complete, false);
+  assert.ok(parsed.diagnostics.some((d) => /unresolved DW_FORM_addrx/.test(d)));
+  const subprogram = [...parsed.dies.values()].find((die) => die.tag === DW_TAG_subprogram);
+  assert.equal(subprogram.attributes.get(DW_AT_low_pc).value, null);
+  assert.equal(subprogram.complete, false);
+}
+
+// 12. A non-zero segment selector changes the entry stride; unsupported segmented
+// addresses must stay partial instead of publishing segment bytes as a PC.
+{
+  const table = debugAddrSection([0x89abcdefn], {
+    segmentSelectorSize: 2,
+    segmentSelector: 0x1234n,
+  });
+  assertAddrxRejected(table);
+}
+
+// 13. The contribution's address_size is authoritative and must match the CU.
+{
+  assertAddrxRejected(debugAddrSection([ADDRESS], { addressSize: 8 }));
+}
+
+// 14. addrx is a DWARF5 contribution contract; another header version is unknown.
+{
+  assertAddrxRejected(debugAddrSection([ADDRESS], { version: 4 }));
+}
+
+// 15. DW_AT_addr_base must name the first entry area, never contribution header bytes.
+{
+  assertAddrxRejected(debugAddrSection([ADDRESS]), { addrBase: 4 });
+}
+
+// 16. Nor may addr_base point into the middle of the address array/body.
+{
+  assertAddrxRejected(debugAddrSection([ADDRESS, 0x89abcdefn]), { addrBase: 9 });
 }
 
 console.log('issue #6184 DWARF5 addrx resolution: PASS');

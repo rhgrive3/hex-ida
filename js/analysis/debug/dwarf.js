@@ -309,26 +309,75 @@ function strxString(index, unit, sections) {
 }
 
 /**
- * Resolves a DW_FORM_addrx* index to an absolute address through `.debug_addr` (#6184).
+ * Finds the `.debug_addr` contribution whose first address entry is `base`.
  *
- * DWARF5 addrx forms carry a zero-based index into the address array anchored at
- * the unit's `DW_AT_addr_base`. The `.debug_addr` table itself is a section
- * header (unit_length/version/address_size/segment_selector_size) followed by
- * address entries; the header size depends on the DWARF format, so the entry
- * stride must match `unit.offsetSize`, not the address size, or the base offset
- * desyncs. Out-of-range or truncated tables return null so callers fail closed
- * instead of exposing the raw index as an address.
+ * DW_AT_addr_base names the first entry, not the contribution header. Walking
+ * contribution lengths from the section start lets addrx resolution prove that
+ * the base is not a header/interior offset and binds it to the header fields
+ * that define the entry layout (#6184).
  */
+function debugAddrContributionAtBase(table, base) {
+  if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  let offset = 0;
+  while (offset < table.length) {
+    if (offset + 4 > table.length) return null;
+    const initialLength = view.getUint32(offset, true);
+    let length;
+    let lengthFieldSize;
+    if (initialLength === 0xffffffff) {
+      if (offset + 12 > table.length) return null;
+      const wideLength = view.getBigUint64(offset + 4, true);
+      if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      length = Number(wideLength);
+      lengthFieldSize = 12;
+    } else {
+      // 0xfffffff0..0xfffffffe are reserved initial-length encodings.
+      if (initialLength >= 0xfffffff0) return null;
+      length = initialLength;
+      lengthFieldSize = 4;
+    }
+    // version(2) + address_size(1) + segment_selector_size(1)
+    if (length < 4) return null;
+    const bodyStart = offset + lengthFieldSize;
+    const end = bodyStart + length;
+    if (!Number.isSafeInteger(end) || end > table.length) return null;
+    const entriesStart = bodyStart + 4;
+    if (entriesStart > end) return null;
+    const contribution = {
+      entriesStart,
+      end,
+      version: view.getUint16(bodyStart, true),
+      addressSize: view.getUint8(bodyStart + 2),
+      segmentSelectorSize: view.getUint8(bodyStart + 3),
+    };
+    if (base === entriesStart) return contribution;
+    // A base inside this contribution but not at its first entry is not the
+    // authority described by this header (including header/interior offsets).
+    if (base >= offset && base < end) return null;
+    offset = end;
+  }
+  return null;
+}
+
+/** Resolves a DW_FORM_addrx* index through a validated DWARF5 `.debug_addr` contribution. */
 function addrxAddress(index, unit, sections) {
   const table = sections.debug_addr;
-  if (!table) return null;
   const base = unit.addrBase;
-  if (!Number.isSafeInteger(base) || base < 0) return null;
-  const entrySize = unit.addressSize;
+  const contribution = debugAddrContributionAtBase(table, base);
+  if (!contribution
+      || contribution.version !== 5
+      || contribution.addressSize !== unit.addressSize
+      || contribution.addressSize < 1
+      || contribution.addressSize > 8
+      || contribution.segmentSelectorSize !== 0) return null;
   const indexNumber = Number(index);
   if (!Number.isSafeInteger(indexNumber) || indexNumber < 0) return null;
-  const at = base + indexNumber * entrySize;
-  if (at + entrySize > table.length) return null;
+  const entrySize = contribution.addressSize;
+  const relative = indexNumber * entrySize;
+  if (!Number.isSafeInteger(relative)) return null;
+  const at = base + relative;
+  if (!Number.isSafeInteger(at) || at + entrySize > contribution.end) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let value = 0n;
   for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
