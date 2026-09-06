@@ -89,10 +89,45 @@ function hasAccessorProperty(owner, key) {
     && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function');
 }
 
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH = typeof SharedArrayBuffer === 'undefined'
+  ? null
+  : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get ?? null;
+
+function isSharedArrayBuffer(value) {
+  if (!SHARED_ARRAY_BUFFER_BYTE_LENGTH || value == null || typeof value !== 'object') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isSharedMemory(value) {
-  if (typeof SharedArrayBuffer === 'undefined') return false;
-  if (value instanceof SharedArrayBuffer) return true;
-  return ArrayBuffer.isView(value) && value.buffer instanceof SharedArrayBuffer;
+  if (isSharedArrayBuffer(value)) return true;
+  if (!ArrayBuffer.isView(value)) return false;
+  return isSharedArrayBuffer(value.buffer);
+}
+
+function scanMapEntries(value, depth, seen) {
+  let entries;
+  try { entries = Map.prototype.entries.call(value); }
+  catch { return null; }
+  for (const [key, item] of entries) {
+    if (!scanForSnapshotUnsafeValues(key, depth + 1, seen)) return false;
+    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
+  }
+  return true;
+}
+
+function scanSetValues(value, depth, seen) {
+  let values;
+  try { values = Set.prototype.values.call(value); }
+  catch { return null; }
+  for (const item of values) {
+    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
+  }
+  return true;
 }
 
 function scanForSnapshotUnsafeValues(value, depth, seen) {
@@ -101,6 +136,10 @@ function scanForSnapshotUnsafeValues(value, depth, seen) {
   if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return false;
   if (seen.has(value)) return true;
   seen.add(value);
+  const mapSafe = scanMapEntries(value, depth, seen);
+  if (mapSafe !== null) return mapSafe;
+  const setSafe = scanSetValues(value, depth, seen);
+  if (setSafe !== null) return setSafe;
   if (Object.getOwnPropertySymbols(value).length > 0) return false;
   for (const key of Object.keys(value)) {
     if (hasAccessorProperty(value, key)) return false;
