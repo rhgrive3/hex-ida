@@ -172,6 +172,18 @@ self.onmessage = (event) => {
     return;
   }
 
+  // Generation safety: a bare id cannot distinguish two live generations of
+  // the same id (active A + queued B). Cancelling by id would then hit the
+  // wrong generation, so live id reuse is rejected fail-closed at entry.
+  // Sequential reuse after settle/cancel remains valid.
+  if (msg.id != null
+      && (activeRequestId === msg.id
+        || queue.some((pending) => pending.id === msg.id)
+        || cancelledIds.has(msg.id))) {
+    self.postMessage({ id: msg.id, ok: false, error: `duplicate live request id: ${msg.id}` });
+    return;
+  }
+
   const pVal = priorityValueOf(msg.priority);
   let insertIdx = queue.length;
   for (let i = 0; i < queue.length; i++) {

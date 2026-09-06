@@ -129,4 +129,43 @@ async function waitFor(predicate, message) {
   assert.equal(worker.posts[0].ok, true);
 }
 
+{
+  // Generation safety: A(id=7) active while Capstone init is deferred, then
+  // B(id=7) arrives. The bare id cannot address a generation, so B must be
+  // rejected at entry instead of queueing behind A where a cancel for one
+  // generation would hit the other.
+  const worker = createWorkerHarness();
+
+  worker.send(request(7)); // A becomes active while module init is deferred
+  worker.send(request(7)); // B reuses the live id and must be rejected
+  await new Promise((resolve) => setImmediate(resolve));
+  await waitFor(
+    () => worker.posts.length === 1,
+    'live id reuse must be rejected fail-closed at entry',
+  );
+  assert.equal(worker.posts[0].id, 7);
+  assert.equal(worker.posts[0].ok, false);
+  assert.match(worker.posts[0].error || '', /duplicate live request id/);
+
+  // Cancelling id=7 now addresses only the single live generation (A):
+  // A is cooperatively cancelled and B never executes afterwards.
+  worker.send({ t:'cancel', id:7 });
+  worker.resolveModule();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    worker.posts.filter((message) => message.ok === true),
+    [],
+    'wrong-generation execution must not occur after entry rejection',
+  );
+
+  // Sequential reuse after everything settled stays valid.
+  worker.send(request(7));
+  await waitFor(
+    () => worker.posts.some((message) => message.ok === true && message.id === 7),
+    'id reuse after settle must remain valid',
+  );
+}
+
 console.log('issue-4504 platform capstone cancellation queue: PASS');
