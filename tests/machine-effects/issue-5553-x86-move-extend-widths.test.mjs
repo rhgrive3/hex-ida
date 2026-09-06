@@ -82,11 +82,13 @@ for (const [family, destination, source, fromBits, toBits] of [
   ['movzx', 'ax', 'bl', 8, 16],
   ['movzx', 'eax', 'bl', 8, 32],
   ['movzx', 'rax', 'bl', 8, 64],
+  ['movzx', 'ax', 'bx', 16, 16],
   ['movzx', 'eax', 'bx', 16, 32],
   ['movzx', 'rax', 'bx', 16, 64],
   ['movsx', 'ax', 'bl', 8, 16],
   ['movsx', 'eax', 'bl', 8, 32],
   ['movsx', 'rax', 'bl', 8, 64],
+  ['movsx', 'ax', 'bx', 16, 16],
   ['movsx', 'eax', 'bx', 16, 32],
   ['movsx', 'rax', 'bx', 16, 64],
   ['movsxd', 'ax', 'bx', 16, 16],
@@ -98,8 +100,6 @@ for (const [family, destination, source, fromBits, toBits] of [
 
 // Invalid architectural width pairs from #5553 fail closed.
 for (const [family, destination, source] of [
-  ['movzx', 'ax', 'bx'],
-  ['movsx', 'ax', 'bx'],
   ['movsxd', 'ax', 'ebx'],
   ['movsxd', 'rax', 'bx'],
   ['movsxd', 'eax', 'bx'],
