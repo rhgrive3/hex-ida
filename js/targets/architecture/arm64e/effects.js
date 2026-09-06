@@ -88,8 +88,8 @@ const AUTH_EXCEPTION_RETURN = Object.freeze({
 });
 
 const AUTH_LOAD = Object.freeze({
-  ldraa: { key: 'ia' },
-  ldrab: { key: 'ib' },
+  ldraa: { key: 'da' },
+  ldrab: { key: 'db' },
 });
 
 // This is the production pointer-authentication family registry.  Keep the
