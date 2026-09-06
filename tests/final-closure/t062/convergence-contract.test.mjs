@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  authenticateStageAConvergenceHistory,
   canonicalStageAConvergenceDigest,
   validateStageAConvergence,
 } from '../../../tools/validation/final-closure/preflight.mjs';
@@ -25,6 +26,7 @@ const validate = (candidate = contract, options = {}) => {
     ownershipText,
     taskIds: [...routeTaskIds],
     requireActive: options.requireActive ?? false,
+    root: options.root ?? null,
     errors,
   });
   return { result, errors };
@@ -45,6 +47,11 @@ const assertError = (candidate, code, message, options = {}) => {
 
 const draft = validate();
 assert.equal(draft.result.valid, true, draft.errors.join('\n'));
+assert.equal(
+  draft.result.historyAuthentication.authenticated,
+  false,
+  'structural validation without a Git root must remain visibly unauthenticated',
+);
 assert.equal(draft.result.active, false);
 assert.equal(draft.result.candidateGateRegistered, false);
 assert.deepEqual(draft.result.ownership.tasks.T062, contract.ownershipExtension.tasks.T062);
@@ -96,5 +103,30 @@ assertError(badExistingOwner, 'stage-a-convergence-owner-row-invalid', 'retained
 const noActivation = validate(contract, { requireActive: true });
 assert.equal(noActivation.result.valid, false);
 assert.ok(noActivation.errors.includes('stage-a-convergence-candidate-gates-unregistered'));
+
+const authenticated = validate(contract, { root: ROOT });
+assert.equal(authenticated.result.valid, true, authenticated.errors.join('\n'));
+assert.equal(authenticated.result.historyAuthentication.authenticated, true);
+for (const mutate of [
+  (candidate) => { candidate.predecessor.headSha = '0'.repeat(40); },
+  (candidate) => { candidate.predecessor.treeSha = '0'.repeat(40); },
+  (candidate) => { candidate.predecessor.integrationInventorySha256 = '0'.repeat(64); },
+  (candidate) => { candidate.predecessor.closureLedgerSha256 = '0'.repeat(64); },
+  (candidate) => { candidate.historicalAuthentication.blobs.integrationInventory.sha256 = '0'.repeat(64); },
+  (candidate) => { candidate.historicalAuthentication.blobs.closureLedger.gitBlobSha1 = '0'.repeat(40); },
+  (candidate) => { candidate.predecessor.acceptedCheckpoint.acceptedTaskId = 'T056'; },
+]) {
+  const historicalMutation = reidentity(structuredClone(contract));
+  mutate(historicalMutation);
+  reidentity(historicalMutation);
+  const errors = [];
+  const result = authenticateStageAConvergenceHistory({
+    root: ROOT,
+    stageAConvergence: historicalMutation,
+    errors,
+  });
+  assert.equal(result.authenticated, false);
+  assert.ok(errors.length > 0, 'historical mutation must be rejected');
+}
 
 console.log('T062 convergence validator, append-only extension, and fail-closed admission: PASS');

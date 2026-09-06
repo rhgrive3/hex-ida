@@ -7,7 +7,7 @@ promote a task, publish an integration receipt, or admit a production component.
 The draft is anchored to exact commit
 `f8b8f1bc27e743c2b7f09d7407bd5242c5df357b` and tree
 `4a07bee6258469927be7b6caae191a207037cf0a`. The original task text is retained
-as an exact 100645-code-unit/101465-byte prefix with SHA-256
+as an exact 100645-code-unit/101048-byte prefix with SHA-256
 `c6340e1dfecd18a81713512e96eccb17a2a8c5368c938b2c3339d4ba44e1b383`; the
 full successor task text is bound in `stage-a-convergence.json`. The frozen
 foundation ownership digest remains
@@ -64,6 +64,17 @@ false`, and rejects admission with
 state must provide a separately specified `actual-product-behavior-v1` oracle
 with independent verification and negative behavioral cases. No producer
 behavior or completion PASS is claimed here.
+
+The current oracle preparation is the independently reviewed but explicitly
+unregistered bundle
+`/mnt/workspace/hex-stage-a-evidence/producer-behavior-oracle-independent-review-v2.json`
+(SHA-256
+`845cba05797d90954d2d5b4d2964aa94b7ba0df8ca0300d2ac7f82833f1ccb2b`). Its
+specification and runner are content-bound in the contract, but the review
+records missing producer authority and an independent x86 value oracle. The
+bundle therefore cannot register or activate T063/T064. In particular, the
+Phase 8 corpus adapter's direct compatibility call remains a required caller
+route to repair before semantic evidence can be admitted.
 
 T064 is never a prerequisite for T013. T049 receives no new static dependency.
 T018 retains its historical dependency text; its machine closure predicate

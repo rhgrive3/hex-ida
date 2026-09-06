@@ -69,6 +69,44 @@ assert.equal(contract.taskClasses.T063.stageB, false);
 assert.equal(contract.taskClasses.T063.requiresT048, false);
 assert.deepEqual(contract.candidateGates.tasks, {}, 'T063 has no semantic gate until an actual oracle is specified');
 
+const registeredGateRows = (taskId) => ({
+  owned: [{ id: `${taskId.toLowerCase()}-owned`, argv: ['node', 'tests/phase8/ordinary-oracle.test.mjs'] }],
+  rolling: [{ id: `${taskId.toLowerCase()}-rolling`, argv: ['node', 'tests/phase8/ordinary-oracle.test.mjs'] }],
+  shadow: [{
+    id: `${taskId.toLowerCase()}-shadow`,
+    argv: ['node', 'tests/phase8/ordinary-oracle.test.mjs'],
+    contract: {},
+    contractSha256: '0'.repeat(64),
+  }],
+});
+const registered = structuredClone(contract);
+registered.candidateGates = {
+  status: 'REGISTERED',
+  requiredTaskIds: ['T063', 'T064'],
+  tasks: {
+    T063: registeredGateRows('T063'),
+    T064: registeredGateRows('T064'),
+  },
+  reason: 'independently reviewed product oracle is bound by a successor receipt',
+  oracleSpecification: {},
+};
+registered.ownershipExtension.candidateGates = structuredClone(registered.candidateGates);
+const registeredEffective = materializeStageAConvergenceOwnership({
+  ownership: baseOwnership,
+  stageAConvergence: registered,
+  errors: [],
+});
+assert.deepEqual(
+  registeredEffective.candidateGates.tasks.T063,
+  registered.candidateGates.tasks.T063,
+  'registered extension gates must be visible to the effective execution bundle',
+);
+assert.deepEqual(
+  registeredEffective.candidateGates.tasks.T064,
+  registered.candidateGates.tasks.T064,
+  'registered T064 gates must use the same effective bundle as T063',
+);
+
 const wrongClass = structuredClone(contract);
 wrongClass.taskClasses.T063.stageB = true;
 reidentity(wrongClass);

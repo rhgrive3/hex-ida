@@ -227,12 +227,99 @@
     },
     "candidateGates": {
       "status": "UNREGISTERED",
+      "requiredTaskIds": [
+        "T063",
+        "T064"
+      ],
       "tasks": {},
       "reason": "No independently specified actual producer behavioral oracle is admitted in this draft; shape-only governance tests cannot certify T063 or T064."
     }
   },
   "identity": {
     "algorithm": "sha256-canonical-json-without-identity-v1",
-    "sha256": "db23d062eba9abc1775cc746d48fd75b1741aebefb9dc127c1f7fd36ba1d2722"
+    "sha256": "ee33cbcbbe15cba1eb90679c2dcc08f503e19e021b19dcf75bb1dcaa95e1faa7"
+  },
+  "historicalAuthentication": {
+    "schemaVersion": "hex-final-closure-stage-a-convergence-history-auth/v1",
+    "predecessor": {
+      "headSha": "f8b8f1bc27e743c2b7f09d7407bd5242c5df357b",
+      "treeSha": "4a07bee6258469927be7b6caae191a207037cf0a"
+    },
+    "blobs": {
+      "tasks": {
+        "path": "specs/005-analysis-final-closure/tasks.md",
+        "gitBlobSha1": "d183d3d0471a2e7d260b25474a9ec51ef93188f5",
+        "sha256": "c6340e1dfecd18a81713512e96eccb17a2a8c5368c938b2c3339d4ba44e1b383",
+        "byteLength": 101048
+      },
+      "ownership": {
+        "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "gitBlobSha1": "913c3107fb896d316d82a02a2f3be7a24f7416cd",
+        "sha256": "e1e9b14bbc674e27b146d5e35adc2a52854140b0482c6c1014b700b0801b9932",
+        "byteLength": 52016
+      },
+      "integrationInventory": {
+        "path": "specs/005-analysis-final-closure/contracts/integration-inventory.json",
+        "gitBlobSha1": "20468862f7f268e6b8e678790f965ffa159d82d0",
+        "sha256": "6f2e71d1bafcc6db3b01af9dd36d0b5e0482fba6f34a098c4c0954242c6505f5",
+        "byteLength": 71567
+      },
+      "closureLedger": {
+        "path": "specs/005-analysis-final-closure/contracts/closure-ledger.md",
+        "gitBlobSha1": "14f36f70218968cf890c89d4f8e6c35d0150e574",
+        "sha256": "b17ac95c6dcdd5f55d99d9eea0174f41c721f692e11294bdae4601b17b16603c",
+        "byteLength": 19769
+      }
+    },
+    "checkpointReceipt": {
+      "path": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+      "gitBlobSha1": "f571e643d2feb8feadfbc7aa5f360ad7e3985a0e",
+      "sha256": "c1f8227287e2ad84c9a5090925e922371247886a7a04146b327e13f22b27d277",
+      "byteLength": 129270,
+      "sequence": 4,
+      "state": "CHECKPOINT_GREEN",
+      "acceptedTaskId": "T057",
+      "evidencePath": "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md"
+    }
+  },
+  "effectiveExecution": {
+    "schemaVersion": "hex-final-closure-stage-a-convergence-effective-bundle/v1",
+    "baseRegistryPath": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+    "extensionPath": "specs/005-analysis-final-closure/contracts/stage-a-convergence.json",
+    "ownershipSource": "base-registry-plus-append-only-stage-contract",
+    "candidateGateSource": "effective-bundle-only",
+    "consumers": [
+      "validatePreflightContracts",
+      "validateComponentLane",
+      "runComponentGates",
+      "verifyCheckpointOperationalEvidence",
+      "verifyCheckpointProductProof",
+      "verifyCheckpointRuntimeEvidence"
+    ],
+    "inactivePolicy": "UNREGISTERED_EXTENSION_GATES_NEVER_EXECUTE",
+    "registeredPolicy": "REGISTERED_EXTENSION_GATES_SHARED_BY_ALL_CANONICAL_CONSUMERS"
+  },
+  "oraclePreparation": {
+    "schemaVersion": "hex-final-closure-stage-a-convergence-oracle-preparation/v1",
+    "status": "UNREGISTERED",
+    "independentReviewPath": "/mnt/workspace/hex-stage-a-evidence/producer-behavior-oracle-independent-review-v2.json",
+    "independentReviewSha256": "845cba05797d90954d2d5b4d2964aa94b7ba0df8ca0300d2ac7f82833f1ccb2b",
+    "specPath": "/mnt/workspace/hex-stage-a-producer-oracle-review/tools/validation/producer-oracle-review/producer-behavior-oracle-spec.json",
+    "specSha256": "b639b602f350ca86eacedaa543fd27b47f3fda4c377a9cfa890ad1496b0b13ff",
+    "runnerPath": "/mnt/workspace/hex-stage-a-producer-oracle-review/tools/validation/producer-oracle-review/producer-behavior-oracle.mjs",
+    "runnerSha256": "03c1a20609ac056f4899af3fa5696149d0bafa288ecf028d398da7c4ba0b5ec6",
+    "semanticPass": false,
+    "acceptance": false,
+    "independentOwner": "independent-producer-oracle-review/x86-26d",
+    "independentOf": [
+      "T063",
+      "T064"
+    ],
+    "blockedFindings": [
+      "PO-001",
+      "PO-002",
+      "PO-003",
+      "PO-004"
+    ]
   }
 }
