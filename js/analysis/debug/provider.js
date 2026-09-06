@@ -162,6 +162,7 @@ export function isCanonicalDebugRecord(record) {
     if (canonical.name !== (record.name ?? null)) return false;
     if (canonical.address !== (record.address ?? null)) return false;
     if (canonical.sizeBytes !== (record.sizeBytes ?? null)) return false;
+    if (canonical.descriptor !== record.descriptor) return false;
     if (canonical.providerId !== record.providerId) return false;
     if (canonical.providerVersion !== record.providerVersion) return false;
     if (canonical.buildIdentity !== (record.buildIdentity ?? null)) return false;
