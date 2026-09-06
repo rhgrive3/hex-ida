@@ -3,19 +3,11 @@ import assert from 'node:assert/strict';
 import { extraApiInfo } from '../js/api-cross-binary-families.js';
 import { apiInfo } from '../js/blocks.js';
 
-test('issue #6189: Accelerate vImage functions are classified as memory convert, not UI', () => {
-  const vimageNames = [
-    'vImageScale_ARGB8888',
-    '_vImageScale_ARGB8888',
-    'vImageRotate90_Planar8',
-    'vImageConvolve_ARGB8888',
-    'vImageHistogramCalculation_ARGB8888',
-  ];
-
-  for (const name of vimageNames) {
+test('issue #6189: known vImage scale transforms are memory-convert, not UI', () => {
+  for (const name of ['vImageScale_ARGB8888', '_vImageScale_ARGB8888']) {
     const extra = extraApiInfo(name);
     assert.ok(extra, `${name} must be classified`);
-    assert.equal(extra.id, 'accelerate_vimage');
+    assert.equal(extra.id, 'accelerate_vimage_scale');
     assert.equal(extra.cat, 'memory');
     assert.equal(extra.effect, 'convert');
     assert.notEqual(extra.cat, 'ui');
@@ -23,11 +15,34 @@ test('issue #6189: Accelerate vImage functions are classified as memory convert,
 
     const info = apiInfo(name);
     assert.ok(info, `${name} must resolve in apiInfo`);
-    assert.equal(info.id, 'accelerate_vimage');
+    assert.equal(info.id, 'accelerate_vimage_scale');
     assert.equal(info.cat, 'memory');
     assert.equal(info.effect, 'convert');
-    assert.notEqual(info.cat, 'ui');
-    assert.notEqual(info.effect, 'ui');
+  }
+});
+
+test('issue #6189: broad vImage namespace stays fail-closed instead of inventing one effect', () => {
+  const names = [
+    'vImageRotate90_Planar8',
+    'vImageConvolve_ARGB8888',
+    'vImageHistogramCalculation_ARGB8888',
+    'vImageBuffer_Init',
+  ];
+
+  for (const name of names) {
+    const extra = extraApiInfo(name);
+    assert.ok(extra, `${name} must be classified`);
+    assert.equal(extra.id, 'accelerate_vimage');
+    assert.equal(extra.cat, 'memory');
+    assert.equal(extra.effect, null, `${name} broad fallback must not claim a uniform transform`);
+    assert.notEqual(extra.cat, 'ui');
+    assert.notEqual(extra.effect, 'ui');
+
+    const info = apiInfo(name);
+    assert.ok(info, `${name} must resolve in apiInfo`);
+    assert.equal(info.id, 'accelerate_vimage');
+    assert.equal(info.cat, 'memory');
+    assert.equal(info.effect, null);
   }
 });
 
