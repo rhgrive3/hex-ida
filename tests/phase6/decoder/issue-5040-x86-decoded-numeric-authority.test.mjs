@@ -73,6 +73,9 @@ test('strict bigint authority preserves the established omitted displacement def
   assert.equal(decoded.detail.operands[0].memory.displacement, 0n);
   assert.equal(decoded.detail.operands[0].memory.scale, 1);
   assert.equal(decoded.detail.operands[0].memory.addressSizeBits, 64);
+
+  const aliased = createX86DecodedInstruction(memoryInstruction({ displacement:undefined, disp:8n }));
+  assert.equal(aliased.detail.operands[0].memory.displacement, 8n);
 });
 
 test('top-level safe-integer fields reject coercible boolean, array, and string values', () => {
@@ -128,7 +131,7 @@ test('immediate numeric fields reject non-canonical representations', () => {
   }
 });
 
-test('memory numeric fields reject array, boolean, string, and Number-to-BigInt coercion', () => {
+test('memory numeric fields reject array, boolean, string, null, and Number-to-BigInt coercion', () => {
   for (const value of [[2], '2', true]) {
     assert.throws(
       () => createX86DecodedInstruction(memoryInstruction({ scale:value })),
@@ -136,7 +139,7 @@ test('memory numeric fields reject array, boolean, string, and Number-to-BigInt 
     );
   }
 
-  for (const value of [true, ['16'], '16', 16]) {
+  for (const value of [null, true, ['16'], '16', 16]) {
     assert.throws(
       () => createX86DecodedInstruction(memoryInstruction({ displacement:value })),
       /x86-decoded-instruction-invalid-displacement/,
@@ -167,4 +170,5 @@ test('malformed numeric authority never reports a structured exact instruction',
   assert.equal(x86DecodedInstructionIsStructured(baseInstruction({ address:true })), false);
   assert.equal(x86DecodedInstructionIsStructured(immediateInstruction({ value:['16'] })), false);
   assert.equal(x86DecodedInstructionIsStructured(memoryInstruction({ displacement:true })), false);
+  assert.equal(x86DecodedInstructionIsStructured(memoryInstruction({ displacement:null })), false);
 });
