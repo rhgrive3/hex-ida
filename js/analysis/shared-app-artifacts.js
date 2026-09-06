@@ -204,6 +204,21 @@ function statsFor(program, counts, scannedRefs, metadata = {}) {
     producerBudgetSupplied:metadata.budget != null,
   });
 }
+function canonicalStringResultRows(result) {
+  try {
+    const rows = result?.results;
+    return Array.isArray(rows) ? [...rows] : null;
+  } catch { return null; }
+}
+function canonicalStringResultRow(item) {
+  try {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+    const addr = item.addr;
+    const text = item.text;
+    if (typeof addr !== 'bigint' || addr < 0n || typeof text !== 'string') return null;
+    return { addr, text };
+  } catch { return null; }
+}
 
 function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
@@ -228,7 +243,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (bytes > 0) use.push({ region:current, bytes });
     }
     const rows = [];
-    let scannedBytes = 0, backendIncomplete = false;
+    let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
     for (let index = 0; index < use.length; index++) {
       throwIfAborted(controller.signal);
       if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -246,11 +261,25 @@ function createStringEntry(app, key, initialOptions = {}) {
       const result = await requestWithSignal(request, controller.signal);
       scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) { backendIncomplete = true; if (!skipped.includes(region)) skipped.push(region); }
-      for (const item of result?.results || []) {
-        if (!budget.accept(item.text)) break;
-        rows.push({ addr:item.addr, text:item.text, region });
+      const resultRows = canonicalStringResultRows(result);
+      if (!resultRows) {
+        backendIncomplete = true;
+        backendMalformed = true;
+        if (!skipped.includes(region)) skipped.push(region);
+      } else {
+        for (const item of resultRows) {
+          const row = canonicalStringResultRow(item);
+          if (!row) {
+            backendIncomplete = true;
+            backendMalformed = true;
+            if (!skipped.includes(region)) skipped.push(region);
+            continue;
+          }
+          if (!budget.accept(row.text)) break;
+          rows.push({ addr:row.addr, text:row.text, region });
+        }
       }
-      if (result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
+      if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
     }
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -258,7 +287,7 @@ function createStringEntry(app, key, initialOptions = {}) {
     Object.assign(rows, {
       complete:!truncated,
       truncated,
-      truncationReason:budget.truncationReason || (skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
+      truncationReason:budget.truncationReason || (backendMalformed ? 'backend-malformed' : skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
       scannedBytes,
       skippedRegions:[...new Set(skipped.map((region) => region.id))],
       unscannedRegions:[...new Set(skipped.map((region) => region.id))],
