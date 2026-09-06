@@ -48,6 +48,78 @@ function delegatedContext(reader, image, sharedBudget) {
   return exactCStringAccounting(reader, budget);
 }
 
+function coffSectionNumberGuard(reader, image, budget, pointer, count) {
+  const tableBytes = count * 18;
+  const tableEnd = Number.isSafeInteger(pointer) && Number.isSafeInteger(tableBytes)
+    ? pointer + tableBytes
+    : null;
+  if (!Number.isSafeInteger(tableEnd) || pointer < 0 || tableBytes < 0) {
+    return { reader, image };
+  }
+
+  const sectionIndexes = new Set(
+    (Array.isArray(image.sections) ? image.sections : [])
+      .map((section) => section?.index)
+      .filter((index) => Number.isInteger(index) && index > 0),
+  );
+  const invalidSectionNumber = (sectionNumber) => (
+    (sectionNumber > 0 && !sectionIndexes.has(sectionNumber))
+    || sectionNumber < -2
+  );
+
+  const validatingReader = new Proxy(reader, {
+    get(target, property) {
+      if (property === 'i16') {
+        return (offset) => {
+          const sectionNumber = target.i16(offset);
+          const relative = offset - pointer;
+          if (
+            Number.isSafeInteger(relative)
+            && relative >= 12
+            && offset < tableEnd
+            && relative % 18 === 12
+            && invalidSectionNumber(sectionNumber)
+          ) {
+            budget.partial(
+              'coff:invalid-section-number',
+              `Ignored PE COFF symbol with invalid SectionNumber ${sectionNumber}`,
+            );
+          }
+          return sectionNumber;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const validatingSymbols = new Proxy(image.symbols, {
+    get(target, property) {
+      if (property === 'push') {
+        return (...entries) => {
+          const accepted = entries.filter((entry) => !(
+            entry?.source === 'COFF'
+            && invalidSectionNumber(entry.sectionIndex)
+          ));
+          return accepted.length ? target.push(...accepted) : target.length;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const validatingImage = new Proxy(image, {
+    get(target, property) {
+      if (property === 'symbols') return validatingSymbols;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  return { reader: validatingReader, image: validatingImage };
+}
+
 export function parseImports(reader, directory, image, sharedBudget = null) {
   if (!directory || !directory.rva || !directory.size) {
     return parseImportsCore(reader, directory, image, sharedBudget);
@@ -74,7 +146,8 @@ export function parseCoffSymbols(reader, pointer, count, image, sharedBudget = n
       );
     }
   }
-  return parseCoffSymbolsCore(context.reader, pointer, count, image, context.budget);
+  const guarded = coffSectionNumberGuard(context.reader, image, context.budget, pointer, count);
+  return parseCoffSymbolsCore(guarded.reader, pointer, count, guarded.image, context.budget);
 }
 
 export function parseDelayImports(reader, directory, image, sharedBudget = null) {
