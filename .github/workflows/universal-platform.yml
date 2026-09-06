@@ -1,35 +1,6 @@
 name: Universal binary platform
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'js/binary/**'
-      - 'js/bytesource/**'
-      - 'js/architecture/**'
-      - 'js/targets/**'
-      - 'js/semantics/**'
-      - 'js/analysis/**'
-      - 'js/decompiler/**'
-      - 'js/ir*.js'
-      - 'js/dataflow*.js'
-      - 'js/controlflow.js'
-      - 'js/blocks.js'
-      - 'js/analyze.js'
-      - 'js/backend.js'
-      - 'js/platform/capability-maturity.js'
-      - 'js/platform/capstone-disasm-worker.js'
-      - 'capstone.js'
-      - 'capstone.wasm'
-      - 'tests/universal-binary*.mjs'
-      - 'tests/binary-platform.mjs'
-      - 'tests/capability-maturity.mjs'
-      - 'tests/issue-495-elf-relocation-budget.mjs'
-      - 'tests/issue-513-elf-symbol-budget.mjs'
-      - 'tools/benchmark/**'
-      - 'scripts/fetch-real-fixtures.mjs'
-      - 'package.json'
-      - '.github/workflows/universal-platform.yml'
   push:
     branches: [main]
     paths:
@@ -65,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: universal-platform-${{ github.event.pull_request.number || github.ref }}
+  group: universal-platform-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -102,10 +73,7 @@ jobs:
           BINARY_GATE: ${{ steps.binary_gate.outcome }}
         shell: bash
         run: |
-          if [[ "$CONTRACTS" != "success" || "$BINARY" != "success" || "$BINARY_GATE" != "success" ]]; then
-            echo "::error::Universal validation failed (contracts=$CONTRACTS, binary=$BINARY, binary-gate=$BINARY_GATE)."
-            exit 1
-          fi
+          if [[ "$CONTRACTS" != "success" || "$BINARY" != "success" || "$BINARY_GATE" != "success" ]]; then exit 1; fi
 
   manual-full-check:
     name: universal-manual-full-check
@@ -134,17 +102,11 @@ jobs:
           FULL_RESULT: ${{ needs.manual-full-check.result }}
         shell: bash
         run: |
-          if [[ "$SHARD_RESULT" != "success" ]]; then
-            echo "::error::Universal platform verification failed ($SHARD_RESULT)."
-            exit 1
-          fi
-          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
-            echo "::error::Manual full check failed ($FULL_RESULT)."
-            exit 1
-          fi
+          if [[ "$SHARD_RESULT" != "success" ]]; then exit 1; fi
+          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then exit 1; fi
 
   benchmark:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20

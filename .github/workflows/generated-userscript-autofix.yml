@@ -4,19 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
+      - 'js/userscript/**'
       - 'scripts/build-userscript.mjs'
       - 'scripts/userscript-release-version.mjs'
       - 'scripts/sync-generated-userscript.mjs'
       - 'tools/validation/generated-output-policy.mjs'
       - 'tests/dev-agent/sync-generated-userscript.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
+      - 'userscript/**'
       - '.github/workflows/generated-sync.yml'
       - '.github/workflows/generated-userscript-autofix.yml'
       - '.github/workflows/generated-userscript-main-sync.yml'
@@ -31,8 +25,13 @@ concurrency:
 jobs:
   autofix:
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref != github.event.pull_request.base.ref
+      github.event.pull_request.head.ref != github.event.pull_request.base.ref &&
+      (
+        github.event.pull_request.base.ref == 'release' ||
+        startsWith(github.event.pull_request.head.ref, 'dev-agent-hardening/integration/')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

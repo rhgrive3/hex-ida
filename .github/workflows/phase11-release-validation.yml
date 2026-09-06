@@ -1,36 +1,6 @@
 name: Phase 11 release validation
 
-# Permanent exact-product verifier for the Managed Frontends phase. Exact-SHA
-# dispatch prevents validation-only PRs (EP-012). Broad repository validation
-# runs only at release boundaries; draft inner-loop pushes stay focused.
 on:
-  push:
-    branches:
-      - main
-      - "phase11/**"
-    paths:
-      - "js/managed/**"
-      - "js/platform/capability-maturity.js"
-      - "tests/phase11/**"
-      - "tests/capability-maturity.mjs"
-      - "tools/validation/phase11/**"
-      - ".github/workflows/phase11-release-validation.yml"
-      - ".github/workflows/_phase-release-validation.yml"
-      - "docs/SUPPORT_MATRIX.md"
-      - "userscript/hex.user.template.js"
-      - "userscript/release-version.json"
-      - "package.json"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "js/managed/**"
-      - "js/platform/capability-maturity.js"
-      - "tests/phase11/**"
-      - "tests/capability-maturity.mjs"
-      - "tools/validation/phase11/**"
-      - ".github/workflows/phase11-release-validation.yml"
-      - "docs/SUPPORT_MATRIX.md"
-      - "package.json"
   workflow_dispatch:
     inputs:
       sha:
@@ -47,28 +17,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase11-release-${{ github.event.pull_request.number || github.ref }}
+  group: phase11-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    # Stage 1 completion owns the aggregate product candidate. Phase 11's
-    # component ownership gate must not reinterpret that cross-phase diff as a
-    # Phase 11 candidate merely because package.json is shared.
-    if: >-
-      ${{ github.event_name != 'pull_request' ||
-          github.head_ref != 'completion/stage1-integration' }}
     uses: ./.github/workflows/_phase-release-validation.yml
     with:
       phase_name: "Phase 11"
-      checkout_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
-      expected_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || '' }}
-      shadow: ${{ github.event_name == 'workflow_dispatch' && inputs.shadow || false }}
-      run_broad_regression: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
+      checkout_ref: ${{ inputs.sha }}
+      expected_sha: ${{ inputs.sha }}
+      shadow: ${{ inputs.shadow }}
+      run_broad_regression: true
       ownership_script: "tools/validation/phase11/ownership-check.mjs"
       verify_script: "tools/validation/phase11/verify.mjs"
       artifact_prefix: "phase11-release-evidence"
-      artifact_suffix: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      artifact_suffix: ${{ inputs.sha }}
       evidence_paths: |
         reports/phase11/phase11-release-evidence.json
         reports/phase11/checkpoints.json

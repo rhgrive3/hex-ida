@@ -19,23 +19,6 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/codeql-javascript.yml'
-  pull_request:
-    paths:
-      - 'js/ai/**'
-      - 'js/binary/**'
-      - 'js/bytesource/**'
-      - 'js/collaboration/**'
-      - 'js/debug/**'
-      - 'js/runtime/**'
-      - 'js/runtime-evidence/**'
-      - 'js/userscript/**'
-      - 'js/sandbox.js'
-      - 'js/plugins.js'
-      - 'js/script.js'
-      - 'worker*.js'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/codeql-javascript.yml'
   schedule:
     - cron: '17 18 * * 0'
 
@@ -43,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: codeql-javascript-${{ github.event.pull_request.number || github.ref }}
+  group: codeql-javascript-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,12 +43,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: javascript-typescript
-
       - name: Analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:

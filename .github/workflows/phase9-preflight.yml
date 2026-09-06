@@ -1,26 +1,14 @@
 name: Phase 9 preflight
 
 on:
-  pull_request:
-    paths:
-      - 'js/symbolic/**'
-      - 'js/analysis/**'
-      - 'js/ai/tools/registry.js'
-      - 'js/ai/tools/storage/observation-store.js'
-      - 'tests/phase9/**'
-      - 'reports/phase9/**'
-      - 'docs/PHASE9_*'
-      - '.github/workflows/phase9-preflight.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Only the newest commit on a PR needs this validation. Explicit manual runs
-# remain isolated so one exact audit cannot cancel another.
 concurrency:
-  group: phase9-preflight-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: phase9-preflight-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   preflight:

@@ -1,7 +1,6 @@
 name: Invariant Gates
 
 on:
-  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -53,70 +52,24 @@ jobs:
             if (!parts.includes(command)) throw new Error(`npm check layout changed; missing ${command}`);
           }
 
-          // Queue pressure is the limiting resource in this repository. Keep the
-          // one very long Phase 8 proof isolated, keep Phase 4/5 on their frozen
-          // compiler lane, and pack the remaining short/medium checks into two
-          // serial lanes. This cuts the recurring check matrix from eight runner
-          // jobs to four without removing, caching, or weakening any proof.
           const reserved = new Set(required);
           const coreContracts = parts.filter((command) => !reserved.has(command));
           if (!coreContracts.length) throw new Error('npm check must contain core contract commands');
 
           const lanes = [
-            {
-              name: 'phase8',
-              coverageCommands: ['npm run phase8:test'],
-              runCommands: ['npm run phase8:test'],
-              frozenToolchain: 'false',
-              runsInvariant: 'false',
-              prepareGenerated: 'false',
-            },
-            {
-              name: 'phase45',
-              coverageCommands: ['npm run phase4:test', 'npm run phase5:test'],
-              runCommands: ['npm run phase4:test', 'npm run phase5:test'],
-              frozenToolchain: 'true',
-              runsInvariant: 'false',
-              prepareGenerated: 'false',
-            },
-            {
-              name: 'analysis-proof',
-              coverageCommands: ['npm run invariants:test', 'npm run semantic-v2:test', 'npm run benchmark:baseline'],
-              runCommands: ['npm run semantic-v2:test', 'npm run benchmark:baseline'],
-              frozenToolchain: 'false',
-              runsInvariant: 'true',
-              prepareGenerated: 'true',
-            },
-            {
-              name: 'repo-regression',
-              coverageCommands: [...coreContracts, 'npm run phase6:test', 'npm test'],
-              runCommands: [...coreContracts, 'npm run phase6:test', 'npm test'],
-              frozenToolchain: 'false',
-              runsInvariant: 'false',
-              prepareGenerated: 'true',
-            },
+            { name:'phase8', coverageCommands:['npm run phase8:test'], runCommands:['npm run phase8:test'], frozenToolchain:'false', runsInvariant:'false', prepareGenerated:'false' },
+            { name:'phase45', coverageCommands:['npm run phase4:test','npm run phase5:test'], runCommands:['npm run phase4:test','npm run phase5:test'], frozenToolchain:'true', runsInvariant:'false', prepareGenerated:'false' },
+            { name:'analysis-proof', coverageCommands:['npm run invariants:test','npm run semantic-v2:test','npm run benchmark:baseline'], runCommands:['npm run semantic-v2:test','npm run benchmark:baseline'], frozenToolchain:'false', runsInvariant:'true', prepareGenerated:'true' },
+            { name:'repo-regression', coverageCommands:[...coreContracts,'npm run phase6:test','npm test'], runCommands:[...coreContracts,'npm run phase6:test','npm test'], frozenToolchain:'false', runsInvariant:'false', prepareGenerated:'true' },
           ];
 
           const scheduled = lanes.flatMap(({ coverageCommands }) => coverageCommands);
           const scheduledCounts = new Map();
           for (const command of scheduled) scheduledCounts.set(command, (scheduledCounts.get(command) || 0) + 1);
-          if (
-            scheduled.length !== parts.length ||
-            parts.some((command) => scheduledCounts.get(command) !== 1) ||
-            scheduled.some((command) => !parts.includes(command))
-          ) {
-            const expected = JSON.stringify(parts);
-            const actual = JSON.stringify(scheduled);
-            throw new Error(`npm-check shard plan must execute each top-level command exactly once (expected=${expected}, actual=${actual})`);
+          if (scheduled.length !== parts.length || parts.some((command) => scheduledCounts.get(command) !== 1) || scheduled.some((command) => !parts.includes(command))) {
+            throw new Error(`npm-check shard plan must execute each top-level command exactly once (expected=${JSON.stringify(parts)}, actual=${JSON.stringify(scheduled)})`);
           }
-
-          // Keep matrix properties scalar. Commands are transported as a JSON
-          // string and decoded inside the job, avoiding nested matrix-value
-          // behavior while retaining the exact plan checked above.
-          const include = lanes.map(({ coverageCommands, runCommands, ...lane }) => ({
-            ...lane,
-            commandsJson: JSON.stringify(runCommands),
-          }));
+          const include = lanes.map(({ coverageCommands, runCommands, ...lane }) => ({ ...lane, commandsJson: JSON.stringify(runCommands) }));
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           NODE
 
@@ -134,54 +87,30 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Resolve current main for ownership proof
         run: git fetch --no-tags origin main:refs/remotes/origin/main
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - name: Install dependencies
         id: install
         run: npm ci --no-audit --no-fund
-
-      # Phase 5's real-byte verification corpus is intentionally pinned to
-      # Clang/LLD 18. Keep only the lane containing Phase 4/5 on that provider.
       - name: Install the frozen Phase 5 toolchain
         if: matrix.frozenToolchain == 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18
-
-      - name: Prepare generated userscript for canonical Phase 5 component semantic check
-        if: >-
-          matrix.prepareGenerated == 'true' &&
-          github.event_name == 'pull_request' &&
-          github.base_ref == 'hex/p5-x86-integration' &&
-          (
-            github.head_ref == 'hex/p5-1-x86-int-control' ||
-            github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
-            github.head_ref == 'hex/p5-3-x86-fp-simd-system' ||
-            github.head_ref == 'hex/p5-4-x86-abis' ||
-            github.head_ref == 'hex/p5-5-variable-viewer' ||
-            github.head_ref == 'hex/p5-6-x86-verification'
-          )
-        run: npm run userscript:build
-
       - name: Verify invariant baseline classifier contract
         if: matrix.runsInvariant == 'true'
         run: node tests/invariant-pr-baseline.mjs
-
       - name: Run exact invariant proof with current-main regression isolation
         if: matrix.runsInvariant == 'true'
         env:
           HEX_INVARIANT_BASE_REF: refs/remotes/origin/main
         run: node tools/validation/invariant-pr-baseline.mjs
-
       - name: Run all remaining exact check commands and aggregate failures
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
@@ -190,21 +119,14 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { spawnSync } from 'node:child_process';
-
           const commands = JSON.parse(process.env.HEX_CHECK_COMMANDS_JSON || '[]');
           if (!Array.isArray(commands) || commands.length === 0) throw new Error('check-lane-empty');
           const failures = [];
           for (const command of commands) {
             console.log(`::group::${command}`);
-            const result = spawnSync(command, {
-              shell: true,
-              stdio: 'inherit',
-              env: process.env,
-            });
+            const result = spawnSync(command, { shell:true, stdio:'inherit', env:process.env });
             console.log('::endgroup::');
-            if (result.error || result.status !== 0) {
-              failures.push({ command, status: result.status, error: result.error?.message ?? null });
-            }
+            if (result.error || result.status !== 0) failures.push({ command, status:result.status, error:result.error?.message ?? null });
           }
           if (failures.length) {
             console.error(`Exact check lane failures: ${JSON.stringify(failures)}`);

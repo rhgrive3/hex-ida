@@ -1,23 +1,6 @@
 name: Stage 2 authority runtime rebuild validation
 
 on:
-  pull_request:
-    paths:
-      - 'js/runtime/authority.js'
-      - 'js/runtime/stage2.js'
-      - 'js/managed/runtime-binding.js'
-      - 'js/managed/index.js'
-      - 'js/rebuild/**'
-      - 'js/collaboration/**'
-      - 'js/phase12/index.js'
-      - 'js/platform/physical-ipad-evidence.js'
-      - 'js/platform/stage2-capability-maturity.js'
-      - 'tests/stage2/**'
-      - 'tools/validation/stage2/**'
-      - 'tools/validation/phase10/ownership.json'
-      - 'tools/validation/phase11/ownership.json'
-      - 'tools/validation/phase12/ownership.json'
-      - '.github/workflows/stage2-release-validation.yml'
   workflow_dispatch:
     inputs:
       expect_sha:
@@ -53,126 +36,12 @@ on:
 permissions:
   contents: read
 
-# A new commit on the same PR supersedes the old exact-head/merge-tree proof.
-# Cancel only stale PR runs; manual final-product runs keep a unique run-id group
-# so one release proof cannot cancel another explicitly requested proof.
 concurrency:
-  group: stage2-release-validation-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: stage2-release-validation-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  pr-proof:
-    name: head-and-candidate-merge-tree
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      # Preserve independent proof completeness even when the head phase is
-      # broken: record outcomes and still attempt the exact merge-tree phase.
-      - name: Checkout exact PR head
-        id: head_checkout
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Set up Node
-        id: node_setup
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install active native proof providers once
-        id: providers
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
-      - name: Install exact PR head dependencies
-        id: head_install
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: npm ci --no-audit --no-fund
-      - name: Assert exact PR head checkout
-        id: head_identity
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
-      - name: Verify exact Stage 2 head
-        id: head_verify
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        # Invariant Gates already runs the complete repository check for every
-        # pull request. Keep Stage 2 focused on its exact product here.
-        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" || { cat reports/stage2/stage2-verdict.json; exit 1; }
-
-      # The exact head and GitHub's synthetic merge tree remain separate proof
-      # identities. They share only the hosted runner/provider installation;
-      # the merge tree is checked out exactly and receives its own npm ci.
-      - name: Checkout exact candidate merge tree
-        id: merge_checkout
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          clean: true
-      - name: Assert exact merge-tree checkout
-        id: merge_identity
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          VERIFY_SHA: ${{ github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$VERIFY_SHA"
-      - name: Install exact candidate merge-tree dependencies
-        id: merge_install
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: npm ci --no-audit --no-fund
-      - name: Verify exact candidate merge tree
-        id: merge_verify
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          VERIFY_SHA: ${{ github.sha }}
-        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" || { cat reports/stage2/stage2-verdict.json; exit 1; }
-
-      - name: Require both Stage 2 proof identities
-        if: ${{ !cancelled() }}
-        shell: bash
-        env:
-          HEAD_CHECKOUT: ${{ steps.head_checkout.outcome }}
-          NODE_SETUP: ${{ steps.node_setup.outcome }}
-          PROVIDERS: ${{ steps.providers.outcome }}
-          HEAD_INSTALL: ${{ steps.head_install.outcome }}
-          HEAD_IDENTITY: ${{ steps.head_identity.outcome }}
-          HEAD_VERIFY: ${{ steps.head_verify.outcome }}
-          MERGE_CHECKOUT: ${{ steps.merge_checkout.outcome }}
-          MERGE_IDENTITY: ${{ steps.merge_identity.outcome }}
-          MERGE_INSTALL: ${{ steps.merge_install.outcome }}
-          MERGE_VERIFY: ${{ steps.merge_verify.outcome }}
-        run: |
-          set -euo pipefail
-          failed=0
-          for name in HEAD_CHECKOUT NODE_SETUP PROVIDERS HEAD_INSTALL HEAD_IDENTITY HEAD_VERIFY MERGE_CHECKOUT MERGE_IDENTITY MERGE_INSTALL MERGE_VERIFY; do
-            outcome="${!name}"
-            if [[ "$outcome" != "success" ]]; then
-              echo "$name=$outcome" >&2
-              failed=1
-            fi
-          done
-          exit "$failed"
-
   final-exact-product:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:

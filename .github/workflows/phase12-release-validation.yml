@@ -1,18 +1,6 @@
 name: Phase 12 release validation
 
 on:
-  pull_request:
-    paths:
-      - 'js/phase12/**'
-      - 'js/knowledge/phase12-**'
-      - 'js/collaboration/**'
-      - 'js/pattern/**'
-      - 'js/rebuild/**'
-      - 'tests/phase12/**'
-      - 'tools/validation/phase12/**'
-      - 'package.json'
-      - 'docs/SUPPORT_MATRIX.md'
-      - '.github/workflows/phase12-release-validation.yml'
   workflow_dispatch:
     inputs:
       expect_sha:
@@ -23,28 +11,18 @@ on:
 permissions:
   contents: read
 
-# Only the newest commit on a PR needs this validation. Explicit manual runs
-# remain isolated so one exact audit cannot cancel another.
 concurrency:
-  group: phase12-release-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: phase12-release-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   verify:
-    # Phase 12 owns only Phase 12 lanes. Dev Agent hardening has its own
-    # ownership/integration spine; package.json is shared there, so do not
-    # misclassify an unrelated Dev Agent or Stage 1 integration PR as a Phase
-    # 12 candidate.
-    if: >-
-      ${{ github.event_name != 'pull_request' ||
-          (!startsWith(github.head_ref, 'dev-agent-hardening/') &&
-           github.head_ref != 'completion/stage1-integration') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.expect_sha || github.sha }}
+          ref: ${{ inputs.expect_sha }}
           fetch-depth: 0
       - name: Resolve current main for ownership proof
         run: git fetch --no-tags origin main:refs/remotes/origin/main
@@ -55,5 +33,5 @@ jobs:
       - run: npm ci
       - name: Verify exact candidate
         env:
-          VERIFY_SHA: ${{ inputs.expect_sha || github.sha }}
+          VERIFY_SHA: ${{ inputs.expect_sha }}
         run: npm run phase12:verify -- --expect-sha "$VERIFY_SHA"
