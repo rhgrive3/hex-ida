@@ -234,8 +234,11 @@ function normalizeUse(input) {
   });
 }
 
-function cfgMap(cfg) {
-  return cfg ? new Map((cfg.blocks ?? []).map((block) => [block.id, block])) : null;
+function cfgMap(cfg, functionId) {
+  if (!cfg) return null;
+  const cfgFunctionId = nonEmpty(cfg.functionId, 'memory-ssa-cfg-function-mismatch');
+  if (cfgFunctionId !== functionId) fail('memory-ssa-cfg-function-mismatch');
+  return new Map((cfg.blocks ?? []).map((block) => [block.id, block]));
 }
 
 export function createMemorySsaContract(input, options = {}) {
@@ -247,6 +250,7 @@ export function createMemorySsaContract(input, options = {}) {
   if (input.contractVersion != null && String(input.contractVersion) !== MEMORY_SSA_CONTRACT_VERSION) {
     fail('memory-ssa-contract-version-mismatch');
   }
+  const functionId = nonEmpty(input.functionId, 'memory-ssa-function-id-required');
 
   const regions = array(input.regions, 'memory-ssa-regions-required')
     .map((region) => { work(); return createMemoryRegionRef(region); })
@@ -276,7 +280,7 @@ export function createMemorySsaContract(input, options = {}) {
     definitionById.set(definition.id, definition);
   }
 
-  const blocks = cfgMap(options.cfg);
+  const blocks = cfgMap(options.cfg, functionId);
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -331,7 +335,7 @@ export function createMemorySsaContract(input, options = {}) {
 
   return deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'memory-ssa-function-id-required'),
+    functionId,
     regions,
     definitions,
     uses,
