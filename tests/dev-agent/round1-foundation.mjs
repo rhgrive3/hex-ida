@@ -149,9 +149,9 @@ await check('standard-agent-scope-regression', () => {
 });
 
 await check('dev-context-packet-dependency-boundary', () => {
-  // Parser-backed boundary (vm.SourceTextModule): every static spelling
-  // (side-effect, from, export-from, including same-line trailing imports)
-  // is visible, comments/strings never count, dynamic import is scanned.
+  // Parser-backed boundary: every static dependency spelling is visible and
+  // dynamic import expressions are taken from the parsed module AST rather
+  // than a comment/string-sensitive textual scan.
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
   assertModuleDependencyBoundary(source, ['../run/analysis-scope.js']);
   const { staticModuleSpecifiers, hasDynamicImport } = __depBoundary;
@@ -170,9 +170,18 @@ await check('dev-context-packet-dependency-boundary', () => {
     ['./ok.js'],
     'commented imports must not count as dependencies',
   );
-  assert.equal(hasDynamicImport("void import('./dynamic.js')"), true);
-  assert.equal(hasDynamicImport("void import /* dependency */ ('./dynamic.js')"), true);
+  for (const lineTerminator of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    assert.equal(hasDynamicImport(`void import // dependency${lineTerminator}('./dynamic.js')`), true,
+      `dynamic import after ${JSON.stringify(lineTerminator)} line-comment terminator must be detected`);
+  }
+  assert.equal(hasDynamicImport("const value = `// ${import('./dynamic.js')}`;"), true,
+    'dynamic import inside a template interpolation must be detected');
+  assert.equal(hasDynamicImport("const value = `import('./not-real.js')`;"), false,
+    'template literal text must not be mistaken for dynamic import syntax');
+  assert.equal(hasDynamicImport("const value = \"import('./not-real.js')\";"), false,
+    'quoted text must not be mistaken for dynamic import syntax');
   assert.equal(hasDynamicImport("// import('./evil.js')"), false);
+  assert.equal(hasDynamicImport("import { a } from './ok.js';"), false);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');

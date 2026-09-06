@@ -1,110 +1,74 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
-const STATIC_MODULE_PARSE = String.raw`
+const MODULE_DEPENDENCY_PARSE = String.raw`
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import vm from 'node:vm';
+const require = createRequire(import.meta.url);
+const { parse } = require('internal/deps/acorn/acorn/dist/acorn');
 const source = readFileSync(0, 'utf8');
 const module = new vm.SourceTextModule(source);
-process.stdout.write(JSON.stringify(module.dependencySpecifiers));
+const ast = parse(source, { ecmaVersion:'latest', sourceType:'module', allowHashBang:true });
+let dynamicImport = false;
+const stack = [ast];
+while (stack.length) {
+  const node = stack.pop();
+  if (!node || typeof node !== 'object') continue;
+  if (node.type === 'ImportExpression') dynamicImport = true;
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) stack.push(...value);
+    else if (value && typeof value === 'object') stack.push(value);
+  }
+}
+process.stdout.write(JSON.stringify({
+  staticSpecifiers: module.dependencySpecifiers,
+  hasDynamicImport: dynamicImport,
+}));
 `;
 
-function staticModuleSpecifiers(source) {
+const cache = new Map();
+function parseModuleDependencies(source) {
+  const text = String(source);
+  const cached = cache.get(text);
+  if (cached) return cached;
   const output = execFileSync(process.execPath, [
     '--no-warnings',
     '--experimental-vm-modules',
+    '--expose-internals',
     '--input-type=module',
     '--eval',
-    STATIC_MODULE_PARSE,
+    MODULE_DEPENDENCY_PARSE,
   ], {
-    input:String(source),
+    input:text,
     encoding:'utf8',
     maxBuffer:1024 * 1024,
   });
-  const specifiers = JSON.parse(output);
-  if (!Array.isArray(specifiers) || specifiers.some((value) => typeof value !== 'string')) {
+  const result = JSON.parse(output);
+  if (!result || !Array.isArray(result.staticSpecifiers)
+      || result.staticSpecifiers.some((value) => typeof value !== 'string')
+      || typeof result.hasDynamicImport !== 'boolean') {
     throw new TypeError('module-dependency-parser-invalid-result');
   }
-  return specifiers;
+  cache.set(text, result);
+  return result;
+}
+
+function staticModuleSpecifiers(source) {
+  return parseModuleDependencies(source).staticSpecifiers;
 }
 
 function hasDynamicImport(source) {
-  const text = String(source);
-  let index = 0;
-  while (index < text.length) {
-    const char = text[index];
-    if (char === "'" || char === '"') {
-      index = skipQuoted(text, index, char);
-      continue;
-    }
-    if (char === '/' && text[index + 1] === '/') {
-      index = skipLineComment(text, index + 2);
-      continue;
-    }
-    if (char === '/' && text[index + 1] === '*') {
-      index = skipBlockComment(text, index + 2);
-      continue;
-    }
-    if (isIdentifierStart(char)) {
-      const start = index++;
-      while (index < text.length && isIdentifierPart(text[index])) index++;
-      if (text.slice(start, index) !== 'import') continue;
-      const next = skipTrivia(text, index);
-      if (text[next] === '(') return true;
-      continue;
-    }
-    index++;
-  }
-  return false;
+  return parseModuleDependencies(source).hasDynamicImport;
 }
-
-function skipTrivia(text, start) {
-  let index = start;
-  while (index < text.length) {
-    if (/\s/u.test(text[index])) { index++; continue; }
-    if (text[index] === '/' && text[index + 1] === '/') {
-      index = skipLineComment(text, index + 2);
-      continue;
-    }
-    if (text[index] === '/' && text[index + 1] === '*') {
-      index = skipBlockComment(text, index + 2);
-      continue;
-    }
-    break;
-  }
-  return index;
-}
-
-function skipQuoted(text, start, quote) {
-  let index = start + 1;
-  while (index < text.length) {
-    if (text[index] === '\\') { index += 2; continue; }
-    if (text[index] === quote) return index + 1;
-    index++;
-  }
-  return text.length;
-}
-
-function skipLineComment(text, start) {
-  const newline = text.indexOf('\n', start);
-  return newline === -1 ? text.length : newline + 1;
-}
-
-function skipBlockComment(text, start) {
-  const close = text.indexOf('*/', start);
-  return close === -1 ? text.length : close + 2;
-}
-
-function isIdentifierStart(char) { return /[A-Za-z_$]/u.test(char || ''); }
-function isIdentifierPart(char) { return /[A-Za-z0-9_$]/u.test(char || ''); }
 
 export function assertModuleDependencyBoundary(source, allowedSpecifiers) {
-  const actual = staticModuleSpecifiers(source);
-  assert.deepEqual(actual, allowedSpecifiers,
+  const actual = parseModuleDependencies(source);
+  assert.deepEqual(actual.staticSpecifiers, allowedSpecifiers,
     'module static dependencies must exactly match the allowlist');
-  assert.equal(hasDynamicImport(source), false,
+  assert.equal(actual.hasDynamicImport, false,
     'dynamic import expressions are forbidden at this dependency boundary');
-  return actual;
+  return actual.staticSpecifiers;
 }
 
 export const __moduleDependencyBoundaryForTests = Object.freeze({
