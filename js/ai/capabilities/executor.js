@@ -1,5 +1,6 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
+import { consumeProposalAuthorization } from '../proposals.js';
 import { validatePatchRange } from '../../patch.js';
 
 export class CapabilityExecutor {
@@ -19,7 +20,7 @@ export class CapabilityExecutor {
     assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, args, runtimePlatform);
-    if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, args)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
     if (entry.agentTool) return this.executeTool(entry, args, options);
     if (entry.actionKind) return this.executeAction(entry, args);
     return this.executeBuiltIn(entry, args, options, runtimePlatform);
