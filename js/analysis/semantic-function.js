@@ -32,21 +32,42 @@ function canonicalInstructionAddress(value, code) {
 function addressOf(instruction) {
   return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
 }
+function instructionLengthOf(instruction) {
+  const length = canonicalInstructionAddress(
+    instruction.length ?? instruction.size,
+    'semantic-function-instruction-length-invalid',
+  );
+  if (length === 0n) throw new TypeError('semantic-function-instruction-length-invalid');
+  return length;
+}
 function endOf(instruction) {
-  return addressOf(instruction)
-    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+  return addressOf(instruction) + instructionLengthOf(instruction);
 }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
+const CONTROL_FLOW_KINDS = new Set([
+  'fallthrough',
+  'call',
+  'branch',
+  'conditional-branch',
+  'return',
+  'unknown',
+]);
+
 function controlKind(plugin, instruction) {
-  try { return String(plugin.classifyControlFlow?.(instruction) || 'fallthrough'); }
-  catch { return 'unknown'; }
+  try {
+    const kind = plugin.classifyControlFlow?.(instruction);
+    if (kind == null || kind === '') return 'fallthrough';
+    return typeof kind === 'string' && CONTROL_FLOW_KINDS.has(kind) ? kind : 'unknown';
+  } catch { return 'unknown'; }
 }
 
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null ? null : BigInt(target);
+    if (target == null) return null;
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 
@@ -68,6 +89,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
   const byAddress = new Map();
   for (const instruction of ordered) {
     const address = addressOf(instruction);
+    instructionLengthOf(instruction);
     if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
     byAddress.set(address.toString(), instruction);
   }
