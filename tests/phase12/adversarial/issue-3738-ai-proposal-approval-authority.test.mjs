@@ -26,7 +26,7 @@ function createProjectProposal(store, id, after = 'approved') {
 }
 
 async function expectApprovalFailure(promise) {
-  await assert.rejects(promise, (error) => error?.code === 'approval_required');
+  await assert.rejects(promise, (error) => error?.type === 'approval_required');
 }
 
 {
@@ -57,6 +57,33 @@ async function expectApprovalFailure(promise) {
   const app = { projectAnnotations: [] };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
+  const proposal = createProjectProposal(store, 'snapshot', 'safe');
+  const { approvalToken } = store.approve(proposal.id);
+  let idReads = 0;
+  let valueReads = 0;
+  await store.apply(proposal.id, {
+    approvalToken,
+    currentState: null,
+    apply: (_item, authorization) => {
+      const args = {};
+      Object.defineProperties(args, {
+        id: { enumerable: true, get: () => (++idReads <= 2 ? 'snapshot' : 'other') },
+        value: { enumerable: true, get: () => (++valueReads <= 2 ? 'safe' : 'evil') },
+      });
+      return executor.execute('annotation.project', args, { authorization });
+    },
+  });
+  assert.equal(idReads, 1, 'approved arguments must be snapshotted before validation and authorization');
+  assert.equal(valueReads, 1, 'approved argument values must not be reread from caller-owned accessors');
+  assert.equal(app.projectAnnotations.length, 1);
+  assert.equal(app.projectAnnotations[0].id, 'snapshot', 'caller drift must not change the approved target');
+  assert.equal(app.projectAnnotations[0].value, 'safe', 'caller drift must not change the approved value');
+}
+
+{
+  const app = { projectAnnotations: [] };
+  const store = createStore();
+  const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-capability');
   const { approvalToken } = store.approve(proposal.id);
   await assert.rejects(store.apply(proposal.id, {
@@ -67,7 +94,7 @@ async function expectApprovalFailure(promise) {
       { address: '4096', value: 'wrong capability' },
       { authorization },
     ),
-  }), (error) => error?.code === 'approval_required');
+  }), (error) => error?.type === 'approval_required');
   assert.equal(app.projectAnnotations.length, 0, 'capability mismatch must not mutate');
 }
 
@@ -85,7 +112,7 @@ async function expectApprovalFailure(promise) {
       { id: 'different-target', value: 'approved' },
       { authorization },
     ),
-  }), (error) => error?.code === 'approval_required');
+  }), (error) => error?.type === 'approval_required');
   assert.equal(app.projectAnnotations.length, 0, 'argument mismatch must not mutate');
 }
 
@@ -103,7 +130,7 @@ async function expectApprovalFailure(promise) {
       proposalArguments(item),
       { authorization: { ...authorization, proposalId: 'proposal_other' } },
     ),
-  }), (error) => error?.code === 'approval_required');
+  }), (error) => error?.type === 'approval_required');
   assert.equal(app.projectAnnotations.length, 0, 'proposal id mismatch must not mutate');
 }
 
@@ -139,7 +166,7 @@ async function expectApprovalFailure(promise) {
       binding = { binaryId: 'bin-b', projectId: 'project-a', runtimeSessionId: null };
       return executor.execute('annotation.project', proposalArguments(item), { authorization });
     },
-  }), (error) => error?.code === 'approval_required');
+  }), (error) => error?.type === 'approval_required');
   assert.equal(app.projectAnnotations.length, 0, 'binding drift must invalidate the authorization before mutation');
 }
 

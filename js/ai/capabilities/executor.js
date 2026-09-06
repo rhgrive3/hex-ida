@@ -17,13 +17,14 @@ export class CapabilityExecutor {
   async execute(id, args = {}, options = {}) {
     const entry = this.catalog?.get?.(id);
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
-    assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
+    assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
-    this.verifyBinding(entry, args, runtimePlatform);
-    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, args)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
-    if (entry.agentTool) return this.executeTool(entry, args, options);
-    if (entry.actionKind) return this.executeAction(entry, args);
-    return this.executeBuiltIn(entry, args, options, runtimePlatform);
+    this.verifyBinding(entry, executionArgs, runtimePlatform);
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
+    if (entry.actionKind) return this.executeAction(entry, executionArgs);
+    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
   }
 
   verifyBinding(entry, args, runtimePlatform = null) {
@@ -108,6 +109,40 @@ export class CapabilityExecutor {
     this.reverts.set(String(patch.offset), metadata);
     return { reverted: true, patch: metadata };
   }
+}
+
+function snapshotApprovedArguments(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
+  let snapshot;
+  try {
+    snapshot = clone(value);
+  } catch {
+    throw new AIError('invalid_tool_call', 'Approved capability arguments must be structured-cloneable.');
+  }
+  if (containsSharedMemory(snapshot)) throw new AIError('invalid_tool_call', 'Approved capability arguments must not contain shared memory.');
+  return snapshot;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  if (value instanceof ArrayBuffer || seen.has(value)) return false;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of value) if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) if (containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
