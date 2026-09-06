@@ -80,7 +80,7 @@ function transport(overrides = {}) {
   const current = transport({ maxVerifiedBindings:2, maxVerifiedBindingBytes:1024 * 1024 });
   const first = await current.authorizeEnvelope(input(1));
   const second = await current.authorizeEnvelope(input(2));
-  assert.equal(current.verifyTransportProof(first.transportProof, first), true);
+  assert.equal(current.verifyTransportProof(second.transportProof, second), true);
   const third = await current.authorizeEnvelope(input(3));
 
   assert.equal(current.verifyTransportProof(first.transportProof, first), false, 'least-recently-used proof must be evicted at the count bound');
