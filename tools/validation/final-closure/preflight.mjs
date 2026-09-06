@@ -105,6 +105,13 @@ const T061_MAINTENANCE_COMPONENT_CODE_PATHS = Object.freeze([
   'specs/005-analysis-final-closure/contracts/task-ownership.json',
   T061_MAINTENANCE_TRANSFER_PATH,
 ]);
+const T061_MAINTENANCE_DATA_MODEL_PATH = 'specs/005-analysis-final-closure/data-model.md';
+const T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX = '\n## T061 Stage A maintenance amendment\n';
+// The amendment is an append-only, bounded documentation suffix.  Keep its
+// digest here so a later component cannot rewrite an old section and restore
+// a plausible-looking T061 paragraph at the end of the file.
+const T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256 =
+  '5aa27c2df7291da2430f72335fa652035ced6c4fdd4e79106ccfff36348e47eb';
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([
@@ -5244,7 +5251,17 @@ export function verifyT060Revalidation(root, integrationHeadSha, { activationCom
 
 // This is one reviewed fixture correction, not a general resealing facility.
 // Derive publication from history: a receipt cannot attest its own commit SHA.
-export function verifyT061MaintenancePackage(mainText, candidateText) {
+function packageCommandSequenceContains(candidateCommand, requiredCommand) {
+  const candidate = String(candidateCommand).split(' && ');
+  const required = String(requiredCommand).split(' && ');
+  let requiredIndex = 0;
+  for (const command of candidate) {
+    if (command === required[requiredIndex]) requiredIndex += 1;
+  }
+  return requiredIndex === required.length;
+}
+
+export function verifyT061MaintenancePackage(mainText, candidateText, integrationText = null) {
   const fail = () => { throw new Error('t061-maintenance-invalid:package-main-preservation'); };
   let expected;
   let candidate;
@@ -5260,6 +5277,18 @@ export function verifyT061MaintenancePackage(mainText, candidateText) {
   // Preserve every current-main field and command, including their ordering.
   // The sole permitted semantic delta is the canonical closure entry point.
   if (canonicalJson(candidate) !== canonicalJson(expected)) fail();
+  if (integrationText != null) {
+    let integration;
+    try { integration = JSON.parse(integrationText); }
+    catch { fail(); }
+    if (!integration || typeof integration !== 'object' || Array.isArray(integration)
+      || !integration.scripts || typeof integration.scripts !== 'object'
+      || Array.isArray(integration.scripts)) fail();
+    for (const [name, command] of Object.entries(integration.scripts)) {
+      if (typeof command !== 'string' || typeof candidate.scripts?.[name] !== 'string'
+        || !packageCommandSequenceContains(candidate.scripts[name], command)) fail();
+    }
+  }
   return true;
 }
 
@@ -5350,7 +5379,19 @@ export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {
   if (!exactSet(codePaths, receipt.component.paths)
     || requiredCodePaths.some((p) => !codePaths.includes(p))) fail('code-path-set');
   verifyT061MaintenancePackage(readTextAt(root, prior.baseSha, 'package.json'),
-    readTextAt(root, code, 'package.json'));
+    readTextAt(root, code, 'package.json'), readTextAt(root, integration, 'package.json'));
+  const historicalDataModel = readTextAt(root, integration, T061_MAINTENANCE_DATA_MODEL_PATH);
+  let previousDataModel = historicalDataModel;
+  for (const sha of codeHistory) {
+    const nextDataModel = readTextAt(root, sha, T061_MAINTENANCE_DATA_MODEL_PATH);
+    if (!nextDataModel.startsWith(previousDataModel)) fail('data-model-prefix');
+    previousDataModel = nextDataModel;
+  }
+  const dataModelSuffix = previousDataModel.slice(historicalDataModel.length);
+  if (!dataModelSuffix.startsWith(T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX)
+    || sha256Text(dataModelSuffix) !== T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256) {
+    fail('data-model-suffix');
+  }
   const taskRecords = (sha) => new Map(taskBlocks(readTextAt(root, sha, tasksPath))
     .map((block) => [block.split('\n')[0].match(/\bT\d{3}\b/)[0], block.trim()]));
   const beforeTasks = taskRecords(integration);
@@ -5371,10 +5412,19 @@ export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {
   const maintenanceTask = codeTasks.get('T061');
   if (!maintenanceTask || taskStatusMap([maintenanceTask]).get('T061') !== 'PENDING'
     || !exactSet([...(dependencyMap([maintenanceTask]).get('T061') || [])], ['T052', 'T060'])) fail('task-contract');
-  // The amendment may append its own task; unrelated prose is also immutable.
-  const withoutTask = (text) => text.replace(/^- \[[ xX]\] T061\b[\s\S]*?(?=^- \[[ xX]\] T\d{3}\b|$(?![\s\S]))/m, '').trimEnd();
-  if (withoutTask(readTextAt(root, code, tasksPath).replace(codeTasks.get('T049'), beforeTasks.get('T049')))
-    !== readTextAt(root, integration, tasksPath).trimEnd()) fail('tasks-text');
+  // T061 is the final task block and its contract is exactly one indented
+  // line.  A bounded slice prevents arbitrary trailing prose from being
+  // swallowed by a greedy "remove through EOF" comparison.
+  const normalizedTasks = readTextAt(root, code, tasksPath)
+    .replace(codeTasks.get('T049'), beforeTasks.get('T049'));
+  const integrationTasks = readTextAt(root, integration, tasksPath).trimEnd();
+  const t061Start = normalizedTasks.indexOf('- [ ] T061 ');
+  if (t061Start < 0 || normalizedTasks.slice(0, t061Start).trimEnd() !== integrationTasks) {
+    fail('tasks-text');
+  }
+  const t061Tail = normalizedTasks.slice(t061Start).trimEnd().split('\n');
+  if (t061Tail.length !== 2 || !/^- \[ \] T061\b/.test(t061Tail[0])
+    || !/^  - \*\*Contract\*\* — /.test(t061Tail[1])) fail('tasks-text');
   const oldOwnership = readJsonAt(root, integration, ownershipPath);
   const newOwnership = readJsonAt(root, code, ownershipPath);
   const maintenanceOwner = newOwnership.tasks?.T061;
@@ -5527,13 +5577,27 @@ export function executeT061MaintenanceGates({ root = ROOT, candidateIdentity,
   if (typeof assertCandidateState !== 'function') {
     throw new Error('t061-maintenance-invalid:runtime-state-check-required');
   }
+  const checkpointEphemeral = () => {
+    try {
+      return checkpointRuntimeEphemeralManifest(root);
+    } catch (error) {
+      throw new Error(`t061-maintenance-invalid:runtime-ephemeral-mutated:${String(error?.message || error)}`);
+    }
+  };
+  const initialEphemeralManifest = checkpointEphemeral();
   const assertState = () => {
     if (git(root, ['rev-parse', 'HEAD']) !== candidateIdentity?.headSha
       || git(root, ['rev-parse', 'HEAD^{tree}']) !== candidateIdentity?.treeSha
       || git(root, ['status', '--porcelain', '--untracked-files=all']) !== '') {
       throw new Error('t061-maintenance-invalid:runtime-product-mutated');
     }
+    // Keep the callback as an additional runtime assertion.  The canonical
+    // manifest below remains authoritative even when the callback is a no-op.
     assertCandidateState('t061-maintenance');
+    const ephemeralManifest = checkpointEphemeral();
+    if (ephemeralManifest.identity !== initialEphemeralManifest.identity) {
+      throw new Error('t061-maintenance-invalid:runtime-ephemeral-mutated');
+    }
   };
   assertState();
   const commands = t061MaintenanceCommands(root, candidateIdentity.headSha);

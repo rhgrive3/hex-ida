@@ -23,6 +23,7 @@ import {
 const SOURCE_ROOT = process.cwd();
 const GIT = 'git';
 const BASE_SHA = 'b3a43e6974e28d24a9f80fef3a8f847dd2cd54ce';
+const PRIOR_COMPONENT_SHA = '22b20128f00a53b75ef2cd9ee07decc1a414fae7';
 const ORIGINAL_T052_HANDOFF_SHA = '0a521b282c6aa93afc94e0dfbfe701e705ccdf2a';
 const PREIMAGE_BLOB_SHA = 'e808eb0ba83611ea3c147645f6070fcc3cd48823';
 const POSTIMAGE_BLOB_SHA = '09a715039737d98ddef107ad477055b37bdde465';
@@ -248,7 +249,8 @@ function bundleAt(root, commitSha) {
   };
 }
 
-function createFixture({ packageTransform = null } = {}) {
+function createFixture({ packageTransform = null, dataModelTransform = null, tasksTransform = null,
+  splitComponent = false } = {}) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-t061-maintenance-'));
   const root = path.join(sandbox, 'repo');
   runGit(SOURCE_ROOT, ['clone', '--quiet', '--shared', '--no-checkout', SOURCE_ROOT, root]);
@@ -274,7 +276,12 @@ function createFixture({ packageTransform = null } = {}) {
   const sourceFixtureTest = fs.readFileSync(path.join(SOURCE_ROOT, T061_TEST_PATH), 'utf8');
   writeFile(root, T061_TEST_PATH, `${sourceFixtureTest}\n// T061 fixture replay boundary\n`);
   const sourceDataModel = fs.readFileSync(path.join(SOURCE_ROOT, DATA_MODEL_PATH), 'utf8');
-  writeFile(root, DATA_MODEL_PATH, `${sourceDataModel}\n// T061 maintenance schema fixture\n`);
+  const initialDataModel = splitComponent
+    ? readAt(SOURCE_ROOT, PRIOR_COMPONENT_SHA, DATA_MODEL_PATH)
+    : sourceDataModel;
+  writeFile(root, DATA_MODEL_PATH, dataModelTransform
+    ? dataModelTransform(initialDataModel, readAt(root, integration, DATA_MODEL_PATH))
+    : initialDataModel);
   writeFile(root, T052_PATH, postimage);
 
   const t061Task = [
@@ -282,7 +289,8 @@ function createFixture({ packageTransform = null } = {}) {
     '  - **Contract** — Objective: carry the reviewed T052 fixture correction through one typed maintenance transfer while retaining the original T052 handoff. Current evidence: T052 is DONE with a sealed preimage and the current main fixture contract requires the reviewed postimage. Owner/model: SOL Ultra integration owner with separate Luna Max review. Risk: RELEASE. Dependencies: T052 and T060. Owned paths: bounded maintenance verifier, fixture regression, task and ownership continuation, and transfer evidence. Delta: add one pending maintenance row and prove the exact T052 preimage-to-postimage transfer through an ordinary product checkpoint. Negative counterexample: direct T052 reseal, owner reassignment without a receipt, rewritten historic handoff, or stale product proof. Tests: actual Git lineage, receipt deletion and rewrite, wrong-head and stale-blob negatives. Integration test: unchanged T052 owned, rolling, and central shadow proof over the fixed accepted task IDs. Completion evidence: one immutable transfer receipt, exact owner transition, and replayable generated product. Status: PENDING.',
   ].join('\n') + '\n';
   const amendedTasks = amendT049Dependencies(readAt(root, integration, TASKS_PATH));
-  writeFile(root, TASKS_PATH, `${amendedTasks.trimEnd()}\n\n${t061Task}`);
+  const amendedTaskText = `${amendedTasks.trimEnd()}\n\n${t061Task}`;
+  writeFile(root, TASKS_PATH, tasksTransform ? tasksTransform(amendedTaskText) : amendedTaskText);
 
   const amendedOwnership = JSON.parse(readAt(root, integration, OWNERSHIP_PATH));
   amendedOwnership.tasks.T061 = {
@@ -297,8 +305,15 @@ function createFixture({ packageTransform = null } = {}) {
   writeFile(root, OWNERSHIP_PATH, `${JSON.stringify(amendedOwnership, null, 2)}\n`);
   if (packageTransform) writeFile(root, 'package.json',
     packageTransform(readAt(root, integration, 'package.json')));
-  const code = commit(root, 'T061 pending bounded maintenance component');
-  const codeTree = runGit(root, ['rev-parse', `${code}^{tree}`]);
+  let code = commit(root, 'T061 pending bounded maintenance component');
+  let codeTree = runGit(root, ['rev-parse', `${code}^{tree}`]);
+  if (splitComponent) {
+    writeFile(root, DATA_MODEL_PATH, dataModelTransform
+      ? dataModelTransform(sourceDataModel, readAt(root, integration, DATA_MODEL_PATH))
+      : sourceDataModel);
+    code = commit(root, 'T061 append bounded data-model suffix');
+    codeTree = runGit(root, ['rev-parse', `${code}^{tree}`]);
+  }
   const codePaths = changedPaths(root, integration, code);
   assert.deepEqual(codePaths, [...T061_REQUIRED_COMPONENT_PATHS, ...(packageTransform ? ['package.json'] : [])].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))));
 
@@ -825,6 +840,29 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
     }
   });
 
+  test('T061 maintenance execution rejects ignored mutation without callback support', () => {
+    const { root, sandbox } = cloneAt(fixture.root, fixture.generated);
+    try {
+      fs.appendFileSync(path.join(root, '.git', 'info', 'exclude'), '\n.t061-self-contained-ignored\n');
+      const ignoredPath = path.join(root, '.t061-self-contained-ignored');
+      let gateCalls = 0;
+      expectInvalid(() => executeT061MaintenanceGates({
+        root,
+        candidateIdentity: { headSha: fixture.generated, treeSha: fixture.generatedTree },
+        assertCandidateState: () => {},
+        spawn: (command, argv) => {
+          gateCalls += 1;
+          if (gateCalls === 1) fs.writeFileSync(ignoredPath, 'ignored mutation\n');
+          return successfulMaintenanceSpawn(command, argv);
+        },
+      }), 'runtime-ephemeral-mutated');
+      assert.equal(gateCalls, 1, 'the canonical manifest must stop replay after the first gate');
+      assert.equal(fs.existsSync(ignoredPath), true);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   test('T061 recorded maintenance gates reject envelope and identity mutations', () => {
     const cases = [
       {
@@ -1081,6 +1119,46 @@ test.after(() => fs.rmSync(fixture.sandbox, { recursive: true, force: true }));
     ), 'owner-regressed');
   });
 
+  test('T061 rejects a historical data-model rewrite in the actual Git component', () => {
+    const invalid = createFixture({ dataModelTransform: (text) => text.replace(
+      '## ExternalBlocker', '## ExternalBlocker rewritten',
+    ) });
+    try {
+      expectInvalid(() => verifyT061MaintenanceStructure(
+        invalid.root, null, { expectedSha: invalid.publication },
+      ), 'data-model-prefix');
+    } finally { fs.rmSync(invalid.sandbox, { recursive: true, force: true }); }
+  });
+
+  test('T061 rejects an unbounded data-model suffix in the actual Git component', () => {
+    const invalid = createFixture({ dataModelTransform: (text) =>
+      `${text}\nUnreviewed maintenance prose.\n` });
+    try {
+      expectInvalid(() => verifyT061MaintenanceStructure(
+        invalid.root, null, { expectedSha: invalid.publication },
+      ), 'data-model-suffix');
+    } finally { fs.rmSync(invalid.sandbox, { recursive: true, force: true }); }
+  });
+
+  test('T061 accepts a two-commit component that appends the bounded data-model suffix', () => {
+    const split = createFixture({ splitComponent: true });
+    try {
+      assert.ok(verifyT061MaintenanceStructure(
+        split.root, null, { expectedSha: split.publication },
+      ));
+    } finally { fs.rmSync(split.sandbox, { recursive: true, force: true }); }
+  });
+
+  test('T061 rejects prose trailing the bounded final task block', () => {
+    const invalid = createFixture({ tasksTransform: (text) =>
+      `${text}\nMaintenance note outside the T061 contract.\n` });
+    try {
+      expectInvalid(() => verifyT061MaintenanceStructure(
+        invalid.root, null, { expectedSha: invalid.publication },
+      ), 'tasks-text');
+    } finally { fs.rmSync(invalid.sandbox, { recursive: true, force: true }); }
+  });
+
 
 test('T061 package preservation retains main commands and rejects either parent losing required gates', () => {
   const main = { name: 'fixture', scripts: { test: 'node base.mjs && node new-regression.mjs',
@@ -1101,6 +1179,63 @@ test('T061 package preservation retains main commands and rejects either parent 
   }
   assert.equal(verifyT061MaintenancePackage(JSON.stringify(candidate), JSON.stringify(candidate)), true);
   assert.throws(() => verifyT061MaintenancePackage('{}', JSON.stringify(candidate)), /package-main-preservation/);
+});
+
+
+test('T061 package preservation names every latest-main test and retains integration commands', () => {
+  const main = {
+    name: 'fixture',
+    scripts: {
+      test: 'node base.mjs && node integration-test.mjs',
+      'core:test': 'node core.mjs && node tests/issue-4251-core-identity-slice-index.test.mjs',
+      'platform:test': 'node platform.mjs && node tests/issue-6223-platform-regions-uncovered-segments.mjs',
+      'binary:test': 'node binary.mjs && node tests/issue-6159-fingerprint-short-read-fail-closed.mjs && node tests/issue-6230-audit-executable-owner-resolution.mjs && node tests/issue-6234-fingerprint-uncovered-segments.mjs',
+    },
+    dependencies: { example: '1.2.3' },
+  };
+  const integration = {
+    name: 'fixture',
+    scripts: {
+      test: 'node tests/final-closure/run.mjs && node base.mjs && node integration-test.mjs',
+      'core:test': 'node core.mjs',
+      'platform:test': 'node platform.mjs',
+      'binary:test': 'node binary.mjs',
+    },
+    dependencies: { example: '1.2.3' },
+  };
+  const candidate = structuredClone(main);
+  candidate.scripts.test = `node tests/final-closure/run.mjs && ${main.scripts.test}`;
+  assert.equal(verifyT061MaintenancePackage(
+    JSON.stringify(main), JSON.stringify(candidate), JSON.stringify(integration),
+  ), true);
+
+  const latestMainTests = [
+    ['core:test', 'node tests/issue-4251-core-identity-slice-index.test.mjs'],
+    ['platform:test', 'node tests/issue-6223-platform-regions-uncovered-segments.mjs'],
+    ['binary:test', 'node tests/issue-6159-fingerprint-short-read-fail-closed.mjs'],
+    ['binary:test', 'node tests/issue-6230-audit-executable-owner-resolution.mjs'],
+    ['binary:test', 'node tests/issue-6234-fingerprint-uncovered-segments.mjs'],
+  ];
+  for (const [script, command] of latestMainTests) {
+    const invalid = structuredClone(candidate);
+    invalid.scripts[script] = invalid.scripts[script].split(' && ')
+      .filter((entry) => entry !== command).join(' && ');
+    assert.throws(() => verifyT061MaintenancePackage(
+      JSON.stringify(main), JSON.stringify(invalid), JSON.stringify(integration),
+    ), /package-main-preservation/);
+  }
+
+  // With the main expectation weakened in lockstep, only the authenticated
+  // integration subsequence assertion can catch the dropped legacy command.
+  const missingIntegrationMain = structuredClone(main);
+  missingIntegrationMain.scripts.test = 'node base.mjs';
+  const missingIntegrationCandidate = structuredClone(missingIntegrationMain);
+  missingIntegrationCandidate.scripts.test =
+    'node tests/final-closure/run.mjs && node base.mjs';
+  assert.throws(() => verifyT061MaintenancePackage(
+    JSON.stringify(missingIntegrationMain), JSON.stringify(missingIntegrationCandidate),
+    JSON.stringify(integration),
+  ), /package-main-preservation/);
 });
 
 

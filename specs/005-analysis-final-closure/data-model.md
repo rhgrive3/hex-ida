@@ -369,3 +369,20 @@ from its changed paths. The package remains owned by T046; its handoff seal
 may point to authenticated C only when the maintenance receipt includes this
 exact path. This exception cannot authorize any other T046 path or package
 change, and all original product gates remain required.
+
+The package comparison is semantic over parsed JSON, so JSON formatting and
+object-key ordering may vary while every current-main field and command stays
+equal. Every command from the authenticated integration package must also
+remain an ordered subsequence of the corresponding candidate command.
+
+For this data-model path, every C revision MUST retain the complete I
+`data-model.md` byte sequence as an exact prefix. The final C revision MUST
+append only the bounded T061 suffix beginning with this amendment heading;
+the verifier declares its SHA-256 as
+`T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256`, and the suffix must match that
+digest through end of file. No historical section may be rewritten,
+reinserted, or followed by unrelated prose.
+
+The maintenance executor records the canonical runtime ephemeral manifest,
+including ignored paths, before and after every gate. The required candidate
+state callback remains an additional assertion for runtime invariants.
