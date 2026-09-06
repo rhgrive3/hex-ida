@@ -4,7 +4,7 @@ import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, prompt
 import {
   acquireDistributedQuota, byteLength, HttpError, isJsonRequest, isRetryableUpstreamFailure,
   jsonError, jsonResponse, MAX_CONTEXT_CHARS, MAX_REQUEST_BYTES, MAX_UPSTREAM_ATTEMPTS,
-  readLimitedText, readUpstreamFailure, releaseDistributedQuota, REQUEST_TIMEOUT_MS,
+  readLimitedText, readLimitedUpstreamJson, readUpstreamFailure, releaseDistributedQuota, REQUEST_TIMEOUT_MS,
   upstreamError, waitForRetry,
 } from './worker-transport.js';
 
@@ -73,8 +73,12 @@ export async function handleAITurn(request, env) {
   }
   if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error.'); }
   let interaction;
-  try { interaction = adapter.normalize(await upstream.json()); }
-  catch { await cleanup(); return jsonError(502, 'invalid_model_output', 'The model returned malformed JSON.'); }
+  try { interaction = adapter.normalize(await readLimitedUpstreamJson(upstream)); }
+  catch (error) {
+    await cleanup();
+    if (error instanceof HttpError) return jsonError(error.status, error.code, error.message);
+    return jsonError(502, 'invalid_model_output', 'The model returned malformed JSON.');
+  }
   await cleanup();
   try {
     const decision = normalizeAIInteraction(interaction, payload.tools.map((tool) => tool.name));
