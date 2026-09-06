@@ -216,7 +216,9 @@ export function liftX86ControlEffects(instruction, context = {}) {
       const operands = ctx.operands;
       const [destination, source] = operands;
       if (operands.length !== 2 || destination?.type !== 'register'
-        || (source?.type !== 'register' && source?.type !== 'memory')) {
+        || Number(destination?.widthBits) !== 32
+        || (source?.type !== 'register' && source?.type !== 'memory')
+        || Number(source?.widthBits) !== 32) {
         return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
       }
     } else if (ctx.operands.length !== 0) {
