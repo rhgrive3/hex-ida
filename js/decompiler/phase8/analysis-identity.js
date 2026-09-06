@@ -318,8 +318,6 @@ const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const getReflectOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const getPrototypeOf = Object.getPrototypeOf;
 const getReflectOwnKeys = Reflect.ownKeys;
-const getOwnPropertyNames = Object.getOwnPropertyNames;
-const getOwnPropertySymbols = Object.getOwnPropertySymbols;
 const getMapSize = getOwnPropertyDescriptor(Map.prototype, 'size').get;
 const getSetSize = getOwnPropertyDescriptor(Set.prototype, 'size').get;
 const SNAPSHOT_MAP_TARGETS = new WeakMap();
@@ -586,17 +584,19 @@ function snapshotChildRole(role, key) {
  * not semantic input. A mutation returns false, which makes the caller discard
  * the cache and perform the normal fresh capture path.
  */
-function rawSnapshotMatches(entry) {
+function rawSnapshotMatches(entry, workBudget) {
   // The original capture already paid the full text/reference budget.  A
   // cache hit only compares the same bounded descriptor witness; replacement
   // primitive values are caught by Object.is and a mismatch goes through a
-  // fresh budgeted capture.  Keep an independent reference counter here so a
-  // hostile Proxy cannot make the validation path unbounded before that retry.
-  let remaining = SEMANTIC_IR_DEFAULT_BUDGET.maxReferences;
+  // fresh budgeted capture. Charge this witness to the caller's shared budget
+  // so cache validation cannot add a second allowance before identity work.
   try {
     const records = entry.validationRecords;
-    if (records.length > remaining) return false;
-    remaining -= records.length;
+    // The cache witness has a fixed cost from the original capture. Charge
+    // that complete bound once before observing any producer node; a mismatch
+    // still fails closed, while a valid hit avoids one budget-closure call per
+    // record and cannot receive a second allowance for the same graph.
+    workBudget.consume(entry.validationCost);
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
       const record = records[recordIndex];
       const source = record.source;
@@ -607,58 +607,92 @@ function rawSnapshotMatches(entry) {
       // separate records and are still checked.
       if (getPrototypeOf(source) !== record.prototype) return false;
 
-      // Captured ordinary records reject symbols, so the string-only native
-      // path can avoid Reflect.ownKeys' mixed-key allocation. Symbols are
-      // still probed explicitly so a later symbol cannot be hidden behind the
-      // faster path; exotic container kinds retain the complete ownKeys view.
-      const currentKeys = record.kind === 'object'
-        ? getOwnPropertyNames(source)
-        : getReflectOwnKeys(source);
-      if (record.kind === 'object' && getOwnPropertySymbols(source).length !== 0) return false;
+      // Observe the complete own-key domain exactly once. Calling the split
+      // string/symbol helpers would give a stateful Proxy a second re-entrant
+      // trap between key validation and descriptor validation; a trap could
+      // then restore an earlier value before its descriptor is checked. The
+      // one complete native view keeps this witness aligned with capture and
+      // rejects symbols without opening that extra mutation window.
+      const currentKeys = getReflectOwnKeys(source);
       const expectedKeys = record.relevantReportedKeys;
-      let observedKeyCount = currentKeys.length;
+      const descriptorKeys = record.relevantDescriptorKeys;
+      const descriptorValues = record.relevantDescriptorValues;
+      const descriptorFlags = record.relevantDescriptorFlags;
+      const descriptorCost = descriptorKeys.length;
       if (record.omitRootKeys) {
-        observedKeyCount = 0;
+        let expectedKeyIndex = 0;
+        let orderedKeysMatch = true;
         for (let keyIndex = 0; keyIndex < currentKeys.length; keyIndex += 1) {
           const key = currentKeys[keyIndex];
           if (SNAPSHOT_ROOT_OMIT_KEYS.has(key)) continue;
-          observedKeyCount += 1;
+          if (key !== expectedKeys[expectedKeyIndex]) {
+            orderedKeysMatch = false;
+            break;
+          }
+          expectedKeyIndex += 1;
+        }
+        if (!orderedKeysMatch || expectedKeyIndex !== expectedKeys.length) {
+          const currentKeySet = new Set();
+          for (let keyIndex = 0; keyIndex < currentKeys.length; keyIndex += 1) {
+            const key = currentKeys[keyIndex];
+            if (!SNAPSHOT_ROOT_OMIT_KEYS.has(key)) currentKeySet.add(key);
+          }
+          if (currentKeySet.size !== expectedKeys.length) return false;
+          for (let keyIndex = 0; keyIndex < expectedKeys.length; keyIndex += 1) {
+            if (!currentKeySet.has(expectedKeys[keyIndex])) return false;
+          }
+        }
+      } else {
+        let orderedKeysMatch = currentKeys.length === expectedKeys.length;
+        if (orderedKeysMatch) {
+          for (let keyIndex = 0; keyIndex < currentKeys.length; keyIndex += 1) {
+            if (currentKeys[keyIndex] !== expectedKeys[keyIndex]) {
+              orderedKeysMatch = false;
+              break;
+            }
+          }
+        }
+        if (!orderedKeysMatch) {
+          // Stable ordinary graphs take the allocation-free ordered path. A
+          // harmless Proxy reorder falls back to a complete private Set check;
+          // a replacement key still fails membership without a second source
+          // ownKeys observation.
+          const currentKeySet = new Set(currentKeys);
+          if (currentKeySet.size !== expectedKeys.length) return false;
+          for (let keyIndex = 0; keyIndex < expectedKeys.length; keyIndex += 1) {
+            if (!currentKeySet.has(expectedKeys[keyIndex])) return false;
+          }
         }
       }
-      if (observedKeyCount !== expectedKeys.length) return false;
       // Snapshot properties are sorted during capture, so source key order is
-      // not semantic. The count catches additions/deletions and the descriptor
-      // probes below catch replacements while still checking Proxy-hidden
-      // schema fields.
-      // Charge the complete descriptor witness once per node. Keeping this
-      // accounting outside the inner loop preserves the same hard cap while
-      // avoiding one closure call for every captured field on the hot path.
-      const descriptorKeys = record.relevantDescriptorKeys;
-      const descriptorValues = record.relevantDescriptorValues;
-      const descriptorPresent = record.relevantDescriptorPresent;
-      const descriptorEnumerable = record.relevantDescriptorEnumerable;
-      const descriptorCost = descriptorKeys.length;
-      if (observedKeyCount > remaining || descriptorCost > remaining - observedKeyCount) return false;
-      remaining -= observedKeyCount + descriptorCost;
+      // not semantic. The ordered witness catches the common additions,
+      // deletions and virtual replacements without allocation; a reordered
+      // Proxy falls back to the complete private Set membership check.
 
       for (let descriptorIndex = 0; descriptorIndex < descriptorCost; descriptorIndex += 1) {
         const key = descriptorKeys[descriptorIndex];
         const observed = getReflectOwnPropertyDescriptor(source, key);
-        if (!descriptorPresent[descriptorIndex]) {
+        const expectedFlags = descriptorFlags[descriptorIndex];
+        if (expectedFlags === 0) {
           if (observed !== undefined) return false;
           continue;
         }
         if (observed === undefined || !('value' in observed)
-            || descriptorEnumerable[descriptorIndex] !== observed.enumerable
-            || !Object.is(descriptorValues[descriptorIndex], observed.value)) return false;
+            || observed.enumerable !== (expectedFlags === 3)) return false;
+        const expectedValue = descriptorValues[descriptorIndex];
+        const observedValue = observed.value;
+        // Semantic capture rejects NaN, so strict equality covers the common
+        // primitive/reference case. Retain Object.is only for signed zero and
+        // the unequal fallback, preserving the exact value contract cheaply.
+        if (expectedValue === observedValue) {
+          if (expectedValue === 0 && !Object.is(expectedValue, observedValue)) return false;
+        } else if (!Object.is(expectedValue, observedValue)) return false;
       }
 
       if (record.kind === 'map') {
         const map = SNAPSHOT_MAP_TARGETS.get(source) ?? source;
         const size = getMapSize.call(map);
         if (size !== record.collectionEntries.length) return false;
-        if (size > remaining) return false;
-        remaining -= size;
         const entries = Array.from(Map.prototype.entries.call(map));
         if (entries.length !== record.collectionEntries.length) return false;
         for (let index = 0; index < entries.length; index += 1) {
@@ -670,8 +704,6 @@ function rawSnapshotMatches(entry) {
         const set = SNAPSHOT_SET_TARGETS.get(source) ?? source;
         const size = getSetSize.call(set);
         if (size !== record.collectionEntries.length) return false;
-        if (size > remaining) return false;
-        remaining -= size;
         const values = Array.from(Set.prototype.values.call(set));
         if (values.length !== record.collectionEntries.length) return false;
         for (let index = 0; index < values.length; index += 1) {
@@ -696,16 +728,23 @@ function rawSnapshotMatches(entry) {
  * caller mutation. Canonical producer artifacts remain producer-owned leaves:
  * their private brand and deep freeze are the stronger ownership proof.
  */
-function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
+function capturePhase8SemanticSnapshotWithBudget(ir, workBudget, {
+  reuseCache = true,
+  rejectOnCacheMismatch = false,
+} = {}) {
   if (PHASE8_SEMANTIC_SNAPSHOTS.has(ir)) return ir;
   if (ir == null || typeof ir !== 'object' || Array.isArray(ir)) {
     throw new TypeError('identity-invalid-semantic-ir');
   }
 
-  const cached = RAW_SNAPSHOT_CACHE.get(ir);
-  if (cached != null) {
-    if (rawSnapshotMatches(cached)) return cached.snapshot;
-    RAW_SNAPSHOT_CACHE.delete(ir);
+  if (reuseCache) {
+    const cached = RAW_SNAPSHOT_CACHE.get(ir);
+    if (cached != null) {
+      const matches = rawSnapshotMatches(cached, workBudget);
+      if (matches) return cached.snapshot;
+      RAW_SNAPSHOT_CACHE.delete(ir);
+      if (rejectOnCacheMismatch) throw new TypeError('identity-live-producer-cache-mismatch');
+    }
   }
 
   const records = new WeakMap();
@@ -963,30 +1002,30 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   // only those mutable or internal-slot records, so no validator bookkeeping is
   // allocated or traversed for frozen records that never need a source check.
   const validationRecords = [];
+  let validationCost = recordList.length;
   for (const record of recordList) {
     record.relevantReportedKeys = record.omitRootKeys
       ? record.reportedKeys.filter((key) => !SNAPSHOT_ROOT_OMIT_KEYS.has(key))
       : record.reportedKeys;
     const relevantDescriptorKeys = [];
     const relevantDescriptorValues = [];
-    const relevantDescriptorPresent = [];
-    const relevantDescriptorEnumerable = [];
+    const relevantDescriptorFlags = [];
     for (const [key, descriptor] of record.descriptors) {
       if (record.omitRootKeys && SNAPSHOT_ROOT_OMIT_KEYS.has(key)) continue;
       relevantDescriptorKeys.push(key);
       relevantDescriptorValues.push(descriptor?.value);
-      relevantDescriptorPresent.push(descriptor != null);
-      relevantDescriptorEnumerable.push(descriptor?.enumerable ?? false);
+      relevantDescriptorFlags.push(descriptor == null ? 0 : descriptor.enumerable ? 3 : 1);
     }
     record.relevantDescriptorKeys = relevantDescriptorKeys;
     record.relevantDescriptorValues = relevantDescriptorValues;
-    record.relevantDescriptorPresent = relevantDescriptorPresent;
-    record.relevantDescriptorEnumerable = relevantDescriptorEnumerable;
+    record.relevantDescriptorFlags = relevantDescriptorFlags;
     Object.freeze(record.relevantReportedKeys);
     Object.freeze(record.relevantDescriptorKeys);
     Object.freeze(record.relevantDescriptorValues);
-    Object.freeze(record.relevantDescriptorPresent);
-    Object.freeze(record.relevantDescriptorEnumerable);
+    Object.freeze(record.relevantDescriptorFlags);
+    validationCost += record.relevantReportedKeys.length + relevantDescriptorKeys.length;
+    if (record.kind === 'map') validationCost += record.collectionEntries.length * 2;
+    else if (record.kind === 'set') validationCost += record.collectionEntries.length;
     // Retain only the witness used on a cache hit. Capture's descriptor maps,
     // role sets and clone bookkeeping are no longer needed after publication.
     validationRecords.push(Object.freeze({
@@ -997,8 +1036,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
       relevantReportedKeys: record.relevantReportedKeys,
       relevantDescriptorKeys: record.relevantDescriptorKeys,
       relevantDescriptorValues: record.relevantDescriptorValues,
-      relevantDescriptorPresent: record.relevantDescriptorPresent,
-      relevantDescriptorEnumerable: record.relevantDescriptorEnumerable,
+      relevantDescriptorFlags: record.relevantDescriptorFlags,
       collectionEntries: record.collectionEntries,
       dateValue: record.dateValue,
     }));
@@ -1007,9 +1045,10 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   const cacheEntry = Object.freeze({
     raw:ir,
     snapshot,
+    validationCost,
     validationRecords:Object.freeze(validationRecords),
   });
-  RAW_SNAPSHOT_CACHE.set(ir, cacheEntry);
+  if (reuseCache) RAW_SNAPSHOT_CACHE.set(ir, cacheEntry);
   return snapshot;
 }
 
@@ -2030,8 +2069,12 @@ export function phase8SemanticSnapshotShapeDigest(ir) {
       if (cached != null) return cached;
     }
     const workBudget = createIdentityWorkBudget();
+    // Keep live producers behind the same descriptor-only immutable snapshot
+    // boundary as every other identity consumer. This fallback is used only
+    // when both canonical identity authorities are unavailable, so its extra
+    // capture cannot affect the normal publication hot path.
     const snapshot = isPhase8SemanticSnapshot(ir)
-      ? ir : capturePhase8SemanticSnapshotWithBudget(ir, workBudget);
+      ? ir : capturePhase8SemanticSnapshotWithBudget(ir, workBudget, { reuseCache:false });
     return irShapeDigest(irShape(snapshot, workBudget));
   } catch {
     return null;
@@ -2291,8 +2334,20 @@ export function canonicalAnalysisIdentity(context = {}) {
   } : null);
   let ir;
   try {
-    ir = isPhase8SemanticSnapshot(rawIr)
-      ? rawIr : capturePhase8SemanticSnapshotWithBudget(rawIr, workBudget);
+    if (isPhase8SemanticSnapshot(rawIr)) {
+      ir = rawIr;
+    } else {
+      // Identity derivation is itself an authority boundary. A live producer
+      // must never take an unchecked raw snapshot cache hit here. Publication
+      // callers may use the bounded descriptor witness, but any confirmed
+      // mismatch is rejected instead of silently recapturing through a
+      // re-entrant producer trap.
+      const publicationWitness = typeof context?.analysis?.get === 'function';
+      ir = capturePhase8SemanticSnapshotWithBudget(rawIr, workBudget, {
+        reuseCache:publicationWitness,
+        rejectOnCacheMismatch:publicationWitness,
+      });
+    }
   } catch {
     return { identity: null, valid: false, reason: 'canonical Semantic IR snapshot is unavailable' };
   }

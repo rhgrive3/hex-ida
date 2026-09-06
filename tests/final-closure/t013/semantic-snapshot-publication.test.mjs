@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ANALYSIS_KEYS, createPassDescriptor, createPassResult } from '../../../js/decompiler/phase8/contract.js';
-import { capturePhase8SemanticSnapshot } from '../../../js/decompiler/phase8/analysis-identity.js';
+import { capturePhase8SemanticSnapshot, canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
 import {
+  analysisSemanticSnapshotIsCurrent,
   createAnalysisState,
   runPassTransaction,
   runPassTransactionBatch,
@@ -73,6 +74,96 @@ function assertStateUnchanged(state, before) {
   assert.deepEqual(state.snapshot(), before.versions);
   for (const key of ANALYSIS_KEYS) assert.equal(state.get(key), before.values[key], `${key} value changed`);
 }
+
+test('T013 cached snapshots compare the complete current property set', () => {
+  for (const target of [{}, []]) {
+    let currentKey = 'a';
+    const extra = new Proxy(target, {
+      ownKeys(object) { return [...Reflect.ownKeys(object), currentKey]; },
+      getOwnPropertyDescriptor(object, key) {
+        if (key === 'a' || key === 'b') {
+          return { value:key === 'a' ? 1 : 2, enumerable:true, configurable:true, writable:true };
+        }
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+    const ir = { extra };
+    const first = capturePhase8SemanticSnapshot(ir);
+    currentKey = 'b';
+    const second = capturePhase8SemanticSnapshot(ir);
+    assert.notEqual(second, first);
+    assert.equal(Object.hasOwn(second.extra, 'a'), false);
+    assert.equal(second.extra.b, 2);
+  }
+});
+
+test('T013 cache validation cannot hide a reentrant ownKeys mutation', () => {
+  const makeGraph = () => {
+    const target = { id:1, bits:8, origin:{ instructionIds:['v'] } };
+    let phase = 'seed';
+    let ownKeyCalls = 0;
+    const value = new Proxy(target, {
+      ownKeys(object) {
+        ownKeyCalls += 1;
+        if (ownKeyCalls === 2) object.id = 99;
+        if (ownKeyCalls === 3) object.id = 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, key) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(object, key);
+        if (phase === 'validate' && key === 'origin') object.id = 99;
+        return descriptor;
+      },
+    });
+    return {
+      ir:{ values:[value], blocks:[], entry:null },
+      target,
+      setPhase(next) { phase = next; },
+    };
+  };
+
+  // A cache hit must not return the immutable graph captured before the trap
+  // changed the producer. The separate graph below checks the publication
+  // guard without consuming the cache-validation ownKeys call first.
+  const cachedGraph = makeGraph();
+  const first = capturePhase8SemanticSnapshot(cachedGraph.ir);
+  cachedGraph.setPhase('validate');
+  const second = capturePhase8SemanticSnapshot(cachedGraph.ir);
+  assert.notEqual(second, first, 'reentrant ownKeys mutation must discard the raw cache');
+  assert.equal(first.values[0].id, 1);
+  assert.equal(cachedGraph.target.id, 99);
+
+  const publicationGraph = makeGraph();
+  const state = seedAnalysisState(publicationGraph.ir);
+  publicationGraph.setPhase('validate');
+  assert.equal(analysisSemanticSnapshotIsCurrent(state, {}), false,
+    'publication must use one uncached producer witness after a reentrant mutation');
+  assert.equal(semanticSnapshotForAnalysis(state).values[0].id, 1);
+  assert.equal(publicationGraph.target.id, 99);
+
+  const identityGraph = makeGraph();
+  const identityFirst = canonicalAnalysisIdentity({ ir:identityGraph.ir });
+  identityGraph.setPhase('validate');
+  const identitySecond = canonicalAnalysisIdentity({ ir:identityGraph.ir });
+  assert.equal(identityFirst.valid, true);
+  assert.equal(identitySecond.valid, true);
+  assert.notEqual(identitySecond.semanticSnapshot, identityFirst.semanticSnapshot,
+    'identity derivation must not reuse a stale live-producer snapshot');
+  assert.notEqual(identitySecond.identity.shapeDigest, identityFirst.identity.shapeDigest);
+});
+
+test('T013 cached witness and authority traversal share the fixed work budget', () => {
+  const makeIr = () => ({ values:[], blocks:[], entry:null,
+    extra:new Map(Array.from({ length:125000 }, (_, index) => [index, 0])) });
+  const ir = makeIr();
+  capturePhase8SemanticSnapshot(ir);
+  assert.equal(canonicalAnalysisIdentity({ ir }).valid, true);
+  const authority = { nested:new Array(1000000) };
+  const warm = canonicalAnalysisIdentity({ ir, analysisIdentity:authority });
+  const cold = canonicalAnalysisIdentity({ ir:makeIr(), analysisIdentity:authority });
+  assert.equal(cold.valid, false);
+  assert.equal(warm.valid, false, 'cache validation must not receive a separate work allowance');
+});
 
 test('T013 raw snapshot witness rechecks mutable fields and hidden proxy fields', () => {
   const target = { id:1, bits:8 };
