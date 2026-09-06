@@ -1,20 +1,17 @@
 import { stableDigest } from "../../core/identity/index.js";
-import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleError } from "./snapshot.js";
+import {
+  assertAnalysisSnapshot,
+  createAnalysisSnapshot,
+  AnalysisSnapshotStaleError,
+  normalizeAnalysisArtifactVersions,
+} from "./snapshot.js";
 
 const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
 
-function artifactVersionsRecord(value) {
-  if (value === null || value === undefined) return {};
-  if (typeof value !== "object" || Array.isArray(value)) return null;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null ? value : null;
-}
-
 function artifactVersionsEqual(left, right) {
   try {
-    const normalizedLeft = artifactVersionsRecord(left);
-    const normalizedRight = artifactVersionsRecord(right);
-    if (normalizedLeft == null || normalizedRight == null) return false;
+    const normalizedLeft = normalizeAnalysisArtifactVersions(left);
+    const normalizedRight = normalizeAnalysisArtifactVersions(right);
     return stableDigest(normalizedLeft) === stableDigest(normalizedRight);
   } catch {
     return false;
@@ -55,16 +52,33 @@ function unavailable(method) {
 }
 
 function completenessOf(result) {
-  const raw = result?.status?.completeness ?? result?.completeness;
-  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
-  if (raw && typeof raw === "object") {
-    if (raw.complete === true) return result?.truncated === true ? "truncated" : "complete";
-    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
-  }
   if (result?.unsupported === true) return "unsupported";
   if (result?.truncated === true) return "truncated";
   if (result?.partial === true || result?.complete === false) return "partial";
+
+  const raw = result?.status?.completeness ?? result?.completeness;
+  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
+  if (raw && typeof raw === "object") {
+    if (raw.complete === true) return "complete";
+    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
+  }
   return "partial";
+}
+
+function preserveKnownQueryLimitContinuation(result) {
+  const page = result?.page;
+  const queryLimited = result?.status?.reason === "query-limit"
+    || result?.status?.truncationReason === "query-limit";
+  if (result?.completeness !== "partial" || !queryLimited || page?.next != null) return result;
+  const offset = safeNonNegativeInteger(page?.offset);
+  const returned = safeNonNegativeInteger(page?.returned);
+  if (offset == null || returned == null || returned === 0) return result;
+  const next = offset + returned;
+  if (!Number.isSafeInteger(next) || next <= offset) return result;
+  return Object.freeze({
+    ...result,
+    page: Object.freeze({ ...page, next }),
+  });
 }
 
 export class AnalysisQueryAPI {
@@ -170,7 +184,8 @@ export class AnalysisQueryAPI {
   }
 
   async xrefs(snapshot, entityId, page = {}, options = {}) {
-    return this.#query("xrefs", snapshot, [entityId, page], options);
+    const result = await this.#query("xrefs", snapshot, [entityId, page], options);
+    return preserveKnownQueryLimitContinuation(result);
   }
 
   async types(snapshot, scope, page = {}, options = {}) {

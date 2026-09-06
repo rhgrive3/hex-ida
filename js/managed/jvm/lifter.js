@@ -1,6 +1,7 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -361,9 +362,18 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
         break;
 
       default:
-        mnemonic = `jvm_op_0x${opcode.toString(16)}`;
-        completeness = 'partial';
-        unknownEffects.push({ category: 'other', reason: `unsupported-jvm-opcode-0x${opcode.toString(16)}` });
+        {
+          const boundary = decodeJvmInstructionBoundary(bytecode, opOffset);
+          pc = Math.max(pc, boundary.end);
+          mnemonic = `jvm_op_0x${opcode.toString(16)}`;
+          completeness = 'partial';
+          unknownEffects.push({
+            category: 'other',
+            reason: boundary.complete
+              ? `unsupported-jvm-opcode-0x${opcode.toString(16)}`
+              : `unsupported-jvm-opcode-0x${opcode.toString(16)}-malformed-boundary`,
+          });
+        }
         break;
     }
 
