@@ -808,6 +808,7 @@
             "end": "\n  }\n\n  accept(envelope)",
             "regex": "reason: '([^']+)'",
             "expected": [
+              "remote-envelope-shape-invalid",
               "remote-envelope-schema-unsupported",
               "remote-operation-schema-unsupported",
               "remote-project-identity-required",

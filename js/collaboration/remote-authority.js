@@ -8,6 +8,7 @@ export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
 export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
+const VALIDATED_REMOTE_SNAPSHOTS = new WeakMap();
 const MAX_MESSAGE_ID_LENGTH = 512;
 
 function validMessageId(value) {
@@ -66,6 +67,46 @@ function isPlainRecord(value) {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+const SNAPSHOT_SCAN_DEPTH_LIMIT = 64;
+
+function hasAccessorProperty(owner, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+  return typeof descriptor === 'object' && descriptor !== null
+    && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function');
+}
+
+function scanForAccessors(value, depth, seen) {
+  if (value == null || typeof value !== 'object') return true;
+  if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  if (Object.getOwnPropertySymbols(value).length > 0) return false;
+  for (const key of Object.keys(value)) {
+    if (hasAccessorProperty(value, key)) return false;
+    if (!scanForAccessors(value[key], depth + 1, seen)) return false;
+  }
+  return true;
+}
+
+// Untrusted remote envelopes must be captured once into an owned snapshot.
+// Accessor-backed or symbol-keyed authority fields are fail-closed rejected:
+// a stateful getter could otherwise present one value to validation and a
+// different one to authorization or ChangeLog application (validation/use
+// TOCTOU). Every downstream consumer reads only this frozen snapshot, cloned
+// faithfully so validated values equal applied values without coercion.
+function snapshotRemoteEnvelope(envelope) {
+  if (!isPlainRecord(envelope)) return null;
+  if (!scanForAccessors(envelope, 0, new Set())) return null;
+  let snapshot;
+  try {
+    snapshot = structuredClone(envelope);
+  } catch {
+    return null;
+  }
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  return deepFreeze(snapshot);
 }
 
 function isCanonicalRemoteOperation(operation) {
@@ -178,63 +219,76 @@ export class RemoteCollaborationGate {
 
   validate(envelope) {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
-    if (!envelope || !this.supportedEnvelopeSchemas.has(envelope.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
-    if (!this.supportedOperationSchemas.has(envelope.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
-    if (!validRawIdentity(envelope.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
-    if (envelope.binaryIdentity != null && !validRawIdentity(envelope.binaryIdentity)) return { ok: false, reason: 'remote-binary-identity-invalid' };
-    if (!validRawIdentity(envelope.sessionIdentity)) return { ok: false, reason: 'remote-session-identity-required' };
-    if (!validRawIdentity(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-identity-required' };
-    if (!validRawIdentity(envelope.deviceIdentity)) return { ok: false, reason: 'remote-device-identity-required' };
-    if (!validRawIdentity(envelope.messageId)) return { ok: false, reason: 'remote-message-id-required' };
-    if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
-    if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
-    if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
-    if (!validSequence(envelope.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
+    const snap = snapshotRemoteEnvelope(envelope);
+    if (!snap) return { ok: false, reason: 'remote-envelope-shape-invalid' };
+    VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
+    if (!this.supportedEnvelopeSchemas.has(snap.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
+    if (!this.supportedOperationSchemas.has(snap.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
+    if (!validRawIdentity(snap.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
+    if (snap.binaryIdentity != null && !validRawIdentity(snap.binaryIdentity)) return { ok: false, reason: 'remote-binary-identity-invalid' };
+    if (!validRawIdentity(snap.sessionIdentity)) return { ok: false, reason: 'remote-session-identity-required' };
+    if (!validRawIdentity(snap.actorIdentity)) return { ok: false, reason: 'remote-actor-identity-required' };
+    if (!validRawIdentity(snap.deviceIdentity)) return { ok: false, reason: 'remote-device-identity-required' };
+    if (!validRawIdentity(snap.messageId)) return { ok: false, reason: 'remote-message-id-required' };
+    if (snap.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
+    if ((snap.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
+    if (snap.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };
+    if (!validSequence(snap.sequence)) return { ok: false, reason: 'remote-sequence-invalid' };
     // Replay authority rests on `messageId`, so untrusted ingress must verify
     // its raw shape itself: a missing or structured value would otherwise be
     // accepted as a Set key (compared by object identity) or skipped entirely.
-    if (!validMessageId(envelope.messageId)) return { ok: false, reason: 'remote-message-id-invalid' };
-    if (typeof envelope.envelopeId !== 'string' || envelope.envelopeId !== envelopeIdentity(envelope)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
-    if (this.revokedActors.has(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
-    const permissions = Object.hasOwn(this.allowedActors, envelope.actorIdentity) ? this.allowedActors[envelope.actorIdentity] : null;
+    if (!validMessageId(snap.messageId)) return { ok: false, reason: 'remote-message-id-invalid' };
+    if (typeof snap.envelopeId !== 'string' || snap.envelopeId !== envelopeIdentity(snap)) return { ok: false, reason: 'remote-envelope-identity-mismatch' };
+    if (this.revokedActors.has(snap.actorIdentity)) return { ok: false, reason: 'remote-actor-revoked' };
+    const permissions = Object.hasOwn(this.allowedActors, snap.actorIdentity) ? this.allowedActors[snap.actorIdentity] : null;
     if (!permissions) return { ok: false, reason: 'remote-actor-unauthorized' };
-    if (this.seenMessages.has(envelope.messageId) || this.seenEnvelopeIds.has(envelope.envelopeId)) return { ok: false, reason: 'remote-replay-or-duplicate' };
-    const previous = this.lastSequenceByActor.get(envelope.actorIdentity);
-    if (previous != null && envelope.sequence <= previous) return { ok: false, reason: 'remote-stale-sequence' };
-    if (!Array.isArray(envelope.operations) || envelope.operations.length === 0 || envelope.operations.length > this.maxBatch) return { ok: false, reason: 'remote-batch-budget-exceeded' };
-    if (byteLength(envelope) > this.maxMessageBytes) return { ok: false, reason: 'remote-message-budget-exceeded' };
-    if (envelope.transportProof?.authenticated !== true || envelope.transportProof?.confidentiality !== 'verified' || envelope.transportProof?.integrity !== 'verified') {
+    if (this.seenMessages.has(snap.messageId) || this.seenEnvelopeIds.has(snap.envelopeId)) return { ok: false, reason: 'remote-replay-or-duplicate' };
+    const previous = this.lastSequenceByActor.get(snap.actorIdentity);
+    if (previous != null && snap.sequence <= previous) return { ok: false, reason: 'remote-stale-sequence' };
+    if (!Array.isArray(snap.operations) || snap.operations.length === 0 || snap.operations.length > this.maxBatch) return { ok: false, reason: 'remote-batch-budget-exceeded' };
+    if (byteLength(snap) > this.maxMessageBytes) return { ok: false, reason: 'remote-message-budget-exceeded' };
+    if (snap.transportProof?.authenticated !== true || snap.transportProof?.confidentiality !== 'verified' || snap.transportProof?.integrity !== 'verified') {
       return { ok: false, reason: 'remote-transport-security-unverified' };
     }
     if (!this.verifyTransportProof) return { ok: false, reason: 'remote-transport-proof-verifier-required' };
     let verified = false;
-    try { verified = this.verifyTransportProof(envelope.transportProof, envelope) === true; }
+    try { verified = this.verifyTransportProof(snap.transportProof, snap) === true; }
     catch { return { ok: false, reason: 'remote-transport-proof-rejected' }; }
     if (!verified) return { ok: false, reason: 'remote-transport-proof-rejected' };
-    if (envelope.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
-    if (envelope.egress?.rawBinaryBytes === true || envelope.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
-    for (const operation of envelope.operations) {
+    if (snap.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
+    if (snap.egress?.rawBinaryBytes === true || snap.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
+    for (const operation of snap.operations) {
       if (!isCanonicalRemoteOperation(operation)) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
-      if (operation.authorIdentity !== envelope.actorIdentity || operation.deviceIdentity !== envelope.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
+      if (operation.authorIdentity !== snap.actorIdentity || operation.deviceIdentity !== snap.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
       if (operation.provenance?.transport !== 'remote') return { ok: false, reason: 'remote-operation-provenance-invalid' };
       if (!authorized(permissions, operation)) return { ok: false, reason: 'remote-operation-not-authorized', factKind: operation.factKind, action: operation.action };
     }
+    VALIDATED_REMOTE_SNAPSHOTS.set(envelope, snap);
     VERIFIED_TRANSPORT_PROOFS.set(this, Object.freeze({
-      envelopeId: envelope.envelopeId,
+      envelopeId: snap.envelopeId,
       verifier: this.verifyTransportProof,
       verifierIdentity: this.transportVerifierIdentity,
     }));
     return { ok: true };
   }
 
+  // The exact owned snapshot captured during validation. Delivery paths must
+  // apply these frozen operations — never the caller-owned raw envelope — so
+  // validated state and used state cannot diverge.
+  validatedSnapshot(envelope) {
+    return VALIDATED_REMOTE_SNAPSHOTS.get(envelope) ?? null;
+  }
+
   accept(envelope) {
     const checked = this.validate(envelope);
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
-    this.seenMessages.add(envelope.messageId);
-    this.seenEnvelopeIds.add(envelope.envelopeId);
-    this.lastSequenceByActor.set(envelope.actorIdentity, envelope.sequence);
-    return Object.freeze({ status: 'accepted', envelopeId: envelope.envelopeId, operationCount: envelope.operations.length });
+    const snap = this.validatedSnapshot(envelope);
+    if (!snap) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
+    this.seenMessages.add(snap.messageId);
+    this.seenEnvelopeIds.add(snap.envelopeId);
+    this.lastSequenceByActor.set(snap.actorIdentity, snap.sequence);
+    return Object.freeze({ status: 'accepted', envelopeId: snap.envelopeId, operationCount: snap.operations.length });
   }
 
   revoke(actorIdentity) {

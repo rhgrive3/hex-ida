@@ -53,9 +53,15 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   const checked = gate.validate(envelope);
   if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
 
+  // Apply the gate's owned ingress snapshot, not the caller-owned envelope:
+  // validated state (canonicality, authorization, digest) and applied state
+  // must be the exact same frozen data (validation/use TOCTOU guard).
+  const snap = typeof gate.validatedSnapshot === 'function' ? gate.validatedSnapshot(envelope) : null;
+  if (!snap || !Array.isArray(snap.operations)) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
+
   const working = cloneWorking(log);
   const results = [];
-  for (const operation of envelope.operations) {
+  for (const operation of snap.operations) {
     const result = working.applyOperation(operation);
     results.push(result);
     if (result.status === 'rejected') return Object.freeze({ status: 'rejected', reason: result.reason, operationId: operation.operationId });
