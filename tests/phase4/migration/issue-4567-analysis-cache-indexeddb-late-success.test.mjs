@@ -79,6 +79,33 @@ test('#4567 AnalysisCache closes a DB from blocked then late success', async () 
   assert.equal(late.closes, 1, 'late successful connection must be discarded exactly once');
 });
 
+test('#4567 AnalysisCache late success cannot overwrite a retry connection', async () => {
+  const fake = controlledIndexedDB();
+  const late = readableDb();
+  const live = readableDb();
+  const firstCache = new AnalysisCache({ indexedDB:fake.indexedDB, fallbackMode:'error' });
+  const firstGet = firstCache.get('hash');
+
+  fake.blocked(0);
+  await assert.rejects(firstGet, /IndexedDB open blocked/);
+
+  const retryCache = new AnalysisCache({ indexedDB:fake.indexedDB, fallbackMode:'error' });
+  const retryGet = retryCache.get('hash');
+  assert.equal(fake.requests.length, 2, 'retry must own a distinct open request');
+
+  fake.success(live.db, 1);
+  assert.equal(await retryGet, null);
+  assert.equal(live.closes, 0, 'retry connection must remain owned');
+
+  fake.success(late.db, 0);
+  assert.equal(late.closes, 1, 'old late-success connection must be discarded');
+  assert.equal(live.closes, 0, 'old request must not close the retry connection');
+
+  assert.equal(await retryCache.get('hash'), null);
+  assert.equal(fake.requests.length, 2, 'accepted retry connection must be reused');
+  assert.equal(live.closes, 0);
+});
+
 test('#4567 AnalysisCache ignores a late error after blocked settlement', async () => {
   const fake = controlledIndexedDB();
   const cache = new AnalysisCache({ indexedDB:fake.indexedDB, fallbackMode:'error' });
