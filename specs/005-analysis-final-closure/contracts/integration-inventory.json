@@ -568,7 +568,7 @@
   "campaignStage": "STAGE_A",
   "integrationRef": "recovery/final-closure-v3-20260904",
   "baseRef": "origin/main",
-  "baseSha": "eef6223fc08d90ef3e86b5eb8e4a56c06f04af84",
+  "baseSha": "185c3a5a71b4a0dc889b0de8f53732f575831a62",
   "candidateRef": "HEAD",
   "taskHandoffRevalidations": {
     "T058": {
@@ -698,7 +698,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -733,8 +732,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -744,9 +741,7 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs",
-    "userscript/hex.user.template.js",
-    "userscript/release-version.json"
+    "tools/validation/phase12/ownership.mjs"
   ],
   "actualChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -755,7 +750,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -790,8 +784,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -801,9 +793,7 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs",
-    "userscript/hex.user.template.js",
-    "userscript/release-version.json"
+    "tools/validation/phase12/ownership.mjs"
   ],
   "unionChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -812,7 +802,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -847,8 +836,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -858,9 +845,7 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs",
-    "userscript/hex.user.template.js",
-    "userscript/release-version.json"
+    "tools/validation/phase12/ownership.mjs"
   ],
   "entries": [
     {
@@ -886,10 +871,6 @@
     {
       "path": "js/ai/dev/ui/controls.js",
       "ownerTaskId": "T051"
-    },
-    {
-      "path": "js/collaboration/index.js",
-      "ownerTaskId": "T052"
     },
     {
       "path": "js/core/scheduler/analysis-scheduler.js",
@@ -1028,14 +1009,6 @@
       "ownerTaskId": "T057"
     },
     {
-      "path": "tests/phase12/adversarial/trust-boundaries.test.mjs",
-      "ownerTaskId": "T052"
-    },
-    {
-      "path": "tests/phase12/integration/facade.test.mjs",
-      "ownerTaskId": "T052"
-    },
-    {
       "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",
       "ownerTaskId": "T058"
     },
@@ -1074,14 +1047,6 @@
     {
       "path": "tools/validation/phase12/ownership.mjs",
       "ownerTaskId": "T046"
-    },
-    {
-      "path": "userscript/hex.user.template.js",
-      "ownerTaskId": "T049"
-    },
-    {
-      "path": "userscript/release-version.json",
-      "ownerTaskId": "T049"
     }
   ],
   "movingMainAmendment": {
