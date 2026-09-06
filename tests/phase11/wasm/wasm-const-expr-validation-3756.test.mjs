@@ -15,7 +15,9 @@ const importedGlobal = (mutable = false) => section(2, [
   0x03,             // global import
   0x7f, mutable ? 0x01 : 0x00,
 ]);
-const globalSection = (valType, expr) => section(6, [0x01, valType, 0x00, ...expr]);
+const globalDef = (valType, mutable, expr) => [valType, mutable ? 0x01 : 0x00, ...expr];
+const globalsSection = (...globals) => section(6, [globals.length, ...globals.flat()]);
+const globalSection = (valType, expr) => globalsSection(globalDef(valType, false, expr));
 
 assert.throws(
   () => parseWasm(wasm(globalSection(0x7f, [0x23, 0x00, 0x0b]))),
@@ -35,6 +37,29 @@ assert.throws(
   )),
   /wasm-invalid-const-expr-global-mutability/,
   'constant expressions may not read mutable imported globals',
+);
+
+assert.doesNotThrow(() => parseWasm(wasm(globalsSection(
+  globalDef(0x7f, false, i32Zero),
+  globalDef(0x7f, false, [0x23, 0x00, 0x0b]),
+))));
+
+assert.throws(
+  () => parseWasm(wasm(globalsSection(
+    globalDef(0x7f, false, [0x23, 0x01, 0x0b]),
+    globalDef(0x7f, false, i32Zero),
+  ))),
+  /wasm-invalid-const-expr-global-index/,
+  'global initializers must not reference later defined globals',
+);
+
+assert.throws(
+  () => parseWasm(wasm(globalsSection(
+    globalDef(0x7f, true, i32Zero),
+    globalDef(0x7f, false, [0x23, 0x00, 0x0b]),
+  ))),
+  /wasm-invalid-const-expr-global-mutability/,
+  'global initializers must not read previously defined mutable globals',
 );
 
 assert.doesNotThrow(() => parseWasm(wasm(globalSection(0x7f, i32Zero))));
