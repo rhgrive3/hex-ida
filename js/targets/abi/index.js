@@ -57,14 +57,7 @@ export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
   }
   const callingConvention = requestedCallingConvention(target);
   const explicit = target?.abiId || (typeof target?.abi === 'string' ? target.abi : null);
-  if (explicit) {
-    return findABIPlugin({
-      id: explicit,
-      callingConvention,
-      architecture: target?.architectureId || target?.architecture || target?.arch,
-      platform: target?.platformId || target?.platform || target?.os,
-    }) || UNKNOWN_ABI;
-  }
+  if (explicit) return findABIPlugin({ id:explicit, callingConvention }) || UNKNOWN_ABI;
   const found = findABIPlugin({
     architecture:target?.architectureId || target?.architecture || target?.arch,
     platform:target?.platformId || target?.platform || target?.os,
