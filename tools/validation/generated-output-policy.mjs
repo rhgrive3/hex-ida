@@ -1,8 +1,8 @@
 /*
  * Generated userscript ownership is a transaction boundary. Component lanes
- * build the outputs ephemerally; only the main/integration lane may publish
- * the committed projection. Keep this decision in one small, testable policy
- * so workflow jobs cannot accidentally turn a component into a release lane.
+ * build the outputs ephemerally; PRs into release branches and explicit
+ * integration lanes own the committed projection. Keep this decision in one
+ * small, testable policy so workflows cannot bypass protected-branch rules.
  */
 
 export const GENERATED_OUTPUT_MODE = Object.freeze({
@@ -10,14 +10,13 @@ export const GENERATED_OUTPUT_MODE = Object.freeze({
   EPHEMERAL: 'ephemeral',
 });
 
-// Generated files the release integration lane may publish automatically.
-// Anything else is source and must never ride along in an automated sync.
 export const CANONICAL_GENERATED_OUTPUT_PATHS = Object.freeze([
   'userscript/hex.user.template.js',
   'userscript/release-version.json',
 ]);
 
 const RELEASE_CONTEXTS = Object.freeze(['main', 'release']);
+const WRITE_CONTEXTS = Object.freeze(['release']);
 const CANONICAL_OUTPUT_PATH_SET = new Set(CANONICAL_GENERATED_OUTPUT_PATHS);
 
 function normalizeRepoPath(value) {
@@ -27,9 +26,9 @@ function normalizeRepoPath(value) {
 }
 
 /*
- * A write-capable generated-output sync is permitted only on an explicit
- * release branch and only when every changed path is canonical generated
- * output. Deleted generated files and source-side build effects fail closed.
+ * Direct generated-output commits are never permitted on protected main.
+ * The legacy publisher remains available only for an explicit release branch,
+ * while main receives canonical outputs through its pull-request transaction.
  */
 export function resolveCanonicalGeneratedOutputCommit({
   eventName = '',
@@ -39,7 +38,7 @@ export function resolveCanonicalGeneratedOutputCommit({
 } = {}) {
   const event = String(eventName || '');
   const branch = String(refName || '');
-  const permitted = RELEASE_CONTEXTS.includes(branch)
+  const permitted = WRITE_CONTEXTS.includes(branch)
     && (event === 'push' || event === 'workflow_dispatch');
   const changed = Object.freeze([
     ...new Set((Array.isArray(changedPaths) ? changedPaths : [])
@@ -72,20 +71,20 @@ function isValidBranchName(branch) {
   return true;
 }
 
-export function generatedOutputMode({ eventName = '', headRef = '', ref = '' } = {}) {
+export function generatedOutputMode({ eventName = '', headRef = '', baseRef = '', ref = '' } = {}) {
   const event = String(eventName || '');
   const branch = String(headRef || '');
+  const base = String(baseRef || '');
   const refName = String(ref || '');
 
   if (event === 'pull_request' && isValidBranchName(branch)) {
+    if (RELEASE_CONTEXTS.includes(base)) return GENERATED_OUTPUT_MODE.ENFORCE;
     if (INTEGRATION_PREFIXES.some((prefix) => branch.startsWith(prefix))) {
       return GENERATED_OUTPUT_MODE.ENFORCE;
     }
     return GENERATED_OUTPUT_MODE.EPHEMERAL;
   }
 
-  // Pushes to main/release contexts, workflow dispatch, and malformed or
-  // unknown contexts fail closed to canonical generated-output enforcement.
   void refName;
   return GENERATED_OUTPUT_MODE.ENFORCE;
 }
@@ -99,6 +98,7 @@ if (isMain) {
   const mode = generatedOutputMode({
     eventName: process.env.GITHUB_EVENT_NAME,
     headRef: process.env.GITHUB_HEAD_REF,
+    baseRef: process.env.GITHUB_BASE_REF,
     ref: process.env.GITHUB_REF,
   });
   process.stdout.write(`${mode}\n`);

@@ -65,6 +65,22 @@ function completenessOf(result) {
   return "partial";
 }
 
+function preserveKnownQueryLimitContinuation(result) {
+  const page = result?.page;
+  const queryLimited = result?.status?.reason === "query-limit"
+    || result?.status?.truncationReason === "query-limit";
+  if (result?.completeness !== "partial" || !queryLimited || page?.next != null) return result;
+  const offset = safeNonNegativeInteger(page?.offset);
+  const returned = safeNonNegativeInteger(page?.returned);
+  if (offset == null || returned == null || returned === 0) return result;
+  const next = offset + returned;
+  if (!Number.isSafeInteger(next) || next <= offset) return result;
+  return Object.freeze({
+    ...result,
+    page: Object.freeze({ ...page, next }),
+  });
+}
+
 export class AnalysisQueryAPI {
   constructor(adapter) {
     if (!adapter || typeof adapter.currentIdentity !== "function") {
@@ -168,7 +184,8 @@ export class AnalysisQueryAPI {
   }
 
   async xrefs(snapshot, entityId, page = {}, options = {}) {
-    return this.#query("xrefs", snapshot, [entityId, page], options);
+    const result = await this.#query("xrefs", snapshot, [entityId, page], options);
+    return preserveKnownQueryLimitContinuation(result);
   }
 
   async types(snapshot, scope, page = {}, options = {}) {
