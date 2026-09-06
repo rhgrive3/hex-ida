@@ -23,6 +23,55 @@ function invocationFailure(registry, type, id, method, error) {
   return { ok: false, error: failure.error, isolated: true, timeout: false };
 }
 
+function createInvocationLease(context) {
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error('plugin invocation is no longer active');
+  };
+
+  const guardBudget = (budget) => {
+    if (!budget || (typeof budget !== 'object' && typeof budget !== 'function')) return budget;
+    return new Proxy(budget, {
+      get(target, property) {
+        assertActive();
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== 'function') return value;
+        return (...args) => {
+          assertActive();
+          const result = Reflect.apply(value, target, args);
+          return property === 'scope' ? guardBudget(result) : result;
+        };
+      },
+    });
+  };
+
+  const guarded = {
+    ...context,
+    resourceBudget: guardBudget(context?.resourceBudget),
+  };
+
+  if (typeof context?.read === 'function') {
+    guarded.read = async (...args) => {
+      assertActive();
+      const value = await context.read(...args);
+      assertActive();
+      return value;
+    };
+  }
+
+  if (typeof context?.reportProgress === 'function') {
+    guarded.reportProgress = (...args) => {
+      assertActive();
+      return context.reportProgress(...args);
+    };
+  }
+
+  return {
+    context: guarded,
+    revoke() { active = false; },
+  };
+}
+
 export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
   constructor(options = {}) {
     validateExplicitPositiveInteger(options?.timeoutMs, 'plugin timeoutMs');
@@ -95,7 +144,13 @@ export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
     } catch (error) {
       return invocationFailure(this, type, id, method, error);
     }
-    return super.invoke(type, id, method, context, ...args);
+
+    const lease = createInvocationLease(context);
+    try {
+      return await super.invoke(type, id, method, lease.context, ...args);
+    } finally {
+      lease.revoke();
+    }
   }
 }
 
