@@ -1,6 +1,6 @@
 import { TraceRingBuffer } from '../trace/ring-buffer.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { encodeWireValue } from '../debug/remote-protocol.js';
+import { decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
 
 let nextSession = 1;
 
@@ -10,6 +10,11 @@ function sessionSafe(value) {
     if (error instanceof DebugAdapterError) throw new DebugAdapterError('session-serialize', error.message, error.details);
     throw new DebugAdapterError('session-serialize', 'session data is not serializable');
   }
+}
+
+function wireSafeTraceEvent(value) {
+  try { return decodeWireValue(encodeWireValue(value)); }
+  catch { return null; }
 }
 
 function eventEpoch(value) {
@@ -79,9 +84,13 @@ export class DebugSession {
   acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
     if (event) {
-      const epoch = event.epoch != null ? eventEpoch(event.epoch) : eventEpoch(sourceEpoch);
+      const safeEvent = wireSafeTraceEvent(event);
+      if (safeEvent == null) return false;
+      const epoch = safeEvent && typeof safeEvent === 'object' && safeEvent.epoch != null
+        ? eventEpoch(safeEvent.epoch)
+        : eventEpoch(sourceEpoch);
       if (epoch == null || epoch !== this.epoch) return false;
-      this.traces.push(event);
+      this.traces.push(safeEvent);
     }
     return true;
   }
