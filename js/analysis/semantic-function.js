@@ -4,7 +4,11 @@ import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
-import { SEMANTIC_FUNCTION_ROUTE, semanticAbiAdapter } from './semantic-function-base.js';
+import {
+  SEMANTIC_FUNCTION_ROUTE,
+  semanticAbiAdapter,
+  semanticControlUnknowns,
+} from './semantic-function-base.js';
 
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
@@ -28,9 +32,16 @@ function canonicalInstructionAddress(value, code) {
 function addressOf(instruction) {
   return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
 }
+function instructionLengthOf(instruction) {
+  const length = canonicalInstructionAddress(
+    instruction.length ?? instruction.size,
+    'semantic-function-instruction-length-invalid',
+  );
+  if (length === 0n) throw new TypeError('semantic-function-instruction-length-invalid');
+  return length;
+}
 function endOf(instruction) {
-  return addressOf(instruction)
-    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+  return addressOf(instruction) + instructionLengthOf(instruction);
 }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
@@ -54,9 +65,9 @@ function controlKind(plugin, instruction) {
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null
-      ? null
-      : canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
+    if (target == null) return null;
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 
@@ -78,6 +89,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
   const byAddress = new Map();
   for (const instruction of ordered) {
     const address = addressOf(instruction);
+    instructionLengthOf(instruction);
     if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
     byAddress.set(address.toString(), instruction);
   }
@@ -88,6 +100,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
+    if (ordered[index + 1] && addressOf(ordered[index + 1]) !== endOf(instruction)) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
     if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) {
       starts.add(addressOf(ordered[index + 1]).toString());
     }
@@ -262,6 +277,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     ? input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)
     : input.instructions;
   const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
+  const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
@@ -274,6 +290,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     mode:input.mode ?? defaultMode ?? 'default',
     entryBlockKey:blocks[0].key,
     blocks,
+    completeness: controlUnknowns.length ? 'partial' : 'complete',
+    unknowns: controlUnknowns,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,
