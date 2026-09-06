@@ -22,7 +22,6 @@ const KNOWN_TYPES = new Set([
   TYPE_CALL_SITE_ID_ITEM, TYPE_METHOD_HANDLE_ITEM, TYPE_MAP_LIST,
   0x1001, 0x1002, 0x1003,
   0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006,
-  0xf000,
 ]);
 
 const FIXED_WIDTH = new Map([
@@ -71,6 +70,8 @@ export function validateDexMap(bytes) {
   const maxMapItems = Math.floor((fileSize - mapOff - 4) / 12);
   if (mapSize === 0 || mapSize > maxMapItems) fail('dex-truncated-map-list');
   checkedRange(fileSize, mapOff + 4, mapSize * 12, 'dex-truncated-map-list');
+  const mapEnd = mapOff + 4 + mapSize * 12;
+  if (mapEnd > dataEnd) fail('dex-map-item-outside-data');
 
   const entries = [];
   const byType = new Map();
@@ -101,15 +102,15 @@ export function validateDexMap(bytes) {
       end = offset + size * width;
     } else if (type === TYPE_MAP_LIST) {
       if (size !== 1 || offset !== mapOff) fail('dex-invalid-map-list-entry');
-      end = mapOff + 4 + mapSize * 12;
-      checkedRange(fileSize, mapOff, end - mapOff, 'dex-truncated-map-list');
-      checkedRange(dataEnd, mapOff, end - mapOff, 'dex-map-item-outside-data');
+      end = mapEnd;
     } else {
       checkedRange(fileSize, offset, 1, 'dex-invalid-map-item-range');
     }
 
     if (previous?.end != null && previous.end > offset) fail('dex-overlapping-map-items');
-    if (type >= 0x1000 && (offset < dataOff || offset >= dataEnd)) fail('dex-map-item-outside-data');
+    if (type >= 0x1000 && (offset < dataOff || offset >= dataEnd || (end != null && end > dataEnd))) {
+      fail('dex-map-item-outside-data');
+    }
 
     const entry = { type, size, offset, end };
     entries.push(entry);

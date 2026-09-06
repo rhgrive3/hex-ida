@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
+import { parseDex as parseDexCore } from '../../../js/managed/dex/parser-core.js';
 
 console.log('[phase11] running dex parser tests...');
 
-const MAP_OFF = 0x160;
+const MAP_OFF = 0x178;
 const MAP_ITEMS = [
   [0x0000, 1, 0x000], [0x0001, 3, 0x070], [0x0002, 2, 0x080],
   [0x0003, 1, 0x090], [0x0005, 1, 0x0a0], [0x0006, 1, 0x0b0],
@@ -55,8 +56,8 @@ export function buildMinimalDex() {
   return buf;
 }
 
-function expectTypeError(bytes, code) {
-  assert.throws(() => parseDex(bytes), (error) => error instanceof TypeError && error.message === code);
+function expectTypeError(bytes, code, parser = parseDex) {
+  assert.throws(() => parser(bytes), (error) => error instanceof TypeError && error.message === code);
 }
 
 const dexBytes = buildMinimalDex();
@@ -75,6 +76,7 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
 {
   const bytes = buildMinimalDex(); new DataView(bytes.buffer).setUint32(52, 0, true);
   expectTypeError(bytes, 'dex-invalid-map-offset');
+  expectTypeError(bytes, 'dex-invalid-map-offset', parseDexCore);
 }
 {
   const bytes = buildMinimalDex(); new DataView(bytes.buffer).setUint32(52, bytes.length, true);
@@ -84,6 +86,11 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
   view.setUint32(52, 0x1fc, true); view.setUint32(0x1fc, 1, true);
   expectTypeError(bytes, 'dex-truncated-map-list');
+}
+{
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
+  view.setUint32(104, 0x90, true);
+  expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const last = MAP_OFF + 4 + 9 * 12;
@@ -110,16 +117,16 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
   view.setUint16(stringData, 0x7777, true);
   expectTypeError(bytes, 'dex-unsupported-map-item-type');
 }
+{
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const stringData = MAP_OFF + 4 + 6 * 12;
+  view.setUint16(stringData, 0xf000, true);
+  expectTypeError(bytes, 'dex-unsupported-map-item-type');
+}
 for (const type of [0x1002, 0x1003]) {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const item = MAP_OFF + 4 + 6 * 12;
   view.setUint16(item, type, true);
   view.setUint32(item + 8, 0x101, true);
   expectTypeError(bytes, 'dex-invalid-map-item-alignment');
-}
-{
-  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
-  view.setUint32(104, 0x80, true);
-  expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 {
   const bytes = new Uint8Array(0x70);

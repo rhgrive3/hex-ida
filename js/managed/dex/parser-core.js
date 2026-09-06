@@ -1,5 +1,6 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
+import { validateDexMap } from './map-validation.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -51,30 +52,6 @@ function readUleb128(bytes, offset) {
     shift += 7;
   }
   fail('dex-malformed-uleb128');
-}
-
-function readUleb128p1(bytes, offset) {
-  const { value, nextOffset } = readUleb128(bytes, offset);
-  return { value: value - 1, nextOffset };
-}
-
-function readSleb128(bytes, offset) {
-  let result = 0;
-  let shift = 0;
-  let pos = offset;
-  let count = 0;
-  let byte = 0;
-  while (pos < bytes.length && count < 5) {
-    byte = bytes[pos++];
-    count++;
-    result |= (byte & 0x7f) << shift;
-    shift += 7;
-    if ((byte & 0x80) === 0) {
-      if (shift < 32 && (byte & 0x40) !== 0) result |= (~0 << shift);
-      return { value: result | 0, nextOffset: pos };
-    }
-  }
-  fail('dex-malformed-sleb128');
 }
 
 function decodeMutf8(bytes, offset) {
@@ -251,6 +228,8 @@ export function parseDex(bytes, options = {}) {
     }
     classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,directMethods,virtualMethods});
   }
+
+  validateDexMap(u8);
 
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
   return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,rawBytes:u8});
