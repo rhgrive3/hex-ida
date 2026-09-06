@@ -1,6 +1,13 @@
+import './issue-4885-strings-pagination.test.mjs';
+import './issue-4873-search-pagination.mjs';
+import './issue-2519-product-evidence-consumer.test.mjs';
 import './issue-2601-pinpoint-architecture-query.mjs';
 import './issue-2596-range-copy-variable-width.mjs';
 import './issue-2594-showdetail-variable-width.mjs';
+import './issue-4878-field-access-pagination.test.mjs';
+import './issue-5079-product-strings-pagination.test.mjs';
+import './next-views.mjs';
+import { NavigationHistory } from '../../js/navigation.js';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, LEGACY_MIGRATION,
@@ -47,6 +54,34 @@ check('migration table contains exactly the audited 54 screens', Object.keys(LEG
 check('every audited legacy screen has a migration disposition', legacyRequired.every((name) => typeof LEGACY_MIGRATION[name] === 'string'));
 check('migration table has no un-audited screen names', Object.keys(LEGACY_MIGRATION).every((name) => legacyRequired.includes(name)));
 check('migration table has only explicit dispositions', Object.values(LEGACY_MIGRATION).every((value) => /^(merge|redirect|deprecated):/.test(value)));
+
+// #3394: malformed optional callbacks must not break history state transitions.
+for (const callbackValue of [undefined, null, false, 0, '', true, 1, 'callback', {}, []]) {
+  let completed = false;
+  try {
+    const history = new NavigationHistory({ onChange:callbackValue, onNavigate:callbackValue });
+    history.reset({ key:'a' });
+    history.visit({ key:'b' });
+    const backed = history.back();
+    const forwarded = history.forward();
+    completed = backed && forwarded && history.current()?.key === 'b' && history.snapshot().length === 2;
+  } catch {
+    completed = false;
+  }
+  check(`navigation ignores non-callable callback ${Object.prototype.toString.call(callbackValue)}`, completed);
+}
+const navigationChanges = [];
+const navigationMoves = [];
+const callbackHistory = new NavigationHistory({
+  onChange:snapshot => navigationChanges.push(snapshot),
+  onNavigate:entry => navigationMoves.push(entry.key),
+});
+callbackHistory.reset({ key:'a' });
+callbackHistory.visit({ key:'b' });
+callbackHistory.back();
+callbackHistory.forward();
+check('navigation keeps callable onChange semantics', navigationChanges.length === 4 && navigationChanges.at(-1).current?.key === 'b');
+check('navigation keeps callable onNavigate semantics', navigationMoves.join(',') === 'a,b');
 
 const previousWindow = globalThis.window;
 const previousHistory = globalThis.history;

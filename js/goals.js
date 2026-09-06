@@ -164,7 +164,8 @@ export const GOALS = [
 
 /** `_currentHP` → `current hp`。当てはめはすべてこの形に対してやる。 */
 export function normalizeFieldName(name) {
-  let s = String(name || '');
+  if (typeof name !== 'string') return '';
+  let s = name;
   s = s.replace(/^_+/, '').replace(/^m_/i, '').replace(/^s_/i, '').replace(/^g_/i, '');
   // camelCase / PascalCase を分ける。HPValue → HP Value のように連続大文字も守る。
   s = s.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -603,8 +604,8 @@ function allMatches(re, s, hasAvoid) {
  * @returns {{score:number, term:string}|null} 当てはまらなければ null
  */
 export function matchText(goal, text) {
-  if (!goal) return null;
-  const s = String(text || '');
+  if (!goal || typeof text !== 'string') return null;
+  const s = text;
   if (s.length < 2) return null;
   let best = null;
   const blocked = avoidSpans(goal, s);
@@ -638,6 +639,6 @@ export function matchText(goal, text) {
 
 /** 名前（シンボル・Objective-C メソッド）との当てはまり。 */
 export function matchName(goal, name) {
-  if (!goal || !name) return null;
-  return matchText(goal, String(name));
+  if (!goal || typeof name !== 'string') return null;
+  return matchText(goal, name);
 }

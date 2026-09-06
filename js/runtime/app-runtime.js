@@ -33,14 +33,19 @@ function activeArchitecture(app) {
     || architectureEvidence(detail.cpu)
     || 'unknown';
 }
+function canonicalSliceUuid(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError('runtime-slice-uuid-invalid');
+  return value;
+}
 function activeSliceIdentity(app) {
   const info=currentFileToken(app);
   const index=strictSliceIndex(app?.store?.get?.('sliceIndex'));
   const slice=index>=0 ? info?.slices?.[index] : null;
   const detail=slice?.info || {};
   const arch=activeArchitecture(app);
-  const uuid=detail.uuid || null;
-  return `slice:${index}:${uuid || '-'}:${arch}`;
+  const uuid=canonicalSliceUuid(detail.uuid);
+  return `slice:${index}:${uuid ?? '-'}:${arch}`;
 }
 function localSandboxSupportsArchitecture(architecture) {
   if (typeof architecture !== 'string') return false;
@@ -92,7 +97,9 @@ export function createAppRuntimeIO(app) {
       // unknown or variable-width targets instead of defaulting to ARM64.
       const arch = activeArchitecture(app);
       if (!localSandboxSupportsArchitecture(arch)) return null;
-      const row = Number((addr - region.vmAddr) / 4n);
+      const delta = addr - region.vmAddr;
+      if (delta % 4n !== 0n) return null;
+      const row = Number(delta / 4n);
       const chunk = Math.floor(row / 1024);
       const decoded = await app.backend.fetchChunk(region.id, chunk, true);
       const index = row - chunk * 1024;

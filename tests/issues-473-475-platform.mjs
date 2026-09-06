@@ -18,12 +18,12 @@ function thin64(cpu, subtype) {
 }
 
 function fatWith(slice, cpu, subtype) {
-  const offset = 28;
+  const offset = 0x4000;
   const bytes = new Uint8Array(offset + slice.length);
   const dv = new DataView(bytes.buffer);
   dv.setUint32(0, 0xcafebabe, false); dv.setUint32(4, 1, false);
   dv.setInt32(8, cpu, false); dv.setInt32(12, subtype, false);
-  dv.setUint32(16, offset, false); dv.setUint32(20, slice.length, false); dv.setUint32(24, 0, false);
+  dv.setUint32(16, offset, false); dv.setUint32(20, slice.length, false); dv.setUint32(24, 14, false);
   bytes.set(slice, offset);
   return bytes;
 }
