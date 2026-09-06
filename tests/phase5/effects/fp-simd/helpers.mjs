@@ -15,7 +15,14 @@ export function evex() { return { legacy:[], rex:null, vector:{ kind:'evex', byt
 
 export function instruction(family, operands = [], options = {}) {
   sequence += 1;
-  const rawBytes = Uint8Array.from(options.rawBytes ?? [0x90]);
+  const prefixes = options.prefixes ?? legacy();
+  const vectorBytes = prefixes?.vector?.bytes || [];
+  const rawPrefixBytes = [
+    ...(prefixes?.legacy || []),
+    ...(prefixes?.rex ? [prefixes.rex] : []),
+    ...vectorBytes,
+  ];
+  const rawBytes = Uint8Array.from(options.rawBytes ?? (rawPrefixBytes.length ? [...rawPrefixBytes, 0x90] : [0x90]));
   const instructionId = options.instructionId ?? `p5-3:test:${family}:${sequence}`;
   return {
     address:BigInt(options.address ?? 0x401000), length:rawBytes.length, rawBytes, mode:'long-64',
@@ -23,7 +30,7 @@ export function instruction(family, operands = [], options = {}) {
     detailAvailable:true, detailStatus:'complete',
     mnemonic:options.mnemonic ?? 'misleading-display-text',
     opStr:options.opStr ?? 'zmm31, [misleading display string]',
-    detail:{ operandCount:operands.length, operands, prefixes:options.prefixes ?? legacy(), implicitReads:options.implicitReads ?? [], implicitWrites:options.implicitWrites ?? [], conditionCode:null },
+    detail:{ operandCount:operands.length, operands, prefixes, implicitReads:options.implicitReads ?? [], implicitWrites:options.implicitWrites ?? [], conditionCode:null },
   };
 }
 
