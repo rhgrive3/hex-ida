@@ -1,10 +1,14 @@
 import { PROTECTED_WORKER_ASSETS } from '../../.runtime-build/embedded-assets.js';
 
 const CAPSTONE_WASM_BOOTSTRAP = '__hex_capstone_wasm__';
+const NESTED_WORKER_BOOTSTRAP = '__hex_nested_worker_runtime__';
+const PLATFORM_WORKER = 'js/platform/worker.js';
+const X86_REVALIDATION_WORKER = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
 const CAPSTONE_CLASSIC_WORKERS = new Set([
   'js/worker.js',
   'js/platform/capstone-probe-worker.js',
   'js/platform/capstone-disasm-worker.js',
+  X86_REVALIDATION_WORKER,
 ]);
 
 export function installProtectedWorkers() {
@@ -20,13 +24,18 @@ export function installProtectedWorkers() {
 
   for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.classic)) {
     const url = workerStage(`protected classic worker Blob (${path})`, () =>
-      URL.createObjectURL(new Blob([capstonePrelude(wasmURL), source], { type: 'text/javascript' })));
+      URL.createObjectURL(new Blob([
+        logicalWorkerPrelude(path),
+        capstonePrelude(wasmURL),
+        source,
+      ], { type: 'text/javascript' })));
     urls.set(path, url);
     revoke.push(url);
   }
   for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.modules)) {
+    const prelude = path === PLATFORM_WORKER ? nestedWorkerPrelude() : '';
     const url = workerStage(`protected module worker Blob (${path})`, () =>
-      URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+      URL.createObjectURL(new Blob([logicalWorkerPrelude(path), prelude, source], { type: 'text/javascript' })));
     urls.set(path, url);
     revoke.push(url);
   }
@@ -42,12 +51,24 @@ export function installProtectedWorkers() {
        inside the protected runtime, so hand them to Capstone directly. Keep
        the URL path in the prelude only as a compatibility fallback. */
     if (local && CAPSTONE_CLASSIC_WORKERS.has(path)) {
+      bootstrapCapstone(worker, wasmBytes, path);
+    }
+    if (local && path === PLATFORM_WORKER) {
+      const semanticURL = urls.get(X86_REVALIDATION_WORKER);
+      if (!semanticURL) {
+        worker.terminate();
+        throw new Error('protected x86 semantic revalidation worker asset is unavailable');
+      }
       const wasmBinary = wasmBytes.slice(0);
       try {
-        worker.postMessage({ t: CAPSTONE_WASM_BOOTSTRAP, wasmBinary }, [wasmBinary]);
+        worker.postMessage({
+          t:NESTED_WORKER_BOOTSTRAP,
+          semanticURL,
+          wasmBinary,
+        }, [wasmBinary]);
       } catch (error) {
         worker.terminate();
-        throw new Error(`protected worker WASM bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+        throw new Error(`protected nested worker bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
       }
     }
     return worker;
@@ -72,6 +93,16 @@ export function installProtectedWorkers() {
   return runtime;
 }
 
+function bootstrapCapstone(worker, wasmBytes, path) {
+  const wasmBinary = wasmBytes.slice(0);
+  try {
+    worker.postMessage({ t: CAPSTONE_WASM_BOOTSTRAP, wasmBinary }, [wasmBinary]);
+  } catch (error) {
+    worker.terminate();
+    throw new Error(`protected worker WASM bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+  }
+}
+
 function workerStage(name, operation) {
   try { return operation(); }
   catch (error) { throw new Error(`${name}: ${String(error?.message || error || 'failed')}`); }
@@ -82,6 +113,30 @@ function logicalPath(value) {
     const path = new URL(String(value), location.href).pathname;
     return path.replace(/^\//, '');
   } catch { return null; }
+}
+
+function logicalWorkerPrelude(path) {
+  return `;Object.defineProperty(globalThis,'__HEX_PROTECTED_WORKER_LOGICAL_PATH__',{value:${JSON.stringify(path)},writable:false,configurable:false});\n`;
+}
+
+function nestedWorkerPrelude() {
+  return `;(()=>{
+const B=${JSON.stringify(NESTED_WORKER_BOOTSTRAP)},C=${JSON.stringify(CAPSTONE_WASM_BOOTSTRAP)};
+addEventListener('message',e=>{
+  const d=e.data;
+  if(!d||d.t!==B)return;
+  e.stopImmediatePropagation();
+  const N=globalThis.Worker,U=String(d.semanticURL||''),W=d.wasmBinary;
+  if(!U||!(W instanceof ArrayBuffer))throw new Error('protected nested worker bootstrap invalid');
+  Object.defineProperty(globalThis,'__HEX_X86_SEMANTIC_REVALIDATION_WORKER_URL__',{value:U,writable:false,configurable:false});
+  function H(v,o){
+    const w=new N(v,o);
+    if(String(v)===U){const b=W.slice(0);try{w.postMessage({t:C,wasmBinary:b},[b])}catch(err){w.terminate();throw err}}
+    return w;
+  }
+  H.prototype=N.prototype;Object.setPrototypeOf(H,N);globalThis.Worker=H;
+},true);
+})();\n`;
 }
 
 function decodeArrayBuffer(value) {
