@@ -56,6 +56,18 @@ test('fusion validates evidence before its sort comparator touches regions', () 
   );
 });
 
+test('already-cancelled fusion preserves cancellation before malformed evidence validation', () => {
+  const controller = new AbortController();
+  controller.abort();
+  const result = fuseFunctionCandidates([
+    evidence({ regions: {} }),
+  ], { snapshotId: 'snapshot-1', signal: controller.signal });
+
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.stopReason, 'cancelled');
+  assert.deepEqual(result.candidates, []);
+});
+
 test('registry fails closed on malformed custom evidence instead of publishing a partial result', () => {
   const registry = new DiscoveryProducerRegistry();
   registry.register({
