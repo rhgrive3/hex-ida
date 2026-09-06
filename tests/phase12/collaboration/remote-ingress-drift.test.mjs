@@ -61,7 +61,7 @@ const logA = new ChangeLog({ projectIdentity: BASE.projectIdentity, binaryIdenti
 const rejected = applyRemoteEnvelope(logA, gateA, alwaysEvil);
 assert.equal(rejected.status, 'rejected');
 assert.equal(rejected.reason, 'remote-envelope-shape-invalid');
-assert.equal(logA.state.facts?.[`${BASE.targetEntityId}\u0000comment`]?.payload ?? logA.snapshot().facts?.[`${BASE.targetEntityId}\u0000comment`]?.payload, undefined, 'no hostile payload may reach the ChangeLog state');
+assert.equal(logA.snapshot().facts?.[`${BASE.targetEntityId}\u0000comment`]?.values?.[0]?.value, undefined, 'no hostile payload may reach the ChangeLog state');
 
 // Stateful drift that would pass accessor rejection by hiding inside a
 // non-configurable enumerable value property cannot occur: the gate snapshots
