@@ -9,6 +9,17 @@ import { parsePE } from '../js/binary/pe.js';
 
 const PE64_DIRECTORY_OFFSET = 112; // PE32+ data directories start at optional-header offset 112
 const PE32_DIRECTORY_OFFSET = 96;  // PE32 data directories start at optional-header offset 96
+const DIRECTORY_TRUNCATION_REASON = 'optional-header:data-directories-truncated';
+
+function assertDirectoryMetadataPartial(image) {
+  assert.equal(image.metadata.peMetadata.complete, false);
+  assert.ok(image.metadata.peMetadata.reasons.includes(DIRECTORY_TRUNCATION_REASON), JSON.stringify(image.metadata.peMetadata));
+}
+
+function assertDirectoryMetadataComplete(image) {
+  assert.equal(image.metadata.peMetadata.complete, true, JSON.stringify(image.metadata.peMetadata));
+  assert.ok(!image.metadata.peMetadata.reasons.includes(DIRECTORY_TRUNCATION_REASON), JSON.stringify(image.metadata.peMetadata));
+}
 
 function dosAndPeHeader() {
   // 'MZ', e_lfanew=0x40, PE\0\0
@@ -97,6 +108,7 @@ function parse(bytes) {
   assert.equal(image.metadata.directories.length, 0);
   assert.ok(!image.warnings.some((w) => /Data Director/i.test(w)), 'no truncation warning expected');
   assert.equal(image.metadata.peDataDirectoriesTruncated, undefined);
+  assertDirectoryMetadataComplete(image);
 }
 
 // 2. PE32+ SizeOfOptionalHeader=112, NumberOfRvaAndSizes=16: declares 16 entries
@@ -106,6 +118,7 @@ function parse(bytes) {
   assert.equal(image.metadata.directories.length, 0);
   assert.equal(image.metadata.peDataDirectoriesTruncated, true);
   assert.ok(image.warnings.some((w) => /declares 16 data directories/.test(w) && /only holds 0/.test(w)), JSON.stringify(image.warnings));
+  assertDirectoryMetadataPartial(image);
 }
 
 // 3. PE32 SizeOfOptionalHeader=96, NumberOfRvaAndSizes=16: same shape.
@@ -116,6 +129,7 @@ function parse(bytes) {
   }));
   assert.equal(image.metadata.peDataDirectoriesTruncated, true);
   assert.ok(image.warnings.some((w) => /data director/i.test(w)));
+  assertDirectoryMetadataPartial(image);
 }
 
 // 4. Declared N entries with exactly N*8 bytes present: valid.
@@ -126,6 +140,15 @@ function parse(bytes) {
   assert.equal(image.metadata.directories[0].rva, 0x2000);
   assert.equal(image.metadata.peDataDirectoriesTruncated, undefined);
   assert.ok(!image.warnings.some((w) => /Data Director/i.test(w)));
+}
+
+// 4a. Exact-fit directory capacity alone remains canonical-complete.
+{
+  const sizeOptional = 112 + 2 * 8;
+  const image = parse(buildPE({ sizeOptional, numberOfRvaAndSizes: 2 }));
+  assert.equal(image.metadata.directories.length, 2);
+  assert.equal(image.metadata.peDataDirectoriesTruncated, undefined);
+  assertDirectoryMetadataComplete(image);
 }
 
 // 5. NumberOfRvaAndSizes < available entries: only the declared count is used.
@@ -146,6 +169,16 @@ function parse(bytes) {
   assert.ok(!image.warnings.some((w) => /Data Director/i.test(w)));
 }
 
+// 6a. More than 16 declared with all 16 known slots physically present is not
+// truncation; zero-valued directory records keep the control otherwise valid.
+{
+  const sizeOptional = 112 + 16 * 8;
+  const image = parse(buildPE({ sizeOptional, numberOfRvaAndSizes: 24 }));
+  assert.equal(image.metadata.directories.length, 16);
+  assert.equal(image.metadata.peDataDirectoriesTruncated, undefined);
+  assertDirectoryMetadataComplete(image);
+}
+
 // 7. Truncated directory declaration must not invent completeness downstream.
 {
   const image = parse(buildPE({
@@ -156,6 +189,7 @@ function parse(bytes) {
   assert.equal(image.metadata.directories.length, 1);
   assert.equal(image.metadata.peDataDirectoriesTruncated, true);
   assert.ok(image.warnings.some((w) => /declares 16 data directories/.test(w) && /only holds 1/.test(w)));
+  assertDirectoryMetadataPartial(image);
 }
 
 // 8. The declared-but-missing directory is not laundered into "absent": import
@@ -166,6 +200,7 @@ function parse(bytes) {
   assert.equal(image.imports.length, 0);
   assert.equal(image.metadata.peDataDirectoriesTruncated, true);
   assert.ok(image.metadata.peDataDirectoryShortfall > 0);
+  assertDirectoryMetadataPartial(image);
 }
 
 console.log('issue #6118 PE data-directory declaration validation: PASS');
