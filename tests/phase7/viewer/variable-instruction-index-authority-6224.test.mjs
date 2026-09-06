@@ -26,6 +26,7 @@ test('issue 6224: rejects structured instruction-address authority', async () =>
     true,
     false,
     null,
+    -1n,
   ];
 
   for (const address of badAddresses) {

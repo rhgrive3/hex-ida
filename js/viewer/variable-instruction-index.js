@@ -22,7 +22,7 @@ function toBigInt(value, code) {
   throw new TypeError(code);
 }
 function instructionAddress(value, code = 'variable-viewer-invalid-instruction-address') {
-  if (typeof value === 'bigint') return value;
+  if (typeof value === 'bigint' && value >= 0n) return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   throw new TypeError(code);
 }
