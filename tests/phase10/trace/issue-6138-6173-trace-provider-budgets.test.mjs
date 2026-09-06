@@ -62,6 +62,34 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
     (error) => error?.code === 'trace-invalid-dropped-count',
   );
 
+  const gapOnly = new TraceProvider(recording(
+    [{ kind:'gap', payload:{ reason:'sampling' } }],
+    { dropped:4 },
+  ));
+  const gapOnlySession = await gapOnly.openSession({ sessionNonce:'gap-only' });
+  const gapOnlyBatch = (await gapOnlySession.facets.trace.events({ batchSize:1 }).next()).value;
+  const gapOnlyReplay = await gapOnlySession.facets.trace.replay();
+  assert.deepEqual(gapOnlySession.normalizedEvents.map((event) => event.kind), ['gap']);
+  assert.equal(gapOnlySession.sourceCompleteness, 'truncated');
+  assert.equal(gapOnlyBatch.dropped, 4);
+  assert.equal(gapOnlyReplay.dropped, 4);
+  assert.equal(gapOnlyBatch.completeness, 'truncated');
+  assert.equal(gapOnlyReplay.completeness, 'truncated');
+  await gapOnlySession.close();
+
+  const truncatedWarning = new TraceProvider(recording([
+    { kind:'provider-warning', payload:{ reason:'source-partial' }, completeness:'truncated' },
+  ]));
+  const truncatedWarningSession = await truncatedWarning.openSession({ sessionNonce:'truncated-warning' });
+  const truncatedWarningBatch = (await truncatedWarningSession.facets.trace.events({ batchSize:1 }).next()).value;
+  const truncatedWarningReplay = await truncatedWarningSession.facets.trace.replay();
+  assert.equal(truncatedWarningSession.sourceCompleteness, 'truncated');
+  assert.equal(truncatedWarningBatch.dropped, 0);
+  assert.equal(truncatedWarningReplay.dropped, 0);
+  assert.equal(truncatedWarningBatch.completeness, 'truncated');
+  assert.equal(truncatedWarningReplay.completeness, 'truncated');
+  await truncatedWarningSession.close();
+
   const agreement = new TraceProvider(recording(
     [{ kind:'dropped-events', payload:{ dropped:3 } }],
     { dropped:3 },

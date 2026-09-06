@@ -288,21 +288,47 @@ export function showStrings(app) {
       const filtered = await queryStrings(rows, input.value, { signal:controller.signal, limit:600 });
       if (controller.signal.aborted || serial !== renderSerial || !sheet.root.isConnected) return;
       results.replaceChildren();
-      const page = filtered.slice(0, 120);
-      for (const row of page) {
-        results.append(tapRow(row.text, {
-          sub:addrHex(row.addr),
-          onTap:() => {
-            sheet.close();
-            if (typeof app.goToStringAddress === 'function') app.goToStringAddress(active, row.addr);
-            else app.goToAddress(row.addr, { announce:true });
-          },
-        }));
-      }
-      if (!page.length) results.append(tapRow(t('strings.none'), { disabled:true }));
+      const pageSize = 120;
+      let shown = 0;
+      const more = tapRow(t('search.more'), { onTap:() => page() });
       const completeness = collection.complete === false || collection.truncated ? '一部' : '完全';
-      status.textContent = `${rows.length.toLocaleString()} 個 · ${completeness}` +
-        (filtered.length >= 600 ? ' · 検索結果は先頭600件' : '');
+      const updateStatus = () => {
+        status.textContent = `${rows.length.toLocaleString()} 個 · ${completeness}` +
+          (filtered.length > pageSize
+            ? ` · ${shown.toLocaleString()}/${filtered.length.toLocaleString()}件表示`
+            : '') +
+          (filtered.length >= 600 ? ' · 検索結果は先頭600件' : '');
+      };
+      const page = () => {
+        more.remove();
+        const frag = document.createDocumentFragment();
+        const end = Math.min(filtered.length, shown + pageSize);
+        for (; shown < end; shown++) {
+          const row = filtered[shown];
+          frag.append(tapRow(row.text, {
+            sub:addrHex(row.addr),
+            onTap:() => {
+              sheet.close();
+              if (typeof app.goToStringAddress === 'function') app.goToStringAddress(active, row.addr);
+              else app.goToAddress(row.addr, { announce:true });
+            },
+          }));
+        }
+        results.append(frag);
+        if (shown < filtered.length) {
+          more.replaceChildren();
+          more.append(el('div', null, t('search.showMore', {
+            n:Math.min(pageSize, filtered.length - shown),
+          })));
+          results.append(more);
+        }
+        updateStatus();
+      };
+      if (filtered.length) page();
+      else {
+        results.append(tapRow(t('strings.none'), { disabled:true }));
+        updateStatus();
+      }
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') return;
       alertDialog(t('search.failed'), userError(error));
