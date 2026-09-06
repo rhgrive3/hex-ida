@@ -69,20 +69,25 @@ function decoderWorker() {
 }
 
 function analyzeViaDecoderRevalidation(input, options = {}) {
-  if (options.signal?.aborted) return Promise.reject(revalidationAbortError(options.signal.reason));
+  const signal = options.signal ?? null;
+  if (signal?.aborted) return Promise.reject(revalidationAbortError(signal.reason));
   const worker = decoderWorker();
   const id = decoderRevalidationSequence++;
   return new Promise((resolve, reject) => {
-    const cleanup = () => options.signal?.removeEventListener?.('abort', abort);
+    const cleanup = () => signal?.removeEventListener?.('abort', abort);
     const settle = (fn) => (value) => { cleanup(); fn(value); };
     const abort = () => {
       if (!decoderRevalidationPending.delete(id)) return;
       try { worker.postMessage({ t:'cancel', id }); } catch { /* local rejection is authoritative */ }
       cleanup();
-      reject(revalidationAbortError(options.signal?.reason));
+      reject(revalidationAbortError(signal?.reason));
     };
     decoderRevalidationPending.set(id, { resolve:settle(resolve), reject:settle(reject) });
-    options.signal?.addEventListener?.('abort', abort, { once:true });
+    signal?.addEventListener?.('abort', abort, { once:true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
     try {
       worker.postMessage({ t:'semanticFunction', id, input, priority:'current' });
     } catch (error) {
