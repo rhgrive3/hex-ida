@@ -84,7 +84,7 @@ await check('dev-run-state', () => {
   assert.equal(run.chatgptProjectContext, null);
   ({ run } = supervisor.applyDecision(run, { type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }));
   assert.equal(run.status, 'ACTIVE');
-  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['ci.completed'], reason: 'wait' }));
+  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['worker.completed'], reason: 'wait' }));
   assert.equal(run.status, 'WAITING_EVENT');
   ({ run } = supervisor.applyDecision(run, { type: 'human', question: 'Security boundary?', blocking: true }));
   assert.equal(run.status, 'WAITING_HUMAN');
