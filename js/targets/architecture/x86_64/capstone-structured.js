@@ -203,7 +203,8 @@
     const groupList = groups(M, handle, detailPointer);
     const isFpuGroup = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
     const normalizedFamily = String(opcodeName || mnemonic || '').toLowerCase();
-    const usesRflags = normalizedFamily.startsWith('fcmov') || ['fcomi', 'fcomip', 'fucomi', 'fucomip'].includes(normalizedFamily);
+    const usesRflags = normalizedFamily.startsWith('fcmov')
+      || ['fcomi', 'fcomip', 'fcompi', 'fucomi', 'fucomip', 'fucompi'].includes(normalizedFamily);
     const flagsKind = isFpuGroup && !usesRflags ? 'fpu-flags' : 'eflags';
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
