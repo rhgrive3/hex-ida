@@ -88,6 +88,16 @@ function localRegionPlan(app, address, kind) {
   return { allRegions, target, local, unscanned };
 }
 function pruneCache(cache) { while (cache.size > MAX_LOCAL_SCAN_CACHE) cache.delete(cache.keys().next().value); }
+// Shared scan producers may exceed the settled cache budget while work is in
+// flight. Only completed entries are evictable, and the same pruning rule runs
+// again when each producer settles so a burst converges without a later insert.
+function pruneSettledCache(cache) {
+  for (const [cacheKey, cacheEntry] of cache) {
+    if (cache.size <= MAX_LOCAL_SCAN_CACHE) break;
+    if (cacheEntry?.settled !== true) continue;
+    cache.delete(cacheKey);
+  }
+}
 function waitForShared(entry, signal) {
   abortIfNeeded(signal); entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -98,6 +108,7 @@ function waitForShared(entry, signal) {
     const onAbort = () => {
       if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1);
       if (!entry.settled && entry.waiters === 0) {
+        entry.cancelled = true;
         entry.cancel?.();
         entry.request?.cancel?.();
       }
@@ -254,31 +265,48 @@ function installMultiRegionShapes(app) {
     if (!regions.length) return null;
     const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
-    if (app.shapesBusy && app.shapesBusyEpoch === epoch) return app.shapesBusy;
+    if (app.shapesBusy && app.shapesBusyEpoch === epoch && !app.shapesBusy.cancelled) return waitForShared(app.shapesBusy, signal);
     app.shapesBusyEpoch = epoch;
-    app.shapesBusy = (async () => {
+    const producerController = new AbortController();
+    const entry = {
+      request:{ cancel:() => { if (!producerController.signal.aborted) producerController.abort('shapes-no-consumers'); } },
+      promise:null, settled:false, cancelled:false, waiters:0,
+    };
+    entry.promise = (async () => {
       const folded = []; const reasons = [];
       for (let index = 0; index < regions.length; index++) {
-        abortIfNeeded(signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
+        abortIfNeeded(producerController.signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
         if (!value) {
           const request = app.backend.valueShapes(region.id, (progress) => onProgress?.({ phase:'shapes', region:region.id, done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:regions.length }));
+          const onAbort = () => request.cancel?.();
+          producerController.signal.addEventListener('abort', onAbort, { once:true });
+          if (producerController.signal.aborted) request.cancel?.();
           try {
             value = await new Promise((resolve, reject) => {
-              const onAbort = () => { signal?.removeEventListener('abort', onAbort); request.cancel?.(); reject(abortError(signal)); };
-              signal?.addEventListener('abort', onAbort, { once:true });
-              if (signal?.aborted) { onAbort(); return; }
-              Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
+              const onProducerAbort = () => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(abortError(producerController.signal)); };
+              producerController.signal.addEventListener('abort', onProducerAbort, { once:true });
+              if (producerController.signal.aborted) { onProducerAbort(); return; }
+              Promise.resolve(request).then(
+                (result) => { producerController.signal.removeEventListener('abort', onProducerAbort); resolve(result); },
+                (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
+              );
             });
             if (value && !value.cancelled) regionCache.set(cacheKey, value);
-          } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
+          } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
+          finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== app.backend.gen) return null;
-      const merged = mergeShapeMaps(folded, reasons); app.shapes = merged; combinedKey = key; pruneCache(regionCache); return merged;
-    })().finally(() => { if (app.shapesBusyEpoch === epoch) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
-    return app.shapesBusy;
+      if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
+      const merged = mergeShapeMaps(folded, reasons);
+      // Partial results remain visible to this caller but are not pinned as the
+      // epoch-wide canonical shapes. Missing regions can therefore be retried.
+      if (merged.complete !== false) { app.shapes = merged; combinedKey = key; }
+      pruneCache(regionCache); return merged;
+    })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusy === entry) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
+    app.shapesBusy = entry;
+    return waitForShared(entry, signal);
   };
 }
 
@@ -380,9 +408,23 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
     if (!entry) {
-      const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' }); entry = { request, promise:null, settled:false, waiters:0 };
-      entry.promise = Promise.resolve(request).then((scan) => { if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' }); entry.settled = true; return scan; }).catch((error) => { regionScans.delete(key); throw error; });
-      regionScans.set(key, entry); pruneCache(regionScans);
+      const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
+      entry = { request, promise:null, settled:false, waiters:0 };
+      entry.promise = Promise.resolve(request)
+        .then((scan) => {
+          if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' });
+          return scan;
+        })
+        .catch((error) => {
+          if (regionScans.get(key) === entry) regionScans.delete(key);
+          throw error;
+        })
+        .finally(() => {
+          entry.settled = true;
+          pruneSettledCache(regionScans);
+        });
+      regionScans.set(key, entry);
+      pruneSettledCache(regionScans);
     }
     return waitForShared(entry, options.signal ?? null);
   };
@@ -443,7 +485,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const queryLimited=refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');

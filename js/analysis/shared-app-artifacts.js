@@ -38,6 +38,19 @@ function mapFor(root, app) {
   if (!map) { map = new Map(); root.set(app, map); }
   return map;
 }
+// A map entry is reusable only while it can still serve the next consumer:
+// an aborted-but-unsettled entry is doomed and would infect newcomers with
+// the old rejection (#5349), while a settled retryable-incomplete entry must
+// not pin precision loss when a retry could upgrade it (#5312, #5337).
+function liveEntry(map, key, entry) {
+  if (!entry) return null;
+  if ((!entry.settled && entry.controller.signal.aborted)
+    || (entry.settled && entry.retryableIncomplete === true)) {
+    if (map.get(key) === entry) map.delete(key);
+    return null;
+  }
+  return entry;
+}
 function publishProgress(entry, value) {
   for (const subscriber of entry.subscribers) {
     try { subscriber.onProgress?.(value); } catch { /* observer only */ }
@@ -64,6 +77,7 @@ function attach(entry, options) {
     const onAbort = () => finish(reject, abortError(options.signal), true);
     if (options.signal?.aborted) { onAbort(); return; }
     options.signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (options.signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -84,6 +98,7 @@ function requestWithSignal(request, signal) {
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -99,6 +114,7 @@ function yieldMainRealm(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     setTimeout(() => finish(resolve), 0);
   });
 }
@@ -188,12 +204,27 @@ function statsFor(program, counts, scannedRefs, metadata = {}) {
     producerBudgetSupplied:metadata.budget != null,
   });
 }
+function canonicalStringResultRows(result) {
+  try {
+    const rows = result?.results;
+    return Array.isArray(rows) ? [...rows] : null;
+  } catch { return null; }
+}
+function canonicalStringResultRow(item) {
+  try {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+    const addr = item.addr;
+    const text = item.text;
+    if (typeof addr !== 'bigint' || addr < 0n || typeof text !== 'string') return null;
+    return { addr, text };
+  } catch { return null; }
+}
 
 function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions),
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -212,7 +243,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (bytes > 0) use.push({ region:current, bytes });
     }
     const rows = [];
-    let scannedBytes = 0, backendIncomplete = false;
+    let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
     for (let index = 0; index < use.length; index++) {
       throwIfAborted(controller.signal);
       if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -230,11 +261,25 @@ function createStringEntry(app, key, initialOptions = {}) {
       const result = await requestWithSignal(request, controller.signal);
       scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) { backendIncomplete = true; if (!skipped.includes(region)) skipped.push(region); }
-      for (const item of result?.results || []) {
-        if (!budget.accept(item.text)) break;
-        rows.push({ addr:item.addr, text:item.text, region });
+      const resultRows = canonicalStringResultRows(result);
+      if (!resultRows) {
+        backendIncomplete = true;
+        backendMalformed = true;
+        if (!skipped.includes(region)) skipped.push(region);
+      } else {
+        for (const item of resultRows) {
+          const row = canonicalStringResultRow(item);
+          if (!row) {
+            backendIncomplete = true;
+            backendMalformed = true;
+            if (!skipped.includes(region)) skipped.push(region);
+            continue;
+          }
+          if (!budget.accept(row.text)) break;
+          rows.push({ addr:row.addr, text:row.text, region });
+        }
       }
-      if (result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
+      if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
     }
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -242,7 +287,7 @@ function createStringEntry(app, key, initialOptions = {}) {
     Object.assign(rows, {
       complete:!truncated,
       truncated,
-      truncationReason:budget.truncationReason || (skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
+      truncationReason:budget.truncationReason || (backendMalformed ? 'backend-malformed' : skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
       scannedBytes,
       skippedRegions:[...new Set(skipped.map((region) => region.id))],
       unscannedRegions:[...new Set(skipped.map((region) => region.id))],
@@ -250,11 +295,17 @@ function createStringEntry(app, key, initialOptions = {}) {
       producerPriority:entry.producerOptions.priority,
       producerBudgetSupplied:entry.producerOptions.budget != null,
     });
+    // Deterministic local budget truncation is terminal and stays cached, but a
+    // transient backend partial must not pin: the next caller retries (#5337).
+    // Backend-partial regions are also listed in skipped, so only the local
+    // budget verdict decides terminality here.
+    entry.retryableIncomplete = backendIncomplete === true && budget.truncationReason == null;
     app.stringIndex = rows;
     entry.result = rows;
     return rows;
   })().then((value) => { entry.settled = true; return value; }).catch((error) => {
-    mapFor(STRING_ENTRIES, app).delete(key);
+    const live = mapFor(STRING_ENTRIES, app);
+    if (live.get(key) === entry) live.delete(key);
     throw error;
   }).finally(() => {
     if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
@@ -269,7 +320,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions),
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -324,13 +375,18 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     const stats = statsFor(program, counts, scannedRefs, entry.producerOptions);
     Object.defineProperty(program, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     Object.defineProperty(merged, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
+    // Permanent caps stay cached, but transient producer failures must not
+    // pin: the next caller retries and can upgrade to complete (#5312).
+    entry.retryableIncomplete = program?.completeness?.complete === false
+      && program?.unsupported !== true && program?.refsCapped !== true && program?.callsCapped !== true;
     app.programScan = merged;
     app.programKey = key;
     app.program = program;
     entry.result = program;
     return program;
   })().then((value) => { entry.settled = true; return value; }).catch((error) => {
-    mapFor(PROGRAM_ENTRIES, app).delete(`${epoch}:${key}`);
+    const live = mapFor(PROGRAM_ENTRIES, app);
+    if (live.get(`${epoch}:${key}`) === entry) live.delete(`${epoch}:${key}`);
     throw error;
   }).finally(() => {
     if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
@@ -347,11 +403,13 @@ export function installSharedAppArtifacts(app) {
   app.ensureStrings = function sharedStrings(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
     throwIfAborted(options.signal);
-    if (app.stringIndex) return Promise.resolve(app.stringIndex);
+    // Only a complete artifact short-circuits: a pinned partial would make a
+    // transient backend gap permanent (#5337).
+    if (app.stringIndex?.complete === true) return Promise.resolve(app.stringIndex);
     const epoch = epochOf(app);
     const key = String(epoch);
     const map = mapFor(STRING_ENTRIES, app);
-    let entry = map.get(key);
+    let entry = liveEntry(map, key, map.get(key));
     if (!entry) entry = createStringEntry(app, key, options);
     return attach(entry, options);
   };
@@ -362,11 +420,12 @@ export function installSharedAppArtifacts(app) {
     const regions = executableRegions(app);
     if (!regions.length) return Promise.resolve(null);
     const key = regions.map((region) => region.id).join('|');
-    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats) return Promise.resolve(app.program);
+    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats
+      && app.program.completeness?.complete === true) return Promise.resolve(app.program);
     const epoch = epochOf(app);
     const mapKey = `${epoch}:${key}`;
     const map = mapFor(PROGRAM_ENTRIES, app);
-    let entry = map.get(mapKey);
+    let entry = liveEntry(map, mapKey, map.get(mapKey));
     if (!entry) entry = createProgramEntry(app, key, regions, options);
     return attach(entry, options);
   };

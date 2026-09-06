@@ -134,6 +134,10 @@ function readUvarint(buf, off) {
   return null;
 }
 
+function isValidSectionOffset(value, length) {
+  return Number.isSafeInteger(value) && value >= 0 && value < length;
+}
+
 /**
  * Searches a byte buffer for Go build info (go1.x.y version).
  */
@@ -200,7 +204,6 @@ export function parsePclntabHeader(buf) {
     filetabOff = Number(readPtr(buf, 8 + 4 * ptrSize, ptrSize, little));
     pctabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
     pclnOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
-    ftabOff = 8 + 7 * ptrSize;
   } else {
     // 1.18 and 1.20+
     nfunc = Number(readPtr(buf, 8, ptrSize, little));
@@ -211,7 +214,16 @@ export function parsePclntabHeader(buf) {
     filetabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
     pctabOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
     pclnOff = Number(readPtr(buf, 8 + 7 * ptrSize, ptrSize, little));
-    ftabOff = 8 + 8 * ptrSize;
+  }
+
+  if (magicInfo.version !== '1.2') {
+    const tableOffsets = { funcnametabOff, cutabOff, filetabOff, pctabOff, pclnOff };
+    for (const [offsetName, offset] of Object.entries(tableOffsets)) {
+      if (!isValidSectionOffset(offset, buf.length)) {
+        return { valid: false, reason: 'invalid-table-offset', offsetName, offset };
+      }
+    }
+    ftabOff = pclnOff;
   }
 
   return {
@@ -238,12 +250,17 @@ export function parsePclntabHeader(buf) {
  * Parses Go pclntab function entries with bounds checking.
  */
 export function parseGoFunctions(buf, header, options = {}) {
-  const maxFuncs = Math.min(header.nfunc, options.maxRecords ?? 50000);
+  const maxRecords = options.maxRecords ?? 50000;
+  if (typeof maxRecords !== 'number' || !Number.isSafeInteger(maxRecords) || maxRecords < 0) {
+    throw new TypeError('go-metadata-invalid-max-records');
+  }
+  const maxFuncs = Math.min(header.nfunc, maxRecords);
   const functions = [];
   let unreadableEntries = 0;
   let invalidEntries = 0;
 
   const ftabOff = header.ftabOff;
+  const funcDataBase = header.version === '1.2' ? 0 : header.pclnOff;
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
 
@@ -267,7 +284,8 @@ export function parseGoFunctions(buf, header, options = {}) {
       funcOff = Number(readPtr(buf, slot + header.ptrSize, header.ptrSize, header.little));
     }
 
-    if (funcOff < 0 || funcOff >= buf.length) {
+    const funcPos = funcDataBase + funcOff;
+    if (!Number.isSafeInteger(funcOff) || funcOff < 0 || !Number.isSafeInteger(funcPos) || funcPos >= buf.length) {
       invalidEntries++;
       continue;
     }
@@ -278,22 +296,22 @@ export function parseGoFunctions(buf, header, options = {}) {
     let argsSize = null;
 
     if (is118Plus) {
-      const nameOff = i32(buf, funcOff + 4, header.little);
-      argsSize = i32(buf, funcOff + 8, header.little);
+      const nameOff = i32(buf, funcPos + 4, header.little);
+      argsSize = i32(buf, funcPos + 8, header.little);
       if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
         name = readCString(buf, header.funcnametabOff + nameOff);
       }
     } else if (header.version === '1.16') {
-      const nameOff = i32(buf, funcOff + header.ptrSize, header.little);
-      argsSize = i32(buf, funcOff + header.ptrSize + 4, header.little);
+      const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
+      argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
       if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
         name = readCString(buf, header.funcnametabOff + nameOff);
       }
     } else {
       // 1.2
-      const nameOff = i32(buf, funcOff + header.ptrSize, header.little);
-      argsSize = i32(buf, funcOff + header.ptrSize + 4, header.little);
-      frameSize = i32(buf, funcOff + header.ptrSize + 8, header.little);
+      const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
+      argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
+      frameSize = i32(buf, funcPos + header.ptrSize + 8, header.little);
       if (nameOff != null && nameOff < buf.length) {
         name = readCString(buf, nameOff);
       }

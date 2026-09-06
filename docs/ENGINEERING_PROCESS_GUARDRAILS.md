@@ -294,6 +294,14 @@ Failures included duplicate lease issuance while a claim was in flight, local RP
 
 **Permanent rule:** any multi-stage autonomous campaign spanning merges/reloads MUST maintain a durable checkpoint containing completed stages, exact evidence, active runtime identity where relevant, remaining blockers, and the resume procedure. A checkpoint is updated at every externally visible stage transition.
 
+### EP-031 — Consolidation batch contained PRs that failed their own tests
+
+**Evidence:** The 2026-09-01 strict-boundary consolidation (66 PRs → 6 lane PRs, #3279–#3284) found three PRs whose regression tests fail on the PR's own head: #3242 asserted a property (`expression.bits`) the translator never returned; #3128 committed removal of the MemorySSA completeness authority while simultaneously adding regression tests that require it (its own tests failed 2/4 on its head, and the wrong resolution had propagated to `main`); #3107 hardened validation without updating the pre-existing foundation fixtures its suite shared. #3254/#3266 additionally shipped correct production hardening with stale canonical fixtures, red on their own heads.
+
+**Process cause:** PR-level CI was treated as a per-PR signal while the whole-suite signal on those heads was already red for unrelated reasons (pre-existing `-O0` compiler-truth red on `main`), so an individual PR's own tests failing was indistinguishable from the shared baseline red. Test-first PRs were accepted without running the new tests.
+
+**Permanent rule:** a PR that adds or changes tests MUST have those tests pass on its own head; a red result identical to the shared baseline red does not exempt a PR from verifying its own added tests are green in isolation. When a lane's canonical baseline is red, per-PR automation MUST diff failures against that baseline (new-failure detection) instead of reporting a uniform UNSTABLE, and consolidations MUST run each absorbed PR's added tests on the absorbing lane head before merge.
+
 ---
 
 ## 3. Mandatory workflow for every future master phase

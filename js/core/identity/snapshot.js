@@ -8,13 +8,17 @@ function required(value, code) {
   return text;
 }
 function exactRevision(value, fallback, code) {
-  const resolved = value ?? fallback;
+  const resolved = value === undefined ? fallback : value;
   if (typeof resolved === 'number') {
-    if (!Number.isSafeInteger(resolved)) fail(code);
+    if (!Number.isSafeInteger(resolved) || resolved < 0) fail(code);
     return String(resolved);
   }
-  if (typeof resolved === 'bigint') return String(resolved);
-  return required(resolved, code);
+  if (typeof resolved === 'bigint') {
+    if (resolved < 0n) fail(code);
+    return String(resolved);
+  }
+  if (typeof resolved !== 'string' || !/^(0|[1-9]\d*)$/.test(resolved)) fail(code);
+  return resolved;
 }
 function exactJson(value) {
   validateCanonicalIdentityNumbers(value);
