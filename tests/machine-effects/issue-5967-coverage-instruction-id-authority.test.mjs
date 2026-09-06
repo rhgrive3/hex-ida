@@ -3,15 +3,17 @@ import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import { classifyMachineEffectsCoverage } from '../../js/targets/architecture/coverage.js';
 
 function bundle(instructionId = 'sample:1', completeness = 'exact', architectureId = 'arm64') {
+  const unknownCompleteness = completeness === 'unknown';
   return createMachineEffectBundle({
     instructionId,
     architectureId,
     mode:'a64',
-    operations:[{ kind:'barrier', scope:{ kind:'issue-5967' } }],
-    controlEffect:{ kind:'fallthrough' },
+    operations: unknownCompleteness ? [] : [{ kind:'barrier', scope:{ kind:'issue-5967' } }],
+    controlEffect: unknownCompleteness ? { kind:'unknown', reason:'issue-5967-test-unresolved-control' } : { kind:'fallthrough' },
     possibleFaults:[],
     origin:{ instructionIds:[instructionId] },
     completeness,
+    ...(completeness === 'exact' ? {} : { unknownEffects:{ categories:['other'], reason:'issue-5967-test-unresolved-effects' } }),
   });
 }
 
