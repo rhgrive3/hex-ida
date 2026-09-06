@@ -127,7 +127,24 @@ const x86Structured = x86.parseInstruction(
   INSTRUCTION,
   { address: semanticAddress },
 );
-const x86Canonical = createX86DecodedInstruction(x86Structured);
+// capstone-structured.js is loaded in a VM realm above. Its Uint8Array prefix
+// views therefore do not satisfy host-realm instanceof checks in the canonical
+// constructor. Normalize only the realm boundary representation here; this
+// regression is about preserving unsigned uint64 instruction addresses.
+const x86Canonical = createX86DecodedInstruction({
+  ...x86Structured,
+  detail: {
+    ...x86Structured.detail,
+    prefixes: {
+      ...x86Structured.detail.prefixes,
+      legacy: Array.from(x86Structured.detail.prefixes?.legacy ?? []),
+      vector: x86Structured.detail.prefixes?.vector == null ? null : {
+        ...x86Structured.detail.prefixes.vector,
+        bytes: Array.from(x86Structured.detail.prefixes.vector.bytes ?? []),
+      },
+    },
+  },
+});
 assert.equal(x86Canonical.address, semanticAddress, 'x86 canonical decoded instruction must preserve the high uint64 address');
 const x86Effects = liftX86MachineEffects({ ...x86Canonical, instructionId: 'issue-4087:x86-high-address-nop' });
 assert.ok(x86Effects, 'x86 high-address instruction must reach MachineEffects');
