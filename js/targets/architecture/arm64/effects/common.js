@@ -268,7 +268,9 @@ export function createArm64EffectContext(instruction, options = {}) {
       return applyModifier(base, targetBits, op.shift || null, targetBits);
     }
     if (op.k === 'reg') {
-      const modifierKind = typeof op.shift?.op === 'string' ? op.shift.op.toLowerCase() : '';
+      if (op.shift != null && op.extend != null) return null;
+      const modifier = op.shift || op.extend || null;
+      const modifierKind = typeof modifier?.op === 'string' ? modifier.op.toLowerCase() : '';
       const widenedXModifier = (modifierKind === 'uxtx' || modifierKind === 'sxtx') && instructionBits(op, targetBits) === 32;
       const sourceOperand = widenedXModifier
         ? { ...op, bits:64, text:op.cls === 'zr' ? 'xzr' : `x${op.num}` }
@@ -276,7 +278,7 @@ export function createArm64EffectContext(instruction, options = {}) {
       const sourceBits = instructionBits(sourceOperand, targetBits);
       const base = readRegister(sourceOperand);
       if (!base) return null;
-      return applyModifier(base, sourceBits, op.shift || null, targetBits);
+      return applyModifier(base, sourceBits, modifier, targetBits);
     }
     return null;
   }
