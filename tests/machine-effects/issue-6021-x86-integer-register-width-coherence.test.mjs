@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { liftX86IntegerEffects } from '../../js/targets/architecture/x86_64/effects/integer.js';
+import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 
 let instructionCode = 0x602100;
 
@@ -27,6 +28,7 @@ function integerInstruction(family, operands) {
     detailAvailable:true,
     detailStatus:'complete',
     detail:{
+      abiContractVersion:'capstone-5-wasm32-x86-detail/v1',
       operandCount:operands.length,
       operands,
       implicitReads:[],
@@ -41,6 +43,13 @@ function assertRejected(family, operands, reason) {
   assert.equal(result.completeness, 'partial');
   assert.equal(result.unknownEffects?.reason, reason);
   assert.equal(result.operations.length, 0, `${family} width mismatch must fail before definite state operations`);
+}
+
+function assertRejectedRouted(family, operands, reason) {
+  const result = liftX86MachineEffects(integerInstruction(family, operands));
+  assert.equal(result.completeness, 'partial', `${family} malformed shape must stay partial through the public dispatcher`);
+  assert.equal(result.unknownEffects?.reason, reason);
+  assert.equal(result.operations.length, 0, `${family} malformed shape must not be terminalized into a definite operation`);
 }
 
 function assertAccepted(family, operands) {
@@ -59,6 +68,21 @@ assertRejected('test', [register('eax', 32), register('ax', 16)], 'x86-test-oper
 assertRejected('imul', [register('rax', 64, 'read-write'), register('eax', 32)], 'x86-imul-two-operand-source-unmodelled');
 assertRejected('imul', [register('rax', 64, 'write'), register('eax', 32), immediate(3, 8)], 'x86-imul-three-operand-source-unmodelled');
 assertRejected('cmovne', [register('rax', 64, 'read-write'), register('ax', 16)], 'x86-cmovne-operand-shape-unmodelled');
+
+// The same malformed records must stay fail-closed after the canonical
+// trusted-decoder terminal, rather than being promoted from a partial result.
+for (const [family, operands, reason] of [
+  ['mov', [register('rax', 64, 'write'), register('al', 8)], 'x86-mov-operand-shape-unmodelled'],
+  ['add', [register('rax', 64, 'read-write'), register('al', 8)], 'x86-add-operand-shape-unmodelled'],
+  ['and', [register('eax', 32, 'read-write'), register('ax', 16)], 'x86-and-operand-shape-unmodelled'],
+  ['cmp', [register('rax', 64), register('al', 8)], 'x86-cmp-operand-shape-unmodelled'],
+  ['test', [register('eax', 32), register('ax', 16)], 'x86-test-operand-shape-unmodelled'],
+  ['imul', [register('rax', 64, 'read-write'), register('eax', 32)], 'x86-imul-two-operand-source-unmodelled'],
+  ['imul', [register('rax', 64, 'write'), register('eax', 32), immediate(3, 8)], 'x86-imul-three-operand-source-unmodelled'],
+  ['cmovne', [register('rax', 64, 'read-write'), register('ax', 16)], 'x86-cmovne-operand-shape-unmodelled'],
+]) {
+  assertRejectedRouted(family, operands, reason);
+}
 
 // Same-width register forms remain exact.
 assertAccepted('mov', [register('rax', 64, 'write'), register('rcx', 64)]);
