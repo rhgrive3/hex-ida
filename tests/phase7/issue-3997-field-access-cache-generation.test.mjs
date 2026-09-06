@@ -68,6 +68,61 @@ test('field-access cache does not reuse complete evidence across backend generat
   assert.equal(binaryB.results[0].addr, 0x2220n);
 });
 
+test('field-access cache never reuses entries when analysisEpoch is missing or invalid', async (t) => {
+  const cases = [
+    ['missing', undefined],
+    ['NaN', Number.NaN],
+    ['negative', -1],
+    ['unsafe', Number.MAX_SAFE_INTEGER + 1],
+  ];
+
+  for (const [label, analysisEpoch] of cases) {
+    let calls = 0;
+    const backend = {
+      analysisEpoch,
+      fieldAccess() {
+        calls += 1;
+        return Promise.resolve(result(BigInt(0x3000 + calls)));
+      },
+    };
+    t.after(() => clearFieldAccessArtifacts(backend));
+
+    const first = await fieldAccessRegion(backend, REGION, 0x20, 8);
+    const second = await fieldAccessRegion(backend, REGION, 0x20, 8);
+
+    assert.equal(calls, 2, label);
+    assert.notEqual(first, second, label);
+    assert.notEqual(first.results[0].addr, second.results[0].addr, label);
+  }
+});
+
+test('invalid analysisEpoch clears prior reusable generation state', async (t) => {
+  let calls = 0;
+  let target = 0x1110n;
+  const backend = {
+    analysisEpoch:7,
+    fieldAccess() {
+      calls += 1;
+      return Promise.resolve(result(target));
+    },
+  };
+  t.after(() => clearFieldAccessArtifacts(backend));
+
+  const first = await fieldAccessRegion(backend, REGION, 0x20, 8);
+  assert.equal(first.results[0].addr, 0x1110n);
+
+  backend.analysisEpoch = Number.NaN;
+  target = 0x2220n;
+  const invalid = await fieldAccessRegion(backend, REGION, 0x20, 8);
+  assert.equal(invalid.results[0].addr, 0x2220n);
+
+  backend.analysisEpoch = 7;
+  target = 0x3330n;
+  const restored = await fieldAccessRegion(backend, REGION, 0x20, 8);
+  assert.equal(restored.results[0].addr, 0x3330n);
+  assert.equal(calls, 3);
+});
+
 test('a pending old-generation request cannot poison the current-generation cache', async (t) => {
   const oldRequest = deferred();
   let calls = 0;

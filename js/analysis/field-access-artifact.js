@@ -17,12 +17,20 @@ function resultState(result) {
 }
 
 function backendGeneration(backend) {
-  const generation = backend?.analysisEpoch;
-  return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+  try {
+    const generation = backend?.analysisEpoch;
+    return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+  } catch {
+    return null;
+  }
 }
 
 function cacheFor(backend) {
   const generation = backendGeneration(backend);
+  if (generation == null) {
+    CACHE.delete(backend);
+    return new Map();
+  }
   let state = CACHE.get(backend);
   if (!state || state.generation !== generation) {
     state = { generation, entries:new Map() };
