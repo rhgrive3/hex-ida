@@ -4,10 +4,20 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function validateExternalSignal(externalSignal) {
+  if (externalSignal == null) return;
+  if ((typeof externalSignal !== 'object' && typeof externalSignal !== 'function')
+    || typeof externalSignal.addEventListener !== 'function'
+    || typeof externalSignal.removeEventListener !== 'function') {
+    throw new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+  }
+}
+
 function operationController(session, externalSignal) {
+  validateExternalSignal(externalSignal);
   const controller = session.controller();
   let listener = null;
-  if (externalSignal) {
+  if (externalSignal != null) {
     if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
     else {
       listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
@@ -18,7 +28,7 @@ function operationController(session, externalSignal) {
   return {
     signal:controller.signal,
     release() {
-      if (externalSignal && listener) externalSignal.removeEventListener('abort',listener);
+      if (externalSignal != null && listener) externalSignal.removeEventListener('abort',listener);
       session.releaseController(controller);
     }
   };
