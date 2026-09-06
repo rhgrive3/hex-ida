@@ -182,6 +182,34 @@ test('T013 cache validation cannot hide a reentrant ownKeys mutation', () => {
   assert.notEqual(identitySecond.identity.shapeDigest, identityFirst.identity.shapeDigest);
 });
 
+test('T013 issued identity provenance rejects caller mutation before publication reuse', () => {
+  for (const mutate of [
+    (issued) => { issued.identity = { ...issued.identity, functionId:'forged-function' }; },
+    (issued) => { issued.valid = false; },
+    (issued) => { issued.semanticSnapshot = {}; },
+  ]) {
+    const ir = fixture();
+    const state = seedAnalysisState(ir);
+    const issued = canonicalAnalysisIdentity({
+      analysis:state,
+      ir:semanticSnapshotForAnalysis(state),
+    });
+    assert.equal(issued.valid, true);
+    const originalIdentity = issued.identity;
+    mutate(issued);
+    const observed = canonicalAnalysisIdentity({
+      analysis:state,
+      ir,
+      resolvedAnalysisIdentity:issued,
+    });
+    assert.equal(observed.valid, true);
+    assert.equal(observed.identity.functionId, originalIdentity.functionId,
+      'a rewritten public identity field must not become an issued witness');
+    assert.notEqual(observed.identity, issued.identity,
+      'publication must derive or retrieve the canonical identity after provenance invalidation');
+  }
+});
+
 test('T013 cached witness and authority traversal share the fixed work budget', () => {
   const makeIr = () => ({ values:[], blocks:[], entry:null,
     extra:new Map(Array.from({ length:125000 }, (_, index) => [index, 0])) });

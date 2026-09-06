@@ -321,9 +321,30 @@ const SNAPSHOT_WITNESS_CACHE = new WeakMap();
 // A resolved identity passed back through one Phase 8 vertical is an
 // internally issued proof, rather than an arbitrary caller-provided identity.
 // Publication may reuse its already-derived field digests after the fresh raw
-// witness proves the same shape. Keeping this provenance private avoids
-// accepting a forged `resolvedAnalysisIdentity` as a shortcut.
-const ISSUED_IDENTITY_RESULTS = new WeakSet();
+// witness proves the same shape. Keep the proof's public fields in a private
+// immutable record: callers may mutate the result object, but those mutations
+// must never turn a forged identity into a trusted shortcut.
+const ISSUED_IDENTITY_RESULTS = new WeakMap();
+function markIssuedIdentity(result) {
+  ISSUED_IDENTITY_RESULTS.set(result, Object.freeze({
+    valid: result.valid,
+    identity: result.identity,
+    semanticSnapshot: result.semanticSnapshot,
+  }));
+  return result;
+}
+function issuedIdentityProof(result) {
+  try {
+    const proof = ISSUED_IDENTITY_RESULTS.get(result);
+    return proof != null
+      && result.valid === proof.valid
+      && result.identity === proof.identity
+      && result.semanticSnapshot === proof.semanticSnapshot
+      ? proof : null;
+  } catch {
+    return null;
+  }
+}
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const getReflectOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const getPrototypeOf = Object.getPrototypeOf;
@@ -593,9 +614,10 @@ function snapshotChildRole(role, key) {
  * publishes normalized frozen properties, so writable/configurable flags are
  * not semantic input. A mutation returns false, which makes the caller discard
  * the cache and, for public capture, perform the normal fresh capture path.
- * Live publication never uses this cache validator: it always takes the
- * uncached producer witness below because a finite witness cannot authenticate
- * arbitrary Proxy/accessor behavior.
+ * Publication never trusts a cache entry looked up by the live producer key;
+ * it uses only the snapshot-owned validation record for a fresh bounded
+ * descriptor/content witness. A finite witness cannot authenticate arbitrary
+ * Proxy/accessor behavior.
  */
 function rawSnapshotMatches(entry, workBudget) {
   // The original capture already paid the full text/reference budget.  A
@@ -2365,13 +2387,13 @@ export function canonicalAnalysisIdentity(context = {}) {
   } : null);
   const contextSourceEntries = identitySourceEntries(context);
   const issuedIdentity = context?.resolvedAnalysisIdentity;
-  const issuedSnapshot = issuedIdentity?.semanticSnapshot;
+  const initialIssuedProof = issuedIdentityProof(issuedIdentity);
+  const issuedSnapshot = initialIssuedProof?.semanticSnapshot ?? null;
   const publicationWitness = typeof context?.analysis?.get === 'function';
   const canUseIssuedWitness = publicationWitness
     && rawIr !== issuedSnapshot
     && isPhase8SemanticSnapshot(issuedSnapshot)
-    && issuedIdentity?.valid === true
-    && ISSUED_IDENTITY_RESULTS.has(issuedIdentity)
+    && initialIssuedProof?.valid === true
     && !contextSourceEntries.some((source) => source.present && source.value == null);
   let ir;
   try {
@@ -2381,28 +2403,28 @@ export function canonicalAnalysisIdentity(context = {}) {
       // The raw producer is still observed on every publication. Reuse only
       // validation records owned by the internally issued immutable snapshot;
       // this avoids trusting an arbitrary raw-object cache entry and avoids
-      // allocating a duplicate immutable graph on the hot path. The witness
-      // is intentionally bounded and makes no universal Proxy-authentication
-      // claim: hostile trap behavior outside this finite observation remains a
-      // producer-contract limitation and must fail closed where observed.
+      // allocating a duplicate immutable graph on the hot path. This is a
+      // fresh bounded descriptor/content witness, not a claim that finite
+      // standard-object observations authenticate arbitrary Proxy traps.
       const witness = SNAPSHOT_WITNESS_CACHE.get(issuedSnapshot);
       // Bind the immutable witness back to the exact raw root that produced
       // it. Without this check a caller could pair an issued identity from one
       // state with a different raw graph and validate the wrong producer.
-      if (witness == null || witness.raw !== rawIr || !rawSnapshotMatches(witness, workBudget)) {
+      if (witness == null || witness.raw !== rawIr || !rawSnapshotMatches(witness, workBudget)
+          || issuedIdentityProof(issuedIdentity) !== initialIssuedProof) {
         throw new TypeError('identity-live-producer-witness-mismatch');
       }
       ir = issuedSnapshot;
     } else {
       // Identity derivation is itself an authority boundary. A live producer
       // must never take an unchecked raw snapshot cache hit here. Publication
-      // takes a fresh uncached producer witness on every call; this gives the
+      // takes a fresh producer witness on every call; this gives the
       // publication guard a fresh source observation instead of pretending
       // that one finite cache traversal authenticates arbitrary live traps.
       ir = capturePhase8SemanticSnapshotWithBudget(rawIr, workBudget, {
-        // A live producer is an authority boundary.  Its cache entry was
+        // A live producer is an authority boundary. Its cache entry was
         // created from an earlier, finite observation and cannot authenticate
-        // a later Proxy/accessor trap.  Publication therefore takes a fresh
+        // a later Proxy/accessor trap. Publication therefore takes a fresh
         // producer witness on every call; the immutable snapshot and its
         // derived identity caches remain reusable below.
         // Direct identity derivation also keeps its historical uncached
@@ -2429,29 +2451,32 @@ export function canonicalAnalysisIdentity(context = {}) {
     if (!identitySourcesAreCacheable(contextIdentitySources)) {
       // Continue through the canonical shape/authority checks below.
     } else {
+      const proof = issuedIdentityProof(issuedIdentity);
+      if (proof == null || proof !== initialIssuedProof || proof.semanticSnapshot !== ir) {
+        return { identity: null, valid: false, reason: 'issued analysis identity provenance changed' };
+      }
       const result = {
-        identity: issuedIdentity.identity,
+        identity: proof.identity,
         valid: true,
         reason: null,
         semanticSnapshot: ir,
       };
-      ISSUED_IDENTITY_RESULTS.add(result);
-      return result;
+      return markIssuedIdentity(result);
     }
   }
-  const canReuseIssuedIdentity = issuedIdentity?.valid === true
-    && ISSUED_IDENTITY_RESULTS.has(issuedIdentity)
+  const currentIssuedProof = issuedIdentityProof(issuedIdentity);
+  const canReuseIssuedIdentity = currentIssuedProof?.valid === true
+    && (initialIssuedProof == null || currentIssuedProof === initialIssuedProof)
     && ir === issuedSnapshot
     && identitySourcesAreCacheable(contextIdentitySources);
   if (canReuseIssuedIdentity) {
     const result = {
-      identity: issuedIdentity.identity,
+      identity: currentIssuedProof.identity,
       valid: true,
       reason: null,
       semanticSnapshot: ir,
     };
-    ISSUED_IDENTITY_RESULTS.add(result);
-    return result;
+    return markIssuedIdentity(result);
   }
 
   const cachedIdentity = SNAPSHOT_IDENTITY_CACHE.get(ir);
@@ -2462,8 +2487,7 @@ export function canonicalAnalysisIdentity(context = {}) {
       reason: null,
       semanticSnapshot: ir,
     };
-    ISSUED_IDENTITY_RESULTS.add(result);
-    return result;
+    return markIssuedIdentity(result);
   }
   const shaped = irShape(ir, workBudget);
   if (shaped == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
@@ -2510,8 +2534,7 @@ export function canonicalAnalysisIdentity(context = {}) {
     SNAPSHOT_IDENTITY_CACHE.set(ir, Object.freeze({ identity, shapeDigest }));
   }
   const result = { identity, valid: true, reason: null, semanticSnapshot:ir };
-  ISSUED_IDENTITY_RESULTS.add(result);
-  return result;
+  return markIssuedIdentity(result);
 }
 
 export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS };
