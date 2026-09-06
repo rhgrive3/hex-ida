@@ -3,7 +3,12 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const PROPOSAL_CAPABILITIES = Object.freeze({
+  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
+  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
+});
 const EXECUTION_PAYLOADS = new WeakMap();
+const EXECUTION_AUTHORIZATIONS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -97,8 +102,11 @@ export class ProposalStore {
       proposal.status = 'failed';
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
+    let authorization = null;
     try {
-      await apply(proposalExecutionView(proposal));
+      const executionProposal = proposalExecutionView(proposal);
+      authorization = issueProposalAuthorization(this, proposal, executionProposal, approvalToken);
+      await apply(executionProposal, authorization);
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
@@ -106,6 +114,8 @@ export class ProposalStore {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
       throw error;
+    } finally {
+      if (authorization) EXECUTION_AUTHORIZATIONS.delete(authorization);
     }
   }
 
@@ -120,6 +130,58 @@ export class ProposalStore {
   all() { return Array.from(this.records.values()); }
   executionView(id) { return proposalExecutionView(this.require(id)); }
 }
+
+export function proposalCapability(proposal) {
+  return PROPOSAL_CAPABILITIES[proposal?.kind] || null;
+}
+
+export function proposalArguments(proposal) {
+  const target = proposalTarget(proposal?.target);
+  if (proposal?.kind === 'rename' || proposal?.kind === 'comment' || proposal?.kind === 'type') return { ...target, value: proposal.after };
+  if (proposal?.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
+  if (proposal?.kind === 'patch') return { ...target, before: proposalBytes(proposal.before), after: proposalBytes(proposal.after) };
+  return { ...target, value: proposal?.after };
+}
+
+export function consumeProposalAuthorization(authorization, capability, args) {
+  if (!authorization || typeof authorization !== 'object') return false;
+  const record = EXECUTION_AUTHORIZATIONS.get(authorization);
+  if (!record) return false;
+
+  // A branded authorization is single-use even when the attempted capability
+  // or arguments are wrong. This prevents a leaked authority from being probed
+  // and then replayed with a corrected mutation.
+  EXECUTION_AUTHORIZATIONS.delete(authorization);
+  try {
+    if (authorization.kind !== 'proposal' || authorization.token !== record.token || authorization.proposalId !== record.proposalId) return false;
+    if (record.store.records.get(record.proposalId) !== record.proposal || record.proposal.status !== 'applying') return false;
+    if (record.capability !== capability) return false;
+    if (record.proposal.bindingRevision !== record.bindingRevision) return false;
+    if (fingerprint(record.store.binding?.() || null) !== record.bindingRevision) return false;
+    return fingerprint(args) === record.argumentsRevision;
+  } catch {
+    return false;
+  }
+}
+
+function issueProposalAuthorization(store, proposal, executionProposal, approvalToken) {
+  const capability = proposalCapability(executionProposal);
+  if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${executionProposal?.kind}`);
+  const authorization = Object.freeze({ kind: 'proposal', token: approvalToken, proposalId: proposal.id });
+  EXECUTION_AUTHORIZATIONS.set(authorization, {
+    store,
+    proposal,
+    proposalId: proposal.id,
+    token: approvalToken,
+    capability,
+    argumentsRevision: fingerprint(proposalArguments(executionProposal)),
+    bindingRevision: proposal.bindingRevision,
+  });
+  return authorization;
+}
+
+function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
+function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
