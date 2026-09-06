@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { assertModuleDependencyBoundary, __moduleDependencyBoundaryForTests } from './helpers/module-dependency-boundary.mjs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -141,6 +143,24 @@ await check('standard-agent-scope-regression', () => {
   const locked = new ScopeController(snapshot, 'function');
   assert.equal(locked.expandTo('binary', 'must stay locked'), false);
   assert.equal(locked.effectiveScope, 'function');
+});
+
+await check('dev-context-packet-dependency-boundary', () => {
+  const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
+  assertModuleDependencyBoundary(source, ['../run/analysis-scope.js']);
+  const parser = __moduleDependencyBoundaryForTests;
+  assert.deepEqual(
+    parser.staticModuleSpecifiers("import './side-effect.js';\nexport { value } /* comment */ from './re-export.js';"),
+    ['./side-effect.js', './re-export.js'],
+  );
+  assert.equal(parser.hasDynamicImport("void import/* comment */('./dynamic.js')"), true);
+  for (const separator of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    assert.equal(
+      parser.hasDynamicImport(`// benign${separator}void import('./dynamic.js')`),
+      true,
+      `dynamic import after ${JSON.stringify(separator)} must remain visible`,
+    );
+  }
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');

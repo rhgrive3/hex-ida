@@ -4,6 +4,7 @@
    evidence, constraints, provenance and conflict history -- and that normalizing
    a Worker's report never turns it into authority. */
 import assert from 'node:assert/strict';
+import { assertModuleDependencyBoundary, __moduleDependencyBoundaryForTests } from './helpers/module-dependency-boundary.mjs';
 import {
   DEV_CONTEXT_PACKET_SCHEMA,
   DEV_TERMINAL_REASON,
@@ -293,12 +294,17 @@ function noStorageAndNoModelCallWasIntroduced() {
   }
   assert.deepEqual(touched, [], 'building a representation must not reach storage, the network, or a model');
 
-  // Structural: representation may depend only on the canonical analysis-scope
-  // validator; it must not grow storage/network/model dependencies.
+  // Structural: representation may reuse the canonical pure scope normalizer,
+  // but it must not acquire storage/network/model dependencies of its own.
   const text = readSource(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url));
-  const imports = [...text.matchAll(/^\s*import[\s\S]*?from\s+['"]([^'"]+)['"];?/gm)].map((match) => match[1]);
-  assert.deepEqual(imports, ['../run/analysis-scope.js'], 'representation imports only the canonical scope validator');
+  assertModuleDependencyBoundary(text, ['../run/analysis-scope.js']);
   assert.equal(/\beval\s*\(/.test(text), false, 'no eval');
+
+  const parser = __moduleDependencyBoundaryForTests;
+  assert.deepEqual(parser.staticModuleSpecifiers("import './storage.js';"), ['./storage.js']);
+  assert.deepEqual(parser.staticModuleSpecifiers("export { value } /* comment */ from './model.js';"), ['./model.js']);
+  assert.equal(parser.hasDynamicImport("void import/* comment */('./model.js')"), true);
+  assert.equal(parser.hasDynamicImport("'import(\"./not-code.js\")'"), false);
 }
 
 function payloadOf(prompt) {
