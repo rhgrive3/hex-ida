@@ -102,6 +102,8 @@
       "js/adapters/index.js",
       "js/address-provenance.js",
       "js/ai/evidence.js",
+      "js/ai/capabilities/executor.js",
+      "js/ai/proposals.js",
       "js/analysis/producer-wait.js",
       "js/analyze.js",
       "js/auto.js",
@@ -184,7 +186,7 @@
     "p12-k",
     "p12-c",
     "p12-p",
-     "p12-r",
+    "p12-r",
     "p12-reviewer"
   ]
 }

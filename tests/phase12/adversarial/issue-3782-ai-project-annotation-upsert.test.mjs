@@ -99,3 +99,36 @@ assert.equal(app.projectAnnotations.length, 2, 'a new id must still append exact
 assert.equal(app.projectAnnotations.find((item) => item.id === 'a2')?.value, 'fresh');
 assert.equal(app.autoReport.report.confirmed.filter((item) => item.id === 'a2').length, 1);
 assert.equal(autosaves, 2);
+
+{
+  // Combined #3782/#3762 postcondition: an upsert whose autosave fails must
+  // restore the prior record in place instead of leaving the new value.
+  const failingApp = {
+    projectAnnotations: [
+      { id: 'b1', kind: 'note', value: 'prior', createdAt },
+    ],
+    autoReport: {
+      report: {
+        confirmed: [
+          { id: 'b1', kind: 'note', value: 'prior', createdAt, confirmed: true, source: 'project-annotation' },
+        ],
+        deep: [],
+      },
+    },
+    workspace: { autosave() { return false; } },
+  };
+  const failingExecutor = new CapabilityExecutor({ catalog: catalog(), app: failingApp });
+  await assert.rejects(
+    () => failingExecutor.execute('annotation.project', { id: 'b1', kind: 'note', value: 'lost' }, {
+      authorization: { kind: 'proposal', token: 'approval-token-3782' },
+    }),
+    /could not be persisted/,
+  );
+  assert.equal(failingApp.projectAnnotations.length, 1);
+  assert.equal(failingApp.projectAnnotations[0].value, 'prior', 'failed upsert must restore the prior record');
+  assert.equal(failingApp.projectAnnotations[0].createdAt, createdAt);
+  assert.equal(failingApp.autoReport.report.confirmed.length, 1);
+  assert.equal(failingApp.autoReport.report.confirmed[0].value, 'prior', 'failed upsert must restore the prior finding');
+}
+
+console.log('issue-3782-ai-project-annotation-upsert: PASS');
