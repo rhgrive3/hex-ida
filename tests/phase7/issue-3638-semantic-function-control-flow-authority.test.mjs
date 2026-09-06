@@ -68,8 +68,8 @@ test('structured or non-canonical control kinds cannot mint definite CFG edges',
   assert.equal(coercions, 0);
 });
 
-test('structured targets cannot become canonical branch addresses', () => {
-  for (const target of [[4], true, new Number(4)]) {
+test('structured or non-canonical targets cannot become canonical branch addresses', () => {
+  for (const target of [[4], true, new Number(4), ' 4', '4 ', '\t4']) {
     const blocks = partitionDecodedFunction(decoded([0, 4]), plugin({
       kinds:{ 0:'branch', 4:'return' },
       targets:{ 0:target },
