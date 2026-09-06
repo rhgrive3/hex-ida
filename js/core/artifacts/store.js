@@ -241,7 +241,10 @@ export class ArtifactStore {
         catch (error) { this.metrics.storageFailures++; throw error; }
         if (!raw) return UPSTREAM_INVALID;
         try {
-          const validated = validateStoredArtifact(raw, { artifactId:upstreamId });
+          const validated = validateStoredArtifact(raw, {
+            artifactId:upstreamId,
+            allowIncomplete:options.allowIncomplete === true,
+          });
           this.metrics.readBytes += validated.payloadBytes.byteLength;
           const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
           if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
