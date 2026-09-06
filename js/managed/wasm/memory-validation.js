@@ -1,3 +1,5 @@
+import { decodeUleb128 } from './parser-core.js';
+
 const I32 = 0x7f;
 const I64 = 0x7e;
 
@@ -37,16 +39,12 @@ function memoryAddressType(memory) {
 
   if (declared === I64) fail('wasm-unsupported-memory-address-type');
   if (declared === I32) {
-    // A non-memory32 limits encoding contradicts an explicit i32 descriptor.
     if (flags != null && (!Number.isSafeInteger(flags) || flags < 0 || (flags & ~0x03) !== 0)) {
       fail('wasm-conflicting-memory-address-type');
     }
     return I32;
   }
 
-  // The current parser only accepts memory32 limits flags 0x00..0x03. Future
-  // memory64 support must publish addressType/indexType instead of inheriting
-  // this parser-profile fallback.
   if (Number.isSafeInteger(flags) && flags >= 0 && (flags & ~0x03) === 0) return I32;
   fail('wasm-memory-address-type-unresolved');
 }
@@ -57,6 +55,32 @@ export function createWasmMemoryValidationContext(wasmModule) {
     .map((entry) => entry.desc);
   const defined = Array.isArray(wasmModule?.memories) ? wasmModule.memories : [];
   return Object.freeze({ memories: Object.freeze([...imported, ...defined]) });
+}
+
+export function decodeWasmMemarg(bytecode, offset) {
+  const flags = decodeUleb128(bytecode, offset);
+  if (flags.value >= 0x80) fail('wasm-invalid-memarg-flags');
+
+  let align = flags.value;
+  let memoryIndex = 0;
+  let pos = flags.nextOffset;
+  if ((flags.value & 0x40) !== 0) {
+    align = flags.value & 0x3f;
+    const memory = decodeUleb128(bytecode, pos);
+    memoryIndex = memory.value;
+    pos = memory.nextOffset;
+  }
+
+  // This frontend currently supports memory32 only. Its existing offset
+  // authority is a canonical u32 ULEB; memory64 remains explicitly unsupported
+  // in memoryAddressType() rather than silently widening this field.
+  const displacement = decodeUleb128(bytecode, pos);
+  return Object.freeze({
+    align,
+    memoryIndex,
+    offset: displacement.value,
+    nextOffset: displacement.nextOffset,
+  });
 }
 
 export function resolveWasmMemory(context, memoryIndex = 0) {

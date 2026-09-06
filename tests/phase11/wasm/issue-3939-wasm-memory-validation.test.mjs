@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { liftWasmFunction } from '../../../js/managed/wasm/lifter.js';
 import {
   createWasmMemoryValidationContext,
+  decodeWasmMemarg,
   resolveWasmMemory,
   validateWasmMemoryInstruction,
 } from '../../../js/managed/wasm/memory-validation.js';
@@ -33,6 +34,8 @@ function moduleWith(bytecode, options = {}) {
 
 const i32Load = (align) => [0x41, 0x00, 0x28, align, 0x00, 0x1a, 0x0b];
 const i32Store = (align) => [0x41, 0x00, 0x41, 0x00, 0x36, align, 0x00, 0x0b];
+const indexedLoad = (memoryIndex) => [0x41, 0x00, 0x28, 0x42, memoryIndex, 0x00, 0x1a, 0x0b];
+const indexedStore = (memoryIndex) => [0x41, 0x00, 0x41, 0x00, 0x36, 0x42, memoryIndex, 0x00, 0x0b];
 
 assert.throws(
   () => liftWasmFunction(0, moduleWith(i32Load(2))),
@@ -58,15 +61,67 @@ assert.throws(
 const validLoad = liftWasmFunction(0, moduleWith(i32Load(2), { memories: [memory32()] }));
 assert.equal(validLoad.aggregateCompleteness, 'exact');
 assert.equal(validLoad.metadata.wasmSpecValidation, 'valid');
-assert.equal(validLoad.bundles.find((bundle) => bundle.opcode === 0x28)?.memoryEffects.length, 1);
+const validLoadEffect = validLoad.bundles.find((bundle) => bundle.opcode === 0x28)?.memoryEffects[0];
+assert.equal(validLoadEffect?.memoryIndex, 0);
+assert.equal(validLoadEffect?.align, 2);
+assert.equal(validLoadEffect?.offset, 0);
+
 const validStore = liftWasmFunction(0, moduleWith(i32Store(2), { memories: [memory32()] }));
 assert.equal(validStore.aggregateCompleteness, 'exact');
 assert.equal(validStore.metadata.wasmSpecValidation, 'valid');
-assert.equal(validStore.bundles.find((bundle) => bundle.opcode === 0x36)?.memoryEffects.length, 1);
+assert.equal(validStore.bundles.find((bundle) => bundle.opcode === 0x36)?.memoryEffects[0]?.memoryIndex, 0);
 
 assert.doesNotThrow(() => liftWasmFunction(0, moduleWith(i32Load(2), {
   imports: [{ module: 'env', field: 'memory', desc: { kind: 2, ...memory32() } }],
 })), 'imported memory 0 is valid memory authority');
+
+// Multi-memory memarg: flags bit 6 carries an explicit memory index; the lower
+// six bits remain the alignment exponent. The public validator and lifter must
+// consume the same bytes and retain that memory identity in the exact effect.
+const twoMemories = [memory32({ min: 2 }), memory32({ min: 3 })];
+const memoryOneLoad = liftWasmFunction(0, moduleWith(indexedLoad(1), { memories: twoMemories }));
+assert.equal(memoryOneLoad.aggregateCompleteness, 'exact');
+assert.equal(memoryOneLoad.metadata.wasmSpecValidation, 'valid');
+assert.deepEqual(memoryOneLoad.bundles.map((bundle) => bundle.mnemonic), ['i32.const', 'i32.load', 'drop', 'end']);
+const memoryOneLoadBundle = memoryOneLoad.bundles.find((bundle) => bundle.opcode === 0x28);
+assert.equal(memoryOneLoadBundle.bytecodeOffset, 2);
+assert.equal(memoryOneLoadBundle.origin.byteRanges[0].end, '6', 'memidx byte is consumed as part of the memarg');
+assert.deepEqual(memoryOneLoadBundle.memoryEffects[0], {
+  space: 'linear-memory',
+  memoryIndex: 1,
+  byteWidth: 4,
+  offset: 0,
+  align: 2,
+  isWrite: false,
+});
+assert.equal(memoryOneLoadBundle.possibleExceptions[0].memoryIndex, 1);
+
+const memoryOneStore = liftWasmFunction(0, moduleWith(indexedStore(1), { memories: twoMemories }));
+assert.equal(memoryOneStore.aggregateCompleteness, 'exact');
+assert.deepEqual(memoryOneStore.bundles.map((bundle) => bundle.mnemonic), ['i32.const', 'i32.const', 'i32.store', 'end']);
+assert.equal(memoryOneStore.bundles.find((bundle) => bundle.opcode === 0x36)?.memoryEffects[0]?.memoryIndex, 1);
+
+assert.throws(
+  () => liftWasmFunction(0, moduleWith(indexedLoad(2), { memories: twoMemories })),
+  /wasm-invalid-memory-index/,
+  'an explicit out-of-range memidx fails closed',
+);
+assert.throws(
+  () => liftWasmFunction(0, moduleWith([0x41, 0x00, 0x28, 0x80, 0x01, 0x00, 0x1a, 0x0b], { memories: twoMemories })),
+  /wasm-invalid-memarg-flags/,
+  'reserved memarg flag values fail closed before publication',
+);
+
+assert.deepEqual(
+  decodeWasmMemarg(Uint8Array.from([0x02, 0x07]), 0),
+  { align: 2, memoryIndex: 0, offset: 7, nextOffset: 2 },
+  'legacy memarg retains implicit memory 0',
+);
+assert.deepEqual(
+  decodeWasmMemarg(Uint8Array.from([0x42, 0x01, 0x07]), 0),
+  { align: 2, memoryIndex: 1, offset: 7, nextOffset: 3 },
+  'multi-memory memarg exposes explicit memory identity',
+);
 
 assert.throws(
   () => liftWasmFunction(0, moduleWith(i32Load(2), { memories: [memory32({ addressType: 'i64' })] })),
