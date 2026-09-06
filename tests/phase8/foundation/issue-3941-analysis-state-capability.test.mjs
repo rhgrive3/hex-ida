@@ -95,3 +95,43 @@ test('commitAnalysisState refuses a non-authoritative target surface', () => {
 
   assert.equal(commitAnalysisState(forgedTarget, working, before), false);
 });
+
+test('registered analysis state API is frozen against capability replacement', () => {
+  const state = createAnalysisState({ cfg: Object.freeze({ blocks: ['trusted'] }) });
+  const originalSnapshot = state.snapshot;
+
+  assert.throws(() => {
+    state.snapshot = () => ({ cfg: 0 });
+  });
+
+  assert.equal(state.snapshot, originalSnapshot);
+  const forgedBefore = { cfg: 0 };
+  const source = createAnalysisState({ cfg: Object.freeze({ blocks: ['trusted'] }) });
+  const working = forkAnalysisState(source);
+  assert.equal(
+    commitAnalysisState(state, working, forgedBefore),
+    false,
+    'stale working state must not pass the version check via a replaced snapshot',
+  );
+});
+
+test('commitAnalysisState refuses a forged working state without registered mutators', () => {
+  const target = createAnalysisState({ cfg: Object.freeze({ blocks: ['trusted'] }) });
+  const before = target.snapshot();
+  const genuineWorking = forkAnalysisState(target);
+  const forgedWorking = {
+    get: (key) => (key === 'cfg' ? { blocks: ['forged'] } : null),
+    version: () => before.cfg + 7,
+    snapshot: () => ({ ...before, cfg: before.cfg + 7 }),
+    available: () => ['cfg'],
+  };
+
+  assert.equal(
+    commitAnalysisState(target, forgedWorking, before),
+    false,
+    'a forged working state must not drive the genuine private mutators',
+  );
+  assert.equal(target.get('cfg'), target.get('cfg'));
+  assert.equal(target.version('cfg'), before.cfg);
+  assert.equal(commitAnalysisState(target, genuineWorking, before), true);
+});

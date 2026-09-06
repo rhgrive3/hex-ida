@@ -65,6 +65,7 @@ export function createAnalysisState(initial = {}, initialVersions = null) {
       return Object.freeze(ANALYSIS_KEYS.filter((key) => versions.get(key) > 0));
     },
   };
+  Object.freeze(api);
   ANALYSIS_MUTATORS.set(api, Object.freeze({
     write(key, value) {
       values.set(key, value);
@@ -106,6 +107,8 @@ export function commitAnalysisState(target, working, before) {
   if (target == null || working == null || before == null) return false;
   const targetMutators = ANALYSIS_MUTATORS.get(target);
   if (targetMutators == null) return false;
+  const workingMutators = ANALYSIS_MUTATORS.get(working);
+  if (workingMutators == null) return false;
   const current = target.snapshot();
   if (ANALYSIS_KEYS.some((key) => current[key] !== before[key])) return false;
   for (const key of ANALYSIS_KEYS) {
