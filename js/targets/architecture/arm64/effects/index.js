@@ -355,10 +355,7 @@ function literalMemoryEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
-  // A64 literal offsets are 64-bit wraparound (SignExtend(imm19:'00') added
-  // to PC64): normalize the displacement mod 2^64 like the ADR/B gates so a
-  // valid cross-boundary encoding is not misread as out of range.
-  const displacement = BigInt.asIntN(64, target - address);
+  const displacement = target - address;
   if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
   return null;
 }

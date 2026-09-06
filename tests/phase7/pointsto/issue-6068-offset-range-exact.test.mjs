@@ -1,0 +1,7 @@
+import test from 'node:test'; import assert from 'node:assert/strict'; import {createPointsToSet,createPointsToTarget,exactRange} from '../../../js/analysis/pointsto/lattice.js'; import {pointsToAlias} from '../../../js/analysis/pointsto/alias.js';
+const base={addressSpace:'memory',rootKind:'rooted',rootIdentity:{id:'same-root'},rootEntityId:'same-root'}; const status={snapshotId:'s',analyzerId:'test',analyzerVersion:'1',completeness:'complete',stopReason:null};
+function alias(l,r){const left=createPointsToTarget({...base,offsetRange:l}),right=createPointsToTarget({...base,offsetRange:r});return {left,result:pointsToAlias(createPointsToSet({targets:[left]}),createPointsToSet({targets:[right]}),{widthBitsLeft:64,widthBitsRight:64,status})};}
+test('6068 forged exact rederived',()=>{const t=createPointsToTarget({...base,offsetRange:{min:0n,max:100n,exact:true}});assert.equal(t.offsetRange.exact,false);assert.equal(t.offsetRange.min,0n);assert.equal(t.offsetRange.max,100n);});
+test('6068 wide overlap not NoAlias',()=>assert.notEqual(alias({min:0n,max:100n,exact:true},exactRange(8)).result.relation,'no'));
+test('6068 wide origin not MustAlias',()=>assert.notEqual(alias({min:0n,max:100n,exact:true},exactRange(0)).result.relation,'must'));
+test('6068 genuine exact strong answers',()=>{assert.equal(alias(exactRange(0),exactRange(0)).result.relation,'must');assert.equal(alias(exactRange(0),exactRange(100)).result.relation,'no');});
