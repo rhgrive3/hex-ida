@@ -46,14 +46,12 @@ function parseMethodDescriptor(text, isStatic) {
 
   const locals = [];
   let slot = 0;
-  if (!isStatic) {
-    locals[slot++] = 'ref';
-  }
+  if (!isStatic) locals[slot++] = 'ref';
   for (const parameter of parameters) {
     locals[slot++] = parameter.kind;
     if (parameter.slots === 2) locals[slot++] = 'cat2-tail';
   }
-  return { parameters, returns, initialLocals: locals, parameterSlots: slot };
+  return { returns, initialLocals: locals, parameterSlots: slot };
 }
 
 function stackSlots(stack) {
@@ -79,8 +77,8 @@ function popKind(state, expected, errors, offset) {
     errors.push({ code: 'jvm-stack-underflow', offset, expected });
     return false;
   }
-  const compatibleUnknown = actual === 'unknown1' && expected && !['long', 'double'].includes(expected)
-    || actual === 'unknown2' && (expected === 'long' || expected === 'double');
+  const compatibleUnknown = (actual === 'unknown1' && expected && !['long', 'double'].includes(expected))
+    || (actual === 'unknown2' && (expected === 'long' || expected === 'double'));
   if (expected && actual !== expected && !compatibleUnknown) {
     errors.push({ code: 'jvm-stack-type-mismatch', offset, expected, actual });
     return false;
@@ -240,10 +238,10 @@ function executeBundle(bundle, state, descriptor, errors, unsupported) {
     case 0xb0: popKind(state, 'ref', errors, offset); if (descriptor.returns.kind !== 'ref') errors.push({ code: 'jvm-return-type-mismatch', offset }); unsupported.add(`reference-assignability:${offset}`); return true;
     case 0xb1: if (descriptor.returns.kind !== 'void') errors.push({ code: 'jvm-return-type-mismatch', offset }); return true;
     case 0xbb: push('ref'); unsupported.add(`uninitialized-object-verification:${offset}`); return true;
-    case 0xbf: popKind(state, 'ref', errors, offset); return true;
+    case 0xbf: popKind(state, 'ref', errors, offset); unsupported.add(`throwable-assignability:${offset}`); return true;
     case 0xc0: popKind(state, 'ref', errors, offset); push('ref'); unsupported.add(`checkcast-cp-validation:${offset}`); return true;
     case 0xc1: popKind(state, 'ref', errors, offset); push('int'); unsupported.add(`instanceof-cp-validation:${offset}`); return true;
-    case 0xc2: case 0xc3: popKind(state, 'ref', errors, offset); return true;
+    case 0xc2: case 0xc3: popKind(state, 'ref', errors, offset); unsupported.add(`structured-locking-verification:${offset}`); return true;
     case 0xb2: case 0xb3: case 0xb4: case 0xb5:
       unsupported.add(`field-descriptor-verification:${offset}`); return false;
     case 0xb6: case 0xb7: case 0xb8: case 0xb9:
@@ -292,6 +290,7 @@ export function verifyJvmMethod(decoded, options = {}) {
   const isStatic = accessFlags != null && (accessFlags & 0x0008) !== 0;
   const descriptor = parseMethodDescriptor(descriptorText, isStatic);
   if (!descriptor) errors.push({ code: 'jvm-invalid-method-descriptor' });
+  if (metadata.methodName === '<init>') unsupported.add('constructor-initialization-verification');
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
@@ -319,6 +318,8 @@ export function verifyJvmMethod(decoded, options = {}) {
   if (descriptor && maxLocals != null && descriptor.parameterSlots > maxLocals) errors.push({ code: 'jvm-parameters-exceed-max-locals' });
 
   const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : 0;
+  const hasControlFlowBranch = bundles.some((bundle) => (bundle.controlEffects ?? []).some((effect) => effect?.kind === 'branch' || effect?.kind === 'conditional-branch'));
+  if (classMajor >= 50 && hasControlFlowBranch) unsupported.add('stack-map-frame-verification');
   for (let bundleIndex = 0; bundleIndex < bundles.length; bundleIndex++) {
     const bundle = bundles[bundleIndex];
     const offset = asNonNegativeInteger(bundle.bytecodeOffset);
@@ -376,7 +377,8 @@ export function verifyJvmMethod(decoded, options = {}) {
       if (!entry) continue;
       const state = cloneState(states.get(offset));
       const canPropagate = executeBundle(entry.bundle, state, descriptor, errors, unsupported);
-      if (stackSlots(state.stack) > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: stackSlots(state.stack), maxStack });
+      const usedStack = stackSlots(state.stack);
+      if (usedStack > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: usedStack, maxStack });
       if (!canPropagate || errors.length) continue;
       for (const successor of normalSuccessors(entry.bundle, bundles, entry.index)) {
         if (!starts.has(successor)) continue;
