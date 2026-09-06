@@ -223,5 +223,7 @@ export function hasExactStart(candidate) {
 }
 
 export function hasKnownExtent(candidate) {
-  return candidate.extentState !== 'unknown' && candidate.regions.length > 0;
+  return candidate.extentState !== 'unknown'
+    && candidate.extentState !== 'contradicted'
+    && candidate.regions.length > 0;
 }

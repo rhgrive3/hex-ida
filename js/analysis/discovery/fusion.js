@@ -187,7 +187,7 @@ function fuseExtent(evidence) {
     const only = [...signatures.values()][0];
     return {
       regions: only.regions,
-      state: authoritative.length > 0 ? 'exact' : considered.length > 1 ? 'probable' : 'heuristic',
+      state: authoritative.length > 0 ? 'exact' : new Set(only.sources).size > 1 ? 'probable' : 'heuristic',
       conflicts: [],
     };
   }
@@ -310,10 +310,8 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 /**
  * Marks candidates whose claimed regions overlap another candidate's start.
  *
- * A region that swallows another function's start is either a false merge or a
- * genuinely shared range (a shared epilogue, a tail-merged block). The fusion
- * cannot tell which, so it records the conflict and withdraws the extent claim
- * symmetrically instead of picking one owner (§12.3).
+ * Explicit `shared` ownership is the only ownership contract that can make an
+ * overlap benign. Exclusive or ambiguous participation remains fail-closed.
  */
 function reconcileOverlaps(candidates, { signal = null } = {}) {
   const n = candidates.length;
@@ -329,12 +327,24 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
         candidateIndex: i,
         start: BigInt(r.start),
         end: BigInt(r.end),
+        ownership: r.ownership,
       });
     }
   }
 
   const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
   starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const sharedAtStart = candidates.map((candidate) => {
+    const start = BigInt(candidate.start);
+    let covered = false;
+    for (const region of candidate.regions) {
+      if (BigInt(region.start) <= start && start < BigInt(region.end)) {
+        covered = true;
+        if (region.ownership !== 'shared') return false;
+      }
+    }
+    return covered;
+  });
 
   for (const reg of regions) {
     if (signal?.aborted) break;
@@ -348,6 +358,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
     for (let k = left; k < starts.length && starts[k].start < reg.end; k++) {
       const otherIdx = starts[k].candidateIndex;
       if (otherIdx !== reg.candidateIndex) {
+        if (reg.ownership === 'shared' && sharedAtStart[otherIdx]) continue;
         swallowed[reg.candidateIndex].push(candidates[otherIdx].start);
       }
     }
@@ -372,6 +383,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
     if (ev.type === 'start') {
       for (const act of active) {
         if (act.candidateIndex !== ev.reg.candidateIndex) {
+          if (act.ownership === 'shared' && ev.reg.ownership === 'shared') continue;
           overlapping[ev.reg.candidateIndex].push(candidates[act.candidateIndex].start);
           overlapping[act.candidateIndex].push(candidates[ev.reg.candidateIndex].start);
         }

@@ -52,15 +52,16 @@ function unavailable(method) {
 }
 
 function completenessOf(result) {
-  const raw = result?.status?.completeness ?? result?.completeness;
-  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
-  if (raw && typeof raw === "object") {
-    if (raw.complete === true) return result?.truncated === true ? "truncated" : "complete";
-    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
-  }
   if (result?.unsupported === true) return "unsupported";
   if (result?.truncated === true) return "truncated";
   if (result?.partial === true || result?.complete === false) return "partial";
+
+  const raw = result?.status?.completeness ?? result?.completeness;
+  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
+  if (raw && typeof raw === "object") {
+    if (raw.complete === true) return "complete";
+    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
+  }
   return "partial";
 }
 
