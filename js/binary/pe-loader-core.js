@@ -40,6 +40,7 @@ export function createPEMetadataBudget(image, options = {}) {
   const meta = image.metadata.peMetadata ||= { complete:true, reasons:[] };
   meta.limits = { ...limits };
   meta.used = used;
+  let nextTimeCheck = 1024;
   const fail = (reason) => { markPEPartial(image, `budget:${reason}`, `PE metadata budget exhausted: ${reason}`); return false; };
   const budget = {
     limits, used, signal,
@@ -47,7 +48,10 @@ export function createPEMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (signal?.aborted) return fail('aborted');
       const nextOps = used.operations + (cost.operations || 0);
-      if ((nextOps & 1023) === 0 && Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      if (nextOps >= nextTimeCheck) {
+        nextTimeCheck = nextOps + 1024;
+        if (Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      }
       for (const key of ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes']) {
         const next = used[key] + (cost[key] || 0);
         if (!Number.isFinite(next) || next < 0 || next > limits[key]) return fail(`${reason}:${key}`);
@@ -352,7 +356,7 @@ export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
     const p=ptr+i*18;let name;
     if(r.u32(p)===0){const noff=r.u32(p+4);name=noff>=4&&noff<strSize&&strBase+noff<strEnd?mappedCStringAtOffset(r,strBase+noff,strEnd,budget,'COFF symbol'):'';}else{name=r.ascii(p,8);if(name&&!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'coff-inline-name'))name='';}
     const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo);const address=sec?sec.address+BigInt(value):0n;
-    if(name){const derivedFunction=!!(type&0x20),executableExternal=!!(sec&&sec.perms.execute&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
+    if(name){const derivedFunction=!!(type&0x20),valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
     if(aux>count-i-1){budget.partial('coff:aux-overrun','PE COFF auxiliary symbol records exceed declared symbol count');break;}i+=1+aux;
   }
 }
