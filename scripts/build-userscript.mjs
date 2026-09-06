@@ -16,6 +16,7 @@ const ORIGIN_TOKEN = '__HEX_ORIGIN__';
 const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
+const BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
@@ -87,6 +88,33 @@ async function bundle(entry, { format = 'iife', rewriteImportMeta = false } = {}
   return Buffer.from(source);
 }
 
+async function bundleInlinedClassic(entry, source) {
+  const result = await build({
+    absWorkingDir: root,
+    stdin: {
+      contents: source,
+      resolveDir: resolve(root, posix.dirname(entry)),
+      sourcefile: posix.basename(entry),
+      loader: 'js',
+    },
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['safari17.4'],
+    charset: 'utf8',
+    legalComments: 'none',
+    minify: true,
+    minifyIdentifiers: true,
+    minifySyntax: true,
+    minifyWhitespace: true,
+    sourcemap: false,
+  });
+  const output = result.outputFiles?.[0]?.contents;
+  if (!output) throw new Error(`esbuild produced no protected classic worker for ${entry}`);
+  return Buffer.from(output);
+}
+
 function protectedImportMetaPlugin() {
   return { name: 'hex-protected-import-meta', setup(api) {
     api.onLoad({ filter: /\.js$/ }, async (args) => {
@@ -102,11 +130,14 @@ function protectedImportMetaPlugin() {
 
 async function buildWorkerAssets() {
   const sources = new Map();
-  for (const entry of CLASSIC_ENTRIES) await collectClassic(entry, sources);
+  for (const entry of [...CLASSIC_ENTRIES, ...BUNDLED_CLASSIC_ENTRIES]) await collectClassic(entry, sources);
   const classic = {};
   for (const entry of CLASSIC_ENTRIES) {
     const minified = await transform(inlineImports(entry, sources), { loader: 'js', target: 'safari17.4', minify: true, legalComments: 'none', sourcemap: false });
     classic[entry] = minified.code;
+  }
+  for (const entry of BUNDLED_CLASSIC_ENTRIES) {
+    classic[entry] = (await bundleInlinedClassic(entry, inlineImports(entry, sources))).toString('utf8');
   }
   const modules = {
     [MODULE_WORKER_ENTRIES[0]]: (await bundle(MODULE_WORKER_ENTRIES[0], { format: 'iife' })).toString('utf8'),
@@ -153,4 +184,4 @@ function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex 
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
-async function writeGeneratedModule(name, source) { const path = resolve(generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+async function writeGeneratedModule(name, source) { const path = resolve(root, '.runtime-build', name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
