@@ -1,15 +1,33 @@
 name: Stage 2 non-physical closure proof
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
-      - 'js/**'
-      - 'tests/**'
-      - 'tools/**'
-      - 'userscript/**'
+      - 'js/targets/architecture/**'
+      - 'js/runtime/**'
+      - 'js/managed/**'
+      - 'js/rebuild/**'
+      - 'js/phase12/**'
+      - 'js/platform/stage2-*'
+      - 'js/platform/physical-ipad-evidence.js'
+      - 'js/knowledge/**'
+      - 'js/signature/**'
+      - 'js/pattern/**'
+      - 'js/collaboration/**'
+      - 'tests/machine-effects/**'
+      - 'tests/stage2/**'
+      - 'tests/phase12/**'
+      - 'tools/validation/machine-effects/**'
+      - 'tools/validation/stage2/**'
+      - 'tools/validation/phase6/**'
+      - 'tools/validation/phase10/**'
+      - 'tools/validation/phase11/**'
+      - 'tools/validation/phase12/**'
+      - 'tools/validation/rebuild-independent-oracle.mjs'
+      - '.github/workflows/stage2-nonphysical-closure.yml'
       - 'package.json'
       - 'package-lock.json'
-      - '.github/workflows/stage2-nonphysical-closure.yml'
   workflow_dispatch:
     inputs:
       expect_sha:
@@ -21,7 +39,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stage2-nonphysical-${{ github.event.pull_request.number || github.run_id }}
+  group: stage2-nonphysical-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,7 +50,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          ref: ${{ inputs.expect_sha || github.sha }}
           fetch-depth: 0
 
       - name: Detect Stage 2 proof impact
@@ -41,7 +59,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          HEAD_SHA: ${{ inputs.expect_sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
@@ -108,7 +126,7 @@ jobs:
         id: identity
         shell: bash
         env:
-          EXPECT_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          EXPECT_SHA: ${{ inputs.expect_sha || github.sha }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"

@@ -4,33 +4,6 @@ name: Phase 11 release validation
 # dispatch prevents validation-only PRs (EP-012). Broad repository validation
 # runs only at release boundaries; draft inner-loop pushes stay focused.
 on:
-  push:
-    branches:
-      - main
-      - "phase11/**"
-    paths:
-      - "js/managed/**"
-      - "js/platform/capability-maturity.js"
-      - "tests/phase11/**"
-      - "tests/capability-maturity.mjs"
-      - "tools/validation/phase11/**"
-      - ".github/workflows/phase11-release-validation.yml"
-      - ".github/workflows/_phase-release-validation.yml"
-      - "docs/SUPPORT_MATRIX.md"
-      - "userscript/hex.user.template.js"
-      - "userscript/release-version.json"
-      - "package.json"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
-    paths:
-      - "js/managed/**"
-      - "js/platform/capability-maturity.js"
-      - "tests/phase11/**"
-      - "tests/capability-maturity.mjs"
-      - "tools/validation/phase11/**"
-      - ".github/workflows/phase11-release-validation.yml"
-      - "docs/SUPPORT_MATRIX.md"
-      - "package.json"
   workflow_dispatch:
     inputs:
       sha:

@@ -1,19 +1,6 @@
 name: Phase 12 release validation
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths:
-      - 'js/phase12/**'
-      - 'js/knowledge/phase12-**'
-      - 'js/collaboration/**'
-      - 'js/pattern/**'
-      - 'js/rebuild/**'
-      - 'tests/phase12/**'
-      - 'tools/validation/phase12/**'
-      - 'package.json'
-      - 'docs/SUPPORT_MATRIX.md'
-      - '.github/workflows/phase12-release-validation.yml'
   workflow_dispatch:
     inputs:
       expect_sha:

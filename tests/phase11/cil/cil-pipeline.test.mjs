@@ -33,6 +33,10 @@ assert.equal(
   null,
 );
 
+const wrongReturn = await frontend.validateMethod(decoded, { returnStackSlots: 0 });
+assert.equal(wrongReturn.status, 'invalid');
+assert.ok(wrongReturn.errors.some((error) => error.code === 'cil-return-stack-shape-invalid'));
+
 const val = await frontend.validateMethod(decoded, { returnStackSlots: 1 });
 assert.equal(val.status, 'valid');
 assert.deepEqual(val.errors, []);
