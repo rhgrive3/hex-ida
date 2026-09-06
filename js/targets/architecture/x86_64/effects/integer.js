@@ -50,6 +50,9 @@ function validLeaDestination(operand) {
     && LEA_DESTINATION_WIDTHS.has(operand.widthBits)
     && LEA_DESTINATION_KINDS.has(operand.register?.kind);
 }
+function registerSourceWidthMatches(destination, source) {
+  return source?.type !== 'register' || source.widthBits === destination?.widthBits;
+}
 function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   const destinationWidth = Number(destinationWidthBits);
   const sourceWidth = Number(sourceWidthBits);
@@ -128,7 +131,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (MOVES.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial('x86-mov-operand-shape-unmodelled', ['registers']);
     }
     const value = ctx.readOperand(source, destination.widthBits);
@@ -149,7 +153,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (ARITHMETIC.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readRegister(destination);
@@ -193,7 +198,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (LOGICAL.has(family)) {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readRegister(destination);
@@ -215,7 +221,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (family === 'cmp' || family === 'test') {
-    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)) {
+    if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
+      || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const left = ctx.readOperand(destination, destination.widthBits);
@@ -299,12 +306,16 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     let right;
     let form;
     if (ctx.operands.length === 2) {
-      if (source?.type !== 'register') return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags']);
+      if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source)) {
+        return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags']);
+      }
       left = ctx.readRegister(destination);
       right = ctx.readOperand(source, destination.widthBits, { signed:true });
       form = 'two-operand';
     } else {
-      if (source?.type !== 'register' || third?.type !== 'immediate') return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags']);
+      if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source) || third?.type !== 'immediate') {
+        return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags']);
+      }
       left = ctx.readOperand(source, destination.widthBits, { signed:true });
       right = ctx.readOperand(third, destination.widthBits, { signed:true });
       form = 'three-operand';
@@ -346,7 +357,8 @@ export function liftX86IntegerEffects(instruction, context = {}) {
 
   if (family.startsWith('cmov')) {
     const code = ctx.instruction.detail.conditionCode ?? family.slice(4);
-    if (destination?.type !== 'register' || source?.type !== 'register' || ctx.operands.length !== 2 || ![16,32,64].includes(destination.widthBits)) {
+    if (destination?.type !== 'register' || source?.type !== 'register' || ctx.operands.length !== 2
+      || ![16,32,64].includes(destination.widthBits) || !registerSourceWidthMatches(destination, source)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
     const condition = emitX86Condition(ctx, code);
