@@ -34,13 +34,20 @@ function buildClass({ firstCodeInfo, secondMethod = false } = {}) {
   return Uint8Array.from(bytes);
 }
 
-function validCodeInfo({ nested = false } = {}) {
+function validCodeInfo({ nested = false, exception = false } = {}) {
   const b=[];
   const u1=x=>b.push(x&0xff);
   const u2=x=>{u1(x>>>8);u1(x);};
   const u4=x=>{u1(x>>>24);u1(x>>>16);u1(x>>>8);u1(x);};
-  u2(0);u2(0);u4(1);u1(0xb1);u2(0); // return, no exceptions
-  if(!nested){u2(0);return b;}
+  u2(0);u2(0);u4(1);u1(0xb1);
+  if(exception){
+    // one valid entry: start_pc=0 end_pc=1 handler_pc=0 catch_type=#2 (Class A)
+    u2(1);u2(0);u2(1);u2(0);u2(2);
+    u2(0); // no nested attributes
+    return b;
+  }
+  u2(0); // no exceptions
+  if(!nested){u2(0);return b;} // no nested attributes
   u2(1);u2(8);u4(0); // one unknown nested attr, valid Utf8 name, empty body
   return b;
 }
@@ -48,6 +55,11 @@ function validCodeInfo({ nested = false } = {}) {
 const valid = parseJvm(buildClass({ firstCodeInfo: validCodeInfo() }));
 assert.equal(valid.methods[0].code.codeLength,1);
 assert.deepEqual([...valid.methods[0].code.bytecode],[0xb1]);
+
+const validException = parseJvm(buildClass({ firstCodeInfo: validCodeInfo({ exception:true }) }));
+assert.deepEqual(validException.methods[0].code.exceptionTable,[
+  { startPc:0, endPc:1, handlerPc:0, catchType:'A' },
+]);
 
 const validNested = parseJvm(buildClass({ firstCodeInfo: validCodeInfo({ nested:true }) }));
 assert.equal(validNested.methods[0].code.codeLength,1);
