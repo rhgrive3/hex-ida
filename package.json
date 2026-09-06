@@ -85,8 +85,8 @@
     "userscript:test": "npm run dev-agent:test && node tests/userscript-importscripts-literals.mjs && npm run userscript:build && node --check userscript/hex.user.template.js && node --check worker-entry.js && node tests/userscript-release-version.mjs && node tests/userscript-embed-protocol.mjs && node tests/userscript-embed-bootstrap.mjs && node tests/chatgpt-web-bridge-contract.mjs && node tests/chatgpt-send-control-resolution.mjs && node tests/chatgpt-disabled-stop-settlement.mjs && node tests/userscript-chatgpt-parent-rpc.mjs && node tests/userscript-chatgpt-iframe-host.mjs && node tests/userscript-chatgpt-sandbox-host.mjs && node tests/userscript-embed-child.mjs && node tests/userscript-dev-worker-runtime.mjs && node tests/userscript-host.mjs && node tests/userscript-decompress.mjs && node tests/userscript-worker-arraybuffer.mjs && node tests/userscript-network.mjs && node tests/chatgpt-web-runtime.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/userscript-routes.mjs && node tests/userscript-embed-route.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.28.1",
-    "playwright": "1.55.0",
-    "wrangler": "^4.123.0"
+    "esbuild": "0.28.2",
+    "playwright": "1.62.1",
+    "wrangler": "^4.128.0"
   }
 }
