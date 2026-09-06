@@ -50,3 +50,65 @@ test('issue #3788 - custom clear removes its own index without touching the defa
   assert.equal(storage.getItem(defaultIndexKey), null);
   assert.equal(storage.getItem(`${STORAGE_KEY}.default-bin`), null);
 });
+
+test('issue #3788 - coercible keys are canonicalized once before storage ownership is derived', () => {
+  const storage = memoryStorage();
+  const customKey = 'test.ai.coercible';
+  const defaultStore = createConversationStore({ storage, namespace: () => 'default-bin' });
+  assert.equal(defaultStore.save([persistedConversation('default-chat')]), true);
+
+  const boxedStore = createConversationStore({
+    storage,
+    key: new String(customKey),
+    namespace: () => 'boxed-bin',
+  });
+  assert.equal(boxedStore.save([persistedConversation('boxed-chat')]), true);
+  boxedStore.clear();
+  assert.ok(storage.getItem(`${STORAGE_KEY}.index`));
+  assert.ok(storage.getItem(`${STORAGE_KEY}.default-bin`));
+  assert.equal(storage.getItem(`${customKey}.index`), null);
+  assert.equal(storage.getItem(`${customKey}.boxed-bin`), null);
+
+  let coercions = 0;
+  const statefulKey = {
+    [Symbol.toPrimitive]() {
+      coercions += 1;
+      return coercions === 1 ? customKey : STORAGE_KEY;
+    },
+  };
+  const statefulStore = createConversationStore({
+    storage,
+    key: statefulKey,
+    namespace: () => 'stateful-bin',
+  });
+  assert.equal(coercions, 1, 'storage key must be snapshotted exactly once');
+  assert.equal(statefulStore.save([persistedConversation('stateful-chat')]), true);
+  assert.equal(coercions, 1, 'save must reuse the canonical storage key');
+  assert.ok(storage.getItem(`${customKey}.index`));
+  assert.ok(storage.getItem(`${customKey}.stateful-bin`));
+
+  statefulStore.clear();
+  assert.equal(coercions, 1, 'clear must reuse the canonical storage key');
+  assert.equal(storage.getItem(`${customKey}.index`), null);
+  assert.equal(storage.getItem(`${customKey}.stateful-bin`), null);
+  assert.ok(storage.getItem(`${STORAGE_KEY}.index`), 'stateful custom key must not alias the default index');
+  assert.ok(storage.getItem(`${STORAGE_KEY}.default-bin`), 'stateful custom key must not alias default buckets');
+});
+
+test('issue #3788 - a boxed default key resolves to the same canonical default owner', () => {
+  const storage = memoryStorage();
+  const boxedDefault = createConversationStore({
+    storage,
+    key: new String(STORAGE_KEY),
+    namespace: () => 'boxed-default-bin',
+  });
+
+  assert.equal(boxedDefault.key, `${STORAGE_KEY}.boxed-default-bin`);
+  assert.equal(boxedDefault.save([persistedConversation('boxed-default-chat')]), true);
+  assert.ok(storage.getItem(`${STORAGE_KEY}.index`));
+  assert.ok(storage.getItem(`${STORAGE_KEY}.boxed-default-bin`));
+
+  boxedDefault.clear();
+  assert.equal(storage.getItem(`${STORAGE_KEY}.index`), null);
+  assert.equal(storage.getItem(`${STORAGE_KEY}.boxed-default-bin`), null);
+});
