@@ -282,17 +282,61 @@ export class InvestigationService {
     this.app = app;
     this.shared = new Map();
     this.pinCache = new Map();
+    this.cacheEpoch = epochOf(app);
+    this.cacheGeneration = 0;
+    this.pinSnapshotId = undefined;
+  }
+
+  #invalidateCaches(reason) {
+    const error = abortError(null, reason);
+    error.stale = true;
+    for (const entry of this.shared.values()) {
+      if (!entry?.settled && !entry?.controller?.signal?.aborted) entry.controller.abort(error);
+    }
+    this.shared.clear();
+    this.pinCache.clear();
+    this.pinSnapshotId = undefined;
+    this.cacheGeneration++;
+  }
+
+  #syncEpoch() {
+    const epoch = epochOf(this.app);
+    if (Object.is(epoch, this.cacheEpoch)) return epoch;
+    this.#invalidateCaches('Investigation epoch changed');
+    this.cacheEpoch = epoch;
+    return epoch;
+  }
+
+  #syncPinSnapshot(snapshotId) {
+    if (Object.is(snapshotId, this.pinSnapshotId)) return;
+    this.pinCache.clear();
+    this.pinSnapshotId = snapshotId;
   }
 
   #shared(key, producer, options = {}) {
     abortIfNeeded(options.signal);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
     let entry = this.shared.get(key);
     if (!entry || entry.controller.signal.aborted) {
       const controller = new AbortController();
       entry = { controller, waiters:0, settled:false, promise:null };
       entry.promise = scheduleProducer(options, controller.signal)
         .then(() => producer(controller.signal))
-        .then((value) => { entry.value = value; entry.settled = true; return value; })
+        .then((value) => {
+          if (controller.signal.aborted || generation !== this.cacheGeneration
+            || !Object.is(epochOf(this.app), epoch)) {
+            if (!controller.signal.aborted) {
+              const error = abortError(null, 'Investigation epoch changed');
+              error.stale = true;
+              controller.abort(error);
+            }
+            throw abortError(controller.signal);
+          }
+          entry.value = value;
+          entry.settled = true;
+          return value;
+        })
         .catch((error) => {
           if (this.shared.get(key) === entry) this.shared.delete(key);
           throw error;
@@ -305,8 +349,8 @@ export class InvestigationService {
   }
 
   collectStrings(options = {}) {
+    const epoch = this.#syncEpoch();
     if (this.app.stringIndex?.complete === true) return Promise.resolve(this.app.stringIndex);
-    const epoch = epochOf(this.app);
     const config = budgetConfig(options, 'strings', STRING_SCAN_BUDGET);
     const profile = budgetProfileKey(config);
     return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
@@ -358,6 +402,7 @@ export class InvestigationService {
   }
 
   async discoverFunctions(options = {}) {
+    this.#syncEpoch();
     const symbols = this.app.symbols;
     if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
     if (typeof this.app.ensureFunctions !== 'function') return symbols;
@@ -374,9 +419,9 @@ export class InvestigationService {
 
   buildProgram(options = {}) {
     const app = this.app;
+    const epoch = this.#syncEpoch();
     const regions = execRegions(app);
     if (!regions.length) return Promise.resolve(null);
-    const epoch = epochOf(app);
     const key = regions.map((r) => r.id).join('|');
     const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
     const profile = budgetProfileKey(limits);
@@ -440,7 +485,7 @@ export class InvestigationService {
   }
 
   collectShapes(options = {}) {
-    const epoch = epochOf(this.app);
+    const epoch = this.#syncEpoch();
     if (this.app.shapes) return Promise.resolve(this.app.shapes);
     return this.#shared(`shapes:${epoch}`, (signal) => {
       const optionsObj = {
@@ -455,7 +500,7 @@ export class InvestigationService {
   }
 
   ensureMetadata(options = {}) {
-    const epoch = epochOf(this.app);
+    const epoch = this.#syncEpoch();
     return this.#shared(`metadata:${epoch}`, async (signal) => {
       abortIfNeeded(signal);
       const sliceIndex = strictInteger(storeValue(this.app, 'sliceIndex'), -1);
@@ -514,6 +559,7 @@ export class InvestigationService {
 
   async prepareGoal(goal, options = {}) {
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     const shapeNeeded = needsShapeEvidence(goal);
     const stringsP = this.collectStrings(options);
     const shapesP = shapeNeeded ? this.collectShapes(options) : Promise.resolve(null);
@@ -526,6 +572,7 @@ export class InvestigationService {
     const queryOptions = { signal:options.signal, priority:priorityOf(options), budget:options.budget ?? null };
     const snapshot = await this.app.analysisQueries.snapshot(queryOptions);
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, binding);
     const context = {
       snapshot,
@@ -556,6 +603,7 @@ export class InvestigationService {
       vendors:vendorsOf(context.fields),
     });
     abortIfNeeded(options.signal);
+    this.#syncPinSnapshot(context.snapshotId);
     const cacheKey = `${context.snapshotId}:${goal?.id || ''}:${goal?.text || ''}`;
     let pin = this.pinCache.get(cacheKey) || null;
     if (!pin) {
@@ -600,6 +648,7 @@ export class InvestigationService {
       budget:options.budget ?? null,
     });
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, context.binding);
     const typedRanked = typedRankedCandidates(ranked, context);
     return Object.freeze({
@@ -645,6 +694,7 @@ export class InvestigationService {
       budget:options.budget ?? null,
     });
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, context.binding);
     report.snapshotId = context.snapshotId;
     report.completeness = context.completeness;
