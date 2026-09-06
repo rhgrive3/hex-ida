@@ -29,6 +29,6 @@ UTF-8 runtime event queue accounting.
 ## Resume procedure
 
 Fetch `origin/main`, verify the exact candidate base, read the shared board after
-#300, then continue from the first unchecked stage. Repository-wide red gates
+message 300, then continue from the first unchecked stage. Repository-wide red gates
 must be compared with a pristine `origin/main` baseline before being treated as
 a lane regression.
