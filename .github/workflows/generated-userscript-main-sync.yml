@@ -1,0 +1,61 @@
+name: Generated userscript main sync
+
+# Deliberately push-only: this workflow owns a write-capable token and must
+# never execute code supplied by a pull_request branch. PRs keep using the
+# read-only Generated userscript sync + same-repo autofix path.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'scripts/sync-generated-userscript.mjs'
+      - 'tools/validation/generated-output-policy.mjs'
+      - 'tests/dev-agent/sync-generated-userscript.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+      - '.github/workflows/generated-userscript-main-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generated-userscript-main-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout exact main push
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Prove generated-output publisher boundaries
+        run: node tests/dev-agent/sync-generated-userscript.mjs
+
+      - name: Rebuild and publish canonical userscript outputs
+        run: node scripts/sync-generated-userscript.mjs --rebuild
