@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
+import { descriptor } from './helpers.mjs';
 
 function deferred() {
   let resolve;
@@ -14,10 +15,6 @@ async function waitState(scheduler, artifactId, state, turns = 1000) {
     await Promise.resolve();
   }
   assert.fail(`state ${state} not reached for ${artifactId}; got ${scheduler.state(artifactId)}`);
-}
-
-function descriptor(name) {
-  return Object.freeze({ artifactId: `artifact_${name}`, upstreamArtifactIds: [] });
 }
 
 class NoCacheStore {

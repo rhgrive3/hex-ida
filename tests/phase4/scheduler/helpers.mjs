@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
+import { createArtifactDescriptor } from '../../../js/core/artifacts/contracts.js';
 
 export class TestStore {
   constructor() { this.entries=new Map(); this.publishes=0; this.gets=0; }
@@ -20,9 +21,12 @@ export class TestStore {
 }
 
 export function descriptor(name, dependencies=[]) {
-  const artifactId=String(name).startsWith('artifact_')?String(name):`artifact_${name}`;
   const upstreamArtifactIds=[...new Set(dependencies.map((item)=>typeof item==='string'?item:item.artifactId))].sort((a,b)=>a.localeCompare(b));
-  return Object.freeze({ artifactId,upstreamArtifactIds });
+  return createArtifactDescriptor({
+    binaryId:'scheduler-test-binary', artifactKind:'analysis', producerId:String(name),
+    producerVersion:'1', loaderVersion:'1', architectureSemanticVersion:'1',
+    abiSemanticVersion:'1', semanticSchemaVersion:'1', upstreamArtifactIds,
+  });
 }
 export function scheduler(options={}) { const store=options.store||new TestStore(); return {store,scheduler:new AnalysisScheduler({store,...options})}; }
 export function deferred() { let resolve,reject; const promise=new Promise((yes,no)=>{resolve=yes;reject=no;}); return {promise,resolve,reject}; }

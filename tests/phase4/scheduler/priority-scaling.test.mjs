@@ -17,7 +17,7 @@ import { deferred, descriptor, scheduler, waitState } from './helpers.mjs';
     ['foreground','priority-foreground'],
   ];
   const promises=cases.map(([priority,id])=>s.request({descriptor:descriptor(id),priority,produce:async()=>{order.push(priority);return {semantic:'same'};}}));
-  for (const [,id] of cases) await waitState(s,`artifact_${id}`,'ready');
+  for (const [,id] of cases) await waitState(s,descriptor(id).artifactId,'ready');
   gate.resolve({ok:true});
   await Promise.all([blockerPromise,...promises]);
   assert.deepEqual(order,['foreground','current','prefetch','background','maintenance']);
@@ -32,10 +32,10 @@ import { deferred, descriptor, scheduler, waitState } from './helpers.mjs';
   await waitState(s,blocker.artifactId,'running');
   const order=[];
   const ids=['tie-z','tie-a','tie-m'];
-  const promises=ids.map((id)=>s.request({descriptor:descriptor(id),priority:'current',produce:async()=>{order.push(`artifact_${id}`);return {};}}));
-  for (const id of ids) await waitState(s,`artifact_${id}`,'ready');
+  const promises=ids.map((id)=>s.request({descriptor:descriptor(id),priority:'current',produce:async()=>{order.push(descriptor(id).artifactId);return {};}}));
+  for (const id of ids) await waitState(s,descriptor(id).artifactId,'ready');
   gate.resolve({}); await Promise.all([blockerPromise,...promises]);
-  assert.deepEqual(order,[...ids].map((id)=>`artifact_${id}`).sort((a,b)=>a.localeCompare(b)));
+  assert.deepEqual(order,ids.map((id)=>descriptor(id).artifactId).sort((a,b)=>a.localeCompare(b)));
 }
 
 // Starvation policy is deterministic: an old maintenance job outranks sufficiently new foreground arrivals.
