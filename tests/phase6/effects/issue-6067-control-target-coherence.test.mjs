@@ -40,3 +40,15 @@ test('6067: operand-only target still resolves', () => {
   const bundle = lift('b', [{ k: 'imm', value: 0x1004n }]);
   assert.equal(bundle?.completeness, 'exact');
 });
+
+test('6067: bc.cond contradictory branchTarget does not exactify', () => {
+  const bundle = lift('bc.eq', [{ k: 'imm', value: 0x1004n }], { branchTarget: 0x1008n });
+  assert.notEqual(bundle?.completeness, 'exact');
+  assert.match(bundle?.unknownEffects?.reason ?? '', /target-evidence-mismatch/);
+});
+
+test('6067: coherent bc.cond target evidence stays exact', () => {
+  const bundle = lift('bc.eq', [{ k: 'imm', value: 0x1004n }], { branchTarget: 0x1004n });
+  assert.equal(bundle?.completeness, 'exact');
+  assert.equal(bundle?.controlEffect?.target?.value, '4100');
+});
