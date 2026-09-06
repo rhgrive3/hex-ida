@@ -49,32 +49,6 @@ function semanticDigest(operation) {
   });
 }
 
-function canonicalOperation(input) {
-  if (CANONICAL_PROJECT_OPERATIONS.has(input)) return input;
-  if (input != null && typeof input === 'object') {
-    try { return createProjectOperation(input); }
-    catch (error) { return { normalized: false, input, error }; }
-  }
-  return { normalized: false, input, error: new TypeError('operation-input-invalid') };
-}
-
-function requireCanonicalOperation(input) {
-  const operation = canonicalOperation(input);
-  if (!CANONICAL_PROJECT_OPERATIONS.has(operation)) throw operation.error;
-  return operation;
-}
-
-function canonicalizationFailureReason(operation) {
-  const reason = operation.error?.message || 'operation-input-invalid';
-  // Versioned string actions historically rejected at the apply boundary as
-  // unsupported, even when an empty string would fail factory validation as
-  // "required". Keep that public result while rebuilding raw values first.
-  if (reason === 'operation-action-required'
-    && operation.input?.schemaVersion === CHANGELOG_SCHEMA_VERSION
-    && typeof operation.input?.action === 'string') return 'operation-action-unsupported';
-  return reason;
-}
-
 export function createProjectOperation(input = {}) {
   if (input.schemaVersion != null && input.schemaVersion !== CHANGELOG_SCHEMA_VERSION) throw new TypeError('operation-schema-version-unsupported');
   const projectIdentity = required(input.projectIdentity ?? input.projectId, 'operation-project-identity-required');
@@ -112,19 +86,14 @@ export function isCanonicalProjectOperation(value) {
 }
 
 function requireCanonicalProjectOperation(input) {
-  return requireCanonicalOperation(input);
+  return isCanonicalProjectOperation(input) ? input : createProjectOperation(input);
 }
 
 // The remote gate expects malformed records to normalize to no authority.
 // Throwing ingress APIs use the same validator without swallowing its error.
 export function canonicalizeProjectOperation(input) {
-  const operation = canonicalOperation(input);
-  if (isCanonicalProjectOperation(operation)) return operation;
-  // The T052 fixture intentionally exposes the structured failure for an
-  // unsupported action; other malformed transport values normalize to no
-  // authority for the remote consumer.
-  if (operation.error?.message === 'operation-action-unsupported') return operation;
-  return null;
+  try { return requireCanonicalProjectOperation(input); }
+  catch { return null; }
 }
 
 function rememberRestoredOperation(map, operation) {
@@ -136,6 +105,12 @@ function rememberRestoredOperation(map, operation) {
 function operationActionReason(action) {
   if (typeof action !== 'string') return 'operation-action-required';
   return OPERATION_ACTIONS.has(action) ? null : 'operation-action-unsupported';
+}
+
+function rawActionRejection(input) {
+  if (input?.schemaVersion !== CHANGELOG_SCHEMA_VERSION) return null;
+  const reason = operationActionReason(input.action);
+  return reason ? Object.freeze({ status: 'rejected', reason }) : null;
 }
 
 function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
@@ -312,15 +287,9 @@ export class ChangeLog {
   }
 
   applyOperation(input) {
-    const operation = canonicalOperation(input);
-    if (!isCanonicalProjectOperation(operation)) {
-      return Object.freeze({
-        status: 'rejected',
-        reason: canonicalizationFailureReason(operation),
-        operationId: operation.input?.operationId ?? null,
-        stateDigest: this.digest(),
-      });
-    }
+    const actionRejection = rawActionRejection(input);
+    if (actionRejection) return actionRejection;
+    const operation = requireCanonicalProjectOperation(input);
     const existingPending = this.pending.get(operation.operationId);
     if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
       return Object.freeze({
@@ -346,19 +315,11 @@ export class ChangeLog {
   }
 
   applyBatch(inputs = []) {
-    const operations = [];
     for (const input of inputs) {
-      const operation = canonicalOperation(input);
-      if (!isCanonicalProjectOperation(operation)) {
-        return Object.freeze({
-          status: 'rejected',
-          reason: canonicalizationFailureReason(operation),
-          operationId: operation.input?.operationId ?? null,
-          stateDigest: this.digest(),
-        });
-      }
-      operations.push(operation);
+      const actionRejection = rawActionRejection(input);
+      if (actionRejection) return actionRejection;
     }
+    const operations = inputs.map((input) => requireCanonicalProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
