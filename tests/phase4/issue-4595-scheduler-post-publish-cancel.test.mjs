@@ -42,21 +42,21 @@ async function waitForIdle(scheduler) {
     onEvent(event) { events.push(event); },
   });
 
-  await assert.rejects(
-    scheduler.request({
-      descriptor: currentDescriptor,
-      dependencies: [],
-      signal: controller.signal,
-      produce: async () => ({ committed:true }),
-    }),
-    (error) => error?.name === 'AbortError',
-  );
+  const result = await scheduler.request({
+    descriptor: currentDescriptor,
+    dependencies: [],
+    signal: controller.signal,
+    produce: async () => ({ committed:true }),
+  });
   await waitForIdle(scheduler);
 
   assert.equal(persisted, true);
+  assert.equal(result.state, 'completed');
+  assert.equal(result.payload.committed, true);
   assert.equal(scheduler.state(currentDescriptor.artifactId), 'completed');
   assert.equal(scheduler.stats().completedJobs, 1);
   assert.equal(scheduler.stats().cancelledJobs, 0);
+  assert.equal(scheduler.stats().cancelledConsumers, 0);
   assert.equal(events.filter((event) => event.type === 'job.completed').length, 1);
   assert.equal(events.filter((event) => event.type === 'job.cancelled').length, 0);
 }
