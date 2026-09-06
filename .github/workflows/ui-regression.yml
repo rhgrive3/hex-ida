@@ -36,10 +36,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -47,7 +47,7 @@ jobs:
       - name: Verify playwright@1.55.0 dependency
         run: node -e "const v=require('./node_modules/playwright/package.json').version; if(v!=='1.55.0'){console.error('unexpected Playwright '+v);process.exit(1)}"
       - name: Restore pinned Playwright Chromium cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.55.0-chromium-v1
@@ -118,7 +118,7 @@ jobs:
           NODE
       - name: Upload Chromium screenshot audit
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-screenshot-audit-chromium
           path: tests/ui-shots/chromium
@@ -135,10 +135,10 @@ jobs:
       image: mcr.microsoft.com/playwright:v1.55.0-noble
       options: --ipc=host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -186,7 +186,7 @@ jobs:
           NODE
       - name: Upload WebKit screenshot audit
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-screenshot-audit-webkit
           path: tests/ui-shots/webkit
@@ -203,7 +203,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download screenshot audit shards
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: ui-screenshot-audit-*
           path: tests/ui-shots-shards
@@ -214,7 +214,7 @@ jobs:
           test "$(find tests/ui-shots-shards -type f -name '*.png' | wc -l)" -ge 30
       - name: Upload combined screenshot audit
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-screenshot-audit
           path: tests/ui-shots-shards

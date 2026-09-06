@@ -81,8 +81,8 @@ jobs:
             file: TsumTsum
             oracle: tests/oracle.TsumTsum.ci.json.gz
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -111,7 +111,7 @@ jobs:
           echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-${{ matrix.target.fixture }}-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
       - name: Restore exact oracle cache
         id: oracle-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.target.oracle }}
           key: ${{ steps.oracle-key.outputs.key }}
@@ -124,19 +124,19 @@ jobs:
 
       - name: Restore exact core result cache
         id: core-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-core.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-core-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Restore exact pinpoint result cache
         id: pinpoint-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-pinpoint.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-pinpoint-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Restore exact pseudoc result cache
         id: pseudoc-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-pseudoc.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-pseudoc-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
@@ -171,7 +171,7 @@ jobs:
           node scripts/fetch-real-fixtures.mjs "${{ matrix.target.fixture }}" --check
           file "tests/.real-fixtures/${{ matrix.target.file }}"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         with:
           python-version: ${{ env.ORACLE_PYTHON_VERSION }}
@@ -188,12 +188,12 @@ jobs:
           gzip -t "${{ matrix.target.oracle }}"
       - name: Save exact oracle cache
         if: steps.oracle-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ matrix.target.oracle }}
           key: ${{ steps.oracle-key.outputs.key }}
       - name: Publish oracle for this run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cross-binary-oracle-${{ matrix.target.name }}
           path: ${{ matrix.target.oracle }}
@@ -289,26 +289,26 @@ jobs:
 
       - name: Save exact core result cache
         if: success() && steps.core-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-core.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-core-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Save exact pinpoint result cache
         if: success() && steps.pinpoint-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-pinpoint.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-pinpoint-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Save exact pseudoc result cache
         if: success() && steps.pseudoc-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: accuracy-part-${{ matrix.target.name }}-pseudoc.json
           key: accuracy-result-v8-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-pseudoc-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
 
       - name: Upload target accuracy partitions
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accuracy-part-${{ matrix.target.name }}
           path: accuracy-part-${{ matrix.target.name }}-*.json
@@ -321,8 +321,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Require complete measurement matrix
@@ -350,7 +350,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: npm test
       - name: Download accuracy partitions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: accuracy-part-*
           merge-multiple: true
@@ -377,7 +377,7 @@ jobs:
         run: node tools/benchmark/compare.mjs --accuracy=accuracy-baseline-report.json
       - name: Upload combined results
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accuracy-results
           path: |
