@@ -101,6 +101,17 @@ function candidateConflicts(value) {
   return out;
 }
 
+function canonicalRegions(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  const regions = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail(code);
+    regions.push(createRegion(value[index]));
+  }
+  return regions;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -127,7 +138,7 @@ export function createDiscoveryEvidence(input = {}) {
     authority: EVIDENCE_AUTHORITY[kind],
     extentRole,
     start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
-    regions: deepFreeze((input.regions ?? []).map((region) => createRegion(region))),
+    regions: deepFreeze(canonicalRegions(input.regions, 'discovery-evidence-invalid-regions')),
     // Producer identity participates in corroboration. Pre-registry evidence
     // may omit it, but any explicit identity must already be canonical.
     producerId: producerId(input.producerId),
@@ -165,7 +176,7 @@ export function createFunctionCandidate(input = {}) {
   const extentState = input.extentState == null ? 'unknown' : (typeof input.extentState === 'string' ? input.extentState : '');
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
-  const regions = (input.regions ?? []).map((region) => createRegion(region));
+  const regions = canonicalRegions(input.regions, 'discovery-candidate-invalid-regions');
   regions.sort((left, right) => {
     const leftStart = BigInt(left.start);
     const rightStart = BigInt(right.start);
@@ -223,5 +234,7 @@ export function hasExactStart(candidate) {
 }
 
 export function hasKnownExtent(candidate) {
-  return candidate.extentState !== 'unknown' && candidate.regions.length > 0;
+  return candidate.extentState !== 'unknown'
+    && candidate.extentState !== 'contradicted'
+    && candidate.regions.length > 0;
 }
