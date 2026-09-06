@@ -224,7 +224,7 @@ function randomId() {
 function safeRequest(input) {
   const out = {};
   for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
-  return out;
+  return checkpoint(out);
 }
 
 export function createAgentJobManager(options) { return new AgentJobManager(options); }
