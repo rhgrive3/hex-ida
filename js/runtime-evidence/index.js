@@ -2,7 +2,7 @@ import { boundedInteger } from '../debug/adapter.js';
 import { GROUP } from '../evidence.js';
 
 function nowIso() { return new Date().toISOString(); }
-function safeConfidence(value, fallback = 0.5) { const n=Number(value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : fallback; }
+function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
 function addressValue(value) {
   if (typeof value === 'bigint') return value;
