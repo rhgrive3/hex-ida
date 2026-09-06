@@ -94,6 +94,23 @@ function isArrayIndex(key) {
   return Number.isSafeInteger(index) && index >= 0 && index < 0xffffffff;
 }
 
+/**
+ * Built-in containers (Map/Set/views/ArrayBuffer/Date) are canonicalized by
+ * their intrinsic state only, so an enumerable own property attached to them
+ * is invisible key material: two options objects that differ only there would
+ * collide on the same artifactId. Fail closed instead of dropping the caller's
+ * semantic payload. Out-of-range index properties on typed-array views carry
+ * no intrinsic state and stay exempt.
+ */
+function failOnEnumerableOwnProperties(descriptors, label, { allowArrayIndex = false } = {}) {
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable) continue;
+    if (allowArrayIndex && typeof key === 'string' && isArrayIndex(key)) continue;
+    fail(`phase8-artifact-options-embedded-own-property:${label}:${String(key)}`);
+  }
+}
+
 function snapshotArtifactOptions(value, active = new WeakSet()) {
   if (!value || typeof value !== 'object') return value;
   if (active.has(value)) fail('phase8-artifact-options-cycle');
@@ -112,29 +129,23 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
     };
 
     if (value instanceof Map) {
+      failOnEnumerableOwnProperties(descriptors, 'map');
       const out = new Map();
       for (const [key, entryValue] of Map.prototype.entries.call(value)) {
         out.set(snapshotArtifactOptions(key, active), snapshotArtifactOptions(entryValue, active));
       }
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
-      }
       return out;
     }
     if (value instanceof Set) {
+      failOnEnumerableOwnProperties(descriptors, 'set');
       const out = new Set();
       for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active));
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
-      }
       return out;
     }
     if (ArrayBuffer.isView(value)) {
       const backingBuffer = viewBackingBuffer(value);
       if (isSharedArrayBuffer(backingBuffer)) fail('phase8-artifact-options-shared-buffer');
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (descriptor.enumerable && !isArrayIndex(key)) snapshotDataProperty(key, descriptor);
-      }
+      failOnEnumerableOwnProperties(descriptors, 'view', { allowArrayIndex: true });
       if (typeof structuredClone === 'function') return structuredClone(value);
       const bytes = new Uint8Array(backingBuffer, value.byteOffset, value.byteLength).slice().buffer;
       if (value instanceof DataView) return new DataView(bytes);
@@ -143,15 +154,11 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       return new Constructor(bytes);
     }
     if (value instanceof ArrayBuffer) {
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
-      }
+      failOnEnumerableOwnProperties(descriptors, 'arraybuffer');
       return ArrayBuffer.prototype.slice.call(value, 0);
     }
     if (value instanceof Date) {
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (descriptor.enumerable) snapshotDataProperty(key, descriptor);
-      }
+      failOnEnumerableOwnProperties(descriptors, 'date');
       return new Date(Date.prototype.getTime.call(value));
     }
     if (Array.isArray(value)) {

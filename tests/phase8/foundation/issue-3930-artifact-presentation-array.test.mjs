@@ -136,3 +136,52 @@ test('shared-memory option buffers fail closed before artifact hashing', () => {
     /phase8-artifact-options-shared-buffer/,
   );
 });
+
+test('built-in containers with enumerable own properties fail closed instead of colliding', () => {
+  const signed = new Map([['a', 1]]);
+  signed.semanticMode = 'signed';
+  const unsigned = new Map([['a', 1]]);
+  unsigned.semanticMode = 'unsigned';
+
+  let signedId = null;
+  assert.throws(
+    () => {
+      const d = createPhase8ArtifactDescriptor({ ...BASE, options: { map: signed } });
+      signedId = d.artifactId;
+    },
+    /phase8-artifact-options-embedded-own-property/,
+  );
+
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { map: unsigned } }),
+    /phase8-artifact-options-embedded-own-property/,
+  );
+  assert.equal(signedId, null, 'colliding artifactId must never be produced');
+
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { set: Object.assign(new Set([1]), { mode: 'x' }) } }),
+    /phase8-artifact-options-embedded-own-property:set/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { view: Object.assign(new Uint8Array([1]), { mode: 'x' }) } }),
+    /phase8-artifact-options-embedded-own-property:view/,
+  );
+  const ab = new ArrayBuffer(4);
+  ab.tag = 't';
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { ab } }),
+    /phase8-artifact-options-embedded-own-property:arraybuffer/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { date: Object.assign(new Date(0), { mode: 'x' }) } }),
+    /phase8-artifact-options-embedded-own-property:date/,
+  );
+
+  const plain = new Map([['a', 1]]);
+  assert.doesNotThrow(() => createPhase8ArtifactDescriptor({ ...BASE, options: { map: plain } }));
+
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { view: new Uint8Array([1, 2, 3, 4]) } }),
+    'in-range index properties of typed-array views are intrinsic state and stay accepted',
+  );
+});
