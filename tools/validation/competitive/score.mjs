@@ -155,10 +155,13 @@ function atomicWriteJson(filePath, value) {
   }
 }
 
-export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile() } = {}) {
-  const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
-
-  // 1. Alias v2 candidate answerer
+/**
+ * Measure the frozen Alias v2 corpus through the same candidate and baseline
+ * answerers used by the competitive scorecard. The evidence producer imports
+ * this helper so a durable observation cannot quietly drift onto a second
+ * query or solver path.
+ */
+export function measureAliasV2({ queries = ALIAS_QUERIES_V2 } = {}) {
   const solverCache = new Map();
   function candidateAnswer(query) {
     const built = buildFixture(query.fixture);
@@ -182,8 +185,17 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     return { relation: aliasMemoryRegions(regionOf(built, query.left), regionOf(built, query.right)) };
   }
 
-  const aliasV2Candidate = scoreAliasQueriesV2(candidateAnswer, { queries: ALIAS_QUERIES_V2 });
-  const aliasV2Baseline = scoreAliasQueriesV2(baselineAnswer, { queries: ALIAS_QUERIES_V2 });
+  return Object.freeze({
+    candidate: scoreAliasQueriesV2(candidateAnswer, { queries }),
+    baseline: scoreAliasQueriesV2(baselineAnswer, { queries }),
+  });
+}
+
+export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile() } = {}) {
+  const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
+
+  // 1. Alias v2 candidate and non-authoritative differential baseline.
+  const { candidate: aliasV2Candidate, baseline: aliasV2Baseline } = measureAliasV2();
 
   // 2. MachineEffects coverage
   const sampleInstruction = {
