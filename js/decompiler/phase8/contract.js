@@ -262,3 +262,93 @@ export function createPassResult(input = {}) {
 export function unchangedResult(descriptor, { completeness = 'complete', diagnostics = [], stopReason = null } = {}) {
   return createPassResult({ descriptor, status: 'unchanged', changed: false, completeness, diagnostics, stopReason });
 }
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Validates untrusted PassResult candidates fail-closed and non-coercively.
+ *
+ * Guaranteed never to call `.toString()`, `.valueOf()`, getters, or convert
+ * objects into strings or numbers.
+ */
+export function isCanonicalPassResult(result) {
+  try {
+    if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
+    if (result.contractVersion !== PHASE8_CONTRACT_VERSION) return false;
+    if (!isNonEmptyString(result.passId)) return false;
+    if (!isNonEmptyString(result.passVersion)) return false;
+    if (typeof result.stage !== 'string' || !STAGE_SET.has(result.stage)) return false;
+    if (typeof result.status !== 'string' || !STATUS_SET.has(result.status)) return false;
+    if (typeof result.changed !== 'boolean') return false;
+    if (typeof result.completeness !== 'string' || !COMPLETENESS_SET.has(result.completeness)) return false;
+    if (result.stopReason != null && !isNonEmptyString(result.stopReason)) return false;
+
+    if (!Array.isArray(result.invalidated)) return false;
+    for (let i = 0; i < result.invalidated.length; i++) {
+      const item = result.invalidated[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.produced)) return false;
+    for (let i = 0; i < result.produced.length; i++) {
+      const item = result.produced[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.preserved)) return false;
+    for (let i = 0; i < result.preserved.length; i++) {
+      const item = result.preserved[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.diagnostics)) return false;
+    for (let i = 0; i < result.diagnostics.length; i++) {
+      const diag = result.diagnostics[i];
+      if (diag == null || typeof diag !== 'object' || Array.isArray(diag)) return false;
+      if (!isNonEmptyString(diag.severity)) return false;
+      if (!isNonEmptyString(diag.code)) return false;
+      if (!isNonEmptyString(diag.message)) return false;
+      if (diag.reason != null && typeof diag.reason !== 'string') return false;
+    }
+
+    if (!Array.isArray(result.transforms)) return false;
+    for (let i = 0; i < result.transforms.length; i++) {
+      const tx = result.transforms[i];
+      if (tx == null || typeof tx !== 'object' || Array.isArray(tx)) return false;
+      if (!isNonEmptyString(tx.kind)) return false;
+      if (!isNonEmptyString(tx.proof)) return false;
+      if (!Array.isArray(tx.targets) || tx.targets.length === 0) return false;
+      for (let j = 0; j < tx.targets.length; j++) {
+        if (!isNonEmptyString(tx.targets[j])) return false;
+      }
+      if (tx.originRefs != null) {
+        if (!Array.isArray(tx.originRefs)) return false;
+        for (let k = 0; k < tx.originRefs.length; k++) {
+          if (!isNonEmptyString(tx.originRefs[k])) return false;
+        }
+      }
+    }
+
+    if ((result.status === 'unchanged' || result.status === 'unsupported') && result.changed === true) {
+      return false;
+    }
+    if (result.status === 'changed' && result.changed === false) {
+      return false;
+    }
+    if (result.changed && result.transforms.length === 0 && result.produced.length === 0) {
+      return false;
+    }
+    if (!result.changed && (result.transforms.length > 0 || result.produced.length > 0 || result.invalidated.length > 0)) {
+      return false;
+    }
+    if (result.status === 'unsupported' && result.completeness === 'complete') {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
