@@ -74,8 +74,12 @@ const EXTRA_API_TABLE = [
   { id:'audio_file', re:/^_?AudioFile[A-Za-z0-9_]*$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
   { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
 
-  // Accelerate vImage image-processing framework transforms pixel buffer memory.
-  { id:'accelerate_vimage', re:/^_?vImage[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:'convert' },
+  // A scale routine is a known pixel-buffer transform; keep that precise effect.
+  { id:'accelerate_vimage_scale', re:/^_?vImageScale_[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:'convert' },
+  // The wider vImage namespace proves image-processing ownership, not one uniform
+  // side effect. Unknown members therefore stay fail-closed instead of being
+  // promoted to UI or conversion effects solely from their symbol prefix.
+  { id:'accelerate_vimage', re:/^_?vImage[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:null },
 
   // GoogleUtilities logging exports.
   { id:'google_utilities_log', re:/^_?GUL(?:OSLog|SetLogger|IsLoggable)[A-Za-z0-9_]*$/, cat:'log', args:null, ret:null, effect:'log' },
