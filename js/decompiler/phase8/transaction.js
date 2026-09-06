@@ -26,6 +26,7 @@ import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
+const ANALYSIS_MUTATORS = new WeakMap();
 
 /**
  * The authoritative analysis state.
@@ -63,20 +64,26 @@ export function createAnalysisState(initial = {}, initialVersions = null) {
     available() {
       return Object.freeze(ANALYSIS_KEYS.filter((key) => versions.get(key) > 0));
     },
-    // Deliberately not exported on the public surface: only commitTransaction
-    // reaches these, so there is no second way to mutate authoritative state.
-    __write(key, value) {
+  };
+  ANALYSIS_MUTATORS.set(api, Object.freeze({
+    write(key, value) {
       values.set(key, value);
       versions.set(key, versions.get(key) + 1);
     },
-    __drop(key) {
+    drop(key) {
       if (versions.get(key) === 0) return false;
       values.set(key, null);
       versions.set(key, versions.get(key) + 1);
       return true;
     },
-  };
+  }));
   return api;
+}
+
+function analysisMutators(state) {
+  const mutators = ANALYSIS_MUTATORS.get(state);
+  if (mutators == null) fail('phase8-analysis-state-required');
+  return mutators;
 }
 
 /** Clone an authoritative state without resetting the evidence versions. */
@@ -97,6 +104,8 @@ export function forkAnalysisState(source) {
  */
 export function commitAnalysisState(target, working, before) {
   if (target == null || working == null || before == null) return false;
+  const targetMutators = ANALYSIS_MUTATORS.get(target);
+  if (targetMutators == null) return false;
   const current = target.snapshot();
   if (ANALYSIS_KEYS.some((key) => current[key] !== before[key])) return false;
   for (const key of ANALYSIS_KEYS) {
@@ -106,8 +115,8 @@ export function commitAnalysisState(target, working, before) {
     const finalValue = working.get(key);
     for (let step = 0; step < delta; step += 1) {
       const last = step === delta - 1;
-      if (last && finalValue == null && target.version(key) > 0) target.__drop(key);
-      else target.__write(key, last ? finalValue : null);
+      if (last && finalValue == null && target.version(key) > 0) targetMutators.drop(key);
+      else targetMutators.write(key, last ? finalValue : null);
     }
   }
   return true;
@@ -226,10 +235,11 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   if (aborted(budget)) return refuse('cancelled-before-commit');
 
   // Commit. Nothing above this line touched authoritative state.
+  const mutators = analysisMutators(state);
   const invalidated = invalidationFor(descriptor, { changed: result.changed });
   const actuallyInvalidated = [];
-  for (const key of invalidated) if (state.__drop(key)) actuallyInvalidated.push(key);
-  for (const [key, value] of stagedWrites) state.__write(key, value);
+  for (const key of invalidated) if (mutators.drop(key)) actuallyInvalidated.push(key);
+  for (const [key, value] of stagedWrites) mutators.write(key, value);
 
   return Object.freeze({
     committed: true,
