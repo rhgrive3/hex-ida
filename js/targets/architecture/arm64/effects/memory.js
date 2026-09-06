@@ -104,6 +104,26 @@ function immediateValue(operand) {
   return null;
 }
 
+// Duplicate PC-relative target evidence must agree before an exact path is
+// entered: a contradictory redundant field must not select a wrong address.
+function canonicalLiteralTarget(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+function literalTargetMismatch(decoded, immediate) {
+  const seen = [];
+  for (const raw of [decoded?.pcRelTarget, decoded?.literalTarget, immediate]) {
+    const value = canonicalLiteralTarget(raw);
+    if (value != null) seen.push(value);
+  }
+  return seen.length > 1 && !seen.every((value) => value === seen[0]);
+}
+
 function memoryWidthBits(mnemonic, reg) {
   if (WIDTH_OVERRIDE[mnemonic]) return WIDTH_OVERRIDE[mnemonic];
   if (!reg) return null;
@@ -520,6 +540,7 @@ function literalLoad(decoded, context, mnemonic) {
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
   if (mnemonic === 'ldrsw' ? !isGp(reg, 64) : !(isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg, [32,64,128]))) return partial(decoded, context, `${mnemonic} literal destination class or width is invalid`);
   const immediate = immediateValue(immediateOperand(decoded));
+  if (literalTargetMismatch(decoded, immediate)) return partial(decoded, context, 'literal load target evidence disagrees');
   let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
   if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
   if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
@@ -634,6 +655,7 @@ function prefetchMetadata(mnemonic, prfop, extra) {
 // the disassembler prints it as a resolved immediate.
 function literalPrefetch(decoded, context, mnemonic, prfop) {
   const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
+  if (literalTargetMismatch(decoded, immediate)) return partial(decoded, context, 'prfm literal target evidence disagrees', ['memory','other']);
   let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
   if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
   if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
