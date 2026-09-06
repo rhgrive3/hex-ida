@@ -155,3 +155,20 @@ test('issue #3883: accessor-backed descriptor state cannot drift claim identity'
   );
   assert.equal(reads, 0);
 });
+
+test('issue #3883: own __proto__ evidence is preserved in canonical identity', () => {
+  const leftDescriptor = JSON.parse(
+    '{"offset":0,"sizeBytes":4,"memberType":{"kind":"opaque","__proto__":{"tag":"A"}}}',
+  );
+  const rightDescriptor = JSON.parse(
+    '{"offset":0,"sizeBytes":4,"memberType":{"kind":"opaque","__proto__":{"tag":"B"}}}',
+  );
+
+  const left = claim('structural', leftDescriptor, 'proto-evidence');
+  const right = claim('structural', rightDescriptor, 'proto-evidence');
+
+  assert.equal(Object.hasOwn(left.descriptor.memberType, '__proto__'), true);
+  assert.equal(Object.hasOwn(right.descriptor.memberType, '__proto__'), true);
+  assert.notEqual(left.key, right.key);
+  assert.equal(claimsConflict(left, right), true);
+});

@@ -182,7 +182,14 @@ function canonicalDescriptorMaterial(layer, descriptor) {
     if (seen.has(value)) return seen.get(value);
     const out = Array.isArray(value) ? [] : {};
     seen.set(value, out);
-    for (const [key, child] of Object.entries(value)) out[key] = visit(child, key);
+    for (const [key, child] of Object.entries(value)) {
+      Object.defineProperty(out, key, {
+        value: visit(child, key),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
     return out;
   };
   return visit(descriptor);
