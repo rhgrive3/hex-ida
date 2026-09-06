@@ -215,8 +215,10 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
   if (!/^[0-9a-f]{40}$/.test(record.treeSha || '')) return { ok: false, reason: 'stage2-profile-evidence-tree-invalid' };
   if (!Number.isFinite(Date.parse(record.generatedAt || ''))) return { ok: false, reason: 'stage2-profile-evidence-time-invalid' };
   if (record.evidenceId !== identity(record)) return { ok: false, reason: 'stage2-profile-evidence-tampered' };
-  if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
-  if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
+  if (expected.commitSha != null && (typeof expected.commitSha !== 'string' || expected.commitSha.length === 0 || expected.commitSha.trim() !== expected.commitSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-commit-invalid' };
+  if (expected.treeSha != null && (typeof expected.treeSha !== 'string' || expected.treeSha.length === 0 || expected.treeSha.trim() !== expected.treeSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-tree-invalid' };
+  if (expected.commitSha && record.commitSha !== expected.commitSha.toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
+  if (expected.treeSha && record.treeSha !== expected.treeSha.toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
   if (!expected.denominatorLock || typeof expected.denominatorLock !== 'object' || Array.isArray(expected.denominatorLock)) return { ok: false, reason: 'stage2-profile-evidence-denominator-lock-required' };
   if (typeof expected.resolveEvidenceIdentity !== 'function') return { ok: false, reason: 'stage2-profile-evidence-identity-resolver-required' };
   const denominatorLock = validateStage2DenominatorLock(expected.denominatorLock, {

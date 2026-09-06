@@ -121,6 +121,40 @@ assert.equal(validation.ok, true, validation.failures?.join('\n'));
 const proofs = createStage2CapabilityProofs(validation);
 assert.equal(proofs['S1-A2-NATIVE'].authority, 'validated-stage2-profile-evidence');
 
+const structuredExpectedCommitValidation = validateStage2ProfileEvidence(record, {
+  commitSha: [COMMIT_SHA],
+  treeSha: TREE_SHA,
+  denominatorLock,
+  scope: SCOPE,
+  resolveInventoryIdentity: inventoryIdentity,
+  resolveDenominatorUnitIds: denominatorUnits,
+  resolveEvidenceIdentity: (identity) => identity,
+});
+assert.equal(structuredExpectedCommitValidation.ok, false);
+assert.equal(structuredExpectedCommitValidation.reason, 'stage2-profile-evidence-expected-commit-invalid');
+assert.throws(
+  () => createStage2CapabilityProofs(structuredExpectedCommitValidation),
+  /stage2-profile-validation-authority-required/,
+  'structured expected commitSha cannot mint capability proof',
+);
+
+const structuredExpectedTreeValidation = validateStage2ProfileEvidence(record, {
+  commitSha: COMMIT_SHA,
+  treeSha: [TREE_SHA],
+  denominatorLock,
+  scope: SCOPE,
+  resolveInventoryIdentity: inventoryIdentity,
+  resolveDenominatorUnitIds: denominatorUnits,
+  resolveEvidenceIdentity: (identity) => identity,
+});
+assert.equal(structuredExpectedTreeValidation.ok, false);
+assert.equal(structuredExpectedTreeValidation.reason, 'stage2-profile-evidence-expected-tree-invalid');
+assert.throws(
+  () => createStage2CapabilityProofs(structuredExpectedTreeValidation),
+  /stage2-profile-validation-authority-required/,
+  'structured expected treeSha cannot mint capability proof',
+);
+
 const targetId = 'S1-A2-NATIVE';
 const structuredCases = [
   ['commitSha', (input) => { input.commitSha = [COMMIT_SHA]; }],
