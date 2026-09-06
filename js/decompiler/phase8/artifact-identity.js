@@ -55,6 +55,39 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'columnWidth', 'prettyColumnWidth', 'theme', 'locale', 'language', 'selection', 'scrollTop', 'highlight',
 ]);
 
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'buffer',
+)?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = typeof SharedArrayBuffer === 'function'
+  ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get
+  : null;
+
+function isSharedArrayBuffer(value) {
+  if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function viewBackingBuffer(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER === 'function') {
+    try {
+      return TYPED_ARRAY_BUFFER_GETTER.call(value);
+    } catch {}
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function') {
+    try {
+      return DATA_VIEW_BUFFER_GETTER.call(value);
+    } catch {}
+  }
+  fail('phase8-artifact-options-view-invalid');
+}
+
 function isArrayIndex(key) {
   if (!/^(0|[1-9]\d*)$/.test(key)) return false;
   const index = Number(key);
@@ -64,6 +97,7 @@ function isArrayIndex(key) {
 function snapshotArtifactOptions(value, active = new WeakSet()) {
   if (!value || typeof value !== 'object') return value;
   if (active.has(value)) fail('phase8-artifact-options-cycle');
+  if (isSharedArrayBuffer(value)) fail('phase8-artifact-options-shared-buffer');
   active.add(value);
   try {
     const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -96,11 +130,13 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       return out;
     }
     if (ArrayBuffer.isView(value)) {
+      const backingBuffer = viewBackingBuffer(value);
+      if (isSharedArrayBuffer(backingBuffer)) fail('phase8-artifact-options-shared-buffer');
       for (const [key, descriptor] of Object.entries(descriptors)) {
         if (descriptor.enumerable && !isArrayIndex(key)) snapshotDataProperty(key, descriptor);
       }
       if (typeof structuredClone === 'function') return structuredClone(value);
-      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice().buffer;
+      const bytes = new Uint8Array(backingBuffer, value.byteOffset, value.byteLength).slice().buffer;
       if (value instanceof DataView) return new DataView(bytes);
       const Constructor = Object.getPrototypeOf(value)?.constructor;
       if (typeof Constructor !== 'function') fail('phase8-artifact-options-view-invalid');

@@ -104,3 +104,35 @@ test('proxy get traps cannot change options between validation and hashing', () 
   assert.equal(proxied.artifactId, plain.artifactId);
   assert.equal(reads, 0, 'snapshot must use own data descriptors rather than proxy property reads');
 });
+
+test('shared-memory option buffers fail closed before artifact hashing', () => {
+  if (typeof SharedArrayBuffer !== 'function') return;
+
+  const shared = new SharedArrayBuffer(8);
+  const bytes = new Uint8Array(shared);
+  const view = new DataView(shared);
+  bytes[0] = 0x41;
+
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { bytes } }),
+    /phase8-artifact-options-shared-buffer/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { view } }),
+    /phase8-artifact-options-shared-buffer/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { shared } }),
+    /phase8-artifact-options-shared-buffer/,
+  );
+
+  const shadowed = new Uint8Array(shared);
+  Object.defineProperty(shadowed, 'buffer', {
+    value: new ArrayBuffer(shared.byteLength),
+    enumerable: false,
+  });
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { shadowed } }),
+    /phase8-artifact-options-shared-buffer/,
+  );
+});
