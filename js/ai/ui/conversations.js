@@ -138,6 +138,7 @@ const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
+  const storageKey = String(key);
   const backing = () => {
     if (storage) return storage;
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -147,8 +148,8 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const bucketKey = (space) => `${key}.${space}`;
-  const indexKey = () => key === STORAGE_KEY ? INDEX_KEY : `${key}.index`;
+  const bucketKey = (space) => `${storageKey}.${space}`;
+  const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
 
   const readIndex = () => {
     const store = backing();
