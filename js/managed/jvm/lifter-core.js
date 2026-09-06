@@ -41,6 +41,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const codeAttr = method.code;
   const bytecode = codeAttr.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  const codeOffset = Number(codeAttr.offset ?? 0);
 
   let pc = 0;
   let opSeq = 0;
@@ -408,7 +409,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
 
     const origin = createOriginSet({
       operationIds: [opId],
-      byteRanges: [{ start: codeAttr.offset + opOffset, end: codeAttr.offset + pc }],
+      byteRanges: [{ start: codeOffset + opOffset, end: codeOffset + pc }],
     });
 
     bundles.push(createVMEffectBundle({
