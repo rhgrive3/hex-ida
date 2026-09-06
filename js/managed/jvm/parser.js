@@ -13,8 +13,8 @@ export function parseJvm(bytes,options={}){
     case 1:{ensure(pos,2,'jvm-truncated-cp-utf8');const len=view.getUint16(pos,false);pos+=2;ensure(pos,len,'jvm-truncated-cp-utf8');constantPool.push({tag:1,value:decodeMutf8(u8.subarray(pos,pos+len))});pos+=len;break;}
     case 3:ensure(pos,4,'jvm-truncated-cp-integer');constantPool.push({tag:3,value:view.getInt32(pos,false)});pos+=4;break;
     case 4:ensure(pos,4,'jvm-truncated-cp-float');constantPool.push({tag:4,value:view.getFloat32(pos,false)});pos+=4;break;
-    case 5:ensure(pos,8,'jvm-truncated-cp-long');constantPool.push({tag:5,value:view.getBigInt64(pos,false)});pos+=8;constantPool.push(null);i++;break;
-    case 6:ensure(pos,8,'jvm-truncated-cp-double');constantPool.push({tag:6,value:view.getFloat64(pos,false)});pos+=8;constantPool.push(null);i++;break;
+    case 5:ensure(pos,8,'jvm-truncated-cp-long');if(i+1>=cpCount)fail('jvm-invalid-cp-reserved-slot');constantPool.push({tag:5,value:view.getBigInt64(pos,false)});pos+=8;constantPool.push(null);i++;break;
+    case 6:ensure(pos,8,'jvm-truncated-cp-double');if(i+1>=cpCount)fail('jvm-invalid-cp-reserved-slot');constantPool.push({tag:6,value:view.getFloat64(pos,false)});pos+=8;constantPool.push(null);i++;break;
     case 7:ensure(pos,2,'jvm-truncated-cp-class');constantPool.push({tag:7,nameIndex:view.getUint16(pos,false)});pos+=2;break;
     case 8:ensure(pos,2,'jvm-truncated-cp-string');constantPool.push({tag:8,stringIndex:view.getUint16(pos,false)});pos+=2;break;
     case 9:case 10:case 11:ensure(pos,4,'jvm-truncated-cp-memberref');constantPool.push({tag,classIndex:view.getUint16(pos,false),nameAndTypeIndex:view.getUint16(pos+2,false)});pos+=4;break;
