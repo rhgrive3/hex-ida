@@ -572,9 +572,11 @@ function expectedCodeViewIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const guid = value.guid;
   const age = value.age;
-  if (typeof guid !== 'string' || !guid.trim()) return null;
-  if (typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0) return null;
-  return `${guid.trim().toUpperCase()}/${age}`;
+  if (typeof guid !== 'string') return null;
+  const normalizedGuid = guid.trim().toUpperCase();
+  if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(normalizedGuid)) return null;
+  if (typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0 || age > 0xffffffff) return null;
+  return `${normalizedGuid}/${age}`;
 }
 
 export class PdbDebugInfoProvider extends DebugInfoProvider {
