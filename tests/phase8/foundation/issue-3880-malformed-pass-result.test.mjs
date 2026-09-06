@@ -183,3 +183,52 @@ test('staged work is discarded and transaction does not throw when pass returns 
   assert.equal(state.version('ranges'), 0);
   assert.equal(state.get('ranges'), null);
 });
+
+test('stateful produced accessor cannot validate one value and drift before commit', () => {
+  const state = createAnalysisState({});
+  const before = state.snapshot();
+  const ownDescriptor = descriptor(['ranges']);
+  const canonical = createPassResult({
+    descriptor: ownDescriptor,
+    status: 'changed',
+    completeness: 'complete',
+    produced: ['ranges'],
+    transforms: [{
+      kind: 'test-transform',
+      targets: ['node:1'],
+      proof: 'issue-3880-stateful-produced',
+    }],
+  });
+  let reads = 0;
+  const hostile = { ...canonical };
+  Object.defineProperty(hostile, 'produced', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      reads += 1;
+      return reads <= 4 ? ['ranges'] : null;
+    },
+  });
+
+  const pass = {
+    descriptor: ownDescriptor,
+    run(_context, _budget, staging) {
+      staging.stage('ranges', Object.freeze({ min: 0, max: 1, completeness: 'complete' }));
+      return hostile;
+    },
+  };
+
+  let outcome;
+  assert.doesNotThrow(() => {
+    outcome = runPassTransaction(state, pass);
+  });
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.result, null);
+  assert.equal(outcome.stopReason, `malformed-result:${PASS_ID}`);
+  assert.equal(reads, 0, 'accessor-backed result fields must be rejected without invocation');
+  assert.deepEqual(outcome.staged, []);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.deepEqual(state.snapshot(), before);
+  assert.equal(state.version('ranges'), 0);
+  assert.equal(state.get('ranges'), null);
+});

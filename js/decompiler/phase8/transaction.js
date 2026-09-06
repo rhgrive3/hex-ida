@@ -144,8 +144,68 @@ function aborted(budget) {
   catch { return true; }
 }
 
+function snapshotPassResultData(value) {
+  const active = new Set();
+
+  const clone = (current) => {
+    if (current == null || typeof current !== 'object') return current;
+    if (active.has(current)) throw new TypeError('phase8-pass-result-cycle');
+
+    const array = Array.isArray(current);
+    const prototype = Object.getPrototypeOf(current);
+    if (array ? prototype !== Array.prototype : (prototype !== Object.prototype && prototype !== null)) {
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(current);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== 'string')) throw new TypeError('phase8-pass-result-symbol-property');
+
+    active.add(current);
+    try {
+      if (array) {
+        const lengthDescriptor = descriptors.length;
+        if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+          || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+          throw new TypeError('phase8-pass-result-array-length-invalid');
+        }
+        const length = lengthDescriptor.value;
+        if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
+        const copy = new Array(length);
+        for (let index = 0; index < length; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+            throw new TypeError('phase8-pass-result-accessor');
+          }
+          copy[index] = clone(descriptor.value);
+        }
+        return Object.freeze(copy);
+      }
+
+      const copy = {};
+      for (const key of keys) {
+        const descriptor = descriptors[key];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+          throw new TypeError('phase8-pass-result-accessor');
+        }
+        copy[key] = clone(descriptor.value);
+      }
+      return Object.freeze(copy);
+    } finally {
+      active.delete(current);
+    }
+  };
+
+  try {
+    return clone(value);
+  } catch {
+    return null;
+  }
+}
+
 function isPassResultShapeUsable(result) {
-  return isCanonicalPassResult(result);
+  const snapshot = snapshotPassResultData(result);
+  return snapshot != null && isCanonicalPassResult(snapshot) ? snapshot : null;
 }
 
 /**
@@ -205,12 +265,17 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
 
   // Validate untrusted pass output before any later contract check can
   // dereference it. This must remain before descriptor-identity validation.
-  if (!isPassResultShapeUsable(result)) {
+  const ownedResult = isPassResultShapeUsable(result);
+  if (ownedResult == null) {
     return Object.freeze({
       committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
       stopReason: `malformed-result:${descriptor.id}`,
     });
   }
+  // From here onward every contract check and publication uses the same owned,
+  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
+  // value and later substitute another at the commit boundary.
+  result = ownedResult;
 
   const stagedWrites = take();
   const refuse = (stopReason) => Object.freeze({
