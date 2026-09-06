@@ -76,6 +76,37 @@ function assertTopology(value) {
     () => decodeWorkerAnalysisPayload({ codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:{ t:'object', i:1, n:false, v:[] } }),
     /analysis-artifact-payload-node-invalid/,
   );
+
+  const completedAlias = decodeWorkerAnalysisPayload({
+    codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+    root:{
+      t:'object', i:0, n:false,
+      v:[
+        ['a', { t:'object', i:1, n:false, v:[['value', { t:'number', v:1 }]] }],
+        ['b', { t:'ref', i:1 }],
+      ],
+    },
+  });
+  assert.equal(completedAlias.a, completedAlias.b, 'refs to fully decoded nodes must remain valid aliases');
+
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{ t:'object', i:0, n:false, v:[['self', { t:'ref', i:0 }]] },
+    }),
+    /analysis-artifact-payload-cyclic/,
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{
+        t:'object', i:0, n:false,
+        v:[['child', { t:'object', i:1, n:false, v:[['parent', { t:'ref', i:0 }]] }]],
+      },
+    }),
+    /analysis-artifact-payload-cyclic/,
+  );
+
   const cyclic = {};
   cyclic.self = cyclic;
   assert.throws(() => encodeWorkerAnalysisPayload(cyclic), /analysis-artifact-payload-cyclic/);
