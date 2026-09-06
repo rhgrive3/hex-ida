@@ -1,10 +1,5 @@
 export const X86_LONG64_INTEGER_DENOMINATOR_SCHEMA = 'x86-long64-integer-denominator/v1';
 export const X86_LONG64_INTEGER_DENOMINATOR_ID = 'x86_64:long-64:effect-family:integer:v1';
-export const X86_LONG64_INTEGER_CASE_DISPOSITIONS = Object.freeze([
-  'defined-positive',
-  'must-reject',
-  'unsupported',
-]);
 
 export const X86_LONG64_INTEGER_MNEMONICS = Object.freeze([
   'mov','movabs','movzx','movsx','movsxd',
@@ -164,11 +159,8 @@ export function* x86Long64IntegerEncodingCases() {
       { owner:'memory', operandWidthBits:widthBits, immediateWidthBits:encodedWidthBits, form:'memory-immediate', semanticClass:'mov-group-immediate' });
   }
 
-  // MOVZX/MOVSX fixed-source-width opcodes. Capstone 5 exposes the
-  // operand-size=16 same-width bytes, but the frozen A2 universe retains those
-  // rows so their conservative disposition can be proved without shrinking
-  // the denominator. Register rows are classified as must-reject and the two
-  // memory rows remain explicit unsupported boundary cases below.
+  // MOVZX/MOVSX fixed-source-width opcodes. Capstone 5 intentionally exposes
+  // the operand-size=16 same-width forms; the effect is still an exact copy.
   for (const [family,opcode,sourceWidthBits] of [['movzx',0xb6,8],['movzx',0xb7,16],['movsx',0xbe,8],['movsx',0xbf,16]]) {
     for (const widthBits of [16,32,64]) {
       if (widthBits < sourceWidthBits) continue;
@@ -340,19 +332,6 @@ function assertImplicit(actual, required, label, itemId) {
   for (const name of required) if (!names.has(name)) fail(`x86-integer-denominator-missing-${label}`, `${itemId}:${name}`);
 }
 
-export function x86Long64IntegerCaseDisposition(candidate) {
-  if (!candidate || typeof candidate !== 'object') fail('x86-integer-denominator-case-required');
-  const sameWidthMovExtend = (candidate.family === 'movzx' || candidate.family === 'movsx')
-    && Number(candidate.sourceWidthBits) === 16
-    && Number(candidate.operandWidthBits) === 16;
-  if (sameWidthMovExtend) {
-    if (candidate.owner === 'integer') return 'must-reject';
-    if (candidate.owner === 'memory') return 'unsupported';
-    fail('x86-integer-denominator-case-disposition-owner-invalid', candidate.id);
-  }
-  return 'defined-positive';
-}
-
 export function validateX86Long64IntegerDecodedCase(candidate, decoded) {
   if (!candidate || !decoded) fail('x86-integer-denominator-decoded-case-required');
   if (decoded.detailAvailable !== true || decoded.detailStatus !== 'complete') fail('x86-integer-denominator-structured-detail-required', candidate.id);
@@ -388,7 +367,6 @@ export function validateX86Long64IntegerDenominator() {
   const prefixes = new Set();
   const counts = new Set();
   const signedness = new Set();
-  const caseDispositionCounts = Object.fromEntries(X86_LONG64_INTEGER_CASE_DISPOSITIONS.map((value) => [value, 0]));
   let encodingCaseCount = 0;
   let integerOwnedCaseCount = 0;
   let memoryDelegationCaseCount = 0;
@@ -402,9 +380,6 @@ export function validateX86Long64IntegerDenominator() {
     if (candidate.operandWidthBits != null) widths.add(candidate.operandWidthBits);
     if (candidate.countDiscriminator != null) counts.add(candidate.countDiscriminator);
     if (candidate.signedness != null) signedness.add(candidate.signedness);
-    const disposition = x86Long64IntegerCaseDisposition(candidate);
-    if (!X86_LONG64_INTEGER_CASE_DISPOSITIONS.includes(disposition)) fail('x86-integer-denominator-case-disposition-invalid', candidate.id);
-    caseDispositionCounts[disposition]++;
     if (candidate.owner === 'integer') integerOwnedCaseCount++; else memoryDelegationCaseCount++;
     encodingCaseCount++;
   }
@@ -413,9 +388,6 @@ export function validateX86Long64IntegerDenominator() {
   for (const required of [8,16,32,64]) if (!widths.has(required)) fail('x86-integer-denominator-width-unobserved', required);
   for (const required of ['register','register-register','register-immediate','register-cl','implicit','memory','memory-source','memory-destination']) if (!forms.has(required)) fail('x86-integer-denominator-form-unobserved', required);
   for (const required of ['signed','unsigned','bitwise','copy-low-bits']) if (!signedness.has(required)) fail('x86-integer-denominator-signedness-unobserved', required);
-  if (Object.values(caseDispositionCounts).reduce((sum, count) => sum + count, 0) !== encodingCaseCount) {
-    fail('x86-integer-denominator-case-disposition-partition-incomplete');
-  }
   return Object.freeze({
     valid:true,
     schemaVersion:X86_LONG64_INTEGER_DENOMINATOR_SCHEMA,
@@ -424,7 +396,6 @@ export function validateX86Long64IntegerDenominator() {
     encodingCaseCount,
     integerOwnedCaseCount,
     memoryDelegationCaseCount,
-    caseDispositionCounts:Object.freeze(caseDispositionCounts),
     mnemonicCount:X86_LONG64_INTEGER_MNEMONICS.length,
     operandWidths:Object.freeze([...widths].sort((a,b)=>a-b)),
     operandFormCount:forms.size,

@@ -277,9 +277,7 @@ function liftMove(ctx, family) {
       return ctx.partial(`x86-${family}-load-width-mismatch`, ['memory','registers']);
     }
     if ((family === 'movzx' || family === 'movsx') && destination.widthBits <= source.widthBits) {
-      return ctx.partial(`x86-${family}-extension-width-invalid`, ['memory','registers'], {
-        metadata:{ encodingValidated:false },
-      });
+      return ctx.partial(`x86-${family}-extension-width-invalid`, ['memory','registers']);
     }
     let sourceWidthBits = source.widthBits;
     if (family === 'movsxd') {

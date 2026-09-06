@@ -170,6 +170,14 @@ export function parsePclntabHeader(buf) {
   const minLC = u8(buf, 6);
   const ptrSize = u8(buf, 7);
 
+  if (buf[4] !== 0 || buf[5] !== 0) {
+    return { valid: false, reason: 'invalid-header-padding' };
+  }
+
+  if (minLC !== 1 && minLC !== 2 && minLC !== 4) {
+    return { valid: false, reason: 'invalid-pc-quantum', minLC };
+  }
+
   if (ptrSize !== 4 && ptrSize !== 8) {
     return { valid: false, reason: 'invalid-pointer-size', ptrSize };
   }
