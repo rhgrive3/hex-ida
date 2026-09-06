@@ -138,3 +138,21 @@ test('complete artifact is not overwritten by a later incomplete one', async () 
   assert.equal(still.callCount, 3);
   assert.equal(calls.length, 2);
 });
+
+test('partial settled stronger profile is retried even while weaker complete cache remains', async () => {
+  let failedLarger = false;
+  const { service, calls } = flakyFixture({
+    failWhen:(limits) => {
+      if (limits.callLimit !== 4 || failedLarger) return false;
+      failedLarger = true;
+      return true;
+    },
+  });
+  const complete = await service.buildProgram(high);
+  assert.equal(complete.completeness.complete, true);
+  const partial = await service.buildProgram(larger);
+  assert.equal(partial.completeness.complete, false);
+  const repaired = await service.buildProgram(larger);
+  assert.equal(repaired.completeness.complete, true);
+  assert.equal(calls.length, 3);
+});

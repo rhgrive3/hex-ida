@@ -280,7 +280,7 @@ export class InvestigationService {
       entry = { controller, waiters:0, settled:false, promise:null };
       entry.promise = scheduleProducer(options, controller.signal)
         .then(() => producer(controller.signal))
-        .then((value) => { entry.settled = true; return value; })
+        .then((value) => { entry.value = value; entry.settled = true; return value; })
         .catch((error) => {
           if (this.shared.get(key) === entry) this.shared.delete(key);
           throw error;
@@ -373,10 +373,10 @@ export class InvestigationService {
       return Promise.resolve(app.program);
     }
     const sharedKey = `program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`;
-    if (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
-      || !programIndexComplete(app.program)) {
-      const settled = this.shared.get(sharedKey);
-      if (settled?.settled) this.shared.delete(sharedKey);
+    const settled = this.shared.get(sharedKey);
+    if (settled?.settled && (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
+      || !programIndexComplete(app.program) || !programIndexComplete(settled.value))) {
+      this.shared.delete(sharedKey);
     }
     return this.#shared(sharedKey, async (signal) => {
       await this.discoverFunctions({ ...options, signal });
