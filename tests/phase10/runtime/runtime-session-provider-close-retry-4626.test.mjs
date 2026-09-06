@@ -13,8 +13,14 @@ class FlakyDisconnectAdapter {
     this.disconnectAttempts = 0;
     this.failures = failures;
     this.epoch = 1;
+    this.listeners = new Set();
   }
   async connect() { this.connectAttempts++; this.connected = true; return { ok: true }; }
+  onEvent(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  emit(event) { for (const listener of [...this.listeners]) listener(event); }
   async disconnect() {
     this.disconnectAttempts++;
     if (this.disconnectAttempts <= this.failures) throw new Error('transient adapter disconnect failure');
@@ -49,6 +55,10 @@ test('P10 DebugSession.disconnect commits closed only after adapter disconnect s
   assert.equal(session.connected, true, 'failed disconnect must retain connected state until backend succeeds');
   assert.equal(session.closed, false, 'failed disconnect must remain retryable');
   assert.equal(observed.length, 0, 'failed disconnect must not fire onClosed');
+  assert.equal(adapter.listeners.size, 1, 'failed disconnect must retain the live event subscription');
+  adapter.emit({ type: 'module-load', epoch: session.epoch, marker: 'after-failed-disconnect' });
+  assert.equal(session.traces.snapshot().events.at(-1)?.marker, 'after-failed-disconnect',
+    'live adapter events must remain observable after a transient disconnect failure');
   const reused = await session.connect();
   assert.equal(reused.reused, true, 'failed disconnect must not make connect register a second backend connection');
   assert.equal(adapter.connectAttempts, 1);
@@ -59,6 +69,7 @@ test('P10 DebugSession.disconnect commits closed only after adapter disconnect s
   assert.equal(session.closed, true);
   assert.equal(observed.length, 1);
   assert.equal(adapter.connected, false);
+  assert.equal(adapter.listeners.size, 0, 'successful disconnect must release the event subscription');
   assert.equal(await session.disconnect(), undefined, 'successful disconnect remains idempotent');
   assert.equal(adapter.disconnectAttempts, 2);
 });

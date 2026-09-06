@@ -109,10 +109,14 @@ export class DebugSession {
   async disconnect() {
     if(this.closed)return;
     if(this._disconnecting)return this._disconnecting;
-    this.cancelAll('disconnected'); if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} } this._unsubscribe=null;
+    this.cancelAll('disconnected');
     const attempt=(async()=>{ await this.adapter.disconnect(); })();
     this._disconnecting=attempt;
-    try{ await attempt; this.connected=false; this.closed=true; }
+    try{
+      await attempt;
+      if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      this._unsubscribe=null; this.connected=false; this.closed=true;
+    }
     finally{ if(this._disconnecting===attempt) this._disconnecting=null; }
     const onClosed=this._onClosed; this._onClosed=null;
     if(onClosed) { try { onClosed(this); } catch {} }
