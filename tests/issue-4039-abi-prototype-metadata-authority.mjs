@@ -174,6 +174,27 @@ assert.equal(throwingProviderAccessorReturn?.reason, 'abi-prototype-metadata-inv
 assert.equal(providerAccessorReads, 0,
   'provider boundary must reject accessors without invoking them');
 
+const throwingProviderDescriptorOptions = new Proxy({}, {
+  getOwnPropertyDescriptor(target, key) {
+    if (key === 'callPrototypeFor') throw new Error('provider descriptor trap');
+    return Reflect.getOwnPropertyDescriptor(target, key);
+  },
+});
+assertConservative(SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  throwingProviderDescriptorOptions,
+), 'xmm0', 'provider callPrototypeFor descriptor trap');
+const throwingProviderDescriptorReturn = SYSV_AMD64_ABI.classifyCallReturn(
+  { callTarget:0x1234n },
+  throwingProviderDescriptorOptions,
+);
+assert.equal(throwingProviderDescriptorReturn?.partial, true,
+  'provider descriptor trap call-return must be partial');
+assert.equal(throwingProviderDescriptorReturn?.reg ?? null, null,
+  'provider descriptor trap call-return must not mint a return register');
+assert.equal(throwingProviderDescriptorReturn?.reason, 'abi-prototype-metadata-invalid',
+  'provider descriptor trap call-return must report invalid metadata');
+
 const throwingPrototype = new Proxy({}, {
   getPrototypeOf() { throw new Error('prototype reflection trap'); },
 });
