@@ -92,7 +92,22 @@ function ownDataValue(record, key) {
 
 function safeEnumerableDataCopy(value) {
   if (!value || typeof value !== 'object') return {};
-  try { return { ...value }; } catch { return {}; }
+  const copy = {};
+  try {
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !('value' in descriptor)) continue;
+      Object.defineProperty(copy, key, {
+        configurable:true,
+        enumerable:true,
+        writable:true,
+        value:descriptor.value,
+      });
+    }
+  } catch {
+    return {};
+  }
+  return copy;
 }
 
 function strictInteger(value) {
