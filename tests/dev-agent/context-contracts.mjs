@@ -293,9 +293,11 @@ function noStorageAndNoModelCallWasIntroduced() {
   }
   assert.deepEqual(touched, [], 'building a representation must not reach storage, the network, or a model');
 
-  // Structural: the representation layer depends on nothing.
+  // Structural: representation may depend only on the canonical analysis-scope
+  // validator; it must not grow storage/network/model dependencies.
   const text = readSource(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url));
-  assert.equal(/^\s*import\s/m.test(text), false, 'the representation layer is self-contained: no imports at all');
+  const imports = [...text.matchAll(/^\s*import[\s\S]*?from\s+['"]([^'"]+)['"];?/gm)].map((match) => match[1]);
+  assert.deepEqual(imports, ['../run/analysis-scope.js'], 'representation imports only the canonical scope validator');
   assert.equal(/\beval\s*\(/.test(text), false, 'no eval');
 }
 
