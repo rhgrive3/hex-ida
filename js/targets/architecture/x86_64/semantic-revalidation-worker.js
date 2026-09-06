@@ -12,11 +12,19 @@ const cancelledIds = new Set();
 function exactAddress(value, code) {
   if (typeof value === 'bigint' && value >= 0n) return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(value.trim())) {
-    const parsed = BigInt(value.trim());
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|0|[1-9]\d*)$/.test(value)) {
+    const parsed = BigInt(value);
     if (parsed >= 0n) return parsed;
   }
   throw new TypeError(code);
+}
+
+function exactLength(row) {
+  const value = row.length ?? row.size;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 15) {
+    throw new TypeError('x86-semantic-function-decoder-revalidation-length-invalid');
+  }
+  return value;
 }
 
 function serializedRows(input) {
@@ -25,7 +33,6 @@ function serializedRows(input) {
     throw new TypeError('x86-semantic-function-decoder-revalidation-instructions-required');
   }
   const rows = [];
-  let expectedAddress = null;
   let totalBytes = 0;
   for (const row of source) {
     if (!row || typeof row !== 'object' || Array.isArray(row)) {
@@ -33,25 +40,15 @@ function serializedRows(input) {
     }
     const address = exactAddress(row.address, 'x86-semantic-function-decoder-revalidation-address-invalid');
     const bytes = row.rawBytes instanceof Uint8Array ? row.rawBytes.slice() : null;
-    const length = Number(row.length ?? row.size);
-    if (!bytes || !Number.isSafeInteger(length) || length < 1 || length > 15 || bytes.length !== length) {
+    const length = exactLength(row);
+    if (!bytes || bytes.length !== length) {
       throw new TypeError('x86-semantic-function-decoder-revalidation-bytes-invalid');
-    }
-    if (expectedAddress != null && address !== expectedAddress) {
-      throw new TypeError('x86-semantic-function-decoder-revalidation-noncontiguous');
     }
     totalBytes += length;
     if (totalBytes > MAX_DECODE_BYTES) throw new RangeError('x86-semantic-function-decoder-revalidation-too-large');
     rows.push(Object.freeze({ address, length, bytes, origin:row.origin ?? null }));
-    expectedAddress = address + BigInt(length);
   }
-  const bytes = new Uint8Array(totalBytes);
-  let cursor = 0;
-  for (const row of rows) {
-    bytes.set(row.bytes, cursor);
-    cursor += row.length;
-  }
-  return Object.freeze({ rows:Object.freeze(rows), bytes, address:rows[0].address });
+  return Object.freeze({ rows:Object.freeze(rows), totalBytes });
 }
 
 async function decoder() {
@@ -79,7 +76,7 @@ async function decoder() {
       return Object.freeze({ M, handle, handlePointer, outputPointer });
     } catch (error) {
       if (outputPointer) M._free(outputPointer);
-      try { M.ccall('cs_close', 'number', ['pointer'], [handlePointer]); } catch { /* preserve root failure */ }
+      try { M.ccall('cs_close', 'number', ['pointer'], [handlePointer]); } catch { /* preserve initialization failure */ }
       M._free(handlePointer);
       throw error;
     }
@@ -94,33 +91,33 @@ function sameBytes(left, right) {
 }
 
 async function revalidateAndAnalyze(message) {
-  if (String(message?.input?.architecture ?? 'x86_64') !== 'x86_64') {
+  const architecture = message?.input?.architecture ?? 'x86_64';
+  if (architecture !== 'x86_64') {
     throw new TypeError('x86-semantic-function-decoder-revalidation-architecture-mismatch');
   }
   const serialized = serializedRows(message.input);
   const { M, handle, outputPointer } = await decoder();
   if (cancelledIds.has(message.id)) return null;
-  const buffer = M._malloc(Math.max(1, serialized.bytes.length));
+  const buffer = M._malloc(15);
   const instructions = [];
-  let consumed = 0;
   try {
-    M.writeArrayToMemory(serialized.bytes, buffer);
-    const count = M.ccall('cs_disasm', 'number', ['number','number','number','number','number','number'], [
-      handle, buffer, serialized.bytes.length, serialized.address, 0, outputPointer,
-    ]);
-    const base = count ? M.getValue(outputPointer, 'i32') : 0;
-    try {
-      for (let index = 0; index < count; index++) {
-        const expected = serialized.rows[index];
-        if (!expected) throw new Error('x86-semantic-function-decoder-revalidation-extra-instruction');
-        const pointer = base + index * 240;
-        const size = M.getValue(pointer + 16, 'i16');
-        const address = serialized.address + BigInt(consumed);
-        if (size !== expected.length || address !== expected.address) {
+    for (const expected of serialized.rows) {
+      if (cancelledIds.has(message.id)) return null;
+      M.writeArrayToMemory(expected.bytes, buffer);
+      const count = M.ccall('cs_disasm', 'number', ['number','number','number','number','number','number'], [
+        handle, buffer, expected.bytes.length, expected.address, 1, outputPointer,
+      ]);
+      const base = count ? M.getValue(outputPointer, 'i32') : 0;
+      try {
+        if (count !== 1 || !base) {
+          throw new Error('x86-semantic-function-decoder-revalidation-incomplete');
+        }
+        const size = M.getValue(base + 16, 'i16');
+        if (size !== expected.length) {
           throw new Error('x86-semantic-function-decoder-revalidation-boundary-mismatch');
         }
-        const decoded = globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, pointer, {
-          address,
+        const decoded = globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, base, {
+          address:expected.address,
           mode:'long-64',
           origin:expected.origin,
         });
@@ -128,15 +125,14 @@ async function revalidateAndAnalyze(message) {
           throw new Error('x86-semantic-function-decoder-revalidation-byte-mismatch');
         }
         instructions.push(decoded);
-        consumed += size;
+      } finally {
+        if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
       }
-    } finally {
-      if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
     }
   } finally {
     M._free(buffer);
   }
-  if (instructions.length !== serialized.rows.length || consumed !== serialized.bytes.length) {
+  if (instructions.length !== serialized.rows.length) {
     throw new Error('x86-semantic-function-decoder-revalidation-incomplete');
   }
   if (cancelledIds.has(message.id)) return null;
