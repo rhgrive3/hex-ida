@@ -73,6 +73,7 @@ export class JvmFrontend {
       metadata: {
         ...decoded.metadata,
         methodIdx: method.methodIdx,
+        methodName: sourceMethod?.name ?? method.name,
         descriptor: sourceMethod?.descriptor ?? method.descriptor,
         accessFlags: sourceMethod?.accessFlags ?? method.accessFlags,
         hasCode: sourceMethod?.code != null,
