@@ -23,19 +23,21 @@ function validInternalClassName(name) {
   return name.split('/').every(validUnqualifiedName);
 }
 
+const PRIMITIVE_FIELD_DESCRIPTORS = Object.freeze(Object.assign(Object.create(null), {
+  B: { bits: 32, category: 1, valueKind: 'int' },
+  C: { bits: 32, category: 1, valueKind: 'int' },
+  F: { bits: 32, category: 1, valueKind: 'float' },
+  I: { bits: 32, category: 1, valueKind: 'int' },
+  J: { bits: 64, category: 2, valueKind: 'long' },
+  S: { bits: 32, category: 1, valueKind: 'int' },
+  Z: { bits: 32, category: 1, valueKind: 'int' },
+  D: { bits: 64, category: 2, valueKind: 'double' },
+}));
+
 export function classifyJvmFieldDescriptor(descriptor) {
   if (typeof descriptor !== 'string' || descriptor.length === 0) return null;
 
-  const primitive = {
-    B: { bits: 32, category: 1, valueKind: 'int' },
-    C: { bits: 32, category: 1, valueKind: 'int' },
-    F: { bits: 32, category: 1, valueKind: 'float' },
-    I: { bits: 32, category: 1, valueKind: 'int' },
-    J: { bits: 64, category: 2, valueKind: 'long' },
-    S: { bits: 32, category: 1, valueKind: 'int' },
-    Z: { bits: 32, category: 1, valueKind: 'int' },
-    D: { bits: 64, category: 2, valueKind: 'double' },
-  }[descriptor];
+  const primitive = PRIMITIVE_FIELD_DESCRIPTORS[descriptor];
   if (primitive) return Object.freeze({ descriptor, slots: primitive.category, ...primitive });
 
   if (descriptor[0] === 'L') {
