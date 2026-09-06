@@ -142,3 +142,112 @@ function decoded({ bundles, codeLength, maxStack = 2, maxLocals = 2, descriptor 
   assert.equal(report.errors.length, 0);
   assert.ok(report.warnings.some((warning) => warning.code === 'ldc2-type-resolution:4'));
 }
+
+function decodedWithVersion({ bundles, codeLength, classMajorVersion, maxStack = 2, maxLocals = 2, descriptor = '()V' }) {
+  return {
+    metadata: {
+      descriptor,
+      accessFlags: 0x0008,
+      methodName: 'm',
+      hasCode: true,
+      codeLength,
+      classMajorVersion,
+    },
+    entryState: { maxStack, maxLocals },
+    bundles,
+    exceptionRegions: [],
+  };
+}
+
+function branchedExactMethod() {
+  return [
+    bundle(0, 0x03),
+    bundle(1, 0x99, [{ kind: 'conditional-branch', targetOffset: 9 }]),
+    bundle(4, 0x04),
+    bundle(5, 0x3b),
+    bundle(6, 0xa7, [{ kind: 'branch', targetOffset: 11 }]),
+    bundle(9, 0x01),
+    bundle(10, 0x4b),
+    bundle(11, 0xb1, [{ kind: 'return' }]),
+  ];
+}
+
+function dataflowFact(report) {
+  return report.verifierFacts.find((fact) => fact.kind === 'jvm-stack-local-dataflow') ?? null;
+}
+
+// Missing class-version evidence must not be fabricated as major 0: the
+// version-dependent StackMap obligation stays unproven, so an exact branched
+// method degrades to partial instead of reaching valid.
+{
+  const report = verifyJvmMethod(decodedWithVersion({
+    codeLength: 12,
+    classMajorVersion: null,
+    bundles: branchedExactMethod(),
+  }));
+  assert.notEqual(report.status, 'valid');
+  assert.equal(report.status, 'partial');
+  assert.equal(report.errors.length, 0);
+  assert.ok(report.warnings.some((warning) => warning.code === 'class-version-evidence-missing'));
+}
+
+// Unknown version + InterfaceMethodref must not be hard-invalidated as an old
+// version: the tag-11 reference is unproven, not a tag violation.
+{
+  const report = verifyJvmMethod(decodedWithVersion({
+    codeLength: 4,
+    maxStack: 2,
+    maxLocals: 1,
+    classMajorVersion: null,
+    bundles: [
+      { bytecodeOffset: 0, opcode: 0xb7, completeness: 'exact', controlEffects: [], callEffects: [{ cpIndex: 1 }] },
+      bundle(3, 0xb1, [{ kind: 'return' }]),
+    ],
+  }), { image: { constantPool: [null, { tag: 11 }] } });
+  assert.ok(!report.errors.some((error) => error.code === 'jvm-invalid-cp-operand-tag'));
+  assert.ok(report.warnings.some((warning) => String(warning.code).startsWith('interface-methodref-version-unproven')));
+  assert.notEqual(report.status, 'valid');
+}
+
+// A proven old version still hard-invalidates a tag-11 InterfaceMethodref.
+{
+  const report = verifyJvmMethod(decodedWithVersion({
+    codeLength: 4,
+    maxStack: 2,
+    maxLocals: 1,
+    classMajorVersion: 49,
+    bundles: [
+      { bytecodeOffset: 0, opcode: 0xb7, completeness: 'exact', controlEffects: [], callEffects: [{ cpIndex: 1 }] },
+      bundle(3, 0xb1, [{ kind: 'return' }]),
+    ],
+  }), { image: { constantPool: [null, { tag: 11 }] } });
+  assert.ok(report.errors.some((error) => error.code === 'jvm-invalid-cp-operand-tag'));
+  assert.equal(report.status, 'invalid');
+}
+
+// Structural errors must not claim dataflow provenance: the dataflow pass
+// never runs when an earlier error exists.
+{
+  const report = verifyJvmMethod(decodedWithVersion({
+    codeLength: 6,
+    classMajorVersion: 49,
+    bundles: [
+      bundle(0, 0xa7, [{ kind: 'branch', targetOffset: 99 }]),
+      bundle(3, 0xb1, [{ kind: 'return' }]),
+    ],
+  }));
+  assert.equal(report.status, 'invalid');
+  assert.ok(report.errors.some((error) => error.code === 'jvm-invalid-branch-target'));
+  assert.equal(dataflowFact(report)?.checked, false);
+}
+
+// A clean dataflow pass keeps its positive provenance.
+{
+  const report = verifyJvmMethod(decodedWithVersion({
+    codeLength: 12,
+    classMajorVersion: 49,
+    bundles: branchedExactMethod(),
+  }));
+  assert.equal(report.status, 'valid');
+  assert.equal(dataflowFact(report)?.checked, true);
+}

@@ -188,7 +188,14 @@ function validateConstantPoolOperand(bundle, image, classMajor, errors, unsuppor
   else if (opcode >= 0xb2 && opcode <= 0xb5) allowed = new Set([9]);
   else if (opcode === 0xb6) allowed = new Set([10]);
   else if (opcode === 0xb9) allowed = new Set([11]);
-  else if (opcode === 0xb7 || opcode === 0xb8) allowed = new Set(classMajor >= 52 ? [10, 11] : [10]);
+  else if (opcode === 0xb7 || opcode === 0xb8) {
+    if (classMajor == null) {
+      // Unknown version must not be treated as an old version: a tag-11
+      // InterfaceMethodref is unproven, never hard-invalid.
+      allowed = new Set([10, 11]);
+      if (tag === 11) unsupported.add(`interface-methodref-version-unproven:${bundle.bytecodeOffset}`);
+    } else allowed = new Set(classMajor >= 52 ? [10, 11] : [10]);
+  }
   else if (opcode === 0xbb) allowed = new Set([7]);
   if (allowed && !allowed.has(tag)) {
     errors.push({ code: 'jvm-invalid-cp-operand-tag', offset: bundle.bytecodeOffset, cpIndex, tag });
@@ -367,9 +374,14 @@ export function verifyJvmMethod(decoded, options = {}) {
   if (bundles.length === 0 || bundles[0]?.bytecodeOffset !== 0) errors.push({ code: 'jvm-code-missing-entry-instruction' });
   if (descriptor && maxLocals != null && descriptor.parameterSlots > maxLocals) errors.push({ code: 'jvm-parameters-exceed-max-locals' });
 
-  const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : 0;
+  // Missing version evidence stays unknown: version-dependent verifier rules
+  // cannot be proven without it, so the method stays partial, never valid.
+  const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
   const hasControlFlowBranch = bundles.some((bundle) => (bundle.controlEffects ?? []).some((effect) => effect?.kind === 'branch' || effect?.kind === 'conditional-branch'));
-  if (classMajor >= 50 && hasControlFlowBranch) unsupported.add('stack-map-frame-verification');
+  if (hasControlFlowBranch) {
+    if (classMajor == null) unsupported.add('class-version-evidence-missing');
+    else if (classMajor >= 50) unsupported.add('stack-map-frame-verification');
+  }
   for (let bundleIndex = 0; bundleIndex < bundles.length; bundleIndex++) {
     const bundle = bundles[bundleIndex];
     const offset = asNonNegativeInteger(bundle.bytecodeOffset);
@@ -415,6 +427,10 @@ export function verifyJvmMethod(decoded, options = {}) {
     }
   }
 
+  // The dataflow provenance must match execution fact: the pass runs only
+  // when no earlier error exists, and `checked` holds only when it completes
+  // without reporting a violation.
+  let dataflowChecked = false;
   if (descriptor && maxStack != null && maxLocals != null && errors.length === 0) {
     const initialLocals = Array(maxLocals).fill(null);
     for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) initialLocals[i] = descriptor.initialLocals[i] ?? null;
@@ -449,6 +465,7 @@ export function verifyJvmMethod(decoded, options = {}) {
         }
       }
     }
+    dataflowChecked = errors.length === 0;
   }
 
   const status = errors.length > 0 ? 'invalid' : unsupported.size > 0 ? 'partial' : 'valid';
@@ -458,7 +475,7 @@ export function verifyJvmMethod(decoded, options = {}) {
     warnings: [...unsupported].map((code) => ({ code })),
     verifierFacts: [
       { kind: 'jvm-instruction-boundaries-checked', checked: true },
-      { kind: 'jvm-stack-local-dataflow', checked: status !== 'partial' },
+      { kind: 'jvm-stack-local-dataflow', checked: dataflowChecked },
     ],
   };
 }
