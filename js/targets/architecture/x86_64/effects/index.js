@@ -20,14 +20,7 @@ import {
 import { vectorPrefixOffset } from './extended-state-helpers.js';
 import { closeTrustedX86Partial } from './trusted-decoder-terminal.js';
 import { createX86EffectContext, normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
-
-const CAPSTONE_STRUCTURED_ABI = 'capstone-5-wasm32-x86-detail/v1';
-
-function hasTrustedDecoderRuntimeProvenance(decoded) {
-  const adapter = globalThis.HexX86CapstoneStructured;
-  if (adapter?.ABI?.contractVersion !== CAPSTONE_STRUCTURED_ABI || typeof adapter?.hasRuntimeProvenance !== 'function') return false;
-  try { return adapter.hasRuntimeProvenance(decoded) === true; } catch { return false; }
-}
+import { hasReceiverRevalidatedX86Row } from '../runtime-provenance.js';
 
 function liftX86IntegerFamily(instruction, context) {
   return liftX86ImplicitSignExtensionEffects(instruction, context)
@@ -119,10 +112,10 @@ function terminalize(instruction, ownerId, result, context, provenanceSource) {
     || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))
   )) return result;
 
-  // Exact-with-intrinsic terminalization is an authority escalation. Version
-  // strings and structured fields are caller data, so only the identity of a
-  // row actually minted by the deployed Capstone adapter may authorize it.
-  if (!hasTrustedDecoderRuntimeProvenance(provenanceSource)) return result;
+  // Terminal exactness is allowed only for rows re-decoded from their raw bytes
+  // inside the dedicated receiver revalidation worker. Public structured parser
+  // calls and transported/copy-only records cannot mint this private brand.
+  if (!hasReceiverRevalidatedX86Row(provenanceSource)) return result;
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
 
