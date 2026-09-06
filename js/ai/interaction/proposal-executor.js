@@ -64,13 +64,14 @@ export class ProposalExecutor {
 async function awaitNoteStoreReady(app) {
   if (!app || app.notes?.id) return app?.notes;
   const controller = app.noteAttachController;
-  if (!controller?.signal || typeof document?.addEventListener !== 'function') return app.notes;
+  const doc = globalThis.document;
+  if (!controller?.signal || typeof doc?.addEventListener !== 'function') return app.notes;
   if (controller.signal.aborted) throw new AIError('tool_failed', 'Annotation store binding was replaced before the proposal could be applied.');
 
   await new Promise((resolve, reject) => {
     let timer = null;
     const cleanup = () => {
-      document.removeEventListener('hex:notes-attached', onAttached);
+      doc.removeEventListener('hex:notes-attached', onAttached);
       controller.signal.removeEventListener('abort', onAbort);
       if (timer != null) clearTimeout(timer);
     };
@@ -81,7 +82,7 @@ async function awaitNoteStoreReady(app) {
     };
     const onAbort = () => fail('Annotation store binding changed before the proposal could be applied.');
 
-    document.addEventListener('hex:notes-attached', onAttached);
+    doc.addEventListener('hex:notes-attached', onAttached);
     controller.signal.addEventListener('abort', onAbort, { once: true });
     if (app.notes?.id) return succeed();
     timer = setTimeout(() => fail('Annotation store binding did not become ready before the proposal could be applied.'), NOTE_READY_TIMEOUT_MS);
