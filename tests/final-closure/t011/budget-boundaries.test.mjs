@@ -201,8 +201,28 @@ function callReturnFixture(effect = 'missing') {
   if (effect === 'empty') call.memKills = [];
   if (effect === 'wrong-key') call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
   if (effect === 'malformed') call.memKills = [{ key:{}, kind:'stack', size:4 }];
-  if (effect === 'private') call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'none' } };
+  if (effect === 'private') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture',
+      memoryWrite:{ scope:'none' },
+    };
+  }
+  if (effect === 'unbound-private') {
+    call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'none' } };
+  }
+  if (effect === 'mismatched-private') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'other-call', summarySource:'fixture',
+      memoryWrite:{ scope:'none' },
+    };
+  }
   if (effect === 'private-access') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
     call.extra = {
       callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture',
       memoryWrite:{
@@ -683,7 +703,7 @@ test('T011 same-row UNKNOWN-kind STORE is broad even with an unrelated key', () 
 });
 
 test('T011 return fallback requires complete canonical CALL memory effects', () => {
-  for (const effect of ['missing', 'empty', 'wrong-key', 'malformed', 'unknown-scope', 'malformed-all', 'unbound-complete', 'unknown-kind-kill']) {
+  for (const effect of ['missing', 'empty', 'wrong-key', 'malformed', 'unknown-scope', 'malformed-all', 'unbound-complete', 'unbound-private', 'mismatched-private', 'unknown-kind-kill']) {
     const result = callReturnFixture(effect);
     recoverExactStackReturn(result, { deterministicTransforms:true });
     assert.equal(result.cAst.body[0].text, 'return local_0;', effect);
@@ -905,7 +925,7 @@ test('T011 committed forwarding consumes the canonical operand proof at the live
   assert.equal(baseline.cAst.body[0].text, 'return secret;');
   assert.equal(baseline.metrics.rewrittenExpressions, 1);
 
-  for (const mutation of ['unknown-call', 'equal-row', 'malformed-row', 'store-after-load', 'cross-block-unknown']) {
+  for (const mutation of ['unknown-call', 'equal-row', 'peer-load-equal-direct', 'malformed-row', 'store-after-load', 'cross-block-unknown']) {
     const result = committedReturnFixture({ operandProof:true });
     const direct = result.ir.instructions.find((instruction) => instruction.id === 502);
     const load = result.ir.instructions.find((instruction) => instruction.id === 501);
@@ -922,6 +942,12 @@ test('T011 committed forwarding consumes the canonical operand proof at the live
         { index:1, startRow:3, endRow:ret.row, pred:[0], succ:[], insts:[effect, load, ret] },
       ];
       result.ir.idom = [-1, 0];
+    } else if (mutation === 'peer-load-equal-direct') {
+      const peerLoad = {
+        id:509, op:'load', block:0, row:direct.row, args:[],
+        loc:{ kind:'stack', key:'stack:sp:e0:-16:s4', size:4 },
+      };
+      result.ir.instructions.splice(2, 0, peerLoad);
     } else if (mutation === 'store-after-load') {
       direct.row = load.row + 1;
       ret.row = load.row + 2;
@@ -1330,6 +1356,31 @@ test('T011 return publication rolls back when printing throws after rewrite muta
   assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms:true }));
   assert.strictEqual(result.cAst.body, originalBody);
   assert.equal(result.cAst.body[0].text, originalText);
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 PHI publication rolls back all fields when printing throws after AST mutation', () => {
+  const result = stackReturnFixture();
+  const originalBody = result.cAst.body;
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[0], 'indent', {
+    configurable:true,
+    get() { throw new Error('PHI indent failure'); },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackPhiExpressions(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
   assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
   for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
   assert.equal(result.metrics.rewrittenExpressions, 0);

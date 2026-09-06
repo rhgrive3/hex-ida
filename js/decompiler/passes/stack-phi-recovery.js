@@ -761,6 +761,71 @@ function returnNodes(result, control) {
   return nodes;
 }
 
+function snapshotPhiPublication(result) {
+  const bodyField = ownData(result.cAst, 'body');
+  const body = bodyField.present && bodyField.valid && Array.isArray(bodyField.value)
+    ? bodyField.value : null;
+  const nodes = (body || []).map((node) => {
+    const semantic = fieldValue(node, 'semantic');
+    return {
+      node,
+      text:ownData(node, 'text'),
+      semantic,
+      expression:ownData(semantic, 'expression'),
+    };
+  });
+  const outputs = Array.isArray(result.semanticAst?.outputs)
+    ? result.semanticAst.outputs.map((output) => ({ output, expression:ownData(output, 'expression') })) : [];
+  const fields = new Map();
+  for (const key of ['pseudocode', 'sourceMap', 'lines', 'rewriteProof', 'metrics', 'ctx']) {
+    fields.set(key, ownData(result, key));
+  }
+  return { bodyField, body, nodes, outputs, fields };
+}
+
+function restorePhiPublication(result, snapshot) {
+  const failures = [];
+  const failure = (key, error) => {
+    failures.push(error instanceof Error ? error : new Error(`failed to restore ${key}`));
+  };
+  const restoreField = (object, key, field) => {
+    if (!object) return;
+    if (!field?.present) {
+      try {
+        delete object[key];
+      } catch (error) {
+        failure(key, error);
+        return;
+      }
+      const restored = ownData(object, key);
+      if (restored.present) failure(key, new Error(`field ${key} remained after rollback`));
+      return;
+    }
+    if (!field.valid) {
+      failure(key, new Error(`field ${key} was not readable at transaction start`));
+      return;
+    }
+    try {
+      object[key] = field.value;
+    } catch (error) {
+      failure(key, error);
+      return;
+    }
+    const restored = ownData(object, key);
+    if (!restored.present || !restored.valid || !Object.is(restored.value, field.value)) {
+      failure(key, new Error(`field ${key} did not match its transaction snapshot`));
+    }
+  };
+  restoreField(result.cAst, 'body', snapshot.bodyField);
+  for (const state of snapshot.nodes) {
+    restoreField(state.node, 'text', state.text);
+    restoreField(state.semantic, 'expression', state.expression);
+  }
+  for (const state of snapshot.outputs) restoreField(state.output, 'expression', state.expression);
+  for (const [key, field] of snapshot.fields) restoreField(result, key, field);
+  if (failures.length) throw new AggregateError(failures, 'exact stack PHI publication rollback failed');
+}
+
 function stackReturnSlot(ir, expression, control) {
   const slot = exactStackLoadSlot(ir, null, expression, control);
   // A rendered stack key is not evidence that a physical read occurred.
@@ -888,43 +953,60 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     deterministic: control.deterministic,
     maxApplications: 512,
   });
-  const rewrite = rewriteReturnsInAst(result, maps, opts, engine, control);
-  if (rewrite.aborted || control.isAborted() || !rewrite.changed) return result;
+  const transaction = snapshotPhiPublication(result);
+  try {
+    const rewrite = rewriteReturnsInAst(result, maps, opts, engine, control);
+    if (rewrite.aborted || control.isAborted() || !rewrite.changed) {
+      if (rewrite.aborted || control.isAborted()) restorePhiPublication(result, transaction);
+      return result;
+    }
 
-  if (control.isAborted()) return result;
-  const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
-  const printed = printProgram(result.cAst, { columnWidth });
-  if (control.isAborted()) {
-    rewrite.rollback?.();
-    return result;
+    if (control.isAborted()) {
+      restorePhiPublication(result, transaction);
+      return result;
+    }
+    const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
+    const printed = printProgram(result.cAst, { columnWidth });
+    if (control.isAborted()) {
+      restorePhiPublication(result, transaction);
+      return result;
+    }
+    result.pseudocode = printed.text;
+    result.sourceMap = printed.mapping;
+    result.lines = result.cAst.body.map((node) => ({
+      kind: node.kind,
+      indent: node.indent,
+      text: node.text,
+      row: node.source?.rows?.[0] ?? null,
+      addr: node.source?.addresses?.[0] ?? null,
+      note: null,
+      source: node.source,
+    }));
+    result.rewriteProof = [...(result.rewriteProof || []), {
+      rule: 'exact-stack-phi-recovery',
+      phase: 'memory-ssa',
+      evidence: { kind: 'cfg-memory-ssa', detail: `${rewrite.changed} return site(s) reconstructed from exact RET provenance without crossing unknown memory effects` },
+    }];
+    result.metrics = {
+      ...(result.metrics || {}),
+      rewrittenExpressions: (result.metrics?.rewrittenExpressions || 0) + rewrite.changed,
+      sourceMappedNodes: printed.mapping.length,
+    };
+    result.ctx = {
+      ...(result.ctx || {}),
+      decompilerPipeline: {
+        ...(result.ctx?.decompilerPipeline || {}),
+        exactStackPhiRecovered: true,
+      },
+    };
+  } catch (error) {
+    try {
+      restorePhiPublication(result, transaction);
+    } catch (rollbackError) {
+      const failure = new Error('exact stack PHI recovery rollback failed', { cause:error });
+      failure.rollbackError = rollbackError;
+      throw failure;
+    }
   }
-  result.pseudocode = printed.text;
-  result.sourceMap = printed.mapping;
-  result.lines = result.cAst.body.map((node) => ({
-    kind: node.kind,
-    indent: node.indent,
-    text: node.text,
-    row: node.source?.rows?.[0] ?? null,
-    addr: node.source?.addresses?.[0] ?? null,
-    note: null,
-    source: node.source,
-  }));
-  result.rewriteProof = [...(result.rewriteProof || []), {
-    rule: 'exact-stack-phi-recovery',
-    phase: 'memory-ssa',
-    evidence: { kind: 'cfg-memory-ssa', detail: `${rewrite.changed} return site(s) reconstructed from exact RET provenance without crossing unknown memory effects` },
-  }];
-  result.metrics = {
-    ...(result.metrics || {}),
-    rewrittenExpressions: (result.metrics?.rewrittenExpressions || 0) + rewrite.changed,
-    sourceMappedNodes: printed.mapping.length,
-  };
-  result.ctx = {
-    ...(result.ctx || {}),
-    decompilerPipeline: {
-      ...(result.ctx?.decompilerPipeline || {}),
-      exactStackPhiRecovered: true,
-    },
-  };
   return result;
 }

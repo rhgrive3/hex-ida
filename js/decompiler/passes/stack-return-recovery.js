@@ -226,9 +226,13 @@ function validMemoryWriteScope(memoryWrite) {
   return { scope, addressSpaces };
 }
 
-function callProducerBound(extra) {
-  return nonEmptyString(fieldValue(extra, 'semanticNodeId'))
-    && nonEmptyString(fieldValue(extra, 'summarySource'));
+function callProducerBound(inst, extra) {
+  const semanticNodeId = fieldValue(extra, 'semanticNodeId');
+  const sourceEntityId = fieldValue(inst, 'semanticNodeId') ?? fieldValue(inst, 'sourceEntityId');
+  return nonEmptyString(semanticNodeId)
+    && nonEmptyString(fieldValue(extra, 'summarySource'))
+    && nonEmptyString(sourceEntityId)
+    && idKey(sourceEntityId) === semanticNodeId;
 }
 
 /**
@@ -297,6 +301,11 @@ function authenticatedCallMemoryEffect(inst, control) {
   if (scope === 'none') {
     if (completeness !== 'complete') return null;
     if (memoryBarrier) return null;
+    // A complete no-write summary is still a projection claim.  It must be
+    // bound to the canonical CALL that produced it; otherwise a caller can
+    // attach the two strings to an unrelated physical call and turn missing
+    // memory effects into a safe proof.
+    if (!callProducerBound(inst, extra)) return null;
     const killsField = ownData(inst, 'memKills');
     if (killsField.present && (!killsField.valid || !Array.isArray(killsField.value) || killsField.value.length)) return null;
     return [];
@@ -304,7 +313,7 @@ function authenticatedCallMemoryEffect(inst, control) {
   // A memory-writing projection is usable only when its producer identity and
   // barrier marker are both present. This applies to complete calls as well:
   // a detached memKills array cannot become effect authority by itself.
-  if (!callProducerBound(extra) || memoryBarrier !== true) return null;
+  if (!callProducerBound(inst, extra) || memoryBarrier !== true) return null;
   const killsField = ownData(inst, 'memKills');
   if (!killsField.present || !killsField.valid || !Array.isArray(killsField.value)
       || killsField.value.length === 0) return null;
@@ -1169,6 +1178,17 @@ function physicalMemoryIntervalMatches(load, direct, proof, context, instruction
     if (candidate !== direct && candidate !== load && candidateIsMutation
         && (row === directRow || row === loadRow)) return false;
     if (candidate === direct || candidate === load) continue;
+
+    // A peer LOAD at the direct STORE's row has the same unauthenticated
+    // read/write ordering problem as a peer STORE at the target LOAD row.
+    // Preserve unrelated precise accesses, but reject a same-location peer
+    // LOAD because its result could be read before or after the direct store.
+    if (candidate !== direct && candidate !== load && candidateIsLoad && row === directRow) {
+      const candidateDescriptor = memoryMutationDescriptor(candidate);
+      const directDescriptor = memoryMutationDescriptor(direct);
+      if (!candidateDescriptor || !directDescriptor
+          || memoryMutationCollides(candidateDescriptor, directDescriptor)) return false;
+    }
 
     let onInterval = false;
     if (directBlock === loadBlock) {
