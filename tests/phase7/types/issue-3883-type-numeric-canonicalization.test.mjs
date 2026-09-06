@@ -137,3 +137,21 @@ test('issue #3883: existing invalid structural numeric inputs remain rejected', 
   assert.throws(() => claim('structural', { alignBytes:0 }), /structural-align-invalid/);
   assert.throws(() => claim('structural', { offset:-1, sizeBytes:1 }), /structural-offset-invalid/);
 });
+
+test('issue #3883: accessor-backed descriptor state cannot drift claim identity', () => {
+  let reads = 0;
+  const descriptor = { kind:'struct' };
+  Object.defineProperty(descriptor, 'sizeBytes', {
+    enumerable:true,
+    get() {
+      reads += 1;
+      return reads <= 4 ? 4n : 8n;
+    },
+  });
+
+  assert.throws(
+    () => claim('structural', descriptor, 'accessor-drift'),
+    /type-claim-descriptor-accessor/,
+  );
+  assert.equal(reads, 0);
+});

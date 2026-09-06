@@ -126,6 +126,50 @@ function canonicalInteger(val) {
   try { return BigInt(val.trim()); } catch { return null; }
 }
 
+function snapshotDescriptor(descriptor) {
+  const seen = new WeakMap();
+  const active = new WeakSet();
+  const visit = (value) => {
+    if (value == null || typeof value !== 'object') return value;
+    if (active.has(value)) fail('type-claim-descriptor-cycle');
+    if (seen.has(value)) return seen.get(value);
+
+    let isArray;
+    let descriptors;
+    try {
+      isArray = Array.isArray(value);
+      descriptors = Object.getOwnPropertyDescriptors(value);
+    } catch {
+      fail('type-claim-descriptor-invalid');
+    }
+
+    const out = isArray ? [] : {};
+    seen.set(value, out);
+    active.add(value);
+    try {
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (isArray && key === 'length') continue;
+        const property = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+          fail('type-claim-descriptor-accessor');
+        }
+        Object.defineProperty(out, key, { ...property, value: visit(property.value) });
+      }
+      if (isArray) {
+        const length = descriptors.length;
+        if (!length || !Object.prototype.hasOwnProperty.call(length, 'value')) {
+          fail('type-claim-descriptor-invalid');
+        }
+        Object.defineProperty(out, 'length', length);
+      }
+    } finally {
+      active.delete(value);
+    }
+    return out;
+  };
+  return visit(descriptor);
+}
+
 function canonicalDescriptorMaterial(layer, descriptor) {
   if (layer === 'nominal' || descriptor == null || typeof descriptor !== 'object') return descriptor;
   const seen = new WeakMap();
@@ -191,12 +235,13 @@ function validateDescriptor(layer, descriptor) {
 export function createTypeClaim(input = {}) {
   const layer = strictNonEmpty(input.layer, 'type-claim-layer-required');
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
+  const descriptor = input.descriptor ?? null;
+  if (descriptor == null) fail('type-claim-descriptor-required');
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: input.descriptor ?? null,
+    descriptor: snapshotDescriptor(descriptor),
   };
-  if (claim.descriptor == null) fail('type-claim-descriptor-required');
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
   return deepFreeze(claim);
