@@ -89,6 +89,13 @@ function budgetConfig(options, key, defaults) {
 function budgetProfileKey(config) {
   return Object.keys(config).sort().map((key) => `${key}:${config[key]}`).join('|');
 }
+function budgetProfileCovers(available, requested) {
+  if (!available || typeof available !== 'object') return false;
+  return Object.keys(requested).every((key) => {
+    const value = available[key];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= requested[key];
+  });
+}
 
 function waitShared(entry, signal, onLastWaiterAbort = null) {
   abortIfNeeded(signal);
@@ -155,6 +162,9 @@ function programComplete(program) {
   if (program.callsCapped || program.refsCapped || program.statsComplete === false) return false;
   return true;
 }
+function programIndexComplete(program) {
+  return program?.completeness?.complete === true;
+}
 function completenessFor({ strings, program, shapes, metadata, goal }) {
   const reasons = [];
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
@@ -183,13 +193,16 @@ function captureAnalysisBinding(app, resolved = {}) {
   const epoch = epochOf(app);
   const sliceIndex = strictInteger(storeValue(app, 'sliceIndex'), -1);
   const symbolsGen = strictInteger(symbols?.gen, 0);
+  const program = resolved.program ?? app?.program ?? null;
   return Object.freeze({
     epoch,
     sliceIndex,
     symbols,
     symbolsGen,
     fields:resolved.fields ?? app?.fields ?? null,
-    program:resolved.program ?? app?.program ?? null,
+    program,
+    programPublished:program != null && app?.program === program,
+    programRegionKey:program == null ? null : execRegions(app).map((item) => item.id).join('|'),
     shapes:resolved.shapes ?? app?.shapes ?? null,
     region,
     regionId:region?.id ?? null,
@@ -205,7 +218,16 @@ function analysisBindingCurrent(app, binding) {
   const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
   if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
   if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
-  if (binding.program != null && app?.program !== binding.program) return false;
+  if (binding.program != null) {
+    if (binding.programPublished) {
+      if (app?.program !== binding.program) return false;
+    } else {
+      if (binding.program.symbols !== binding.symbols) return false;
+      const programGen = strictInteger(binding.program.gen, null);
+      if (programGen == null || programGen !== binding.symbolsGen) return false;
+      if (execRegions(app).map((item) => item.id).join('|') !== binding.programRegionKey) return false;
+    }
+  }
   if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
   return (region?.id ?? null) === binding.regionId;
@@ -270,7 +292,7 @@ export class InvestigationService {
       entry = { controller, waiters:0, settled:false, promise:null };
       entry.promise = scheduleProducer(options, controller.signal)
         .then(() => producer(controller.signal))
-        .then((value) => { entry.settled = true; return value; })
+        .then((value) => { entry.value = value; entry.settled = true; return value; })
         .catch((error) => {
           if (this.shared.get(key) === entry) this.shared.delete(key);
           throw error;
@@ -356,12 +378,22 @@ export class InvestigationService {
     if (!regions.length) return Promise.resolve(null);
     const epoch = epochOf(app);
     const key = regions.map((r) => r.id).join('|');
-    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen) return Promise.resolve(app.program);
-    return this.#shared(`program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}`, async (signal) => {
+    const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
+    const profile = budgetProfileKey(limits);
+    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+      && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) {
+      return Promise.resolve(app.program);
+    }
+    const sharedKey = `program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`;
+    const settled = this.shared.get(sharedKey);
+    if (settled?.settled && (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
+      || !programIndexComplete(app.program) || !programIndexComplete(settled.value))) {
+      this.shared.delete(sharedKey);
+    }
+    return this.#shared(sharedKey, async (signal) => {
       await this.discoverFunctions({ ...options, signal });
       abortIfNeeded(signal);
       const scans = [], failures = [];
-      const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
       let calls = limits.calls, refs = limits.refs, kinds = limits.kindWords;
       let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
       for (let index = 0; index < regions.length; index++) {
@@ -392,9 +424,17 @@ export class InvestigationService {
       const merged = mergeProgramScans(scans, { regions, reasons:failures, limits });
       const primary = regions.find((r) => r.section === '__text') || regions[0];
       const program = new ProgramIndex(merged, app.symbols, primary);
-      app.programScan = merged;
-      app.programKey = key;
-      app.program = program;
+      if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) return app.program;
+      const cachedComplete = app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && programIndexComplete(app.program);
+      if (!cachedComplete || (programIndexComplete(program)
+        && budgetProfileCovers(limits, app.programBudgetProfile))) {
+        app.programScan = merged;
+        app.programKey = key;
+        app.programBudgetProfile = Object.freeze({ ...limits });
+        app.program = program;
+      }
       return program;
     }, options);
   }
@@ -619,4 +659,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });
