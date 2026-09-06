@@ -107,31 +107,45 @@ function testCanonicalWiring() {
 
 async function testSearchPanelQueryAndCancellation() {
   const calls = [];
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
   const queries = {
-    async search(...args) {
+    search(...args) {
       calls.push(args);
-      return { value:[{ addr:1n, text:'hit' }], completeness:'complete', page:{ next:null } };
+      markStarted();
+      const signal = args[3]?.signal;
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('search aborted'), {
+          name:'AbortError',
+          reason:signal?.reason,
+        }));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once:true });
+      });
     },
   };
   const snapshot = Object.freeze({ snapshotId:'search-regression' });
   const query = Object.freeze({ regionId:'r', kind:'text', query:'needle', from:0 });
   const pager = createSearchPager(queries, snapshot, query);
-  const signal = new AbortController().signal;
-  const page = await pager.next({ signal });
-  assert.equal(page.done, true);
-  assert.equal(page.completeness, 'complete');
+  const runs = createSearchRunLifecycle();
+  const controller = runs.start();
+  assert.ok(controller);
+
+  const pagePromise = pager.next({ signal:controller.signal });
+  await started;
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], snapshot);
   assert.equal(calls[0][1], query);
   assert.deepEqual(calls[0][2], { offset:0, limit:1000 });
-  assert.equal(calls[0][3].signal, signal);
+  assert.equal(calls[0][3].signal, controller.signal,
+    'the lifecycle controller must own the signal passed to queries.search');
 
-  const runs = createSearchRunLifecycle();
-  const controller = runs.start();
-  assert.ok(controller);
   assert.equal(runs.cancel('search-sheet-closed'), controller);
   assert.equal(controller.signal.aborted, true);
   assert.equal(controller.signal.reason, 'search-sheet-closed');
+  await assert.rejects(pagePromise,
+    (error) => error?.name === 'AbortError' && error?.reason === 'search-sheet-closed',
+    'closing Search must abort the in-flight query with the lifecycle reason');
 }
 
 await testMachOSelectedSliceSingleFlight();
