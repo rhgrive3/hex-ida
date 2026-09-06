@@ -63,10 +63,10 @@ function unsupported(id, reason) {
 }
 
 function completenessOf(value, fallback = 'complete') {
-  if (value?.status?.completeness) return value.status.completeness;
   if (value?.unsupported === true) return 'unsupported';
   if (value?.truncated === true) return 'truncated';
   if (value?.completeness?.complete === false || value?.complete === false || value?.partial === true) return 'partial';
+  if (value?.status?.completeness) return value.status.completeness;
   if (typeof value?.completeness === 'string') return value.completeness;
   return fallback;
 }
