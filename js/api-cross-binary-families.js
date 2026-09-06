@@ -118,11 +118,21 @@ for (const entry of EXTRA_API_TABLE) {
 }
 Object.freeze(EXTRA_API_TABLE);
 
+function publicEntry(entry) {
+  // Keep RegExp compatibility without handing callers the private matcher that
+  // decides future classifications. RegExp has mutable internal slots (for
+  // example via legacy compile()), so a frozen entry alone is not sufficient.
+  const re = new RegExp(entry.re.source, entry.re.flags);
+  Object.freeze(re);
+  const args = entry.args == null ? null : Object.freeze([...entry.args]);
+  return Object.freeze({ ...entry, re, args });
+}
+
 export function extraApiInfo(name) {
   if (typeof name !== 'string') return null;
   const clean = name.trim();
   if (!clean) return null;
-  for (const entry of EXTRA_API_TABLE) if (entry.re.test(clean)) return entry;
+  for (const entry of EXTRA_API_TABLE) if (entry.re.test(clean)) return publicEntry(entry);
   return null;
 }
 
