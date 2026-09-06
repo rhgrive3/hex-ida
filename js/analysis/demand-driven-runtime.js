@@ -250,7 +250,10 @@ function installDemandRecognition(app) {
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
     const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); bootstrapEpochs.add(epoch);
-    const result = originalApplySlice(...args); Promise.resolve(app.symbolsReady).finally(() => bootstrapEpochs.delete(epoch)); return result;
+    const result = originalApplySlice(...args);
+    const clearBootstrap = () => bootstrapEpochs.delete(epoch);
+    void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap);
+    return result;
   };
   return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
 }
