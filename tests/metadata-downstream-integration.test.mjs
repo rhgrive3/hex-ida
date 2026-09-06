@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   parseUnifiedLanguageMetadata,
+  createLanguageMetadataIdentity,
+  createLanguageMetadataRecord,
   classifyLanguageRuntimeCall,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
@@ -50,11 +52,14 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
 
   const goTypeResult = {
     ecosystem: 'go',
-    identity: {
+    identity: createLanguageMetadataIdentity({
       verdict: 'matched-authoritative',
       providerId: 'metadata.go',
       providerVersion: '1.0.0',
-    },
+      ecosystem: 'go',
+      expected: 'sha256:go-integration',
+      observed: 'sha256:go-integration',
+    }),
     completeness: { present: true, declared: 1, scanned: 1, parsed: 1, complete: true },
     // #3260: a result without a proven-complete status can never mint hard
     // constraints, so the fixture carries the canonical complete status.
@@ -68,14 +73,16 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
 
   const goTypePage = {
     records: [
-      {
+      createLanguageMetadataRecord({
         kind: 'type',
         entityId: 'type@0x5000',
         descriptor: { name: 'main.ServerState', size: 64 },
         providerId: 'metadata.go',
         providerVersion: '1.0.0',
+        ecosystem: 'go',
+        buildIdentity: 'sha256:go-integration',
         evidenceIds: ['go:type:0x5000'],
-      },
+      }),
     ],
   };
 
@@ -91,11 +98,13 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
   const partialGraph = new TypeConstraintGraph({ snapshotId: 'snap-partial' });
   const partialTypeResult = {
     ecosystem: 'go',
-    identity: {
+    identity: createLanguageMetadataIdentity({
       verdict: 'identity-unavailable',
       providerId: 'metadata.go',
       providerVersion: '1.0.0',
-    },
+      ecosystem: 'go',
+      binaryIdentity: 'sha256:go-integration',
+    }),
   };
 
   const appliedSoft = applyLanguageMetadataTypesToGraph(partialGraph, partialTypeResult, goTypePage);
@@ -111,7 +120,14 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
 {
   const rustResult = {
     ecosystem: 'rust',
-    identity: { verdict: 'matched-authoritative' },
+    identity: createLanguageMetadataIdentity({
+      verdict: 'matched-authoritative',
+      providerId: 'metadata.rust',
+      providerVersion: '1.0.0',
+      ecosystem: 'rust',
+      expected: 'sha256:rust-integration',
+      observed: 'sha256:rust-integration',
+    }),
     completeness: { present: true, declared: 1, scanned: 1, parsed: 1, complete: true },
     status: createAnalysisStatus({
       snapshotId: 'snap-integration',
@@ -123,15 +139,18 @@ console.log('Testing Language Metadata Downstream Integration & Cross-Ecosystem 
 
   const rustPage = {
     records: [
-      {
+      createLanguageMetadataRecord({
         kind: 'symbol',
+        entityId: 'symbol@0x1040',
         name: 'my_crate::process_request',
         address: '0x1040',
         sizeBytes: 128,
         providerId: 'metadata.rust',
         providerVersion: '1.0.0',
+        ecosystem: 'rust',
+        buildIdentity: 'sha256:rust-integration',
         evidenceIds: ['rust:sym:0x1040'],
-      },
+      }),
     ],
   };
 
