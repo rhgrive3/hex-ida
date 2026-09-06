@@ -189,7 +189,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       });
       continue;
     }
-    if (c.aggregate && c.bits > 128) {
+    if (c.aggregate && (c.aggregateBytes ?? 0) > 16) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const stackPointerOffset = reg ? null : alignUp(stackOffset, 8);
       const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;

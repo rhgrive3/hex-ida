@@ -117,4 +117,32 @@ const scalar = () => ({ type:'uint64_t', bits:64 });
   assert.equal(unproven.partial, true);
 }
 
+{
+  // B.4 is a physical-size rule: a proven padded aggregate whose canonical
+  // physical extent exceeds 16 bytes is indirect even when its logical bit
+  // width stays at 128.
+  const padded = classify([{
+    type:'struct Padded24',
+    aggregate:true,
+    bits:128,
+    layout:{
+      bits:128, bytes:24,
+      members:[
+        { type:'uint64_t', bits:64, bytes:8, byteOffset:0 },
+        { type:'uint64_t', bits:64, bytes:8, byteOffset:8 },
+      ],
+      padding:[{ bytes:8, byteOffset:16 }],
+    },
+  }]);
+  const arg = padded.arguments[0];
+  assert.equal(arg.location, 'register');
+  assert.equal(arg.reg, 'x0');
+  assert.equal(arg.abiClass, 'aggregate-indirect-copy');
+  assert.equal(arg.pointer, true);
+  assert.equal(arg.callerCopy, true);
+  assert.equal(arg.pointeeBits, 128);
+  assert.equal(padded.arguments[0].partial, undefined);
+  assert.deepEqual(padded.srcs.map((source) => source.reg), ['x0']);
+}
+
 console.log('issue #5601 Darwin ARM64 large aggregate indirect-copy classification: ok');
