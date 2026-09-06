@@ -23,7 +23,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -54,6 +54,7 @@ function effectsForAccesses(node, scope, resolveRegion, source) {
     for (const region of regions) {
       effects.push(createMemoryEffect({
         regionId: region.id, regionKind: region.kind,
+        ...(region.kind === 'unknown' ? {} : { region }),
         broad: region.kind === 'unknown',
         addressSpaces: [access.addressSpace ?? 'memory'],
         source, evidenceIds: evidenceOf(node),
@@ -290,6 +291,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           into.push(createMemoryEffect({
             regionId: region.id,
             regionKind: region.kind,
+            ...(region.kind === 'unknown' ? {} : { region }),
             broad: region.kind === 'unknown',
             addressSpaces: [node.memory.addressSpace],
             source: 'proven-summary',

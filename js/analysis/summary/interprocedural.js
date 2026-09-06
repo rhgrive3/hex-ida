@@ -23,6 +23,7 @@
  * requested roots, not the whole program (P7-INV-009).
  */
 
+import { mergeOriginSets } from '../../core/identity/origin.js';
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
 import {
   EFFECT_SOURCES,
@@ -33,7 +34,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.1.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -136,6 +137,14 @@ function strongestSource(left, right) {
   return leftRank <= rightRank ? left : right;
 }
 
+function mergedRegionProof(left, right) {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  if (left.id !== right.id || left.kind !== right.kind) return null;
+  try { return { ...left, origin: mergeOriginSets(left.origin, right.origin) }; }
+  catch { return null; }
+}
+
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
@@ -166,6 +175,7 @@ function mergeEffects(lists, cap) {
       addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
       source: strongestSource(prior.source, effect.source),
       evidenceIds: [...new Set([...prior.evidenceIds, ...effect.evidenceIds])].sort(),
+      region: mergedRegionProof(prior.region, effect.region),
     }));
   }
   const specific = [...byKey.values()];
