@@ -166,11 +166,12 @@
   }
 
   function normalizeName(value) {
-    return String(value ?? '').trim().toLowerCase().replace(/^%/, '');
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase().replace(/^%/, '');
   }
 
   function registerDescriptor(value) {
-    const name = normalizeName(typeof value === 'object'
+    const name = normalizeName(value !== null && typeof value === 'object'
       ? (value.registerId ?? value.id ?? value.name ?? value.text)
       : value);
     return descriptors.get(name) || null;
