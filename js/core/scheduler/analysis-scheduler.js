@@ -374,7 +374,7 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    budget.checkCancelled(); this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
