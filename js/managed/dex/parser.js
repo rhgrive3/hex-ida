@@ -18,14 +18,24 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
+
 export function probeDex(bytes) {
   if (!bytes || bytes.length < 40) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (u8[0] === 0x64 && u8[1] === 0x65 && u8[2] === 0x78 && u8[3] === 0x0a && u8[7] === 0x00) {
-    const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
-    return { supported: true, confidence: 1.0, formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (u8[0] !== 0x64 || u8[1] !== 0x65 || u8[2] !== 0x78 || u8[3] !== 0x0a || u8[7] !== 0x00) {
+    return { supported: false, confidence: 0, reason: 'invalid-magic' };
   }
-  return { supported: false, confidence: 0, reason: 'invalid-magic' };
+  if (u8[4] < 0x30 || u8[4] > 0x39 || u8[5] < 0x30 || u8[5] > 0x39 || u8[6] < 0x30 || u8[6] > 0x39) {
+    return { supported: false, confidence: 0, reason: 'invalid-version' };
+  }
+
+  const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
+  const versionInfo = { formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (!SUPPORTED_DEX_VERSIONS.has(vStr)) {
+    return { supported: false, confidence: 0, reason: 'unsupported-version', ...versionInfo };
+  }
+  return { supported: true, confidence: 1.0, ...versionInfo };
 }
 
 function readUleb128(bytes, offset) {

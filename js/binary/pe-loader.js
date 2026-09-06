@@ -3,6 +3,7 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  parseExceptionFunctions as parseExceptionFunctionsCore,
   parseLoadConfig as parseLoadConfigCore,
 } from './pe-loader-core.js';
 
@@ -12,7 +13,6 @@ export {
   mappedFileRangeForRva,
   mappedFileSpanForRva,
   parseImports,
-  parseExceptionFunctions,
   parseBaseRelocations,
   parseCoffSymbols,
   directory,
@@ -48,6 +48,24 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
     }
   }
   return parseLoadConfigCore(r, dir, image, budget);
+}
+
+export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
+  if (!dir || !dir.rva || !dir.size) {
+    return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+  }
+  const recordSize = machine === 0x8664
+    ? 12
+    : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+  if (recordSize && dir.size % recordSize !== 0 && mappedFileSpanForRva(image, dir.rva, dir.size)) {
+    const budget = ensureBudget(image, sharedBudget);
+    budget.partial(
+      'exception:directory-record-remainder',
+      `PE exception directory size ${dir.size} is not a multiple of ${recordSize}`,
+    );
+    return parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  }
+  return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {

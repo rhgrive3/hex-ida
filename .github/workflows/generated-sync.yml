@@ -42,8 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -53,13 +53,34 @@ jobs:
       - name: Resolve generated-output ownership policy
         id: generated-policy
         shell: bash
-        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          mode="$(node tools/validation/generated-output-policy.mjs)"
+          case "$mode" in
+            enforce|ephemeral) ;;
+            *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
       - name: Require userscript-owned generated outputs to match source
-        if: steps.generated-policy.outputs.mode == 'enforce'
+        if: steps.generated-policy.outputs.mode == 'enforce' && github.event_name != 'push'
         run: >-
           git diff --exit-code --
           userscript/hex.user.template.js
           userscript/release-version.json
+      - name: Validate main build before push-only canonical publication
+        if: steps.generated-policy.outputs.mode == 'enforce' && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f userscript/hex.user.template.js
+          test -f userscript/release-version.json
+          unexpected="$({ git diff --name-only -- .; git ls-files --others --exclude-standard; } | sort -u | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'userscript:build changed files outside the generated-output allowlist:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          echo 'Main canonical delta is published by the push-only Generated userscript main sync workflow.'
       - name: Keep component output ephemeral
         if: steps.generated-policy.outputs.mode == 'ephemeral'
         run: echo 'Component lane built generated output ephemerally; integration owns committed synchronization.'
