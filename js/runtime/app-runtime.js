@@ -1,6 +1,7 @@
 import { RuntimeAnalysisPlatform } from './index.js';
 
 const states = new WeakMap();
+const transitions = new WeakMap();
 
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
@@ -119,29 +120,44 @@ async function disposeState(state) {
   }
 }
 
+async function withRuntimeTransition(app, operation) {
+  const previous = transitions.get(app) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(operation);
+  transitions.set(app, pending);
+  try {
+    return await pending;
+  } finally {
+    if (transitions.get(app) === pending) transitions.delete(app);
+  }
+}
+
 export async function runtimePlatformForApp(app) {
   if (!app) throw new Error('runtime app is required');
-  const identity = await runtimeIdentityForApp(app);
-  if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
-  let state = states.get(app);
-  if (state && state.identityKey !== identity.key) {
-    await disposeState(state);
-    states.delete(app);
-    state = null;
-  }
-  if (!state) {
-    const platform = new RuntimeAnalysisPlatform({
-      localIO: createAppRuntimeIO(app),
-      sessions: { maxSessions: 2 },
-      sliceIdentity: identity.sliceIdentity,
-    });
-    state = { platform, fileToken:currentFileToken(app), identityKey:identity.key, identity };
-    states.set(app, state);
-  }
-  if (!state.platform.sessions.current) {
-    await state.platform.startSession({ adapter:'local', binaryHash:identity.contentHash, connect:true });
-  }
-  return state.platform;
+  return withRuntimeTransition(app, async () => {
+    let identity = await runtimeIdentityForApp(app);
+    if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
+    let state = states.get(app);
+    if (state && state.identityKey !== identity.key) {
+      await disposeState(state);
+      if (states.get(app) === state) states.delete(app);
+      state = states.get(app) || null;
+      identity = await runtimeIdentityForApp(app);
+      if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
+    }
+    if (!state) {
+      const platform = new RuntimeAnalysisPlatform({
+        localIO: createAppRuntimeIO(app),
+        sessions: { maxSessions: 2 },
+        sliceIdentity: identity.sliceIdentity,
+      });
+      state = { platform, fileToken:currentFileToken(app), identityKey:identity.key, identity };
+      states.set(app, state);
+    }
+    if (!state.platform.sessions.current) {
+      await state.platform.startSession({ adapter:'local', binaryHash:identity.contentHash, connect:true });
+    }
+    return state.platform;
+  });
 }
 
 export function runtimeEvidenceForApp(app, functionAddress = null) {
@@ -174,9 +190,12 @@ export async function verifyAppHypothesis(app, hypothesis, options = {}) {
 }
 
 export async function resetAppRuntime(app) {
-  const state = states.get(app);
-  if (!state) return false;
-  await disposeState(state);
-  states.delete(app);
-  return true;
+  if (!app) return false;
+  return withRuntimeTransition(app, async () => {
+    const state = states.get(app);
+    if (!state) return false;
+    await disposeState(state);
+    if (states.get(app) === state) states.delete(app);
+    return true;
+  });
 }
