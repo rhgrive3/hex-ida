@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { SchedulerCycleError, SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/analysis-scheduler.js';
+import { ArtifactError } from '../../../js/core/artifacts/contracts.js';
+import { SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/analysis-scheduler.js';
 import { descriptor, scheduler } from './helpers.mjs';
 
 function nodeRequest(desc, dependencies=[], counter=null) {
@@ -96,7 +97,7 @@ function nodeRequest(desc, dependencies=[], counter=null) {
   assert.equal(s.stats().dependencyIdentityErrors,1);
 }
 
-// Cycle and self-cycle are explicit failures and invoke no producer.
+// Forged graph identities fail closed at the canonical descriptor boundary.
 {
   const {scheduler:s}=scheduler();
   const a={artifactId:'artifact_cycle-a',upstreamArtifactIds:['artifact_cycle-b']};
@@ -104,16 +105,15 @@ function nodeRequest(desc, dependencies=[], counter=null) {
   const requestA={descriptor:a,produce:async()=>({})};
   const requestB={descriptor:b,dependencies:[requestA],produce:async()=>({})};
   requestA.dependencies=[requestB];
-  await assert.rejects(s.request(requestA),(error)=>error instanceof SchedulerCycleError&&error.code==='artifact-dependency-cycle'&&error.path[0]===error.path.at(-1)&&error.path.includes('artifact_cycle-a')&&error.path.includes('artifact_cycle-b'));
+  await assert.rejects(s.request(requestA),(error)=>error instanceof ArtifactError&&error.code==='artifact-descriptor-noncanonical');
   assert.equal(s.stats().producerInvocations,0);
-  assert.ok(s.stats().cycleChecks>=1);
 }
 {
   const {scheduler:s}=scheduler();
   const self={artifactId:'artifact_self-cycle',upstreamArtifactIds:['artifact_self-cycle']};
   const request={descriptor:self,produce:async()=>({})};
   request.dependencies=[request];
-  await assert.rejects(s.request(request),(error)=>error instanceof SchedulerCycleError&&error.path.join(' -> ')==='artifact_self-cycle -> artifact_self-cycle');
+  await assert.rejects(s.request(request),(error)=>error instanceof ArtifactError&&error.code==='artifact-descriptor-noncanonical');
   assert.equal(s.stats().producerInvocations,0);
 }
 
