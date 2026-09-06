@@ -64,22 +64,35 @@ function canonicalCallingConvention(value) {
 
 function plainRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
 }
 
 function ownDataValue(record, key) {
   let owner = record;
-  while (owner && owner !== Object.prototype) {
-    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
-    if (descriptor) {
-      return 'value' in descriptor
-        ? { present:true, value:descriptor.value }
-        : { present:true, accessor:true, value:undefined };
+  try {
+    while (owner && owner !== Object.prototype) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        return 'value' in descriptor
+          ? { present:true, value:descriptor.value }
+          : { present:true, accessor:true, value:undefined };
+      }
+      owner = Object.getPrototypeOf(owner);
     }
-    owner = Object.getPrototypeOf(owner);
+  } catch {
+    return { present:true, accessor:true, value:undefined };
   }
   return { present:false, value:undefined };
+}
+
+function safeEnumerableDataCopy(value) {
+  if (!value || typeof value !== 'object') return {};
+  try { return { ...value }; } catch { return {}; }
 }
 
 function strictInteger(value) {
@@ -177,7 +190,7 @@ function strictOptionsMetadata(options) {
 }
 
 function sanitizedClassifierOptions(options = {}) {
-  const sanitized = { ...(options && typeof options === 'object' ? options : {}) };
+  const sanitized = safeEnumerableDataCopy(options);
   for (const key of ABI_AUTHORITY_OPTION_FIELDS) delete sanitized[key];
   sanitized.callPrototypeFor = () => null;
   return sanitized;
@@ -185,7 +198,9 @@ function sanitizedClassifierOptions(options = {}) {
 
 function withoutCallPrototype(instruction) {
   if (!instruction || typeof instruction !== 'object') return instruction;
-  return { ...instruction, callPrototype:null };
+  const sanitized = safeEnumerableDataCopy(instruction);
+  sanitized.callPrototype = null;
+  return sanitized;
 }
 
 function guardedProviderOptions(options = {}, state) {

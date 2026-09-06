@@ -114,6 +114,46 @@ const providerResult = SYSV_AMD64_ABI.classifyArguments(
 );
 assertConservative(providerResult, 'xmm0', 'provider-supplied structured prototype');
 
+const throwingPrototype = new Proxy({}, {
+  getPrototypeOf() { throw new Error('prototype reflection trap'); },
+});
+assertConservative(SYSV_AMD64_ABI.classifyArguments({ callPrototype:throwingPrototype }),
+  'xmm0', 'explicit prototype getPrototypeOf trap');
+assertConservative(SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  { callPrototypeFor() { return throwingPrototype; } },
+), 'xmm0', 'provider prototype getPrototypeOf trap');
+
+const throwingDescriptorPrototype = new Proxy({}, {
+  getOwnPropertyDescriptor() { throw new Error('prototype descriptor trap'); },
+});
+assertConservative(MICROSOFT_X64_ABI.classifyArguments({ callPrototype:throwingDescriptorPrototype }),
+  'xmm0', 'explicit prototype getOwnPropertyDescriptor trap');
+assertConservative(MICROSOFT_X64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  { callPrototypeFor() { return throwingDescriptorPrototype; } },
+), 'xmm0', 'provider prototype getOwnPropertyDescriptor trap');
+
+const trappedCallReturn = SYSV_AMD64_ABI.classifyCallReturn({ callPrototype:throwingPrototype });
+assert.equal(trappedCallReturn?.partial, true,
+  'reflective call-return prototype must be partial');
+assert.equal(trappedCallReturn?.reg ?? null, null,
+  'reflective call-return prototype must not mint a return register');
+assert.equal(trappedCallReturn?.reason, 'abi-prototype-metadata-invalid',
+  'reflective call-return prototype must report invalid metadata');
+
+const throwingConventionMetadata = new Proxy({
+  callingConvention:'microsoft-x64',
+  callPrototype:{ parameters:[{ type:'double', bits:64 }] },
+}, {
+  getOwnPropertyDescriptor(target, key) {
+    if (key === 'callingConvention') throw new Error('calling-convention descriptor trap');
+    return Reflect.getOwnPropertyDescriptor(target, key);
+  },
+});
+assertConservative(MICROSOFT_X64_ABI.classifyArguments(throwingConventionMetadata),
+  'xmm0', 'calling-convention getOwnPropertyDescriptor trap');
+
 const malformedConvention = MICROSOFT_X64_ABI.classifyArguments({
   callPrototype:{ parameters:[{ type:'double', bits:64 }] },
 }, {
