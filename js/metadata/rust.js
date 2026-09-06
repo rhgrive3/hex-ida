@@ -509,6 +509,9 @@ export function demangleRustLegacy(symbol) {
   if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
+  if (i !== s.length) {
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
+  }
 
   const demangled = components.join('::');
   return {
