@@ -159,4 +159,32 @@ function aggregate({ members, nestedMembers = members, padding, nestedPadding = 
   });
 }
 
+{
+  const topMember = {};
+  Object.defineProperty(topMember, 'bits', { value:32, enumerable:true });
+  Object.defineProperty(topMember, 'bytes', { value:4, enumerable:true });
+  Object.defineProperty(topMember, 'byteOffset', { value:0, enumerable:true });
+  Object.defineProperty(topMember, 'padding', { value:0, enumerable:false });
+  const nestedMember = { bits:16, bytes:4, byteOffset:0, padding:0 };
+  assert.equal(
+    canonicalAggregateLayout(aggregate({ members:[topMember], nestedMembers:[nestedMember] })),
+    null,
+    'non-enumerable own fields must not be silently omitted from descriptor equality',
+  );
+}
+
+{
+  const shared = {};
+  Object.defineProperty(shared, 'bits', { get() { throw new Error('accessor must never be invoked'); }, enumerable:true });
+  const topMember = { bytes:4, byteOffset:0, detail:shared };
+  const nestedMember = { bits:32, bytes:4, byteOffset:0, detail:shared };
+  assert.doesNotThrow(() => {
+    assert.equal(
+      canonicalAggregateLayout(aggregate({ members:[topMember], nestedMembers:[nestedMember] })),
+      null,
+      'a shared reference must traverse the fail-closed validation path, not the identity shortcut',
+    );
+  });
+}
+
 console.log('issue #5550 aggregate layout semantic descriptor equality regression: ok');

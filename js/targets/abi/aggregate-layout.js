@@ -96,8 +96,11 @@ function enumerableDataDescriptors(value) {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return null;
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors).filter((key) => descriptors[key].enumerable);
-  if (keys.some((key) => typeof key !== 'string')) return null;
+  const keys = Reflect.ownKeys(descriptors).filter((key) => typeof key === 'string' && descriptors[key].enumerable);
+  const hiddenKeys = Reflect.ownKeys(descriptors).filter((key) => typeof key !== 'string'
+    || !descriptors[key].enumerable
+    || (Object.hasOwn(descriptors[key], 'get') || Object.hasOwn(descriptors[key], 'set')));
+  if (hiddenKeys.length > 0) return null;
   if (keys.some((key) => !Object.hasOwn(descriptors[key], 'value'))) return null;
   return { descriptors, keys:keys.sort() };
 }
@@ -107,7 +110,13 @@ function enumerableArrayDataDescriptors(value) {
   const lengthDescriptor = descriptors.length;
   if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
     || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null;
-  const keys = Reflect.ownKeys(descriptors).filter((key) => descriptors[key].enumerable);
+  const keys = Reflect.ownKeys(descriptors).filter((key) => typeof key === 'string' && descriptors[key].enumerable);
+  const hiddenKeys = Reflect.ownKeys(descriptors).filter((key) => key !== 'length'
+    && (typeof key !== 'string'
+      || !descriptors[key].enumerable
+      || Object.hasOwn(descriptors[key], 'get')
+      || Object.hasOwn(descriptors[key], 'set')));
+  if (hiddenKeys.length > 0) return null;
   if (keys.length !== lengthDescriptor.value) return null;
   for (let index = 0; index < lengthDescriptor.value; index += 1) {
     const key = String(index);
@@ -117,7 +126,7 @@ function enumerableArrayDataDescriptors(value) {
 }
 
 function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRight = new WeakSet()) {
-  if (Object.is(left, right)) return true;
+  if (Object.is(left, right) && (left == null || typeof left !== 'object')) return true;
   if (left == null || right == null || typeof left !== typeof right) return false;
   if (typeof left !== 'object') return false;
   let leftArray;
