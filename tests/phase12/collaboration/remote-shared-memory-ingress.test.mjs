@@ -37,12 +37,18 @@ if (typeof SharedArrayBuffer !== 'undefined') {
   const dataView = new DataView(dvSab);
   const dvEnv = envelope(dataView, 3, 'sab-dataview');
   assert.equal(gate().validate(dvEnv).reason, 'remote-envelope-shape-invalid');
+
+  const mapEnv = envelope(new Map([['bytes', new Uint8Array(new SharedArrayBuffer(1))]]), 4, 'sab-map');
+  assert.equal(gate().validate(mapEnv).reason, 'remote-envelope-shape-invalid');
+
+  const setEnv = envelope(new Set([new Uint8Array(new SharedArrayBuffer(1))]), 5, 'sab-set');
+  assert.equal(gate().validate(setEnv).reason, 'remote-envelope-shape-invalid');
 }
 
 // Private non-shared bytes remain accepted.
 const privateBytes = new Uint8Array(new ArrayBuffer(2));
 privateBytes.set([7, 9]);
-const clean = envelope(privateBytes, 4, 'arraybuffer-view');
+const clean = envelope(privateBytes, 6, 'arraybuffer-view');
 const cleanGate = gate();
 assert.equal(cleanGate.validate(clean).ok, true);
 const cleanSnap = cleanGate.validatedSnapshot(clean);
