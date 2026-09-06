@@ -4,6 +4,8 @@ const KIND_CAPABILITY = Object.freeze({
   rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
   'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
 });
+const NOTE_BACKED_KINDS = new Set(['rename', 'comment', 'type', 'struct-field']);
+const NOTE_READY_TIMEOUT_MS = 10_000;
 
 export class ProposalExecutor {
   constructor({ store, capabilityExecutor, app } = {}) {
@@ -13,7 +15,8 @@ export class ProposalExecutor {
   async approveAndApply(id) {
     if (!this.store) throw new AIError('tool_failed', 'No proposal store is available.');
     const { proposal, approvalToken } = this.store.approve(id);
-    const currentState = await this.currentState(proposal);
+    const executionProposal = typeof this.store.executionView === 'function' ? this.store.executionView(id) : proposal;
+    const currentState = await this.currentState(executionProposal);
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
@@ -30,6 +33,7 @@ export class ProposalExecutor {
   }
 
   async currentState(proposal) {
+    if (NOTE_BACKED_KINDS.has(proposal.kind)) await awaitNoteStoreReady(this.app);
     const target = targetObject(proposal.target);
     const address = target.address == null ? null : BigInt(target.address);
     switch (proposal.kind) {
@@ -55,6 +59,35 @@ export class ProposalExecutor {
     const live = await this.currentState({ ...proposal, before: proposal.after });
     if (!containsValue(live, proposal.after)) throw new AIError('tool_failed', `Postcondition verification failed for ${proposal.kind}.`);
   }
+}
+
+async function awaitNoteStoreReady(app) {
+  if (!app || app.notes?.id) return app?.notes;
+  const controller = app.noteAttachController;
+  const doc = globalThis.document;
+  if (!controller?.signal || typeof doc?.addEventListener !== 'function') return app.notes;
+  if (controller.signal.aborted) throw new AIError('tool_failed', 'Annotation store binding was replaced before the proposal could be applied.');
+
+  await new Promise((resolve, reject) => {
+    let timer = null;
+    const cleanup = () => {
+      doc.removeEventListener('hex:notes-attached', onAttached);
+      controller.signal.removeEventListener('abort', onAbort);
+      if (timer != null) clearTimeout(timer);
+    };
+    const succeed = () => { cleanup(); resolve(); };
+    const fail = (message) => { cleanup(); reject(new AIError('tool_failed', message)); };
+    const onAttached = () => {
+      if (app.noteAttachController === controller && app.notes?.id) succeed();
+    };
+    const onAbort = () => fail('Annotation store binding changed before the proposal could be applied.');
+
+    doc.addEventListener('hex:notes-attached', onAttached);
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    if (app.notes?.id) return succeed();
+    timer = setTimeout(() => fail('Annotation store binding did not become ready before the proposal could be applied.'), NOTE_READY_TIMEOUT_MS);
+  });
+  return app.notes;
 }
 
 function proposalArguments(proposal) {

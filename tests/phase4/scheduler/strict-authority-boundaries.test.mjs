@@ -46,4 +46,34 @@ async function waitFor(predicate, message) {
   await Promise.resolve();
 }
 
+// #3336: public scheduler lookups must not coerce structured IDs into the ID
+// of a real task. String "abc" keeps its normal lifecycle authority; ["abc"]
+// fails before it can read or cancel that task.
+{
+  const store={
+    get:async()=>({status:'miss'}),
+    publish:async()=>({status:'stored'}),
+  };
+  const s=new AnalysisScheduler({store,maxConcurrency:1});
+  let producerStarted=false;
+  const p=s.request({
+    descriptor:{artifactId:'abc',upstreamArtifactIds:[]},
+    produce:({signal})=>new Promise((resolve,reject)=>{
+      producerStarted=true;
+      signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+    }),
+  });
+  await waitFor(()=>producerStarted,'abc producer did not start');
+
+  assert.equal(s.state('abc'),'running');
+  assert.deepEqual(s.dependencyIds('abc'),[]);
+  assert.throws(()=>s.cancel(['abc']),/artifact-id-required/);
+  assert.throws(()=>s.state(['abc']),/artifact-id-required/);
+  assert.throws(()=>s.dependencyIds(['abc']),/artifact-id-required/);
+  assert.equal(s.state('abc'),'running','structured lookup must not affect the real task');
+
+  assert.equal(s.cancel('abc'),true,'canonical string ID keeps cancellation authority');
+  await assert.rejects(p,(error)=>error?.name==='AbortError');
+}
+
 console.log('phase4 scheduler strict authority boundaries: PASS');

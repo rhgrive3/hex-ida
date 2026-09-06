@@ -17,6 +17,8 @@
    No storage, no model call, no embedding, no summarizer.
 */
 
+import { createAnalysisScopeRequest } from '../run/analysis-scope.js';
+
 export const DEV_CONTEXT_PACKET_SCHEMA = 'hex-dev-context-packet/v1';
 export const DEV_WORKER_RESULT_SCHEMA = 'hex-dev-worker-result/v1';
 
@@ -54,7 +56,7 @@ export function createDevContextPacket(input = {}) {
     role: text(input.role, MAX_SHORT) || null,
     objective,
     successCriteria: list(input.successCriteria, (value) => text(value, MAX_TEXT)),
-    scope: text(input.scope, MAX_TEXT) || null,
+    scope: normalizeScope(input.scope),
     constraints: list(input.constraints, (value) => text(value, MAX_TEXT)),
     authoritativeFacts: list(input.authoritativeFacts, authoritativeFact),
     dependencyResults: list(input.dependencyResults, dependencyResult),
@@ -64,6 +66,7 @@ export function createDevContextPacket(input = {}) {
     requiredEvidence: list(input.requiredEvidence, (value) => text(value, MAX_TEXT)),
     forbiddenActions: list(input.forbiddenActions, (value) => text(value, MAX_TEXT)),
     stopConditions: list(input.stopConditions, (value) => text(value, MAX_TEXT)),
+    contextDelta: list(input.contextDelta, contextDeltaEntry),
     budget: budget(input.budget),
   });
 }
@@ -107,7 +110,8 @@ export function createDevWorkerResult(input = {}) {
 export function devTerminalReasonFrom({ runtimeReason = null, workerState = null } = {}) {
   const owned = terminalReason(runtimeReason);
   if (owned) return owned;
-  const state = String(workerState || '').toUpperCase();
+  if (typeof workerState !== 'string') return null;
+  const state = workerState.trim().toUpperCase();
   if (state === 'COMPLETED') return DEV_TERMINAL_REASON.COMPLETED;
   if (state === 'CANCELLED') return DEV_TERMINAL_REASON.CANCELLED;
   if (state === 'FAILED') return DEV_TERMINAL_REASON.WORKER_ERROR;
@@ -123,11 +127,11 @@ function authoritativeFact(value) {
     statement,
     // Provenance is part of the fact. A fact whose source or freshness is
     // unknown must stay visibly unknown, never quietly authoritative.
-    source: text(value.source, MAX_SHORT) || null,
-    authority: text(value.authority, MAX_SHORT) || null,
+    source: identityString(value.source, MAX_SHORT),
+    authority: identityString(value.authority, MAX_SHORT),
     observedAt: timestamp(value.observedAt),
-    supersedes: list(value.supersedes, (item) => text(item, MAX_SHORT)),
-    conflictsWith: list(value.conflictsWith, (item) => text(item, MAX_SHORT)),
+    supersedes: list(value.supersedes, (item) => requiredIdentityString(item, MAX_SHORT)),
+    conflictsWith: list(value.conflictsWith, (item) => requiredIdentityString(item, MAX_SHORT)),
   };
 }
 
@@ -184,15 +188,32 @@ function contextDeltaEntry(value) {
     const statement = text(value, MAX_TEXT);
     return statement ? { statement, source: null, observedAt: null, authority: 'worker-reported-evidence' } : null;
   }
+  return observedFact(value);
+}
+
+function observedFact(value) {
   if (!plainRecord(value)) return null;
-  const statement = text(value.statement ?? value.fact ?? value.note, MAX_TEXT);
+  const statement = text(value.statement ?? value.fact, MAX_TEXT);
   if (!statement) return null;
   return {
     statement,
-    source: text(value.source, MAX_SHORT) || null,
+    source: identityString(value.source, MAX_SHORT),
     observedAt: timestamp(value.observedAt),
     authority: 'worker-reported-evidence',
   };
+}
+
+function identityString(value, max = MAX_SHORT) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
+}
+
+function requiredIdentityString(value, max = MAX_SHORT) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
 }
 
 function errorRecord(value) {
@@ -214,7 +235,8 @@ function budget(value) {
 }
 
 function terminalReason(value) {
-  const reason = String(value ?? '').trim();
+  if (typeof value !== 'string') return null;
+  const reason = value.trim();
   return DEV_TERMINAL_REASONS.includes(reason) ? reason : null;
 }
 function timestamp(value) {
@@ -227,6 +249,19 @@ function positiveInteger(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.floor(number);
+}
+function normalizeScope(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const normalized = value.trim().slice(0, MAX_TEXT);
+    return normalized || null;
+  }
+  if (!plainRecord(value)) {
+    throw new TypeError('ContextPacket scope must be a string or an analysis scope object.');
+  }
+  // Reuse the authoritative run contract so protocol normalization cannot drift
+  // or grant schema-invalid child values authority through String coercion.
+  return { ...createAnalysisScopeRequest(value) };
 }
 function text(value, max) {
   if (value == null) return '';

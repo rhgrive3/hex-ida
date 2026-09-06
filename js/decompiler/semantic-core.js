@@ -63,6 +63,21 @@ function sourceForInst(inst, reason = null) {
   });
 }
 
+/*
+ * A `memory-forward` MOV carries the canonical MemorySSA exact stack-operand
+ * proof attached by the v2→v1 projection: its single argument is the exact
+ * stored operand identity of the load it replaced. Such a move stands in for
+ * the original LOAD, so provenance treats it like that load and its argument
+ * like the load's reaching store — an exact identity, not a computed value.
+ */
+export function isExactOperandForwardMove(def) {
+  if (def?.sub !== 'memory-forward' || def?.extra?.originalMemoryOp !== OP.LOAD) return false;
+  const proof = def.extra?.memoryOperandForwarding;
+  return proof?.status === 'exact' && proof?.exact === true
+    && proof?.proofKind === 'canonical-memoryssa-direct-stack-operand-identity'
+    && Array.isArray(def.args) && def.args.length === 1;
+}
+
 function dependencySource(value, ctx, seen = new Set(), depth = 0) {
   if (!value || depth > MAX_EXPR_DEPTH || seen.has(value.id)) return sourceOf();
   seen.add(value.id);
@@ -81,6 +96,10 @@ function dependencySource(value, ctx, seen = new Set(), depth = 0) {
       parts.push(dependencySource(d.addr?.base, ctx, seen, depth + 1));
       parts.push(dependencySource(d.addr?.index, ctx, seen, depth + 1));
     }
+  } else if (isExactOperandForwardMove(d)) {
+    // The forwarded operand is the exact stored identity behind the replaced
+    // fixed-stack load. Provenance stops here exactly like the stack-load
+    // boundary above: the spill/reload plumbing is not source provenance.
   } else {
     for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, seen, depth + 1));
   }

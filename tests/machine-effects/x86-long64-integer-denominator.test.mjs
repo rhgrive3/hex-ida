@@ -157,6 +157,10 @@ test('implicit multiply/divide/sign-extension, flags, count masks and divide fau
       assert.equal(fault.condition.anyOf[1].signed,signed);
       assert.equal(flagWrites(bundle).length,6);
       assert.ok(flagWrites(bundle).every((operation) => operation.metadata.definedness === 'undefined'));
+      const undefinedFlagSources = bundle.operations.filter((operation) => operation.kind === 'intrinsic' && operation.intrinsicId.startsWith('x86.flag.undefined.'));
+      assert.equal(undefinedFlagSources.length,6);
+      assert.ok(undefinedFlagSources.every((operation) => operation.undefinedResult?.class === 'fully'
+        && operation.undefinedResult.widthBits === 1 && operation.undefinedResult.mask === '0x1'));
     }
 
     const cqo = effect(session,[0x48,0x99],'implicit:cqo');

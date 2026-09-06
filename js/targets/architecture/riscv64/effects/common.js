@@ -35,9 +35,19 @@ export function createRiscv64EffectContext(decoded, context = {}) {
   const instructionId = String(instruction.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('riscv64-effects-instruction-id-required');
   const mode = String(instruction.mode || RISCV64_MODE);
-  const instructionAlignment = Number(context.instructionAlignment ?? instruction.instructionAlignment ?? RISCV64_INSTRUCTION_ALIGNMENT);
-  if (!Number.isSafeInteger(instructionAlignment) || instructionAlignment < 2 || (instructionAlignment & (instructionAlignment - 1)) !== 0) {
+  const instructionAlignment = instruction.instructionAlignment;
+  if (!Number.isSafeInteger(instructionAlignment) || ![2, 4].includes(instructionAlignment)) {
     throw new TypeError('riscv64-invalid-instruction-alignment');
+  }
+  if (context.instructionAlignment != null) {
+    const requestedAlignment = context.instructionAlignment;
+    if (
+      typeof requestedAlignment !== 'number'
+      || !Number.isSafeInteger(requestedAlignment)
+      || requestedAlignment !== instructionAlignment
+    ) {
+      throw new TypeError('riscv64-effect-context-instruction-alignment-mismatch');
+    }
   }
   const options = context.machineEffectsOptions ?? context.options ?? {};
   const fields = instruction.fields;
