@@ -4,9 +4,14 @@ import { readFile } from 'node:fs/promises';
 await import('../../../js/targets/architecture/x86_64/capstone-structured.js');
 const { liftX86MachineEffects } = await import('../../../js/targets/architecture/x86_64/effects/index.js');
 const { x86SemanticFunctionRequiresDecoderRevalidation } = await import('../../../js/targets/architecture/x86_64/semantic-function.js');
+const {
+  hasReceiverRevalidatedX86Row,
+  markReceiverRevalidatedX86Row,
+} = await import('../../../js/targets/architecture/x86_64/runtime-provenance.js');
 
 const adapter = globalThis.HexX86CapstoneStructured;
-assert.equal(typeof adapter?.hasRuntimeProvenance, 'function');
+assert.equal(typeof adapter?.parseInstruction, 'function');
+assert.equal('hasRuntimeProvenance' in adapter, false, 'public parser must expose no authority-mint/probe API');
 assert.deepEqual(
   Object.getOwnPropertyDescriptor(globalThis, 'HexX86CapstoneStructured'),
   {
@@ -15,7 +20,7 @@ assert.deepEqual(
     enumerable:true,
     configurable:false,
   },
-  'decoder authority binding must be non-substitutable',
+  'structured parser binding itself remains non-substitutable',
 );
 
 function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90, origin = null } = {}) {
@@ -44,35 +49,39 @@ const origin = Object.freeze({
   byteRanges:Object.freeze([{ binaryId:'binary:issue-5082', start:0n, length:1 }]),
   virtualRanges:Object.freeze([{ sliceId:'slice:0', start:0n, length:1 }]),
 });
-const deployedRow = fakeCapstoneRow({ opcodeName:'mov', origin });
-assert.equal(adapter.hasRuntimeProvenance(deployedRow), true, 'adapter-issued rows carry runtime identity');
-assert.deepEqual(deployedRow.origin, origin, 'canonical re-decode must preserve Backend origin evidence');
-assert.equal(adapter.hasRuntimeProvenance({ ...deployedRow }), false, 'copying fields must not copy decoder authority');
-assert.equal(adapter.hasRuntimeProvenance(new Proxy(deployedRow, {})), false, 'wrapping must not copy decoder authority');
-assert.equal(adapter.hasRuntimeProvenance({ decoderSemanticVersion:'capstone-5-x86-structured-v2' }), false);
-assert.equal(
-  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[deployedRow] }),
-  false,
-  'same-realm canonical decoder rows need no transport revalidation',
+
+// The exact counterexample from the review: public parseInstruction() remains a
+// useful structured parser, but fake/caller-controlled M can never mint the
+// receiver-only terminal authority, even if it claims MOV for NOP bytes.
+const fakeParsedMov = fakeCapstoneRow({ opcodeName:'mov', byte:0x90, origin });
+assert.deepEqual(fakeParsedMov.origin, origin);
+assert.equal(hasReceiverRevalidatedX86Row(fakeParsedMov), false);
+assert.throws(
+  () => markReceiverRevalidatedX86Row(fakeParsedMov),
+  /x86-decoder-runtime-provenance-mint-outside-revalidation-worker/,
+  'page/Node/public code cannot mint receiver decoder authority',
 );
+assert.equal(
+  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[fakeParsedMov] }),
+  true,
+  'even parser-produced rows require receiver byte revalidation after transport',
+);
+const fakeParsedResult = liftX86MachineEffects(fakeParsedMov, { instructionId:'issue-5082:fake-parser' });
+assert.equal(fakeParsedResult?.completeness, 'partial', 'fake-M parser row must not reach terminal exactness');
+assert.notEqual(fakeParsedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
-const deployedResult = liftX86MachineEffects(deployedRow, { instructionId:'issue-5082:deployed' });
-assert.equal(deployedResult?.completeness, 'exact-with-intrinsic', 'adapter-issued rows keep terminal exactness');
-assert.equal(deployedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
-
-const transportedRow = structuredClone(deployedRow);
-assert.equal(adapter.hasRuntimeProvenance(transportedRow), false, 'structured clone must not preserve WeakSet authority');
-assert.deepEqual(transportedRow.origin, origin, 'transported row retains source origin for decoder revalidation');
+const transportedRow = structuredClone(fakeParsedMov);
+assert.equal(hasReceiverRevalidatedX86Row(transportedRow), false);
+assert.deepEqual(transportedRow.origin, origin, 'transport preserves source origin but never receiver authority');
 assert.equal(
   x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[transportedRow] }),
   true,
-  'the production structured-clone boundary must route through canonical decoder revalidation',
 );
 const transportedResult = liftX86MachineEffects(transportedRow, { instructionId:'issue-5082:transported' });
-assert.equal(transportedResult?.completeness, 'partial', 'copy-only rows cannot mint exactness without receiver revalidation');
+assert.equal(transportedResult?.completeness, 'partial');
 assert.notEqual(transportedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
-const transportedGapRow = structuredClone(deployedRow);
+const transportedGapRow = structuredClone(fakeParsedMov);
 transportedGapRow.address = 0x100n;
 assert.equal(
   x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[transportedRow, transportedGapRow] }),
@@ -105,42 +114,49 @@ assert.equal(
   'manual structured rows must route to independent byte re-decode in the platform worker realm',
 );
 
-const replacement = Object.freeze({
-  ABI:adapter.ABI,
-  hasRuntimeProvenance:() => true,
-});
+const replacement = Object.freeze({ ABI:adapter.ABI, parseInstruction:() => forged });
 assert.throws(
   () => { globalThis.HexX86CapstoneStructured = replacement; },
   TypeError,
   'same-realm replacement must fail closed',
 );
-assert.equal(globalThis.HexX86CapstoneStructured, adapter, 'failed replacement must leave canonical adapter installed');
+assert.equal(globalThis.HexX86CapstoneStructured, adapter);
 
-const result = liftX86MachineEffects(forged);
-assert.equal(result?.completeness, 'partial', 'forged NOP/MOV record must remain fail-closed');
-assert.notEqual(result?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
-
-const stringOnly = liftX86MachineEffects({ ...forged, instructionId:'issue-5082:string-only' });
-assert.equal(stringOnly?.completeness, 'partial');
-assert.notEqual(stringOnly?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
+const forgedResult = liftX86MachineEffects(forged);
+assert.equal(forgedResult?.completeness, 'partial', 'forged NOP/MOV record must remain fail-closed');
+assert.notEqual(forgedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
 const semanticEntrySource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-function.js', import.meta.url), 'utf8');
 const revalidationWorkerSource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-revalidation-worker.js', import.meta.url), 'utf8');
+const structuredParserSource = await readFile(new URL('../../../js/targets/architecture/x86_64/capstone-structured.js', import.meta.url), 'utf8');
+const provenanceSource = await readFile(new URL('../../../js/targets/architecture/x86_64/runtime-provenance.js', import.meta.url), 'utf8');
+
 assert.match(semanticEntrySource, /new Worker\(new URL\('\.\/semantic-revalidation-worker\.js'/,
-  'platform semantic entry must route unbranded transported x86 rows to the canonical revalidation worker');
+  'platform semantic entry must route transported x86 rows to the canonical revalidation worker');
+assert.match(semanticEntrySource, /hasReceiverRevalidatedX86Row/,
+  'only the receiver-private WeakSet may bypass a second revalidation');
 assert.match(semanticEntrySource, /addEventListener\?\.\('abort', abort, \{ once:true \}\);\s*if \(signal\?\.aborted\)/,
   'revalidation cancellation must close the check-to-listener registration race');
-assert.match(revalidationWorkerSource, /HexX86CapstoneStructured\.parseInstruction/,
-  'receiver-side proof must be rebuilt by the deployed canonical Capstone adapter');
-assert.match(revalidationWorkerSource, /decoderSemanticVersion:'capstone-5-x86-structured-v2'/,
-  'receiver must replace caller-supplied decoder version authority after byte re-decode');
-assert.doesNotMatch(revalidationWorkerSource, /decoder-revalidation-noncontiguous/,
-  'receiver revalidation must not invent a whole-function contiguity requirement');
-assert.match(revalidationWorkerSource, /for \(const expected of serialized\.rows\)/,
-  'transported instructions must be independently re-decoded so CFG address gaps remain valid');
+
+assert.doesNotMatch(structuredParserSource, /RUNTIME_PROVENANCE|publishDecodedRow|hasRuntimeProvenance/,
+  'public structured parser must contain no terminal-authority mint path');
+assert.match(provenanceSource, /REVALIDATION_WORKER_PATH = '\/js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
+assert.match(provenanceSource, /pathname\.endsWith\(REVALIDATION_WORKER_PATH\)/,
+  'authority minting is restricted to the deployed receiver worker URL realm');
+
+const initAt = revalidationWorkerSource.indexOf('const M = await MCapstone(');
+const verifyAt = revalidationWorkerSource.indexOf('HexX86CapstoneStructured.verifyVersion(M)');
+const disasmAt = revalidationWorkerSource.indexOf("M.ccall('cs_disasm'");
+const parseAt = revalidationWorkerSource.indexOf('HexX86CapstoneStructured.parseInstruction(M, handle, base');
+const byteProofAt = revalidationWorkerSource.indexOf('if (!sameBytes(decoded.rawBytes, expected.bytes))');
+const mintAt = revalidationWorkerSource.indexOf('markReceiverRevalidatedX86Row(decoded)');
+assert.ok(initAt >= 0 && verifyAt > initAt && disasmAt > verifyAt && parseAt > disasmAt && byteProofAt > parseAt && mintAt > byteProofAt,
+  'positive authority path must be real MCapstone init -> version proof -> decode -> exact byte proof -> private mint');
 assert.match(revalidationWorkerSource, /expected\.bytes\.length, expected\.address, 1, outputPointer/,
-  'each transported row must be re-decoded from exactly its own bytes and address');
+  'each transported row is independently re-decoded from exactly its own bytes/address');
+assert.doesNotMatch(revalidationWorkerSource, /decoder-revalidation-noncontiguous/,
+  'receiver revalidation must not invent whole-function contiguity');
 assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length/,
-  'receiver revalidation must reject decode-count incompleteness');
+  'receiver revalidation rejects decode-count incompleteness');
 
 console.log('issue-5082 x86 decoder provenance regression: PASS');
