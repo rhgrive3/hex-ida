@@ -35,11 +35,17 @@ function exactIntegerConstant(valuesById, nodesById, valueId) {
   if (value.definitionNodeId != null && definitionNodeId == null) return null;
   const node = definitionNodeId == null ? null : nodesById.get(definitionNodeId);
   if (!node || node.kind !== 'const') return null;
+  let exact = null;
   for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
     const integer = parseInteger(candidate);
-    if (integer != null) return integer;
+    if (integer == null) continue;
+    if (exact == null) {
+      exact = integer;
+      continue;
+    }
+    if (integer !== exact) return null;
   }
-  return null;
+  return exact;
 }
 
 /**
