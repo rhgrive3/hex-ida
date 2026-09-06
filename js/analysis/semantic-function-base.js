@@ -47,7 +47,13 @@ function frozenAbiRecord(value, seen = new WeakMap()) {
   return Object.freeze(copy);
 }
 
-function optionalIdentity(value) { return value == null ? null : String(value); }
+function optionalIdentity(value, label) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`semantic-function-abi-${label}-invalid`);
+  }
+  return value;
+}
 
 function abiEvidenceState(options = {}, call = null, adapter = null) {
   const optionState = abiResultInvalidState(options);
@@ -347,12 +353,12 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
     registryDigest,
     registryGeneration,
     schemaVersion:schemaVersion == null ? null : String(schemaVersion),
-    snapshotId:snapshotId == null ? null : String(snapshotId),
-    analyzerId:analyzerId == null ? null : String(analyzerId),
-    analyzerVersion:analyzerVersion == null ? null : String(analyzerVersion),
-    binaryId:optionalIdentity(binaryId),
-    sliceId:optionalIdentity(sliceId),
-    functionId:optionalIdentity(functionId),
+    snapshotId:optionalIdentity(snapshotId, 'snapshot-id'),
+    analyzerId:optionalIdentity(analyzerId, 'analyzer-id'),
+    analyzerVersion:optionalIdentity(analyzerVersion, 'analyzer-version'),
+    binaryId:optionalIdentity(binaryId, 'binary-id'),
+    sliceId:optionalIdentity(sliceId, 'slice-id'),
+    functionId:optionalIdentity(functionId, 'function-id'),
     architectureProfile,
   });
   const provenance = Object.freeze({
