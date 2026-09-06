@@ -122,6 +122,18 @@ function createPclntab12() {
   return buf;
 }
 
+function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } = {}) {
+  const buf = new Uint8Array(16);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, 0xfffffffb, little);
+  buf[4] = pad1;
+  buf[5] = pad2;
+  buf[6] = minLC;
+  buf[7] = 8;
+  dv.setBigUint64(8, 1n, little);
+  return buf;
+}
+
 // 1. Positive: Go 1.20+ valid pclntab
 {
   const buf = createPclntab120({
@@ -214,6 +226,57 @@ function createPclntab12() {
   assert.equal(unsafeHeader.valid, false);
   assert.equal(unsafeHeader.reason, 'invalid-table-offset');
   assert.equal(unsafeHeader.offsetName, 'funcnametabOff');
+}
+
+// #3706: official pclntab header discriminants are authority-bearing.
+{
+  for (const minLC of [1, 2, 4]) {
+    const buf = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+    buf[6] = minLC;
+    const header = parsePclntabHeader(buf);
+    assert.equal(header.valid, true, `pc quantum ${minLC} is accepted`);
+    assert.equal(header.minLC, minLC);
+  }
+
+  for (const minLC of [0, 3, 5]) {
+    const buf = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+    buf[6] = minLC;
+    const header = parsePclntabHeader(buf);
+    assert.equal(header.valid, false, `pc quantum ${minLC} is rejected`);
+    assert.equal(header.reason, 'invalid-pc-quantum');
+    assert.equal(header.minLC, minLC);
+  }
+
+  for (const paddingOffset of [4, 5]) {
+    const buf = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+    buf[paddingOffset] = 1;
+    const header = parsePclntabHeader(buf);
+    assert.equal(header.valid, false, `non-zero reserved byte ${paddingOffset} is rejected`);
+    assert.equal(header.reason, 'invalid-header-padding');
+  }
+
+  const littleHeader = parsePclntabHeader(createPclntab12Header({ little: true, minLC: 2 }));
+  assert.equal(littleHeader.valid, true);
+  assert.equal(littleHeader.little, true);
+  assert.equal(littleHeader.version, '1.2');
+
+  const bigHeader = parsePclntabHeader(createPclntab12Header({ little: false, minLC: 4 }));
+  assert.equal(bigHeader.valid, true);
+  assert.equal(bigHeader.little, false);
+  assert.equal(bigHeader.version, '1.2');
+
+  const malformed = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+  malformed[4] = 0xff;
+  const provider = new GoMetadataProvider({
+    pclntabBuffer: malformed,
+    binaryIdentity: 'sha256:malformed-go-header',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.authoritative, false);
+  assert.equal(probe.identity.verdict, 'malformed');
+  assert.equal(probe.completeness.complete, false);
+  assert.deepEqual(probe.completeness.reasons, ['invalid-header-padding']);
+  assert.equal(provider.symbols().records.length, 0, 'malformed header must not reach function parsing');
 }
 
 // #3432: maxRecords is coverage authority and must remain a typed, non-negative

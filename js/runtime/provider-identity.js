@@ -120,7 +120,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
     pathHint: optionalText(input.pathHint ?? input.path ?? input.name),
     binaryId,
     sliceId,
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     buildIdentity: input.buildIdentity == null ? null : ownedClone(input.buildIdentity),
     loadedSequence: safeSequence(input.loadedSequence, 'loadedSequence'),
     unloadedSequence: safeSequence(input.unloadedSequence, 'unloadedSequence'),
@@ -235,8 +235,14 @@ export class RuntimeModuleBindingTable {
       });
     }
 
-    if (targetSliceId && binding.sliceId && targetSliceId !== binding.sliceId) {
-      return createRuntimeAddressResolution({ ...binding, runtimeAddress: address, state: 'mismatch', method: 'slice-id-mismatch', evidenceIds: binding.identityEvidenceIds });
+    if (targetSliceId && binding.sliceId !== targetSliceId) {
+      return createRuntimeAddressResolution({
+        ...binding,
+        runtimeAddress: address,
+        state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+        method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
+        evidenceIds: binding.identityEvidenceIds,
+      });
     }
 
     if (!binding.binaryId || binding.staticBase == null || binding.identityState === 'unresolved') {
@@ -269,7 +275,7 @@ export function createRuntimeAddressResolution(input = {}) {
     runtimeAddress,
     binaryId: optionalIdentity(input.binaryId, 'binaryId'),
     sliceId: optionalIdentity(input.sliceId, 'sliceId'),
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     staticAddress,
     targetEntityIds: freezeEntityIds(input.targetEntityIds),
     state,

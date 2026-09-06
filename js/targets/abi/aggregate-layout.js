@@ -92,12 +92,91 @@ export function aggregateLayoutDescriptorPresent(parameter) {
   return [parameter, ...nestedLayouts].some(hasPhysicalField);
 }
 
-function sameDescriptorValue(left, right) {
-  if (Object.is(left, right)) return true;
+function enumerableDataDescriptors(value) {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).filter((key) => typeof key === 'string' && descriptors[key].enumerable);
+  const hiddenKeys = Reflect.ownKeys(descriptors).filter((key) => typeof key !== 'string'
+    || !descriptors[key].enumerable
+    || (Object.hasOwn(descriptors[key], 'get') || Object.hasOwn(descriptors[key], 'set')));
+  if (hiddenKeys.length > 0) return null;
+  if (keys.some((key) => !Object.hasOwn(descriptors[key], 'value'))) return null;
+  return { descriptors, keys:keys.sort() };
+}
+
+function enumerableArrayDataDescriptors(value) {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthDescriptor = descriptors.length;
+  if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null;
+  const keys = Reflect.ownKeys(descriptors).filter((key) => typeof key === 'string' && descriptors[key].enumerable);
+  const hiddenKeys = Reflect.ownKeys(descriptors).filter((key) => key !== 'length'
+    && (typeof key !== 'string'
+      || !descriptors[key].enumerable
+      || Object.hasOwn(descriptors[key], 'get')
+      || Object.hasOwn(descriptors[key], 'set')));
+  if (hiddenKeys.length > 0) return null;
+  if (keys.length !== lengthDescriptor.value) return null;
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const key = String(index);
+    if (keys[index] !== key || !Object.hasOwn(descriptors[key], 'value')) return null;
+  }
+  return { descriptors, length:lengthDescriptor.value };
+}
+
+function sameDescriptorValue(left, right, activeLeft = new WeakSet(), activeRight = new WeakSet()) {
+  if (Object.is(left, right) && (left == null || typeof left !== 'object')) return true;
   if (left == null || right == null || typeof left !== typeof right) return false;
-  if (typeof left !== 'object') return String(left) === String(right);
-  try { return JSON.stringify(left) === JSON.stringify(right); }
-  catch { return false; }
+  if (typeof left !== 'object') return false;
+  let leftArray;
+  let rightArray;
+  try {
+    leftArray = Array.isArray(left);
+    rightArray = Array.isArray(right);
+  } catch {
+    return false;
+  }
+  if (leftArray !== rightArray) return false;
+  if (activeLeft.has(left) || activeRight.has(right)) return false;
+  activeLeft.add(left);
+  activeRight.add(right);
+  try {
+    if (leftArray) {
+      const leftData = enumerableArrayDataDescriptors(left);
+      const rightData = enumerableArrayDataDescriptors(right);
+      if (!leftData || !rightData || leftData.length !== rightData.length) return false;
+      for (let index = 0; index < leftData.length; index += 1) {
+        const key = String(index);
+        if (!sameDescriptorValue(
+          leftData.descriptors[key].value,
+          rightData.descriptors[key].value,
+          activeLeft,
+          activeRight,
+        )) return false;
+      }
+      return true;
+    }
+    const leftData = enumerableDataDescriptors(left);
+    const rightData = enumerableDataDescriptors(right);
+    if (!leftData || !rightData || leftData.keys.length !== rightData.keys.length) return false;
+    for (let index = 0; index < leftData.keys.length; index += 1) {
+      const key = leftData.keys[index];
+      if (key !== rightData.keys[index]
+        || !sameDescriptorValue(
+          leftData.descriptors[key].value,
+          rightData.descriptors[key].value,
+          activeLeft,
+          activeRight,
+        )) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    activeLeft.delete(left);
+    activeRight.delete(right);
+  }
 }
 
 /*
