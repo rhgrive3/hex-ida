@@ -89,7 +89,7 @@ function logicalImmediateEncodable(op, widthBits) {
 }
 
 function validExtendedSource(rhs, targetBits) {
-  if (!isGpOrZr(rhs)) return false;
+  if (!isGpOrZr(rhs) || (rhs.shift != null && rhs.extend != null)) return false;
   const modifier = rhs.shift || rhs.extend || null;
   if (modifier == null) return regBits(rhs) === targetBits;
   if (typeof modifier.op !== 'string') return false;
@@ -103,7 +103,7 @@ function validExtendedSource(rhs, targetBits) {
 }
 
 function validShiftedSource(rhs, targetBits) {
-  if (!isGpOrZr(rhs) || regBits(rhs) !== targetBits) return false;
+  if (!isGpOrZr(rhs) || regBits(rhs) !== targetBits || (rhs.shift != null && rhs.extend != null)) return false;
   const modifier = rhs.shift || rhs.extend || null;
   if (modifier == null) return true;
   if (typeof modifier.op !== 'string') return false;
