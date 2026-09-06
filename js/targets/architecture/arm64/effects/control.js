@@ -132,7 +132,7 @@ function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
 
 function branchTargetOperand(instruction, mnemonic) {
   const ops = instruction?.ops || [];
-  if (mnemonic === 'b' || mnemonic === 'bl' || /^b\./.test(mnemonic)) return ops.length === 1 ? ops[0] : null;
+  if (mnemonic === 'b' || mnemonic === 'bl' || /^(?:b|bc)\./.test(mnemonic)) return ops.length === 1 ? ops[0] : null;
   if (COMPARE_BRANCH.has(mnemonic)) return ops.length === 2 ? ops[1] : null;
   if (TEST_BRANCH.has(mnemonic)) return ops.length === 3 ? ops[2] : null;
   return null;
