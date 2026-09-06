@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { buildSelectorIndex, resolveSelectorStub } from '../js/apple/selector-stubs.js';
 import { FieldIndex } from '../js/fields.js';
-import { formatObjcMessage, objcMessage } from '../js/apple/objc-runtime.js';
+import { buildObjcRuntimeIndex, formatObjcMessage, objcMessage, resolveObjcDispatch } from '../js/apple/objc-runtime.js';
 import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '../js/rtti.js';
 import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
 import '../js/objc-stub-recovery.js';
@@ -224,6 +224,63 @@ import '../js/objc-stub-recovery.js';
   assert.deepEqual(unterminated, [], 'region-end without a NUL terminator must fail closed');
 
   console.log('✔ #3629 ObjC stub selector termination proof passed');
+}
+
+// --- Test 7: #4253 known-empty ObjC protocol context must not mean unrestricted ---
+{
+  const requirements = [
+    { name: 'P', methods: [{ sel: 'work', types: 'v@:' }] },
+    { name: 'Q', methods: [{ sel: 'work', types: 'v@:' }] },
+  ];
+
+  const knownEmpty = buildObjcRuntimeIndex({
+    classes: [{ name: 'PlainClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  const emptyResult = resolveObjcDispatch(knownEmpty, { receiverType: 'PlainClass', selector: 'work' });
+  assert.deepEqual(emptyResult.requirements, [], 'known protocols:[] must filter unrelated requirements to empty');
+  assert.equal(emptyResult.confidence, 0.1);
+  assert.equal(emptyResult.reason, 'selector implementation not present in parsed metadata');
+
+  const adopted = buildObjcRuntimeIndex({
+    classes: [{ name: 'ConformingClass', superName: null, protocols: ['P'], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  const adoptedResult = resolveObjcDispatch(adopted, { receiverType: 'ConformingClass', selector: 'work' });
+  assert.deepEqual(adoptedResult.requirements.map((x) => x.className), ['P'], 'known non-empty conformance must keep only adopted protocol requirements');
+
+  const explicitResult = resolveObjcDispatch(adopted, { receiverType: null, selector: 'work', protocols: ['Q'] });
+  assert.deepEqual(explicitResult.requirements.map((x) => x.className), ['Q'], 'explicit protocol context must remain authoritative');
+
+  const unknownReceiver = buildObjcRuntimeIndex({ classes: [], protocols: requirements, categories: [] });
+  assert.equal(resolveObjcDispatch(unknownReceiver, { selector: 'work' }).requirements.length, 2, 'truly unknown receiver/protocol context must preserve all requirements');
+
+  const legacyMissingConformance = buildObjcRuntimeIndex({
+    classes: [{ name: 'LegacyClass', superName: null, methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  assert.equal(resolveObjcDispatch(legacyMissingConformance, { receiverType: 'LegacyClass', selector: 'work' }).requirements.length, 2, 'missing protocols property must remain conservative for #3983 compatibility');
+
+  const partial = buildObjcRuntimeIndex({
+    classes: [{ name: 'PartialClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+    runtimeCompleteness: { classes: { complete: false }, categories: { complete: true } },
+  });
+  assert.equal(resolveObjcDispatch(partial, { receiverType: 'PartialClass', selector: 'work' }).requirements.length, 2, 'explicitly partial class metadata must not become negative protocol proof');
+
+  const partialProtocols = buildObjcRuntimeIndex({
+    classes: [{ name: 'PartialRegistryClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+    runtimeCompleteness: { classes: { complete: true }, protocols: { complete: false }, categories: { complete: true } },
+  });
+  assert.equal(resolveObjcDispatch(partialProtocols, { receiverType: 'PartialRegistryClass', selector: 'work' }).requirements.length, 2, 'incomplete protocol registry must not enable negative protocol filtering');
+
+  console.log('✔ #4253 known-empty ObjC protocol context passed');
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');
