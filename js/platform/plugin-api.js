@@ -23,10 +23,115 @@ function invocationFailure(registry, type, id, method, error) {
   return { ok: false, error: failure.error, isolated: true, timeout: false };
 }
 
+function createInvocationLease(context) {
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error('plugin invocation is no longer active');
+  };
+
+  const guardBudget = (budget) => {
+    if (!budget || (typeof budget !== 'object' && typeof budget !== 'function')) return budget;
+    return new Proxy(budget, {
+      get(target, property) {
+        assertActive();
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== 'function') return value;
+        return (...args) => {
+          assertActive();
+          const result = Reflect.apply(value, target, args);
+          return property === 'scope' ? guardBudget(result) : result;
+        };
+      },
+    });
+  };
+
+  const guarded = {
+    ...context,
+    resourceBudget: guardBudget(context?.resourceBudget),
+  };
+
+  if (typeof context?.read === 'function') {
+    guarded.read = async (...args) => {
+      assertActive();
+      const value = await context.read(...args);
+      assertActive();
+      return value;
+    };
+  }
+
+  if (typeof context?.reportProgress === 'function') {
+    guarded.reportProgress = (...args) => {
+      assertActive();
+      return context.reportProgress(...args);
+    };
+  }
+
+  return {
+    context: guarded,
+    revoke() { active = false; },
+  };
+}
+
 export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
   constructor(options = {}) {
     validateExplicitPositiveInteger(options?.timeoutMs, 'plugin timeoutMs');
     super(options);
+  }
+
+  #guardRegistration(type, id, register) {
+    const dispose = register();
+    const record = this.entries.get(type)?.get(id);
+    return () => {
+      if (record && this.entries.get(type)?.get(id) === record) dispose();
+    };
+  }
+
+  registerFormat(id, contribution) {
+    return this.#guardRegistration('format', id, () => super.registerFormat(id, contribution));
+  }
+
+  registerArchitecture(id, contribution) {
+    return this.#guardRegistration('architecture', id, () => super.registerArchitecture(id, contribution));
+  }
+
+  registerKnowledgeProvider(id, contribution) {
+    return this.#guardRegistration('knowledgeProvider', id, () => super.registerKnowledgeProvider(id, contribution));
+  }
+
+  registerSignatureProvider(id, contribution) {
+    return this.#guardRegistration('signatureProvider', id, () => super.registerSignatureProvider(id, contribution));
+  }
+
+  registerRecognitionProvider(id, contribution) {
+    return this.#guardRegistration('recognitionProvider', id, () => super.registerRecognitionProvider(id, contribution));
+  }
+
+  registerViewContribution(id, contribution) {
+    return this.#guardRegistration('viewContribution', id, () => super.registerViewContribution(id, contribution));
+  }
+
+  registerGoalProvider(id, contribution) {
+    return this.#guardRegistration('goalProvider', id, () => super.registerGoalProvider(id, contribution));
+  }
+
+  registerPlugin(rawManifest, implementations = {}) {
+    super.registerPlugin(rawManifest, implementations);
+    const pluginRecord = [...this.plugins.values()].at(-1);
+    const registered = (pluginRecord?.manifest?.contributions || []).map((contribution) => ({
+      type: contribution.type,
+      id: contribution.id,
+      record: this.entries.get(contribution.type)?.get(contribution.id),
+    }));
+
+    return () => {
+      for (const { type, id, record } of registered) {
+        const bucket = this.entries.get(type);
+        if (record && bucket?.get(id) === record) bucket.delete(id);
+      }
+      if (pluginRecord && this.plugins.get(pluginRecord.id) === pluginRecord) {
+        this.plugins.delete(pluginRecord.id);
+      }
+    };
   }
 
   async invoke(type, id, method, context = {}, ...args) {
@@ -39,7 +144,13 @@ export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
     } catch (error) {
       return invocationFailure(this, type, id, method, error);
     }
-    return super.invoke(type, id, method, context, ...args);
+
+    const lease = createInvocationLease(context);
+    try {
+      return await super.invoke(type, id, method, lease.context, ...args);
+    } finally {
+      lease.revoke();
+    }
   }
 }
 
