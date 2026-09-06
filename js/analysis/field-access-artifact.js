@@ -39,9 +39,38 @@ function cacheFor(backend) {
   return state.entries;
 }
 
-function artifactKey(region, offset, size) {
-  const keySize = typeof size === 'bigint' ? `${size}n` : Number(size || 0);
-  return `${region.id}:${BigInt(offset)}:${keySize}`;
+function canonicalRegionId(region) {
+  const regionId = region?.id;
+  if (typeof regionId !== 'string' || regionId.length === 0) throw new TypeError('field-access-region-id-invalid');
+  return regionId;
+}
+
+function canonicalOffset(offset) {
+  if (typeof offset === 'bigint') return offset;
+  if (typeof offset === 'number' && Number.isSafeInteger(offset)) return BigInt(offset);
+  throw new TypeError('field-access-offset-invalid');
+}
+
+function canonicalSize(size) {
+  if (size == null) return 0;
+  if (typeof size === 'bigint') {
+    if (size < 0n || size > BigInt(Number.MAX_SAFE_INTEGER)) throw new TypeError('field-access-size-invalid');
+    return Number(size);
+  }
+  if (typeof size === 'number' && Number.isSafeInteger(size) && size >= 0) return size === 0 ? 0 : size;
+  throw new TypeError('field-access-size-invalid');
+}
+
+function canonicalRequest(region, offset, size) {
+  return Object.freeze({
+    regionId:canonicalRegionId(region),
+    offset:canonicalOffset(offset),
+    size:canonicalSize(size),
+  });
+}
+
+function artifactKey(request) {
+  return `${request.regionId}:${request.offset}:${request.size}`;
 }
 
 function validBackendResult(result) {
@@ -53,21 +82,21 @@ function validBackendResult(result) {
   return true;
 }
 
-function entryFor(backend, region, offset, size) {
+function entryFor(backend, requestParams) {
   const map = cacheFor(backend);
-  const key = artifactKey(region, offset, size);
+  const key = artifactKey(requestParams);
   let entry = map.get(key);
   if (entry) return entry;
 
-  const request = backend.fieldAccess({ regionId:region.id, offset, size:size || 0 });
+  const request = backend.fieldAccess(requestParams);
   entry = { request, waiters:0, result:null, promise:null };
   entry.promise = Promise.resolve(request)
     .then((result) => {
       if (!validBackendResult(result)) throw new TypeError('field-access-invalid-result');
       const state = resultState(result);
       entry.result = Object.freeze({
-        regionId:region.id,
-        results:Object.freeze(result.results.map((row) => Object.freeze({ ...row, regionId:region.id }))),
+        regionId:requestParams.regionId,
+        results:Object.freeze(result.results.map((row) => Object.freeze({ ...row, regionId:requestParams.regionId }))),
         ...state,
       });
       return entry.result;
@@ -81,9 +110,10 @@ function entryFor(backend, region, offset, size) {
 }
 
 export function fieldAccessRegion(backend, region, offset, size, { signal } = {}) {
-  if (!backend || !region?.id) return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, reason:'field-access-unavailable' });
+  if (!backend || region?.id == null || region.id === '') return Promise.resolve({ regionId:region?.id || null, results:[], complete:false, reason:'field-access-unavailable' });
   if (signal?.aborted) return Promise.reject(abortError(signal));
-  const entry = entryFor(backend, region, offset, size);
+  const requestParams = canonicalRequest(region, offset, size);
+  const entry = entryFor(backend, requestParams);
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
 
