@@ -117,7 +117,10 @@ export function legacyRecoveryControl(opts) {
   const validWorkBudget = workBudget.present && workBudget.valid && typeof workBudget.value === 'number'
     && Number.isSafeInteger(workBudget.value) && workBudget.value >= 0;
   const started = globalThis.performance?.now ? globalThis.performance.now() : Date.now();
-  const derivedDeadline = deterministic.value === true || !validTimeBudget ? Infinity : started + timeBudget.value;
+  // Malformed and omitted time budgets retain the finite default below;
+  // only explicit deterministic mode disables the wall-clock deadline.
+  const callerTimeBudget = validTimeBudget ? timeBudget.value : 50;
+  const derivedDeadline = deterministic.value === true ? Infinity : started + callerTimeBudget;
   const effectiveDeadline = validDeadline ? Math.min(deadline.value, derivedDeadline) : derivedDeadline;
   const maxWork = validWorkBudget ? workBudget.value : 12000;
   const callbackFunction = callback.present && callback.valid && typeof callback.value === 'function'
@@ -189,7 +192,7 @@ export function exactLegacySameBlockStackStore(load, ir, opts = {}, control = le
       if (op === 'call' || op === 'clobber' || op === 'unknown') return null;
       continue;
     }
-    if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
+    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
       memoryRows.add(row);
     }

@@ -118,8 +118,9 @@ function recoveryControl(opts) {
   const started = now();
   const callerTimeBudget = validCallerTimeBudget ? timeBudgetField.value : 50;
   const callerWorkBudget = validCallerWorkBudget ? workBudgetField.value : 12000;
-  const derivedDeadline = !deterministic && validCallerTimeBudget
-    ? started + callerTimeBudget : Infinity;
+  // Invalid or omitted caller budgets retain the finite default deadline;
+  // structural proof scans remain bounded in every interactive mode.
+  const derivedDeadline = !deterministic ? started + callerTimeBudget : Infinity;
   const deadline = validDeadline ? Math.min(deadlineField.value, derivedDeadline) : derivedDeadline;
   let workUsed = 0;
   const isAborted = () => {
@@ -150,6 +151,51 @@ function recoveryControl(opts) {
 function positiveAccessSize(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
     && value <= Math.floor(Number.MAX_SAFE_INTEGER / 8) ? value : null;
+}
+
+const MEMORY_LOCATION_KINDS = new Set(['stack', 'global', 'field', 'unknown']);
+const MEMORY_WRITE_SCOPES = new Set(['none', 'accesses', 'all', 'unknown']);
+
+function canonicalMemoryKill(location) {
+  if (location == null || typeof location !== 'object' || Array.isArray(location)) return null;
+  const kindField = ownData(location, 'kind');
+  const keyField = ownData(location, 'key');
+  const sizeField = ownData(location, 'size');
+  if (!kindField.present || !kindField.valid || !MEMORY_LOCATION_KINDS.has(kindField.value)
+      || !keyField.present || !keyField.valid || typeof keyField.value !== 'string'
+      || keyField.value.length === 0
+      || !sizeField.present || !sizeField.valid
+      || (sizeField.value !== null && positiveAccessSize(sizeField.value) == null)) return null;
+  return { kind:kindField.value, key:keyField.value, size:sizeField.value };
+}
+
+function authenticatedCallMemoryEffect(inst, control) {
+  const extra = fieldValue(inst, 'extra');
+  const completeness = fieldValue(extra, 'callCompleteness');
+  const memoryWrite = fieldValue(extra, 'memoryWrite');
+  const scope = fieldValue(memoryWrite, 'scope');
+  // `memKills` is a projection of the canonical memory effect.  Its absence
+  // is safe only for a complete call whose canonical summary explicitly says
+  // it writes no memory.  A bare array, even an empty one, is not authority.
+  if (completeness !== 'complete' || memoryWrite == null || typeof memoryWrite !== 'object'
+      || Array.isArray(memoryWrite) || !MEMORY_WRITE_SCOPES.has(scope)) return null;
+  if (scope === 'none') {
+    if (fieldValue(inst, 'memoryBarrier') === true) return null;
+    const killsField = ownData(inst, 'memKills');
+    if (killsField.present && (!killsField.valid || !Array.isArray(killsField.value) || killsField.value.length)) return null;
+    return [];
+  }
+  const killsField = ownData(inst, 'memKills');
+  if (!killsField.present || !killsField.valid || !Array.isArray(killsField.value)
+      || killsField.value.length === 0) return null;
+  const kills = [];
+  for (const location of killsField.value) {
+    if (control?.isAborted?.()) return null;
+    const canonical = canonicalMemoryKill(location);
+    if (!canonical) return null;
+    kills.push(canonical);
+  }
+  return kills;
 }
 
 function mapsOf(result, control) {
@@ -628,10 +674,10 @@ function committedStoreBarrier(inst, key, control) {
   const locationKind = fieldValue(location, 'kind');
   if (op === 'clobber' || op === 'unknown') return true;
   if (op === 'call') {
-    const kills = arrayField(inst, 'memKills');
-    if (!kills.ok) return true;
-    for (const loc of kills.value) {
-      if (control?.isAborted?.() || fieldValue(loc, 'key') === key) return true;
+    const kills = authenticatedCallMemoryEffect(inst, control);
+    if (!kills) return true;
+    for (const loc of kills) {
+      if (control?.isAborted?.() || loc.kind === 'unknown' || loc.key === key) return true;
     }
     return false;
   }
@@ -660,7 +706,7 @@ function storeOfExactValue(ir, blockIndex, value, control) {
       const row = fieldValue(instruction, 'row');
       if (!validRow(row)) return null;
       const op = fieldValue(instruction, 'op');
-      if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
+      if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
         if (memoryRows.has(row)) return null;
         memoryRows.add(row);
       }
@@ -928,13 +974,10 @@ function unsafeBarrier(inst, key, control) {
   const locationKind = fieldValue(location, 'kind');
   if (op === 'clobber' || op === 'unknown') return true;
   if (op === 'call') {
-    // buildMemorySSA has already proven which locations this call can kill.
-    // A private caller stack slot is absent from memKills and is safe to carry
-    // through the call; an escaped stack address is present and remains a barrier.
-    const kills = arrayField(inst, 'memKills');
-    if (!kills.ok) return true;
-    for (const loc of kills.value) {
-      if (control?.isAborted?.() || fieldValue(loc, 'key') === key) return true;
+    const kills = authenticatedCallMemoryEffect(inst, control);
+    if (!kills) return true;
+    for (const loc of kills) {
+      if (control?.isAborted?.() || loc.kind === 'unknown' || loc.key === key) return true;
     }
     return false;
   }
@@ -956,7 +999,7 @@ function before(ir, block, row, key, control) {
     const instructionRow = fieldValue(instruction, 'row');
     const op = fieldValue(instruction, 'op');
     if (!validRow(instructionRow)) return null;
-    if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
+    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(instructionRow)) return null;
       memoryRows.add(instructionRow);
     }
@@ -1053,6 +1096,47 @@ function returnNodes(result, control) {
     if (isReturnNode(node)) nodes.push(node);
   }
   return nodes;
+}
+
+function snapshotReturnPublication(result) {
+  const bodyField = ownData(result.cAst, 'body');
+  const body = bodyField.present && bodyField.valid && Array.isArray(bodyField.value) ? bodyField.value : null;
+  const nodes = (body || []).map((node) => {
+    const semantic = fieldValue(node, 'semantic');
+    return {
+      node,
+      text:ownData(node, 'text'),
+      semantic,
+      expression:ownData(semantic, 'expression'),
+    };
+  });
+  const outputs = Array.isArray(result.semanticAst?.outputs)
+    ? result.semanticAst.outputs.map((output) => ({ output, expression:ownData(output, 'expression') })) : [];
+  const fields = new Map();
+  for (const key of ['pseudocode', 'sourceMap', 'lines', 'rewriteProof', 'metrics', 'ctx']) {
+    fields.set(key, ownData(result, key));
+  }
+  return { bodyField, body, nodes, outputs, fields };
+}
+
+function restoreReturnPublication(result, snapshot) {
+  const restoreField = (object, key, field) => {
+    if (!object) return;
+    if (!field.present) {
+      try { delete object[key]; } catch { /* immutable result fields stay unchanged */ }
+      return;
+    }
+    try { object[key] = field.value; } catch { /* immutable result fields stay unchanged */ }
+  };
+  if (snapshot.bodyField.present && snapshot.bodyField.valid) {
+    restoreField(result.cAst, 'body', snapshot.bodyField);
+  }
+  for (const state of snapshot.nodes) {
+    restoreField(state.node, 'text', state.text);
+    restoreField(state.semantic, 'expression', state.expression);
+  }
+  for (const state of snapshot.outputs) restoreField(state.output, 'expression', state.expression);
+  for (const [key, field] of snapshot.fields) restoreField(result, key, field);
 }
 
 function returnNodeMatches(node, ret, control) {
@@ -1226,9 +1310,23 @@ export function recoverExactStackReturn(result, opts = {}) {
     loadProof.size, values, opts, engine, new Set(), 0, control);
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
+  const transaction = snapshotReturnPublication(result);
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack')
-      || !rewriteReturn(result, recovered, opts, ret, control)) return result;
-  if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts, control);
+      || !rewriteReturn(result, recovered, opts, ret, control)) {
+    restoreReturnPublication(result, transaction);
+    return result;
+  }
+  if (committedSpill && (!removeProofOnlyStackSpill(result, committedSpill, opts, control)
+      || control.isAborted())) {
+    restoreReturnPublication(result, transaction);
+    return result;
+  }
+  // Do not append proof or metrics after a cancellation that arrived during
+  // cleanup.  The complete publication is one transaction with the AST edit.
+  if (control.isAborted()) {
+    restoreReturnPublication(result, transaction);
+    return result;
+  }
 
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule:'exact-stack-return-recovery', phase:'memory-ssa',

@@ -111,8 +111,10 @@ function recoveryControl(opts) {
   const started = now();
   const callerTimeBudget = validCallerTimeBudget ? timeBudgetField.value : 50;
   const callerWorkBudget = validCallerWorkBudget ? workBudgetField.value : 12000;
-  const derivedDeadline = !deterministic && validCallerTimeBudget
-    ? started + callerTimeBudget : Infinity;
+  // Every non-deterministic scan has a finite wall-clock default. Invalid or
+  // omitted caller budgets must not silently make the structural walk
+  // unbounded.
+  const derivedDeadline = !deterministic ? started + callerTimeBudget : Infinity;
   const deadline = validDeadline ? Math.min(deadlineField.value, derivedDeadline) : derivedDeadline;
   let workUsed = 0;
   const isAborted = () => {
@@ -625,7 +627,7 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
     // Equal rows are normally harmless for value-only instructions, but two
     // memory effects at one row have no authenticated order. Reject the whole
     // proof so the result cannot depend on IR array order.
-    if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
+    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
       memoryRows.add(row);
     }
