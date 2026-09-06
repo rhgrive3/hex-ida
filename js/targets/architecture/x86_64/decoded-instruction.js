@@ -10,13 +10,15 @@ const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value !== 'bigint') throw new TypeError(code);
+  return value;
 }
 
 function text(value, code, { empty = false } = {}) {
@@ -117,6 +119,9 @@ function normalizeOperand(input, index) {
     const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index', { decoderRegisterCode:raw.indexCode ?? raw.index?.decoderRegisterCode, widthBits:raw.index?.viewBits });
     const segment = segmentOf(raw.segment);
     const scale = raw.scale == null ? 1 : integer(raw.scale, 'x86-decoded-instruction-invalid-memory-scale', { min:1, max:8 });
+    const displacement = raw.displacement === undefined
+      ? (raw.disp === undefined ? 0n : raw.disp)
+      : raw.displacement;
     if (![1,2,4,8].includes(scale)) throw new TypeError('x86-decoded-instruction-invalid-memory-scale');
     return Object.freeze({
       ...common,
@@ -124,7 +129,7 @@ function normalizeOperand(input, index) {
         base,
         index:indexRegister,
         scale,
-        displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
+        displacement:bigint(displacement, 'x86-decoded-instruction-invalid-displacement'),
         segment,
         addressSizeBits:integer(raw.addressSizeBits ?? 64, 'x86-decoded-instruction-invalid-address-size', { min:16, max:64 }),
       }),
