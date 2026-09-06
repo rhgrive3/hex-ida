@@ -171,6 +171,7 @@
       mnemonic,
       opStr,
       rawBytes,
+      origin:options.origin ?? null,
       architecture:'x86_64',
       mode:String(options.mode || 'long-64'),
       decoderContractVersion:'x86-64-decoded-instruction/v1',
@@ -232,5 +233,11 @@
     return Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail });
   }
 
-  root.HexX86CapstoneStructured = Object.freeze({ ABI, verifyVersion, parseInstruction });
+  const adapter = Object.freeze({ ABI, verifyVersion, parseInstruction });
+  Object.defineProperty(root, 'HexX86CapstoneStructured', {
+    value:adapter,
+    enumerable:true,
+    configurable:false,
+    writable:false,
+  });
 })(globalThis);
