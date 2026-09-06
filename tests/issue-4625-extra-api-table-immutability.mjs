@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { extraApiInfo } from '../js/api-cross-binary-families.js';
 import { apiInfo } from '../js/blocks.js';
 
-test('issue #4625: extraApiInfo returned entry is deeply frozen and immutable', () => {
+test('issue #4625: extraApiInfo returned entry surface is frozen and immutable', () => {
   const info = extraApiInfo('strndup');
   assert.ok(info);
   assert.equal(info.id, 'libc_strndup');
@@ -45,12 +45,33 @@ test('issue #4625: extraApiInfo returned entry is deeply frozen and immutable', 
   assert.deepEqual(nextInfo.args, ['str', 'maxlen']);
 });
 
+test('issue #4625: returned RegExp cannot mutate the private lookup matcher', () => {
+  const info = extraApiInfo('strndup');
+  assert.ok(info?.re instanceof RegExp);
+
+  // RegExp has mutable internal slots through legacy compile(). Even when a
+  // returned RegExp is frozen, an engine may mutate the clone before throwing.
+  // The key contract is that no returned matcher is the private table matcher.
+  try {
+    info.re.compile('.*');
+  } catch {
+    // Expected on engines that reject compile() on a frozen RegExp.
+  }
+
+  assert.equal(extraApiInfo('definitely_not_an_api_symbol'), null);
+  const nextInfo = extraApiInfo('strndup');
+  assert.equal(nextInfo?.id, 'libc_strndup');
+  assert.notEqual(nextInfo?.re, info.re, 'each lookup must expose an isolated matcher clone');
+  assert.match('strndup', nextInfo.re);
+});
+
 test('issue #4625: all returned entries across families are frozen', () => {
   const sampleNames = ['basename', 'SecCertificateCopyData', 'vImageScale_ARGB8888', 'qsort', 'difftime', 'reallocf'];
   for (const name of sampleNames) {
     const info = extraApiInfo(name);
     assert.ok(info, `${name} should be found`);
     assert.ok(Object.isFrozen(info), `${name} entry should be frozen`);
+    assert.ok(Object.isFrozen(info.re), `${name} returned matcher should be frozen`);
     if (info.args) {
       assert.ok(Object.isFrozen(info.args), `${name} args array should be frozen`);
     }
