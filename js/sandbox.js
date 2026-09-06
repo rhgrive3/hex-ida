@@ -161,6 +161,14 @@ const WORKER_PRELUDE = String.raw`
     const isView = nativeArrayBufferIsView(value);
     let isArrayBuffer = false;
     try { nativeArrayBufferByteLength(value); isArrayBuffer = true; } catch {}
+    if (isView) {
+      let buffer = null;
+      try { buffer = nativeTypedArrayBuffer(value); }
+      catch { try { buffer = nativeDataViewBuffer(value); } catch {} }
+      if (!buffer) { nativeSetDelete(seen, value); return limit; }
+      try { nativeArrayBufferByteLength(buffer); }
+      catch { nativeSetDelete(seen, value); return limit; }
+    }
     if (!isArray && !isView && !isArrayBuffer) {
       let proto;
       try { proto = nativeGetPrototypeOf(value); }

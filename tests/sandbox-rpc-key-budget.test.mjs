@@ -30,6 +30,8 @@ function loadEstimators() {
       + 'const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);\n'
       + 'const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);\n'
       + 'const nativeArrayBufferByteLength = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);\n'
+      + 'const nativeTypedArrayBuffer = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "buffer").get);\n'
+      + 'const nativeDataViewBuffer = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(DataView.prototype, "buffer").get);\n'
       + `${workerBody}\nreturn { measure, prepareRpcArgs };`,
   )();
   const valueSize = new Function(
@@ -116,6 +118,30 @@ test('worker sends an owned snapshot for accepted RPC input', () => {
   payload.nested.alpha = 'mutated-after-prepare';
   payload.extra = oversizedKeyObject();
   assert.deepEqual(prepared.args, [{ nested: { alpha: 'ok' } }]);
+});
+
+test('worker rejects SharedArrayBuffer-backed views before creating an RPC snapshot', () => {
+  if (typeof SharedArrayBuffer !== 'function') return;
+
+  const shared = new SharedArrayBuffer(8);
+  const typed = new Uint8Array(shared);
+  const sharedClone = structuredClone(typed);
+  typed[0] = 0x5a;
+  assert.equal(
+    sharedClone[0],
+    0x5a,
+    'structuredClone alone must demonstrate the shared-backing counterexample',
+  );
+
+  assert.equal(prepareRpcArgs([typed], INPUT_BUDGET), null);
+  assert.equal(prepareRpcArgs([new DataView(shared)], INPUT_BUDGET), null);
+
+  Object.defineProperty(typed, 'buffer', { value:new ArrayBuffer(8) });
+  assert.equal(
+    prepareRpcArgs([typed], INPUT_BUDGET),
+    null,
+    'native backing inspection must ignore a shadowed buffer property',
+  );
 });
 
 test('worker fails closed on opaque cloneables before RPC transport', () => {
