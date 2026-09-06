@@ -109,4 +109,22 @@ function fixture({ size = 96, classProperties = CLASS_PROPERTIES, shortClassProp
   assert.equal(protocol.completeness.complete, false);
 }
 
+// A truncated fixed-prefix read (56..63 bytes) with separately readable size/flags
+// must never publish authoritative completeness: the instance-properties pointer
+// bytes at +56..63 were never observed.
+{
+  const { read } = fixture();
+  const truncatedRead = async (address, length, soft = false) => {
+    if (BigInt(address) === PROTOCOL) {
+      return read(address, 56, soft);
+    }
+    return read(address, length, soft);
+  };
+  const protocol = await parseProtocol(truncatedRead, PROTOCOL);
+  assert.ok(protocol, 'a truncated prefix still yields the parsed protocol structure');
+  assert.equal(protocol.size, 96);
+  assert.equal(protocol.instancePropertiesAddress, null, 'unobserved +56..63 bytes must not mint a pointer');
+  assert.equal(protocol.completeness.complete, false, 'incomplete fixed prefix cannot be authoritative');
+}
+
 console.log('✔ #3979 ObjC protocol_t size/classProperties regression passed');

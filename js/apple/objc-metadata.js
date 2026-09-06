@@ -166,7 +166,8 @@ async function parseProtocol(get, address, opts = {}) {
   const flagsReadable = !!layout && layout.length >= 8;
   const size = sizeReadable ? u32(layout, 0) : null;
   const flags = flagsReadable ? u32(layout, 4) : null;
-  let layoutComplete = flagsReadable && size >= PROTOCOL_FIXED_SIZE;
+  const prefixComplete = b.length >= 64;
+  let layoutComplete = flagsReadable && size >= PROTOCOL_FIXED_SIZE && prefixComplete;
   let classPropertiesAddress = null;
   const classPropertiesDeclared = size != null && size > PROTOCOL_CLASS_PROPERTIES_OFFSET;
   if (classPropertiesDeclared) {
@@ -196,7 +197,7 @@ async function parseProtocol(get, address, opts = {}) {
     optionalClassMethods: optionalClassMethods.completeness,
   };
   const completeness = { methods: methodCompleteness, protocols: inherited.completeness, complete: !opts?.signal?.aborted && layoutComplete && inherited.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: b.length >= 64 ? await decodedPointer(get, u64(b, 56), address + 56n) : null, classPropertiesAddress, completeness };
+  return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: prefixComplete ? await decodedPointer(get, u64(b, 56), address + 56n) : null, classPropertiesAddress, completeness };
 }
 
 async function parseCategory(get, address, classByAddress, opts = {}) {
