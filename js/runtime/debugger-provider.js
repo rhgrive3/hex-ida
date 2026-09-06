@@ -232,7 +232,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
 
     const originalClose = session.close.bind(session);
     session.close = async () => {
-      if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {}
+      if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
       unsubscribe = null;
       return originalClose();
     };
