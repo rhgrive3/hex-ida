@@ -10,65 +10,115 @@ import {
 
 console.log('Testing Go Metadata Provider...');
 
-// Helper to construct synthetic pclntab buffers
-function createPclntab120({ nfunc = 2, textStart = 0x400000n, functions = [] } = {}) {
-  // Pclntab 1.20 layout
-  // 0: magic (0xfffffff1)
-  // 4: pad0 (0), pad1 (0), minLC (1), ptrSize (8)
-  // 8: nfunc (uint64)
-  // 16: nfiles (uint64)
-  // 24: textStart (uint64)
-  // 32: funcnametab offset (uint64) = 96
-  // 40: cutab offset (uint64) = 96
-  // 48: filetab offset (uint64) = 96
-  // 56: pctab offset (uint64) = 96
-  // 64: pcln offset (uint64) = 96
-  // 72: ftab offset starts here! (8 uint64s = 64 bytes offset from 8 => 72)
-  // ftab: nfunc entries of { entryOff (uint32), funcOff (uint32) }
+const MODERN_MAGICS = Object.freeze({
+  '1.16': 0xfffffffa,
+  '1.18': 0xfffffff0,
+  '1.20+': 0xfffffff1,
+});
+
+function writeCString(buf, off, value) {
+  for (let i = 0; i < value.length; i++) buf[off + i] = value.charCodeAt(i);
+  buf[off + value.length] = 0;
+}
+
+function createModernPclntab({ version = '1.20+', nfunc = 2, textStart = 0x400000n, functions = [] } = {}) {
+  const magic = MODERN_MAGICS[version];
+  if (!magic) throw new Error(`unsupported test pclntab version: ${version}`);
+
   const buf = new Uint8Array(2048);
   const dv = new DataView(buf.buffer);
+  const ptrSize = 8;
+  const nameTabStart = 160;
+  const cutabStart = 240;
+  const filetabStart = 280;
+  const pctabStart = 320;
+  const pclnStart = 512;
+  const funcDataRelativeStart = 128;
+  const effectiveFunctions = Array.from({ length: nfunc }, (_, i) => functions[i] || {
+    entryOff: i * 0x100,
+    name: `func_${i}`,
+  });
 
-  dv.setUint32(0, 0xfffffff1, true);
-  buf[4] = 0; buf[5] = 0; buf[6] = 1; buf[7] = 8;
+  dv.setUint32(0, magic, true);
+  buf[4] = 0; buf[5] = 0; buf[6] = 1; buf[7] = ptrSize;
   dv.setBigUint64(8, BigInt(nfunc), true);
   dv.setBigUint64(16, 0n, true);
-  dv.setBigUint64(24, textStart, true);
-  dv.setBigUint64(32, 200n, true); // funcnametab offset
-  dv.setBigUint64(40, 200n, true);
-  dv.setBigUint64(48, 200n, true);
-  dv.setBigUint64(56, 200n, true);
-  dv.setBigUint64(64, 200n, true);
 
-  const ftabStart = 72;
-  const funcDataStart = 400;
-  const nameTabStart = 200;
+  if (version === '1.16') {
+    dv.setBigUint64(24, BigInt(nameTabStart), true);
+    dv.setBigUint64(32, BigInt(cutabStart), true);
+    dv.setBigUint64(40, BigInt(filetabStart), true);
+    dv.setBigUint64(48, BigInt(pctabStart), true);
+    dv.setBigUint64(56, BigInt(pclnStart), true);
+  } else {
+    dv.setBigUint64(24, textStart, true);
+    dv.setBigUint64(32, BigInt(nameTabStart), true);
+    dv.setBigUint64(40, BigInt(cutabStart), true);
+    dv.setBigUint64(48, BigInt(filetabStart), true);
+    dv.setBigUint64(56, BigInt(pctabStart), true);
+    dv.setBigUint64(64, BigInt(pclnStart), true);
+  }
 
-  // Add strings to nameTabStart
   let nameCursor = nameTabStart;
   const nameOffsets = [];
-  for (const fn of functions) {
-    const off = nameCursor - nameTabStart;
-    nameOffsets.push(off);
-    const str = fn.name || 'pkg.Func';
-    for (let i = 0; i < str.length; i++) buf[nameCursor + i] = str.charCodeAt(i);
-    buf[nameCursor + str.length] = 0;
-    nameCursor += str.length + 1;
+  for (const fn of effectiveFunctions) {
+    nameOffsets.push(nameCursor - nameTabStart);
+    writeCString(buf, nameCursor, fn.name || 'pkg.Func');
+    nameCursor += (fn.name || 'pkg.Func').length + 1;
   }
 
   for (let i = 0; i < nfunc; i++) {
-    const fn = functions[i] || { entryOff: i * 0x100, name: `func_${i}` };
-    const funcDescOff = funcDataStart + i * 32;
-    // ftab slot
-    dv.setUint32(ftabStart + i * 8, fn.entryOff, true);
-    dv.setUint32(ftabStart + i * 8 + 4, funcDescOff, true);
+    const fn = effectiveFunctions[i];
+    const funcOff = funcDataRelativeStart + i * 32;
+    const funcPos = pclnStart + funcOff;
 
-    // _func descriptor
-    dv.setUint32(funcDescOff + 0, fn.entryOff, true);
-    dv.setInt32(funcDescOff + 4, nameOffsets[i] ?? 0, true);
-    dv.setInt32(funcDescOff + 8, fn.argsSize ?? 16, true);
-    dv.setInt32(funcDescOff + 12, 0, true);
+    if (version === '1.16') {
+      const entryPC = fn.entryPC ?? (textStart + BigInt(fn.entryOff ?? i * 0x100));
+      const slot = pclnStart + i * 16;
+      dv.setBigUint64(slot, entryPC, true);
+      dv.setBigUint64(slot + 8, BigInt(funcOff), true);
+      dv.setBigUint64(funcPos, entryPC, true);
+      dv.setInt32(funcPos + 8, nameOffsets[i], true);
+      dv.setInt32(funcPos + 12, fn.argsSize ?? 16, true);
+    } else {
+      const entryOff = fn.entryOff ?? i * 0x100;
+      const slot = pclnStart + i * 8;
+      dv.setUint32(slot, entryOff, true);
+      dv.setUint32(slot + 4, funcOff, true);
+      dv.setUint32(funcPos, entryOff, true);
+      dv.setInt32(funcPos + 4, nameOffsets[i], true);
+      dv.setInt32(funcPos + 8, fn.argsSize ?? 16, true);
+      dv.setInt32(funcPos + 12, 0, true);
+    }
   }
 
+  return buf;
+}
+
+function createPclntab120(options = {}) {
+  return createModernPclntab({ ...options, version: '1.20+' });
+}
+
+function createPclntab12() {
+  const buf = new Uint8Array(512);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, 0xfffffffb, true);
+  buf[6] = 1; buf[7] = 8;
+  dv.setBigUint64(8, 1n, true);
+
+  const ftabStart = 16;
+  const funcPos = 96;
+  const namePos = 160;
+  dv.setBigUint64(ftabStart, 0x401000n, true);
+  dv.setBigUint64(ftabStart + 8, BigInt(funcPos), true);
+  // nfunc+1 sentinel: legacy tables remain header-adjacent.
+  dv.setBigUint64(ftabStart + 16, 0x401100n, true);
+  dv.setBigUint64(ftabStart + 24, 0n, true);
+  dv.setBigUint64(funcPos, 0x401000n, true);
+  dv.setInt32(funcPos + 8, namePos, true);
+  dv.setInt32(funcPos + 12, 8, true);
+  dv.setInt32(funcPos + 16, 32, true);
+  writeCString(buf, namePos, 'legacy.main');
   return buf;
 }
 
@@ -103,6 +153,101 @@ function createPclntab120({ nfunc = 2, textStart = 0x400000n, functions = [] } =
   assert.equal(syms.records[0].address, '0x401000');
   assert.equal(syms.records[1].name, 'main.helper');
   assert.equal(syms.records[1].address, '0x402000');
+}
+
+// #3694: Go 1.16+ functab and _func offsets are rooted at pclnOff.
+{
+  for (const version of ['1.16', '1.18', '1.20+']) {
+    const buf = createModernPclntab({
+      version,
+      nfunc: 1,
+      textStart: 0x400000n,
+      functions: [{ entryOff: 0x1234, name: `main.${version}`, argsSize: 24 }],
+    });
+    const header = parsePclntabHeader(buf);
+    assert.equal(header.valid, true, `${version} header is valid`);
+    assert.equal(header.ftabOff, header.pclnOff, `${version} functab starts at pclnOff`);
+
+    const parsed = parseGoFunctions(buf, header);
+    assert.equal(parsed.completeness.complete, true, `${version} parses completely`);
+    assert.equal(parsed.functions.length, 1);
+    assert.equal(parsed.functions[0].name, `main.${version}`);
+    assert.equal(parsed.functions[0].address, '0x401234');
+    assert.equal(parsed.functions[0].argsSize, 24);
+  }
+}
+
+// #3694: Go 1.2 keeps its header-adjacent functab and absolute _func offsets.
+{
+  const buf = createPclntab12();
+  const header = parsePclntabHeader(buf);
+  assert.equal(header.valid, true);
+  assert.equal(header.version, '1.2');
+  assert.equal(header.ftabOff, 16);
+  const parsed = parseGoFunctions(buf, header);
+  assert.equal(parsed.completeness.complete, true);
+  assert.equal(parsed.functions[0].name, 'legacy.main');
+  assert.equal(parsed.functions[0].address, '0x401000');
+}
+
+// #3694: decoded modern table offsets are authority-bearing and must be in-section safe integers.
+{
+  const offsetFields = [
+    ['funcnametabOff', 32],
+    ['cutabOff', 40],
+    ['filetabOff', 48],
+    ['pctabOff', 56],
+    ['pclnOff', 64],
+  ];
+  for (const [offsetName, fieldPos] of offsetFields) {
+    const buf = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+    new DataView(buf.buffer).setBigUint64(fieldPos, BigInt(buf.length), true);
+    const header = parsePclntabHeader(buf);
+    assert.equal(header.valid, false, `${offsetName} at section end is rejected`);
+    assert.equal(header.reason, 'invalid-table-offset');
+    assert.equal(header.offsetName, offsetName);
+  }
+
+  const unsafe = createPclntab120({ nfunc: 1, functions: [{ entryOff: 0x1000, name: 'main.main' }] });
+  new DataView(unsafe.buffer).setBigUint64(32, 1n << 53n, true);
+  const unsafeHeader = parsePclntabHeader(unsafe);
+  assert.equal(unsafeHeader.valid, false);
+  assert.equal(unsafeHeader.reason, 'invalid-table-offset');
+  assert.equal(unsafeHeader.offsetName, 'funcnametabOff');
+}
+
+// #3432: maxRecords is coverage authority and must remain a typed, non-negative
+// safe-integer number rather than relying on Math.min() ToNumber coercion.
+{
+  const buf = createPclntab120({
+    nfunc: 2,
+    functions: [
+      { entryOff: 0x1000, name: 'main.one' },
+      { entryOff: 0x2000, name: 'main.two' },
+    ],
+  });
+  const header = parsePclntabHeader(buf);
+  assert.ok(header);
+
+  for (const maxRecords of ['1', true, false, [1], {}, NaN, Infinity, 1.5, -1]) {
+    assert.throws(
+      () => parseGoFunctions(buf, header, { maxRecords }),
+      /go-metadata-invalid-max-records/,
+      `maxRecords rejects ${String(maxRecords)}`,
+    );
+  }
+
+  const none = parseGoFunctions(buf, header, { maxRecords:0 });
+  assert.equal(none.completeness.scanned, 0);
+  assert.equal(none.functions.length, 0);
+
+  const one = parseGoFunctions(buf, header, { maxRecords:1 });
+  assert.equal(one.completeness.scanned, 1);
+  assert.equal(one.functions.length, 1);
+
+  const defaults = parseGoFunctions(buf, header);
+  assert.equal(defaults.completeness.scanned, 2);
+  assert.equal(defaults.functions.length, 2);
 }
 
 // 2. Negative: Unknown future Go magic (0xffffffef) -> Fail-closed
@@ -182,4 +327,5 @@ function createPclntab120({ nfunc = 2, textStart = 0x400000n, functions = [] } =
   assert.equal(desc.align, 8);
 }
 
+assert.equal(GO_PCLNTAB_MAGICS[0xfffffff1].version, '1.20+');
 console.log('Go Metadata Provider tests passed.');

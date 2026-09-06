@@ -327,7 +327,7 @@ export class Emulator {
     while (n < limit && !this.stopped) {
       throwIfAborted(signal);
       if (this.breakpoints.has(this.pc.toString())) {
-        return { hitBreakpoint: true, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+        return { hitBreakpoint: true, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
       }
       const r = await this.step({ signal });
       n++;
@@ -340,7 +340,7 @@ export class Emulator {
     }
     throwIfAborted(signal);
     if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
-    return { hitBreakpoint: false, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+    return { hitBreakpoint: false, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }
 
   traceSnapshot() {
