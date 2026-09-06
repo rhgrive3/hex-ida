@@ -21,6 +21,13 @@ const coherentOps = [
   { k: 'imm', value: 0x1004n },
 ];
 
+function genericImmediate(value) {
+  return [
+    { k: 'reg', cls: 'gp', num: 0, bits: 64, text: 'x0' },
+    { kind: 'immediate', value },
+  ];
+}
+
 test('6078: coherent literal evidence stays exact', () => {
   const bundle = lift({ pcRelTarget: 0x1004n, ops: coherentOps });
   assert.equal(bundle?.completeness, 'exact');
@@ -40,4 +47,22 @@ test('6078: contradictory literalTarget does not exactify a wrong address', () =
 test('6078: single-source target still resolves', () => {
   const onlyImmediate = lift({ ops: coherentOps });
   assert.equal(onlyImmediate?.completeness, 'exact');
+});
+
+test('6078: generic immediate participates in target coherence', () => {
+  const bundle = lift({ pcRelTarget: 0x1008n, ops: genericImmediate(0x1004n) });
+  assert.notEqual(bundle?.completeness, 'exact');
+  assert.match(bundle?.unknownEffects?.reason ?? '', /literal-target-evidence-mismatch/);
+});
+
+test('6078: generic immediate cannot bypass literal alignment proof', () => {
+  const bundle = lift({ ops: genericImmediate(0x1002n) });
+  assert.notEqual(bundle?.completeness, 'exact');
+  assert.match(bundle?.unknownEffects?.reason ?? '', /literal-target-misaligned-encoding/);
+});
+
+test('6078: generic immediate cannot bypass literal range proof', () => {
+  const bundle = lift({ ops: genericImmediate(0x300000n) });
+  assert.notEqual(bundle?.completeness, 'exact');
+  assert.match(bundle?.unknownEffects?.reason ?? '', /literal-target-out-of-range-encoding/);
 });
