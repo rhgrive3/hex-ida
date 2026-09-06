@@ -48,12 +48,18 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   const sourceWidth = Number(sourceWidthBits);
   if (!supportedWidth(destinationWidth) || !supportedWidth(sourceWidth)) return false;
   if (family === 'movsxd') {
-    return (sourceWidth === 16 && destinationWidth === 16)
-      || (sourceWidth === 32 && (destinationWidth === 32 || destinationWidth === 64));
+    // Capstone reports the source as r32 for opcode 63 even when 66h makes
+    // the architectural destination 16-bit. The 16-bit form is therefore a
+    // low-16 copy/truncation; default and REX.W remain 32-bit copy and 32->64
+    // sign extension respectively.
+    return sourceWidth === 32 && [16,32,64].includes(destinationWidth);
   }
   if (family === 'movzx' || family === 'movsx') {
+    // Capstone accepts operand-size=16 on the r/m16 opcodes and exposes it as
+    // a same-width r16 -> r16 operation. It is an exact copy (coerce is a
+    // no-op when widths match), not an unmodelled shape.
     return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
+      || (sourceWidth === 16 && [16,32,64].includes(destinationWidth));
   }
   return false;
 }

@@ -22,6 +22,10 @@ import {
   buildDevSupervisorPrompt,
   devSupervisorContextPacket,
 } from '../../js/ai/dev/protocol/dev-supervisor-prompt.js';
+import {
+  assertModuleDependencyBoundary,
+  __moduleDependencyBoundaryForTests as __depBoundary,
+} from './helpers/module-dependency-boundary.mjs';
 
 function packetIsNormalizedJsonSafeAndValidated() {
   for (const malformed of [null, undefined, 'a string', 42, [], new Date()]) {
@@ -293,10 +297,22 @@ function noStorageAndNoModelCallWasIntroduced() {
   }
   assert.deepEqual(touched, [], 'building a representation must not reach storage, the network, or a model');
 
-  // Structural: the representation layer depends on nothing.
+  // Structural: representation may reuse the canonical pure scope normalizer,
+  // but it must not acquire storage/network/model dependencies of its own.
+  // Parser-backed boundary (vm.SourceTextModule + comment-aware dynamic scan):
+  // side-effect imports, export-from, same-line trailing imports, and dynamic
+  // import expressions are all visible; comments/strings never count.
   const text = readSource(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url));
-  assert.equal(/^\s*import\s/m.test(text), false, 'the representation layer is self-contained: no imports at all');
+  assertModuleDependencyBoundary(text, ['../run/analysis-scope.js']);
   assert.equal(/\beval\s*\(/.test(text), false, 'no eval');
+
+  const { staticModuleSpecifiers, hasDynamicImport } = __depBoundary;
+  assert.deepEqual(staticModuleSpecifiers("import './storage.js';"), ['./storage.js']);
+  assert.deepEqual(staticModuleSpecifiers("const marker = 1; import './trailing-same-line.js';"), ['./trailing-same-line.js']);
+  assert.deepEqual(staticModuleSpecifiers("export { value } from './model.js';"), ['./model.js']);
+  assert.equal(hasDynamicImport("void import('./model.js')"), true);
+  assert.equal(hasDynamicImport("// import('./evil.js')"), false);
+  assert.equal(hasDynamicImport("import { a } from './ok.js';"), false);
 }
 
 function payloadOf(prompt) {

@@ -49,18 +49,16 @@ function encodeUtf16(text, encoding) {
 test('#6298 UTF-16LE/BE preserve ordinary and delimiter-adjacent runs across a chunk boundary', async () => {
   for (const encoding of ['le', 'be']) {
     const ordinary = new Uint8Array(65_560);
-    ordinary.fill(0xff);
-    ordinary.set(encodeUtf16('ABCDEFGH', encoding), 65_531);
+    ordinary.set(encodeUtf16('ĀBCDEFGH', encoding), 65_531);
     const ordinaryResult = await assertChunkParity(
       ordinary,
       { utf16: encoding, minLength: 2, maxLength: 64 },
       `${encoding} ordinary boundary run must match unchunked scan`,
     );
-    assert.deepEqual(ordinaryResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_531n, 'ABCDEFGH']]);
+    assert.deepEqual(ordinaryResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_531n, 'ĀBCDEFGH']]);
 
     const delimiterAfter = new Uint8Array(65_560);
-    delimiterAfter.fill(0xff);
-    delimiterAfter.set(encodeUtf16('ABCD', encoding), 65_528);
+    delimiterAfter.set(encodeUtf16('ĀBCD', encoding), 65_528);
     delimiterAfter[65_536] = 0;
     delimiterAfter[65_537] = 0;
     const afterResult = await assertChunkParity(
@@ -68,19 +66,18 @@ test('#6298 UTF-16LE/BE preserve ordinary and delimiter-adjacent runs across a c
       { utf16: encoding, minLength: 2, maxLength: 64 },
       `${encoding} run ending immediately before the chunk delimiter must match`,
     );
-    assert.deepEqual(afterResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_528n, 'ABCD']]);
+    assert.deepEqual(afterResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_528n, 'ĀBCD']]);
 
     const delimiterBefore = new Uint8Array(65_560);
-    delimiterBefore.fill(0xff);
     delimiterBefore[65_534] = 0;
     delimiterBefore[65_535] = 0;
-    delimiterBefore.set(encodeUtf16('WXYZ', encoding), 65_536);
+    delimiterBefore.set(encodeUtf16('ĀWXYZ', encoding), 65_536);
     const beforeResult = await assertChunkParity(
       delimiterBefore,
       { utf16: encoding, minLength: 2, maxLength: 64 },
       `${encoding} run starting immediately after the chunk delimiter must match`,
     );
-    assert.deepEqual(beforeResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_536n, 'WXYZ']]);
+    assert.deepEqual(beforeResult.results.map((entry) => [entry.fileOffset, entry.text]), [[65_536n, 'ĀWXYZ']]);
   }
 });
 
@@ -141,19 +138,18 @@ test('#6298 carry dedupe cannot consume a small result limit', async () => {
 
   for (const encoding of ['le', 'be']) {
     const bytes = new Uint8Array(65_570);
-    bytes.fill(0xff);
-    bytes.set(encodeUtf16('ABCDEFGH', encoding), 65_530);
-    bytes[65_546] = 0;
-    bytes[65_547] = 0;
-    bytes.set(encodeUtf16('WXYZ', encoding), 65_548);
-    bytes[65_556] = 0;
-    bytes[65_557] = 0;
+    bytes.set(encodeUtf16('ĀBCDEFGH', encoding), 65_530);
+    bytes[65_548] = 0;
+    bytes[65_549] = 0;
+    bytes.set(encodeUtf16('ĀWXYZ', encoding), 65_550);
+    bytes[65_560] = 0;
+    bytes[65_561] = 0;
     const result = await assertChunkParity(
       bytes,
       { utf16: encoding, minLength: 2, maxLength: 64, limit: 2 },
       `${encoding} carry duplicate must not consume limit=2`,
     );
-    assert.deepEqual(result.results.map((entry) => entry.text), ['ABCDEFGH', 'WXYZ']);
+    assert.deepEqual(result.results.map((entry) => entry.text), ['ĀBCDEFGH', 'ĀWXYZ']);
     assert.equal(result.capped, false);
   }
 });

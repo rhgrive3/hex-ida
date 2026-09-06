@@ -96,7 +96,9 @@ function nodeRequest(desc, dependencies=[], counter=null) {
   assert.equal(s.stats().dependencyIdentityErrors,1);
 }
 
-// Cycle and self-cycle are explicit failures and invoke no producer.
+// Cyclic identities cannot be canonical content-addressed artifact descriptors.
+// Handcrafted cycle/self-cycle requests therefore fail closed before DAG mutation
+// or producer execution.
 {
   const {scheduler:s}=scheduler();
   const a={artifactId:'artifact_cycle-a',upstreamArtifactIds:['artifact_cycle-b']};
@@ -104,17 +106,47 @@ function nodeRequest(desc, dependencies=[], counter=null) {
   const requestA={descriptor:a,produce:async()=>({})};
   const requestB={descriptor:b,dependencies:[requestA],produce:async()=>({})};
   requestA.dependencies=[requestB];
-  await assert.rejects(s.request(requestA),(error)=>error instanceof SchedulerCycleError&&error.code==='artifact-dependency-cycle'&&error.path[0]===error.path.at(-1)&&error.path.includes('artifact_cycle-a')&&error.path.includes('artifact_cycle-b'));
+  await assert.rejects(s.request(requestA),(error)=>error?.code==='artifact-descriptor-noncanonical');
   assert.equal(s.stats().producerInvocations,0);
-  assert.ok(s.stats().cycleChecks>=1);
+  assert.equal(s.stats().dagEdges,0);
 }
 {
   const {scheduler:s}=scheduler();
   const self={artifactId:'artifact_self-cycle',upstreamArtifactIds:['artifact_self-cycle']};
   const request={descriptor:self,produce:async()=>({})};
   request.dependencies=[request];
-  await assert.rejects(s.request(request),(error)=>error instanceof SchedulerCycleError&&error.path.join(' -> ')==='artifact_self-cycle -> artifact_self-cycle');
+  await assert.rejects(s.request(request),(error)=>error?.code==='artifact-descriptor-noncanonical');
   assert.equal(s.stats().producerInvocations,0);
+  assert.equal(s.stats().dagEdges,0);
+}
+
+// A canonical descriptor cannot authorize an undeclared self-dependency:
+// the undeclared edge is rejected as an identity error before any DAG
+// mutation or producer execution.
+{
+  const {scheduler:s}=scheduler();
+  const self=descriptor('canonical-self-cycle');
+  const request=nodeRequest(self);
+  request.dependencies=[request];
+  await assert.rejects(s.request(request),(error)=>error instanceof SchedulerDependencyIdentityError);
+  assert.equal(s.stats().producerInvocations,0);
+  assert.equal(s.stats().dagEdges,0);
+}
+
+// The DAG cycle guard remains active for canonical requests when a retained
+// graph edge would close a cycle. Seed that corrupt prior edge explicitly;
+// do not manufacture an unbranded descriptor to reach the internal guard.
+{
+  const {scheduler:s}=scheduler();
+  const a=descriptor('retained-cycle-a');
+  const b=descriptor('retained-cycle-b',[a]);
+  s.dag.set(a.artifactId,Object.freeze([b.artifactId]));
+  await assert.rejects(s.request(nodeRequest(b,[nodeRequest(a)])),(error)=>
+    error instanceof SchedulerCycleError&&error.code==='artifact-dependency-cycle'
+    &&error.path.join(' -> ')===`${b.artifactId} -> ${a.artifactId} -> ${b.artifactId}`);
+  assert.equal(s.stats().producerInvocations,0);
+  assert.equal(s.stats().dagEdges,0);
+  assert.ok(s.stats().cycleChecks>=1);
 }
 
 // Dependency producer failure is distinct and blocks parent production.

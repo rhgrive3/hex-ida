@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import {
+  assertModuleDependencyBoundary,
+  __moduleDependencyBoundaryForTests as __depBoundary,
+} from './helpers/module-dependency-boundary.mjs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -84,7 +89,7 @@ await check('dev-run-state', () => {
   assert.equal(run.chatgptProjectContext, null);
   ({ run } = supervisor.applyDecision(run, { type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }));
   assert.equal(run.status, 'ACTIVE');
-  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['ci.completed'], reason: 'wait' }));
+  ({ run } = supervisor.applyDecision(run, { type: 'wait', events: ['worker.completed'], reason: 'wait' }));
   assert.equal(run.status, 'WAITING_EVENT');
   ({ run } = supervisor.applyDecision(run, { type: 'human', question: 'Security boundary?', blocking: true }));
   assert.equal(run.status, 'WAITING_HUMAN');
@@ -141,6 +146,42 @@ await check('standard-agent-scope-regression', () => {
   const locked = new ScopeController(snapshot, 'function');
   assert.equal(locked.expandTo('binary', 'must stay locked'), false);
   assert.equal(locked.effectiveScope, 'function');
+});
+
+await check('dev-context-packet-dependency-boundary', () => {
+  // Parser-backed boundary: every static dependency spelling is visible and
+  // dynamic import expressions are taken from the parsed module AST rather
+  // than a comment/string-sensitive textual scan.
+  const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
+  assertModuleDependencyBoundary(source, ['../run/analysis-scope.js']);
+  const { staticModuleSpecifiers, hasDynamicImport } = __depBoundary;
+  assert.deepEqual(
+    staticModuleSpecifiers([
+      "/* lead */ import /* dependency */ './side-effect.js';",
+      "import /* dependency */ { value } from './network.js';",
+      "export /* dependency */ { value } /* link */ from './re-export.js';",
+      "export /* dependency */ * as storage from '../storage.js';",
+      "const marker = 1; import './trailing-same-line.js';",
+    ].join('\n')),
+    ['./side-effect.js', './network.js', './re-export.js', '../storage.js', './trailing-same-line.js'],
+  );
+  assert.deepEqual(
+    staticModuleSpecifiers("// import './evil.js';\nimport { a } from './ok.js';"),
+    ['./ok.js'],
+    'commented imports must not count as dependencies',
+  );
+  for (const lineTerminator of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    assert.equal(hasDynamicImport(`void import // dependency${lineTerminator}('./dynamic.js')`), true,
+      `dynamic import after ${JSON.stringify(lineTerminator)} line-comment terminator must be detected`);
+  }
+  assert.equal(hasDynamicImport("const value = `// ${import('./dynamic.js')}`;"), true,
+    'dynamic import inside a template interpolation must be detected');
+  assert.equal(hasDynamicImport("const value = `import('./not-real.js')`;"), false,
+    'template literal text must not be mistaken for dynamic import syntax');
+  assert.equal(hasDynamicImport("const value = \"import('./not-real.js')\";"), false,
+    'quoted text must not be mistaken for dynamic import syntax');
+  assert.equal(hasDynamicImport("// import('./evil.js')"), false);
+  assert.equal(hasDynamicImport("import { a } from './ok.js';"), false);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
