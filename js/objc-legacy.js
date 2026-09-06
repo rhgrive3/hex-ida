@@ -618,7 +618,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   if (classesCompleteness.misalignedBytes) markLegacyPartial(classesCompleteness, 'class-list-size-misaligned');
   if (classesCompleteness.capped) markLegacyPartial(classesCompleteness, 'class-budget');
 
-  const get = pagedReader(read);
+  const get = pagedReader(read, 65536, 96, { signal: options?.signal });
   get.base = imageBase != null
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
