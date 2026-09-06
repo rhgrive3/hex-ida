@@ -7,7 +7,8 @@ const source = () => new MemoryByteSource(bytes, { maxReadLength: 2 });
 const expectedFnv = await hashByteSource(source(), { chunkSize: 2 });
 const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 
-for (const onProgress of [undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress')]) {
+class ProgressCallback {}
+for (const onProgress of [undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'), ProgressCallback, class {}]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
 }
@@ -38,8 +39,6 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
     /chunkSize must be a positive safe integer/,
   );
 
-  // Optional callback validation must not change the established method
-  // receiver, nor depend on a function's user-defined `call` property.
   const events = [];
   const options = { chunkSize: 2, onProgress(value) {
     assert.equal(this, options);

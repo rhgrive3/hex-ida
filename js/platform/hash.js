@@ -5,7 +5,9 @@ const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
 function optionalProgressCallback(value) {
-  return typeof value === 'function' ? value : null;
+  if (typeof value !== 'function') return null;
+  const source = Function.prototype.toString.call(value);
+  return /^\s*class(?:\s|\{)/.test(source) ? null : value;
 }
 
 function throwIfAborted(signal) {
