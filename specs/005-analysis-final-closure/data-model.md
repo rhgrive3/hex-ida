@@ -308,3 +308,94 @@ The Stage B applicability packet serializes these as `requirementId`,
 `repositoryLimitation`, `externalOwner`, `attemptedAlternatives`, `evidence`,
 and `minimumUnblockAction`; an empty, missing, extra-field, or mismatched object
 is not a valid blocker disposition.
+
+## T061 Stage A maintenance amendment
+
+The implementation-component lists and `CandidateGateRegistry` rules above
+apply to ordinary components. T061 is the single explicitly declared
+`STAGE_A_MAINTENANCE` task. It is not a Stage B component and cannot add a
+component gate, shadow registry entry, or new acceptance counter. This amendment
+does not create a generic exemption for other task IDs.
+
+The inventory's `stageAMaintenanceTransfer` field contains an immutable
+`hex-final-closure-t061-maintenance-transfer/v1` receipt:
+
+| Field | Rule |
+|---|---|
+| `predecessor` | T052 task ID, exact integration I head/tree, and original canonical T052 handoff. |
+| `successorTaskId` | Exactly T061. |
+| `component` | Exact code C head/tree and actual bounded code paths. |
+| `product` | `hex-final-closure-t061-maintenance-product/v1` proof for M and G. |
+| `evidence` | Exact evidence E head/tree. |
+| `paths` | Actual code paths plus the single maintenance evidence path. |
+| `transfer` | Only the named T052 fixture, T052-to-T061 owners, and reviewed preimage/postimage blob IDs. |
+
+I retains all original accepted checkpoints and handoffs. C is a nonempty
+linear code continuation of I, restricted to the exact T061 code-path set;
+the data-model amendment is part of that code review. M has parents [I, C]
+and the actual candidate merge tree. G is the generated-only child of M.
+E is the evidence-only child of G. P is the publication child of E and changes
+only the inventory and T061's pending-to-done task record. P is derived from
+first-parent history, avoiding a receipt that embeds its own commit identity.
+Publication detection parses JSON property identity independently of escape
+spelling. Receipt removal, rewriting, reuse, or owner regression is rejected.
+Non-JSON draft versions before the first semantic publication are not
+maintenance records. Any unreadable inventory revision after publication is
+rejected, even when a later revision restores the receipt.
+
+The product retains the preceding checkpoint's `acceptedTaskIds` unchanged and
+records `acceptedMerge`, `checkpointProduct`, `integrationReconciliation`,
+`generation`, `rollingProductGates`, `independentShadowVerifier`,
+`initialCandidateGateDigest`, and `maintenanceGates`. All original generation,
+rolling, and shadow verification requirements still apply. The additional
+maintenance gates execute the original T052 owned command, the full canonical
+final-closure suite, and Phase 12 against exact G. The runtime state callback
+is required before and after gate execution and checks generated/ignored
+ephemeral artifacts in addition to source, Git identities, and refs.
+
+Only the fixed collaboration fixture transfers from T052 to T061. Existing
+ownership remains unchanged; new generated paths belong to T049. T049 depends
+on T061, and no following component is accepted before this maintenance
+transaction has current-main, generated-output, runtime, and independent
+verification evidence. Original receipt and handoff history stays immutable.
+
+The bounded maintenance code may also restore `package.json` after a
+parent-selected main reconciliation. The verifier derives the expected
+package from the authenticated integration inventory's `baseSha`: all main
+fields and command strings must remain equal, with only the canonical
+`node tests/final-closure/run.mjs` prefix added to `scripts.test` when absent.
+This comparison is mandatory even if the component omits `package.json`
+from its changed paths. The package remains owned by T046; its handoff seal
+may point to authenticated C only when the maintenance receipt includes this
+exact path. This exception cannot authorize any other T046 path or package
+change, and all original product gates remain required.
+
+The package comparison is semantic over parsed JSON, so JSON formatting and
+object-key ordering may vary while every current-main field and command stays
+equal. Every command from the authenticated integration package must also
+remain an ordered subsequence of the corresponding candidate command.
+
+For this data-model path, every C revision MUST retain the complete I
+`data-model.md` byte sequence as an exact prefix. The final C revision MUST
+append only the bounded T061 suffix beginning with this amendment heading;
+the verifier declares its SHA-256 as
+`T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256`, and the suffix must match that
+digest through end of file. No historical section may be rewritten,
+reinserted, or followed by unrelated prose.
+
+The maintenance executor records the canonical runtime ephemeral manifest,
+including ignored paths, before and after every gate. The required candidate
+state callback remains an additional assertion for runtime invariants.
+
+This bounded maintenance also synchronizes the Phase 12 denominator source
+markers from the `js/pattern/index.js` facade to `js/pattern/index-core.js`.
+The correction is a fixture-contract update; it does not change the pattern
+implementation or promote an excluded capability.
+
+When a refetched current-main commit replaces a sealed owner blob, or adds a
+path that was absent from the sealed snapshot, during a moving-main
+reconciliation, `verifyTaskHandoffs` may authorize that path only with the
+authenticated `currentMainSha`: the integration blob must equal the
+current-main blob, and an existing sealed handoff blob must differ. Generated
+paths and arbitrary integration blobs remain sealed, and omitting
+`currentMainSha` preserves the original fail-closed behavior.
