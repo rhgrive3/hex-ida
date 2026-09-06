@@ -23,7 +23,7 @@
  * requested roots, not the whole program (P7-INV-009).
  */
 
-import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
+import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
 import {
   EFFECT_SOURCES,
   createFunctionSummary,
@@ -323,9 +323,13 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
 
-  const reads = [local.memoryReadRegions];
-  const writes = [local.memoryWriteRegions];
-  const unknowns = [...local.unknownCallEffects];
+  // Call-site fallback lives in the local summary without a per-effect
+  // callSiteId. Seed its memory/unknown dimensions only after we know which
+  // opaque call boundaries this A3 pass actually closed.
+  const reads = [[]];
+  const writes = [[]];
+  const unknowns = [];
+  const resolvedLocalCallSites = new Set();
   const statuses = [local.status];
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
@@ -344,6 +348,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   };
 
   for (const call of local.directCalls) {
+    let fallbackClosed = call.targetEntityIds.length > 0;
     for (const target of call.targetEntityIds) {
       const callee = solved.get(target);
       if (callee) {
@@ -352,12 +357,14 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         // effect lattice infinite and the recursive fixed point would never
         // converge — the exact summary-growth failure §9.4 warns about.
         accumulateCallee(callee);
+        if (!isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0) fallbackClosed = false;
         continue;
       }
       if (component.includes(target)) {
         // A member of our own component that this iteration has not reached
         // yet. It contributes nothing for now; the fixed point revisits it, and
         // the optimistic intermediate state is never published.
+        fallbackClosed = false;
         continue;
       }
       const model = models.get(target);
@@ -370,6 +377,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         mayThrow.push(model.mayThrow ?? 'unknown');
         continue;
       }
+      fallbackClosed = false;
       writes.push([broadEffect('unknown-call-fallback')]);
       unknowns.push(createUnknownCallEffect({
         callSiteId: call.callSiteId,
@@ -379,16 +387,22 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       noreturn.push('unknown');
       mayThrow.push('unknown');
     }
+    if (fallbackClosed) resolvedLocalCallSites.add(call.callSiteId);
   }
 
   for (const set of local.indirectCallSets) {
+    let fallbackClosed = set.exhaustive && set.candidateEntityIds.length > 0;
     for (const candidate of set.candidateEntityIds) {
       const callee = solved.get(candidate);
       if (callee) {
         accumulateCallee(callee);
+        if (!isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0) fallbackClosed = false;
         continue;
       }
-      if (component.includes(candidate)) continue;
+      if (component.includes(candidate)) {
+        fallbackClosed = false;
+        continue;
+      }
       const model = models.get(candidate);
       if (model && !locals.has(candidate)) {
         reads.push(model.memoryReadRegions ?? []);
@@ -397,6 +411,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         mayThrow.push(model.mayThrow ?? 'unknown');
         continue;
       }
+      fallbackClosed = false;
       writes.push([broadEffect('unknown-call-fallback')]);
       unknowns.push(createUnknownCallEffect({
         callSiteId: set.callSiteId,
@@ -412,7 +427,22 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         unknowns.push(createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
       }
     }
+    if (fallbackClosed) resolvedLocalCallSites.add(set.callSiteId);
   }
+
+  const retainedLocalUnknowns = local.unknownCallEffects.filter(
+    (unknown) => !resolvedLocalCallSites.has(unknown.callSiteId),
+  );
+  unknowns.unshift(...retainedLocalUnknowns);
+
+  // Local memory effects do not carry a callSiteId, so pruning one resolved
+  // site's fallback in a mixed unresolved function would be unsound. Replace
+  // unknown-call fallback effects only when every local unknown was a call-site
+  // boundary that is now closed; otherwise preserve the whole local fallback.
+  const replaceLocalFallback = local.unknownCallEffects.length > 0 && retainedLocalUnknowns.length === 0;
+  const keepLocalEffect = (effect) => !replaceLocalFallback || effect.source !== 'unknown-call-fallback';
+  reads[0] = local.memoryReadRegions.filter(keepLocalEffect);
+  writes[0] = local.memoryWriteRegions.filter(keepLocalEffect);
 
   if (unconverged) {
     writes.push([broadEffect('unknown-call-fallback')]);
