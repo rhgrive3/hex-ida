@@ -133,7 +133,12 @@ async function protectedRuntime(request, env, url) {
   if (request.method === 'OPTIONS') return runtimeAssetPreflight(origin, url.origin);
   if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
   if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
-  const buildId = decodeURIComponent(url.pathname.slice('/_runtime/'.length));
+  let buildId;
+  try {
+    buildId = decodeURIComponent(url.pathname.slice('/_runtime/'.length));
+  } catch {
+    return json({ error: 'invalid-runtime-path' }, 400);
+  }
   if (buildId !== RUNTIME_BUILD.manifest.buildId) return json({ error: 'wrong-build' }, 403);
   const raw = request.headers.get('authorization') || '';
   const token = raw.startsWith('Bearer ') ? raw.slice(7) : '';
