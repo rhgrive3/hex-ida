@@ -1,20 +1,17 @@
 import { stableDigest } from "../../core/identity/index.js";
-import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleError } from "./snapshot.js";
+import {
+  assertAnalysisSnapshot,
+  createAnalysisSnapshot,
+  AnalysisSnapshotStaleError,
+  normalizeAnalysisArtifactVersions,
+} from "./snapshot.js";
 
 const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
 
-function artifactVersionsRecord(value) {
-  if (value === null || value === undefined) return {};
-  if (typeof value !== "object" || Array.isArray(value)) return null;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null ? value : null;
-}
-
 function artifactVersionsEqual(left, right) {
   try {
-    const normalizedLeft = artifactVersionsRecord(left);
-    const normalizedRight = artifactVersionsRecord(right);
-    if (normalizedLeft == null || normalizedRight == null) return false;
+    const normalizedLeft = normalizeAnalysisArtifactVersions(left);
+    const normalizedRight = normalizeAnalysisArtifactVersions(right);
     return stableDigest(normalizedLeft) === stableDigest(normalizedRight);
   } catch {
     return false;

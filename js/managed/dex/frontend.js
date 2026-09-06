@@ -3,6 +3,7 @@ import { createManagedMethodId, createManagedTypeId } from '../shared/identity.j
 import { createManagedValidationReport } from '../shared/validation.js';
 import { liftDexMethod } from './lifter.js';
 import { parseDex, probeDex } from './parser.js';
+import { validateLinearIntRegisterDataflow } from './register-dataflow.js';
 import { captureDexValidationMetadata, validateDexMethod } from './validation.js';
 
 export class DexFrontend {
@@ -76,18 +77,27 @@ export class DexFrontend {
 
   async validateMethod(decoded, context = {}) {
     const verifier = validateDexMethod(decoded);
+    const dataflow = validateLinearIntRegisterDataflow(decoded?.metadata?.dexValidation, context.image);
+    const provenOffsets = dataflow.complete ? new Set(dataflow.provenOffsets) : null;
+    const partialReasons = verifier.partialReasons.filter((reason) => !(provenOffsets
+      && reason?.code === 'dex-verifier-dataflow-incomplete'
+      && provenOffsets.has(reason.offset)));
+    const verifierErrors = [...verifier.errors, ...dataflow.errors];
+    const verifierFacts = dataflow.complete
+      ? [...verifier.verifierFacts, { code:'dex-linear-int-register-dataflow-validated', instructionOffsets:dataflow.provenOffsets }]
+      : verifier.verifierFacts;
     const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
     const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
     const semanticPartial = hasUnknowns || hasPartials;
-    const invalid = verifier.structuralErrors.length > 0 || verifier.errors.length > 0;
-    const verifierPartial = verifier.partialReasons.length > 0;
+    const invalid = verifier.structuralErrors.length > 0 || verifierErrors.length > 0;
+    const verifierPartial = partialReasons.length > 0;
     const status = invalid ? 'invalid' : (semanticPartial || verifierPartial) ? 'partial' : 'valid';
     return createManagedValidationReport({
       targetId: decoded.methodId,
       status,
-      errors: [...verifier.structuralErrors, ...verifier.errors],
-      warnings: [...verifier.warnings, ...verifier.partialReasons],
-      verifierFacts: verifier.verifierFacts,
+      errors: [...verifier.structuralErrors, ...verifierErrors],
+      warnings: [...verifier.warnings, ...partialReasons],
+      verifierFacts,
       completeness: {
         structural: verifier.structuralErrors.length > 0 ? 'failed' : 'complete',
         specValidation: invalid ? 'failed' : verifierPartial || semanticPartial ? 'partial' : 'valid',

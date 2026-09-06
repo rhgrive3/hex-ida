@@ -73,6 +73,15 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: ${{ inputs.phase_name }} ownership inventory
         run: node ${{ inputs.ownership_script }}
+      # Pull requests already run the complete repository-wide contract through
+      # Invariant Gates. Re-running npm run check inside every matching Phase
+      # validator duplicates the same work and dominates PR wall-clock time.
+      # Keep the broad suite at main/manual release boundaries, and run it
+      # before the exact-product verifier: phase verifiers publish tracked
+      # evidence files, which intentionally makes the worktree dirty.
+      - name: Broad repository regression at release boundary
+        if: ${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}
+        run: npm run check
       - name: ${{ inputs.phase_name }} exact-product verifier
         env:
           EXPECT_SHA: ${{ inputs.expected_sha }}
@@ -83,13 +92,6 @@ jobs:
           if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
           if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
           node ${{ inputs.verify_script }} "${args[@]}"
-      # Pull requests already run the complete repository-wide contract through
-      # Invariant Gates. Re-running npm run check inside every matching Phase
-      # validator duplicates the same work and dominates PR wall-clock time.
-      # Keep the broad suite at main/manual release boundaries.
-      - name: Broad repository regression at release boundary
-        if: ${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}
-        run: npm run check
       - name: Publish validated ${{ inputs.phase_name }} evidence
         if: success()
         uses: actions/upload-artifact@v4

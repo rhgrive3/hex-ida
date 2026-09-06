@@ -47,10 +47,13 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   const destinationWidth = Number(destinationWidthBits);
   const sourceWidth = Number(sourceWidthBits);
   if (!supportedWidth(destinationWidth) || !supportedWidth(sourceWidth)) return false;
-  if (family === 'movsxd') return sourceWidth === 32 && [16,32,64].includes(destinationWidth);
+  if (family === 'movsxd') {
+    return (sourceWidth === 16 && destinationWidth === 16)
+      || (sourceWidth === 32 && (destinationWidth === 32 || destinationWidth === 64));
+  }
   if (family === 'movzx' || family === 'movsx') {
-    if (![8,16].includes(sourceWidth)) return false;
-    return destinationWidth >= Math.max(16, sourceWidth);
+    return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
+      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
   }
   return false;
 }

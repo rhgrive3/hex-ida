@@ -7,6 +7,7 @@ const CLI_DIRECTORY_INDEX = 14;
 const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
+const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function checkedRange(bytes, offset, size, code) {
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length - size) {
@@ -28,6 +29,27 @@ function readU16(view, offset, code = 'cil-truncated-structure') {
 function align4(offset) {
   return (offset + 3) & ~3;
 }
+
+function parseStringsHeap(bytes, offset, size) {
+  checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  const strings = [];
+  let position = offset;
+  const end = offset + size;
+  while (position < end) {
+    const start = position;
+    while (position < end && bytes[position] !== 0) position++;
+    let value;
+    try {
+      value = STRICT_UTF8_DECODER.decode(bytes.subarray(start, position));
+    } catch {
+      fail('cil-invalid-strings-utf8');
+    }
+    if (position < end) position++;
+    if (value) strings.push(value);
+  }
+  return strings;
+}
+
 
 function readPeCliLayout(bytes, view) {
   if (bytes.length < 64 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) return null;
@@ -444,18 +466,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const stringStream = streams.find((stream) => stream.name === '#Strings');
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
-  const strings = [];
-  if (stringStream) {
-    checkedRange(bytes, stringStream.offset, stringStream.size, 'cil-metadata-strings-out-of-bounds');
-    let position = stringStream.offset;
-    const end = stringStream.offset + stringStream.size;
-    while (position < end) {
-      let value = '';
-      while (position < end && bytes[position] !== 0) value += String.fromCharCode(bytes[position++]);
-      position++;
-      if (value) strings.push(value);
-    }
-  }
+  const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
   const tables = parseMetadataTables(bytes, view, tableStream);
   return Object.freeze({
     runtimeVersion,
@@ -464,6 +475,39 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
     standAloneSigBlobIndexes: tables.standAloneSigBlobIndexes,
     blobStream,
   });
+}
+
+function exceptionClauseKind(flags) {
+  switch (flags) {
+    case 0: return 'catch';
+    case 1: return 'filter';
+    case 2: return 'finally';
+    case 4: return 'fault';
+    default: fail('cil-invalid-exception-clause-flags');
+  }
+}
+
+function validateExceptionClauseRange(clause, codeSize) {
+  const rangeInCode = (offset, length) => Number.isSafeInteger(offset)
+    && Number.isSafeInteger(length)
+    && offset >= 0
+    && length > 0
+    && offset < codeSize
+    && length <= codeSize - offset;
+
+  if (!rangeInCode(clause.tryOffset, clause.tryLength)
+      || !rangeInCode(clause.handlerOffset, clause.handlerLength)) {
+    fail('cil-invalid-exception-clause-range');
+  }
+
+  if (clause.kind === 'filter') {
+    const filterOffset = clause.classTokenOrFilter;
+    // Match the canonical verifier: filter code is [filterOffset, handlerOffset).
+    if (!Number.isSafeInteger(filterOffset) || filterOffset < 0 || filterOffset >= clause.handlerOffset) {
+      fail('cil-invalid-exception-filter-offset');
+    }
+  }
+  return clause;
 }
 
 function parseMethodBody(bytes, view, offset, metadataInfo = null) {
@@ -502,41 +546,75 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
   const exceptionClauses = [];
 
   if ((flags & 0x08) !== 0) {
-    const extraOffset = align4(codeOffset + codeSize);
-    checkedRange(bytes, extraOffset, 4, 'cil-method-extra-section-truncated');
-    const kind = bytes[extraOffset];
-    const dataSize = bytes[extraOffset + 1]
-      | (bytes[extraOffset + 2] << 8)
-      | (bytes[extraOffset + 3] << 16);
-    if (dataSize < 4) fail('cil-invalid-method-extra-section');
-    checkedRange(bytes, extraOffset, dataSize, 'cil-method-extra-section-truncated');
-    if ((kind & 0x01) !== 0) {
-      const clauseSize = (kind & 0x40) !== 0 ? 24 : 12;
+    let extraOffset = align4(codeOffset + codeSize);
+    let moreSections = true;
+    let sectionCount = 0;
+    let totalChainedBytes = 0;
+    const MAX_METHOD_EXTRA_SECTIONS = 64;
+    const MAX_METHOD_EXTRA_SECTION_BYTES = 65536;
+
+    while (moreSections) {
+      sectionCount++;
+      if (sectionCount > MAX_METHOD_EXTRA_SECTIONS) {
+        fail('cil-method-extra-sections-exceeded');
+      }
+      checkedRange(bytes, extraOffset, 4, 'cil-method-extra-section-truncated');
+      const kind = bytes[extraOffset];
+      const isFat = (kind & 0x40) !== 0;
+      let dataSize;
+      if (isFat) {
+        dataSize = bytes[extraOffset + 1]
+          | (bytes[extraOffset + 2] << 8)
+          | (bytes[extraOffset + 3] << 16);
+      } else {
+        dataSize = bytes[extraOffset + 1];
+        if (bytes[extraOffset + 2] !== 0 || bytes[extraOffset + 3] !== 0) {
+          fail('cil-invalid-method-extra-section');
+        }
+      }
+      if (dataSize < 4) fail('cil-invalid-method-extra-section');
+      totalChainedBytes += dataSize;
+      if (totalChainedBytes > MAX_METHOD_EXTRA_SECTION_BYTES) {
+        fail('cil-method-extra-section-bytes-exceeded');
+      }
+      checkedRange(bytes, extraOffset, dataSize, 'cil-method-extra-section-truncated');
+      if ((kind & 0x3f) !== 0x01) fail('cil-unsupported-method-extra-section');
+
+      const clauseSize = isFat ? 24 : 12;
       if ((dataSize - 4) % clauseSize !== 0) fail('cil-invalid-method-clause-size');
       const clauseCount = (dataSize - 4) / clauseSize;
       for (let clause = 0; clause < clauseCount; clause++) {
         const clauseOffset = extraOffset + 4 + clause * clauseSize;
+        let parsedClause;
         if (clauseSize === 24) {
           const clauseFlags = readU32(view, clauseOffset, 'cil-fat-method-clause-truncated');
-          exceptionClauses.push({
-            kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
+          parsedClause = {
+            kind: exceptionClauseKind(clauseFlags),
             tryOffset: readU32(view, clauseOffset + 4, 'cil-fat-method-clause-truncated'),
             tryLength: readU32(view, clauseOffset + 8, 'cil-fat-method-clause-truncated'),
             handlerOffset: readU32(view, clauseOffset + 12, 'cil-fat-method-clause-truncated'),
             handlerLength: readU32(view, clauseOffset + 16, 'cil-fat-method-clause-truncated'),
             classTokenOrFilter: readU32(view, clauseOffset + 20, 'cil-fat-method-clause-truncated'),
-          });
+          };
         } else {
           const clauseFlags = readU16(view, clauseOffset, 'cil-small-method-clause-truncated');
-          exceptionClauses.push({
-            kind: clauseFlags === 1 ? 'filter' : clauseFlags === 2 ? 'finally' : clauseFlags === 4 ? 'fault' : 'catch',
+          parsedClause = {
+            kind: exceptionClauseKind(clauseFlags),
             tryOffset: readU16(view, clauseOffset + 2, 'cil-small-method-clause-truncated'),
             tryLength: bytes[clauseOffset + 4],
             handlerOffset: readU16(view, clauseOffset + 5, 'cil-small-method-clause-truncated'),
             handlerLength: bytes[clauseOffset + 7],
             classTokenOrFilter: readU32(view, clauseOffset + 8, 'cil-small-method-clause-truncated'),
-          });
+          };
         }
+        exceptionClauses.push(validateExceptionClauseRange(parsedClause, codeSize));
+      }
+
+      moreSections = (kind & 0x80) !== 0;
+      if (moreSections) {
+        const nextOffset = align4(extraOffset + dataSize);
+        if (nextOffset <= extraOffset) fail('cil-invalid-method-extra-section');
+        extraOffset = nextOffset;
       }
     }
   }
@@ -569,7 +647,8 @@ export function probeCil(bytes) {
         return { supported: true, confidence: 1.0, formatVersion: 'pe-cli', vmSpecEdition: 'clr-v4' };
       }
       return { supported: false, confidence: 0, reason: layout?.cliPresent === false ? 'cli-directory-missing' : 'invalid-pe-cli' };
-    } catch {
+    } catch (error) {
+      if (error?.message === 'cil-invalid-strings-utf8') throw error;
       return { supported: false, confidence: 0, reason: 'malformed-pe-cli' };
     }
   }
@@ -664,16 +743,7 @@ export function parseCil(bytes, options = {}) {
 
       const stringStream = streams.find((st) => st.name === '#Strings');
       if (stringStream && stringStream.offset + stringStream.size <= u8.length) {
-        let p = stringStream.offset;
-        const end = stringStream.offset + stringStream.size;
-        while (p < end) {
-          let str = '';
-          while (p < end && u8[p] !== 0) {
-            str += String.fromCharCode(u8[p++]);
-          }
-          p++; // skip null
-          if (str) strings.push(str);
-        }
+        strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
       }
     }
   }

@@ -883,10 +883,11 @@
     if (!indirectBuf || !indirectBuf.length || !sym) return out;
     const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
     const total = Math.floor(indirectBuf.length / 4);
+    const pointerSize = info.pointerBits === 32 ? 4 : 8;
     for (const seg of info.segments) {
       for (const sec of seg.sections) {
         if (!sec.stubs && !sec.pointers) continue;
-        const entSize = sec.stubs ? (sec.reserved2 || 12) : 8;
+        const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
         if (entSize <= 0) continue;
         const count = Number(sec.size / BigInt(entSize));
         for (let i = 0; i < count; i++) {

@@ -1,12 +1,10 @@
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 function rejectMalformedIntegerScalar(value, message) {
-  if (value == null || typeof value === 'boolean') {
-    throw new RangeError(message);
-  }
-  if (typeof value === 'string' && value.trim() === '') {
-    throw new RangeError(message);
-  }
+  const type = typeof value;
+  if (type === 'number' || type === 'bigint') return;
+  if (type === 'string' && value.trim() !== '') return;
+  throw new RangeError(message);
 }
 
 export function checkedChunkIndex(value) {

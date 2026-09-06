@@ -25,6 +25,9 @@ const INCOMPATIBLE_CODES = new Set([
   'artifact-record-identity-mismatch',
   'artifact-storage-envelope-schema-mismatch',
 ]);
+const UPSTREAM_VALID = 'valid';
+const UPSTREAM_INVALID = 'invalid';
+const UPSTREAM_BUDGET_EXHAUSTED = 'budget-exhausted';
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -133,8 +136,10 @@ export class ArtifactStore {
             descriptor,
             allowIncomplete:options.allowIncomplete,
           });
-          if (!(await this.#upstreamsValid(validated.record, options))) {
+          const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+          if (upstreamStatus !== UPSTREAM_VALID) {
             if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
+            if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, 'hot');
             return this.#staleDependency(artifactId, 'hot', validated.record, validated.payloadBytes);
           }
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
@@ -168,8 +173,10 @@ export class ArtifactStore {
           allowIncomplete:options.allowIncomplete,
         });
         this.metrics.readBytes += validated.payloadBytes.byteLength;
-        if (!(await this.#upstreamsValid(validated.record, options))) {
+        const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+        if (upstreamStatus !== UPSTREAM_VALID) {
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
+          if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, source);
           return this.#staleDependency(artifactId, source, validated.record, validated.payloadBytes);
         }
         if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
@@ -192,7 +199,7 @@ export class ArtifactStore {
   }
 
   async #upstreamsValid(record, options, context = null) {
-    if (options.verifyUpstreams === false) return true;
+    if (options.verifyUpstreams === false) return UPSTREAM_VALID;
     const ctx = context || {
       activePath: new Set(),
       validated: new Set(),
@@ -200,33 +207,34 @@ export class ArtifactStore {
       nodesVisited: 0,
     };
     const currentId = requireArtifactId(record.artifactId);
-    if (ctx.activePath.has(currentId)) return false;
+    if (ctx.activePath.has(currentId)) return UPSTREAM_INVALID;
     ctx.activePath.add(currentId);
     try {
       for (const upstreamId of record.upstreamArtifactIds || []) {
         aborted(options.signal);
-        if (ctx.activePath.has(upstreamId)) return false;
+        if (ctx.activePath.has(upstreamId)) return UPSTREAM_INVALID;
         if (ctx.validated.has(upstreamId)) continue;
-        if (++ctx.nodesVisited > ctx.maxNodes) return false;
+        if (++ctx.nodesVisited > ctx.maxNodes) return UPSTREAM_BUDGET_EXHAUSTED;
 
         let raw;
         try { this.metrics.reads++; raw = await this.backend.getRaw(upstreamId); }
         catch (error) { this.metrics.storageFailures++; throw error; }
-        if (!raw) return false;
+        if (!raw) return UPSTREAM_INVALID;
         try {
           const validated = validateStoredArtifact(raw, { artifactId:upstreamId });
           this.metrics.readBytes += validated.payloadBytes.byteLength;
-          if (!(await this.#upstreamsValid(validated.record, options, ctx))) return false;
+          const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
+          if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
           ctx.validated.add(upstreamId);
         } catch (error) {
           if (error instanceof ArtifactCorruptionError) {
             this.metrics.validationFailures++;
-            return false;
+            return UPSTREAM_INVALID;
           }
           throw error;
         }
       }
-      return true;
+      return UPSTREAM_VALID;
     } finally {
       ctx.activePath.delete(currentId);
     }
@@ -246,6 +254,11 @@ export class ArtifactStore {
         throw error;
       }
     });
+  }
+
+  #verificationBudgetMiss(artifactId, source) {
+    this.metrics.misses++;
+    return { status:'miss', source, artifactId, reason:'verification-budget-exhausted' };
   }
 
   async #staleDependency(artifactId, source, record, payloadBytes) {

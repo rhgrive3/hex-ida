@@ -97,7 +97,9 @@ export function createAppRuntimeIO(app) {
       // unknown or variable-width targets instead of defaulting to ARM64.
       const arch = activeArchitecture(app);
       if (!localSandboxSupportsArchitecture(arch)) return null;
-      const row = Number((addr - region.vmAddr) / 4n);
+      const delta = addr - region.vmAddr;
+      if (delta % 4n !== 0n) return null;
+      const row = Number(delta / 4n);
       const chunk = Math.floor(row / 1024);
       const decoded = await app.backend.fetchChunk(region.id, chunk, true);
       const index = row - chunk * 1024;

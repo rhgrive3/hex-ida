@@ -75,8 +75,19 @@ function requiredOrigin(input, code) {
   return createOriginSet(input.origin);
 }
 function signedIntegerString(value, code) {
-  try { return (typeof value === 'bigint' ? value : BigInt(value)).toString(); }
-  catch { fail(code); }
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value).toString();
+  }
+  if (typeof value === 'string') {
+    let canonical;
+    try { canonical = BigInt(value).toString(); }
+    catch { fail(code); }
+    if (canonical !== value) fail(code);
+    return canonical;
+  }
+  fail(code);
 }
 function aliasRelation(value, code) {
   const relation = nonEmpty(value, code);

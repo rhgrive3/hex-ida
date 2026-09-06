@@ -6,6 +6,7 @@ import { addrHex } from '../format.js';
 
 const ja = () => (navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
+const CLAIM_PAGE_SIZE = 500;
 
 function addressText(value) {
   try { return addrHex(typeof value === 'bigint' ? value : BigInt(value)); }
@@ -23,6 +24,33 @@ function verdictBadge(verdict) {
     case 'likely': return 'likely';
     case 'contradicted': return 'contradicted';
     default: return 'unverified';
+  }
+}
+
+export async function loadCanonicalClaims(queries, snapshot, detailId = null, options = {}) {
+  if (detailId != null) {
+    return queries.claims(snapshot, { claimId:detailId }, { offset:0, limit:1 }, options);
+  }
+  const value = [];
+  let offset = 0;
+  let completeness = 'complete';
+  while (true) {
+    const result = await queries.claims(snapshot, {}, { offset, limit:CLAIM_PAGE_SIZE }, options);
+    const rows = Array.isArray(result?.value) ? result.value : [];
+    value.push(...rows);
+    if (result?.completeness !== 'complete') completeness = 'partial';
+    if (options.signal?.aborted) return { value, completeness:'partial' };
+    const page = result?.page;
+    if (!page || !Object.hasOwn(page, 'next')) {
+      return { value, completeness:'partial' };
+    }
+    const next = page.next;
+    if (next === null) return { value, completeness };
+    const expectedNext = offset + rows.length;
+    if (!Number.isSafeInteger(next) || next <= offset || next !== expectedNext) {
+      return { value, completeness:'partial' };
+    }
+    offset = next;
   }
 }
 
@@ -146,7 +174,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   (async () => {
     try {
       const snapshot = await queries.snapshot({ signal:meta.signal });
-      const result = await queries.claims(snapshot, detailId ? { claimId:detailId } : {}, { offset:0, limit:detailId ? 1 : 500 }, { signal:meta.signal });
+      const result = await loadCanonicalClaims(queries, snapshot, detailId, { signal:meta.signal });
       if (meta.signal.aborted) return;
       const claims = result.value || [];
       if (detailId) {

@@ -25,12 +25,10 @@ function optionalIdentity(value, name) {
 
 function safeSequence(value, name = 'sequence') {
   if (value == null) return null;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
-  return n;
+  return value;
 }
 
 function positiveSize(value, name = 'runtimeSize') {

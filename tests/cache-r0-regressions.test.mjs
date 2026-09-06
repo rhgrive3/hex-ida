@@ -68,3 +68,118 @@ test('artifact-id-only get rejects and removes canonical records without binaryH
   assert.equal(await cache.get(null, { artifactId: ARTIFACT_ID }), null);
   assert.equal(cache.memory.has(key), false);
 });
+
+function controlledIndexedDB() {
+  const transactions = [];
+  let requestSuccesses = 0;
+  const db = {
+    objectStoreNames: { contains: () => true },
+    close() {},
+    transaction(_storeName, mode) {
+      assert.equal(mode, 'readwrite');
+      const makeRequest = () => {
+        const request = { result:undefined, error:null, onsuccess:null, onerror:null };
+        queueMicrotask(() => {
+          requestSuccesses++;
+          request.onsuccess?.();
+        });
+        return request;
+      };
+      const transaction = {
+        error:null,
+        oncomplete:null,
+        onerror:null,
+        onabort:null,
+        objectStore() {
+          return { put:makeRequest, delete:makeRequest, clear:makeRequest };
+        },
+      };
+      transactions.push(transaction);
+      return transaction;
+    },
+  };
+  const indexedDB = {
+    open() {
+      const request = {
+        result:db,
+        error:null,
+        onupgradeneeded:null,
+        onsuccess:null,
+        onerror:null,
+        onblocked:null,
+      };
+      queueMicrotask(() => request.onsuccess?.());
+      return request;
+    },
+  };
+  return {
+    indexedDB,
+    transactions,
+    get requestSuccesses() { return requestSuccesses; },
+    complete(index = 0) { transactions[index].oncomplete?.(); },
+    abort(error, index = 0) {
+      const transaction = transactions[index];
+      transaction.error = error;
+      transaction.onabort?.();
+    },
+  };
+}
+
+function nextTurn() {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+async function assertPendingAfterRequest(fake, promise) {
+  let state = 'pending';
+  promise.then(
+    () => { state = 'resolved'; },
+    () => { state = 'rejected'; },
+  );
+  await nextTurn();
+  assert.equal(fake.transactions.length, 1, 'mutation must open one readwrite transaction');
+  assert.equal(fake.requestSuccesses, 1, 'object-store request must have succeeded before transaction settlement');
+  assert.equal(state, 'pending', 'request success must not settle the public mutation before transaction commit');
+}
+
+for (const [name, mutate] of [
+  ['put', cache => cache.put('hash', { analysisSummaries:{ ok:true } })],
+  ['delete', cache => cache.delete('hash')],
+  ['clear', cache => cache.clear()],
+]) {
+  test(`#4482 AnalysisCache.${name} rejects a transaction abort after request success`, async () => {
+    const fake = controlledIndexedDB();
+    const cache = new AnalysisCache({ indexedDB:fake.indexedDB, fallbackMode:'error' });
+    const abortError = new Error(`${name}-transaction-aborted`);
+    const mutation = mutate(cache);
+
+    await assertPendingAfterRequest(fake, mutation);
+    fake.abort(abortError);
+
+    await assert.rejects(mutation, error => error === abortError);
+  });
+}
+
+test('#4482 successful mutation waits for transaction complete', async () => {
+  const fake = controlledIndexedDB();
+  const cache = new AnalysisCache({ indexedDB:fake.indexedDB, fallbackMode:'error' });
+  const mutation = cache.put('hash', { analysisSummaries:{ committed:true } });
+
+  await assertPendingAfterRequest(fake, mutation);
+  fake.complete();
+
+  assert.deepEqual(await mutation, { analysisSummaries:{ committed:true } });
+  assert.equal(cache.memory, null, 'committed IndexedDB writes must not enter memory fallback');
+});
+
+test('#4482 transaction abort activates memory fallback before put resolves', async () => {
+  const fake = controlledIndexedDB();
+  const cache = new AnalysisCache({ indexedDB:fake.indexedDB });
+  const mutation = cache.put('hash', { analysisSummaries:{ fallback:true } });
+
+  await assertPendingAfterRequest(fake, mutation);
+  fake.abort(new Error('transaction-aborted'));
+
+  assert.deepEqual(await mutation, { analysisSummaries:{ fallback:true } });
+  assert.ok(cache.memory instanceof Map);
+  assert.equal((await cache.get('hash')).analysisSummaries.fallback, true);
+});

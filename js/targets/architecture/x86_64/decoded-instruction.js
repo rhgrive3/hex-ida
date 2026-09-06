@@ -124,13 +124,29 @@ function normalizeOperand(input, index) {
   return Object.freeze(common);
 }
 
+function prefixBytesOf(input, code) {
+  if (input == null) return new Uint8Array();
+  if (input instanceof Uint8Array) return input.slice();
+  if (!Array.isArray(input)) throw new TypeError(code);
+  const bytes = new Uint8Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError(code);
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError(code);
+    }
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
 function normalizePrefixState(input = {}) {
-  const legacy = Uint8Array.from(input.legacy || []);
+  const legacy = prefixBytesOf(input.legacy, 'x86-decoded-instruction-invalid-legacy-prefix-byte');
   if (legacy.length > 4) throw new TypeError('x86-decoded-instruction-too-many-legacy-prefixes');
   const rex = input.rex == null ? null : integer(input.rex, 'x86-decoded-instruction-invalid-rex', { max:255 });
   const vector = input.vector == null ? null : Object.freeze({
     kind:text(input.vector.kind, 'x86-decoded-instruction-vector-prefix-kind'),
-    bytes:Uint8Array.from(input.vector.bytes || []),
+    bytes:prefixBytesOf(input.vector.bytes, 'x86-decoded-instruction-invalid-vector-prefix-byte'),
   });
   return Object.freeze({ legacy, rex, vector });
 }

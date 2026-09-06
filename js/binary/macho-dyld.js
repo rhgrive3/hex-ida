@@ -409,6 +409,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     image.warnings.push(`${source}: ${message}`);
   };
+  const validDylibOrdinal = () => {
+    if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (libOrdinal > 0 && libOrdinal > libraryCount) { fail(`dylib ordinal ${libOrdinal} exceeds dependency count ${libraryCount}`); return false; }
+    return true;
+  };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
     const seg = segments[segIndex];
@@ -416,6 +422,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (!validDylibOrdinal()) return;
     if (threadedTable) {
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);

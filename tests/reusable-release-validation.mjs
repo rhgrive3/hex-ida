@@ -35,8 +35,19 @@ assert.ok(reusableText.includes("actions/upload-artifact@v4"), "13. upload-artif
 assert.ok(reusableText.includes("if: success()"), "14. if: success()");
 assert.ok(reusableText.includes("${{ inputs.artifact_prefix }}-${{ inputs.artifact_suffix }}"), "15. artifact name");
 assert.ok(reusableText.includes("if-no-files-found: error"), "16. if-no-files-found: error");
+const broadRegressionIndex = reusableText.indexOf("- name: Broad repository regression at release boundary");
+const exactVerifierIndex = reusableText.indexOf("- name: ${{ inputs.phase_name }} exact-product verifier");
+const evidenceUploadIndex = reusableText.indexOf("- name: Publish validated ${{ inputs.phase_name }} evidence");
+assert.ok(
+  broadRegressionIndex >= 0 && exactVerifierIndex >= 0 && broadRegressionIndex < exactVerifierIndex,
+  "17. broad regression runs before exact verifier so verifier-published evidence cannot dirty clean-tree checks",
+);
+assert.ok(
+  exactVerifierIndex < evidenceUploadIndex,
+  "18. evidence is uploaded only after exact verification",
+);
 
-console.log("  ok 1-16 reusable workflow assertions");
+console.log("  ok 1-18 reusable workflow assertions");
 
 function extractPaths(text, event) {
   const match = text.match(new RegExp(event + ":[\\s\\S]*?paths:\\s*\\n([\\s\\S]*?)(?:\\n\\s*\\w+:|\\Z)"));
