@@ -1,5 +1,7 @@
 /* Objective-C runtime intelligence built on top of objc.js metadata parsing. */
 
+const PROTOCOLS_KNOWN = Symbol('objc.protocolsKnown');
+
 function cleanClassName(name) {
   if (name == null || typeof name !== 'string') return null;
   return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
@@ -181,6 +183,7 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     };
     info.methods = shallowCloneArray(info.methods);
     info.classMethods = shallowCloneArray(info.classMethods);
+    Object.defineProperty(info, PROTOCOLS_KNOWN, { value: Array.isArray(c.protocols) });
     classes.set(info.name, info);
     for (const m of info.methods || []) {
       const x = normalizeMethod(m, info.name, false, 'class', proofRequired);
@@ -339,9 +342,36 @@ function protocolSet(index, chain, explicit) {
   return out;
 }
 
-function protocolRequirements(index, key, allowedProtocols) {
+// A hierarchy chain is a negative proof only when every link resolved to
+// indexed class metadata and the walk reached a real root. A receiver class
+// from a linked framework, bundle, or runtime registration is simply absent
+// from the current image index: filtering by that open chain would turn an
+// unobserved superclass into a proven contradiction.
+function hierarchyComplete(index, chain) {
+  if (!chain.length) return false;
+  for (const name of chain) {
+    if (!index.classes.has(name)) return false;
+  }
+  const last = index.classes.get(chain[chain.length - 1]);
+  return !cleanClassName(last?.superName);
+}
+
+// "Known-empty" protocol context must be distinguished from "unknown" context.
+// An empty allowed set means unrestricted only when the receiver hierarchy or
+// protocol universe itself is unknown; a known receiver that demonstrably
+// adopts zero protocols must filter unrelated requirements to empty.
+function protocolContextKnown(index, chain, explicit) {
+  if (Array.isArray(explicit)) return true;
+  if (!hierarchyComplete(index, chain)) return false;
+  if (index.completeness?.classes?.complete === false) return false;
+  if (index.completeness?.categories?.complete === false) return false;
+  if (index.completeness?.protocols?.complete === false) return false;
+  return chain.every((name) => index.classes.get(name)?.[PROTOCOLS_KNOWN] === true);
+}
+
+function protocolRequirements(index, key, allowedProtocols, contextKnown) {
   const all = index.protocolRequirementsBySelector?.get(key) || [];
-  if (!allowedProtocols.size) return all.slice();
+  if (!allowedProtocols.size && !contextKnown) return all.slice();
   return all.filter((m) => allowedProtocols.has(m.className));
 }
 
@@ -358,7 +388,8 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const chain = hierarchy(index, cleanReceiver);
   const ranks = new Map(chain.map((n, i) => [n, i]));
   const allowedProtocols = protocolSet(index, chain, protocols);
-  const requirements = protocolRequirements(index, key, allowedProtocols);
+  const contextKnown = protocolContextKnown(index, chain, protocols);
+  const requirements = protocolRequirements(index, key, allowedProtocols, contextKnown);
   const all = (index.methodsBySelector.get(key) || []).filter((m) => m.source !== 'protocol' && m.imp != null);
   if (!all.length) {
     return {

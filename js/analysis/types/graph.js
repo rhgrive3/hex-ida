@@ -64,9 +64,8 @@ function fail(code) { throw new TypeError(code); }
 
 function positiveLimit(value, fallback, code) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
 }
 
 function defaultAlign(sizeBytes) {

@@ -219,6 +219,10 @@ function parameterAbiClass(param) {
   return { pointer, hfa, vector, fp, members, bits };
 }
 
+function abiReturnBits(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 64;
+}
+
 /** AAPCS64-visible call inputs. Unknown prototypes deliberately include both
  * GP and SIMD argument banks and mark stack arguments as unknown instead of
  * pretending x0-x7 is a complete ABI description. */
@@ -271,9 +275,9 @@ function callResultLocation(insn, opts) {
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   if (proto.indirectResult === true || cls === 'indirect') return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+    return { reg:'v0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
   }
-  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
   return null;
 }
 
@@ -284,10 +288,10 @@ function functionReturnLocation(opts) {
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   if (proto?.indirectResult === true || cls === 'indirect') return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+    return { reg:'v0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
-    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+    return { reg:'x0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
   }
   return null;
 }
