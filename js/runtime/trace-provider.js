@@ -58,6 +58,10 @@ function sumDroppedEventCounts(events) {
   return total;
 }
 
+function isLossEvent(event) {
+  return event.completeness === 'truncated' || event.kind === 'gap' || event.kind === 'dropped-events';
+}
+
 function collectionField(value, field) {
   if (value == null) return [];
   if (!Array.isArray(value)) {
@@ -215,15 +219,21 @@ export class TraceProvider {
         completeness: 'truncated',
       }));
     }
+    const canonicalDropped = hasExplicitDroppedCount ? explicitDropped : this.recording.dropped;
+    const hasDroppedEventCount = normalized.some((event) => event.kind === 'dropped-events');
+    const hasExplicitLoss = normalized.some(isLossEvent);
     session.normalizedEvents = Object.freeze(normalized);
-    session.sourceCompleteness = hasExplicitDrop ? 'truncated' : this.recording.completeness;
-    session.facets = Object.freeze({ trace: this.#createTraceFacet(session) });
+    session.sourceCompleteness = hasExplicitLoss ? 'truncated' : this.recording.completeness;
+    session.facets = Object.freeze({ trace: this.#createTraceFacet(session, Object.freeze({
+      dropped: canonicalDropped,
+      hasDroppedEventCount,
+    })) });
     session.setState('ready');
     this.activeSession = session;
     return session;
   }
 
-  #createTraceFacet(session) {
+  #createTraceFacet(session, lossAuthority) {
     return Object.freeze({
       source: deepFreeze({
         recordingId: this.recording.recordingId,
@@ -235,17 +245,23 @@ export class TraceProvider {
       async *events(options = {}) {
         const batchSize = boundedInteger(options.batchSize, 256, 1, 4096, 'batchSize');
         const signal = options.signal;
+        let implicitDroppedPending = lossAuthority.dropped > 0 && !lossAuthority.hasDroppedEventCount;
         for (let i = 0; i < session.normalizedEvents.length; i += batchSize) {
           if (signal?.aborted) throw new DebugAdapterError('cancelled', 'trace event stream cancelled');
           const events = session.normalizedEvents.slice(i, i + batchSize);
-          const loss = events.some((event) => event.completeness === 'truncated' || event.kind === 'gap' || event.kind === 'dropped-events');
+          const loss = events.some(isLossEvent);
+          let dropped = sumDroppedEventCounts(events);
+          if (implicitDroppedPending && loss) {
+            dropped = lossAuthority.dropped;
+            implicitDroppedPending = false;
+          }
           yield createRuntimeEventBatch({
             runtimeSessionId: session.runtimeSessionId,
             providerId: session.providerId,
             sessionEpoch: session.epoch,
             events,
             completeness: loss ? 'truncated' : session.sourceCompleteness,
-            dropped: sumDroppedEventCounts(events),
+            dropped,
           });
         }
       },
@@ -255,7 +271,7 @@ export class TraceProvider {
         sessionEpoch: session.epoch,
         events: session.normalizedEvents,
         completeness: session.sourceCompleteness,
-        dropped: sumDroppedEventCounts(session.normalizedEvents),
+        dropped: lossAuthority.dropped,
       }),
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
     });
