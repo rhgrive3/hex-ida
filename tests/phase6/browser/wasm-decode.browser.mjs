@@ -7,14 +7,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 /**
  * Real-browser proof for the Phase 6 decoder.
  *
- * Hex is browser/iPad-first, so "the deployed WASM decodes RISC-V" is only
- * believable once it has been observed in a browser, streaming the same
- * capstone.wasm over HTTP the way the product does. This runs the production
- * classic worker script itself inside a real Worker.
+ * Hex is browser/iPad-first, so deployed WASM/Worker authority is only
+ * believable once observed through the production browser transport. Besides
+ * the existing cross-architecture decode proof this test now verifies #5082:
+ * an x86 row crosses the real decoder Worker boundary, is independently
+ * re-decoded by the dedicated receiver Worker, and only then may MachineEffects
+ * publish terminal exactness.
  *
- * It is a `.browser.mjs`, not a `.test.mjs`, so the canonical Phase 6 runner
- * does not silently require a browser toolchain; `npm run phase6:browser`
- * runs it and fails closed when Playwright is unavailable.
+ * It is a `.browser.mjs`, not a `.test.mjs`, so the canonical Phase 6 Node
+ * denominator stays browser-toolchain independent; `npm run phase6:browser`
+ * runs this stronger deployed-WASM proof and fails closed without Playwright.
  */
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -39,7 +41,7 @@ function serve() {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     if (pathname === '/phase6-test') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      response.end('<!doctype html><meta charset="utf-8"><title>Phase 6 RISC-V decode</title>');
+      response.end('<!doctype html><meta charset="utf-8"><title>Phase 6 browser decode</title>');
       return;
     }
     const file = path.resolve(root, pathname.replace(/^\/+/, ''));
@@ -63,22 +65,48 @@ try {
   await page.goto(`${origin}/phase6-test`);
 
   const result = await page.evaluate(async () => {
-    // The production classic worker script, loaded exactly as the product loads it.
-    const worker = new Worker('/js/platform/capstone-disasm-worker.js');
-    const ask = (message) => new Promise((resolve, reject) => {
+    const requestWorker = (worker, message) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('worker timeout')), 60_000);
       worker.onmessage = (event) => { clearTimeout(timer); resolve(event.data); };
       worker.onerror = (event) => { clearTimeout(timer); reject(new Error(event.message)); };
       worker.postMessage(message);
     });
+
+    // Production classic decoder Worker, loaded exactly as the product loads it.
+    const decoderWorker = new Worker('/js/platform/capstone-disasm-worker.js');
     // c.li a0,7 | addi a1,a1,1 | c.add a0,a1 | ld a2,0(a0) | ret
-    const riscv = await ask({
+    const riscv = await requestWorker(decoderWorker, {
       id: 1, architecture: 'riscv64', address: 0x1000n,
       bytes: new Uint8Array([0x1d, 0x45, 0x93, 0x85, 0x15, 0x00, 0x2e, 0x95, 0x03, 0x36, 0x05, 0x00, 0x67, 0x80, 0x00, 0x00]),
     });
-    const arm64 = await ask({ id: 2, architecture: 'arm64', address: 0x1000n, bytes: new Uint8Array([0x00, 0x00, 0x80, 0xd2]) });
-    const x86 = await ask({ id: 3, architecture: 'x86_64', address: 0x2000n, bytes: new Uint8Array([0x48, 0x89, 0xf8, 0xc3]) });
-    worker.terminate();
+    const arm64 = await requestWorker(decoderWorker, {
+      id: 2, architecture: 'arm64', address: 0x1000n,
+      bytes: new Uint8Array([0x00, 0x00, 0x80, 0xd2]),
+    });
+    // mov rax,[rbx] | ret. The memory-form MOV is intentionally a family result
+    // that needs the trusted decoder terminal summary to become exact.
+    const x86 = await requestWorker(decoderWorker, {
+      id: 3, architecture: 'x86_64', address: 0x2000n,
+      bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xc3]),
+    });
+    decoderWorker.terminate();
+
+    const semanticWorker = new Worker('/js/targets/architecture/x86_64/semantic-revalidation-worker.js');
+    const semantic = await requestWorker(semanticWorker, {
+      t:'semanticFunction',
+      id:4,
+      input:{
+        architecture:'x86_64',
+        platform:'linux',
+        binaryId:'binary:phase6-browser-x86',
+        sliceId:'slice:phase6-browser-x86',
+        decoderSemanticVersion:'capstone-5-x86-structured-v2',
+        instructions:x86.instructions ?? [],
+      },
+    });
+    semanticWorker.terminate();
+    const firstMachineEffects = semantic?.result?.pipeline?.machineEffects?.[0] ?? null;
+
     return {
       riscv: {
         ok: riscv.ok, error: riscv.error ?? null, bytesConsumed: riscv.bytesConsumed,
@@ -88,7 +116,14 @@ try {
         hasStructuredDetail: (riscv.instructions ?? []).every((instruction) => Array.isArray(instruction.capstoneOperands)),
       },
       arm64: { ok: arm64.ok, count: (arm64.instructions ?? []).length },
-      x86: { ok: x86.ok, count: (x86.instructions ?? []).length },
+      x86: {
+        ok:x86.ok,
+        count:(x86.instructions ?? []).length,
+        semanticOk:semantic?.ok === true,
+        semanticError:semantic?.error ?? null,
+        firstCompleteness:firstMachineEffects?.completeness ?? null,
+        firstTerminalizedBy:firstMachineEffects?.metadata?.terminalizedBy ?? null,
+      },
       crossOriginIsolated: globalThis.crossOriginIsolated === true,
       hasSharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
     };
@@ -105,11 +140,16 @@ try {
   assert.equal(result.arm64.count, 1);
   assert.equal(result.x86.ok, true, 'x86-64 must still decode in the browser');
   assert.equal(result.x86.count, 2);
+  assert.equal(result.x86.semanticOk, true, `x86 receiver revalidation failed: ${result.x86.semanticError}`);
+  assert.equal(result.x86.firstCompleteness, 'exact-with-intrinsic',
+    'real Capstone memory-MOV must regain terminal exactness only after receiver byte revalidation');
+  assert.equal(result.x86.firstTerminalizedBy, 'trusted-capstone-structured-intrinsic',
+    'positive exact authority must come from the deployed receiver revalidation path');
   // Phase 6 must not have introduced a cross-origin-isolation requirement.
-  assert.equal(result.crossOriginIsolated, false, 'RISC-V decode must not require cross-origin isolation');
+  assert.equal(result.crossOriginIsolated, false, 'browser decode must not require cross-origin isolation');
 
   console.log(`PHASE6_BROWSER=${JSON.stringify(result)}`);
-  console.log('phase6 browser RISC-V decode: PASS');
+  console.log('phase6 browser deployed-WASM decode/revalidation: PASS');
 } finally {
   await browser.close();
   server.close();
