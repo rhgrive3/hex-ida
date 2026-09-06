@@ -118,6 +118,37 @@ jobs:
           VERIFY_SHA: ${{ github.sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
 
+      # Temporary CI-only diagnostics: surface raw continue-on-error outcomes in
+      # job step metadata without requiring the full job log. Remove after the
+      # hidden failing proof child is identified.
+      - name: DIAG failed HEAD_CHECKOUT
+        if: ${{ !cancelled() && steps.head_checkout.outcome != 'success' }}
+        run: true
+      - name: DIAG failed NODE_SETUP
+        if: ${{ !cancelled() && steps.node_setup.outcome != 'success' }}
+        run: true
+      - name: DIAG failed HEAD_INSTALL
+        if: ${{ !cancelled() && steps.head_install.outcome != 'success' }}
+        run: true
+      - name: DIAG failed HEAD_IDENTITY
+        if: ${{ !cancelled() && steps.head_identity.outcome != 'success' }}
+        run: true
+      - name: DIAG failed HEAD_VERIFY
+        if: ${{ !cancelled() && steps.head_verify.outcome != 'success' }}
+        run: true
+      - name: DIAG failed MERGE_CHECKOUT
+        if: ${{ !cancelled() && steps.merge_checkout.outcome != 'success' }}
+        run: true
+      - name: DIAG failed MERGE_IDENTITY
+        if: ${{ !cancelled() && steps.merge_identity.outcome != 'success' }}
+        run: true
+      - name: DIAG failed MERGE_INSTALL
+        if: ${{ !cancelled() && steps.merge_install.outcome != 'success' }}
+        run: true
+      - name: DIAG failed MERGE_VERIFY
+        if: ${{ !cancelled() && steps.merge_verify.outcome != 'success' }}
+        run: true
+
       - name: Require both Stage 1 proof identities
         if: ${{ !cancelled() }}
         shell: bash
