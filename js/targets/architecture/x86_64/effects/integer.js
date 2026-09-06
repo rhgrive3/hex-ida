@@ -39,10 +39,17 @@ const ROTATES = new Set(['rol','ror']);
 const MULTIPLY = new Set(['mul','imul']);
 const DIVIDE = new Set(['div','idiv']);
 const WIDTHS = new Set([8,16,32,64]);
+const LEA_DESTINATION_WIDTHS = new Set([16,32,64]);
+const LEA_DESTINATION_KINDS = new Set(['gp','stack-pointer']);
 
 function supportedWidth(widthBits) { return WIDTHS.has(Number(widthBits)); }
 function hasMemory(operands) { return operands.some((operand) => operand?.type === 'memory'); }
 function registerOrImmediate(operand) { return operand?.type === 'register' || operand?.type === 'immediate'; }
+function validLeaDestination(operand) {
+  return operand?.type === 'register'
+    && LEA_DESTINATION_WIDTHS.has(operand.widthBits)
+    && LEA_DESTINATION_KINDS.has(operand.register?.kind);
+}
 function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   const destinationWidth = Number(destinationWidthBits);
   const sourceWidth = Number(sourceWidthBits);
@@ -359,7 +366,7 @@ export function liftX86LeaEffects(instruction, context = {}) {
   if (String(instruction?.instructionFamily || '').toLowerCase() !== 'lea') return null;
   const ctx = createX86EffectContext(instruction, context);
   const [destination, source] = ctx.operands;
-  if (destination?.type !== 'register' || source?.type !== 'memory') return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other']);
+  if (!validLeaDestination(destination) || source?.type !== 'memory') return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other']);
   const address = materializeX86Address(ctx, source);
   if (!address || !ctx.writeRegister(destination, address)) return ctx.partial('x86-lea-address-unmodelled', ['registers','other']);
   return ctx.finish({ family:'integer', metadata:{ operation:'lea', semanticMemoryAccess:false, address:source.memory } });
