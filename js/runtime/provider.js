@@ -284,7 +284,8 @@ export class DebugAdapterRuntimeProvider {
       if (options.connect !== false && !this.adapter.connected) await this.adapter.connect(options.connectOptions || {});
       if (this.adapter.capabilities?.modules && typeof this.adapter.getModules === 'function') {
         const modules = await this.adapter.getModules();
-        for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debug adapter getModules must return an array');
+        for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if (module.base == null || module.size == null) continue;
           const bindingKey = module.id ?? module.uuid ?? module.name ?? `module:${i}`;

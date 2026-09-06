@@ -15,9 +15,14 @@ function validMessageId(value) {
 }
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
+}
+
+function validRawIdentity(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function positive(value, fallback, max, code) {
@@ -34,15 +39,39 @@ function list(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
 }
 
+function identityList(value, code) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((identity) => required(identity, code)))].sort();
+}
+
+function permissionList(value) {
+  if (!Array.isArray(value)) return [];
+  const permissions = [];
+  for (const permission of value) {
+    if (typeof permission !== 'string' || permission.length === 0) {
+      throw new TypeError('remote-gate-permission-invalid');
+    }
+    permissions.push(permission);
+  }
+  return [...new Set(permissions)].sort();
+}
+
 function byteLength(value) {
   const text = JSON.stringify(jsonSafe(value));
   return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
 }
 
 function normalizePermissions(value) {
-  if (value instanceof Map) return Object.fromEntries([...value.entries()].map(([actor, permissions]) => [String(actor), list(permissions)]));
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([actor, permissions]) => [String(actor), list(permissions)]));
+  const entries = value instanceof Map
+    ? [...value.entries()]
+    : (!value || typeof value !== 'object' || Array.isArray(value) ? [] : Object.entries(value));
+  const normalized = Object.create(null);
+  for (const [actor, permissions] of entries) {
+    const identity = required(actor, 'remote-gate-actor-identity-invalid');
+    if (Object.hasOwn(normalized, identity)) throw new TypeError('remote-gate-actor-identity-duplicate');
+    normalized[identity] = permissionList(permissions);
+  }
+  return normalized;
 }
 
 function authorized(permissions, operation) {
@@ -91,7 +120,9 @@ export function createRemoteCollaborationEnvelope(input = {}) {
       authenticated: input.transportProof?.authenticated === true,
       confidentiality: input.transportProof?.confidentiality === 'verified' ? 'verified' : 'unverified',
       integrity: input.transportProof?.integrity === 'verified' ? 'verified' : 'unverified',
-      proofIdentity: input.transportProof?.proofIdentity == null ? null : String(input.transportProof.proofIdentity),
+      proofIdentity: input.transportProof?.proofIdentity == null
+        ? null
+        : required(input.transportProof.proofIdentity, 'remote-transport-proof-identity-invalid'),
     },
     egress: {
       userAuthorized: input.egress?.userAuthorized === true,
@@ -109,7 +140,7 @@ export class RemoteCollaborationGate {
     this.binaryIdentity = input.binaryIdentity == null ? null : required(input.binaryIdentity, 'remote-gate-binary-invalid');
     this.sessionIdentity = required(input.sessionIdentity, 'remote-gate-session-required');
     this.allowedActors = normalizePermissions(input.allowedActors);
-    this.revokedActors = new Set(list(input.revokedActors));
+    this.revokedActors = new Set(identityList(input.revokedActors, 'remote-gate-revoked-actor-invalid'));
     this.supportedEnvelopeSchemas = new Set(list(input.supportedEnvelopeSchemas || [REMOTE_COLLAB_SCHEMA]));
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
@@ -127,6 +158,12 @@ export class RemoteCollaborationGate {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     if (!envelope || !this.supportedEnvelopeSchemas.has(envelope.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
     if (!this.supportedOperationSchemas.has(envelope.operationSchemaVersion)) return { ok: false, reason: 'remote-operation-schema-unsupported' };
+    if (!validRawIdentity(envelope.projectIdentity)) return { ok: false, reason: 'remote-project-identity-required' };
+    if (envelope.binaryIdentity != null && !validRawIdentity(envelope.binaryIdentity)) return { ok: false, reason: 'remote-binary-identity-invalid' };
+    if (!validRawIdentity(envelope.sessionIdentity)) return { ok: false, reason: 'remote-session-identity-required' };
+    if (!validRawIdentity(envelope.actorIdentity)) return { ok: false, reason: 'remote-actor-identity-required' };
+    if (!validRawIdentity(envelope.deviceIdentity)) return { ok: false, reason: 'remote-device-identity-required' };
+    if (!validRawIdentity(envelope.messageId)) return { ok: false, reason: 'remote-message-id-required' };
     if (envelope.projectIdentity !== this.projectIdentity) return { ok: false, reason: 'remote-wrong-project' };
     if ((envelope.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-wrong-binary' };
     if (envelope.sessionIdentity !== this.sessionIdentity) return { ok: false, reason: 'remote-wrong-session' };

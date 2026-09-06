@@ -3,6 +3,7 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const EXECUTION_PAYLOADS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -16,27 +17,37 @@ export class ProposalStore {
 
   create(input = {}) {
     if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).map(String).filter((id) => this.evidenceStore?.has(id))));
+    const evidenceIds = Array.from(new Set((Array.isArray(input.evidenceIds) ? input.evidenceIds : []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
-    if (input.id) {
-      id = String(input.id);
+    if (Object.prototype.hasOwnProperty.call(input, 'id')) {
+      if (typeof input.id !== 'string' || !input.id) throw new AIError('invalid_tool_call', 'Proposal id must be a non-empty string.');
+      id = input.id;
       if (this.records.has(id)) throw new AIError('invalid_tool_call', `Proposal id already exists: ${id}`);
     } else {
       do id = `proposal_${proposalSequence++}`;
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
+    const revision = fingerprint(input.before);
+    const bindingRevision = fingerprint(binding);
+    const executionPayload = snapshotProposalPayload(input);
     const record = {
-      id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
+      id, kind: input.kind,
+      // The public record stays bounded for display/wire consumers. Mutation
+      // authority is held separately in EXECUTION_PAYLOADS.
+      target: jsonSafe(executionPayload.target),
+      before: jsonSafe(executionPayload.before),
+      after: jsonSafe(executionPayload.after),
       reason: String(input.reason || '').slice(0, 2000), evidenceIds,
       createdAt: new Date().toISOString(), status: 'pending',
-      // Identity/staleness checks use the complete value, never jsonSafe's
-      // display-oriented depth/item truncation.
-      revision: fingerprint(input.before),
+      // Identity/staleness checks use the exact snapshotted value that will be
+      // executed, never jsonSafe's display-oriented depth/item truncation.
+      revision,
       binding: jsonSafe(binding),
-      bindingRevision: fingerprint(binding),
+      bindingRevision,
     };
+    EXECUTION_PAYLOADS.set(record, executionPayload);
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
     return record;
@@ -87,7 +98,7 @@ export class ProposalStore {
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
     try {
-      await apply(proposal);
+      await apply(proposalExecutionView(proposal));
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
       return proposal;
@@ -99,13 +110,113 @@ export class ProposalStore {
   }
 
   require(id) {
-    const value = this.records.get(String(id));
+    if (typeof id !== 'string' || !id) throw new AIError('invalid_tool_call', 'Unknown proposal.');
+    const value = this.records.get(id);
     if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
     return value;
   }
-  has(id) { return this.records.has(String(id)); }
-  get(id) { return this.records.get(String(id)) || null; }
+  has(id) { return typeof id === 'string' && !!id && this.records.has(id); }
+  get(id) { return typeof id === 'string' && !!id ? this.records.get(id) || null : null; }
   all() { return Array.from(this.records.values()); }
+  executionView(id) { return proposalExecutionView(this.require(id)); }
+}
+
+function proposalExecutionView(proposal) {
+  const payload = EXECUTION_PAYLOADS.get(proposal);
+  if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
+  return { ...proposal, ...snapshotProposalPayload(payload) };
+}
+
+function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
+  if (!source || typeof source !== 'object' || !target || typeof target !== 'object') return;
+  if (seen.has(source)) return;
+  seen.add(source);
+  if (source instanceof RegExp && target instanceof RegExp) {
+    target.lastIndex = source.lastIndex;
+    return;
+  }
+  if (source instanceof Map && target instanceof Map) {
+    const srcKeys = Array.from(source.keys());
+    const tgtKeys = Array.from(target.keys());
+    for (let i = 0; i < srcKeys.length; i++) {
+      restoreRegExpLastIndex(srcKeys[i], tgtKeys[i], seen);
+      restoreRegExpLastIndex(source.get(srcKeys[i]), target.get(tgtKeys[i]), seen);
+    }
+    return;
+  }
+  if (source instanceof Set && target instanceof Set) {
+    const srcVals = Array.from(source.values());
+    const tgtVals = Array.from(target.values());
+    for (let i = 0; i < srcVals.length; i++) {
+      restoreRegExpLastIndex(srcVals[i], tgtVals[i], seen);
+    }
+    return;
+  }
+  if (Array.isArray(source) && Array.isArray(target)) {
+    for (let i = 0; i < source.length; i++) {
+      restoreRegExpLastIndex(source[i], target[i], seen);
+    }
+    return;
+  }
+  for (const key of Object.keys(source)) {
+    if (key in target) {
+      restoreRegExpLastIndex(source[key], target[key], seen);
+    }
+  }
+}
+
+function snapshotProposalPayload(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') {
+    throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
+  }
+  let payload;
+  try {
+    payload = {
+      target: clone(value.target),
+      before: clone(value.before),
+      after: clone(value.after),
+    };
+    restoreRegExpLastIndex(value.target, payload.target);
+    restoreRegExpLastIndex(value.before, payload.before);
+    restoreRegExpLastIndex(value.after, payload.after);
+  } catch {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
+  }
+  if (containsSharedMemory(payload)) {
+    throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
+  }
+  return payload;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) {
+    return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  }
+  if (value instanceof ArrayBuffer) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  if (value instanceof Map) {
+    for (const [key, item] of value) {
+      if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) {
+      if (containsSharedMemory(item, seen)) return true;
+    }
+    return false;
+  }
+
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 /**

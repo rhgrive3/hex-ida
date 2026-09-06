@@ -116,13 +116,35 @@ export class InvestigationSessionStore {
   list(binaryId = null) { return Array.from(this.sessions.values()).filter((session) => binaryId == null || session.binaryId === String(binaryId)); }
 }
 
-export function stripSecrets(value) {
+export function stripSecrets(value, seen = new Set()) {
   const blocked = /api.?key|token|secret|authorization|credential/i;
-  if (Array.isArray(value)) return value.map(stripSecrets);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [key, item] of Object.entries(value)) if (!blocked.test(key)) out[key] = stripSecrets(item);
-  return out;
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) throw new TypeError('Cannot strip secrets from cyclic object');
+    seen.add(value);
+  }
+  let result;
+  if (Array.isArray(value)) {
+    result = value.map((item) => stripSecrets(item, seen));
+  } else if (!value || typeof value !== 'object') {
+    return value;
+  } else {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (!blocked.test(key)) {
+        Object.defineProperty(out, key, {
+          value: stripSecrets(item, seen),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+    result = out;
+  }
+  if (value && typeof value === 'object') {
+    seen.delete(value);
+  }
+  return result;
 }
 
 export function createProjectSessionPersistence(project, { onChange } = {}) {
