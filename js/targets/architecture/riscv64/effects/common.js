@@ -203,7 +203,6 @@ export function createRiscv64EffectContext(decoded, context = {}) {
 }
 
 export function normalizeRiscv64Instruction(decoded, context = {}) {
-  if (decoded?.contractVersion === 'riscv64-decoded-instruction/v1' && decoded.instructionId && decoded.origin) return decoded;
   return createRiscv64DecodedInstruction({
     ...decoded,
     ...(decoded?.instructionId == null && context.instructionId != null ? { instructionId: context.instructionId } : {}),
