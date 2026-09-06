@@ -43,7 +43,10 @@ const WIDTHS = new Set([8,16,32,64]);
 function supportedWidth(widthBits) { return WIDTHS.has(Number(widthBits)); }
 function hasMemory(operands) { return operands.some((operand) => operand?.type === 'memory'); }
 function registerOrImmediate(operand) { return operand?.type === 'register' || operand?.type === 'immediate'; }
-function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
+function hasLegacyPrefix(instruction, byte) {
+  return [...(instruction?.detail?.prefixes?.legacy || [])].includes(byte);
+}
+function validExtendShape(family, destinationWidthBits, sourceWidthBits, instruction = null) {
   const destinationWidth = Number(destinationWidthBits);
   const sourceWidth = Number(sourceWidthBits);
   if (!supportedWidth(destinationWidth) || !supportedWidth(sourceWidth)) return false;
@@ -53,7 +56,8 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   }
   if (family === 'movzx' || family === 'movsx') {
     return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
+      || (sourceWidth === 16 && [32,64].includes(destinationWidth))
+      || (sourceWidth === 16 && destinationWidth === 16 && hasLegacyPrefix(instruction, 0x66));
   }
   return false;
 }
@@ -130,15 +134,22 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   }
 
   if (EXTENDS.has(family)) {
+    let sourceWidthBits = source?.widthBits;
+    if (family === 'movsxd' && destination?.widthBits === 16 && sourceWidthBits === 32) {
+      const prefixes = ctx.instruction.detail.prefixes;
+      const capstone16BitWidthQuirk = hasLegacyPrefix(ctx.instruction, 0x66)
+        && ((prefixes.rex ?? 0) & 0x08) === 0;
+      if (capstone16BitWidthQuirk) sourceWidthBits = 16;
+    }
     if (destination?.type !== 'register' || source?.type !== 'register'
-      || !validExtendShape(family, destination.widthBits, source.widthBits)) {
+      || !validExtendShape(family, destination.widthBits, sourceWidthBits, ctx.instruction)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers']);
     }
-    const raw = ctx.readOperand(source, source.widthBits);
+    const raw = ctx.readOperand(source, sourceWidthBits);
     if (!raw) return ctx.partial(`x86-${family}-source-unmodelled`, ['registers']);
-    const extended = ctx.coerce(raw, source.widthBits, destination.widthBits, EXTENDS.get(family));
+    const extended = ctx.coerce(raw, sourceWidthBits, destination.widthBits, EXTENDS.get(family));
     if (!ctx.writeRegister(destination, extended)) return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers']);
-    return ctx.finish({ family:'integer', metadata:{ operation:family, fromBits:source.widthBits, toBits:destination.widthBits } });
+    return ctx.finish({ family:'integer', metadata:{ operation:family, fromBits:sourceWidthBits, toBits:destination.widthBits } });
   }
 
   if (ARITHMETIC.has(family)) {
