@@ -6,6 +6,7 @@ import { parseMachOSource, clearMachOSourceCache } from '../../../js/binary/inde
 import { makeFatMachOFixture } from '../../universal-binary.mjs';
 import { __demandDrivenInternalsForTests } from '../../../js/analysis/demand-driven-runtime.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
+import { createSearchPager, createSearchRunLifecycle } from '../../../js/ui/panels/search.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const source = (name) => fs.readFileSync(path.join(root, name), 'utf8');
@@ -88,12 +89,10 @@ function testCanonicalWiring() {
     'empty and filtered Product function views must share the canonical query path');
 
   const search = source('js/ui/panels/search.js');
-  assert.match(search, /const response = await queries\.search\(snapshot, query/,
-    'Search pager must issue the canonical AnalysisQueryAPI.search call');
   assert.match(search, /createSearchPager\(app\.analysisQueries,snapshot,query\)/,
-    'standard Search panel must bind the pager to app.analysisQueries');
-  assert.match(search, /runs\.cancel\('search-sheet-closed'\)/,
-    'Search close must cancel its consumer through the owned lifecycle');
+    'standard Search panel must inject AnalysisQueryAPI into its pager');
+  assert.match(search, /onClose:\(\)\s*=>\s*runs\.cancel\('search-sheet-closed'\)/,
+    'Search close must cancel the active consumer lifecycle');
 
   for (const name of [
     'patch-product-explorer-2505.yml',
@@ -106,8 +105,52 @@ function testCanonicalWiring() {
   }
 }
 
+async function testSearchPanelQueryAndCancellation() {
+  const calls = [];
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const queries = {
+    search(...args) {
+      calls.push(args);
+      markStarted();
+      const signal = args[3]?.signal;
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('search aborted'), {
+          name:'AbortError',
+          reason:signal?.reason,
+        }));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once:true });
+      });
+    },
+  };
+  const snapshot = Object.freeze({ snapshotId:'search-regression' });
+  const query = Object.freeze({ regionId:'r', kind:'text', query:'needle', from:0 });
+  const pager = createSearchPager(queries, snapshot, query);
+  const runs = createSearchRunLifecycle();
+  const controller = runs.start();
+  assert.ok(controller);
+
+  const pagePromise = pager.next({ signal:controller.signal });
+  await started;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], snapshot);
+  assert.equal(calls[0][1], query);
+  assert.deepEqual(calls[0][2], { offset:0, limit:1000 });
+  assert.equal(calls[0][3].signal, controller.signal,
+    'the lifecycle controller must own the signal passed to queries.search');
+
+  assert.equal(runs.cancel('search-sheet-closed'), controller);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason, 'search-sheet-closed');
+  await assert.rejects(pagePromise,
+    (error) => error?.name === 'AbortError' && error?.reason === 'search-sheet-closed',
+    'closing Search must abort the in-flight query with the lifecycle reason');
+}
+
 await testMachOSelectedSliceSingleFlight();
 testRecognitionInputIdentity();
 testInvestigationDependencyPlan();
 testCanonicalWiring();
+await testSearchPanelQueryAndCancellation();
 console.log('issues-2502-2522-demand-analysis: PASS');

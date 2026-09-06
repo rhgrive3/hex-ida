@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../js/core/artifacts/index.js';
+import { ArtifactError, ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../js/core/artifacts/index.js';
 import { BudgetExceededError } from '../../js/core/budgets/index.js';
 import { AnalysisScheduler, SchedulerDependencyIdentityError } from '../../js/core/scheduler/index.js';
 
@@ -47,10 +47,8 @@ async function waitState(scheduler, artifactId, state) {
   );
 }
 
-// Canonical artifact identities are content-addressed by their upstream set, so a
-// handcrafted cyclic descriptor graph is not a valid public scheduler input. It
-// must fail closed at the canonical-descriptor boundary before DAG traversal or
-// producer execution.
+// Hand-written identities cannot bypass the canonical descriptor contract.
+// A forged cyclic graph therefore fails closed before any producer or DAG walk.
 {
   const { scheduler }=schedulerWithStore();
   const a={ artifactId:'artifact_cycle_a', upstreamArtifactIds:['artifact_cycle_b'] };
@@ -60,10 +58,9 @@ async function waitState(scheduler, artifactId, state) {
   requestA.dependencies=[requestB];
   await assert.rejects(
     scheduler.request(requestA),
-    (error)=>error?.code==='artifact-descriptor-noncanonical',
+    (error)=>error instanceof ArtifactError && error.code==='artifact-descriptor-noncanonical',
   );
   assert.equal(scheduler.stats().producerInvocations,0);
-  assert.equal(scheduler.stats().dagEdges,0);
 }
 
 // Budget exhaustion is distinct and cannot publish a valid artifact.

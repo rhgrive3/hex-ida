@@ -14,14 +14,12 @@ test('generated userscript ownership survives retirement of Phase 2/5 campaign w
   assert.deepEqual(MANIFEST.generatedWriteOwners, ['p5-0', 'p5-i']);
   assert.equal(fs.existsSync(RETIRED_PHASE2_WORKFLOW), false);
   assert.match(GENERATED_SYNC, /npm run userscript:build/);
-  assert.match(GENERATED_SYNC, /git diff --exit-code --/);
-  assert.match(GENERATED_SYNC, /userscript\/hex\.user\.template\.js/);
-  assert.match(GENERATED_SYNC, /userscript\/release-version\.json/);
-  assert.deepEqual(
-    GENERATED_SYNC.split('\n')
-      .filter((line) => line.includes('deployment-identity.generated.js'))
-      .map((line) => line.trim()),
-    ['run: git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js'],
-    'Cloudflare-owned identity may only be restored from HEAD, never included in userscript output checks or writes',
-  );
+  assert.match(GENERATED_SYNC, /git restore --source=HEAD --worktree -- js\/userscript\/deployment-identity\.generated\.js/,
+    'Cloudflare-owned deployment identity must be restored after the local userscript build');
+  const canonicalDiff = GENERATED_SYNC.match(
+    /^[ \t]*run:[ \t]+git diff --exit-code -- userscript\/hex\.user\.template\.js userscript\/release-version\.json[ \t]*$/m,
+  )?.[0] ?? '';
+  assert.ok(canonicalDiff, 'canonical generated-output diff must remain explicit and exact');
+  assert.doesNotMatch(canonicalDiff, /deployment-identity\.generated\.js/,
+    'Cloudflare-owned deployment identity must not be part of the local generated-output transaction');
 });

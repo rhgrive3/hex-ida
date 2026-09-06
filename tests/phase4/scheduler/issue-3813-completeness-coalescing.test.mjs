@@ -19,9 +19,13 @@ async function waitState(scheduler, artifactId, state, turns = 1000) {
 
 function descriptor(name) {
   return createArtifactDescriptor({
-    binaryId:'bin_3813_fixture', artifactKind:`fixture-${name}`, producerId:`fixture-${name}`, producerVersion:'1',
-    versions:{ loader:'fixture-1' }, relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
-    config:{ name }, upstreamArtifactIds:[],
+    binaryId:'bin_phase4_scheduler_3813',
+    artifactKind:'phase4-scheduler-completeness-fixture',
+    producerId:'issue-3813-regression',
+    producerVersion:'1',
+    versions:{ loader:'fixture-1' },
+    relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
+    config:{ name },
   });
 }
 

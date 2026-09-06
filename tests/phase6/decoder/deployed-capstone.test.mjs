@@ -40,8 +40,8 @@ test('the deployed Capstone build really opens RISC-V64 with the compressed exte
 });
 
 test('RISC-V decode support is declared only where the deployed bundle proves it', () => {
-  // The preceding live probe proves the deployed bundle accepts RV64 + RVC, so
-  // the production capability map must expose the same verified support.
+  // The preceding bundle probe proves RV64+C can actually be opened with
+  // structured detail, so the deployed capability map must expose the same fact.
   assert.equal(DEPLOYED_CAPSTONE_SUPPORT.arm64, true);
   assert.equal(DEPLOYED_CAPSTONE_SUPPORT.x86_64, true);
   assert.equal(DEPLOYED_CAPSTONE_SUPPORT.riscv64, true);

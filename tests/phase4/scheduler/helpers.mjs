@@ -23,9 +23,14 @@ export class TestStore {
 export function descriptor(name, dependencies=[]) {
   const upstreamArtifactIds=[...new Set(dependencies.map((item)=>typeof item==='string'?item:item.artifactId))].sort((a,b)=>a.localeCompare(b));
   return createArtifactDescriptor({
-    binaryId:'bin_scheduler_fixture', artifactKind:`fixture-${name}`, producerId:`fixture-${name}`, producerVersion:'1',
-    versions:{ loader:'fixture-1' }, relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
-    config:{ name }, upstreamArtifactIds,
+    binaryId:'bin_phase4_scheduler_fixture',
+    artifactKind:'phase4-scheduler-fixture',
+    producerId:'phase4-scheduler-tests',
+    producerVersion:'1',
+    versions:{ loader:'fixture-1' },
+    relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
+    config:{ name:String(name) },
+    upstreamArtifactIds,
   });
 }
 export function scheduler(options={}) { const store=options.store||new TestStore(); return {store,scheduler:new AnalysisScheduler({store,...options})}; }
