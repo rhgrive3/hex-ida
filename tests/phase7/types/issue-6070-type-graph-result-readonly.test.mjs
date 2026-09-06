@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { TypeConstraintGraph, createTypeGraphResult } from '../js/analysis/types/graph.js';
-import { createHardConstraint } from '../js/analysis/types/constraints.js';
+import { TypeConstraintGraph, createTypeGraphResult } from '../../../js/analysis/types/graph.js';
+import { createHardConstraint } from '../../../js/analysis/types/constraints.js';
 
 const status = { completeness: 'complete' };
 

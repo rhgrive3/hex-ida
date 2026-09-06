@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSemanticModel } from '../js/blocks.js';
-import { irFor } from '../js/architecture/compat/ir-core-arm64-aapcs64-v1.js';
+import { buildSemanticModel } from '../../js/blocks.js';
+import { irFor } from '../../js/architecture/compat/ir-core-arm64-aapcs64-v1.js';
 
 const BASE = 0x100000000n;
 function modelOf(lines) {

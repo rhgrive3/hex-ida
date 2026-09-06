@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bvSort } from '../js/symbolic/expr/kinds.js';
-import { createFreshSymbol } from '../js/symbolic/expr/factory.js';
-import { evaluateExpr } from '../js/symbolic/expr/evaluate.js';
+import { bvSort } from '../../../js/symbolic/expr/kinds.js';
+import { createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
+import { evaluateExpr } from '../../../js/symbolic/expr/evaluate.js';
 
 test('6081: malformed string binding becomes UNKNOWN, not a throw', () => {
   const x = createFreshSymbol(bvSort(64), 'x');

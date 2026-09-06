@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildObjcRuntimeIndex, resolveObjcDispatch } from '../js/apple/objc-runtime.js';
-import { resolveObjcIMP } from '../js/apple/runtime.js';
+import { buildObjcRuntimeIndex, resolveObjcDispatch } from '../../js/apple/objc-runtime.js';
+import { resolveObjcIMP } from '../../js/apple/runtime.js';
 
 const COMPLETE = {
   complete: true,

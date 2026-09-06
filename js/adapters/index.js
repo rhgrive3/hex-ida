@@ -267,7 +267,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     const monotonicNow = typeof options.monotonicNow === 'function' ? options.monotonicNow : defaultMonotonicNow;
-    const started = monotonicNow();
     const onAbort = () => {
       run.cancelled = true;
       run.sandbox.emulator.stopped = 'cancelled';
@@ -279,7 +278,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
+    let started;
     try {
+      // The initial clock sample is inside the cleanup boundary: an injected
+      // clock that throws on first read must not leak the active run.
+      started = monotonicNow();
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';

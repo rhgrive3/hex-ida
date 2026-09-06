@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { LocalFunctionSandboxAdapter } from '../../../js/adapters/index.js';
 
 function loopingIo() {
   return {
@@ -95,6 +95,37 @@ test('6075: no premature timeout before the budget elapses', async () => {
       monotonicNow: () => 0,
     });
     assert.equal(result.timeout, false);
+  } finally {
+    await adapter.disconnect();
+  }
+});
+
+test('6075: throwing initial clock read does not leak the active run', async () => {
+  const adapter = await launched();
+  try {
+    await assert.rejects(
+      () => adapter.resume({
+        maxSteps: 400,
+        timeoutMs: 30000,
+        monotonicNow: () => { throw new Error('clock-boom'); },
+      }),
+      /clock-boom/,
+    );
+    assert.equal(adapter.activeRun, null, 'failed clock sample must release the active run');
+    // The adapter must accept a new run afterwards instead of reporting
+    // already-running (any terminal result is fine here).
+    let alreadyRunning = false;
+    try {
+      await adapter.resume({
+        maxSteps: 400,
+        timeoutMs: 30000,
+        monotonicNow: () => 0,
+      });
+    } catch (error) {
+      alreadyRunning = /already-running/.test(String(error?.message || error));
+      if (alreadyRunning) throw error;
+    }
+    assert.equal(alreadyRunning, false);
   } finally {
     await adapter.disconnect();
   }

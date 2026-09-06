@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PluginHost, pluginManifestDigest } from '../js/plugins.js';
+import { PluginHost, pluginManifestDigest } from '../../js/plugins.js';
 
 function storage() {
   const store = new Map();

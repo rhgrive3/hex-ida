@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
-import { DebugAdapterError } from '../js/debug/adapter.js';
-import { DEFAULT_OBJECT_BASE } from '../js/symbolic/function-sandbox.js';
+import { LocalFunctionSandboxAdapter } from '../../../js/adapters/index.js';
+import { DebugAdapterError } from '../../../js/debug/adapter.js';
+import { DEFAULT_OBJECT_BASE } from '../../../js/symbolic/function-sandbox.js';
 
 const io = {
   fetch: async (address) => BigInt(address) === 0x1000n ? { mn: 'ret', ops: '' } : null,

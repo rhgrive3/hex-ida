@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAnalysisStatus } from '../js/analysis/status.js';
-import { createFunctionSummary } from '../js/analysis/summary/contract.js';
-import { solveInterproceduralSummaries } from '../js/analysis/summary/interprocedural.js';
+import { createAnalysisStatus } from '../../../js/analysis/status.js';
+import { createFunctionSummary } from '../../../js/analysis/summary/contract.js';
+import { solveInterproceduralSummaries } from '../../../js/analysis/summary/interprocedural.js';
 
 const completeStatus = () => createAnalysisStatus({
   snapshotId: 's6074',
