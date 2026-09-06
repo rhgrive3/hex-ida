@@ -150,7 +150,7 @@ function staticModuleSpecifiers(source) {
   for (const pattern of [
     /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm,
     /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-    /^\s*export\s+(?:\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+    /^\s*export\s+(?:\*\s+as\s+(?:[A-Za-z_$][\w$]*|['"][^'"]+['"])|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
   ]) {
     for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
   }
@@ -162,8 +162,8 @@ await check('dev-context-packet-dependency-boundary', () => {
   assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
   assert.doesNotMatch(source, /\bimport\s*\(/, 'context packet must not gain dynamic import authority');
   assert.deepEqual(
-    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';"),
-    ['./side-effect.js', './re-export.js'],
+    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';\nexport * as storage from '../storage.js';"),
+    ['./side-effect.js', './re-export.js', '../storage.js'],
   );
   assert.match("void import('./dynamic.js')", /\bimport\s*\(/);
 });
