@@ -253,9 +253,16 @@ function exactStackLoadSlot(ir, value, expression) {
   return load && size != null ? { load, key:load.loc.key, size } : null;
 }
 
+function storeAccessSize(inst) {
+  const size = positiveAccessSize(inst?.loc?.size ?? inst?.size);
+  if (size != null) return size;
+  const match = String(inst?.loc?.key || '').match(/:s(\d+)$/);
+  return match ? positiveAccessSize(Number(match[1])) : null;
+}
+
 function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth) {
   if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key
-      || positiveAccessSize(inst.loc?.size) !== size) return null;
+      || storeAccessSize(inst) !== size) return null;
   const value = valueOf(inst.args?.[0]);
   let expression = value ? maps.values.get(value.id) || null : null;
   if (!expression) return null;
@@ -349,7 +356,15 @@ function isReturnNode(node) {
 }
 
 function stackReturnSlot(ir, expression) {
-  return exactStackLoadSlot(ir, null, expression);
+  const slot = exactStackLoadSlot(ir, null, expression);
+  if (slot) return slot;
+  if (expression?.kind === 'load' && expression.location?.kind === 'stack' && expression.location?.key) {
+    const size = positiveAccessSize(expression.location?.size)
+      || (Number.isSafeInteger(expression.bits) && expression.bits > 0 && expression.bits % 8 === 0 ? expression.bits / 8 : null)
+      || positiveAccessSize(Number(String(expression.location.key).match(/:s(\d+)$/)?.[1]));
+    if (size != null) return { load: null, key: expression.location.key, size };
+  }
+  return null;
 }
 
 function returnSiteForNode(node, ir, allowSingleFallback = false) {

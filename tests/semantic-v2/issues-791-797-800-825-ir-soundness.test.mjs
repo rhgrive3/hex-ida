@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../../js/blocks.js';
 import {
   OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance,
+  getSemanticMigrationMode, setSemanticMigrationMode,
 } from '../../js/ir.js';
+import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
 
 const BASE = 0x100000000n;
 
@@ -41,6 +43,10 @@ function firstBranchFact(ir) {
   assert.ok(fact, 'branch constraint must exist');
   return fact;
 }
+
+const initialMigrationMode = getSemanticMigrationMode();
+setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT);
+try {
 
 // #791 — promoted globals retain each access extent independently of iteration order.
 {
@@ -165,7 +171,7 @@ for (const [tag, lines, expected] of [
   ['x-lsl-wrap', ['mov x1, #0x8000000000000000', 'cmp x0, x1, lsl #1', 'b.eq #0x100000010', 'nop', 'ret'], 0n],
   ['w-lsr', ['mov w1, #0x80000000', 'cmp w0, w1, lsr #31', 'b.eq #0x100000010', 'nop', 'ret'], 1n],
   ['w-asr', ['mov w1, #0x80000000', 'cmp w0, w1, asr #31', 'b.eq #0x100000010', 'nop', 'ret'], 0xffffffffn],
-  ['w-ror', ['mov w1, #0x80000001', 'cmp w0, w1, ror #1', 'b.eq #0x100000010', 'nop', 'ret'], 0xc0000000n],
+  ['w-ror', ['mov w1, #0x80000001', 'ror w1, w1, #1', 'cmp w0, w1', 'b.eq #0x100000014', 'nop', 'ret'], 0xc0000000n],
 ]) {
   const fact = firstBranchFact(build(lines, `825-${tag}`));
   assert.equal(fact.taken.constant, expected, `#825 ${tag}`);
@@ -201,3 +207,6 @@ for (const [tag, andLine, branchLine] of [
 }
 
 console.log('issues #791/#797/#800/#825 IR soundness regressions: PASS');
+} finally {
+  setSemanticMigrationMode(initialMigrationMode);
+}
