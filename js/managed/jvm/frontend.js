@@ -1,8 +1,15 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
 import { createManagedValidationReport } from '../shared/validation.js';
+import { createVMEffectFunction } from '../shared/vm-effects.js';
 import { liftJvmMethod } from './lifter.js';
 import { parseJvm, probeJvm } from './parser.js';
+import { verifyJvmMethod } from './verifier.js';
+
+function classMajorVersion(image) {
+  const match = /^class-(\d+)\./.exec(image?.formatVersion ?? '');
+  return match ? Number(match[1]) : null;
+}
 
 export class JvmFrontend {
   constructor(options = {}) {
@@ -59,21 +66,48 @@ export class JvmFrontend {
   async decodeMethod(method, context = {}) {
     const jvmClass = context.image;
     if (!jvmClass) throw new TypeError('jvm-context-image-required');
-    return liftJvmMethod(method.methodIdx, jvmClass, context);
+    const decoded = liftJvmMethod(method.methodIdx, jvmClass, context);
+    const sourceMethod = jvmClass.methods[method.methodIdx];
+    return createVMEffectFunction({
+      ...decoded,
+      metadata: {
+        ...decoded.metadata,
+        methodIdx: method.methodIdx,
+        methodName: sourceMethod?.name ?? method.name,
+        descriptor: sourceMethod?.descriptor ?? method.descriptor,
+        accessFlags: sourceMethod?.accessFlags ?? method.accessFlags,
+        hasCode: sourceMethod?.code != null,
+        codeLength: sourceMethod?.code?.codeLength ?? 0,
+        classMajorVersion: classMajorVersion(jvmClass),
+      },
+    }, context);
   }
 
   async validateMethod(decoded, context = {}) {
+    const verification = verifyJvmMethod(decoded, context);
     const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
     const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const status = hasUnknowns ? 'partial' : hasPartials ? 'partial' : 'valid';
+    const semanticStatus = hasUnknowns || hasPartials ? 'partial' : 'valid';
+    const status = verification.status === 'invalid'
+      ? 'invalid'
+      : verification.status === 'valid' && semanticStatus === 'valid'
+        ? 'valid'
+        : 'partial';
     return createManagedValidationReport({
       targetId: decoded.methodId,
       status,
       completeness: {
-        structural: 'complete',
-        specValidation: 'valid',
-        semanticEffect: status === 'valid' ? 'complete' : 'partial',
+        structural: hasUnknowns ? 'partial' : 'complete',
+        specValidation: verification.status === 'invalid'
+          ? 'failed'
+          : verification.status === 'valid'
+            ? 'valid'
+            : 'partial',
+        semanticEffect: semanticStatus === 'valid' ? 'complete' : 'partial',
       },
+      errors: verification.errors,
+      warnings: verification.warnings,
+      verifierFacts: verification.verifierFacts,
     });
   }
 
