@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { partitionDecodedFunction } from '../../js/analysis/semantic-function.js';
 import {
   ARM64_ARCHITECTURE,
   ARM64E_ARCHITECTURE,
@@ -13,6 +14,30 @@ for (const [name, architecture] of [
   test(`3770: ${name} treats DRPS as non-fallthrough unknown control`, () => {
     assert.equal(architecture.classifyControlFlow({ mnemonic:'drps' }), 'unknown');
     assert.equal(architecture.classifyControlFlow({ mnemonic:'DRPS' }), 'unknown');
+  });
+
+  test(`3770: ${name} shared CFG emits no normal DRPS-to-MOV successor`, () => {
+    const blocks = partitionDecodedFunction([
+      { address:0x1000n, length:4n, mnemonic:'drps' },
+      { address:0x1004n, length:4n, mnemonic:'mov' },
+      { address:0x1008n, length:4n, mnemonic:'ret' },
+    ], architecture);
+    const drps = blocks.find((block) => block.startAddress === 0x1000n);
+    const after = blocks.find((block) => block.startAddress === 0x1004n);
+
+    assert.ok(drps, 'DRPS must start its decoded block');
+    assert.ok(after, 'the instruction after DRPS must start a distinct block');
+    assert.deepEqual(
+      drps.instructions.map(({ decoded }) => decoded.mnemonic),
+      ['drps'],
+      'DRPS must terminate its block instead of absorbing the next instruction',
+    );
+    assert.deepEqual(drps.successors, [], 'DRPS must not have a normal CFG successor');
+    assert.equal(
+      drps.successors.some((edge) => edge.to === after.key),
+      false,
+      'DRPS must not create a fallthrough edge to MOV',
+    );
   });
 }
 
