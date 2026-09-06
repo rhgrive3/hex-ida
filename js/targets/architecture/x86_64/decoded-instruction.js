@@ -124,10 +124,17 @@ function normalizeOperand(input, index) {
   return Object.freeze(common);
 }
 
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
 function prefixBytesOf(input, code) {
   if (input == null) return new Uint8Array();
   if (ArrayBuffer.isView(input)) {
-    if (Object.prototype.toString.call(input) !== '[object Uint8Array]') throw new TypeError(code);
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    if (tag !== 'Uint8Array') throw new TypeError(code);
     try { return Uint8Array.from(input); } catch { throw new TypeError(code); }
   }
   if (!Array.isArray(input)) throw new TypeError(code);
