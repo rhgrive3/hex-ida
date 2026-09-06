@@ -142,10 +142,12 @@ export class DebugAdapter {
   }
   negotiate(requested = null) {
     if (!requested) return this.capabilities;
-    const keys = requested instanceof Set ? [...requested] : Array.isArray(requested) ? requested : Object.keys(requested);
+    const requestedMap = requested instanceof Set || Array.isArray(requested) ? null : requested;
+    const keys = requestedMap ? Object.keys(requestedMap) : [...requested];
     const out = {};
     for (const key of keys) {
-      const value = DEBUG_CAPABILITIES.includes(key)
+      const explicitlyRequested = !requestedMap || requestedMap[key] === true;
+      const value = explicitlyRequested && DEBUG_CAPABILITIES.includes(key)
         ? !!this.capabilities[key] && (!capabilityMethod(key) || typeof this[capabilityMethod(key)] === 'function')
         : false;
       Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });

@@ -32,17 +32,19 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
   e: 'str',
   f: 'f32',
   h: 'u8',
-  i: 'i32',
-  j: 'u64',
+  i: 'isize',
+  j: 'usize',
   l: 'i32',
   m: 'u32',
   n: 'i128',
   o: 'u128',
   p: '_',
-  s: 'isize',
-  t: 'usize',
+  s: 'i16',
+  t: 'u16',
   u: '()',
   v: '...',
+  x: 'i64',
+  y: 'u64',
   z: '!',
 });
 
@@ -69,6 +71,76 @@ function parseV0Base62(str, pos) {
 }
 
 /**
+ * Decodes a Punycode string (RFC 3492) as used in Rust v0 mangling.
+ * In Rust v0, the delimiter is '_' instead of '-'.
+ */
+function decodePunycode(input) {
+  const base = 36;
+  const tmin = 1;
+  const tmax = 26;
+  const skew = 38;
+  const damp = 700;
+  const initialBias = 72;
+  const initialN = 128;
+
+  function adapt(delta, numpoints, firsttime) {
+    let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
+    d += Math.floor(d / numpoints);
+    let k = 0;
+    while (d > Math.floor(((base - tmin) * tmax) / 2)) {
+      d = Math.floor(d / (base - tmin));
+      k += base;
+    }
+    return k + Math.floor(((base - tmin + 1) * d) / (d + skew));
+  }
+
+  const output = [];
+  let n = initialN;
+  let i = 0;
+  let bias = initialBias;
+
+  const delimIndex = input.lastIndexOf('_');
+  let pos = 0;
+  if (delimIndex !== -1) {
+    for (let j = 0; j < delimIndex; j++) {
+      const code = input.charCodeAt(j);
+      if (code >= 0x80) return null;
+      output.push(String.fromCharCode(code));
+    }
+    pos = delimIndex + 1;
+  }
+
+  while (pos < input.length) {
+    const oldi = i;
+    let w = 1;
+    let k = base;
+    while (true) {
+      if (pos >= input.length) return null;
+      const c = input.charCodeAt(pos++);
+      let digit = -1;
+      if (c >= 0x30 && c <= 0x39) digit = c - 0x30 + 26;
+      else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61;
+      else if (c >= 0x41 && c <= 0x5a) digit = c - 0x41;
+      else return null;
+
+      i += digit * w;
+      const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+      if (digit < t) break;
+      w *= (base - t);
+      k += base;
+    }
+    const outLen = output.length + 1;
+    bias = adapt(i - oldi, outLen, oldi === 0);
+    n += Math.floor(i / outLen);
+    if (n > 0x10ffff) return null;
+    i = i % outLen;
+    output.splice(i, 0, String.fromCodePoint(n));
+    i++;
+  }
+  return output.join('');
+}
+
+/**
  * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
  */
 function parseV0Identifier(str, pos) {
@@ -82,23 +154,92 @@ function parseV0Identifier(str, pos) {
     p = dis.nextPos;
   }
 
+  let isUnicode = false;
+  if (p < str.length && str[p] === 'u') {
+    isUnicode = true;
+    p++;
+  }
+
   // Length integer
   const lenMatch = str.slice(p).match(/^(\d+)/);
   if (!lenMatch) return null;
   const len = Number(lenMatch[1]);
   p += lenMatch[1].length;
+  if (p < str.length && str[p] === '_') {
+    p++;
+  }
 
   if (p + len > str.length) return null;
-  const ident = str.slice(p, p + len);
+  const rawIdent = str.slice(p, p + len);
+  let identifier = rawIdent;
+  if (isUnicode) {
+    try {
+      const decoded = decodePunycode(rawIdent);
+      if (decoded === null) return null;
+      identifier = decoded;
+    } catch {
+      return null;
+    }
+  }
+
   return {
-    identifier: ident,
+    identifier,
     isDisambiguated,
     nextPos: p + len,
   };
 }
 
-function parseV0Type(str, state, depth = 0) {
+/**
+ * Parses a Rust v0 const value (`<type> <const-data> | p | <backref>`), where
+ * `<const-data>` is `[n] <hex>* _` and `p` is a standalone placeholder.
+ */
+function parseV0Const(str, state, depth = 0) {
   if (state.pos >= str.length || depth > 32) return null;
+  if (str[state.pos] === 'p') {
+    state.pos++;
+    return '_';
+  }
+  if (str[state.pos] === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Const(str, refState, depth + 1);
+  }
+  const constType = parseV0Type(str, state, depth + 1);
+  if (!constType) return null;
+  let isNegative = false;
+  if (state.pos < str.length && str[state.pos] === 'n') {
+    isNegative = true;
+    state.pos++;
+  }
+  let hexStr = '';
+  while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
+    hexStr += str[state.pos++];
+  }
+  if (state.pos >= str.length || str[state.pos] !== '_') {
+    return null;
+  }
+  state.pos++; // consume '_'
+  if (hexStr === '') {
+    return '0';
+  }
+  try {
+    const val = BigInt('0x' + hexStr);
+    return isNegative ? `-${val.toString()}` : val.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseV0Type(str, state, depth = 0) {
+  if (state.pos >= str.length) return null;
+  if (depth > state.maxDepth) {
+    state.depthExceeded = true;
+    return null;
+  }
   const c = str[state.pos];
   if (RUST_V0_BASIC_TYPES[c]) {
     state.pos++;
@@ -106,17 +247,48 @@ function parseV0Type(str, state, depth = 0) {
   }
   if (c === 'R' || c === 'Q') {
     state.pos++;
-    return `&${parseV0Type(str, state, depth + 1) || ''}`;
+    if (state.pos < str.length && str[state.pos] === 'L') {
+      state.pos++;
+      const lt = parseV0Base62(str, state.pos);
+      if (!lt) return null;
+      state.pos = lt.nextPos;
+    }
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'R' ? `&${inner}` : `&mut ${inner}`;
   }
   if (c === 'P' || c === 'O') {
     state.pos++;
-    return `*${parseV0Type(str, state, depth + 1) || ''}`;
+    const inner = parseV0Type(str, state, depth + 1);
+    if (!inner) return null;
+    return c === 'P' ? `*const ${inner}` : `*mut ${inner}`;
+  }
+  if (c === 'A') {
+    state.pos++;
+    const elemType = parseV0Type(str, state, depth + 1);
+    if (!elemType) return null;
+    const len = parseV0Const(str, state, depth + 1);
+    if (len === null) return null;
+    return `[${elemType}; ${len}]`;
+  }
+  if (c === 'B') {
+    state.pos++;
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Type(str, refState, depth + 1);
   }
   return parseV0Path(str, state, depth + 1);
 }
 
 function parseV0Path(str, state, depth = 0) {
-  if (state.pos >= str.length || depth > 32) return null;
+  if (state.pos >= str.length) return null;
+  if (depth > state.maxDepth) {
+    state.depthExceeded = true;
+    return null;
+  }
   const tag = str[state.pos++];
 
   if (tag === 'C') {
@@ -134,14 +306,20 @@ function parseV0Path(str, state, depth = 0) {
     const ident = parseV0Identifier(str, state.pos);
     if (!ident) return parent;
     state.pos = ident.nextPos;
-    return `${parent}::${ident.identifier}`;
+    let name = ident.identifier;
+    if (!name) {
+      if (ns === 'C') name = '{closure}';
+      else if (ns === 'S') name = '{shim}';
+      else name = `{${ns}}`;
+    }
+    return `${parent}::${name}`;
   }
 
   if (tag === 'M') {
     const implPath = parseV0Path(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
-    return `<${typeName || implPath || 'impl'}>`;
+    return null;
   }
 
   if (tag === 'X') {
@@ -153,12 +331,38 @@ function parseV0Path(str, state, depth = 0) {
 
   if (tag === 'I') {
     const base = parseV0Path(str, state, depth + 1);
+    if (!base) return null;
+    const args = [];
     let gCount = 0;
-    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 16) {
-      parseV0Type(str, state, depth + 1);
+    while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 32) {
+      if (str[state.pos] === 'L') {
+        state.pos++;
+        const lt = parseV0Base62(str, state.pos);
+        if (!lt) return null;
+        state.pos = lt.nextPos;
+      } else if (str[state.pos] === 'K') {
+        state.pos++;
+        const c = parseV0Const(str, state, depth + 1);
+        if (c === null) return null;
+        args.push(c);
+      } else {
+        const t = parseV0Type(str, state, depth + 1);
+        if (!t) return null;
+        args.push(t);
+      }
     }
-    if (state.pos < str.length && str[state.pos] === 'E') state.pos++;
-    return base;
+    if (state.pos >= str.length || str[state.pos] !== 'E') return null;
+    state.pos++;
+    return args.length > 0 ? `${base}<${args.join(', ')}>` : base;
+  }
+
+  if (tag === 'B') {
+    const br = parseV0Base62(str, state.pos);
+    if (!br) return null;
+    if (br.value < 0 || br.value >= state.pos - 1) return null;
+    state.pos = br.nextPos;
+    const refState = { pos: br.value };
+    return parseV0Path(str, refState, depth + 1);
   }
 
   const ident = parseV0Identifier(str, state.pos - 1);
@@ -184,7 +388,8 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
   }
 
-  const state = { pos: 0 };
+  const depthLimit = Number.isSafeInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 32;
+  const state = { pos: 0, maxDepth: depthLimit, depthExceeded: false };
   let demangled = null;
 
   try {
@@ -193,11 +398,15 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
   }
 
+  if (state.depthExceeded) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded' };
+  }
+
   if (!demangled) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
   }
 
-  if (state.pos < s.length && !v0SuffixParses(s, state.pos)) {
+  if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit)) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
   }
 
@@ -217,13 +426,13 @@ export function demangleRustV0(symbol, maxDepth = 32) {
  * productions: an optional instantiating crate path followed by an optional
  * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
  */
-function v0SuffixParses(s, pos) {
+function v0SuffixParses(s, pos, maxDepth) {
   if (pos >= s.length) return true;
   if (s[pos] === '.' || s[pos] === '$') return true;
-  const state = { pos };
+  const state = { pos, maxDepth, depthExceeded: false };
   try {
     const crate = parseV0Path(s, state, 0);
-    if (!crate) return false;
+    if (!crate || state.depthExceeded) return false;
     if (state.pos >= s.length) return true;
     return s[state.pos] === '.' || s[state.pos] === '$';
   } catch {
@@ -231,23 +440,40 @@ function v0SuffixParses(s, pos) {
   }
 }
 
+/** Normalize the canonical legacy prefix and its single Mach-O decoration. */
+export function stripLegacyRustPrefix(text) {
+  if (typeof text !== 'string') return null;
+  if (text.startsWith('__ZN')) return text.slice(2);
+  if (text.startsWith('_ZN')) return text.slice(1);
+  if (text.startsWith('ZN')) return text;
+  return null;
+}
+
+/** Recognize supported Rust symbol prefixes without coercing metadata. */
+export function isRustCandidateSymbol(text) {
+  if (typeof text !== 'string') return false;
+  return text.startsWith('_R') || text.startsWith('__R') || stripLegacyRustPrefix(text) != null;
+}
+
 /**
- * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
+ * Demangles a Rust legacy symbol, including the single Mach-O decoration.
  */
 export function demangleRustLegacy(symbol) {
   const original = String(symbol || '');
-  const s = original.replace(/^_/, '');
-  if (!s.startsWith('ZN')) {
+  const s = stripLegacyRustPrefix(original);
+  if (s == null) {
     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
   }
 
   const components = [];
   let i = 2;
   let hash = null;
+  let terminated = false;
 
   while (i < s.length) {
     if (s[i] === 'E') {
       i++;
+      terminated = true;
       break;
     }
     const match = s.slice(i).match(/^(\d+)/);
@@ -280,7 +506,7 @@ export function demangleRustLegacy(symbol) {
     }
   }
 
-  if (components.length === 0) {
+  if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
 
@@ -304,7 +530,7 @@ export function demangleRustSymbol(symbol) {
   if (text.startsWith('_R') || text.startsWith('__R')) {
     return demangleRustV0(text);
   }
-  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
+  if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
     if (leg.parsed) return leg;
   }
@@ -382,15 +608,14 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
   }
 
   probe() {
-    const rawSymbols = this.symbolsList || [];
+    const rawSymbols = this.symbolsList == null ? [] : this.symbolsList;
+    if (!Array.isArray(rawSymbols)) throw new TypeError('rust-metadata-symbols-must-be-array');
     const rustSymbols = [];
     const vtables = [];
     let unreadable = 0;
     let invalidEntries = 0;
 
-    const isRustCandidateName = (name) =>
-      typeof name === 'string' &&
-      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+    const isRustCandidateName = isRustCandidateSymbol;
 
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);

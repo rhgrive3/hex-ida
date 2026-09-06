@@ -1,5 +1,5 @@
 import { validateMachineEffectBundle } from '../../semantics/effects/index.js';
-import { architecturePluginV2 } from './registry.js';
+import { architecturePluginV2, canonicalArchitectureId } from './registry.js';
 
 export const MACHINE_EFFECTS_COVERAGE_SCHEMA = 'machine-effects-coverage/v1';
 
@@ -13,7 +13,13 @@ function resolvePlugin(value) {
 }
 
 function identity(value) {
-  return String(value ?? '').trim().toLowerCase();
+  return canonicalArchitectureId(value);
+}
+
+function instructionId(value) {
+  if (typeof value !== 'string') return null;
+  const out = value.trim();
+  return out || null;
 }
 
 // ARM64e deliberately delegates ordinary A64 instructions to the canonical
@@ -87,8 +93,11 @@ export function classifyMachineEffectsCoverage(architectureOrPlugin, decoded, co
     return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-architecture-mismatch', expected: [...architectureIds], observed: validated.architectureId, instructionId: validated.instructionId });
   }
   const expectedInstructionId = context?.instructionId ?? decoded?.instructionId;
-  if (expectedInstructionId != null && String(validated.instructionId) !== String(expectedInstructionId)) {
-    return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-instruction-mismatch', expected: String(expectedInstructionId), observed: validated.instructionId });
+  if (expectedInstructionId != null) {
+    const expected = instructionId(expectedInstructionId);
+    if (expected == null || validated.instructionId !== expected) {
+      return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-instruction-mismatch', expected, observed: validated.instructionId });
+    }
   }
   if (modes.size > 0 && !modes.has(identity(validated.mode))) {
     return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-bundle-mode-mismatch', expected: [...modes], observed: validated.mode, instructionId: validated.instructionId });

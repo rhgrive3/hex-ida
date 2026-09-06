@@ -13,13 +13,6 @@ function nonNegativeSafeInteger(value, label) {
   return value;
 }
 
-function isAbortLike(error) {
-  return error?.name === 'AbortError'
-    || error?.name === 'ByteSourceCancelledError'
-    || error?.code === 'ABORT_ERR'
-    || error?.code === 'BYTE_SOURCE_CANCELLED';
-}
-
 export function createPageIdentity({ sourceId, pageIndex, pageSize }) {
   if (typeof sourceId !== 'string' || sourceId.length === 0) throw new TypeError('sourceId must be a non-empty string');
   const index = nonNegativeBigInt(pageIndex, 'page index');
@@ -204,7 +197,7 @@ export class PagedArtifactReader {
         if (!entry.discard) this.#remember(key, bytes);
         return bytes;
       } catch (error) {
-        if (isAbortLike(error)) throw new ByteSourceCancelledError();
+        if (entry.controller?.signal?.aborted) throw new ByteSourceCancelledError();
         throw error;
       }
     })().finally(() => {
@@ -240,7 +233,7 @@ export class PagedArtifactReader {
       };
       entry.promise.then(
         (value) => finish(resolve, value),
-        (error) => finish(reject, isAbortLike(error) ? new ByteSourceCancelledError() : error),
+        (error) => finish(reject, entry.controller?.signal?.aborted ? new ByteSourceCancelledError() : error),
       );
       signal?.addEventListener?.('abort', onAbort, { once:true });
       if (signal?.aborted) {
