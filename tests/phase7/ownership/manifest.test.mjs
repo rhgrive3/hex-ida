@@ -100,9 +100,7 @@ test('the Phase 7 sync check matches the canonical generated-sync check', () => 
     assert.ok(phase7.includes(artifact), `Phase 7 workflow must check ${artifact}`);
   }
   const stamp = 'deployment-identity.generated.js';
-  assert.deepEqual(canonical.split('\n').filter((line) => line.includes(stamp)).map((line) => line.trim()),
-    ['run: git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js'],
-    'the canonical workflow may only restore the stamp, not check or write it as userscript output');
+  assert.ok(!canonical.includes(stamp), 'the canonical workflow excludes the deployment stamp');
   assert.ok(!phase7.split('Generated-output synchronization')[1].split('- name:')[0].includes(`-- ${stamp}`),
     'the Phase 7 workflow must not require the deployment stamp to match');
 });
