@@ -72,6 +72,14 @@ const transportedResult = liftX86MachineEffects(transportedRow, { instructionId:
 assert.equal(transportedResult?.completeness, 'partial', 'copy-only rows cannot mint exactness without receiver revalidation');
 assert.notEqual(transportedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
+const transportedGapRow = structuredClone(deployedRow);
+transportedGapRow.address = 0x100n;
+assert.equal(
+  x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[transportedRow, transportedGapRow] }),
+  true,
+  'non-contiguous transported rows still require receiver revalidation instead of being assumed invalid',
+);
+
 const forged = {
   address:0n,
   length:1,
@@ -120,11 +128,19 @@ const semanticEntrySource = await readFile(new URL('../../../js/targets/architec
 const revalidationWorkerSource = await readFile(new URL('../../../js/targets/architecture/x86_64/semantic-revalidation-worker.js', import.meta.url), 'utf8');
 assert.match(semanticEntrySource, /new Worker\(new URL\('\.\/semantic-revalidation-worker\.js'/,
   'platform semantic entry must route unbranded transported x86 rows to the canonical revalidation worker');
+assert.match(semanticEntrySource, /addEventListener\?\.\('abort', abort, \{ once:true \}\);\s*if \(signal\?\.aborted\)/,
+  'revalidation cancellation must close the check-to-listener registration race');
 assert.match(revalidationWorkerSource, /HexX86CapstoneStructured\.parseInstruction/,
   'receiver-side proof must be rebuilt by the deployed canonical Capstone adapter');
 assert.match(revalidationWorkerSource, /decoderSemanticVersion:'capstone-5-x86-structured-v2'/,
   'receiver must replace caller-supplied decoder version authority after byte re-decode');
-assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length \|\| consumed !== serialized\.bytes\.length/,
-  'receiver revalidation must reject decode-boundary or completeness mismatches');
+assert.doesNotMatch(revalidationWorkerSource, /decoder-revalidation-noncontiguous/,
+  'receiver revalidation must not invent a whole-function contiguity requirement');
+assert.match(revalidationWorkerSource, /for \(const expected of serialized\.rows\)/,
+  'transported instructions must be independently re-decoded so CFG address gaps remain valid');
+assert.match(revalidationWorkerSource, /expected\.bytes\.length, expected\.address, 1, outputPointer/,
+  'each transported row must be re-decoded from exactly its own bytes and address');
+assert.match(revalidationWorkerSource, /instructions\.length !== serialized\.rows\.length/,
+  'receiver revalidation must reject decode-count incompleteness');
 
 console.log('issue-5082 x86 decoder provenance regression: PASS');
