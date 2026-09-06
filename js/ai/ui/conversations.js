@@ -147,9 +147,17 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const bucketKey = (space) => `${key}.${space}`;
-  const indexKey = () => key === STORAGE_KEY ? INDEX_KEY : `${key}.index`;
-  const ownsLegacyStorage = key === STORAGE_KEY;
+  // Canonicalize the storage key once: ownership and every storage path must
+  // agree on the same primitive snapshot. Without this, a boxed/coercible key
+  // (e.g. `new String(STORAGE_KEY)`) is classified as non-owner by `===`
+  // while its coerced bucket/index paths still alias the default store, so a
+  // "custom" clear() would delete default data and leave the legacy key.
+  const storageKey = (() => {
+    try { return String(key); } catch { return null; }
+  })();
+  const bucketKey = (space) => `${storageKey}.${space}`;
+  const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
+  const ownsLegacyStorage = storageKey === STORAGE_KEY;
 
   const readIndex = () => {
     const store = backing();

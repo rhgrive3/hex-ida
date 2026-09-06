@@ -91,3 +91,38 @@ test('issue #3792 - default store still performs the v1 to v2 migration', () => 
   assert.ok(storage.getItem(`${STORAGE_KEY}.prod-bin`));
   assert.ok(storage.getItem(`${STORAGE_KEY}.index`));
 });
+
+test('issue #3792 - boxed default key agrees on ownership and storage paths', () => {
+  const storage = memoryStorage();
+  const defaultStore = createConversationStore({ storage, namespace: () => 'prod-bin' });
+  assert.equal(defaultStore.save([persistedConversation('default-chat')]), true);
+  assert.ok(storage.getItem(`${STORAGE_KEY}.prod-bin`));
+  assert.ok(storage.getItem(`${STORAGE_KEY}.index`));
+  storage.setItem(LEGACY_STORAGE_KEY, legacyPayload());
+
+  // A boxed String carrying the default key value is the default store, not a
+  // custom store: ownership and every storage path must use one snapshot.
+  const boxedStore = createConversationStore({ storage, key: new String(STORAGE_KEY), namespace: () => 'prod-bin' });
+  assert.deepEqual(boxedStore.load().map((conversation) => conversation.id), ['default-chat']);
+  boxedStore.clear();
+  // Owner clear removes the owned v2 bucket, the owned index, and the legacy
+  // key together: no half-state where v2 data is gone but legacy is orphaned.
+  assert.equal(storage.getItem(`${STORAGE_KEY}.prod-bin`), null);
+  assert.equal(storage.getItem(`${STORAGE_KEY}.index`), null);
+  assert.equal(storage.getItem(LEGACY_STORAGE_KEY), null);
+});
+
+test('issue #3792 - stateful key object uses a single path snapshot', () => {
+  const storage = memoryStorage();
+  let calls = 0;
+  const statefulKey = { toString() { calls += 1; return calls === 1 ? 'stateful.a' : 'stateful.b'; } };
+  const store = createConversationStore({ storage, key: statefulKey, namespace: () => 'bin' });
+  assert.equal(store.save([persistedConversation('stateful-chat')]), true);
+  store.clear();
+  // Every path (bucket, index) must derive from the same first snapshot, so
+  // clear() retires exactly the keys that save() created.
+  assert.equal(storage.getItem('stateful.a.bin'), null);
+  assert.equal(storage.getItem('stateful.a.index'), null);
+  assert.equal(storage.getItem('stateful.b.bin'), null);
+  assert.equal(storage.getItem('stateful.b.index'), null);
+});
