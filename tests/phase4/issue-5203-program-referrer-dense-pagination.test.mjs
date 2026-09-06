@@ -49,6 +49,21 @@ assert.equal(two[1].count, 1);
 assert.equal(two.queryLimited, false, 'exhausting the target range at the distinct-function limit is complete');
 assert.equal(two.complete, true);
 
+const interleaved = new ProgramIndex({
+  callFrom:new BigUint64Array(0),
+  callTo:new BigUint64Array(0),
+  refFrom:new BigUint64Array([0x1100n, 0x1104n, 0x2100n]),
+  refTo:new BigUint64Array([target, target + 1n, target]),
+  refKind:new Uint8Array([1, 2, 3]),
+  completeness:{ complete:true, reasons:[] },
+}, symbols, null).functionsReferencing(target, 2n, 1);
+assert.deepEqual(interleaved.map((entry) => entry.addr), [0x1000n]);
+assert.equal(interleaved[0].count, 2, 'accepted function keeps its exact count across interleaved targets');
+assert.equal(interleaved[0].site, 0x1100n, 'first-site provenance remains stable');
+assert.equal(interleaved[0].kind, 1, 'first-kind provenance remains stable');
+assert.equal(interleaved.queryLimited, true);
+assert.equal(interleaved.complete, false);
+
 const zero = program.functionsReferencing(target, 1n, 0);
 assert.equal(zero.length, 0);
 assert.equal(zero.queryLimited, true, 'zero limit remains partial when matching referrers exist');
@@ -63,5 +78,12 @@ assert.deepEqual(capped.map((entry) => entry.addr), [0x1000n, 0x2000n]);
 assert.equal(capped.complete, false, 'source ref cap remains fail-closed after distinct enumeration');
 assert.equal(capped.capped, true);
 assert.equal(capped.incompleteReason, 'refs-source-capped');
+
+const sourceIncomplete = makeProgram({
+  completeness:{ complete:false, reasons:['program-region-unscanned:test'] },
+}).functionsReferencing(target, 1n, 2);
+assert.equal(sourceIncomplete.complete, false, 'generic source incompleteness remains fail-closed');
+assert.equal(sourceIncomplete.capped, false);
+assert.equal(sourceIncomplete.incompleteReason, 'program-region-unscanned:test');
 
 console.log('issue #5203 dense ProgramIndex referrer regression passed');

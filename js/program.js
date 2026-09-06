@@ -341,7 +341,11 @@ export class ProgramIndex {
       const site = this.refFrom[k], fn = this.functionStartOf(site);
       const key = fn != null ? fn.toString() : 's' + site.toString();
       if (!seen.has(key)) {
-        if (seen.size >= limit) { queryLimited = true; break; }
+        if (seen.size >= limit) {
+          queryLimited = true;
+          if (seen.size === 0) break;
+          continue;
+        }
         seen.set(key, { addr: fn, site, kind: this.refKind[k], count: 0 });
       }
       seen.get(key).count++;
