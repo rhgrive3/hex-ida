@@ -117,6 +117,11 @@ for (const type of [0x1002, 0x1003]) {
   expectTypeError(bytes, 'dex-invalid-map-item-alignment');
 }
 {
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
+  view.setUint32(104, 0x80, true);
+  expectTypeError(bytes, 'dex-map-item-outside-data');
+}
+{
   const bytes = new Uint8Array(0x70);
   expectTypeError(bytes, 'dex-unsupported-binary');
 }

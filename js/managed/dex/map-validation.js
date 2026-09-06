@@ -103,6 +103,7 @@ export function validateDexMap(bytes) {
       if (size !== 1 || offset !== mapOff) fail('dex-invalid-map-list-entry');
       end = mapOff + 4 + mapSize * 12;
       checkedRange(fileSize, mapOff, end - mapOff, 'dex-truncated-map-list');
+      checkedRange(dataEnd, mapOff, end - mapOff, 'dex-map-item-outside-data');
     } else {
       checkedRange(fileSize, offset, 1, 'dex-invalid-map-item-range');
     }
