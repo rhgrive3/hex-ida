@@ -103,31 +103,36 @@ function normalizeRecording(recording = {}, options = {}) {
 }
 
 function normalizedEventFromRecord(record, context, index) {
-  const source = record && record.type === 'event' && record.event ? record.event : record;
-  const rawKind = source?.kind ?? source?.type ?? 'trace-marker';
+  const protocolEnvelope = record && record.type === 'event' && typeof record.event === 'string';
+  const source = protocolEnvelope
+    ? (record.data && typeof record.data === 'object' && !Array.isArray(record.data) ? record.data : {})
+    : (record && record.type === 'event' && record.event ? record.event : record);
+  const rawKind = protocolEnvelope ? record.event : (source?.kind ?? source?.type ?? 'trace-marker');
   const rawType = typeof rawKind === 'string' ? rawKind : 'trace-marker';
   const kindMap = { branch: 'basic-block', trace: 'trace-marker', 'stream-truncated': 'gap' };
   const known = new Set(['session-open','session-close','process-start','process-exit','thread-start','thread-exit','module-load','module-unload','paused','resumed','breakpoint-hit','watchpoint-hit','exception','signal','call','return','basic-block','memory-read','memory-write','register-snapshot','instrumentation-observation','instrumentation-intervention','emulator-checkpoint','trace-marker','gap','dropped-events','provider-warning','provider-error']);
   const kind = known.has(rawType) ? rawType : (kindMap[rawType] || 'trace-marker');
-  const payload = source?.payload ?? source ?? {};
+  const payload = protocolEnvelope ? (record.data ?? {}) : (source?.payload ?? source ?? {});
+  const envelopeValue = (key) => protocolEnvelope && record[key] != null ? record[key] : source?.[key];
+  const truncated = record?.truncated === true || source?.truncated === true || rawType === 'stream-truncated';
   if (kind === 'dropped-events') droppedEventCount(payload?.dropped);
   return createRuntimeEvent({
     ...context,
-    eventId: source?.eventId,
-    streamId: source?.streamId ?? source?.threadKey ?? 'trace',
-    sequence: source?.sequence ?? index,
-    providerEventId: source?.providerEventId ?? source?.id,
-    timestamp: source?.timestamp,
-    processKey: source?.processKey ?? context.processKey,
-    threadKey: source?.threadKey,
-    moduleBindingKey: source?.moduleBindingKey,
-    moduleGeneration: source?.moduleGeneration,
+    eventId: envelopeValue('eventId'),
+    streamId: envelopeValue('streamId') ?? envelopeValue('threadKey') ?? 'trace',
+    sequence: envelopeValue('sequence') ?? index,
+    providerEventId: envelopeValue('providerEventId') ?? envelopeValue('id'),
+    timestamp: envelopeValue('timestamp'),
+    processKey: envelopeValue('processKey') ?? context.processKey,
+    threadKey: envelopeValue('threadKey'),
+    moduleBindingKey: envelopeValue('moduleBindingKey'),
+    moduleGeneration: envelopeValue('moduleGeneration'),
     kind,
     payload,
-    observationMode: source?.observationMode ?? 'observed',
-    completeness: source?.completeness ?? (rawType === 'stream-truncated' || source?.truncated === true ? 'truncated' : context.sourceCompleteness),
-    predecessorIds: source?.predecessorIds,
-    interventionIds: source?.interventionIds,
+    observationMode: envelopeValue('observationMode') ?? 'observed',
+    completeness: envelopeValue('completeness') ?? (truncated ? 'truncated' : context.sourceCompleteness),
+    predecessorIds: envelopeValue('predecessorIds'),
+    interventionIds: envelopeValue('interventionIds'),
   });
 }
 
