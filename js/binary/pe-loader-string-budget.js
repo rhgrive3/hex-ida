@@ -37,9 +37,6 @@ function exactCStringAccounting(reader, budget) {
             const index = (offset - capture.baseOffset) / 4;
             if (Number.isInteger(index) && index >= 0 && index < 8) {
               let value = capture.snapshot[index];
-              // The delegated core currently skips ModuleHandleRVA (+8). For the one
-              // otherwise-all-zero shape, project that truthiness through `bound`,
-              // which the core uses only in its descriptor-zero predicate.
               if (index === 5 && capture.moduleHandleOnly) value = capture.snapshot[2];
               if (index === 7) descriptorCapture = null;
               return value;
