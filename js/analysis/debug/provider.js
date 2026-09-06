@@ -77,6 +77,18 @@ function optionalSizeBytes(value) {
 }
 
 /**
+ * Provider cursors are opaque protocol values, but the built-in DWARF/PDB
+ * providers currently encode them as canonical non-negative decimal strings.
+ * Validate that contract before a backend can apply Number()/slice coercion.
+ */
+function assertDebugPageCursor(cursor) {
+  if (cursor == null) return;
+  if (typeof cursor !== 'string' || !/^(0|[1-9]\d*)$/.test(cursor)) fail('debug-page-cursor-invalid');
+  const offset = Number(cursor);
+  if (!Number.isSafeInteger(offset)) fail('debug-page-cursor-invalid');
+}
+
+/**
  * The identity verdict for one debug source.
  *
  * Both the expected and the observed identity are recorded even when they
@@ -128,6 +140,13 @@ function coverageList(value) {
   return new Set(value.map((item) => item.trim()));
 }
 
+function debugRecordMatchesIdentitySource(identity, record) {
+  if (!identity || !record) return false;
+  if (record.providerId !== identity.providerId || record.providerVersion !== identity.providerVersion) return false;
+  if (record.buildIdentity != null && record.buildIdentity !== identity.observed) return false;
+  return true;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  *
@@ -138,7 +157,7 @@ function coverageList(value) {
  */
 export function isDebugRecordAuthoritative(result, record) {
   const identity = result?.identity;
-  if (!identity || !record) return false;
+  if (!identity || !record || !debugRecordMatchesIdentitySource(identity, record)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -229,7 +248,7 @@ export function createDebugPage(input = {}) {
  */
 export function createDebugProviderResult(input = {}) {
   const identity = createDebugIdentity(input.identity ?? {});
-  const status = input.status?.schemaVersion ? input.status : createAnalysisStatus(input.status ?? {});
+  const status = createAnalysisStatus(input.status ?? {});
   return deepFreeze({
     schemaVersion: DEBUG_PROVIDER_SCHEMA_VERSION,
     contractVersion: DEBUG_PROVIDER_CONTRACT_VERSION,
@@ -258,6 +277,21 @@ export class DebugInfoProvider {
     this.id = nonEmpty(id, 'debug-provider-id-required');
     this.version = nonEmpty(version, 'debug-provider-version-required');
     this.ecosystem = nonEmpty(ecosystem, 'debug-provider-ecosystem-required');
+
+    // The built-in readers share the same cursor protocol. Own the validation
+    // at this common public boundary so DWARF and PDB cannot drift apart again.
+    for (const readerName of ['symbols', 'types']) {
+      const reader = this[readerName];
+      if (typeof reader !== 'function') continue;
+      Object.defineProperty(this, readerName, {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          assertDebugPageCursor(args[1]?.cursor ?? null);
+          return Reflect.apply(reader, this, args);
+        },
+      });
+    }
   }
 
   /** Must return a `createDebugProviderResult`. */
@@ -278,7 +312,6 @@ export class DebugInfoProvider {
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createDebugPage({ records: [], truncated: false });
     const page = reader.call(this, scope, options);
-    if (result.identity?.verdict !== 'matched-partial') return page;
     return createDebugPage({
       records: (page.records ?? []).filter((record) => isDebugRecordAuthoritative(result, record)),
       nextCursor: page.nextCursor,

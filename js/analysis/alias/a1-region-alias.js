@@ -23,7 +23,7 @@
 
 import { stableStringify } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
-import { createAliasResult, mayAlias, unknownAlias } from './result.js';
+import { createAliasResult, mayAlias, reasonCodeForStopReason, unknownAlias } from './result.js';
 import { aliasMemoryRegions } from './legacy-safety-floor.js';
 import { isPreciseMemoryRegion, sameMemoryRegionIdentity } from './regions-v2.js';
 
@@ -64,7 +64,7 @@ export function provenAddressSpace(region) {
   if (!region) return null;
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
-    const space = region.addressSpace == null ? null : String(region.addressSpace).trim();
+    const space = typeof region.addressSpace === 'string' ? region.addressSpace.trim() : null;
     return space || null;
   }
   return null;
@@ -161,7 +161,7 @@ export function a1RegionAlias(a, b, options = {}) {
   // A cancelled or budget-exhausted caller may not receive a strong answer at
   // all, regardless of what the regions look like (P7-INV-010).
   if (status.stopReason != null && status.completeness !== 'bounded') {
-    return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted'], {
+    return unknownAlias(status, [reasonCodeForStopReason(status.stopReason)], {
       regionIds: [a?.id, b?.id].filter(Boolean),
     });
   }

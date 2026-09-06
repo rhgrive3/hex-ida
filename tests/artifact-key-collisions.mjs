@@ -110,4 +110,52 @@ const base = Object.freeze({
 }
 console.log('  ok 3 artifact kind is a canonical identity dimension (#1281)');
 
+/* ── #6201 TypedArray views / DataView / ArrayBuffer distinction ─ */
+{
+  const u8 = new Uint8Array([255]);
+  const i8 = new Int8Array([-1]);
+  const u16 = new Uint16Array([0x00ff]);
+  const dv = new DataView(new Uint8Array([255]).buffer);
+  const ab = new Uint8Array([255]).buffer;
+
+  const hU8 = canonicalConfigHash({ view: u8 });
+  const hI8 = canonicalConfigHash({ view: i8 });
+  const hU16 = canonicalConfigHash({ view: u16 });
+  const hDv = canonicalConfigHash({ view: dv });
+  const hAb = canonicalConfigHash({ view: ab });
+
+  assert.notEqual(hU8, hI8, 'Uint8Array and Int8Array must have different config hashes (#6201)');
+  assert.notEqual(hU8, hU16, 'Uint8Array and Uint16Array must have different config hashes (#6201)');
+  assert.notEqual(hU8, hDv, 'Uint8Array and DataView must have different config hashes (#6201)');
+  assert.notEqual(hU8, hAb, 'Uint8Array and ArrayBuffer must have different config hashes (#6201)');
+
+  const descU8 = createArtifactDescriptor({ ...base, config: { view: u8 } });
+  const descI8 = createArtifactDescriptor({ ...base, config: { view: i8 } });
+  assert.notEqual(descU8.artifactId, descI8.artifactId, 'distinct views must produce different artifactId (#6201)');
+  console.log('  ok 4 typed array view distinct identities (#6201)');
+}
+
+/* ── #6290 RegExp and non-plain objects rejected ─────────────── */
+{
+  for (const bad of [/alpha/g, new (class Foo {})()]) {
+    assert.throws(() => canonicalArtifactKeyValue({ reg: bad }), /artifact-key-unsupported-object/);
+    assert.throws(() => canonicalConfigHash({ reg: bad }), /artifact-key-unsupported-object/);
+  }
+  assert.doesNotThrow(() => canonicalConfigHash({ plain: { a: 1 } }));
+  assert.doesNotThrow(() => canonicalConfigHash({ nullProto: Object.create(null) }));
+  console.log('  ok 5 non-plain objects rejected (#6290)');
+}
+
+/* ── #4425 Map/Set locale-independent deterministic ordering ─── */
+{
+  const s1 = new Set(['ä', 'z']);
+  const s2 = new Set(['z', 'ä']);
+  assert.equal(canonicalConfigHash({ s: s1 }), canonicalConfigHash({ s: s2 }), 'Set ordering must be deterministic (#4425)');
+
+  const m1 = new Map([['ä', 1], ['z', 2]]);
+  const m2 = new Map([['z', 2], ['ä', 1]]);
+  assert.equal(canonicalConfigHash({ m: m1 }), canonicalConfigHash({ m: m2 }), 'Map ordering must be deterministic (#4425)');
+  console.log('  ok 6 locale-independent Map/Set ordering (#4425)');
+}
+
 console.log('artifact key collisions: PASS');

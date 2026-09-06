@@ -68,6 +68,39 @@ function producerId(value) {
   return value;
 }
 
+function optionalArchitectureId(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) fail('discovery-invalid-architecture-id');
+  return value;
+}
+
+function candidateConflicts(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail('discovery-candidate-invalid-conflicts');
+  const out = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail('discovery-candidate-invalid-conflict');
+    const conflict = value[index];
+    if (conflict == null || typeof conflict !== 'object' || Array.isArray(conflict)) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    const prototype = Object.getPrototypeOf(conflict);
+    if (prototype !== Object.prototype && prototype !== null) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    const kindDescriptor = Object.getOwnPropertyDescriptor(conflict, 'kind');
+    if (kindDescriptor == null || !Object.hasOwn(kindDescriptor, 'value')) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    const kind = kindDescriptor.value;
+    if (typeof kind !== 'string' || kind.length === 0 || kind.trim() !== kind) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    out.push(conflict);
+  }
+  return out;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -98,7 +131,7 @@ export function createDiscoveryEvidence(input = {}) {
     // Producer identity participates in corroboration. Pre-registry evidence
     // may omit it, but any explicit identity must already be canonical.
     producerId: producerId(input.producerId),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
+    architectureId: optionalArchitectureId(input.architectureId),
     name: input.name == null ? null : String(input.name),
     confidence: input.confidence == null ? null : String(input.confidence),
     evidenceIds: [...new Set(evidenceIds)].sort(),
@@ -148,17 +181,27 @@ export function createFunctionCandidate(input = {}) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
 
+  const startEvidence = deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence)));
+  // `exact` is derived authority, not a caller assertion: it requires at
+  // least one authoritative evidence item explicitly bound to this start.
+  // Start-less evidence can be authoritative for other facts, but cannot
+  // establish an exact function-start identity.
+  if (startState === 'exact' && !startEvidence.some((evidence) =>
+      evidence.authority === 'authoritative' && evidence.start === start.toString())) {
+    fail('discovery-candidate-exact-start-requires-authoritative-evidence');
+  }
+
   const candidate = {
     schemaVersion: FUNCTION_CANDIDATE_SCHEMA_VERSION,
     start: start.toString(),
     name: input.name == null ? null : String(input.name),
     regions: deepFreeze(regions),
-    startEvidence: deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
+    startEvidence,
     extentEvidence: deepFreeze((input.extentEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
     startState,
     extentState,
-    conflicts: deepFreeze([...(input.conflicts ?? [])]),
-    architectureId: input.architectureId == null ? null : String(input.architectureId),
+    conflicts: deepFreeze(candidateConflicts(input.conflicts)),
+    architectureId: optionalArchitectureId(input.architectureId),
   };
   candidate.digest = stableDigest({
     start: candidate.start,
@@ -176,9 +219,11 @@ export function createFunctionCandidate(input = {}) {
  * A contradicted candidate is never exact, whatever its evidence count says.
  */
 export function hasExactStart(candidate) {
-  return candidate.startState === 'exact' && !candidate.conflicts.some((conflict) => conflict.kind === 'start');
+  return candidate.startState === 'exact' && !candidate.conflicts.some((conflict) => conflict?.kind === 'start');
 }
 
 export function hasKnownExtent(candidate) {
-  return candidate.extentState !== 'unknown' && candidate.regions.length > 0;
+  return candidate.extentState !== 'unknown'
+    && candidate.extentState !== 'contradicted'
+    && candidate.regions.length > 0;
 }

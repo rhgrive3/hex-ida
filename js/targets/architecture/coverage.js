@@ -1,5 +1,5 @@
 import { validateMachineEffectBundle } from '../../semantics/effects/index.js';
-import { architecturePluginV2 } from './registry.js';
+import { architecturePluginV2, canonicalArchitectureId } from './registry.js';
 
 export const MACHINE_EFFECTS_COVERAGE_SCHEMA = 'machine-effects-coverage/v1';
 
@@ -13,7 +13,7 @@ function resolvePlugin(value) {
 }
 
 function identity(value) {
-  return String(value ?? '').trim().toLowerCase();
+  return canonicalArchitectureId(value);
 }
 
 // ARM64e deliberately delegates ordinary A64 instructions to the canonical
