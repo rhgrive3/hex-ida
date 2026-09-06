@@ -1,12 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
 import { validateDexMap } from './map-validation.js';
-
-function fail(code) { throw new TypeError(code); }
-
-function checkedRange(limit, offset, size, code) {
-  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
-}
+import { checkedRange, fail } from './validation-utils.js';
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;

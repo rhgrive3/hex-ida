@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
 import { parseDex as parseDexCore } from '../../../js/managed/dex/parser-core.js';
+import { validateDexMap } from '../../../js/managed/dex/map-validation.js';
 
 console.log('[phase11] running dex parser tests...');
 
@@ -89,7 +90,8 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
 }
 {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
-  view.setUint32(104, 0x90, true);
+  // mapOff remains inside data, but the complete map_list extends past dataEnd.
+  view.setUint32(104, 0x90, true); // data=[0x100,0x190), map=[0x178,0x1f4)
   expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 {
@@ -119,6 +121,7 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
 }
 {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const stringData = MAP_OFF + 4 + 6 * 12;
+  // hiddenapi_class_data_item is not structurally validated here, so fail closed as unsupported.
   view.setUint16(stringData, 0xf000, true);
   expectTypeError(bytes, 'dex-unsupported-map-item-type');
 }
@@ -143,6 +146,51 @@ for (const type of [0x1002, 0x1003]) {
   view.setUint32(40, 0x78563412, true);
   view.setUint32(52, 0, true);
   expectTypeError(bytes, 'dex-reverse-endian-unsupported');
+}
+
+function buildVariableMapDex(type, payload) {
+  const bytes = new Uint8Array(0x180);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x64,0x65,0x78,0x0a,0x30,0x33,0x35,0x00], 0);
+  view.setUint32(32, bytes.length, true);
+  view.setUint32(36, 0x70, true);
+  view.setUint32(40, 0x12345678, true);
+  view.setUint32(52, 0x100, true);
+  view.setUint32(104, bytes.length - 0x70, true);
+  view.setUint32(108, 0x70, true);
+  bytes.set(payload, 0x70);
+  view.setUint32(0x100, 3, true);
+  for (const [i, itemType, size, offset] of [[0,0x0000,1,0],[1,type,1,0x70],[2,0x1000,1,0x100]]) {
+    const pos = 0x104 + i * 12;
+    view.setUint16(pos, itemType, true); view.setUint16(pos + 2, 0, true);
+    view.setUint32(pos + 4, size, true); view.setUint32(pos + 8, offset, true);
+  }
+  return bytes;
+}
+
+for (const [type, payload] of [
+  [0x1001, [0,0,0,0]],
+  [0x1002, [0,0,0,0]],
+  [0x1003, [0,0,0,0]],
+  [0x2000, [0,0,0,0]],
+  [0x2001, new Array(16).fill(0)],
+  [0x2002, [0,0]],
+  [0x2003, [0,0,0]],
+  [0x2004, [0,0,0]],
+  [0x2005, [0]],
+  [0x2006, new Array(16).fill(0)],
+]) {
+  const bytes = buildVariableMapDex(type, payload);
+  assert.equal(validateDexMap(bytes), true, `variable map type 0x${type.toString(16)}`);
+  assert.doesNotThrow(() => parseDex(bytes), `public parse variable map type 0x${type.toString(16)}`);
+}
+
+{
+  const bytes = buildVariableMapDex(0x1001, [0,0,0,0]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0x70, 0x1000, true); // type_list element count escapes into the next map section
+  assert.throws(() => validateDexMap(bytes), /dex-invalid-map-item-range/);
+  expectTypeError(bytes, 'dex-invalid-map-item-range');
 }
 
 console.log('  ok dex parser tests passed');
