@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   resetAppRuntime,
+  runtimeEvidenceForApp,
   runtimePlatformForApp,
 } from '../../../js/runtime/app-runtime.js';
 
@@ -70,6 +71,18 @@ function barrierClose(platform) {
   assert.equal(a, b, 'same target identity must reuse one replacement platform');
   assert.notEqual(a, old);
   assert.equal(await runtimePlatformForApp(app), a, 'replacement must remain the registered current platform');
+
+  const replacementEvidence = {
+    sliceIdentity:a.options.sliceIdentity,
+    binaryHash:'hash-B',
+    source:'converged-replacement',
+  };
+  a.evidence.push(replacementEvidence);
+  assert.deepEqual(
+    runtimeEvidenceForApp(app),
+    [replacementEvidence],
+    'runtime evidence lookup must observe the converged replacement state',
+  );
   await resetAppRuntime(app);
 }
 
