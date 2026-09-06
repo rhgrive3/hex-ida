@@ -205,6 +205,11 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // Live-binding violations must never become a fallback decision.
+        // The inner catch runs caller-supplied onActivity synchronously, so a
+        // drift detected at the planner boundary could otherwise be masked by
+        // restoring the bindings before the final guard. Latch fail-closed.
+        if (normalized.type === 'scope_violation') throw normalized;
         limitReason = normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
