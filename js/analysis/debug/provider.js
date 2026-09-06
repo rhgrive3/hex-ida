@@ -77,6 +77,18 @@ function optionalSizeBytes(value) {
 }
 
 /**
+ * Provider cursors are opaque protocol values, but the built-in DWARF/PDB
+ * providers currently encode them as canonical non-negative decimal strings.
+ * Validate that contract before a backend can apply Number()/slice coercion.
+ */
+function assertDebugPageCursor(cursor) {
+  if (cursor == null) return;
+  if (typeof cursor !== 'string' || !/^(0|[1-9]\d*)$/.test(cursor)) fail('debug-page-cursor-invalid');
+  const offset = Number(cursor);
+  if (!Number.isSafeInteger(offset)) fail('debug-page-cursor-invalid');
+}
+
+/**
  * The identity verdict for one debug source.
  *
  * Both the expected and the observed identity are recorded even when they
@@ -265,6 +277,21 @@ export class DebugInfoProvider {
     this.id = nonEmpty(id, 'debug-provider-id-required');
     this.version = nonEmpty(version, 'debug-provider-version-required');
     this.ecosystem = nonEmpty(ecosystem, 'debug-provider-ecosystem-required');
+
+    // The built-in readers share the same cursor protocol. Own the validation
+    // at this common public boundary so DWARF and PDB cannot drift apart again.
+    for (const readerName of ['symbols', 'types']) {
+      const reader = this[readerName];
+      if (typeof reader !== 'function') continue;
+      Object.defineProperty(this, readerName, {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          assertDebugPageCursor(args[1]?.cursor ?? null);
+          return Reflect.apply(reader, this, args);
+        },
+      });
+    }
   }
 
   /** Must return a `createDebugProviderResult`. */
