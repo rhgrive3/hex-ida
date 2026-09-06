@@ -9,7 +9,6 @@ import {
   isCanonicalExactMemoryOperandForwarding,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
-import { isCanonicalExactStackOperandIdentity } from '../../semantics/memoryssa/operand-forwarding.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
@@ -1201,14 +1200,6 @@ function canonicalCommittedOperandProof(load, direct, use, bits, definitionId, c
   const regionId = fieldValue(use, 'regionId') ?? fieldValue(context, 'regionId');
   if (!proof || !context || !artifact || loadSourceEntityId == null || directSourceEntityId == null
       || !nonEmptyString(regionId)) return null;
-  const expected = {
-    useId: fieldValue(context, 'useId'),
-    definitionId,
-    loadSourceEntityId,
-    storedSourceEntityId: directSourceEntityId,
-    regionId,
-    widthBits: bits,
-  };
   const projectionMatches = () => idKey(fieldValue(proof, 'loadSourceEntityId')) === loadSourceEntityId
     && idKey(fieldValue(proof, 'storedSourceEntityId')) === directSourceEntityId
     && idKey(fieldValue(proof, 'regionId') ?? fieldValue(proof, 'loadRegionId')) === regionId
@@ -1219,14 +1210,9 @@ function canonicalCommittedOperandProof(load, direct, use, bits, definitionId, c
       return { proof, context, artifact };
     }
   } catch {
-    // The direct stack-operand producer has its own canonical binding gate.
-  }
-  try {
-    if (isCanonicalExactStackOperandIdentity(proof, artifact, expected)) {
-      return { proof, context, artifact };
-    }
-  } catch {
-    return null;
+    // A malformed or stale canonical fact remains unavailable to the
+    // physical consumer. There is no private projection proof to fall back
+    // to after the canonical query gate refuses it.
   }
   return null;
 }
