@@ -88,6 +88,30 @@ const T060_REVALIDATION_CODE_PATHS = Object.freeze([
   'tests/final-closure/preflight.test.mjs',
   'specs/005-analysis-final-closure/plan.md',
 ]);
+export const STAGE_A_MAINTENANCE_TASK_IDS = Object.freeze(['T061']);
+export const T061_MAINTENANCE_TRANSFER_FIELD = 'stageAMaintenanceTransfer';
+export const T061_MAINTENANCE_TRANSFER_SCHEMA_VERSION = 'hex-final-closure-t061-maintenance-transfer/v1';
+export const T061_MAINTENANCE_PRODUCT_SCHEMA_VERSION = 'hex-final-closure-t061-maintenance-product/v1';
+const T061_MAINTENANCE_INVENTORY_PATH = T060_AMENDMENT_INVENTORY_PATH;
+const T061_MAINTENANCE_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md';
+const T061_MAINTENANCE_TRANSFER_PATH = 'tests/final-closure/t052/canonical-operation-registry.test.mjs';
+const T061_MAINTENANCE_COMPONENT_CODE_PATHS = Object.freeze([
+  'package.json',
+  'tools/validation/final-closure/preflight.mjs',
+  'tests/final-closure/preflight.test.mjs',
+  'tests/final-closure/fixture-maintenance.test.mjs',
+  'specs/005-analysis-final-closure/tasks.md',
+  'specs/005-analysis-final-closure/data-model.md',
+  'specs/005-analysis-final-closure/contracts/task-ownership.json',
+  T061_MAINTENANCE_TRANSFER_PATH,
+]);
+const T061_MAINTENANCE_DATA_MODEL_PATH = 'specs/005-analysis-final-closure/data-model.md';
+const T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX = '\n## T061 Stage A maintenance amendment\n';
+// The amendment is an append-only, bounded documentation suffix.  Keep its
+// digest here so a later component cannot rewrite an old section and restore
+// a plausible-looking T061 paragraph at the end of the file.
+const T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256 =
+  '5aa27c2df7291da2430f72335fa652035ced6c4fdd4e79106ccfff36348e47eb';
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([
@@ -456,7 +480,12 @@ function transitivelyDepends(taskId, dependencyId, dependencies, seen = new Set(
   return false;
 }
 
-function dependencyErrors(blocks, taskIds) {
+function isStageAMaintenanceTask(taskId, ownership) {
+  return STAGE_A_MAINTENANCE_TASK_IDS.includes(taskId)
+    && ownership?.tasks?.[taskId]?.maintenanceClass === 'STAGE_A_MAINTENANCE';
+}
+
+function dependencyErrors(blocks, taskIds, ownership = null) {
   const errors = [];
   const dependencies = dependencyMap(blocks);
   const statuses = taskStatusMap(blocks);
@@ -493,7 +522,8 @@ function dependencyErrors(blocks, taskIds) {
   };
   for (const taskId of taskIds) visit(taskId);
   for (const taskId of taskIds.filter((candidate) => Number(candidate.slice(1)) > RESERVED_TASK_COUNT)) {
-    if (!transitivelyDepends(taskId, 'T048', dependencies)) {
+    if (!isStageAMaintenanceTask(taskId, ownership)
+      && !transitivelyDepends(taskId, 'T048', dependencies)) {
       errors.push(`tasks-dynamic-t048-dependency-missing:${taskId}`);
     }
   }
@@ -1125,6 +1155,7 @@ export function validateStageBApplicability({
   campaignStage,
   blocks,
   taskIds,
+  ownership = null,
   integrationInventory,
   stageBResidualCoverageText,
   roadmapMatrixText,
@@ -1226,7 +1257,8 @@ export function validateStageBApplicability({
 
   const componentTaskIds = taskIds.filter((taskId) => {
     const number = Number(taskId.slice(1));
-    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId) || number > RESERVED_TASK_COUNT;
+    return STAGE_B_FOUNDATION_COMPONENT_TASK_IDS.includes(taskId)
+      || (number > RESERVED_TASK_COUNT && !isStageAMaintenanceTask(taskId, ownership));
   });
   const tasks = Array.isArray(coverage.tasks) ? coverage.tasks : [];
   const coverageTaskIds = tasks.map((row) => row?.taskId);
@@ -1527,7 +1559,7 @@ function validateStageBEvidence({
   return Object.freeze({ stageA, stageB });
 }
 
-function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = null) {
+function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = null, ownership = null) {
   if (campaignStage === 'STAGE_A') {
     return taskIds.filter((taskId) => STAGE_A_COMPONENT_TASK_IDS.includes(taskId));
   }
@@ -1539,7 +1571,8 @@ function stageComponentTaskIds(campaignStage, taskIds, stageBApplicability = nul
     }
     return taskIds.filter((taskId) => {
       const number = Number(taskId.slice(1));
-      return (number >= 26 && number <= 36) || number === 45 || number > RESERVED_TASK_COUNT;
+      return (number >= 26 && number <= 36) || number === 45
+        || (number > RESERVED_TASK_COUNT && !isStageAMaintenanceTask(taskId, ownership));
     });
   }
   return [];
@@ -1690,7 +1723,7 @@ function validateCheckpointContract({
   const checkpoint = integrationInventory?.checkpoint;
   const expectedPath = CHECKPOINT_PATHS[campaignStage];
   const checkpointOwnerTaskId = CHECKPOINT_OWNER_TASK_IDS[campaignStage];
-  const componentTaskIds = stageComponentTaskIds(campaignStage, taskIds, stageBApplicability);
+  const componentTaskIds = stageComponentTaskIds(campaignStage, taskIds, stageBApplicability, ownership);
   const statuses = taskStatusMap(blocks);
   if (checkpoint?.schemaVersion !== CHECKPOINT_STATE_SCHEMA_VERSION) {
     errors.push('checkpoint-state-schema-invalid');
@@ -2186,7 +2219,8 @@ function validateCandidateGateRegistry({ ownership, taskIds, packageJson, shadow
       shadowAuthorityDefinition: null,
     });
   }
-  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > RESERVED_TASK_COUNT);
+  const dynamicTaskIds = taskIds.filter((taskId) => Number(taskId.slice(1)) > RESERVED_TASK_COUNT
+    && !isStageAMaintenanceTask(taskId, ownership));
   const componentTaskIds = [...INITIAL_COMPONENT_TASK_IDS, ...dynamicTaskIds];
   const shadowPolicy = registry?.shadowEvidence;
   const shadowAuthorityDefinition = validateShadowAuthorityDefinition({
@@ -2338,11 +2372,12 @@ export function validatePreflightContracts({
       }
     }
   }
-  errors.push(...dependencyErrors(blocks, taskIds));
+  errors.push(...dependencyErrors(blocks, taskIds, ownership));
   errors.push(...concurrentOwnershipErrors(blocks, ownership));
 
   const stageBApplicability = validateStageBApplicability({
     campaignStage: integrationInventory?.campaignStage,
+    ownership,
     blocks,
     taskIds,
     integrationInventory,
@@ -4367,6 +4402,16 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   if (!ledger || ledger.checkpoints.length !== sequence) {
     throw new Error('checkpoint-operational-ledger-missing');
   }
+  const maintenance = verifyT061MaintenanceTransfer(root, null, {
+    expectedSha: integrationHeadSha, checkpointState: checkpointResult,
+  });
+  const maintenanceIndex = maintenance ? maintenance.acceptedTaskIds.length - 1 : -1;
+  const maintenanceIsLatestProduct = maintenance != null && maintenanceIndex === sequence - 1;
+  if (maintenance) {
+    const priorInventory = readJsonAt(root, maintenance.integration, T061_MAINTENANCE_INVENTORY_PATH);
+    derivedTailMainReconciliation(root, { previousEvidenceSha: maintenance.previousEvidenceSha,
+      integrationHeadSha: maintenance.integration, currentMainSha: priorInventory.baseSha });
+  }
   const handoffs = result?.taskHandoffResult?.handoffs || {};
   const evidencePath = checkpointResult.checkpoint.evidencePath;
   const evidenceCommitShas = ledger.checkpoints.map((row, index) => {
@@ -4410,7 +4455,9 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
       .slice(0, rowIndex + 1)
       .map((checkpointRow) => checkpointRow.acceptedTaskId);
     verifyMainReconciliation(root, row.mainReconciliation, {
-      expectedPreviousEvidenceSha: movingMainAmendment && rowIndex === amendmentIndex + 1
+      expectedPreviousEvidenceSha: maintenance && rowIndex === maintenanceIndex + 1
+        ? maintenance.publication
+        : movingMainAmendment && rowIndex === amendmentIndex + 1
         ? movingMainAmendment.continuationCommitSha
         : rowIndex === 0
         ? (foundationRevalidation?.publicationCommitSha ?? canonicalT058.transitionCommitSha)
@@ -4520,11 +4567,11 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
   const evidenceCommitSha = evidenceCommitShas.at(-1);
   if (!validSha1(evidenceCommitSha)) throw new Error(`checkpoint-evidence-commit-missing:${evidencePath}`);
   assertAncestor(root, evidenceCommitSha, integrationHeadSha, 'checkpoint-evidence-not-ancestor');
-  const requiresExactCheckpointHead = componentMode || amendmentIsLatestProduct
+  const requiresExactCheckpointHead = componentMode || amendmentIsLatestProduct || maintenanceIsLatestProduct
     || (checkpointResult.remainingComponentTaskIds || []).length > 0;
   const tailMainReconciliation = requiresExactCheckpointHead
     ? derivedTailMainReconciliation(root, {
-      previousEvidenceSha: amendmentIsLatestProduct
+      previousEvidenceSha: maintenanceIsLatestProduct ? maintenance.publication : amendmentIsLatestProduct
         ? movingMainAmendment.continuationCommitSha : evidenceCommitSha,
       integrationHeadSha,
       currentMainSha,
@@ -4617,6 +4664,8 @@ export function verifyCheckpointOperationalEvidence(root, result, integrationHea
     tailMainReconciliation,
     movingMainAmendment,
     amendmentIsLatestProduct,
+    maintenance,
+    maintenanceIsLatestProduct,
   });
 }
 
@@ -5200,6 +5249,408 @@ export function verifyT060Revalidation(root, integrationHeadSha, { activationCom
     paths: Object.freeze([...codePaths, T060_AMENDMENT_EVIDENCE_PATH]), product });
 }
 
+// This is one reviewed fixture correction, not a general resealing facility.
+// Derive publication from history: a receipt cannot attest its own commit SHA.
+function packageCommandSequenceContains(candidateCommand, requiredCommand) {
+  const candidate = String(candidateCommand).split(' && ');
+  const required = String(requiredCommand).split(' && ');
+  let requiredIndex = 0;
+  for (const command of candidate) {
+    if (command === required[requiredIndex]) requiredIndex += 1;
+  }
+  return requiredIndex === required.length;
+}
+
+export function verifyT061MaintenancePackage(mainText, candidateText, integrationText = null) {
+  const fail = () => { throw new Error('t061-maintenance-invalid:package-main-preservation'); };
+  let expected;
+  let candidate;
+  try { expected = JSON.parse(mainText); candidate = JSON.parse(candidateText); }
+  catch { fail(); }
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)
+    || !expected.scripts || typeof expected.scripts !== 'object' || Array.isArray(expected.scripts)
+    || typeof expected.scripts.test !== 'string' || expected.scripts.test.trim() === '') fail();
+  const hook = 'node tests/final-closure/run.mjs';
+  if (expected.scripts.test !== hook && !expected.scripts.test.startsWith(`${hook} && `)) {
+    expected.scripts.test = `${hook} && ${expected.scripts.test}`;
+  }
+  // Preserve every current-main field and command, including their ordering.
+  // The sole permitted semantic delta is the canonical closure entry point.
+  if (canonicalJson(candidate) !== canonicalJson(expected)) fail();
+  if (integrationText != null) {
+    let integration;
+    try { integration = JSON.parse(integrationText); }
+    catch { fail(); }
+    if (!integration || typeof integration !== 'object' || Array.isArray(integration)
+      || !integration.scripts || typeof integration.scripts !== 'object'
+      || Array.isArray(integration.scripts)) fail();
+    for (const [name, command] of Object.entries(integration.scripts)) {
+      if (typeof command !== 'string' || typeof candidate.scripts?.[name] !== 'string'
+        || !packageCommandSequenceContains(candidate.scripts[name], command)) fail();
+    }
+  }
+  return true;
+}
+
+export function verifyT061MaintenanceStructure(root, bundle, { expectedSha } = {}) {
+  const fail = (reason) => { throw new Error(`t061-maintenance-invalid:${reason}`); };
+  if (!validSha1(expectedSha)) fail('head');
+  const field = T061_MAINTENANCE_TRANSFER_FIELD;
+  const inventoryPath = T061_MAINTENANCE_INVENTORY_PATH;
+  const tasksPath = 'specs/005-analysis-final-closure/tasks.md';
+  const ownershipPath = 'specs/005-analysis-final-closure/contracts/task-ownership.json';
+  const current = readJsonAt(root, expectedSha, inventoryPath);
+  const same = (a, b) => canonicalJson(a) === canonicalJson(b);
+  if (bundle?.integrationInventory && !same(bundle.integrationInventory, current)) fail('bundle');
+  let receipt = null;
+  let publication = null;
+  const history = git(root, ['rev-list', '--first-parent', '--reverse', expectedSha,
+    '--', inventoryPath]).split('\n').filter(Boolean);
+  for (const sha of history) {
+    const text = readOptionalText(root, inventoryPath, sha);
+    if (text == null) {
+      if (publication) fail('receipt-removed');
+      continue;
+    }
+    let historicalInventory;
+    try { historicalInventory = JSON.parse(text); }
+    catch {
+      // Before this protocol existed the path may have held draft text. Once
+      // a semantic publication exists, an unreadable revision is corruption.
+      if (publication) fail('receipt-unreadable');
+      continue;
+    }
+    const recorded = historicalInventory?.[field];
+    if (recorded == null) {
+      if (publication) fail('receipt-removed');
+      continue;
+    }
+    receipt ??= recorded;
+    publication ??= sha;
+    if (!same(recorded, receipt)) fail('receipt-rewritten');
+  }
+  // JSON escape spellings do not change a receipt's property identity. Only
+  // the parsed first-parent history can prove that no publication occurred.
+  if (!publication && current[field] == null) {
+    if (current.taskHandoffs?.T061 && isStageAMaintenanceTask('T061', readJsonAt(root, expectedSha,
+      'specs/005-analysis-final-closure/contracts/task-ownership.json'))) fail('receipt-missing');
+    return null;
+  }
+  if (!receipt || !same(receipt, current[field])) fail('receipt-missing');
+  if (!exactSet(Object.keys(receipt), ['schemaVersion', 'predecessor', 'successorTaskId',
+    'component', 'product', 'evidence', 'paths', 'transfer'])
+    || receipt.schemaVersion !== T061_MAINTENANCE_TRANSFER_SCHEMA_VERSION
+    || receipt.successorTaskId !== 'T061') fail('schema');
+  const parents = (sha) => git(root, ['show', '-s', '--format=%P', sha]).split(/\s+/).filter(Boolean);
+  const identity = (value, label, key = 'headSha', extra = []) => {
+    if (!value || !exactSet(Object.keys(value), [key, 'treeSha', ...extra])
+      || !validSha1(value[key]) || !validSha1(value.treeSha)
+      || git(root, ['rev-parse', `${value[key]}^{tree}`]) !== value.treeSha) fail(`${label}-identity`);
+  };
+  const predecessor = receipt.predecessor;
+  if (!predecessor || !exactSet(Object.keys(predecessor), ['taskId', 'integration', 'originalHandoff'])
+    || predecessor.taskId !== 'T052') fail('predecessor');
+  identity(predecessor.integration, 'integration');
+  identity(receipt.component, 'component', 'headSha', ['paths']);
+  identity(receipt.evidence, 'evidence');
+  const integration = predecessor.integration.headSha;
+  const code = receipt.component.headSha;
+  const evidence = receipt.evidence.headSha;
+  const prior = readJsonAt(root, integration, inventoryPath);
+  if (prior.campaignStage !== 'STAGE_A' || prior[field] != null
+    || prior.checkpoint?.state !== 'CHECKPOINT_GREEN'
+    || prior.taskHandoffs?.T061 || !prior.taskHandoffs?.T052 || !prior.taskHandoffs?.T060
+    || !same(prior.taskHandoffs.T052, predecessor.originalHandoff)) fail('predecessor-state');
+  const original = canonicalTaskHandoffAnchor(root, integration, 'T052');
+  if (!same(original.handoff, predecessor.originalHandoff)) fail('original-handoff');
+  const codeHistory = git(root, ['rev-list', '--first-parent', '--reverse',
+    `${integration}..${code}`]).split('\n').filter(Boolean);
+  let previous = integration;
+  if (!codeHistory.length) fail('code-empty');
+  for (const sha of codeHistory) {
+    if (!same(parents(sha), [previous]) || changedPaths(root, previous, sha)
+      .some((p) => !T061_MAINTENANCE_COMPONENT_CODE_PATHS.includes(p))) fail('code-scope');
+    previous = sha;
+  }
+  if (previous !== code) fail('code-parent');
+  const codePaths = changedPaths(root, integration, code);
+  const requiredCodePaths = T061_MAINTENANCE_COMPONENT_CODE_PATHS
+    .filter((p) => !['tests/final-closure/preflight.test.mjs', 'package.json'].includes(p));
+  if (!exactSet(codePaths, receipt.component.paths)
+    || requiredCodePaths.some((p) => !codePaths.includes(p))) fail('code-path-set');
+  verifyT061MaintenancePackage(readTextAt(root, prior.baseSha, 'package.json'),
+    readTextAt(root, code, 'package.json'), readTextAt(root, integration, 'package.json'));
+  const historicalDataModel = readTextAt(root, integration, T061_MAINTENANCE_DATA_MODEL_PATH);
+  let previousDataModel = historicalDataModel;
+  for (const sha of codeHistory) {
+    const nextDataModel = readTextAt(root, sha, T061_MAINTENANCE_DATA_MODEL_PATH);
+    if (!nextDataModel.startsWith(previousDataModel)) fail('data-model-prefix');
+    previousDataModel = nextDataModel;
+  }
+  const dataModelSuffix = previousDataModel.slice(historicalDataModel.length);
+  if (!dataModelSuffix.startsWith(T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX)
+    || sha256Text(dataModelSuffix) !== T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256) {
+    fail('data-model-suffix');
+  }
+  const taskRecords = (sha) => new Map(taskBlocks(readTextAt(root, sha, tasksPath))
+    .map((block) => [block.split('\n')[0].match(/\bT\d{3}\b/)[0], block.trim()]));
+  const beforeTasks = taskRecords(integration);
+  const codeTasks = taskRecords(code);
+  if (beforeTasks.has('T061') || codeTasks.size !== beforeTasks.size + 1) fail('task-set');
+  for (const [id, block] of beforeTasks) {
+    const next = codeTasks.get(id);
+    if (id === 'T049') {
+      const withoutDependencies = (text) => text?.replace(/Dependencies:.*?\. Owned paths:/,
+        'Dependencies: <maintenance>. Owned paths:');
+      if (withoutDependencies(next) !== withoutDependencies(block)
+        || !exactSet(dependencyMap([next]).get(id), [...dependencyMap([block]).get(id), 'T061'])) {
+        fail('integration-dependency');
+      }
+    } else if (next !== block) fail(`historical-task:${id}`);
+  }
+  if (!beforeTasks.has('T049')) fail('integration-task-missing');
+  const maintenanceTask = codeTasks.get('T061');
+  if (!maintenanceTask || taskStatusMap([maintenanceTask]).get('T061') !== 'PENDING'
+    || !exactSet([...(dependencyMap([maintenanceTask]).get('T061') || [])], ['T052', 'T060'])) fail('task-contract');
+  // T061 is the final task block and its contract is exactly one indented
+  // line.  A bounded slice prevents arbitrary trailing prose from being
+  // swallowed by a greedy "remove through EOF" comparison.
+  const normalizedTasks = readTextAt(root, code, tasksPath)
+    .replace(codeTasks.get('T049'), beforeTasks.get('T049'));
+  const integrationTasks = readTextAt(root, integration, tasksPath).trimEnd();
+  const t061Start = normalizedTasks.indexOf('- [ ] T061 ');
+  if (t061Start < 0 || normalizedTasks.slice(0, t061Start).trimEnd() !== integrationTasks) {
+    fail('tasks-text');
+  }
+  const t061Tail = normalizedTasks.slice(t061Start).trimEnd().split('\n');
+  if (t061Tail.length !== 2 || !/^- \[ \] T061\b/.test(t061Tail[0])
+    || !/^  - \*\*Contract\*\* — /.test(t061Tail[1])) fail('tasks-text');
+  const oldOwnership = readJsonAt(root, integration, ownershipPath);
+  const newOwnership = readJsonAt(root, code, ownershipPath);
+  const maintenanceOwner = newOwnership.tasks?.T061;
+  if (oldOwnership.tasks?.T061 || !maintenanceOwner
+    || !exactSet(Object.keys(maintenanceOwner), ['maintenanceClass', 'allowedPaths', 'forbiddenOverlap'])
+    || maintenanceOwner.maintenanceClass !== 'STAGE_A_MAINTENANCE'
+    || !Array.isArray(maintenanceOwner.forbiddenOverlap) || maintenanceOwner.forbiddenOverlap.length === 0
+    || maintenanceOwner.forbiddenOverlap.some((value) => typeof value !== 'string' || value.trim() === '')
+    || !exactSet(maintenanceOwner.allowedPaths,
+      [...T061_MAINTENANCE_COMPONENT_CODE_PATHS, T061_MAINTENANCE_EVIDENCE_PATH])) fail('ownership');
+  delete newOwnership.tasks.T061;
+  if (!same(newOwnership, oldOwnership)) fail('historical-ownership');
+  const transfer = receipt.transfer;
+  if (!transfer || !exactSet(Object.keys(transfer), ['path', 'oldOwnerTaskId', 'newOwnerTaskId',
+    'preimageBlobSha1', 'postimageBlobSha1'])
+    || transfer.path !== T061_MAINTENANCE_TRANSFER_PATH
+    || transfer.oldOwnerTaskId !== 'T052' || transfer.newOwnerTaskId !== 'T061'
+    || transfer.preimageBlobSha1 !== 'e808eb0ba83611ea3c147645f6070fcc3cd48823'
+    || transfer.postimageBlobSha1 !== '09a715039737d98ddef107ad477055b37bdde465'
+    || git(root, ['rev-parse', `${integration}:${transfer.path}`]) !== transfer.preimageBlobSha1
+    || git(root, ['rev-parse', `${code}:${transfer.path}`]) !== transfer.postimageBlobSha1) fail('transfer');
+  const product = receipt.product;
+  if (!product || product.schemaVersion !== T061_MAINTENANCE_PRODUCT_SCHEMA_VERSION) fail('product-schema');
+  identity(product.acceptedMerge, 'merge', 'commitSha');
+  identity(product.checkpointProduct, 'product', 'commitSha');
+  const merge = product.acceptedMerge.commitSha;
+  const generated = product.checkpointProduct.commitSha;
+  if (!same(parents(merge), [integration, code])
+    || candidateMergeTree(root, integration, code) !== product.acceptedMerge.treeSha) fail('merge');
+  if (!same(parents(generated), [merge]) || changedPaths(root, merge, generated)
+    .some((p) => !CHECKPOINT_GENERATED_PATHS.includes(p))) fail('generation-scope');
+  if (!same(parents(evidence), [generated])
+    || !exactSet(changedPaths(root, generated, evidence), [T061_MAINTENANCE_EVIDENCE_PATH])) fail('evidence-scope');
+  const evidenceText = readTextAt(root, evidence, T061_MAINTENANCE_EVIDENCE_PATH);
+  if ([integration, code, merge, generated, predecessor.originalHandoff.headSha,
+    transfer.preimageBlobSha1, transfer.postimageBlobSha1].some((id) => !evidenceText.includes(id))) fail('evidence-binding');
+  if (!same(parents(publication), [evidence])
+    || !exactSet(changedPaths(root, evidence, publication), [inventoryPath, tasksPath])) fail('publication-scope');
+  const publishedTasks = taskRecords(publication);
+  if (publishedTasks.size !== codeTasks.size) fail('publication-tasks');
+  for (const [id, block] of codeTasks) {
+    const expected = id === 'T061' ? block.replace(/^- \[ \]/, '- [x]').replace('Status: PENDING.', 'Status: DONE.') : block;
+    if (publishedTasks.get(id) !== expected) fail(`publication-task:${id}`);
+  }
+  if (readTextAt(root, publication, tasksPath) !== readTextAt(root, evidence, tasksPath)
+    .replace(maintenanceTask, publishedTasks.get('T061'))) fail('publication-tasks-text');
+  const published = readJsonAt(root, publication, inventoryPath);
+  const preserved = structuredClone(published);
+  delete preserved[field];
+  delete preserved.taskHandoffs?.T061;
+  for (const key of ['expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths', 'entries']) {
+    preserved[key] = prior[key];
+  }
+  if (!same(preserved, prior)) fail('inventory-delta');
+  const canonical = canonicalTaskHandoffAnchor(root, expectedSha, 'T061');
+  const expectedHandoff = { headSha: code, treeSha: receipt.component.treeSha,
+    evidencePath: 'tests/final-closure/fixture-maintenance.test.mjs' };
+  if (canonical.transitionCommitSha !== publication || !same(canonical.handoff, expectedHandoff)
+    || !same(current.taskHandoffs?.T061, expectedHandoff)
+    || !same(current.taskHandoffs?.T052, predecessor.originalHandoff)) fail('handoff');
+  const paths = [...codePaths, T061_MAINTENANCE_EVIDENCE_PATH];
+  if (!exactSet(paths, receipt.paths)) fail('receipt-paths');
+  const priorEntries = new Map(prior.entries.map((entry) => [entry.path, entry]));
+  if (priorEntries.get(transfer.path)?.ownerTaskId !== 'T052') fail('predecessor-owner');
+  const actualPaths = changedPaths(root, prior.baseSha, publication);
+  // Canonical generation can add or remove generated files from the base diff.
+  // Its exact transaction is authenticated above; new generated entries retain
+  // T049 ownership and never become maintenance-owned source.
+  if (actualPaths.some((p) => !priorEntries.has(p) && !paths.includes(p)
+    && !CHECKPOINT_GENERATED_PATHS.includes(p))
+    || [...priorEntries.keys()].some((p) => !actualPaths.includes(p)
+      && !CHECKPOINT_GENERATED_PATHS.includes(p) && p !== transfer.path)
+    || !exactSet(published.entries.map((entry) => entry.path), actualPaths)) fail('entry-set');
+  for (const entry of published.entries) {
+    const priorEntry = priorEntries.get(entry.path);
+    const expected = priorEntry ? { ...priorEntry,
+      ...(entry.path === transfer.path && { ownerTaskId: 'T061' }) }
+      : { path: entry.path, ownerTaskId: CHECKPOINT_GENERATED_PATHS.includes(entry.path) ? 'T049' : 'T061' };
+    if (!same(entry, expected)) fail(`entry-owner:${entry.path}`);
+  }
+  for (const key of ['expectedChangedPaths', 'actualChangedPaths', 'unionChangedPaths']) {
+    if (!exactSet(published[key], actualPaths)) fail('inventory-paths');
+  }
+  if (!exactSet(published.entries.map((entry) => entry.path), actualPaths)) fail('inventory-entries');
+  if (git(root, ['rev-parse', `${expectedSha}:${transfer.path}`]) !== transfer.postimageBlobSha1) fail('current-fixture');
+  // Later ordinary main reconciliation may drop paths from its diff; it may
+  // never transfer the retained fixture back to the historical owner.
+  for (const sha of history.slice(history.indexOf(publication))) {
+    const inventory = readJsonAt(root, sha, inventoryPath);
+    const entry = inventory.entries?.find((item) => item.path === transfer.path);
+    if (entry && entry.ownerTaskId !== 'T061') fail('owner-regressed');
+    if (!same(inventory.taskHandoffs?.T052, predecessor.originalHandoff)
+      || !same(inventory.taskHandoffs?.T061, expectedHandoff)) fail('handoff-rewritten');
+  }
+  assertAncestor(root, publication, expectedSha, 't061-maintenance-publication-not-ancestor');
+  return Object.freeze({ code, evidence, publication, integration, product, paths, transfer });
+}
+
+export function verifyT061MaintenanceTransfer(root, bundle, { expectedSha, checkpointState = null } = {}) {
+  const verified = verifyT061MaintenanceStructure(root, bundle, { expectedSha });
+  if (!verified) return null;
+  const fail = (reason) => { throw new Error(`t061-maintenance-invalid:${reason}`); };
+  const inventory = readJsonAt(root, verified.integration, T061_MAINTENANCE_INVENTORY_PATH);
+  const errors = [];
+  const ledger = parseEvidenceJsonBlock(readTextAt(root, verified.integration,
+    inventory.checkpoint.evidencePath), CHECKPOINT_BLOCKS.STAGE_A, errors);
+  const acceptedTaskIds = ledger?.checkpoints?.map((row) => row.acceptedTaskId);
+  const product = verified.product;
+  if (!exactSet(Object.keys(product), ['schemaVersion', 'acceptedTaskIds', 'acceptedMerge',
+    'checkpointProduct', 'integrationReconciliation', 'generation', 'rollingProductGates',
+    'independentShadowVerifier', 'initialCandidateGateDigest', 'maintenanceGates'])) fail('product-schema');
+  if (errors.length || !acceptedTaskIds?.length
+    || acceptedTaskIds.length !== inventory.checkpoint.sequence
+    || canonicalJson(product.acceptedTaskIds) !== canonicalJson(acceptedTaskIds)
+    || !acceptedTaskIds.includes('T052') || acceptedTaskIds.includes('T061')) fail('product-task-set');
+  if (checkpointState?.ledger?.campaignStage === 'STAGE_A'
+    && canonicalJson(checkpointState.ledger?.checkpoints?.slice(0, acceptedTaskIds.length))
+    !== canonicalJson(ledger.checkpoints)) fail('checkpoint-history');
+  const reconciliation = product.integrationReconciliation;
+  if (!reconciliation || reconciliation.schemaVersion !== PRODUCT_RECONCILIATION_SCHEMA_VERSION
+    || reconciliation.ownerTaskId !== 'T049'
+    || reconciliation.mergeCommitSha !== product.acceptedMerge.commitSha
+    || reconciliation.productCommitSha !== product.checkpointProduct.commitSha
+    || !exactSet(reconciliation.paths, []) || reconciliation.pathCount !== 0
+    || reconciliation.stableDigest !== stableDigest([])) fail('product-reconciliation');
+  verifyCheckpointProductProof(root, { ...product, sequence: 'T061' }, acceptedTaskIds);
+  verifyT061MaintenanceGates(root, product);
+  return Object.freeze({ ...verified, acceptedTaskIds, previousEvidenceSha: git(root,
+    ['log', '-1', '--format=%H', verified.integration, '--', inventory.checkpoint.evidencePath]) });
+}
+
+function t061MaintenanceCommands(root, headSha) {
+  const ownership = readJsonAt(root, headSha,
+    'specs/005-analysis-final-closure/contracts/task-ownership.json');
+  const owned = ownership.candidateGates?.tasks?.T052?.owned;
+  if (!Array.isArray(owned) || canonicalJson(owned) !== canonicalJson([
+    { id: 't052-owned-regressions', argv: ['node', 'tests/final-closure/run.mjs', '--group', 't052'] },
+  ])) throw new Error('t061-maintenance-invalid:owned-command');
+  return [
+    ...owned,
+    { id: 't061-final-closure', argv: ['node', 'scripts/run-quiet-command.mjs', '--label',
+      't061-final-closure', '--', 'node', 'tests/final-closure/run.mjs'] },
+    { id: 't061-phase12', argv: ['node', 'scripts/run-quiet-command.mjs', '--label',
+      't061-phase12', '--', 'npm', 'run', 'phase12:test'] },
+  ];
+}
+
+export function executeT061MaintenanceGates({ root = ROOT, candidateIdentity,
+  spawn = spawnSync, environment = process.env, assertCandidateState = null } = {}) {
+  if (typeof assertCandidateState !== 'function') {
+    throw new Error('t061-maintenance-invalid:runtime-state-check-required');
+  }
+  const checkpointEphemeral = () => {
+    try {
+      return checkpointRuntimeEphemeralManifest(root);
+    } catch (error) {
+      throw new Error(`t061-maintenance-invalid:runtime-ephemeral-mutated:${String(error?.message || error)}`);
+    }
+  };
+  const initialEphemeralManifest = checkpointEphemeral();
+  const assertState = () => {
+    if (git(root, ['rev-parse', 'HEAD']) !== candidateIdentity?.headSha
+      || git(root, ['rev-parse', 'HEAD^{tree}']) !== candidateIdentity?.treeSha
+      || git(root, ['status', '--porcelain', '--untracked-files=all']) !== '') {
+      throw new Error('t061-maintenance-invalid:runtime-product-mutated');
+    }
+    // Keep the callback as an additional runtime assertion.  The canonical
+    // manifest below remains authoritative even when the callback is a no-op.
+    assertCandidateState('t061-maintenance');
+    const ephemeralManifest = checkpointEphemeral();
+    if (ephemeralManifest.identity !== initialEphemeralManifest.identity) {
+      throw new Error('t061-maintenance-invalid:runtime-ephemeral-mutated');
+    }
+  };
+  assertState();
+  const commands = t061MaintenanceCommands(root, candidateIdentity.headSha);
+  const results = commands.map(({ id, argv }) => {
+    assertState();
+    const refs = persistentRefSnapshot(root);
+    const child = spawn(argv[0], argv.slice(1), { cwd: root,
+      env: { ...process.env, ...environment }, shell: false, encoding: null,
+      stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: ROLLING_GATE_OUTPUT_LIMIT_BYTES });
+    assertOnlyAllowedRefChanges(refs, persistentRefSnapshot(root), []);
+    assertState();
+    if (child?.status !== 0 || child?.signal != null || child?.error != null) {
+      throw new Error(`t061-maintenance-invalid:gate-failed:${id}:${child?.status}`);
+    }
+    const stdout = rollingStreamEvidence(child.stdout);
+    if (stdout.byteLength === 0) throw new Error(`t061-maintenance-invalid:gate-empty:${id}`);
+    return { id, argv, exitCode: 0, signal: null, spawnErrorCode: null,
+      stdout, stderr: rollingStreamEvidence(child.stderr) };
+  });
+  const body = { schemaVersion: 'hex-final-closure-t061-maintenance-gates/v1',
+    candidateIdentity: { ...candidateIdentity },
+    verifier: blobEvidenceAt(root, candidateIdentity.headSha, 'tools/validation/final-closure/preflight.mjs'),
+    results };
+  return { ...body, identity: sha256Text(canonicalJson(body)) };
+}
+
+export function verifyT061MaintenanceGates(root, product) {
+  const fail = (reason) => { throw new Error(`t061-maintenance-invalid:maintenance-gates-${reason}`); };
+  const record = product.maintenanceGates;
+  const identity = { headSha: product.checkpointProduct.commitSha, treeSha: product.checkpointProduct.treeSha };
+  const commands = t061MaintenanceCommands(root, identity.headSha);
+  if (!record || !exactSet(Object.keys(record), ['schemaVersion', 'candidateIdentity', 'verifier', 'results', 'identity'])
+    || record.schemaVersion !== 'hex-final-closure-t061-maintenance-gates/v1'
+    || canonicalJson(record.candidateIdentity) !== canonicalJson(identity)
+    || canonicalJson(record.verifier) !== canonicalJson(blobEvidenceAt(root, identity.headSha,
+      'tools/validation/final-closure/preflight.mjs'))
+    || !Array.isArray(record.results) || record.results.length !== commands.length) fail('schema');
+  record.results.forEach((row, index) => {
+    if (!row || !exactSet(Object.keys(row), ['id', 'argv', 'exitCode', 'signal', 'spawnErrorCode', 'stdout', 'stderr'])
+      || row.id !== commands[index].id || canonicalJson(row.argv) !== canonicalJson(commands[index].argv)
+      || row.exitCode !== 0 || row.signal !== null || row.spawnErrorCode !== null) fail('command');
+    for (const stream of [row.stdout, row.stderr]) {
+      if (!stream || !exactSet(Object.keys(stream), ['byteLength', 'sha256'])
+        || !Number.isSafeInteger(stream.byteLength) || stream.byteLength < 0
+        || stream.byteLength > ROLLING_GATE_OUTPUT_LIMIT_BYTES || !validSha256(stream.sha256)) fail('output');
+    }
+    if (row.stdout.byteLength === 0) fail('empty');
+  });
+  const { identity: digest, ...body } = record;
+  if (digest !== sha256Text(canonicalJson(body))) fail('identity');
+  return record;
+}
+
 export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   requireCompleteOwners = false,
 } = {}) {
@@ -5226,6 +5677,14 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     canonicalHandoffs[taskId] = canonical;
   }
   const canonicalT046 = canonicalHandoffs.T046 ?? null;
+  const maintenance = completedTaskIds.has('T060') || completedTaskIds.has('T061')
+    ? verifyT061MaintenanceTransfer(root, null, { expectedSha: integrationHeadSha,
+      checkpointState: result?.checkpointResult }) : null;
+  if (completedTaskIds.has('T061') && !maintenance && isStageAMaintenanceTask('T061',
+    readJsonAt(root, integrationHeadSha, 'specs/005-analysis-final-closure/contracts/task-ownership.json'))) {
+    throw new Error('t061-maintenance-invalid:receipt-missing');
+  }
+  if (maintenance) canonicalHandoffs.T061 = canonicalTaskHandoffAnchor(root, integrationHeadSha, 'T061');
   const revalidation = verifyT058Revalidation(root, integrationHeadSha, canonicalHandoffs.T058 ?? null);
   let movingMainAmendment = null;
   if (completedTaskIds.has('T060')) {
@@ -5285,6 +5744,14 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
       sealedHead = entry.path === T060_AMENDMENT_EVIDENCE_PATH
         ? movingMainAmendment.revalidation.evidenceHeadSha : movingMainAmendment.revalidation.codeHeadSha;
     }
+    if (['T058', 'T060', 'T061'].includes(ownerTaskId) && maintenance?.paths.includes(entry.path)) {
+      sealedHead = entry.path === T061_MAINTENANCE_EVIDENCE_PATH ? maintenance.evidence : maintenance.code;
+    }
+    if (ownerTaskId === 'T046'
+      && ['specs/005-analysis-final-closure/data-model.md', 'package.json'].includes(entry.path)
+      && maintenance?.paths.includes(entry.path)) {
+      sealedHead = maintenance.code;
+    }
     const unchanged = runGit(root, [
       'diff', '--quiet', sealedHead, integrationHeadSha, '--', entry.path,
     ]);
@@ -5299,6 +5766,7 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
     canonicalT058TransitionCommitSha: canonicalHandoffs.T058?.transitionCommitSha ?? null,
     canonicalT060TransitionCommitSha: canonicalHandoffs.T060?.transitionCommitSha ?? null,
     movingMainAmendmentPublicationCommitSha: movingMainAmendment?.publicationCommitSha ?? null,
+    maintenancePublicationCommitSha: maintenance?.publication ?? null,
   });
 }
 
@@ -6105,8 +6573,9 @@ export function verifyCheckpointRuntimeEvidence({
     });
   }
   const historicalRow = result.checkpointResult.ledger.checkpoints.at(-1);
-  const amendmentProduct = operational.amendmentIsLatestProduct
-    ? operational.movingMainAmendment?.product?.product ?? null : null;
+  const maintenanceProduct = operational.maintenanceIsLatestProduct ? operational.maintenance?.product : null;
+  const amendmentProduct = maintenanceProduct ?? (operational.amendmentIsLatestProduct
+    ? operational.movingMainAmendment?.product?.product ?? null : null);
   const row = amendmentProduct
     ? Object.freeze({
       ...amendmentProduct,
@@ -6233,6 +6702,19 @@ export function verifyCheckpointRuntimeEvidence({
       throw new Error(`checkpoint-runtime-rolling-evidence-mismatch:${row.sequence}`);
     }
 
+    let maintenanceGates = null;
+    if (maintenanceProduct) {
+      maintenanceGates = executeT061MaintenanceGates({ root: temporaryWorktree,
+        candidateIdentity: productIdentity, spawn, environment,
+        assertCandidateState: (label) => assertProductState(label, generatedEphemeral.identity) });
+      verifyT061MaintenanceGates(temporaryWorktree, { ...row, maintenanceGates });
+      const replay = (record) => ({ ...record, identity: null,
+        results: record.results.map(({ stdout, stderr, ...result }) => result) });
+      if (canonicalJson(replay(maintenanceGates)) !== canonicalJson(replay(row.maintenanceGates))) {
+        throw new Error('t061-maintenance-invalid:runtime-gates-mismatch');
+      }
+    }
+
     const shadowGates = cumulativeTaskIds.flatMap((taskId) => {
       const gates = checkpointOwnership?.candidateGates?.tasks?.[taskId]?.shadow;
       return Array.isArray(gates) ? gates.map((gate) => ({ taskId, gate })) : [];
@@ -6284,6 +6766,7 @@ export function verifyCheckpointRuntimeEvidence({
       generation,
       rollingProductGates,
       independentShadowVerifier,
+      ...(maintenanceGates && { maintenanceTaskId: 'T061', maintenanceGates }),
       runtimeEphemeralIdentity: generatedEphemeral.identity,
     });
   } finally {
