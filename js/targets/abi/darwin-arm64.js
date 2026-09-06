@@ -191,6 +191,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && c.bits > 128) {
       const reg = gp < 8 ? `x${gp++}` : null;
+      const stackPointerOffset = reg ? null : alignUp(stackOffset, 8);
       const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
       const entry = reg
         ? {
@@ -200,16 +201,16 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           possible:false, mustUse:true,
         }
         : {
-          index, location:'stack', offset:stackOffset, bytes:8, abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
+          index, location:'stack', offset:stackPointerOffset, bytes:8, abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
           pointeeBits:c.bits, aggregate:true, callerCopy:true, mayContainPointers,
-          pieces:[{ pieceIndex:0, order:0, stackOffset, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
+          pieces:[{ pieceIndex:0, order:0, stackOffset:stackPointerOffset, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
           possible:false, mustUse:true,
         };
       if (reg) {
         srcs.push({ t:'reg', reg, bits:64, purpose:'aggregate-indirect-copy', possible:false, mustUse:true });
       } else {
         stackArguments.push(entry);
-        stackOffset += 8;
+        stackOffset = stackPointerOffset + 8;
         stackArgsMayContainPointers = true;
       }
       arguments_.push(entry);
