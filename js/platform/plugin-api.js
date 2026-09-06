@@ -29,6 +29,62 @@ export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
     super(options);
   }
 
+  #guardRegistration(type, id, register) {
+    const dispose = register();
+    const record = this.entries.get(type)?.get(id);
+    return () => {
+      if (record && this.entries.get(type)?.get(id) === record) dispose();
+    };
+  }
+
+  registerFormat(id, contribution) {
+    return this.#guardRegistration('format', id, () => super.registerFormat(id, contribution));
+  }
+
+  registerArchitecture(id, contribution) {
+    return this.#guardRegistration('architecture', id, () => super.registerArchitecture(id, contribution));
+  }
+
+  registerKnowledgeProvider(id, contribution) {
+    return this.#guardRegistration('knowledgeProvider', id, () => super.registerKnowledgeProvider(id, contribution));
+  }
+
+  registerSignatureProvider(id, contribution) {
+    return this.#guardRegistration('signatureProvider', id, () => super.registerSignatureProvider(id, contribution));
+  }
+
+  registerRecognitionProvider(id, contribution) {
+    return this.#guardRegistration('recognitionProvider', id, () => super.registerRecognitionProvider(id, contribution));
+  }
+
+  registerViewContribution(id, contribution) {
+    return this.#guardRegistration('viewContribution', id, () => super.registerViewContribution(id, contribution));
+  }
+
+  registerGoalProvider(id, contribution) {
+    return this.#guardRegistration('goalProvider', id, () => super.registerGoalProvider(id, contribution));
+  }
+
+  registerPlugin(rawManifest, implementations = {}) {
+    super.registerPlugin(rawManifest, implementations);
+    const pluginRecord = [...this.plugins.values()].at(-1);
+    const registered = (pluginRecord?.manifest?.contributions || []).map((contribution) => ({
+      type: contribution.type,
+      id: contribution.id,
+      record: this.entries.get(contribution.type)?.get(contribution.id),
+    }));
+
+    return () => {
+      for (const { type, id, record } of registered) {
+        const bucket = this.entries.get(type);
+        if (record && bucket?.get(id) === record) bucket.delete(id);
+      }
+      if (pluginRecord && this.plugins.get(pluginRecord.id) === pluginRecord) {
+        this.plugins.delete(pluginRecord.id);
+      }
+    };
+  }
+
   async invoke(type, id, method, context = {}, ...args) {
     try {
       const policy = context?.pluginPolicy || context?.pluginPermissions || {};
