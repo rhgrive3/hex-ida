@@ -32,15 +32,19 @@ function hasBranchTargetFault(bundle) {
   return bundle?.possibleFaults?.some(f => f.kind === "branch-target-exception") ?? false;
 }
 
-// 0: PACIASP: guarded + BTYPE=0 -> incompatible, triggers branch target exception
+// 0: PACIASP: guarded + BTYPE=0 -> implicit BTI check is skipped; PAC and BTYPE reset still execute.
 {
   const result = liftWithBti(paciasp, {
-    instructionId: "test:paciasp:guarded-incompatible-0",
+    instructionId: "test:paciasp:guarded-zero-btype",
     btiGuardedPage: { mappedPageGuarded: true },
     incomingBtype: 0,
   });
   assert.ok(result);
-  assert.ok(hasBranchTargetFault(result), "BTYPE=0 on guarded page must trigger branch target exception");
+  assert.equal(result.completeness, "exact-with-intrinsic");
+  assert.ok(!hasBranchTargetFault(result), "BTYPE=0 must not trigger a Branch Target Exception");
+  assert.equal(btypeWrites(result).length, 1, "must still reset pstate.btype");
+  assert.equal(btypeWrites(result)[0].value.value, "0");
+  assert.ok(result.operations.some(op => op.kind === "intrinsic" && op.intrinsicId === "arm64e.pointer.sign"));
 }
 
 // 1: PACIASP: guarded + compatible call BTYPE (0b01 = 1) -> PAC path + no triggered Branch Target Exception
@@ -96,6 +100,16 @@ function hasBranchTargetFault(bundle) {
 
 // 3: PACIBSP symmetry
 {
+  // Zero BTYPE: no implicit BTI fault, but PAC/BTYPE reset stay live.
+  const resZero = liftWithBti(pacibsp, {
+    instructionId: "test:pacibsp:zero-btype",
+    btiGuardedPage: { mappedPageGuarded: true },
+    incomingBtype: 0,
+  });
+  assert.equal(resZero.completeness, "exact-with-intrinsic");
+  assert.ok(!hasBranchTargetFault(resZero));
+  assert.equal(btypeWrites(resZero).length, 1);
+
   // Compatible
   const resCompat = liftWithBti(pacibsp, {
     instructionId: "test:pacibsp:compatible",
