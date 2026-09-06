@@ -1,5 +1,11 @@
 import { inRange } from './reader.js';
 
+export function sectionHasMappedAddress(sec) {
+  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
+  if (sec?.source === 'unmapped-section') return false;
+  return true;
+}
+
 function bigintOrNull(v) {
   if (v == null) return null;
   return typeof v === 'bigint' ? v : BigInt(v);
@@ -131,7 +137,7 @@ export class BinaryImage {
     if (o === null || o < 0n) return null;
     const candidates = [];
     for (const s of this.sections) {
-      if (s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
+      if (!sectionHasMappedAddress(s) || s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
       candidates.push(s);
     }
     for (const s of this.segments) {
@@ -170,7 +176,7 @@ export class BinaryImage {
     if (a === null || a < 0n) return null;
     let best = null;
     for (const s of this.sections) {
-      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+      if (sectionHasMappedAddress(s) && s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
     }
     for (const s of this.segments) {
       if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
@@ -189,7 +195,9 @@ export class BinaryImage {
       if (m.size >= owner.size) return;
       if (next === null || m.address < next) next = m.address;
     };
-    for (const m of this.sections) consider(m);
+    for (const m of this.sections) {
+      if (sectionHasMappedAddress(m)) consider(m);
+    }
     for (const m of this.segments) consider(m);
     return next;
   }
