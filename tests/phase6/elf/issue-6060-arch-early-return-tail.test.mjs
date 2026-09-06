@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRiscvAttributes } from '../js/binary/riscv-isa.js';
+import { parseRiscvAttributes } from '../../../js/binary/riscv-isa.js';
 
 function uleb(n) {
   const out = [];
@@ -54,3 +54,11 @@ test('6060: no arch tag still yields null', () => {
   const out = parseRiscvAttributes(payload([[ ...uleb(64), ...uleb(7) ]]));
   assert.equal(out, null);
 });
+
+for (const garbage of [[0x00], [0x00, 0x00], [0x00, 0x00, 0x00], [0xff]]) {
+  test(`6060: ${garbage.length}-byte garbage suffix after a valid section fails the parse`, () => {
+    const clean = payload(archAttr());
+    const out = parseRiscvAttributes(Uint8Array.from([...clean, ...garbage]));
+    assert.equal(out, null);
+  });
+}

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveABIPlugin, abiPlugin, registerABIPlugin } from '../js/targets/abi/index.js';
-import { riscvAbiFromElfFlags } from '../js/targets/abi/riscv-lp64.js';
+import { resolveABIPlugin, abiPlugin, registerABIPlugin } from '../../../js/targets/abi/index.js';
+import { riscvAbiFromElfFlags } from '../../../js/targets/abi/riscv-lp64.js';
 
 test('6052: arch+platform alone does not invent soft-float LP64', () => {
   assert.equal(resolveABIPlugin({ architecture: 'riscv64', platform: 'linux' }).id, 'unknown');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRiscvAttributes } from '../js/binary/riscv-isa.js';
+import { parseRiscvAttributes } from '../../../js/binary/riscv-isa.js';
 
 function uleb(n) {
   const out = [];

@@ -131,6 +131,10 @@ export function parseRiscvAttributes(input, options = {}) {
     }
     cursor = subsectionEnd;
   }
+  // A valid section is fully consumed: 1-3 trailing bytes after the last
+  // subsection are garbage, not evidence, and must fail the parse instead of
+  // returning a prefix match.
+  if (cursor !== bytes.length) return null;
   return found;
 }
 

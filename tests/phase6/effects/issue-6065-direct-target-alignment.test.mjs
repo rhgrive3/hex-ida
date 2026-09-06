@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liftRiscv64ControlEffects } from '../js/targets/architecture/riscv64/effects/control.js';
+import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/riscv64/effects/control.js';
 
 function rvControl(op, fields = {}, address = 0x1000n, instructionAlignment = 4) {
   return {

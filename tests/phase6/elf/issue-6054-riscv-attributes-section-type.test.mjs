@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseELF } from '../js/binary/elf-core.js';
+import { parseELF } from '../../../js/binary/elf-core.js';
 
 function uleb(n) {
   const out = [];

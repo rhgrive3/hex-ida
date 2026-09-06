@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseProgramDynamic } from '../js/binary/elf-dynamic.js';
+import { parseProgramDynamic } from '../../../js/binary/elf-dynamic.js';
 
 const BASE = 0x400000n;
 const DYNAMIC_OFFSET = 0x100;

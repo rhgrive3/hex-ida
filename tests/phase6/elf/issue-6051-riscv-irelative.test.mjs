@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dynamicRelocationResolutionMetadata } from '../js/binary/elf-dynamic.js';
+import { dynamicRelocationResolutionMetadata } from '../../../js/binary/elf-dynamic.js';
 
 const RISCV = { metadata: { machine: 243 } };
 

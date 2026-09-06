@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { riscv64MemoryFaults } from '../js/targets/architecture/riscv64/effects/common.js';
+import { riscv64MemoryFaults } from '../../../js/targets/architecture/riscv64/effects/common.js';
 
 test('6027: 8-bit LB/LBU/SB must not carry address-misaligned', () => {
   for (const [direction, width] of [['read', 8], ['write', 8]]) {
