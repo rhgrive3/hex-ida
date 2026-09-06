@@ -114,6 +114,66 @@ const providerResult = SYSV_AMD64_ABI.classifyArguments(
 );
 assertConservative(providerResult, 'xmm0', 'provider-supplied structured prototype');
 
+const validProviderResult = SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  {
+    callPrototypeFor() {
+      return { parameters:[{ type:'double', bits:64 }] };
+    },
+  },
+);
+assert.equal(exactRegister(validProviderResult, 'xmm0'), true,
+  'valid provider-supplied prototype must preserve exact FP placement');
+
+let providerGetReads = 0;
+const throwingProviderGetOptions = new Proxy({}, {
+  get(target, key, receiver) {
+    if (key === 'callPrototypeFor') {
+      providerGetReads += 1;
+      throw new Error('provider get trap');
+    }
+    return Reflect.get(target, key, receiver);
+  },
+});
+assertConservative(SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  throwingProviderGetOptions,
+), 'xmm0', 'provider callPrototypeFor get trap');
+const throwingProviderGetReturn = SYSV_AMD64_ABI.classifyCallReturn(
+  { callTarget:0x1234n },
+  throwingProviderGetOptions,
+);
+assert.equal(throwingProviderGetReturn?.reg ?? null, null,
+  'provider get trap must not mint a return register');
+assert.equal(providerGetReads, 0,
+  'provider boundary must not invoke caller get traps while snapshotting callPrototypeFor');
+
+let providerAccessorReads = 0;
+const throwingProviderAccessorOptions = {};
+Object.defineProperty(throwingProviderAccessorOptions, 'callPrototypeFor', {
+  enumerable:true,
+  get() {
+    providerAccessorReads += 1;
+    throw new Error('provider accessor trap');
+  },
+});
+assertConservative(SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  throwingProviderAccessorOptions,
+), 'xmm0', 'provider callPrototypeFor accessor');
+const throwingProviderAccessorReturn = SYSV_AMD64_ABI.classifyCallReturn(
+  { callTarget:0x1234n },
+  throwingProviderAccessorOptions,
+);
+assert.equal(throwingProviderAccessorReturn?.partial, true,
+  'provider accessor call-return must be partial');
+assert.equal(throwingProviderAccessorReturn?.reg ?? null, null,
+  'provider accessor call-return must not mint a return register');
+assert.equal(throwingProviderAccessorReturn?.reason, 'abi-prototype-metadata-invalid',
+  'provider accessor call-return must report invalid metadata');
+assert.equal(providerAccessorReads, 0,
+  'provider boundary must reject accessors without invoking them');
+
 const throwingPrototype = new Proxy({}, {
   getPrototypeOf() { throw new Error('prototype reflection trap'); },
 });
