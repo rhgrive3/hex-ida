@@ -472,15 +472,20 @@ export function showXrefs(app, target) {
       if (pageCompleteness !== 'complete') {
         exactTotal = null;
         totalTrusted = false;
-      } else if (totalTrusted && rawTotal != null) {
-        const candidateTotal = Number(rawTotal);
-        if (!Number.isSafeInteger(candidateTotal) || candidateTotal < requestedOffset + rows.length ||
-            (exactTotal != null && exactTotal !== candidateTotal)) {
-          exactTotal = null;
-          totalTrusted = false;
-        } else {
-          exactTotal = candidateTotal;
+      } else if (rawTotal == null) {
+        exactTotal = null;
+      } else if (typeof rawTotal !== 'number' || !Number.isSafeInteger(rawTotal) || !totalTrusted) {
+        markPaginationPartial();
+        return;
+      } else if (exactTotal == null || exactTotal === rawTotal) {
+        if (rawTotal < requestedOffset + rows.length) {
+          markPaginationPartial();
+          return;
         }
+        exactTotal = rawTotal;
+      } else {
+        markPaginationPartial();
+        return;
       }
 
       appendRows(rows);
@@ -489,13 +494,18 @@ export function showXrefs(app, target) {
       const rawNext = pageInfo.next;
       if (rawNext == null) {
         nextOffset = null;
+        if (exactTotal != null && loaded < exactTotal) {
+          markPaginationPartial();
+          return;
+        }
         updateStatus();
         return;
       }
 
-      const candidateNext = Number(rawNext);
+      const candidateNext = rawNext;
       const expectedNext = requestedOffset + rows.length;
-      if (!Number.isSafeInteger(candidateNext) || candidateNext <= requestedOffset || candidateNext !== expectedNext ||
+      if (typeof candidateNext !== 'number' || !Number.isSafeInteger(candidateNext) ||
+          candidateNext <= requestedOffset || candidateNext !== expectedNext ||
           (exactTotal != null && candidateNext >= exactTotal)) {
         markPaginationPartial();
         return;

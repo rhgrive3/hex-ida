@@ -55,6 +55,21 @@ test('continuations fail closed on stalled, skipped, malformed, or unproven pagi
   assert.match(showXrefs, /completeness = 'partial';/);
 });
 
+test('pagination authority is primitive safe integer or null without coercion laundering', () => {
+  for (const raw of ['401', [401], { value:401 }, true]) {
+    assert.notEqual(Number(raw), null, 'precondition: raw value is coercible, so it must be type-rejected');
+  }
+  assert.match(showXrefs, /typeof rawTotal !== 'number' \|\| !Number\.isSafeInteger\(rawTotal\)/);
+  assert.match(showXrefs, /typeof candidateNext !== 'number' \|\| !Number\.isSafeInteger\(candidateNext\)/);
+  assert.doesNotMatch(showXrefs, /Number\(rawTotal\)/);
+  assert.doesNotMatch(showXrefs, /Number\(rawNext\)/);
+});
+
+test('trusted total exhaustion contradiction cannot claim complete (401 total, next:null after 400 rows)', () => {
+  assert.match(showXrefs, /if \(rawNext == null\) \{\s*\n\s*nextOffset = null;\s*\n\s*if \(exactTotal != null && loaded < exactTotal\) \{\s*\n\s*markPaginationPartial\(\);/);
+  assert.equal(requestedOffsets(401).length, 2, 'a 401-row set must have a second reachable page while continuation exists');
+});
+
 test('producer non-completeness stays sticky and only trustworthy complete totals are disclosed', () => {
   assert.match(showXrefs, /completeness === 'complete' \|\| completeness === 'unknown' \|\| pageCompleteness === 'truncated'/);
   assert.match(showXrefs, /pageCompleteness !== 'complete'/);
