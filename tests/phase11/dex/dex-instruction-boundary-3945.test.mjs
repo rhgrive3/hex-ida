@@ -104,4 +104,17 @@ for (const { words, mnemonic, bytes } of [
   assert.equal(lifted.aggregateCompleteness, 'exact');
 }
 
+{
+  const controller = new AbortController();
+  controller.abort();
+  assert.throws(
+    () => liftDexMethod(0, image([0x0015, 0x000e]), { signal: controller.signal }),
+    (error) => error?.name === 'AbortError' && error?.message === 'vm-effects-cancelled',
+  );
+  assert.throws(
+    () => liftDexMethod(0, image([0x0015, 0x000e]), { budget: { maxOperations: 0 } }),
+    /vm-effect-resource-limit-operations/,
+  );
+}
+
 console.log('[phase11] DEX instruction-boundary regression #3945 passed');
