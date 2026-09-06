@@ -24,6 +24,14 @@ function deepCopyEvidence(value) {
   return value;
 }
 
+function parseGuardedField(val) {
+  if (val === undefined || val === null) return { present:false };
+  if (val === true || val === 'guarded') return { present:true, kind:'guarded', bool:true };
+  if (val === false || val === 'unguarded') return { present:true, kind:'unguarded', bool:false };
+  if (val === 'unknown') return { present:true, kind:'unknown', bool:null };
+  return { present:true, kind:'malformed', bool:null, raw:val };
+}
+
 export function normalizeArm64BtiGuardedPageState(input = null) {
   if (typeof input === 'boolean') {
     return Object.freeze({
@@ -39,17 +47,43 @@ export function normalizeArm64BtiGuardedPageState(input = null) {
       state:'unknown', mappedPageGuarded:null, source:'not-observed', evidence:null, loaderPolicy:null,
     });
   }
-  const raw = input.mappedPageGuarded ?? input.guarded ?? input.state;
+
+  const fMapped = parseGuardedField(input.mappedPageGuarded);
+  const fGuarded = parseGuardedField(input.guarded);
+  const fGuardedPage = parseGuardedField(input.guardedPage);
+  const fState = parseGuardedField(input.state);
+
+  const presentFields = [fMapped, fGuarded, fGuardedPage, fState].filter((f) => f.present);
+  const hasMalformed = presentFields.some((f) => f.kind === 'malformed');
+  const hasGuarded = presentFields.some((f) => f.kind === 'guarded');
+  const hasUnguarded = presentFields.some((f) => f.kind === 'unguarded');
+
   let state = 'unknown';
   let mappedPageGuarded = null;
-  if (raw === true || raw === 'guarded') { state = 'guarded'; mappedPageGuarded = true; }
-  else if (raw === false || raw === 'unguarded') { state = 'unguarded'; mappedPageGuarded = false; }
+  let conflict = false;
+  let conflictReason = null;
+
+  if (hasMalformed) {
+    conflict = true;
+    conflictReason = 'malformed-guarded-page-state-alias';
+  } else if (hasGuarded && hasUnguarded) {
+    conflict = true;
+    conflictReason = 'conflicting-guarded-page-state-aliases';
+  } else if (hasGuarded) {
+    state = 'guarded';
+    mappedPageGuarded = true;
+  } else if (hasUnguarded) {
+    state = 'unguarded';
+    mappedPageGuarded = false;
+  }
+
   return Object.freeze({
     state,
     mappedPageGuarded,
-    source:String(input.source || input.mappedPageGuardedSource || 'execution-context'),
+    source:String(input.source || input.mappedPageGuardedSource || (conflict ? 'conflicting-execution-context' : 'execution-context')),
     evidence:deepCopyEvidence(input.evidence ?? input.mappingEvidence ?? null),
     loaderPolicy:deepCopyEvidence(input.loaderPolicy ?? input.elfPolicy ?? null),
+    ...(conflict ? { conflict:true, conflictReason } : {}),
   });
 }
 
@@ -154,7 +188,25 @@ function rebuiltBundle(bundle, { operations, possibleFaults, completeness, unkno
   });
 }
 
-function guardFaultCondition(guardState, landing) {
+function normalizeBtype(val) {
+  if (val == null) return null;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'bigint') return Number(val);
+  if (typeof val === 'string') {
+    const s = val.trim().toLowerCase();
+    if (s.startsWith('0b')) return parseInt(s.slice(2), 2);
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+  }
+  return null;
+}
+
+function normalizeSctlrBt(val) {
+  if (val === true || val === 1 || val === '1' || val === 'enabled' || val === 'incompatible') return true;
+  if (val === false || val === 0 || val === '0' || val === 'disabled' || val === 'compatible') return false;
+  return null;
+}
+
+function guardFaultCondition(guardState, landing, sctlrBt = null) {
   return {
     kind:'and',
     terms:[
@@ -166,7 +218,12 @@ function guardFaultCondition(guardState, landing) {
       },
       {
         kind:'not',
-        condition:{ kind:'bti-compatible', btype:'pstate.btype', landingPadKind:landing.kind },
+        condition:{
+          kind:'bti-compatible',
+          btype:'pstate.btype',
+          landingPadKind:landing.kind,
+          ...(sctlrBt != null ? { sctlrBt } : {}),
+        },
       },
     ],
   };
@@ -222,11 +279,194 @@ function withArchitecturalBtypeReset(instruction, bundle) {
 
 export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context = {}) {
   if (!bundle) return bundle;
-  if (mnemonicOf(instruction) !== 'bti') return withArchitecturalBtypeReset(instruction, bundle);
+  const mnemonic = mnemonicOf(instruction);
+  const isImplicitBti = (mnemonic === 'paciasp' || mnemonic === 'pacibsp');
+  if (mnemonic !== 'bti' && !isImplicitBti) return withArchitecturalBtypeReset(instruction, bundle);
+
+  const featBti = context.featBti ?? context.hasBti ?? true;
+  if (isImplicitBti && featBti === false) {
+    return withArchitecturalBtypeReset(instruction, bundle);
+  }
+
   const guardState = normalizeArm64BtiGuardedPageState(
     context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null,
   );
-  const landing = landingKindOf(instruction);
+  const landing = isImplicitBti
+    ? Object.freeze({ kind:'pacixsp', code:4, mnemonic })
+    : landingKindOf(instruction);
+
+  if (isImplicitBti) {
+    const btype = normalizeBtype(context.incomingBtype ?? context.btype ?? context.pstateBtype);
+    const sctlrBt = normalizeSctlrBt(context.sctlrBt ?? context.sctlr_elx_bt ?? context.btPolicy ?? context.sctlrPolicy);
+
+    if (guardState.state === 'unguarded') {
+      return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+        operations:bundle.operations,
+        possibleFaults:bundle.possibleFaults,
+        completeness:bundle.completeness,
+        unknownEffects:bundle.unknownEffects,
+        metadata:{
+          btiGuardedPage:guardState,
+          btiCheck:'skipped-non-guarded-page',
+          landingPadKind:'pacixsp',
+        },
+      }));
+    }
+
+    if (guardState.state === 'guarded') {
+      if (btype === 1 || btype === 2) {
+        return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+          operations:bundle.operations,
+          possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
+          completeness:bundle.completeness,
+          unknownEffects:bundle.unknownEffects,
+          metadata:{
+            btiGuardedPage:guardState,
+            btiCheck:'compatible-call-btype',
+            landingPadKind:'pacixsp',
+            incomingBtype:btype,
+          },
+        }));
+      }
+
+      if (btype === 0) {
+        return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+          operations:bundle.operations,
+          possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
+          completeness:bundle.completeness,
+          unknownEffects:bundle.unknownEffects,
+          metadata:{
+            btiGuardedPage:guardState,
+            btiCheck:'skipped-zero-btype',
+            landingPadKind:'pacixsp',
+            incomingBtype:0,
+          },
+        }));
+      }
+
+      if (btype === 3) {
+        if (sctlrBt === false) {
+          return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+            operations:bundle.operations,
+            possibleFaults:bundle.possibleFaults.filter((f) => f?.kind !== 'branch-target-exception'),
+            completeness:bundle.completeness,
+            unknownEffects:bundle.unknownEffects,
+            metadata:{
+              btiGuardedPage:guardState,
+              btiCheck:'compatible-sctlr-policy',
+              landingPadKind:'pacixsp',
+              incomingBtype:btype,
+              sctlrBt:false,
+            },
+          }));
+        }
+        if (sctlrBt === true) {
+          const fault = Object.freeze({
+            kind:'branch-target-exception',
+            condition:Object.freeze({
+              kind:'bti-incompatible',
+              btype:3,
+              landingPadKind:'pacixsp',
+              sctlrBt:true,
+            }),
+            detail:Object.freeze({
+              guardedPageState:'guarded',
+              landingPadKind:'pacixsp',
+              sctlrBt:true,
+            }),
+          });
+          return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+            operations:bundle.operations,
+            possibleFaults:[...bundle.possibleFaults, fault],
+            completeness:bundle.completeness,
+            unknownEffects:bundle.unknownEffects,
+            metadata:{
+              btiGuardedPage:guardState,
+              btiCheck:'incompatible-branch-target',
+              landingPadKind:'pacixsp',
+              incomingBtype:btype,
+              sctlrBt:true,
+            },
+          }));
+        }
+        const fault = Object.freeze({
+          kind:'branch-target-exception',
+          condition:guardFaultCondition(guardState, landing, null),
+          detail:Object.freeze({
+            guardedPageState:'guarded',
+            landingPadKind:'pacixsp',
+            sctlrBt:null,
+          }),
+        });
+        return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+          operations:bundle.operations,
+          possibleFaults:[...bundle.possibleFaults, fault],
+          completeness:'partial',
+          unknownEffects:{
+            categories:['control','faults'],
+            reason:'arm64-bti-sctlr-policy-unresolved',
+            detail:{ loaderPolicy:guardState.loaderPolicy },
+          },
+          metadata:{
+            btiGuardedPage:guardState,
+            btiCheck:'conditional-on-sctlr-policy',
+            landingPadKind:'pacixsp',
+            incomingBtype:btype,
+          },
+        }));
+      }
+
+      const fault = Object.freeze({
+        kind:'branch-target-exception',
+        condition:guardFaultCondition(guardState, landing, sctlrBt),
+        detail:Object.freeze({
+          guardedPageState:'guarded',
+          landingPadKind:'pacixsp',
+          sctlrBt,
+        }),
+      });
+      return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+        operations:bundle.operations,
+        possibleFaults:[...bundle.possibleFaults, fault],
+        completeness:'partial',
+        unknownEffects:{
+          categories:['control','faults'],
+          reason:'arm64-bti-incoming-btype-unresolved',
+          detail:{ loaderPolicy:guardState.loaderPolicy },
+        },
+        metadata:{
+          btiGuardedPage:guardState,
+          btiCheck:'conditional-on-incoming-btype',
+          landingPadKind:'pacixsp',
+        },
+      }));
+    }
+
+    const fault = Object.freeze({
+      kind:'branch-target-exception',
+      condition:guardFaultCondition(guardState, landing, sctlrBt),
+      detail:Object.freeze({
+        guardedPageState:'unknown',
+        landingPadKind:'pacixsp',
+        sctlrBt,
+      }),
+    });
+    return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
+      operations:bundle.operations,
+      possibleFaults:[...bundle.possibleFaults, fault],
+      completeness:'partial',
+      unknownEffects:{
+        categories:['control','faults'],
+        reason:'bti-mapped-page-guarded-state-unresolved',
+        detail:{ loaderPolicy:guardState.loaderPolicy },
+      },
+      metadata:{
+        btiGuardedPage:guardState,
+        btiCheck:'conditional-on-unknown-page-guard-state',
+        landingPadKind:'pacixsp',
+      },
+    }));
+  }
 
   if (guardState.state === 'unguarded') {
     return withArchitecturalBtypeReset(instruction, rebuiltBundle(bundle, {
@@ -293,12 +533,12 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
     completeness:'partial',
     unknownEffects:{
       categories:['control','faults'],
-      reason:'bti-mapped-page-guarded-state-unresolved',
-      detail:{ loaderPolicy:guardState.loaderPolicy },
+      reason:guardState.conflict ? 'bti-mapped-page-guarded-state-conflict' : 'bti-mapped-page-guarded-state-unresolved',
+      detail:{ loaderPolicy:guardState.loaderPolicy, ...(guardState.conflictReason ? { conflictReason:guardState.conflictReason } : {}) },
     },
     metadata:{
       btiGuardedPage:guardState,
-      btiCheck:'conditional-on-unknown-page-guard-state',
+      btiCheck:guardState.conflict ? 'conflicting-page-guard-state' : 'conditional-on-unknown-page-guard-state',
       loaderPolicyDoesNotImplyMappedState:true,
     },
   }));

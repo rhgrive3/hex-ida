@@ -16,8 +16,8 @@ function arm64ControlFlow(instruction) {
   if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
-  if (op === 'b.al' || op === 'b.nv') return 'branch';
-  if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
+  if (op === 'b.al' || op === 'b.nv' || op === 'bc.al' || op === 'bc.nv') return 'branch';
+  if (/^(?:b|bc)\./.test(op) || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
   if (/^(?:eret|eretaa|eretab|drps|brk|hlt|svc|hvc|smc)$/.test(op)) return 'unknown';
   return 'fallthrough';
 }

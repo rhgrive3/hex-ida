@@ -584,7 +584,14 @@ function dsbOption(decoded) {
     return { option:DSB_OPTION_BY_CRM[crm], crm, reservedEncoding:crm === 8 || crm === 12 };
   }
   const option = barrierOption(decoded);
-  return BARRIER_OPTIONS[option] ? { option, crm:null, reservedEncoding:false } : null;
+  if (BARRIER_OPTIONS[option]) return { option, crm:null, reservedEncoding:false };
+  // FEAT_XS selectors share their base domain; the nxs marker records the
+  // missing XS attribute. Recognized here because the memory/atomic family
+  // owns DSB in production dispatch. The domain derives from the base
+  // selector so no second option table can drift from system.js.
+  const nxs = /^(osh|nsh|ish|sy)nxs$/.exec(option);
+  if (nxs) return { option, crm:null, reservedEncoding:false, nxsBase:nxs[1] };
+  return null;
 }
 
 function isbOption(decoded) {
@@ -638,7 +645,7 @@ function barrier(decoded, context, mnemonic) {
   if (mnemonic === 'dsb') {
     const normalized = dsbOption(decoded);
     if (!normalized) return partial(decoded, context, `unsupported DSB option: ${barrierOption(decoded)}`, ['memory','other']);
-    const { option, crm, reservedEncoding } = normalized;
+    const { option, crm, reservedEncoding, nxsBase } = normalized;
     if (option === 'ssbb' || option === 'pssbb') {
       const scope = { domain:'speculation', access:'store-bypass' };
       return bundle(decoded, context, {
@@ -646,10 +653,10 @@ function barrier(decoded, context, mnemonic) {
         metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, crm, alias:option },
       });
     }
-    const scope = BARRIER_OPTIONS[option];
+    const scope = nxsBase ? { ...BARRIER_OPTIONS[nxsBase], nxs:true } : BARRIER_OPTIONS[option];
     return bundle(decoded, context, {
-      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) } })],
-      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) },
+      operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}), ...(nxsBase ? { nxs:true } : {}) } })],
+      metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}), ...(nxsBase ? { nxs:true } : {}) },
     });
   }
   if (mnemonic === 'isb') {

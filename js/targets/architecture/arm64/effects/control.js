@@ -17,7 +17,7 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
   if (typeof mnemonic !== 'string') return false;
   const base = mnemonic.toLowerCase();
   return DIRECT_BRANCH.has(base) || INDIRECT_BRANCH.has(base) || COMPARE_BRANCH.has(base)
-    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
+    || TEST_BRANCH.has(base) || base === 'ret' || /^(?:b|bc)\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
 }
 
 function addressRef(address) {
@@ -47,7 +47,7 @@ function isAlignedDirectTarget(target) {
 
 function directBranchDisplacementBits(mnemonic) {
   if (mnemonic === 'b' || mnemonic === 'bl') return 26;
-  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  if (COMPARE_BRANCH.has(mnemonic) || /^(?:b|bc)\./.test(mnemonic)) return 19;
   if (TEST_BRANCH.has(mnemonic)) return 14;
   return null;
 }
@@ -130,6 +130,38 @@ function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
   return operand?.k === 'other' && explicit != null;
 }
 
+function branchTargetOperand(instruction, mnemonic) {
+  const ops = instruction?.ops || [];
+  if (mnemonic === 'b' || mnemonic === 'bl' || /^(?:b|bc)\./.test(mnemonic)) return ops.length === 1 ? ops[0] : null;
+  if (COMPARE_BRANCH.has(mnemonic)) return ops.length === 2 ? ops[1] : null;
+  if (TEST_BRANCH.has(mnemonic)) return ops.length === 3 ? ops[2] : null;
+  return null;
+}
+
+function operandTargetValue(operand) {
+  if (operand?.k === 'imm' && operand.value != null) {
+    try { return BigInt(operand.value); } catch { return null; }
+  }
+  if (operand?.k === 'other' && typeof operand.text === 'string'
+    && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(operand.text.trim())) {
+    try { return BigInt(operand.text.trim().replace(/^#/, '')); } catch { return null; }
+  }
+  return null;
+}
+
+// Redundant direct-target evidence must agree before an exact path is
+// entered: preferring branchTarget/callTarget over a contradictory operand
+// would exactify an address no evidence supports.
+function directTargetEvidenceMismatch(instruction, mnemonic, kind = 'branch') {
+  const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
+  if (explicit == null) return false;
+  let explicitValue = null;
+  try { explicitValue = BigInt(explicit); } catch { return false; }
+  const operandValue = operandTargetValue(branchTargetOperand(instruction, mnemonic));
+  if (operandValue == null) return false;
+  return explicitValue !== operandValue;
+}
+
 function isBranchTestRegister(operand) {
   return operand?.k === 'reg'
     && (operand.cls === 'gp' || operand.cls === 'zr')
@@ -142,7 +174,7 @@ function isBranchTestRegister(operand) {
 }
 
 function directBranchOperandShapeValid(instruction, mnemonic, ops) {
-  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+  if (mnemonic === 'b' || /^(?:b|bc)\./.test(mnemonic)) {
     return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
   }
   if (mnemonic === 'bl') {
@@ -178,6 +210,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'b') {
     const target = directTargetOf(instruction, 'branch');
     if (target == null) return ctx.partial('arm64-b-target-unavailable', ['control'], undefined, { kind: 'unknown', reason: 'arm64-b-target-unavailable' });
+    if (directTargetEvidenceMismatch(instruction, mnemonic, 'branch')) return ctx.partial('arm64-b-target-evidence-mismatch', ['control'], undefined, { kind:'unknown', reason:'arm64-b-target-evidence-mismatch' });
     const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
     if (!encoding.valid) return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
     return ctx.finish({
@@ -204,6 +237,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (mnemonic === 'bl') {
     const target = directTargetOf(instruction, 'call');
     if (target == null) return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
+    if (directTargetEvidenceMismatch(instruction, mnemonic, 'call')) return ctx.partial('arm64-bl-target-evidence-mismatch', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-bl-target-evidence-mismatch' });
     const address = instructionAddress(instruction);
     if (address == null) {
       return ctx.partial('arm64-bl-link-address-unavailable', ['registers'], undefined, { kind: 'call', target: addressRef(target) });
@@ -259,6 +293,9 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   if (target == null || !fallthrough) {
     return ctx.partial(`arm64-${mnemonic}-targets-unavailable`, ['control'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-targets-unavailable` });
   }
+  if (directTargetEvidenceMismatch(instruction, mnemonic, 'branch')) {
+    return ctx.partial(`arm64-${mnemonic}-target-evidence-mismatch`, ['control'], undefined, { kind:'unknown', reason:`arm64-${mnemonic}-target-evidence-mismatch` });
+  }
   const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
   if (!encoding.valid) {
     return ctx.partial(encoding.reason, ['control'], undefined, { kind:'unknown', reason:encoding.reason });
@@ -290,7 +327,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     });
   }
 
-  const conditionCode = mnemonic.slice(2);
+  const conditionCode = mnemonic.startsWith('bc.') ? mnemonic.slice(3) : mnemonic.slice(2);
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
   return ctx.finish({
@@ -307,6 +344,6 @@ export function liftArm64ControlEffects(instruction, options = {}) {
   // address/target evidence is intentionally not included: a decoded valid direct
   // branch still resets BTYPE even when its concrete target cannot be reconstructed.
   const failureReason = String(bundle.unknownEffects?.reason || '');
-  if (/(?:operand-shape-invalid|target-(?:misaligned|out-of-range)-encoding)$/.test(failureReason)) return bundle;
+  if (/(?:operand-shape-invalid|target-(?:misaligned|out-of-range)-encoding|target-evidence-mismatch)$/.test(failureReason)) return bundle;
   return decorateArm64BtypeEffects(instruction, options, bundle);
 }

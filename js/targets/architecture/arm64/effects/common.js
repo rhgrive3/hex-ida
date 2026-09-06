@@ -49,7 +49,20 @@ export function immediateOf(op) {
   try { return BigInt(op.value); } catch { return null; }
 }
 
-function decodedAbsoluteTargetOf(op) {
+// Strict architectural address parser: only bigint, safe-integer numbers,
+// and canonical decimal/hex strings are address evidence. JavaScript
+// coercion (single-element arrays, booleans, objects) must never mint an
+// exact address.
+export function strictAddressInput(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
+    try { return BigInt(value.trim()); } catch { return null; }
+  }
+  return null;
+}
+
+export function decodedAbsoluteTargetOf(op) {
   const immediate = immediateOf(op);
   if (immediate != null) return immediate;
   // Some current decoded-model fixtures retain an absolute direct target as a
@@ -69,7 +82,8 @@ export function conditionOf(instruction) {
   // not coerce into a real condition identity.
   if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
-  if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
+  const match = /^(?:b|bc)\.([a-z]+)$/.exec(mnemonic);
+  if (match) return match[1];
   return null;
 }
 

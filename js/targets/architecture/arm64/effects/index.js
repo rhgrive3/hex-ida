@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { createArm64EffectContext, decodedAbsoluteTargetOf, directTargetOf, immediateOf, instructionMnemonic, strictAddressInput } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -350,8 +350,11 @@ function literalMemoryEncodingFailure(instruction) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
   const immediate = ops.find((op) => op?.k === 'imm' || op?.kind === 'immediate');
-  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateOf(immediate));
+  const immediateValue = immediate == null ? null
+    : immediate?.k === 'imm' ? immediateOf(immediate) : asBigIntOrNull(immediate?.value);
+  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateValue);
   if (target == null) return null;
+  if (immediateValue != null && immediateValue !== target) return `arm64-${mnemonic}-literal-target-evidence-mismatch`;
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
@@ -389,10 +392,19 @@ function addressImmediateEncodingFailure(instruction) {
     || targetOperand?.shift != null || targetOperand?.extend != null) {
     return `arm64-${mnemonic}-target-operand-unencodable`;
   }
-  const address = asBigIntOrNull(instruction?.address);
-  const target = asBigIntOrNull(instruction?.pcRelTarget);
-  if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+  const address = strictAddressInput(instruction?.address);
+  if (address == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  let target = null;
+  if (instruction?.pcRelTarget !== undefined) {
+    if (instruction.pcRelTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = strictAddressInput(instruction.pcRelTarget);
+    if (target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  }
+  const operandTarget = decodedAbsoluteTargetOf(targetOperand);
+  if (target == null) {
+    if (operandTarget == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+    target = operandTarget;
+  } else if (operandTarget != null && operandTarget !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
   if (mnemonic === 'adr') {
