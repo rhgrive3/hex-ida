@@ -1,7 +1,7 @@
 import { build, transform } from 'esbuild';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
@@ -16,7 +16,7 @@ const ORIGIN_TOKEN = '__HEX_ORIGIN__';
 const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
-const BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
+const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
@@ -128,15 +128,29 @@ function protectedImportMetaPlugin() {
   } };
 }
 
+async function existingOptionalEntries(entries) {
+  const present = [];
+  for (const entry of entries) {
+    try {
+      await access(resolve(root, entry));
+      present.push(entry);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return present;
+}
+
 async function buildWorkerAssets() {
+  const bundledClassicEntries = await existingOptionalEntries(OPTIONAL_BUNDLED_CLASSIC_ENTRIES);
   const sources = new Map();
-  for (const entry of [...CLASSIC_ENTRIES, ...BUNDLED_CLASSIC_ENTRIES]) await collectClassic(entry, sources);
+  for (const entry of [...CLASSIC_ENTRIES, ...bundledClassicEntries]) await collectClassic(entry, sources);
   const classic = {};
   for (const entry of CLASSIC_ENTRIES) {
     const minified = await transform(inlineImports(entry, sources), { loader: 'js', target: 'safari17.4', minify: true, legalComments: 'none', sourcemap: false });
     classic[entry] = minified.code;
   }
-  for (const entry of BUNDLED_CLASSIC_ENTRIES) {
+  for (const entry of bundledClassicEntries) {
     classic[entry] = (await bundleInlinedClassic(entry, inlineImports(entry, sources))).toString('utf8');
   }
   const modules = {
