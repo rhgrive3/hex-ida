@@ -162,6 +162,9 @@ function programComplete(program) {
   if (program.callsCapped || program.refsCapped || program.statsComplete === false) return false;
   return true;
 }
+function programIndexComplete(program) {
+  return program?.completeness?.complete === true;
+}
 function completenessFor({ strings, program, shapes, metadata, goal }) {
   const reasons = [];
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
@@ -366,8 +369,16 @@ export class InvestigationService {
     const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
     const profile = budgetProfileKey(limits);
     if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
-      && budgetProfileCovers(app.programBudgetProfile, limits)) return Promise.resolve(app.program);
-    return this.#shared(`program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`, async (signal) => {
+      && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) {
+      return Promise.resolve(app.program);
+    }
+    const sharedKey = `program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`;
+    if (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
+      || !programIndexComplete(app.program)) {
+      const settled = this.shared.get(sharedKey);
+      if (settled?.settled) this.shared.delete(sharedKey);
+    }
+    return this.#shared(sharedKey, async (signal) => {
       await this.discoverFunctions({ ...options, signal });
       abortIfNeeded(signal);
       const scans = [], failures = [];
@@ -402,11 +413,16 @@ export class InvestigationService {
       const primary = regions.find((r) => r.section === '__text') || regions[0];
       const program = new ProgramIndex(merged, app.symbols, primary);
       if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
-        && budgetProfileCovers(app.programBudgetProfile, limits)) return app.program;
-      app.programScan = merged;
-      app.programKey = key;
-      app.programBudgetProfile = Object.freeze({ ...limits });
-      app.program = program;
+        && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) return app.program;
+      const cachedComplete = app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && programIndexComplete(app.program);
+      if (!cachedComplete || (programIndexComplete(program)
+        && budgetProfileCovers(limits, app.programBudgetProfile))) {
+        app.programScan = merged;
+        app.programKey = key;
+        app.programBudgetProfile = Object.freeze({ ...limits });
+        app.program = program;
+      }
       return program;
     }, options);
   }

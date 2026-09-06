@@ -45,6 +45,26 @@ function fixture() {
 const low = { budget:{ program:{ calls:1, refs:1, kindWords:1 } } };
 const high = { budget:{ program:{ calls:3, refs:3, kindWords:3 } } };
 
+function flakyFixture({ failWhen = null } = {}) {
+  const region = { id:'text', exec:true, vmAddr:0x1000n, size:0x100n, section:'__text' };
+  const calls = [];
+  const app = {
+    backend:{
+      gen:7,
+      scanProgram(regionId, _progress, limits) {
+        calls.push({ regionId, ...limits });
+        if (failWhen && failWhen(limits)) return Promise.reject(new Error('transient region scan failure'));
+        return Promise.resolve(scanFor(region, limits));
+      },
+    },
+    symbols:{ gen:11, functionStartsComplete:true, functionCount:0 },
+    programRegions:() => [region],
+  };
+  return { app, service:new InvestigationService(app), calls };
+}
+
+const larger = { budget:{ program:{ calls:4, refs:4, kindWords:4 } } };
+
 test('low-budget cached ProgramIndex cannot satisfy a later stronger request', async () => {
   const { service, calls } = fixture();
   const first = await service.buildProgram(low);
@@ -82,4 +102,39 @@ test('budget profile dominance is strict and non-coercing', () => {
   assert.equal(budgetProfileCovers({ calls:1, refs:4, kindWords:5 }, { calls:2, refs:2, kindWords:5 }), false);
   assert.equal(budgetProfileCovers({ calls:'3', refs:4, kindWords:5 }, { calls:3, refs:2, kindWords:5 }), false);
   assert.equal(budgetProfileCovers(null, { calls:1, refs:1, kindWords:1 }), false);
+});
+
+test('transient partial at high profile does not pin the cache; same high request rescans', async () => {
+  const limitsSeen = [];
+  const { service, calls } = flakyFixture({
+    failWhen:(limits) => {
+      limitsSeen.push(limits.callLimit);
+      return limitsSeen.length === 1;
+    },
+  });
+  const partial = await service.buildProgram(high);
+  assert.equal(partial.completeness.complete, false);
+  assert.equal(calls.length, 1);
+  const repaired = await service.buildProgram(high);
+  assert.equal(repaired.completeness.complete, true);
+  assert.equal(calls.length, 2);
+});
+
+test('complete artifact is not overwritten by a later incomplete one', async () => {
+  const limitsSeen = [];
+  const { service, calls } = flakyFixture({
+    failWhen:(limits) => {
+      limitsSeen.push(limits.callLimit);
+      return limitsSeen.length === 2;
+    },
+  });
+  const complete = await service.buildProgram(high);
+  assert.equal(complete.completeness.complete, true);
+  const partial = await service.buildProgram(larger);
+  assert.equal(partial.completeness.complete, false);
+  const still = await service.buildProgram(high);
+  assert.equal(still.completeness.complete, true);
+  assert.strictEqual(still, complete);
+  assert.equal(still.callCount, 3);
+  assert.equal(calls.length, 2);
 });
