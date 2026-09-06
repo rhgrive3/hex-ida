@@ -4,6 +4,7 @@
    evidence, constraints, provenance and conflict history -- and that normalizing
    a Worker's report never turns it into authority. */
 import assert from 'node:assert/strict';
+import { assertModuleDependencyBoundary, __moduleDependencyBoundaryForTests } from './helpers/module-dependency-boundary.mjs';
 import {
   DEV_CONTEXT_PACKET_SCHEMA,
   DEV_TERMINAL_REASON,
@@ -296,34 +297,14 @@ function noStorageAndNoModelCallWasIntroduced() {
   // Structural: representation may reuse the canonical pure scope normalizer,
   // but it must not acquire storage/network/model dependencies of its own.
   const text = readSource(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url));
-  const dependencies = staticModuleSpecifiers(text);
-  assert.deepEqual(dependencies, ['../run/analysis-scope.js'],
-    'only the canonical pure scope normalizer may be shared');
-  assert.doesNotMatch(text, /\bimport\s*\(/, 'dynamic imports are forbidden in the representation layer');
+  assertModuleDependencyBoundary(text, ['../run/analysis-scope.js']);
   assert.equal(/\beval\s*\(/.test(text), false, 'no eval');
 
-  // Negative regressions: every static dependency spelling is visible to the
-  // allowlist, and dynamic import cannot silently acquire runtime authority.
-  assert.deepEqual(staticModuleSpecifiers("import './storage.js';"), ['./storage.js']);
-  assert.deepEqual(staticModuleSpecifiers("import {\n  value,\n} from './network.js';"), ['./network.js']);
-  assert.deepEqual(staticModuleSpecifiers("export { value } from './model.js';"), ['./model.js']);
-  assert.match("void import('./model.js')", /\bimport\s*\(/);
-}
-
-function staticModuleSpecifiers(source) {
-  const matches = [];
-  for (const [kind, pattern] of [
-    ['import', /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm],
-    ['import', /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm],
-    ['export', /^\s*export\s+(?:\*\s+as\s+[A-Za-z_$][\w$]*|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm],
-  ]) {
-    for (const match of source.matchAll(pattern)) matches.push({ kind, index:match.index, specifier:match[1] });
-  }
-  const parsedImports = matches.filter((match) => match.kind === 'import').length;
-  const importDeclarations = [...source.matchAll(/^\s*import\b(?!\s*\()/gm)].length;
-  assert.equal(parsedImports, importDeclarations,
-    'every static import declaration must be parsed before dependency authority is checked');
-  return matches.sort((left,right)=>left.index-right.index).map(({specifier})=>specifier);
+  const parser = __moduleDependencyBoundaryForTests;
+  assert.deepEqual(parser.staticModuleSpecifiers("import './storage.js';"), ['./storage.js']);
+  assert.deepEqual(parser.staticModuleSpecifiers("export { value } /* comment */ from './model.js';"), ['./model.js']);
+  assert.equal(parser.hasDynamicImport("void import/* comment */('./model.js')"), true);
+  assert.equal(parser.hasDynamicImport("'import(\"./not-code.js\")'"), false);
 }
 
 function payloadOf(prompt) {
