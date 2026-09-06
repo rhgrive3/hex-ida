@@ -174,6 +174,23 @@ function stackReturnWriterFixture(mode, writerRow = 1) {
   };
 }
 
+function sameRowUnknownStoreFixture(reverse = false) {
+  const result = stackReturnFixture();
+  const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+  const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+  const originalStore = result.ir.instructions.find((instruction) => instruction.op === 'store');
+  const unknownStore = {
+    id:14, op:'store', block:load.block, row:load.row, address:0x1008n,
+    loc:{ kind:'unknown', key:'unknown:other', size:4 }, args:[{ value:{ id:101 } }],
+  };
+  const ordered = reverse
+    ? [originalStore, load, unknownStore, ret]
+    : [originalStore, unknownStore, load, ret];
+  result.ir.instructions = ordered;
+  result.ir.blocks[0].insts = ordered;
+  return result;
+}
+
 function callReturnFixture(effect = 'missing') {
   const key = 'stack:sp:e0:-16:s4';
   const value = { id:100 };
@@ -184,6 +201,39 @@ function callReturnFixture(effect = 'missing') {
   if (effect === 'wrong-key') call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
   if (effect === 'malformed') call.memKills = [{ key:{}, kind:'stack', size:4 }];
   if (effect === 'private') call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'none' } };
+  if (effect === 'private-access') {
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture',
+      memoryWrite:{
+        scope:'accesses',
+        accesses:[{
+          addressSpace:'memory', addressExpr:{ valueId:'address-fixture' }, widthBits:32,
+          endian:'little', alignment:null, volatility:false, atomic:false, ordering:'unknown', faults:[],
+        }],
+      },
+    };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'field', key:'field:other', size:4 }];
+  }
+  if (effect === 'unknown-scope') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'unknown' } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'unknown', key:'unknown:call', size:null }];
+  }
+  if (effect === 'malformed-all') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'all' } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
+  }
+  if (effect === 'unbound-complete') {
+    call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'all', addressSpaces:['memory'] } };
+    call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
+  }
+  if (effect === 'unknown-kind-kill') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'all', addressSpaces:['memory'] } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'unknown', key:'unknown:call', size:null }];
+  }
   const load = { id:12, op:'load', block:0, row:2, address:0x1008n,
     loc:{ kind:'stack', key, size:4 }, args:[] };
   const ret = { id:13, op:'ret', block:0, row:3, address:0x100cn, args:[] };
@@ -564,8 +614,33 @@ test('T011 equal-row physical LOAD and STORE metadata fail closed independent of
   }
 });
 
+test('T011 same-row UNKNOWN-kind STORE is broad even with an unrelated key', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const reverse of [false, true]) {
+      const result = sameRowUnknownStoreFixture(reverse);
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;', `${recover.name}:${reverse}`);
+      assert.equal(result.metrics.rewrittenExpressions, 0, `${recover.name}:${reverse}`);
+    }
+  }
+
+  for (const reverse of [false, true]) {
+    const result = legacyStaleReachingStoreFixture();
+    const [oldStore, newerStore, load] = result.ir.instructions;
+    newerStore.row = load.row;
+    newerStore.loc.kind = 'unknown';
+    newerStore.loc.key = 'unknown:other';
+    const ordered = reverse ? [newerStore, oldStore, load] : [oldStore, newerStore, load];
+    result.ir.instructions = ordered;
+    result.ir.blocks[0].insts = ordered;
+    materializeLegacyExactStackValues(result, { deterministicTransforms:true });
+    assert.equal(result.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load', `legacy:${reverse}`);
+    assert.equal(exactLegacySameBlockStackStore(load, result.ir, { deterministicTransforms:true }), null, `legacy:${reverse}`);
+  }
+});
+
 test('T011 return fallback requires complete canonical CALL memory effects', () => {
-  for (const effect of ['missing', 'empty', 'wrong-key', 'malformed']) {
+  for (const effect of ['missing', 'empty', 'wrong-key', 'malformed', 'unknown-scope', 'malformed-all', 'unbound-complete', 'unknown-kind-kill']) {
     const result = callReturnFixture(effect);
     recoverExactStackReturn(result, { deterministicTransforms:true });
     assert.equal(result.cAst.body[0].text, 'return local_0;', effect);
@@ -575,6 +650,10 @@ test('T011 return fallback requires complete canonical CALL memory effects', () 
   recoverExactStackReturn(privateCall, { deterministicTransforms:true });
   assert.equal(privateCall.cAst.body[0].text, 'return 11;');
   assert.equal(privateCall.metrics.rewrittenExpressions, 1);
+  const privateAccessCall = callReturnFixture('private-access');
+  recoverExactStackReturn(privateAccessCall, { deterministicTransforms:true });
+  assert.equal(privateAccessCall.cAst.body[0].text, 'return 11;');
+  assert.equal(privateAccessCall.metrics.rewrittenExpressions, 1);
 });
 
 test('T011 PHI recovery does not infer missing or malformed STORE widths from a stack key', () => {
@@ -1076,6 +1155,82 @@ test('T011 proof-only spill cleanup cancellation rolls back the complete return 
   for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
   assert.equal(result.cAst.body[0].text, 'local_0 = spilled;');
   assert.equal(result.cAst.body[1].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 return publication rolls back when printing throws after rewrite mutation', () => {
+  const result = stackReturnFixture();
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalBody = result.cAst.body;
+  const originalText = result.cAst.body[0].text;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[0], 'indent', {
+    configurable:true,
+    get() { throw new Error('indent failure'); },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, originalText);
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 return publication surfaces rollback failures instead of swallowing them', () => {
+  const result = stackReturnFixture();
+  const node = result.cAst.body[0];
+  let text = node.text;
+  Object.defineProperty(node, 'text', {
+    configurable:true,
+    get() { return text; },
+    set(value) {
+      if (value === 'return local_0;') throw new Error('text rollback failure');
+      text = value;
+    },
+  });
+  Object.defineProperty(node, 'indent', {
+    configurable:true,
+    get() { throw new Error('indent failure'); },
+  });
+
+  assert.throws(() => recoverExactStackReturn(result, { deterministicTransforms:true }), /rollback failed/);
+  assert.equal(text, 'return 11;');
+});
+
+test('T011 proof-only spill cleanup rolls back when its print throws', () => {
+  const result = committedSpillReturnFixture();
+  const originalBody = result.cAst.body;
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[1], 'indent', {
+    configurable:true,
+    get() {
+      if (result.cAst.body.length === 1) throw new Error('cleanup print failure');
+      return 0;
+    },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, 'local_0 = spilled;');
+  assert.equal(result.cAst.body[1].text, 'return local_0;');
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
   assert.equal(result.metrics.rewrittenExpressions, 0);
 });
 

@@ -8,6 +8,11 @@
  * The legacy reachingStore pointer is only a candidate: publication still
  * needs the physical same-block LOAD/STORE layout and source binding below.
  */
+import {
+  memoryMutationCollides,
+  memoryMutationDescriptor,
+} from './passes/stack-return-recovery.js';
+
 function positiveAccessSize(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -195,28 +200,30 @@ export function exactLegacySameBlockStackStore(load, ir, opts = {}, control = le
       continue;
     }
     if (op === 'load') {
-      const loadKey = location?.key ?? null;
+      const loadDescriptor = memoryMutationDescriptor(inst);
       const mutations = memoryMutations.get(row) || [];
-      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
-          || loadKey == null || mutation.key === loadKey)) return null;
+      if (!loadDescriptor || mutations.some((mutation) => memoryMutationCollides(loadDescriptor, mutation))) return null;
       const loads = physicalLoads.get(row) || [];
-      loads.push(loadKey);
+      loads.push(loadDescriptor);
       physicalLoads.set(row, loads);
     } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
-      const locationKey = op === 'store' ? location?.key ?? null : null;
+      const mutation = memoryMutationDescriptor(inst);
+      if (!mutation) return null;
       const loads = physicalLoads.get(row) || [];
-      if (loads.some((loadKey) => op !== 'store' || locationKey == null
-          || loadKey == null || locationKey === loadKey)) return null;
+      if (loads.some((load) => memoryMutationCollides(load, mutation))) return null;
       memoryRows.add(row);
       const mutations = memoryMutations.get(row) || [];
-      mutations.push({ op, key:locationKey });
+      mutations.push(mutation);
       memoryMutations.set(row, mutations);
     }
     if (inst === store || inst === load) continue;
     if (row <= storeRow || row >= loadRow) continue;
     if (op === 'call' || op === 'clobber' || op === 'unknown') return null;
-    if (op === 'store' && (!location || location.kind === 'unknown' || location.key === loadLocation.key)) return null;
+    if (op === 'store') {
+      const mutation = memoryMutationDescriptor(inst);
+      if (!mutation || mutation.broad || mutation.key === loadLocation.key) return null;
+    }
   }
   return store;
 }

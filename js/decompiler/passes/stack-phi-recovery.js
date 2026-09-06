@@ -3,6 +3,10 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import {
+  memoryMutationCollides,
+  memoryMutationDescriptor,
+} from './stack-return-recovery.js';
 
 function ownData(object, key) {
   if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
@@ -631,22 +635,21 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
     // semantic row (for example a field read and a stack spill), so only the
     // candidate location collision is ambiguous.
     if (op === 'load') {
-      const loadKey = fieldValue(fieldValue(inst, 'loc'), 'key');
+      const load = memoryMutationDescriptor(inst);
       const mutations = memoryMutations.get(row) || [];
-      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
-          || loadKey == null || mutation.key === loadKey)) return null;
+      if (!load || mutations.some((mutation) => memoryMutationCollides(load, mutation))) return null;
       const loads = physicalLoads.get(row) || [];
-      loads.push(loadKey);
+      loads.push(load);
       physicalLoads.set(row, loads);
     } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
-      const locationKey = op === 'store' ? fieldValue(fieldValue(inst, 'loc'), 'key') : null;
+      const mutation = memoryMutationDescriptor(inst);
+      if (!mutation) return null;
       const loads = physicalLoads.get(row) || [];
-      if (loads.some((loadKey) => op !== 'store' || locationKey == null
-          || loadKey == null || locationKey === loadKey)) return null;
+      if (loads.some((load) => memoryMutationCollides(load, mutation))) return null;
       memoryRows.add(row);
       const mutations = memoryMutations.get(row) || [];
-      mutations.push({ op, key:locationKey });
+      mutations.push(mutation);
       memoryMutations.set(row, mutations);
     }
     if (beforeRow == null || row < beforeRow) selected.push(inst);
@@ -657,12 +660,10 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
 
 function hasUnsafeBarrier(inst, key) {
   const op = fieldValue(inst, 'op');
-  const location = fieldValue(inst, 'loc');
-  const locationKey = fieldValue(location, 'key');
-  const locationKind = fieldValue(location, 'kind');
   if (op === 'call' || op === 'clobber' || op === 'unknown') return true;
-  return op === 'store' && (locationKey !== key || locationKind !== 'stack')
-    && (!locationKey || locationKind === 'unknown');
+  if (op !== 'store') return false;
+  const location = memoryMutationDescriptor(inst);
+  return !location || location.broad || location.key === key;
 }
 
 function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth = 0, control) {

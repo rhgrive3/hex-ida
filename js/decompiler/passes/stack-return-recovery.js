@@ -154,7 +154,117 @@ function positiveAccessSize(value) {
 }
 
 const MEMORY_LOCATION_KINDS = new Set(['stack', 'global', 'field', 'unknown']);
-const MEMORY_WRITE_SCOPES = new Set(['none', 'accesses', 'all', 'unknown']);
+const PRECISE_MEMORY_LOCATION_KINDS = new Set(['stack', 'global', 'field']);
+const MEMORY_WRITE_SCOPES = new Set(['none', 'accesses', 'all']);
+const CALL_COMPLETENESS = new Set(['complete', 'partial', 'unknown']);
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function validMemoryAccess(access) {
+  if (access == null || typeof access !== 'object' || Array.isArray(access)) return false;
+  const addressSpace = ownData(access, 'addressSpace');
+  const addressExpr = ownData(access, 'addressExpr');
+  const widthBits = ownData(access, 'widthBits');
+  const endian = ownData(access, 'endian');
+  const alignment = ownData(access, 'alignment');
+  const volatility = ownData(access, 'volatility');
+  const atomic = ownData(access, 'atomic');
+  const ordering = ownData(access, 'ordering');
+  const faults = ownData(access, 'faults');
+  if (!addressSpace.present || !addressSpace.valid || !nonEmptyString(addressSpace.value)
+      || !addressExpr.present || !addressExpr.valid || addressExpr.value == null
+      || typeof addressExpr.value !== 'object' || Array.isArray(addressExpr.value)
+      || !nonEmptyString(fieldValue(addressExpr.value, 'valueId'))
+      || !widthBits.present || !widthBits.valid || !validBits(widthBits.value)
+      || !endian.present || !endian.valid || !['little', 'big'].includes(endian.value)
+      || !alignment.present || !alignment.valid
+      || (alignment.value !== null && (typeof alignment.value !== 'number'
+        || !Number.isSafeInteger(alignment.value) || alignment.value <= 0))
+      || !volatility.present || !volatility.valid
+      || ![true, false, 'unknown'].includes(volatility.value)
+      || !atomic.present || !atomic.valid
+      || ![true, false, 'unknown'].includes(atomic.value)
+      || !ordering.present || !ordering.valid
+      || !['relaxed', 'acquire', 'release', 'acq-rel', 'seq-cst', 'unknown'].includes(ordering.value)
+      || !faults.present || !faults.valid || !Array.isArray(faults.value)) return false;
+  if (atomic.value === false && ordering.value !== 'unknown') return false;
+  for (const fault of faults.value) {
+    if (fault == null || typeof fault !== 'object' || Array.isArray(fault)
+        || !nonEmptyString(fieldValue(fault, 'kind'))) return false;
+  }
+  return true;
+}
+
+function validMemoryWriteScope(memoryWrite) {
+  if (memoryWrite == null || typeof memoryWrite !== 'object' || Array.isArray(memoryWrite)) return null;
+  const scopeField = ownData(memoryWrite, 'scope');
+  if (!scopeField.present || !scopeField.valid || !MEMORY_WRITE_SCOPES.has(scopeField.value)) return null;
+  const scope = scopeField.value;
+  const accessesField = ownData(memoryWrite, 'accesses');
+  const addressSpacesField = ownData(memoryWrite, 'addressSpaces');
+  if (scope === 'none') {
+    if (accessesField.present || addressSpacesField.present) return null;
+    return { scope, addressSpaces:[] };
+  }
+  if (scope === 'accesses') {
+    if (!accessesField.present || !accessesField.valid || !Array.isArray(accessesField.value)
+        || accessesField.value.length === 0 || addressSpacesField.present) return null;
+    for (const access of accessesField.value) if (!validMemoryAccess(access)) return null;
+    return { scope, addressSpaces:[] };
+  }
+  if (!addressSpacesField.present || !addressSpacesField.valid || !Array.isArray(addressSpacesField.value)
+      || addressSpacesField.value.length === 0 || accessesField.present) return null;
+  const addressSpaces = [];
+  for (const addressSpace of addressSpacesField.value) {
+    if (!nonEmptyString(addressSpace) || addressSpaces.includes(addressSpace)) return null;
+    addressSpaces.push(addressSpace);
+  }
+  return { scope, addressSpaces };
+}
+
+function callProducerBound(extra) {
+  return nonEmptyString(fieldValue(extra, 'semanticNodeId'))
+    && nonEmptyString(fieldValue(extra, 'summarySource'));
+}
+
+/**
+ * Describe one physical memory instruction for same-row ownership checks.
+ * A missing, malformed, or UNKNOWN location kind is broad by construction;
+ * only the canonical precise kinds can establish a non-alias relation.
+ */
+export function memoryMutationDescriptor(instruction) {
+  const op = fieldValue(instruction, 'op');
+  if (op === 'load' || op === 'store') {
+    const location = fieldValue(instruction, 'loc');
+    const kindField = ownData(location, 'kind');
+    const keyField = ownData(location, 'key');
+    const kind = kindField.present && kindField.valid ? kindField.value : null;
+    const key = keyField.present && keyField.valid && nonEmptyString(keyField.value)
+      ? keyField.value : null;
+    return {
+      op,
+      kind,
+      key,
+      broad: !PRECISE_MEMORY_LOCATION_KINDS.has(kind) || key == null,
+    };
+  }
+  if (op === 'call' || op === 'clobber' || op === 'unknown') {
+    return { op, kind:null, key:null, broad:true };
+  }
+  return null;
+}
+
+export function memoryMutationCollides(load, mutation) {
+  if (!load || load.op !== 'load' || !mutation || mutation.op === 'load') return false;
+  return load.broad || mutation.broad || load.key === mutation.key;
+}
+
+function memoryKillCollides(location, key) {
+  return !location || location.kind === 'unknown' || !PRECISE_MEMORY_LOCATION_KINDS.has(location.kind)
+    || location.key === key;
+}
 
 function canonicalMemoryKill(location) {
   if (location == null || typeof location !== 'object' || Array.isArray(location)) return null;
@@ -162,8 +272,7 @@ function canonicalMemoryKill(location) {
   const keyField = ownData(location, 'key');
   const sizeField = ownData(location, 'size');
   if (!kindField.present || !kindField.valid || !MEMORY_LOCATION_KINDS.has(kindField.value)
-      || !keyField.present || !keyField.valid || typeof keyField.value !== 'string'
-      || keyField.value.length === 0
+      || !keyField.present || !keyField.valid || !nonEmptyString(keyField.value)
       || !sizeField.present || !sizeField.valid
       || (sizeField.value !== null && positiveAccessSize(sizeField.value) == null)) return null;
   return { kind:kindField.value, key:keyField.value, size:sizeField.value };
@@ -173,26 +282,27 @@ function authenticatedCallMemoryEffect(inst, control) {
   const extra = fieldValue(inst, 'extra');
   const completeness = fieldValue(extra, 'callCompleteness');
   const memoryWrite = fieldValue(extra, 'memoryWrite');
-  const scope = fieldValue(memoryWrite, 'scope');
+  if (!CALL_COMPLETENESS.has(completeness)) return null;
+  const validatedScope = validMemoryWriteScope(memoryWrite);
+  if (!validatedScope) return null;
+  const { scope, addressSpaces } = validatedScope;
+  const barrierField = ownData(inst, 'memoryBarrier');
+  if (barrierField.present && (!barrierField.valid || typeof barrierField.value !== 'boolean')) return null;
+  const memoryBarrier = barrierField.present ? barrierField.value : false;
   // `memKills` is a projection of the canonical memory effect.  Its absence
   // is safe only for a complete call whose canonical summary explicitly says
   // it writes no memory.  A bare array, even an empty one, is not authority.
-  if (memoryWrite == null || typeof memoryWrite !== 'object' || Array.isArray(memoryWrite)
-      || !MEMORY_WRITE_SCOPES.has(scope)) return null;
   if (scope === 'none') {
     if (completeness !== 'complete') return null;
-    if (fieldValue(inst, 'memoryBarrier') === true) return null;
+    if (memoryBarrier) return null;
     const killsField = ownData(inst, 'memKills');
     if (killsField.present && (!killsField.valid || !Array.isArray(killsField.value) || killsField.value.length)) return null;
     return [];
   }
-  // A partial/unknown ABI summary may still carry an authoritative canonical
-  // effect projection. Require the producer binding and its barrier marker so
-  // an arbitrary hand-written memKills array cannot become proof.
-  if (completeness !== 'complete'
-      && (typeof fieldValue(extra, 'semanticNodeId') !== 'string'
-        || typeof fieldValue(extra, 'summarySource') !== 'string'
-        || fieldValue(inst, 'memoryBarrier') !== true)) return null;
+  // A memory-writing projection is usable only when its producer identity and
+  // barrier marker are both present. This applies to complete calls as well:
+  // a detached memKills array cannot become effect authority by itself.
+  if (!callProducerBound(extra) || memoryBarrier !== true) return null;
   const killsField = ownData(inst, 'memKills');
   if (!killsField.present || !killsField.valid || !Array.isArray(killsField.value)
       || killsField.value.length === 0) return null;
@@ -202,6 +312,11 @@ function authenticatedCallMemoryEffect(inst, control) {
     const canonical = canonicalMemoryKill(location);
     if (!canonical) return null;
     kills.push(canonical);
+  }
+  // `all` is a broad scope for the named address spaces. Preserve that fact
+  // even if a projection's finite kill list omits the candidate location.
+  if (scope === 'all' && addressSpaces.includes('memory')) {
+    kills.push({ kind:'unknown', key:'unknown:all-memory', size:null });
   }
   return kills;
 }
@@ -677,20 +792,18 @@ function storedViewProjectsValue(stored, expected, store) {
 
 function committedStoreBarrier(inst, key, control) {
   const op = fieldValue(inst, 'op');
-  const location = fieldValue(inst, 'loc');
-  const locationKey = fieldValue(location, 'key');
-  const locationKind = fieldValue(location, 'kind');
   if (op === 'clobber' || op === 'unknown') return true;
   if (op === 'call') {
     const kills = authenticatedCallMemoryEffect(inst, control);
     if (!kills) return true;
     for (const loc of kills) {
-      if (control?.isAborted?.() || loc.key === key) return true;
+      if (control?.isAborted?.() || memoryKillCollides(loc, key)) return true;
     }
     return false;
   }
   if (op !== 'store') return false;
-  return !locationKey || locationKind === 'unknown' || locationKey === key;
+  const location = memoryMutationDescriptor(inst);
+  return !location || location.broad || location.key === key;
 }
 
 function storeOfExactValue(ir, blockIndex, value, control) {
@@ -717,22 +830,21 @@ function storeOfExactValue(ir, blockIndex, value, control) {
       if (!validRow(row)) return null;
       const op = fieldValue(instruction, 'op');
       if (op === 'load') {
-        const loadKey = fieldValue(fieldValue(instruction, 'loc'), 'key');
+        const load = memoryMutationDescriptor(instruction);
         const mutations = memoryMutations.get(row) || [];
-        if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
-            || loadKey == null || mutation.key === loadKey)) return null;
+        if (!load || mutations.some((mutation) => memoryMutationCollides(load, mutation))) return null;
         const loads = physicalLoads.get(row) || [];
-        loads.push(loadKey);
+        loads.push(load);
         physicalLoads.set(row, loads);
       } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
         if (memoryRows.has(row)) return null;
-        const locationKey = op === 'store' ? fieldValue(fieldValue(instruction, 'loc'), 'key') : null;
+        const mutation = memoryMutationDescriptor(instruction);
+        if (!mutation) return null;
         const loads = physicalLoads.get(row) || [];
-        if (loads.some((loadKey) => op !== 'store' || locationKey == null
-            || loadKey == null || locationKey === loadKey)) return null;
+        if (loads.some((load) => memoryMutationCollides(load, mutation))) return null;
         memoryRows.add(row);
         const mutations = memoryMutations.get(row) || [];
-        mutations.push({ op, key:locationKey });
+        mutations.push(mutation);
         memoryMutations.set(row, mutations);
       }
     }
@@ -915,6 +1027,47 @@ function canonicalReturnRegister(result, root, opts = {}) {
   return null;
 }
 
+function exactCommittedMemoryUse(load, key, bits, instructions, control) {
+  const useField = ownData(load, 'memUse');
+  if (!useField.present || !useField.valid) return null;
+  const use = useField.value;
+  if (use == null || typeof use !== 'object' || Array.isArray(use)
+      || fieldValue(use, 'kind') !== 'store' || fieldValue(use, 'key') !== key
+      || fieldValue(use, 'aliasRelation') !== 'must' || fieldValue(use, 'unknownAlias') !== false
+      || fieldValue(load, 'memoryAliasRelation') !== 'must') return null;
+  const effectSummary = fieldValue(use, 'effectSummary');
+  if (fieldValue(effectSummary, 'relation') !== 'must'
+      || fieldValue(effectSummary, 'role') !== 'write'
+      || fieldValue(effectSummary, 'broad') !== false
+      || fieldValue(effectSummary, 'sourceKind') !== 'store') return null;
+  const proof = fieldValue(use, 'proof');
+  if (fieldValue(proof, 'aliasRelation') !== 'must'
+      || fieldValue(proof, 'kind') !== 'must-alias-memory-write') return null;
+  const definitionId = idKey(fieldValue(use, 'definitionId'));
+  if (definitionId == null) return null;
+  const direct = fieldValue(use, 'inst');
+  if (!direct || fieldValue(direct, 'op') !== 'store') return null;
+  const directLocation = fieldValue(direct, 'loc');
+  if (fieldValue(directLocation, 'kind') !== 'stack' || fieldValue(directLocation, 'key') !== key
+      || positiveAccessSize(fieldValue(directLocation, 'size')) * 8 !== bits) return null;
+  let matches = 0;
+  let matched = null;
+  for (const candidate of instructions) {
+    if (control?.isAborted?.()) return null;
+    const candidateId = idKey(fieldValue(candidate, 'id'));
+    const candidateDefinition = idKey(fieldValue(fieldValue(candidate, 'memDef'), 'definitionId'))
+      ?? idKey(fieldValue(fieldValue(candidate, 'extra'), 'memoryDefinitionId'));
+    if (candidate === direct || candidateDefinition === definitionId) {
+      if (fieldValue(candidate, 'op') !== 'store') return null;
+      matches += 1;
+      matched = candidate;
+      if (candidateId == null) return null;
+    }
+  }
+  if (matches !== 1 || matched !== direct) return null;
+  return { contributingDefinitionIds:[definitionId] };
+}
+
 function committedReturnValue(result, root, ret, opts = {}, control, physicalRootLoad = null) {
   if (control?.isAborted?.()) return null;
   const rootLocation = fieldValue(root, 'location');
@@ -933,7 +1086,15 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
   const returnRegister = canonicalReturnRegister(result, root, opts);
   if (!returnRegister) return null;
   const reaching = reachingRegisterDefinition(result.ir, ret, returnRegister, control);
-  const load = fieldValue(reaching, 'def');
+  // The machine-effects projection may wrap a physical return LOAD in
+  // authenticated state-view MOVs (for example a W-register truncation and
+  // the public x0 projection).  Keep the committed path tied to the exact
+  // view chain and then continue with the physical LOAD's Memory-SSA proof;
+  // a detached or non-identity wrapper cannot authorize publication.
+  const reachingDefinition = fieldValue(reaching, 'def');
+  const traced = reachingDefinition && fieldValue(reachingDefinition, 'op') === 'load'
+    ? { root:reaching } : exactViewTrace(reaching);
+  const load = fieldValue(fieldValue(traced, 'root'), 'def');
   const loadLocation = fieldValue(load, 'loc');
   const loadSize = positiveAccessSize(fieldValue(loadLocation, 'size'));
   const loadRow = fieldValue(load, 'row');
@@ -955,8 +1116,13 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
   } catch {
     return null;
   }
-  if (!exactForwarding) return null;
-  const contributingField = ownData(forwarding, 'contributingDefinitionIds');
+  const instructions = arrayField(result.ir, 'instructions');
+  if (!instructions.ok) return null;
+  const committedForwarding = exactForwarding
+    ? forwarding
+    : exactCommittedMemoryUse(load, rootKey, rootBits, instructions.value, control);
+  if (!committedForwarding) return null;
+  const contributingField = ownData(committedForwarding, 'contributingDefinitionIds');
   if (!contributingField.present || !contributingField.valid || !Array.isArray(contributingField.value)) return null;
   const definitionIds = new Set();
   for (const definitionId of contributingField.value) {
@@ -964,8 +1130,6 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
     if (key == null) return null;
     definitionIds.add(key);
   }
-  const instructions = arrayField(result.ir, 'instructions');
-  if (!instructions.ok) return null;
   const stackStores = [];
   for (const candidate of instructions.value) {
     if (control?.isAborted?.()) return null;
@@ -994,21 +1158,18 @@ function committedReturnValue(result, root, ret, opts = {}, control, physicalRoo
 
 function unsafeBarrier(inst, key, control) {
   const op = fieldValue(inst, 'op');
-  const location = fieldValue(inst, 'loc');
-  const locationKey = fieldValue(location, 'key');
-  const locationKind = fieldValue(location, 'kind');
   if (op === 'clobber' || op === 'unknown') return true;
   if (op === 'call') {
     const kills = authenticatedCallMemoryEffect(inst, control);
     if (!kills) return true;
     for (const loc of kills) {
-      if (control?.isAborted?.() || loc.key === key) return true;
+      if (control?.isAborted?.() || memoryKillCollides(loc, key)) return true;
     }
     return false;
   }
   if (op !== 'store') return false;
-  if (locationKey === key) return true;
-  return !locationKey || locationKind === 'unknown';
+  const location = memoryMutationDescriptor(inst);
+  return !location || location.broad || location.key === key;
 }
 
 function before(ir, block, row, key, control) {
@@ -1027,22 +1188,21 @@ function before(ir, block, row, key, control) {
     const op = fieldValue(instruction, 'op');
     if (!validRow(instructionRow)) return null;
     if (op === 'load') {
-      const loadKey = fieldValue(fieldValue(instruction, 'loc'), 'key');
+      const load = memoryMutationDescriptor(instruction);
       const mutations = memoryMutations.get(instructionRow) || [];
-      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
-          || loadKey == null || mutation.key === loadKey)) return null;
+      if (!load || mutations.some((mutation) => memoryMutationCollides(load, mutation))) return null;
       const loads = physicalLoads.get(instructionRow) || [];
-      loads.push(loadKey);
+      loads.push(load);
       physicalLoads.set(instructionRow, loads);
     } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(instructionRow)) return null;
-      const locationKey = op === 'store' ? fieldValue(fieldValue(instruction, 'loc'), 'key') : null;
+      const mutation = memoryMutationDescriptor(instruction);
+      if (!mutation) return null;
       const loads = physicalLoads.get(instructionRow) || [];
-      if (loads.some((loadKey) => op !== 'store' || locationKey == null
-          || loadKey == null || locationKey === loadKey)) return null;
+      if (loads.some((load) => memoryMutationCollides(load, mutation))) return null;
       memoryRows.add(instructionRow);
       const mutations = memoryMutations.get(instructionRow) || [];
-      mutations.push({ op, key:locationKey });
+      mutations.push(mutation);
       memoryMutations.set(instructionRow, mutations);
     }
     if (row == null || instructionRow < row) selected.push(instruction);
@@ -1162,23 +1322,48 @@ function snapshotReturnPublication(result) {
 }
 
 function restoreReturnPublication(result, snapshot) {
+  const failures = [];
+  const failure = (key, error) => {
+    failures.push(error instanceof Error
+      ? error
+      : new Error(`failed to restore ${key}`));
+  };
   const restoreField = (object, key, field) => {
     if (!object) return;
-    if (!field.present) {
-      try { delete object[key]; } catch { /* immutable result fields stay unchanged */ }
+    if (!field?.present) {
+      try {
+        delete object[key];
+      } catch (error) {
+        failure(key, error);
+        return;
+      }
+      const restored = ownData(object, key);
+      if (restored.present) failure(key, new Error(`field ${key} remained after rollback`));
       return;
     }
-    try { object[key] = field.value; } catch { /* immutable result fields stay unchanged */ }
+    if (!field.valid) {
+      failure(key, new Error(`field ${key} was not readable at transaction start`));
+      return;
+    }
+    try {
+      object[key] = field.value;
+    } catch (error) {
+      failure(key, error);
+      return;
+    }
+    const restored = ownData(object, key);
+    if (!restored.present || !restored.valid || !Object.is(restored.value, field.value)) {
+      failure(key, new Error(`field ${key} did not match its transaction snapshot`));
+    }
   };
-  if (snapshot.bodyField.present && snapshot.bodyField.valid) {
-    restoreField(result.cAst, 'body', snapshot.bodyField);
-  }
+  restoreField(result.cAst, 'body', snapshot.bodyField);
   for (const state of snapshot.nodes) {
     restoreField(state.node, 'text', state.text);
     restoreField(state.semantic, 'expression', state.expression);
   }
   for (const state of snapshot.outputs) restoreField(state.output, 'expression', state.expression);
   for (const [key, field] of snapshot.fields) restoreField(result, key, field);
+  if (failures.length) throw new AggregateError(failures, 'exact stack return publication rollback failed');
 }
 
 function returnNodeMatches(node, ret, control) {
@@ -1353,28 +1538,47 @@ export function recoverExactStackReturn(result, opts = {}) {
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   const transaction = snapshotReturnPublication(result);
-  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack')
-      || !rewriteReturn(result, recovered, opts, ret, control)) {
+  let rollbackAttempted = false;
+  const rollback = () => {
+    rollbackAttempted = true;
     restoreReturnPublication(result, transaction);
-    return result;
-  }
-  if (committedSpill && (!removeProofOnlyStackSpill(result, committedSpill, opts, control)
-      || control.isAborted())) {
-    restoreReturnPublication(result, transaction);
-    return result;
-  }
-  // Do not append proof or metrics after a cancellation that arrived during
-  // cleanup.  The complete publication is one transaction with the AST edit.
-  if (control.isAborted()) {
-    restoreReturnPublication(result, transaction);
-    return result;
-  }
+  };
+  try {
+    if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack')
+        || !rewriteReturn(result, recovered, opts, ret, control)) {
+      rollback();
+      return result;
+    }
+    if (committedSpill && (!removeProofOnlyStackSpill(result, committedSpill, opts, control)
+        || control.isAborted())) {
+      rollback();
+      return result;
+    }
+    // Do not append proof or metrics after a cancellation that arrived during
+    // cleanup.  The complete publication is one transaction with the AST edit.
+    if (control.isAborted()) {
+      rollback();
+      return result;
+    }
 
-  result.rewriteProof = [...(result.rewriteProof || []), {
-    rule:'exact-stack-return-recovery', phase:'memory-ssa',
-    evidence:{ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' },
-  }];
-  result.metrics = { ...(result.metrics || {}), rewrittenExpressions:(result.metrics?.rewrittenExpressions || 0) + 1, sourceMappedNodes:result.sourceMap?.length || 0 };
-  result.ctx = { ...(result.ctx || {}), decompilerPipeline:{ ...(result.ctx?.decompilerPipeline || {}), exactStackReturnRecovered:true } };
-  return result;
+    result.rewriteProof = [...(result.rewriteProof || []), {
+      rule:'exact-stack-return-recovery', phase:'memory-ssa',
+      evidence:{ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' },
+    }];
+    result.metrics = { ...(result.metrics || {}), rewrittenExpressions:(result.metrics?.rewrittenExpressions || 0) + 1, sourceMappedNodes:result.sourceMap?.length || 0 };
+    result.ctx = { ...(result.ctx || {}), decompilerPipeline:{ ...(result.ctx?.decompilerPipeline || {}), exactStackReturnRecovered:true } };
+    return result;
+  } catch (error) {
+    // A failed explicit rollback is already a fail-closed publication error;
+    // retrying it could hide an immutable or throwing field failure.
+    if (rollbackAttempted) throw error;
+    try {
+      restoreReturnPublication(result, transaction);
+    } catch (rollbackError) {
+      const failure = new Error('exact stack return recovery rollback failed', { cause:error });
+      failure.rollbackError = rollbackError;
+      throw failure;
+    }
+    return result;
+  }
 }
