@@ -435,6 +435,8 @@ console.log('Testing integrated PRs and issue fixes...');
     binaryId: 'binary_1',
     functionId: 'function_1',
     architectureId: 'arm64',
+    architectureSemanticVersion: '1.0.0',
+    abiSemanticVersion: '1.0.0',
     snapshotId: 'snapshot_1',
     analyzerId: 'phase7.types.constraints',
     analyzerVersion: '1.0.0',
