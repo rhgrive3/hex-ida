@@ -7,6 +7,8 @@ function wrapped(text) {
   return /^[-+]?\w+(?:->\w+|\.\w+)*$/.test(s) ? s : `(${s})`;
 }
 
+const MAX_ADDRESS_SCALE_SHIFT = 4;
+
 export function renderExtendedIndex(indexText, extend = null) {
   const index = wrapped(indexText);
   if (typeof extend !== 'string' && extend !== null) return `__arm64_index_invalid(${index})`;
@@ -21,7 +23,7 @@ export function renderExtendedIndex(indexText, extend = null) {
 }
 
 export function renderIndexedMemory(baseText, indexText, { extend = null, scale = 0, size = 0 } = {}) {
-  const shift = typeof scale === 'number' && Number.isSafeInteger(scale) && scale >= 0 ? scale : 0;
+  const shift = typeof scale === 'number' && Number.isSafeInteger(scale) && scale >= 0 && scale <= MAX_ADDRESS_SCALE_SHIFT ? scale : 0;
   const bytes = typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? size : 0;
   const index = renderExtendedIndex(indexText, extend);
   const scaleBytes = 2 ** shift;
@@ -44,7 +46,7 @@ function canonicalExtendSelector(value) {
 }
 
 function canonicalScale(value) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_ADDRESS_SCALE_SHIFT) return null;
   return value;
 }
 
