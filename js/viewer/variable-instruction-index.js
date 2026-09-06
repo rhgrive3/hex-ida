@@ -159,7 +159,7 @@ export class VariableInstructionIndex {
     const key=pageKey(this.generation,start),cached=this.pages.get(key);
     if(cached){this._metrics.cacheHits++;cached.lastUsed=++this._clock;if(protect)this.currentPageKey=key;return cached;}
     const shared=this.inflight.get(key);
-    if(shared){this._metrics.cacheHits++;return this._join(shared.promise,signal);}
+    if(shared){this._metrics.cacheHits++;if(protect)shared.protect=true;return this._join(shared.promise,signal);}
 
     this._metrics.cacheMisses++;
     const controller=new AbortController(),generation=this.generation,region=this.region,remaining=region.end-start;
@@ -178,7 +178,8 @@ export class VariableInstructionIndex {
         if(generation!==this.generation||this.region!==region){this._metrics.staleResultsDiscarded++;return Object.freeze({stale:true,start,entries:Object.freeze([]),status:'stale',nextAddress:start});}
         if(controller.signal.aborted)throw abortError(controller.signal.reason);
         const page=this._buildPage({start,requested,response,generation,region});
-        this._publish(key,page,{protect}); return page;
+        const effectiveProtect=this.inflight.get(key)?.protect ?? protect;
+        this._publish(key,page,{protect:effectiveProtect}); return page;
       }catch(error){
         if(generation!==this.generation||this.region!==region){this._metrics.staleResultsDiscarded++;return Object.freeze({stale:true,start,entries:Object.freeze([]),status:'stale',nextAddress:start});}
         if(isAbort(error))throw error;
@@ -188,7 +189,7 @@ export class VariableInstructionIndex {
         const pending=this.inflight.get(key); if(pending?.promise===promise)this.inflight.delete(key);
       }
     })();
-    this.inflight.set(key,{controller,promise,generation,start});
+    this.inflight.set(key,{controller,promise,generation,start,protect});
     return this._join(promise,signal);
   }
 

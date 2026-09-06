@@ -487,6 +487,10 @@ export function makeInstruction(raw) {
     }
   }
   insn.reads = Array.from(reads);
+  // BL/BLR (and authenticated link forms) architecturally write X30/LR with
+  // the return address. Expose that implicit write so generic dataflow
+  // consumers do not treat the call as X30-preserving (#6126).
+  if (insn.isCall) writes.add('x30');
   insn.writes = Array.from(writes);
   insn.destination = wIdx.length ? parsed[wIdx[0]] || null : null;
   insn.source = parsed.length > 1 ? parsed[wIdx.length ? 1 : 0] || null : (parsed[0] || null);
@@ -586,6 +590,15 @@ function value(kind, extra, conf, evList, def) {
  */
 
 const CALLER_SAVED = 18;   // x0〜x17 は呼び出しで壊れる（x18 はプラットフォーム予約）
+
+function toLinkReturnAddress(address) {
+  try {
+    if (address == null) return null;
+    const pc = typeof address === 'bigint' ? address : BigInt(address);
+    if (pc < 0n) return null;
+    return pc + 4n;
+  } catch { return null; }
+}
 
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
@@ -784,6 +797,17 @@ export function analyzeDataFlow(insns, opts) {
       calls.push(call);
       // 呼び出しで x0〜x17 は壊れる。x0 だけは戻り値として意味を持つ。
       for (let a = 0; a < CALLER_SAVED; a++) regs.delete('x' + a);
+      // BL/BLR writes the return address into X30/LR. The pre-call value
+      // cannot survive the call, even when the call target is indirect (#6126).
+      regs.delete('x30');
+      const linkAddr = toLinkReturnAddress(insn.address);
+      if (linkAddr != null) {
+        const link = value('imm', { value: linkAddr },
+          SCORE.confirmed,
+          [ev('call-link', insn.row, { value: linkAddr })], insn.row);
+        set('x30', link);
+        flow('call-link', insn.row, null, 'x30', link);
+      }
       const retKind = api && api.ret ? api.ret : null;
       const ret = value('callResult', { call, ret: retKind },
         name ? SCORE.high : SCORE.inferred,

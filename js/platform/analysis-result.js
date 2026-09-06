@@ -47,6 +47,24 @@ export function machoSymbolTruth(image) {
   };
 }
 
+function seedProvenanceConfidence(seed, confirmed) {
+  const raw = Number(seed?.confidence ?? (confirmed ? 1 : 0.5));
+  return Number.isFinite(raw) ? raw : (confirmed ? 1 : 0.5);
+}
+
+function isStrongerFunctionSeed(next, current) {
+  const nextExact = isExactFunctionSeed(next);
+  const currentExact = isExactFunctionSeed(current);
+  if (nextExact !== currentExact) return nextExact;
+  const nextConf = seedProvenanceConfidence(next, nextExact);
+  const currentConf = seedProvenanceConfidence(current, currentExact);
+  if (nextConf !== currentConf) return nextConf > currentConf;
+  const nextSource = String(next?.source || 'heuristic');
+  const currentSource = String(current?.source || 'heuristic');
+  if (nextSource !== currentSource) return nextSource < currentSource;
+  return false;
+}
+
 function u64Address(value) {
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) throw new TypeError('analysis-address-unsafe-number');
@@ -104,7 +122,9 @@ export function analysisFromBinaryImage(image) {
     if (seed?.address == null) continue;
     const address = u64Address(seed.address);
     const key = address.toString();
-    seedByAddress.set(key, seed);
+    const existing = seedByAddress.get(key);
+    if (!existing) seedByAddress.set(key, seed);
+    else if (isStrongerFunctionSeed(seed, existing)) seedByAddress.set(key, seed);
     const extentConfidence = Number(seed.extentConfidence ?? 0);
     if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
     let end = null;
