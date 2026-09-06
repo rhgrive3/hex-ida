@@ -29,6 +29,12 @@ function surfaceFor(built, { memorySsa = built.memorySsa, memorySsaBinding = nul
 }
 
 function assertDependencyMismatch(surface, use) {
+  // Keep the public-query identity floor aligned with A2: the exact stop reason
+  // differs for unsupported contract versions, but neither boundary may publish
+  // stale dependency evidence as complete.
+  const pointsTo = surface.pointsTo();
+  assert.notEqual(pointsTo.status.completeness, 'complete');
+
   const definition = surface.reachingMemoryDef(use);
   assert.equal(definition.definition, null);
   assert.equal(definition.status.completeness, 'unsupported');
@@ -80,6 +86,8 @@ test('issue-4072: current canonical MemorySSA keeps complete public answers', ()
   const built = fixture();
   const use = loadUse(built);
   const surface = surfaceFor(built);
+
+  assert.equal(surface.pointsTo().status.completeness, 'complete');
 
   const definition = surface.reachingMemoryDef(use);
   assert.ok(definition.definition);
