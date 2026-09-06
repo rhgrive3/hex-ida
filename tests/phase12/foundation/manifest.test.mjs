@@ -31,6 +31,11 @@ assert.equal(componentViolation.ok, false);
 assert.ok(componentViolation.violations.some((item) => item.category === 'unowned'));
 const integrationPass = validateFiles(['tools/validation/phase12/verify.mjs', 'package.json'], 'p12-integration', manifest);
 assert.equal(integrationPass.ok, true);
+const managedCilIntegrationPass = validateAggregateFiles([
+  'js/managed/cil/parser.js',
+  'tests/phase11/cil/cil-strings-utf8-3764.test.mjs',
+], manifest);
+assert.equal(managedCilIntegrationPass.ok, true);
 const generatedViolation = validateFiles(['reports/phase12/phase12-release-evidence.json'], 'p12-c', manifest);
 assert.equal(generatedViolation.ok, false);
 assert.ok(generatedViolation.violations.some((item) => item.category === 'generated' || item.category === 'release'));
