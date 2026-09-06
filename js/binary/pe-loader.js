@@ -156,3 +156,4 @@ export function parseExports(r, dir, image, sharedBudget = null) {
     const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name:publicNames[0],source:'export',confidence:0.95}));
   }
 }
+
