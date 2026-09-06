@@ -57,7 +57,35 @@ jobs:
           node-version: '22'
       - run: npm ci --no-audit --no-fund
       - name: Canonical Phase 7 suite
-        run: npm run phase7:test
+        shell: bash
+        run: |
+          set +e
+          npm run phase7:test > /tmp/phase7-suite.out 2>&1
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 ]]; then
+            STATUS="$status" node <<'NODE'
+          const fs = require('node:fs');
+          const lines = fs.readFileSync('/tmp/phase7-suite.out', 'utf8').split(/\r?\n/);
+          const patterns = [/^[✖×]/u, /AssertionError/, /ERR_ASSERTION/, /^not ok\b/, /test runner failed/i];
+          let index = lines.findIndex((line) => patterns.some((pattern) => pattern.test(line)));
+          if (index < 0) index = Math.max(0, lines.length - 36);
+          const start = Math.max(0, index - 4);
+          const end = Math.min(lines.length, index + 40);
+          const excerpt = [`phase7_exit_status=${process.env.STATUS}`, ...lines.slice(start, end)].join('\n').trimEnd() + '\n';
+          fs.writeFileSync('phase7-first-failure.txt', excerpt);
+          NODE
+            cat phase7-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+      - name: Upload minimal Phase 7 failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase7-first-failure-${{ github.sha }}
+          path: phase7-first-failure.txt
+          if-no-files-found: error
+          retention-days: 1
       - name: Required regression gates on the exact head
         run: |
           set -euo pipefail
