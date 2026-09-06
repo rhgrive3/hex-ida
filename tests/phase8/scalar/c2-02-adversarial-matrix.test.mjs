@@ -112,7 +112,7 @@ test('semantic snapshot capture preserves graph sharing and cycles', () => {
   assert.ok(Object.isFrozen(source.uses));
 });
 
-test('a generic-first alias cannot hide fields required by its later semantic role', () => {
+test('a generic-first alias with incomplete keys fails closed', () => {
   const target = {
     id:1, kind:'arg', bits:8, signed:null, const:null, def:null, uses:[],
     origin:{ instructionIds:['instruction_role_union_value'] },
@@ -128,19 +128,17 @@ test('a generic-first alias cannot hide fields required by its later semantic ro
   const before = canonicalAnalysisIdentity({ ir });
   target.bits = 16;
   const after = canonicalAnalysisIdentity({ ir });
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+  assert.equal(before.valid, false);
+  assert.equal(after.valid, false);
 });
 
-test('GVN-consumed scalar and memory fields are known snapshot-role keys', () => {
-  const assertChanged = (label, ir, mutate) => {
+test('GVN-consumed scalar and memory fields reject incomplete proxy observations', () => {
+  const assertRejected = (label, ir, mutate) => {
     const before = identityOf(ir);
     mutate();
     const after = identityOf(ir);
-    assert.equal(before.valid, true, `${label}: before`);
-    assert.equal(after.valid, true, `${label}: after`);
-    assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId, label);
+    assert.equal(before.valid, false, `${label}: before`);
+    assert.equal(after.valid, false, `${label}: after`);
   };
   const hidden = (target, ...keys) => new Proxy(target, {
     ownKeys(object) {
@@ -153,14 +151,14 @@ test('GVN-consumed scalar and memory fields are known snapshot-role keys', () =>
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const argument = { ...definition.args[0], bits:8 };
     definition.args[0] = hidden(argument, 'bits');
-    assertChanged('argument.bits', ir, () => { argument.bits = 4; });
+    assertRejected('argument.bits', ir, () => { argument.bits = 4; });
   }
   for (const field of ['op', 'amount']) {
     const ir = identityFixture(`c2-02-hidden-shift-${field}`);
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const shift = { op:'lsl', amount:1 };
     definition.args[0] = { ...definition.args[0], shift:hidden(shift, field) };
-    assertChanged(`argument.shift.${field}`, ir, () => {
+    assertRejected(`argument.shift.${field}`, ir, () => {
       shift[field] = field === 'op' ? 'lsr' : 2;
     });
   }
@@ -171,7 +169,7 @@ test('GVN-consumed scalar and memory fields are known snapshot-role keys', () =>
     const proxy = hidden(Object.assign(definition, { cond:'eq' }), 'cond');
     const block = ir.blocks.find((candidate) => candidate.insts.includes(definition));
     block.insts[block.insts.indexOf(definition)] = proxy;
-    assertChanged('definition.cond', ir, () => { definition.cond = 'ne'; });
+    assertRejected('definition.cond', ir, () => { definition.cond = 'ne'; });
   }
 
   const extraFields = [
@@ -186,14 +184,14 @@ test('GVN-consumed scalar and memory fields are known snapshot-role keys', () =>
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const extra = { [field]:first };
     definition.extra = hidden(extra, field);
-    assertChanged(`extra.${field}`, ir, () => { extra[field] = second; });
+    assertRejected(`extra.${field}`, ir, () => { extra[field] = second; });
   }
   {
     const ir = identityFixture('c2-02-hidden-state-identity');
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const state = { key:'r0', kind:'physical-state', scope:'function' };
     definition.extra = { stateRead:hidden(state, 'key') };
-    assertChanged('extra.stateRead.key', ir, () => { state.key = 'r1'; });
+    assertRejected('extra.stateRead.key', ir, () => { state.key = 'r1'; });
   }
 
   const accessFields = [
@@ -207,14 +205,14 @@ test('GVN-consumed scalar and memory fields are known snapshot-role keys', () =>
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const access = { [field]:first };
     definition.extra = { memoryAccess:hidden(access, field) };
-    assertChanged(`memoryAccess.${field}`, ir, () => { access[field] = second; });
+    assertRejected(`memoryAccess.${field}`, ir, () => { access[field] = second; });
   }
   {
     const ir = identityFixture('c2-02-hidden-memory-address-expression');
     const definition = ir.values.find((value) => value.def?.op === 'bin').def;
     const addressExpr = { valueId:'address:A' };
     definition.extra = { memoryAccess:{ addressExpr:hidden(addressExpr, 'valueId') } };
-    assertChanged('memoryAccess.addressExpr.valueId', ir,
+    assertRejected('memoryAccess.addressExpr.valueId', ir,
       () => { addressExpr.valueId = 'address:B'; });
   }
   for (const field of ['kind', 'widthBits']) {
@@ -222,13 +220,13 @@ test('GVN-consumed scalar and memory fields are known snapshot-role keys', () =>
     const value = ir.values.find((candidate) => candidate.def?.op === 'bin');
     const machineType = { kind:'bitvector', widthBits:8 };
     value.machineType = hidden(machineType, field);
-    assertChanged(`value.machineType.${field}`, ir, () => {
+    assertRejected(`value.machineType.${field}`, ir, () => {
       machineType[field] = field === 'kind' ? 'predicate' : 16;
     });
   }
 });
 
-test('reference-only roles probe preferred ID aliases after a generic-first visit', () => {
+test('reference-only roles reject incomplete preferred ID aliases', () => {
   const ir = identityFixture('c2-02-reference-role-union');
   const target = { instructionId:'store:A', id:7 };
   const reference = new Proxy(target, {
@@ -239,9 +237,8 @@ test('reference-only roles probe preferred ID aliases after a generic-first visi
   const before = canonicalAnalysisIdentity({ ir });
   target.instructionId = 'store:B';
   const after = canonicalAnalysisIdentity({ ir });
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+  assert.equal(before.valid, false);
+  assert.equal(after.valid, false);
 });
 
 test('definition destinations and value use edges are bound without expanding graph cycles', () => {
@@ -811,7 +808,7 @@ test('identity authorities must be plain descriptor records', () => {
   }
 });
 
-test('identity authority prototypes are observed once without dropping fields', () => {
+test('identity authority prototypes are observed once and incomplete keys fail closed', () => {
   const ir = identityFixture('c2-02-identity-source-prototype');
   let prototypeReads = 0;
   const source = new Proxy({ binaryId:'binary:external-proxy' }, {
@@ -830,9 +827,8 @@ test('identity authority prototypes are observed once without dropping fields', 
     ownKeys() { return []; },
   });
   const knownField = canonicalAnalysisIdentity({ ir, analysisIdentity:hiddenFromOwnKeys });
-  assert.equal(knownField.valid, true);
-  assert.equal(knownField.identity.binaryId, 'binary:own-keys-proxy',
-    'known authority fields are probed independently of Proxy ownKeys');
+  assert.equal(knownField.valid, false,
+    'known authority fields omitted from ownKeys make the authority incomplete');
 });
 
 test('external identity-authority traversal has a fresh Semantic IR reference budget', () => {
@@ -996,7 +992,7 @@ test('generic array identity is independent of Proxy own-key order', () => {
     'an own array index outside the captured length must not disappear from identity');
 });
 
-test('generic array capture probes dense indexes omitted by Proxy ownKeys', () => {
+test('generic array capture rejects dense indexes omitted by Proxy ownKeys', () => {
   const target = [1];
   const hiddenDenseIndex = new Proxy(target, {
     ownKeys() { return ['length']; },
@@ -1009,10 +1005,8 @@ test('generic array capture probes dense indexes omitted by Proxy ownKeys', () =
   target[0] = 2;
   const after = identityOf(ir);
 
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId,
-    'a dense element omitted from ownKeys must remain part of the semantic identity');
+  assert.equal(before.valid, false);
+  assert.equal(after.valid, false);
 });
 
 test('semantic snapshot array probing is bounded by the Semantic IR reference budget', () => {
@@ -1037,10 +1031,8 @@ test('semantic snapshot array probing is bounded by the Semantic IR reference bu
   const denseTarget = [7];
   definition.extra = { items:new Proxy(denseTarget, { ownKeys() { return ['length']; } }) };
   const dense = identityOf(ir);
-  assert.equal(hole.valid, true);
-  assert.equal(dense.valid, true);
-  assert.notEqual(hole.identity.semanticIrId, dense.identity.semanticIrId,
-    'a true hole and a hidden dense element remain distinct below the budget');
+  assert.equal(hole.valid, true, 'a real sparse hole remains a complete observation');
+  assert.equal(dense.valid, false, 'a dense element omitted from ownKeys is incomplete');
 });
 
 test('public semantic snapshot capture owns its work budget', () => {
@@ -1061,7 +1053,7 @@ test('public semantic snapshot capture owns its work budget', () => {
     'a rejected public capture cannot spend another call\'s budget');
 });
 
-test('the immediate-post-dominator alias is probed and must agree with ipdom', () => {
+test('the immediate-post-dominator alias rejects incomplete Proxy observations', () => {
   const target = identityFixture('c2-02-ipdom-alias');
   const alias = target.ipdom.slice();
   delete target.ipdom;
@@ -1074,10 +1066,8 @@ test('the immediate-post-dominator alias is probed and must agree with ipdom', (
   const before = identityOf(ir);
   alias[0] = alias[0] == null ? 1 : null;
   const after = identityOf(ir);
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId,
-    'a known post-dominator alias cannot disappear behind Proxy ownKeys');
+  assert.equal(before.valid, false);
+  assert.equal(after.valid, false);
 
   const conflict = identityFixture('c2-02-ipdom-alias-conflict');
   conflict.immediatePostDominators = conflict.ipdom.slice();
@@ -1142,7 +1132,7 @@ test('projected shape fields are consumed from descriptor snapshots', () => {
     'shape construction must use the values captured while validating descriptors');
 });
 
-test('schema projections probe known fields omitted by Proxy ownKeys', () => {
+test('schema projections reject known fields omitted by Proxy ownKeys', () => {
   const ir = identityFixture('c2-02-known-key-probe');
   const targetValue = ir.values[0];
   let ordinaryReads = 0;
@@ -1154,12 +1144,10 @@ test('schema projections probe known fields omitted by Proxy ownKeys', () => {
     },
   });
   const first = identityOf(ir);
-  assert.equal(first.valid, true);
+  assert.equal(first.valid, false);
   targetValue.bits = 16;
   const second = identityOf(ir);
-  assert.equal(second.valid, true);
-  assert.notEqual(second.identity.semanticIrId, first.identity.semanticIrId,
-    'omitting a known value field from ownKeys cannot hide its mutation');
+  assert.equal(second.valid, false);
   assert.equal(ordinaryReads, 0);
 
   const root = identityFixture('c2-02-known-root-key-probe');
@@ -1169,10 +1157,8 @@ test('schema projections probe known fields omitted by Proxy ownKeys', () => {
   const beforeEntry = canonicalAnalysisIdentity({ ir:proxiedRoot });
   root.entry = 1;
   const afterEntry = canonicalAnalysisIdentity({ ir:proxiedRoot });
-  assert.equal(beforeEntry.valid, true);
-  assert.equal(afterEntry.valid, true);
-  assert.notEqual(afterEntry.identity.semanticIrId, beforeEntry.identity.semanticIrId,
-    'omitting the known root entry field cannot hide its mutation');
+  assert.equal(beforeEntry.valid, false);
+  assert.equal(afterEntry.valid, false);
 });
 
 test('canonical shape ordering uses exact code-unit order', () => {
@@ -1354,7 +1340,7 @@ test('reference aliases skip null candidates but reject missing required identit
   }
 });
 
-test('unknown-store barriers bind their nested instruction identity', () => {
+test('unknown-store barriers reject incomplete nested instruction identity', () => {
   const ir = identityFixture('c2-02-unknown-store-barrier');
   const definition = ir.values.find((value) => value.def?.op === 'bin').def;
   const instructionTarget = { id:99 };
@@ -1365,9 +1351,8 @@ test('unknown-store barriers bind their nested instruction identity', () => {
   const before = identityOf(ir);
   instructionTarget.id = 100;
   const after = identityOf(ir);
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId);
+  assert.equal(before.valid, false);
+  assert.equal(after.valid, false);
 
   definition.unknownAliasBarrier = { inst:'instruction:100' };
   assert.equal(identityOf(ir).valid, false,

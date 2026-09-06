@@ -22,6 +22,35 @@
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
 
+// Publication is a trust boundary too.  Capture the descriptor/prototype
+// intrinsics before traversing IDs and proof records supplied by the Semantic
+// IR so a poisoned global or accessor cannot turn a frozen result into a live
+// caller-controlled reference.
+const INTRINSIC_OBJECT_CREATE = Object.create;
+const INTRINSIC_OBJECT_DEFINE_PROPERTY = Object.defineProperty;
+const INTRINSIC_OBJECT_FREEZE = Object.freeze;
+const INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR = Object.getOwnPropertyDescriptor;
+const INTRINSIC_OBJECT_GET_PROTOTYPE_OF = Object.getPrototypeOf;
+const INTRINSIC_OBJECT_HAS_OWN = Object.hasOwn;
+const INTRINSIC_OBJECT_IS = Object.is;
+const INTRINSIC_OBJECT_IS_FROZEN = Object.isFrozen;
+const INTRINSIC_OBJECT_KEYS = Object.keys;
+const INTRINSIC_OBJECT_PROTOTYPE = Object.prototype;
+const INTRINSIC_REFLECT_OWN_KEYS = Reflect.ownKeys;
+const INTRINSIC_ARRAY_CONSTRUCTOR = Array;
+const INTRINSIC_ARRAY_IS_ARRAY = Array.isArray;
+const INTRINSIC_ARRAY_PROTOTYPE = Array.prototype;
+const INTRINSIC_MAP_CONSTRUCTOR = Map;
+const INTRINSIC_MAP_PROTOTYPE = Map.prototype;
+const INTRINSIC_MAP_ENTRIES = Map.prototype.entries;
+const INTRINSIC_MAP_GET = Map.prototype.get;
+const INTRINSIC_MAP_HAS = Map.prototype.has;
+const INTRINSIC_MAP_SET = Map.prototype.set;
+const INTRINSIC_MAP_DELETE = Map.prototype.delete;
+const INTRINSIC_MAP_CLEAR = Map.prototype.clear;
+const INTRINSIC_MAP_VALUES = Map.prototype.values;
+const INTRINSIC_SET_CONSTRUCTOR = Set;
+
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
   version: '1.0.3',
@@ -38,7 +67,7 @@ export const GVN_PASS = createPassDescriptor({
 });
 
 /** Operators whose operand order does not change the result. */
-const COMMUTATIVE = new Set(['add', 'mul', 'and', 'or', 'xor', 'eq', 'ne']);
+const COMMUTATIVE = new INTRINSIC_SET_CONSTRUCTOR(['add', 'mul', 'and', 'or', 'xor', 'eq', 'ne']);
 
 /**
  * Operations that are never congruent to anything, including themselves.
@@ -47,30 +76,30 @@ const COMMUTATIVE = new Set(['add', 'mul', 'and', 'or', 'xor', 'eq', 'ne']);
  * value each time it runs. Giving two of them the same number would let a
  * consumer replace the second with the first.
  */
-const NEVER_CONGRUENT = new Set(['call', 'clobber', 'unknown']);
+const NEVER_CONGRUENT = new INTRINSIC_SET_CONSTRUCTOR(['call', 'clobber', 'unknown']);
 
 function fail(code) { throw new TypeError(code); }
 
 const INVALID_CONGRUENCE_KEY = Symbol('phase8-gvn-invalid-congruence-key');
 
-const BITVECTOR_BINARY_OPERATORS = new Set([
+const BITVECTOR_BINARY_OPERATORS = new INTRINSIC_SET_CONSTRUCTOR([
   'add', 'sub', 'mul', 'and', 'or', 'xor', 'shl', 'lshr', 'ashr', 'rotl', 'rotr',
   'udiv', 'urem', 'sdiv', 'srem', 'bic', 'orn', 'eon',
 ]);
-const BITVECTOR_UNARY_OPERATORS = new Set([
+const BITVECTOR_UNARY_OPERATORS = new INTRINSIC_SET_CONSTRUCTOR([
   'not', 'neg', 'zext', 'sext', 'trunc', 'is-zero',
 ]);
-const SHIFT_OPERATORS = new Set([
+const SHIFT_OPERATORS = new INTRINSIC_SET_CONSTRUCTOR([
   'lsl', 'lsr', 'asr', 'uxtb', 'uxth', 'uxtw', 'sxtb', 'sxth', 'sxtw',
 ]);
-const COMMON_SCALAR_EXTRA_KEYS = new Set([
+const COMMON_SCALAR_EXTRA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'semanticNodeId', 'attributes', 'completeness', 'widthBits', 'compatSource',
 ]);
-const LOAD_EXTRA_KEYS = new Set([
+const LOAD_EXTRA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'semanticNodeId', 'size', 'widthBits', 'signed', 'memoryAccess', 'completeness',
   'addressPrecise', 'addressOrigin', 'faults',
 ]);
-const MEMORY_ACCESS_KEYS = new Set([
+const MEMORY_ACCESS_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment',
   'volatility', 'atomic', 'ordering', 'faults',
 ]);
@@ -78,32 +107,32 @@ const INSTRUCTION_PROVENANCE_KEYS = [
   'id', 'instructionId', 'definitionId', 'semanticNodeId', 'sourceEntityId',
   'sourceEffectIds', 'sourceInstructionIds', 'address', 'text', 'origin',
 ];
-const SCALAR_DEFINITION_KEYS = new Set([
+const SCALAR_DEFINITION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', ...INSTRUCTION_PROVENANCE_KEYS,
 ]);
-const LOAD_DEFINITION_KEYS = new Set([
+const LOAD_DEFINITION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', 'loc', 'addr', 'memUse',
   'unknownAliasBarrier', 'memoryAliasRelation', ...INSTRUCTION_PROVENANCE_KEYS,
 ]);
-const PRODUCED_VALUE_KEYS = new Set([
+const PRODUCED_VALUE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'id', 'vid', 'kind', 'reg', 'stateKey', 'version', 'bits', 'def', 'uses',
   'const', 'range', 'signed', 'nullable', 'type', 'label', 'semanticValueId',
   'semanticSsaValueId', 'sourceSemanticValueId', 'sourceEntityId', 'machineType',
   'origin', 'float', 'floatConst', 'constKind',
 ]);
-const LOAD_LOCATION_KEYS = new Set([
+const LOAD_LOCATION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'key', 'kind', 'size', 'regionId', 'base', 'baseEntityId', 'index', 'scale',
   'address', 'disp', 'uncertaintyIdentity', 'addressMetadataSource', 'origin',
 ]);
-const LOAD_ADDRESS_KEYS = new Set([
+const LOAD_ADDRESS_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'base', 'baseReg', 'disp', 'index', 'scale', 'extend', 'size', 'widthBits',
   'stack', 'addressSpace', 'rawAddressValueId', 'indexSignedness', 'indexWidthBits',
   'addressWidthBits', 'precise', 'unknownReason', 'compatDisplacementEvidence', 'origin',
 ]);
-const LOAD_MEMORY_USE_KEYS = new Set([
+const LOAD_MEMORY_USE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'memDefs', 'reaching', 'unknownAlias', 'kind', 'reason', 'clobber',
 ]);
-const MEMORY_DEFINITION_ENTRY_KEYS = new Set([
+const MEMORY_DEFINITION_ENTRY_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'inst', 'id', 'instructionId', 'definitionId',
 ]);
 
@@ -133,7 +162,7 @@ function typedPrimitiveFrame(value) {
     text = value ? 'true' : 'false';
   } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
     type = 'number';
-    text = Object.is(value, -0) ? '-0' : String(value);
+    text = INTRINSIC_OBJECT_IS(value, -0) ? '-0' : String(value);
   } else {
     return null;
   }
@@ -142,7 +171,7 @@ function typedPrimitiveFrame(value) {
 
 /** An injective transcript for one typed tuple, including every field boundary. */
 function framedTupleKey(kind, values) {
-  if (typeof kind !== 'string' || !kind || !Array.isArray(values)) return null;
+  if (typeof kind !== 'string' || !kind || !INTRINSIC_ARRAY_IS_ARRAY(values)) return null;
   const fields = [typedPrimitiveFrame(kind)];
   for (const value of values) fields.push(typedPrimitiveFrame(value));
   if (fields.some((field) => field == null)) return null;
@@ -150,7 +179,7 @@ function framedTupleKey(kind, values) {
 }
 
 function hasOnlyOwnKeys(value, allowed) {
-  return isPlainRecord(value) && Object.keys(value).every((key) => allowed.has(key));
+  return isPlainRecord(value) && INTRINSIC_OBJECT_KEYS(value).every((key) => allowed.has(key));
 }
 
 function createValueIdKeyer() {
@@ -178,9 +207,9 @@ function createValueIdKeyer() {
  * Native Map uses SameValueZero, so it aliases -0 and +0. The underlying map
  * stores a typed key while iteration and get/has expose the original ID.
  */
-class CanonicalValueIdMap extends Map {
+class CanonicalValueIdMap extends INTRINSIC_MAP_CONSTRUCTOR {
   #keyOf;
-  #rawKeys = new Map();
+  #rawKeys = new INTRINSIC_MAP_CONSTRUCTOR();
 
   constructor(keyOf, entries = []) {
     super();
@@ -197,34 +226,34 @@ class CanonicalValueIdMap extends Map {
   set(key, value) {
     const canonical = this.#canonical(key);
     this.#rawKeys.set(canonical, key);
-    Map.prototype.set.call(this, canonical, value);
+    INTRINSIC_MAP_SET.call(this, canonical, value);
     return this;
   }
 
   get(key) {
     const canonical = this.#keyOf(key);
-    return canonical == null ? undefined : Map.prototype.get.call(this, canonical);
+    return canonical == null ? undefined : INTRINSIC_MAP_GET.call(this, canonical);
   }
 
   has(key) {
     const canonical = this.#keyOf(key);
-    return canonical != null && Map.prototype.has.call(this, canonical);
+    return canonical != null && INTRINSIC_MAP_HAS.call(this, canonical);
   }
 
   delete(key) {
     const canonical = this.#keyOf(key);
     if (canonical == null) return false;
     this.#rawKeys.delete(canonical);
-    return Map.prototype.delete.call(this, canonical);
+    return INTRINSIC_MAP_DELETE.call(this, canonical);
   }
 
   clear() {
     this.#rawKeys.clear();
-    return Map.prototype.clear.call(this);
+    return INTRINSIC_MAP_CLEAR.call(this);
   }
 
   *entries() {
-    for (const [canonical, value] of Map.prototype.entries.call(this)) {
+    for (const [canonical, value] of INTRINSIC_MAP_ENTRIES.call(this)) {
       yield [this.#rawKeys.get(canonical), value];
     }
   }
@@ -233,7 +262,7 @@ class CanonicalValueIdMap extends Map {
     for (const [key] of this.entries()) yield key;
   }
 
-  values() { return Map.prototype.values.call(this); }
+  values() { return INTRINSIC_MAP_VALUES.call(this); }
   [Symbol.iterator]() { return this.entries(); }
 
   forEach(callback, thisArg = undefined) {
@@ -264,21 +293,64 @@ function readonlyMap(source) {
     },
     [Symbol.iterator]() { return snapshot[Symbol.iterator](); },
   };
-  return Object.freeze(view);
+  return INTRINSIC_OBJECT_FREEZE(view);
 }
 
-function immutablePublishedValue(value, active = new Set()) {
+function immutablePublishedValue(value, active = new INTRINSIC_SET_CONSTRUCTOR()) {
   if (value == null || typeof value !== 'object') return value;
   if (active.has(value)) throw new TypeError('phase8-value-number-publication-cycle');
   active.add(value);
   try {
-    if (Array.isArray(value)) return Object.freeze(value.map((item) => immutablePublishedValue(item, active)));
-    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+    const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(value);
+    if (INTRINSIC_ARRAY_IS_ARRAY(value)) {
+      if (prototype !== INTRINSIC_ARRAY_PROTOTYPE) {
+        throw new TypeError('phase8-value-number-publication-array');
+      }
+      const lengthDescriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, 'length');
+      if (lengthDescriptor == null || !('value' in lengthDescriptor)
+          || lengthDescriptor.enumerable || lengthDescriptor.configurable
+          || !Number.isSafeInteger(lengthDescriptor.value)
+          || lengthDescriptor.value < 0 || lengthDescriptor.value > 0xffffffff) {
+        throw new TypeError('phase8-value-number-publication-array');
+      }
+      const copy = new INTRINSIC_ARRAY_CONSTRUCTOR(lengthDescriptor.value);
+      for (const key of INTRINSIC_REFLECT_OWN_KEYS(value)) {
+        if (typeof key === 'symbol' || key === 'length') {
+          if (typeof key === 'symbol') throw new TypeError('phase8-value-number-publication-symbol');
+          continue;
+        }
+        const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, key);
+        if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+          throw new TypeError('phase8-value-number-publication-descriptor');
+        }
+        INTRINSIC_OBJECT_DEFINE_PROPERTY(copy, key, {
+          value:immutablePublishedValue(descriptor.value, active),
+          enumerable:true,
+          configurable:true,
+          writable:true,
+        });
+      }
+      return INTRINSIC_OBJECT_FREEZE(copy);
+    }
+    if (prototype !== INTRINSIC_OBJECT_PROTOTYPE && prototype !== null) {
       throw new TypeError('phase8-value-number-publication-object');
     }
-    const copy = {};
-    for (const key of Object.keys(value).sort()) copy[key] = immutablePublishedValue(value[key], active);
-    return Object.freeze(copy);
+    const copy = INTRINSIC_OBJECT_CREATE(prototype);
+    const keys = INTRINSIC_REFLECT_OWN_KEYS(value);
+    for (const key of keys.sort()) {
+      if (typeof key === 'symbol') throw new TypeError('phase8-value-number-publication-symbol');
+      const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, key);
+      if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+        throw new TypeError('phase8-value-number-publication-descriptor');
+      }
+      INTRINSIC_OBJECT_DEFINE_PROPERTY(copy, key, {
+        value:immutablePublishedValue(descriptor.value, active),
+        enumerable:true,
+        configurable:true,
+        writable:true,
+      });
+    }
+    return INTRINSIC_OBJECT_FREEZE(copy);
   } finally {
     active.delete(value);
   }
@@ -287,13 +359,13 @@ function immutablePublishedValue(value, active = new Set()) {
 function canonicalFactMap(source, keyOf) {
   if (source == null) return null;
   try {
-    if (Object.getPrototypeOf(source) === Map.prototype) {
-      return new CanonicalValueIdMap(keyOf, Map.prototype.entries.call(source));
+    if (INTRINSIC_OBJECT_GET_PROTOTYPE_OF(source) === INTRINSIC_MAP_PROTOTYPE) {
+      return new CanonicalValueIdMap(keyOf, INTRINSIC_MAP_ENTRIES.call(source));
     }
     // SCCP publishes a frozen read-only Map view so Map.prototype.set cannot
     // mutate its evidence after publication. Consume that established artifact
     // contract through its iterator, then keep only this pass-local typed copy.
-    if (Object.isFrozen(source) && typeof source.entries === 'function') {
+    if (INTRINSIC_OBJECT_IS_FROZEN(source) && typeof source.entries === 'function') {
       return new CanonicalValueIdMap(keyOf, source.entries());
     }
   } catch {
@@ -307,9 +379,9 @@ function supportedResultWidth(bits) {
 }
 
 function isPlainRecord(value) {
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  if (value == null || typeof value !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(value)) return false;
+  const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(value);
+  return prototype === INTRINSIC_OBJECT_PROTOTYPE || prototype === null;
 }
 
 function bitvectorResultKey(value) {
@@ -325,7 +397,7 @@ function bitvectorResultKey(value) {
     return framedTupleKey('legacy-bitvector-result', [value.bits, value.signed, value.kind]);
   }
   if (!isPlainRecord(machineType)) return null;
-  const keys = Object.keys(machineType).sort();
+  const keys = INTRINSIC_OBJECT_KEYS(machineType).sort();
   if (keys.length !== 2 || keys[0] !== 'kind' || keys[1] !== 'widthBits'
       || machineType.kind !== 'bitvector' || machineType.widthBits !== value.bits) return null;
   return framedTupleKey('bitvector-result', [
@@ -341,18 +413,18 @@ function producedBitvectorKey(value, definition, {
       || (value.kind !== 'def' && !(allowConstantKind && value.kind === 'const'))
       || value.def !== definition
       || !supportedIdentityPrimitive(value.id)
-      || (Object.hasOwn(value, 'vid') && !Number.isSafeInteger(value.vid))
-      || (Object.hasOwn(value, 'reg') && value.reg != null)
-      || (Object.hasOwn(value, 'stateKey') && value.stateKey != null)
-      || (Object.hasOwn(value, 'version') && value.version !== 0)
-      || (Object.hasOwn(value, 'uses') && !Array.isArray(value.uses))
-      || (!allowStoredConstant && Object.hasOwn(value, 'const') && value.const != null)
-      || (Object.hasOwn(value, 'range') && value.range != null)
-      || (Object.hasOwn(value, 'nullable') && value.nullable != null)
-      || (Object.hasOwn(value, 'type') && value.type != null)
-      || (Object.hasOwn(value, 'float') && value.float != null)
-      || (Object.hasOwn(value, 'floatConst') && value.floatConst != null)
-      || (Object.hasOwn(value, 'constKind') && value.constKind != null)) {
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'vid') && !Number.isSafeInteger(value.vid))
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'reg') && value.reg != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'stateKey') && value.stateKey != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'version') && value.version !== 0)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'uses') && !INTRINSIC_ARRAY_IS_ARRAY(value.uses))
+      || (!allowStoredConstant && INTRINSIC_OBJECT_HAS_OWN(value, 'const') && value.const != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'range') && value.range != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'nullable') && value.nullable != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'type') && value.type != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'float') && value.float != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'floatConst') && value.floatConst != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(value, 'constKind') && value.constKind != null)) {
     return null;
   }
   return bitvectorResultKey(value);
@@ -360,7 +432,7 @@ function producedBitvectorKey(value, definition, {
 
 function exactShiftKey(shift) {
   if (!isPlainRecord(shift)) return null;
-  const keys = Object.keys(shift).sort();
+  const keys = INTRINSIC_OBJECT_KEYS(shift).sort();
   if (keys.length !== 2 || keys[0] !== 'amount' || keys[1] !== 'op'
       || !SHIFT_OPERATORS.has(shift.op)
       || !Number.isSafeInteger(shift.amount) || shift.amount < 0) return null;
@@ -369,16 +441,16 @@ function exactShiftKey(shift) {
 
 function argumentCongruenceKey(argument, valueKey) {
   if (!isPlainRecord(argument) || valueKey == null || valueKey === INVALID_CONGRUENCE_KEY) return null;
-  const allowed = new Set(['value', 'bits', 'shift', 'origin']);
-  if (Object.keys(argument).some((key) => !allowed.has(key))) return null;
+  const allowed = new INTRINSIC_SET_CONSTRUCTOR(['value', 'bits', 'shift', 'origin']);
+  if (INTRINSIC_OBJECT_KEYS(argument).some((key) => !allowed.has(key))) return null;
   let bits;
-  if (Object.hasOwn(argument, 'bits')) {
+  if (INTRINSIC_OBJECT_HAS_OWN(argument, 'bits')) {
     bits = argument.bits;
     if (!supportedResultWidth(bits) || !supportedResultWidth(argument.value?.bits)
         || bits > argument.value.bits) return null;
   }
   let shiftKey;
-  if (Object.hasOwn(argument, 'shift')) {
+  if (INTRINSIC_OBJECT_HAS_OWN(argument, 'shift')) {
     if (argument.shift == null) shiftKey = framedTupleKey('operand-shift-null', []);
     else {
       shiftKey = exactShiftKey(argument.shift);
@@ -388,28 +460,28 @@ function argumentCongruenceKey(argument, valueKey) {
   return framedTupleKey('operand', [valueKey, bits, shiftKey]);
 }
 
-function scalarExtraKey(extra, producedBits, allowedSemanticKeys = new Map()) {
+function scalarExtraKey(extra, producedBits, allowedSemanticKeys = new INTRINSIC_MAP_CONSTRUCTOR()) {
   if (extra == null) return framedTupleKey('scalar-extra', []);
   if (!isPlainRecord(extra)) return null;
-  const allowedKeys = new Set([...COMMON_SCALAR_EXTRA_KEYS, ...allowedSemanticKeys.keys()]);
-  if (Object.keys(extra).some((key) => !allowedKeys.has(key))) return null;
-  if (Object.hasOwn(extra, 'semanticNodeId') && !supportedIdentityPrimitive(extra.semanticNodeId)) return null;
+  const allowedKeys = new INTRINSIC_SET_CONSTRUCTOR([...COMMON_SCALAR_EXTRA_KEYS, ...allowedSemanticKeys.keys()]);
+  if (INTRINSIC_OBJECT_KEYS(extra).some((key) => !allowedKeys.has(key))) return null;
+  if (INTRINSIC_OBJECT_HAS_OWN(extra, 'semanticNodeId') && !supportedIdentityPrimitive(extra.semanticNodeId)) return null;
   // `attributes` is an open-ended producer metadata bag. Until the producer
   // gives every member a value-semantics contract, even an apparently empty
   // Proxy-backed bag cannot be treated as proof of scalar equality: ownKeys
   // may legally hide configurable fields. Keep such operations singleton.
-  if (Object.hasOwn(extra, 'attributes')) return null;
-  if (Object.hasOwn(extra, 'completeness') && extra.completeness !== 'complete') return null;
-  if (Object.hasOwn(extra, 'widthBits') && extra.widthBits !== producedBits) return null;
-  if (Object.hasOwn(extra, 'compatSource')
+  if (INTRINSIC_OBJECT_HAS_OWN(extra, 'attributes')) return null;
+  if (INTRINSIC_OBJECT_HAS_OWN(extra, 'completeness') && extra.completeness !== 'complete') return null;
+  if (INTRINSIC_OBJECT_HAS_OWN(extra, 'widthBits') && extra.widthBits !== producedBits) return null;
+  if (INTRINSIC_OBJECT_HAS_OWN(extra, 'compatSource')
       && (typeof extra.compatSource !== 'string' || !extra.compatSource)) return null;
   const fields = [
-    Object.hasOwn(extra, 'completeness'), extra.completeness,
-    Object.hasOwn(extra, 'widthBits'), extra.widthBits,
-    Object.hasOwn(extra, 'compatSource'), extra.compatSource,
+    INTRINSIC_OBJECT_HAS_OWN(extra, 'completeness'), extra.completeness,
+    INTRINSIC_OBJECT_HAS_OWN(extra, 'widthBits'), extra.widthBits,
+    INTRINSIC_OBJECT_HAS_OWN(extra, 'compatSource'), extra.compatSource,
   ];
   for (const [key, validator] of allowedSemanticKeys) {
-    const present = Object.hasOwn(extra, key);
+    const present = INTRINSIC_OBJECT_HAS_OWN(extra, key);
     const value = extra[key];
     if (present && !validator(value)) return null;
     fields.push(key, present, value);
@@ -428,7 +500,7 @@ function scalarOperationKey(instruction, produced, argumentKeys) {
 
   if (instruction.op === 'bin') {
     if (!BITVECTOR_BINARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 2) return null;
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
       ['negate', (value) => typeof value === 'boolean'],
     ]));
     if (extra == null) return null;
@@ -440,7 +512,7 @@ function scalarOperationKey(instruction, produced, argumentKeys) {
   if (instruction.op === 'un') {
     if (!BITVECTOR_UNARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 1) return null;
     const positiveWidth = (value) => supportedResultWidth(value);
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
       ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
     ]));
     return extra == null ? null
@@ -453,7 +525,7 @@ function scalarOperationKey(instruction, produced, argumentKeys) {
     if (argumentKeys.length !== 1
         || (instruction.sub != null && typeof instruction.sub !== 'string')) return null;
     const positiveWidth = (value) => supportedResultWidth(value);
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new Map([
+    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
       ['castKind', (value) => typeof value === 'string' && value.length > 0],
       ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
     ]));
@@ -479,8 +551,8 @@ function memoryAccessOf(definition) {
 }
 
 function denseList(value) {
-  if (!Array.isArray(value)) return false;
-  const keys = Object.keys(value);
+  if (!INTRINSIC_ARRAY_IS_ARRAY(value)) return false;
+  const keys = INTRINSIC_OBJECT_KEYS(value);
   if (keys.length !== value.length) return false;
   return keys.every((key, index) => key === String(index));
 }
@@ -501,92 +573,92 @@ function loadLocationIdentity(location) {
       || !supportedIdentityPrimitive(location.key)
       || !['stack', 'field', 'global'].includes(location.kind)
       || !Number.isSafeInteger(location.size) || location.size <= 0
-      || (Object.hasOwn(location, 'regionId') && location.regionId != null
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'regionId') && location.regionId != null
         && !supportedIdentityPrimitive(location.regionId))
-      || (Object.hasOwn(location, 'baseEntityId') && location.baseEntityId != null
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'baseEntityId') && location.baseEntityId != null
         && !supportedIdentityPrimitive(location.baseEntityId))
-      || (Object.hasOwn(location, 'scale')
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'scale')
         && (!Number.isSafeInteger(location.scale) || location.scale < 0))
-      || (Object.hasOwn(location, 'address') && !scalarOffset(location.address))
-      || (Object.hasOwn(location, 'disp') && !scalarOffset(location.disp))
-      || (Object.hasOwn(location, 'uncertaintyIdentity')
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'address') && !scalarOffset(location.address))
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'disp') && !scalarOffset(location.disp))
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'uncertaintyIdentity')
         && location.uncertaintyIdentity != null)
-      || (Object.hasOwn(location, 'addressMetadataSource')
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'addressMetadataSource')
         && (typeof location.addressMetadataSource !== 'string'
           || location.addressMetadataSource.length === 0))) {
     return null;
   }
-  const base = Object.hasOwn(location, 'base') ? referenceIdKey(location.base) : null;
-  const index = Object.hasOwn(location, 'index') ? referenceIdKey(location.index) : null;
-  if ((Object.hasOwn(location, 'base') && base == null)
-      || (Object.hasOwn(location, 'index') && index == null)) return null;
+  const base = INTRINSIC_OBJECT_HAS_OWN(location, 'base') ? referenceIdKey(location.base) : null;
+  const index = INTRINSIC_OBJECT_HAS_OWN(location, 'index') ? referenceIdKey(location.index) : null;
+  if ((INTRINSIC_OBJECT_HAS_OWN(location, 'base') && base == null)
+      || (INTRINSIC_OBJECT_HAS_OWN(location, 'index') && index == null)) return null;
   return framedTupleKey('load-location', [
     location.key, location.kind, location.size,
-    Object.hasOwn(location, 'regionId'), location.regionId,
-    Object.hasOwn(location, 'base'), base,
-    Object.hasOwn(location, 'baseEntityId'), location.baseEntityId,
-    Object.hasOwn(location, 'index'), index,
-    Object.hasOwn(location, 'scale'), location.scale,
-    Object.hasOwn(location, 'address'), location.address,
-    Object.hasOwn(location, 'disp'), location.disp,
-    Object.hasOwn(location, 'uncertaintyIdentity'), location.uncertaintyIdentity,
-    Object.hasOwn(location, 'addressMetadataSource'), location.addressMetadataSource,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'regionId'), location.regionId,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'base'), base,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'baseEntityId'), location.baseEntityId,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'index'), index,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'scale'), location.scale,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'address'), location.address,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'disp'), location.disp,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'uncertaintyIdentity'), location.uncertaintyIdentity,
+    INTRINSIC_OBJECT_HAS_OWN(location, 'addressMetadataSource'), location.addressMetadataSource,
   ]);
 }
 
 function loadAddressIdentity(address) {
   if (address == null) return framedTupleKey('load-address-absent', []);
   if (!hasOnlyOwnKeys(address, LOAD_ADDRESS_KEYS)
-      || (Object.hasOwn(address, 'baseReg') && address.baseReg != null
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'baseReg') && address.baseReg != null
         && !supportedIdentityPrimitive(address.baseReg))
-      || (Object.hasOwn(address, 'disp') && !scalarOffset(address.disp))
-      || (Object.hasOwn(address, 'scale')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'disp') && !scalarOffset(address.disp))
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'scale')
         && (!Number.isSafeInteger(address.scale) || address.scale < 0))
-      || (Object.hasOwn(address, 'extend') && address.extend != null
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'extend') && address.extend != null
         && (typeof address.extend !== 'string' || address.extend.length === 0))
-      || (Object.hasOwn(address, 'size')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'size')
         && (!Number.isSafeInteger(address.size) || address.size <= 0))
-      || (Object.hasOwn(address, 'widthBits')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'widthBits')
         && !supportedResultWidth(address.widthBits))
-      || (Object.hasOwn(address, 'stack') && typeof address.stack !== 'boolean')
-      || (Object.hasOwn(address, 'addressSpace') && address.addressSpace !== 'memory')
-      || (Object.hasOwn(address, 'rawAddressValueId')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'stack') && typeof address.stack !== 'boolean')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'addressSpace') && address.addressSpace !== 'memory')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'rawAddressValueId')
         && !supportedIdentityPrimitive(address.rawAddressValueId))
-      || (Object.hasOwn(address, 'indexSignedness') && address.indexSignedness != null
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'indexSignedness') && address.indexSignedness != null
         && !['signed', 'unsigned'].includes(address.indexSignedness))
-      || (Object.hasOwn(address, 'indexWidthBits') && address.indexWidthBits != null
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'indexWidthBits') && address.indexWidthBits != null
         && !supportedResultWidth(address.indexWidthBits))
-      || (Object.hasOwn(address, 'addressWidthBits') && address.addressWidthBits != null
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'addressWidthBits') && address.addressWidthBits != null
         && !supportedResultWidth(address.addressWidthBits))
-      || (Object.hasOwn(address, 'precise') && address.precise !== true)
-      || (Object.hasOwn(address, 'unknownReason') && address.unknownReason != null)
-      || (Object.hasOwn(address, 'compatDisplacementEvidence')
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'precise') && address.precise !== true)
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'unknownReason') && address.unknownReason != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'compatDisplacementEvidence')
         && (typeof address.compatDisplacementEvidence !== 'string'
           || address.compatDisplacementEvidence.length === 0))) {
     return null;
   }
-  const base = Object.hasOwn(address, 'base') ? referenceIdKey(address.base) : null;
-  const index = Object.hasOwn(address, 'index') ? referenceIdKey(address.index) : null;
-  if ((Object.hasOwn(address, 'base') && base == null)
-      || (Object.hasOwn(address, 'index') && index == null)) return null;
+  const base = INTRINSIC_OBJECT_HAS_OWN(address, 'base') ? referenceIdKey(address.base) : null;
+  const index = INTRINSIC_OBJECT_HAS_OWN(address, 'index') ? referenceIdKey(address.index) : null;
+  if ((INTRINSIC_OBJECT_HAS_OWN(address, 'base') && base == null)
+      || (INTRINSIC_OBJECT_HAS_OWN(address, 'index') && index == null)) return null;
   return framedTupleKey('load-address', [
-    Object.hasOwn(address, 'base'), base,
-    Object.hasOwn(address, 'baseReg'), address.baseReg,
-    Object.hasOwn(address, 'disp'), address.disp,
-    Object.hasOwn(address, 'index'), index,
-    Object.hasOwn(address, 'scale'), address.scale,
-    Object.hasOwn(address, 'extend'), address.extend,
-    Object.hasOwn(address, 'size'), address.size,
-    Object.hasOwn(address, 'widthBits'), address.widthBits,
-    Object.hasOwn(address, 'stack'), address.stack,
-    Object.hasOwn(address, 'addressSpace'), address.addressSpace,
-    Object.hasOwn(address, 'rawAddressValueId'), address.rawAddressValueId,
-    Object.hasOwn(address, 'indexSignedness'), address.indexSignedness,
-    Object.hasOwn(address, 'indexWidthBits'), address.indexWidthBits,
-    Object.hasOwn(address, 'addressWidthBits'), address.addressWidthBits,
-    Object.hasOwn(address, 'precise'), address.precise,
-    Object.hasOwn(address, 'unknownReason'), address.unknownReason,
-    Object.hasOwn(address, 'compatDisplacementEvidence'), address.compatDisplacementEvidence,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'base'), base,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'baseReg'), address.baseReg,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'disp'), address.disp,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'index'), index,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'scale'), address.scale,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'extend'), address.extend,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'size'), address.size,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'widthBits'), address.widthBits,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'stack'), address.stack,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'addressSpace'), address.addressSpace,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'rawAddressValueId'), address.rawAddressValueId,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'indexSignedness'), address.indexSignedness,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'indexWidthBits'), address.indexWidthBits,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'addressWidthBits'), address.addressWidthBits,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'precise'), address.precise,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'unknownReason'), address.unknownReason,
+    INTRINSIC_OBJECT_HAS_OWN(address, 'compatDisplacementEvidence'), address.compatDisplacementEvidence,
   ]);
 }
 
@@ -596,17 +668,17 @@ function memoryDefinitionListKey(reaching) {
   for (const entry of reaching) {
     if (!hasOnlyOwnKeys(entry, MEMORY_DEFINITION_ENTRY_KEYS)) return null;
     const aliases = [];
-    if (Object.hasOwn(entry, 'inst') && entry.inst != null) {
-      if (!hasOnlyOwnKeys(entry.inst, new Set(['id']))
-          || !Object.hasOwn(entry.inst, 'id')) return null;
+    if (INTRINSIC_OBJECT_HAS_OWN(entry, 'inst') && entry.inst != null) {
+      if (!hasOnlyOwnKeys(entry.inst, new INTRINSIC_SET_CONSTRUCTOR(['id']))
+          || !INTRINSIC_OBJECT_HAS_OWN(entry.inst, 'id')) return null;
       aliases.push(entry.inst.id);
     }
     for (const key of ['id', 'instructionId', 'definitionId']) {
-      if (Object.hasOwn(entry, key) && entry[key] != null) aliases.push(entry[key]);
+      if (INTRINSIC_OBJECT_HAS_OWN(entry, key) && entry[key] != null) aliases.push(entry[key]);
     }
     if (aliases.length === 0 || aliases.some((id) => !supportedIdentityPrimitive(id))) return null;
     const id = aliases[0];
-    if (aliases.some((candidate) => !Object.is(candidate, id))) return null;
+    if (aliases.some((candidate) => !INTRINSIC_OBJECT_IS(candidate, id))) return null;
     framed.push(framedTupleKey('memory-definition', [id]));
   }
   framed.sort();
@@ -615,12 +687,12 @@ function memoryDefinitionListKey(reaching) {
 
 function loadMemoryUseIdentity(use) {
   if (!hasOnlyOwnKeys(use, LOAD_MEMORY_USE_KEYS)
-      || (Object.hasOwn(use, 'unknownAlias') && use.unknownAlias !== false)
-      || (Object.hasOwn(use, 'clobber') && use.clobber !== false)
-      || (Object.hasOwn(use, 'kind') && use.kind != null)
-      || (Object.hasOwn(use, 'reason') && use.reason != null)) return null;
-  const hasMemDefs = Object.hasOwn(use, 'memDefs');
-  const hasReaching = Object.hasOwn(use, 'reaching');
+      || (INTRINSIC_OBJECT_HAS_OWN(use, 'unknownAlias') && use.unknownAlias !== false)
+      || (INTRINSIC_OBJECT_HAS_OWN(use, 'clobber') && use.clobber !== false)
+      || (INTRINSIC_OBJECT_HAS_OWN(use, 'kind') && use.kind != null)
+      || (INTRINSIC_OBJECT_HAS_OWN(use, 'reason') && use.reason != null)) return null;
+  const hasMemDefs = INTRINSIC_OBJECT_HAS_OWN(use, 'memDefs');
+  const hasReaching = INTRINSIC_OBJECT_HAS_OWN(use, 'reaching');
   if (!hasMemDefs && !hasReaching) return null;
   const memDefs = hasMemDefs ? memoryDefinitionListKey(use.memDefs) : null;
   const reaching = hasReaching ? memoryDefinitionListKey(use.reaching) : null;
@@ -631,10 +703,10 @@ function loadMemoryUseIdentity(use) {
     version,
     key:framedTupleKey('load-memory-use', [
       hasMemDefs, memDefs, hasReaching, reaching,
-      Object.hasOwn(use, 'unknownAlias'), use.unknownAlias,
-      Object.hasOwn(use, 'clobber'), use.clobber,
-      Object.hasOwn(use, 'kind'), use.kind,
-      Object.hasOwn(use, 'reason'), use.reason,
+      INTRINSIC_OBJECT_HAS_OWN(use, 'unknownAlias'), use.unknownAlias,
+      INTRINSIC_OBJECT_HAS_OWN(use, 'clobber'), use.clobber,
+      INTRINSIC_OBJECT_HAS_OWN(use, 'kind'), use.kind,
+      INTRINSIC_OBJECT_HAS_OWN(use, 'reason'), use.reason,
     ]),
   };
 }
@@ -645,7 +717,7 @@ function loadValueIdentity(definition, access) {
       || !denseList(definition.args) || definition.args.length !== 0
       || definition.dst == null
       || definition.unknownAliasBarrier != null
-      || (Object.hasOwn(definition, 'memoryAliasRelation')
+      || (INTRINSIC_OBJECT_HAS_OWN(definition, 'memoryAliasRelation')
         && definition.memoryAliasRelation !== 'must')
       || !hasOnlyOwnKeys(definition?.extra, LOAD_EXTRA_KEYS)
       || !hasOnlyOwnKeys(access, MEMORY_ACCESS_KEYS)) {
@@ -668,18 +740,18 @@ function loadValueIdentity(definition, access) {
   if (access.endian !== 'little' && access.endian !== 'big') {
     return { ok:false, reason:'load memory endianness is missing or unsupported' };
   }
-  if (!Object.hasOwn(access, 'alignment')
+  if (!INTRINSIC_OBJECT_HAS_OWN(access, 'alignment')
       || (access.alignment !== null && (!Number.isSafeInteger(access.alignment) || access.alignment <= 0))) {
     return { ok:false, reason:'load memory alignment is missing or malformed' };
   }
   if (!isPlainRecord(access.addressExpr)
-      || Object.keys(access.addressExpr).length !== 1
-      || !Object.hasOwn(access.addressExpr, 'valueId')
+      || INTRINSIC_OBJECT_KEYS(access.addressExpr).length !== 1
+      || !INTRINSIC_OBJECT_HAS_OWN(access.addressExpr, 'valueId')
       || !supportedIdentityPrimitive(access.addressExpr.valueId)) {
     return { ok:false, reason:'load address expression is missing or malformed' };
   }
-  if (Object.hasOwn(access, 'addressValueId')
-      && !Object.is(access.addressValueId, access.addressExpr.valueId)) {
+  if (INTRINSIC_OBJECT_HAS_OWN(access, 'addressValueId')
+      && !INTRINSIC_OBJECT_IS(access.addressValueId, access.addressExpr.valueId)) {
     return { ok:false, reason:'load address identity aliases disagree' };
   }
   const signed = definition?.extra?.signed;
@@ -698,11 +770,11 @@ function loadValueIdentity(definition, access) {
   if (definition.extra.completeness !== 'complete') {
     return { ok:false, reason:'load semantic description is incomplete' };
   }
-  if (!Array.isArray(access.faults) || access.faults.length !== 0) {
+  if (!INTRINSIC_ARRAY_IS_ARRAY(access.faults) || access.faults.length !== 0) {
     return { ok:false, reason:'load may fault or has malformed fault facts' };
   }
-  if (Object.hasOwn(definition.extra, 'faults')
-      && (!Array.isArray(definition.extra.faults) || definition.extra.faults.length !== 0)) {
+  if (INTRINSIC_OBJECT_HAS_OWN(definition.extra, 'faults')
+      && (!INTRINSIC_ARRAY_IS_ARRAY(definition.extra.faults) || definition.extra.faults.length !== 0)) {
     return { ok:false, reason:'load may trap or has malformed trap facts' };
   }
   const resultType = producedBitvectorKey(definition.dst, definition);
@@ -714,7 +786,7 @@ function loadValueIdentity(definition, access) {
     return { ok:false, reason:'load location identity is malformed or unsupported' };
   }
   const addressIdentity = loadAddressIdentity(
-    Object.hasOwn(definition, 'addr') ? definition.addr : null,
+    INTRINSIC_OBJECT_HAS_OWN(definition, 'addr') ? definition.addr : null,
   );
   if (addressIdentity == null) {
     return { ok:false, reason:'load address proof is malformed or unsupported' };
@@ -731,13 +803,13 @@ function loadValueIdentity(definition, access) {
     reason:null,
     fields:[
       access.addressSpace, access.addressExpr.valueId, accessBits, access.endian,
-      Object.hasOwn(access, 'addressValueId'), access.addressValueId,
+      INTRINSIC_OBJECT_HAS_OWN(access, 'addressValueId'), access.addressValueId,
       access.alignment, definition.loc.kind, definition.loc.size,
       signed, extensionMode, resultType,
       definition.extra.completeness,
-      Object.hasOwn(definition.extra, 'faults'),
+      INTRINSIC_OBJECT_HAS_OWN(definition.extra, 'faults'),
       locationIdentity, addressIdentity, memoryUseIdentity.key,
-      Object.hasOwn(definition, 'memoryAliasRelation'), definition.memoryAliasRelation,
+      INTRINSIC_OBJECT_HAS_OWN(definition, 'memoryAliasRelation'), definition.memoryAliasRelation,
     ],
     memoryVersion:memoryUseIdentity.version,
   };
@@ -823,7 +895,7 @@ function memoryVersionKey(definition) {
  */
 function canonicalIdSet(source, keyOf) {
   try {
-    const result = new Set();
+    const result = new INTRINSIC_SET_CONSTRUCTOR();
     for (const value of source ?? []) {
       const key = keyOf(value);
       if (key == null) return null;
@@ -836,22 +908,22 @@ function canonicalIdSet(source, keyOf) {
 }
 
 function dominatorSets(ir, keyOf, trustProvidedFacts = true) {
-  const sets = new Map();
+  const sets = new INTRINSIC_MAP_CONSTRUCTOR();
   if (!trustProvidedFacts) return sets;
   const raw = ir?.dominators;
   if (raw instanceof Map) {
     for (const [block, dominators] of raw) {
       const blockKey = keyOf(block);
       const canonical = canonicalIdSet(dominators, keyOf);
-      if (blockKey == null || canonical == null) return new Map();
+      if (blockKey == null || canonical == null) return new INTRINSIC_MAP_CONSTRUCTOR();
       sets.set(blockKey, canonical);
     }
     return sets;
   }
-  if (Array.isArray(raw)) {
+  if (INTRINSIC_ARRAY_IS_ARRAY(raw)) {
     for (let block = 0; block < raw.length; block += 1) {
       const canonical = canonicalIdSet(raw[block], keyOf);
-      if (canonical == null) return new Map();
+      if (canonical == null) return new INTRINSIC_MAP_CONSTRUCTOR();
       sets.set(keyOf(block), canonical);
     }
     return sets;
@@ -862,13 +934,13 @@ function dominatorSets(ir, keyOf, trustProvidedFacts = true) {
   const immediateOf = (block) => (idom instanceof Map ? idom.get(block) : idom[block]);
   for (const block of (ir.blocks ?? []).map((item) => item.index)) {
     const blockKey = keyOf(block);
-    if (blockKey == null) return new Map();
-    const chain = new Set([blockKey]);
+    if (blockKey == null) return new INTRINSIC_MAP_CONSTRUCTOR();
+    const chain = new INTRINSIC_SET_CONSTRUCTOR([blockKey]);
     let current = immediateOf(block);
     let guard = 0;
     while (current != null && guard < 4096) {
       const currentKey = keyOf(current);
-      if (currentKey == null) return new Map();
+      if (currentKey == null) return new INTRINSIC_MAP_CONSTRUCTOR();
       if (chain.has(currentKey)) break;
       chain.add(currentKey);
       current = immediateOf(current);
@@ -926,15 +998,15 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
 
   const valueIdKey = createValueIdKeyer();
   const numbers = new CanonicalValueIdMap(valueIdKey);
-  const classes = new Map();
+  const classes = new INTRINSIC_MAP_CONSTRUCTOR();
   const singletonReasons = new CanonicalValueIdMap(valueIdKey);
   const reuseCandidates = [];
   const diagnostics = [];
   // A native Map/Set cannot retain the sign of a zero key. If this adversarial
   // graph actually uses -0 as a block identity, do not consume ambiguous
   // cross-block dominance evidence; exact same-block checks remain available.
-  const hasNegativeZeroBlock = blocks.some((block) => Object.is(block?.index, -0))
-    || values.some((value) => Object.is(value?.def?.block, -0));
+  const hasNegativeZeroBlock = blocks.some((block) => INTRINSIC_OBJECT_IS(block?.index, -0))
+    || values.some((value) => INTRINSIC_OBJECT_IS(value?.def?.block, -0));
   const dominatorsOf = dominatorSets(
     context.ir ?? { blocks, dominators:cfg?.dominators, idom:cfg?.idom },
     valueIdKey,
@@ -948,14 +1020,14 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   // A native producer Map cannot say whether its sole zero key was inserted as
   // -0 or +0. If this graph contains -0, decline every zero-keyed input fact;
   // the typed GVN tables below can still number the two IR values separately.
-  const ambiguousNativeZeroFact = values.some((value) => Object.is(value.id, -0));
+  const ambiguousNativeZeroFact = values.some((value) => INTRINSIC_OBJECT_IS(value.id, -0));
   const inputFact = (map, valueId) => (
     ambiguousNativeZeroFact && typeof valueId === 'number' && valueId === 0
       ? null : map?.get(valueId) ?? null
   );
 
   let nextNumber = 1;
-  const keyToNumber = new Map();
+  const keyToNumber = new INTRINSIC_MAP_CONSTRUCTOR();
 
   // Values with no defining operation — function arguments, incoming state,
   // anything the IR presents without a producer — are each their own class. They
@@ -1107,7 +1179,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         continue;
       }
 
-      if (!Array.isArray(instruction.args)) {
+      if (!INTRINSIC_ARRAY_IS_ARRAY(instruction.args)) {
         singleton(produced, 'operation arguments are malformed');
         continue;
       }
@@ -1146,13 +1218,13 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   }
 
   const congruentClasses = [...classes.values()].filter((members) => members.length > 1);
-  const publishedClasses = readonlyMap(new Map(
+  const publishedClasses = readonlyMap(new INTRINSIC_MAP_CONSTRUCTOR(
     [...classes.entries()].map(([number, members]) => [number, immutablePublishedValue(members)]),
   ));
-  const publishedReuseCandidates = Object.freeze(
+  const publishedReuseCandidates = INTRINSIC_OBJECT_FREEZE(
     reuseCandidates.map((entry) => immutablePublishedValue(entry)),
   );
-  const facts = Object.freeze({
+  const facts = INTRINSIC_OBJECT_FREEZE({
     passVersion: GVN_PASS.version,
     numbers:readonlyMap(numbers),
     classes:publishedClasses,
@@ -1179,7 +1251,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
       severity: 'info',
       code: 'phase8.gvn.load-not-reused',
       message: `${blockedLoads.length} loads were not reused.`,
-      reason: [...new Set(blockedLoads.map(([, reason]) => reason))].slice(0, 4).join('; '),
+      reason: [...new INTRINSIC_SET_CONSTRUCTOR(blockedLoads.map(([, reason]) => reason))].slice(0, 4).join('; '),
     });
   }
 

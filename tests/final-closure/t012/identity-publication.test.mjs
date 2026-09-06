@@ -27,7 +27,7 @@ function gvnFixture(name) {
   return { ir:f.build(), first, second };
 }
 
-test('T012 identity rejects an accessor and cannot miss a proxy-hidden semantic field', () => {
+test('T012 identity rejects accessors and incomplete proxy observations', () => {
   const ir = identityFixture('t012-hostile-identity');
   const target = ir.values[0];
   let getterReads = 0;
@@ -51,10 +51,25 @@ test('T012 identity rejects an accessor and cannot miss a proxy-hidden semantic 
   const before = canonicalAnalysisIdentity({ ir:clean });
   value.bits = 16;
   const after = canonicalAnalysisIdentity({ ir:clean });
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(after.identity.semanticIrId, before.identity.semanticIrId,
-    'a proxy cannot hide a known semantic field from the identity transcript');
+  assert.equal(before.valid, false, 'an omitted known field must fail closed');
+  assert.equal(after.valid, false, 'an incomplete proxy remains invalid after mutation');
+});
+
+test('T012 identity descriptor reads remain intrinsic-safe after global poisoning', () => {
+  const ir = identityFixture('t012-intrinsic-descriptor');
+  const original = Object.getOwnPropertyDescriptor;
+  let poisonedReads = 0;
+  Object.getOwnPropertyDescriptor = () => {
+    poisonedReads += 1;
+    throw new Error('poisoned descriptor intrinsic');
+  };
+  try {
+    const result = canonicalAnalysisIdentity({ ir });
+    assert.equal(result.valid, true);
+    assert.equal(poisonedReads, 0, 'identity must use captured descriptor intrinsics');
+  } finally {
+    Object.getOwnPropertyDescriptor = original;
+  }
 });
 
 test('T012 GVN publication does not expose mutable numbering authority', () => {
@@ -74,6 +89,9 @@ test('T012 GVN publication does not expose mutable numbering authority', () => {
 
   const members = facts.classes.get(firstNumber);
   assert.ok(Array.isArray(members));
+  assert.equal(Object.isFrozen(facts.reuseCandidates), true);
+  assert.equal(Object.isFrozen(facts.reuseCandidates[0]), true);
+  assert.throws(() => facts.reuseCandidates[0].proof = 'forged-proof', /read only|immutable|object is not extensible/i);
   assert.throws(() => members.push('forged-value'), /read only|immutable|object is not extensible/i);
   assert.deepEqual(facts.classes.get(firstNumber), [first.id, second.id],
     'class membership remains stable after publication');

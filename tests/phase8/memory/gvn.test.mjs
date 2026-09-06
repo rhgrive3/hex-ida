@@ -684,7 +684,7 @@ test('structured memory-definition IDs remain singletons', () => {
   assert.match(facts.singletonReasons.get(second.id) ?? '', /not determined/);
 });
 
-test('hidden memDefs cannot be replaced by the lower-priority reaching alias', () => {
+test('incomplete memDefs fail closed before GVN can consume a lower-priority alias', () => {
   const f = fixture('load-hidden-memory-version');
   f.block(0);
   const first = provedLoad(f, 32);
@@ -700,14 +700,14 @@ test('hidden memDefs cannot be replaced by the lower-priority reaching alias', (
   });
 
   const before = canonicalAnalysisIdentity({ ir });
-  const { facts } = analyze(ir);
-  assert.equal(congruent(facts, first, second), false,
-    'the preferred hidden memDefs version must block reuse');
+  const { outcome, facts } = analyze(ir);
+  assert.equal(before.valid, false, 'an incomplete preferred memory version invalidates the IR identity');
+  assert.equal(facts, null, 'GVN must not consume an IR whose memory identity is incomplete');
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.result, null, 'the transaction must withhold GVN when identity input is unavailable');
   target.memDefs[0].inst.id = 'store_C';
   const after = canonicalAnalysisIdentity({ ir });
-  assert.equal(before.valid, true);
-  assert.equal(after.valid, true);
-  assert.notEqual(before.identity.semanticIrId, after.identity.semanticIrId);
+  assert.equal(after.valid, false);
 });
 
 test('load congruence requires exact definition, location, address, and memory-use schemas', () => {

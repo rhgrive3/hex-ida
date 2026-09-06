@@ -11,6 +11,58 @@ import * as originIdentity from '../../core/identity/origin.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 import { SEMANTIC_IR_DEFAULT_BUDGET } from '../../semantics/ir/common.js';
 
+// Capture the language intrinsics before inspecting caller-owned analysis
+// objects.  Descriptor/key reads are the trust boundary here: a caller can
+// replace a global method, or provide a Proxy whose traps change what a later
+// ordinary read would observe.  Every semantic observation below goes through
+// these references and therefore never dispatches through a mutable global
+// binding after this module has loaded.
+const INTRINSIC_OBJECT_CREATE = Object.create;
+const INTRINSIC_OBJECT_DEFINE_PROPERTY = Object.defineProperty;
+const INTRINSIC_OBJECT_FREEZE = Object.freeze;
+const INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR = Object.getOwnPropertyDescriptor;
+const INTRINSIC_OBJECT_GET_PROTOTYPE_OF = Object.getPrototypeOf;
+const INTRINSIC_OBJECT_HAS_OWN = Object.hasOwn;
+const INTRINSIC_OBJECT_IS_FROZEN = Object.isFrozen;
+const INTRINSIC_OBJECT_IS = Object.is;
+const INTRINSIC_OBJECT_KEYS = Object.keys;
+const INTRINSIC_OBJECT_PROTOTYPE = Object.prototype;
+const INTRINSIC_REFLECT_GET = Reflect.get;
+const INTRINSIC_REFLECT_OWN_KEYS = Reflect.ownKeys;
+const INTRINSIC_ARRAY_CONSTRUCTOR = Array;
+const INTRINSIC_ARRAY_FROM = Array.from;
+const INTRINSIC_ARRAY_IS_ARRAY = Array.isArray;
+const INTRINSIC_ARRAY_PROTOTYPE = Array.prototype;
+const INTRINSIC_DATE_CONSTRUCTOR = Date;
+const INTRINSIC_DATE_PROTOTYPE = Date.prototype;
+const INTRINSIC_DATE_GET_TIME = Date.prototype.getTime;
+const INTRINSIC_DATE_TO_ISO_STRING = Date.prototype.toISOString;
+const INTRINSIC_MAP_CONSTRUCTOR = Map;
+const INTRINSIC_MAP_PROTOTYPE = Map.prototype;
+const INTRINSIC_MAP_ENTRIES = Map.prototype.entries;
+const INTRINSIC_MAP_FOR_EACH = Map.prototype.forEach;
+const INTRINSIC_MAP_GET = Map.prototype.get;
+const INTRINSIC_MAP_HAS = Map.prototype.has;
+const INTRINSIC_MAP_ITERATOR = Map.prototype[Symbol.iterator];
+const INTRINSIC_MAP_KEYS = Map.prototype.keys;
+const INTRINSIC_MAP_SET = Map.prototype.set;
+const INTRINSIC_MAP_SIZE_GETTER = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(
+  INTRINSIC_MAP_PROTOTYPE, 'size',
+).get;
+const INTRINSIC_MAP_VALUES = Map.prototype.values;
+const INTRINSIC_SET_CONSTRUCTOR = Set;
+const INTRINSIC_SET_PROTOTYPE = Set.prototype;
+const INTRINSIC_SET_ADD = Set.prototype.add;
+const INTRINSIC_SET_ENTRIES = Set.prototype.entries;
+const INTRINSIC_SET_FOR_EACH = Set.prototype.forEach;
+const INTRINSIC_SET_HAS = Set.prototype.has;
+const INTRINSIC_SET_ITERATOR = Set.prototype[Symbol.iterator];
+const INTRINSIC_SET_KEYS = Set.prototype.keys;
+const INTRINSIC_SET_SIZE_GETTER = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(
+  INTRINSIC_SET_PROTOTYPE, 'size',
+).get;
+const INTRINSIC_SET_VALUES = Set.prototype.values;
+
 // #3255 is the Phase 8 consumer lane and must remain independently loadable on
 // current main.  #3382 publishes this producer-owned fast path afterwards; the
 // generic strict graph digest remains the conservative behavior until then.
@@ -18,7 +70,7 @@ const canonicalOriginSetDigest = typeof originIdentity.canonicalOriginSetDigest 
   ? originIdentity.canonicalOriginSetDigest
   : () => null;
 
-const REQUIRED_FIELDS = Object.freeze([
+const REQUIRED_FIELDS = INTRINSIC_OBJECT_FREEZE([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
 ]);
 
@@ -52,7 +104,7 @@ function createIdentityWorkBudget(limit = SEMANTIC_IR_DEFAULT_BUDGET.maxReferenc
     consumeText(text);
     return text;
   };
-  return Object.freeze({ consume, consumeText, bigintText, remaining:() => limit - used });
+  return INTRINSIC_OBJECT_FREEZE({ consume, consumeText, bigintText, remaining:() => limit - used });
 }
 
 function token(value, digests = null) {
@@ -69,7 +121,7 @@ function token(value, digests = null) {
   }
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) throw new TypeError('identity-invalid-token');
-    const text = Object.is(value, -0) ? '-0' : String(value);
+    const text = INTRINSIC_OBJECT_IS(value, -0) ? '-0' : String(value);
     return `number:${text.length}:${text}`;
   }
   if (value == null) return null;
@@ -106,8 +158,8 @@ function codeUnitCompare(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
-const NO_SKIPPED_KEYS = new Set();
+const NON_SEMANTIC_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['dst', 'uses']);
+const NO_SKIPPED_KEYS = new INTRINSIC_SET_CONSTRUCTOR();
 export const ANALYSIS_IDENTITY_VERSION = 'phase8-analysis-v1';
 // This seed frames every persistent semantic digest. Any transcript change
 // must advance it so evidence issued by the previous algorithm fails stale;
@@ -122,23 +174,44 @@ export const ANALYSIS_IDENTITY_DIGEST_VERSION = 'phase8-analysis-merkle-v7';
  * explicit enumerable data. */
 function semanticOwnKeys(value) {
   const keys = [];
-  for (const key of Reflect.ownKeys(value)) {
+  for (const key of INTRINSIC_REFLECT_OWN_KEYS(value)) {
     if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
-    if (Array.isArray(value) && key === 'length') continue;
+    if (INTRINSIC_ARRAY_IS_ARRAY(value) && key === 'length') continue;
     keys.push(key);
   }
   return keys;
 }
 
 function semanticDataValue(value, key) {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, key);
   if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
     throw new TypeError('identity-unsupported-semantic-descriptor');
   }
   return descriptor.value;
 }
 
-const REFERENCE_TOKEN_KEYS = Object.freeze(['id', 'instructionId', 'definitionId']);
+/*
+ * A Proxy may return a plausible key list while omitting a configurable
+ * semantic field.  Probing the schema fields through the intrinsic descriptor
+ * operation lets us distinguish a real absent optional field from an
+ * incomplete observation.  The latter is rejected before its value can enter
+ * either the snapshot or the digest.  JavaScript cannot identify a perfectly
+ * transparent Proxy in general; this check closes the observable omission
+ * boundary that would otherwise launder a known semantic field.
+ */
+function rejectHiddenKnownProperties(value, reported, knownKeys, descriptorCache = null, charge = null) {
+  for (const key of knownKeys ?? EMPTY_LIST) {
+    if (reported.has(key)) continue;
+    if (charge != null && !descriptorCache.has(key)) charge(key);
+    const descriptor = descriptorCache?.has(key)
+      ? descriptorCache.get(key)
+      : INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, key) ?? null;
+    if (descriptorCache != null) descriptorCache.set(key, descriptor);
+    if (descriptor != null) throw new TypeError('identity-incomplete-semantic-keys');
+  }
+}
+
+const REFERENCE_TOKEN_KEYS = INTRINSIC_OBJECT_FREEZE(['id', 'instructionId', 'definitionId']);
 
 function referenceFieldSnapshot(value, digests) {
   const digester = digests?.graphDigester ?? createFastJsonGraphDigester();
@@ -150,7 +223,7 @@ function optionalReferenceToken(value, digests, ...keys) {
   if (typeof value !== 'object') return requiredToken(value, digests);
   const fields = referenceFieldSnapshot(value, digests);
   for (const key of keys) {
-    if (!Object.hasOwn(fields, key) || fields[key] == null) continue;
+    if (!INTRINSIC_OBJECT_HAS_OWN(fields, key) || fields[key] == null) continue;
     return requiredToken(fields[key], digests);
   }
   throw new TypeError('identity-required-reference-token');
@@ -160,7 +233,7 @@ function referenceOrSelfToken(value, digests, ...keys) {
   if (value == null || typeof value !== 'object') return token(value, digests);
   const fields = referenceFieldSnapshot(value, digests);
   for (const key of keys) {
-    if (!Object.hasOwn(fields, key)) continue;
+    if (!INTRINSIC_OBJECT_HAS_OWN(fields, key)) continue;
     return requiredToken(fields[key], digests);
   }
   return requiredToken(value, digests);
@@ -173,7 +246,7 @@ function arrayIndexKey(key) {
 }
 
 function semanticArrayLength(value) {
-  const descriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(value, 'length');
   if (descriptor == null || !('value' in descriptor) || descriptor.enumerable
       || descriptor.configurable || !Number.isSafeInteger(descriptor.value)
       || descriptor.value < 0 || descriptor.value > 0xffffffff) {
@@ -183,12 +256,12 @@ function semanticArrayLength(value) {
 }
 
 function mappedSemanticList(value, mapper) {
-  if (!Array.isArray(value)) throw new TypeError('identity-unsupported-semantic-array');
-  if (Object.getPrototypeOf(value) !== Array.prototype) {
+  if (!INTRINSIC_ARRAY_IS_ARRAY(value)) throw new TypeError('identity-unsupported-semantic-array');
+  if (INTRINSIC_OBJECT_GET_PROTOTYPE_OF(value) !== INTRINSIC_ARRAY_PROTOTYPE) {
     throw new TypeError('identity-unsupported-semantic-array');
   }
   const length = semanticArrayLength(value);
-  const captured = new Array(length);
+  const captured = new INTRINSIC_ARRAY_CONSTRUCTOR(length);
   const keys = semanticOwnKeys(value);
   if (keys.length !== length) throw new TypeError('identity-unsupported-semantic-array');
   for (const key of keys) {
@@ -198,13 +271,13 @@ function mappedSemanticList(value, mapper) {
     captured[Number(key)] = semanticDataValue(value, key);
   }
   for (let index = 0; index < length; index += 1) {
-    if (!Object.hasOwn(captured, index)) throw new TypeError('identity-unsupported-semantic-array');
+    if (!INTRINSIC_OBJECT_HAS_OWN(captured, index)) throw new TypeError('identity-unsupported-semantic-array');
   }
   return captured.map(mapper);
 }
 
 function mappedSemanticPropertyList(values, key, mapper) {
-  if (!Object.hasOwn(values, key)) return null;
+  if (!INTRINSIC_OBJECT_HAS_OWN(values, key)) return null;
   return mappedSemanticList(values[key], mapper);
 }
 
@@ -215,23 +288,23 @@ function mappedSemanticPropertyList(values, key, mapper) {
 // product IR as cyclic/unsupported.  Their semantic content is represented by
 // the block, instruction, value and origin shapes below; hashing the indexes a
 // second time would also make identity depend on derived bookkeeping.
-const IDENTITY_AUTHORITY_KEYS = Object.freeze([
+const IDENTITY_AUTHORITY_KEYS = INTRINSIC_OBJECT_FREEZE([
   'analysisIdentity', 'identity', 'artifactIdentity',
 ]);
-const IDENTITY_PUBLIC_KEYS = Object.freeze([
+const IDENTITY_PUBLIC_KEYS = INTRINSIC_OBJECT_FREEZE([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'semanticIRId',
   'ssaId', 'analyzerVersion',
 ]);
-const IDENTITY_BINDING_KEYS = Object.freeze([
+const IDENTITY_BINDING_KEYS = INTRINSIC_OBJECT_FREEZE([
   'semanticIrShapeDigest', 'semanticIRShapeDigest', 'irShapeDigest',
   'canonicalIrDigest', 'shapeDigest',
 ]);
-const IDENTITY_SOURCE_KEYS = Object.freeze(['analysisIdentity', 'identity', 'artifactIdentity']);
-const IDENTITY_FIELD_KEYS = new Set([
+const IDENTITY_SOURCE_KEYS = INTRINSIC_OBJECT_FREEZE(['analysisIdentity', 'identity', 'artifactIdentity']);
+const IDENTITY_FIELD_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...IDENTITY_PUBLIC_KEYS, ...IDENTITY_BINDING_KEYS,
   'semanticSchemaVersion',
 ]);
-const DERIVED_IR_KEYS = new Set([
+const DERIVED_IR_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'blocks', 'values', 'instructions', 'locations', 'byRow', 'args', 'reachable',
   'idom', 'dominators', 'ipdom', 'immediatePostDominators', 'postDominators',
   'stackSlots', 'loops', 'backEdges',
@@ -239,48 +312,48 @@ const DERIVED_IR_KEYS = new Set([
   'origin', ...IDENTITY_AUTHORITY_KEYS, ...IDENTITY_PUBLIC_KEYS,
   ...IDENTITY_BINDING_KEYS, ...NON_SEMANTIC_KEYS,
 ]);
-const ARGUMENT_KEYS = new Set(['value', 'bits', 'shift', 'origin', ...NON_SEMANTIC_KEYS]);
-const INCOMING_KEYS = new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]);
-const MEMORY_INCOMING_KEYS = new Set([
+const ARGUMENT_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['value', 'bits', 'shift', 'origin', ...NON_SEMANTIC_KEYS]);
+const INCOMING_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['value', 'origin', ...NON_SEMANTIC_KEYS]);
+const MEMORY_INCOMING_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'from', 'semanticPredecessorBlockId', 'node', 'definitionId',
 ]);
-const MEMORY_NODE_KEYS = new Set([
+const MEMORY_NODE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'kind', 'key', 'definitionId', 'regionId', 'block', 'reason', 'unknownAlias', 'aliasRelation',
   'clobber', 'inst', 'prev', 'previous', 'incoming', 'memDefs', 'reaching',
   'effectSummary', 'proof', 'origin',
 ]);
-const MEMORY_REACHING_ENTRY_KEYS = new Set(['inst', ...REFERENCE_TOKEN_KEYS]);
-const MEMORY_REACHING_INSTRUCTION_KEYS = new Set(['id']);
-const MEMORY_LOCATION_KEYS = new Set([
+const MEMORY_REACHING_ENTRY_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['inst', ...REFERENCE_TOKEN_KEYS]);
+const MEMORY_REACHING_INSTRUCTION_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['id']);
+const MEMORY_LOCATION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'key', 'kind', 'size', 'regionId', 'base', 'baseEntityId', 'index', 'scale',
   'address', 'disp', 'uncertaintyIdentity', 'addressMetadataSource', 'metadata', 'origin',
 ]);
-const DEFINITION_KEYS = new Set([
+const DEFINITION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'cond', 'extra', 'origin',
   'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
   ...NON_SEMANTIC_KEYS,
 ]);
-const VALUE_KEYS = new Set([
+const VALUE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'id', 'bits', 'kind', 'signed', 'const', 'float', 'floatConst', 'constKind',
   'machineType', 'origin', 'def', 'uses',
 ]);
-const VALUE_SCHEMA_KEYS = new Set([
+const VALUE_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...VALUE_KEYS,
   'vid', 'reg', 'stateKey', 'version', 'range', 'nullable', 'type', 'label',
   'semanticValueId', 'semanticSsaValueId', 'sourceSemanticValueId', 'sourceEntityId',
   'unknown', 'undefined', 'clobbered', 'compatDerived',
 ]);
-const BLOCK_KEYS = new Set([
+const BLOCK_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'insts', 'phis', 'memPhis', 'successorEdges', 'succ', 'pred', 'origin', ...NON_SEMANTIC_KEYS,
 ]);
-const ADDRESS_KEYS = new Set(['base', 'index']);
-const DEFINITION_REFERENCE_KEYS = new Set([
+const ADDRESS_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['base', 'index']);
+const DEFINITION_REFERENCE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...REFERENCE_TOKEN_KEYS, 'block', 'row', 'op', 'sub', 'dst',
 ]);
-const IR_SCHEMA_KEYS = new Set([...DERIVED_IR_KEYS, 'entry', 'semanticSchemaVersion']);
-const ARGUMENT_SCHEMA_KEYS = new Set([...ARGUMENT_KEYS, 'id']);
-const INCOMING_SCHEMA_KEYS = new Set([...INCOMING_KEYS, 'id', 'from']);
-const DEFINITION_SCHEMA_KEYS = new Set([
+const IR_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([...DERIVED_IR_KEYS, 'entry', 'semanticSchemaVersion']);
+const ARGUMENT_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([...ARGUMENT_KEYS, 'id']);
+const INCOMING_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([...INCOMING_KEYS, 'id', 'from']);
+const DEFINITION_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...DEFINITION_KEYS,
   ...REFERENCE_TOKEN_KEYS,
   'op', 'sub', 'block', 'row', 'target', 'trueTarget', 'falseTarget',
@@ -289,44 +362,46 @@ const DEFINITION_SCHEMA_KEYS = new Set([
   'sourceEffectIds', 'sourceInstructionIds', 'address', 'text', 'memoryAliasRelation',
   'memoryBarrier', 'clobbers',
 ]);
-const BLOCK_SCHEMA_KEYS = new Set([
+const BLOCK_SCHEMA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...BLOCK_KEYS, 'index', 'id', 'isEntry', 'declaredEdges',
 ]);
-const EMPTY_LIST = Object.freeze([]);
+const EMPTY_LIST = INTRINSIC_OBJECT_FREEZE([]);
 
 /*
  * Phase 8 executes over this private, descriptor-captured graph rather than the
- * caller's live objects.  A Proxy descriptor is allowed to mutate another
- * property while a graph is being observed; trying to detect every such
- * re-entrancy after the fact is not an enforceable boundary.  Capturing once
- * makes the mixed observation itself the immutable semantic input shared by
- * identity derivation and every consumer.  Publication separately verifies
- * that a fresh capture still has the same shape.
+ * caller's live objects. Accessors and schema-incomplete Proxy observations are
+ * rejected before a value enters that graph. A perfectly transparent Proxy is
+ * indistinguishable from its target in JavaScript, so the boundary is defined
+ * by intrinsic descriptors, stable own-key coverage and the immutable copy.
+ * Publication separately verifies that a fresh capture still has the same
+ * shape.
  */
 const PHASE8_SEMANTIC_SNAPSHOTS = new WeakSet();
 const SNAPSHOT_MAP_TARGETS = new WeakMap();
 const SNAPSHOT_SET_TARGETS = new WeakMap();
 const SNAPSHOT_DATE_TARGETS = new WeakMap();
 const rejectSnapshotMutation = () => { throw new TypeError('phase8-semantic-snapshot-immutable'); };
-const MAP_READ_METHODS = new Set(['get', 'has', 'entries', 'keys', 'values']);
-const SET_READ_METHODS = new Set(['has', 'entries', 'keys', 'values']);
 
 function readonlyMap(target) {
   let proxy;
   proxy = new Proxy(target, {
     get(map, key, receiver) {
       if (key === 'set' || key === 'delete' || key === 'clear') return rejectSnapshotMutation;
-      if (key === 'size') return Reflect.get(map, key, map);
+      if (key === 'size') return INTRINSIC_REFLECT_GET(map, key, map);
       if (key === 'forEach') {
         return (callback, thisArg = undefined) => {
           if (typeof callback !== 'function') throw new TypeError('phase8-semantic-map-callback-required');
-          return Map.prototype.forEach.call(map,
+          return INTRINSIC_MAP_FOR_EACH.call(map,
             (value, entryKey) => callback.call(thisArg, value, entryKey, proxy));
         };
       }
-      if (key === Symbol.iterator) return Map.prototype[Symbol.iterator].bind(map);
-      if (MAP_READ_METHODS.has(key)) return Map.prototype[key].bind(map);
-      return Reflect.get(map, key, receiver);
+      if (key === Symbol.iterator) return INTRINSIC_MAP_ITERATOR.bind(map);
+      if (key === 'get') return INTRINSIC_MAP_GET.bind(map);
+      if (key === 'has') return INTRINSIC_MAP_HAS.bind(map);
+      if (key === 'entries') return INTRINSIC_MAP_ENTRIES.bind(map);
+      if (key === 'keys') return INTRINSIC_MAP_KEYS.bind(map);
+      if (key === 'values') return INTRINSIC_MAP_VALUES.bind(map);
+      return INTRINSIC_REFLECT_GET(map, key, receiver);
     },
     set:rejectSnapshotMutation,
     defineProperty:rejectSnapshotMutation,
@@ -342,17 +417,20 @@ function readonlySet(target) {
   proxy = new Proxy(target, {
     get(set, key, receiver) {
       if (key === 'add' || key === 'delete' || key === 'clear') return rejectSnapshotMutation;
-      if (key === 'size') return Reflect.get(set, key, set);
+      if (key === 'size') return INTRINSIC_REFLECT_GET(set, key, set);
       if (key === 'forEach') {
         return (callback, thisArg = undefined) => {
           if (typeof callback !== 'function') throw new TypeError('phase8-semantic-set-callback-required');
-          return Set.prototype.forEach.call(set,
+          return INTRINSIC_SET_FOR_EACH.call(set,
             (value) => callback.call(thisArg, value, value, proxy));
         };
       }
-      if (key === Symbol.iterator) return Set.prototype[Symbol.iterator].bind(set);
-      if (SET_READ_METHODS.has(key)) return Set.prototype[key].bind(set);
-      return Reflect.get(set, key, receiver);
+      if (key === Symbol.iterator) return INTRINSIC_SET_ITERATOR.bind(set);
+      if (key === 'has') return INTRINSIC_SET_HAS.bind(set);
+      if (key === 'entries') return INTRINSIC_SET_ENTRIES.bind(set);
+      if (key === 'keys') return INTRINSIC_SET_KEYS.bind(set);
+      if (key === 'values') return INTRINSIC_SET_VALUES.bind(set);
+      return INTRINSIC_REFLECT_GET(set, key, receiver);
     },
     set:rejectSnapshotMutation,
     defineProperty:rejectSnapshotMutation,
@@ -367,11 +445,11 @@ function readonlyDate(target) {
   const proxy = new Proxy(target, {
     get(date, key, receiver) {
       if (typeof key === 'string' && key.startsWith('set')
-          && typeof Date.prototype[key] === 'function') return rejectSnapshotMutation;
-      if (Object.hasOwn(Date.prototype, key) && typeof Date.prototype[key] === 'function') {
-        return Date.prototype[key].bind(date);
+          && typeof INTRINSIC_DATE_PROTOTYPE[key] === 'function') return rejectSnapshotMutation;
+      if (INTRINSIC_OBJECT_HAS_OWN(INTRINSIC_DATE_PROTOTYPE, key) && typeof INTRINSIC_DATE_PROTOTYPE[key] === 'function') {
+        return INTRINSIC_DATE_PROTOTYPE[key].bind(date);
       }
-      return Reflect.get(date, key, receiver);
+      return INTRINSIC_REFLECT_GET(date, key, receiver);
     },
     set:rejectSnapshotMutation,
     defineProperty:rejectSnapshotMutation,
@@ -381,7 +459,7 @@ function readonlyDate(target) {
   SNAPSHOT_DATE_TARGETS.set(proxy, target);
   return proxy;
 }
-const SNAPSHOT_ROOT_OMIT_KEYS = new Set([
+const SNAPSHOT_ROOT_OMIT_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   // Executable/index compatibility views are not semantic inputs and are not
   // consumed by Phase 8. Their own descriptors are still validated below.
   'locations', 'byRow', 'args', 'reachable', 'defUse', '_unknownStoreBarriers',
@@ -392,19 +470,19 @@ const SNAPSHOT_ROOT_OMIT_KEYS = new Set([
   // snapshot boundary.
   'dominators', 'postDominators',
 ]);
-const SNAPSHOT_EDGE_KEYS = new Set([
+const SNAPSHOT_EDGE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'from', 'to', 'kind', 'kinds', 'edgeId', 'reachable', 'status', 'predicate',
   'facts', 'provenance', 'reason',
 ]);
-const SNAPSHOT_LOOP_KEYS = new Set([
+const SNAPSHOT_LOOP_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'header', 'nodes', 'blocks', 'latches', 'exits', 'exitEdges', 'classification',
   'guardBlock', 'depth', 'parentHeader', 'earlyExitCount', 'earlyExitEdges',
 ]);
-const SNAPSHOT_ORIGIN_KEYS = new Set([
+const SNAPSHOT_ORIGIN_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'schemaVersion', 'byteRanges', 'virtualRanges', 'instructionIds', 'operationIds',
   'bytecodeOperationIds', 'sourceLocations', 'parentEntityIds', 'transforms',
 ]);
-const SNAPSHOT_EXTRA_KEYS = new Set([
+const SNAPSHOT_EXTRA_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'value', 'lsb', 'low', 'offset', 'width', 'widthBits', 'sourceBits', 'targetBits',
   'cases', 'casesComplete', 'memoryAccess', 'addressPrecise', 'faults',
   'signed', 'widen', 'toward', 'bitfieldKind', 'negate', 'comparison', 'float',
@@ -414,29 +492,29 @@ const SNAPSHOT_EXTRA_KEYS = new Set([
   'stateSsaUseId', 'stateSsaDefinitionId', 'stateReadProof', 'stateWriteProof',
   'localPhysicalViewProjection', 'entryStateRead', 'attributes', 'semanticNodeId',
 ]);
-const SNAPSHOT_MEMORY_ACCESS_KEYS = new Set([
+const SNAPSHOT_MEMORY_ACCESS_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment',
   'volatility', 'atomic', 'ordering', 'faults',
 ]);
-const SNAPSHOT_SHIFT_KEYS = new Set(['op', 'amount']);
-const SNAPSHOT_MACHINE_TYPE_KEYS = new Set([
+const SNAPSHOT_SHIFT_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['op', 'amount']);
+const SNAPSHOT_MACHINE_TYPE_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'kind', 'widthBits', 'format', 'laneCount', 'elementType', 'addressSpace',
 ]);
-const SNAPSHOT_ADDRESS_EXPRESSION_KEYS = new Set(['valueId']);
-const SNAPSHOT_STATE_IDENTITY_KEYS = new Set([
+const SNAPSHOT_ADDRESS_EXPRESSION_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['valueId']);
+const SNAPSHOT_STATE_IDENTITY_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'key', 'kind', 'scope', 'physicalIdentity', 'metadata',
 ]);
-const SNAPSHOT_PHYSICAL_IDENTITY_KEYS = new Set([
+const SNAPSHOT_PHYSICAL_IDENTITY_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'kind', 'registerId', 'flagId', 'groupId', 'view', 'widthBits',
 ]);
-const SNAPSHOT_SWITCH_CASE_KEYS = new Set(['value', 'caseValue', 'constant', 'to', 'target']);
-const SNAPSHOT_FAULT_KEYS = new Set(['kind', 'condition', 'detail']);
-const SNAPSHOT_ADDRESS_KEYS = new Set([
+const SNAPSHOT_SWITCH_CASE_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['value', 'caseValue', 'constant', 'to', 'target']);
+const SNAPSHOT_FAULT_KEYS = new INTRINSIC_SET_CONSTRUCTOR(['kind', 'condition', 'detail']);
+const SNAPSHOT_ADDRESS_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   ...ADDRESS_KEYS, 'baseReg', 'disp', 'scale', 'extend', 'size', 'widthBits',
   'stack', 'addressSpace', 'rawAddressValueId', 'indexSignedness', 'indexWidthBits',
   'addressWidthBits', 'precise', 'unknownReason', 'compatDisplacementEvidence', 'origin',
 ]);
-const SNAPSHOT_ROLE_KEYS = new Map([
+const SNAPSHOT_ROLE_KEYS = new INTRINSIC_MAP_CONSTRUCTOR([
   ['ir', IR_SCHEMA_KEYS],
   ['block', BLOCK_SCHEMA_KEYS],
   ['value', VALUE_SCHEMA_KEYS],
@@ -461,7 +539,7 @@ const SNAPSHOT_ROLE_KEYS = new Map([
   ['memory-reaching', MEMORY_REACHING_ENTRY_KEYS],
   ['switch-case', SNAPSHOT_SWITCH_CASE_KEYS],
   ['fault', SNAPSHOT_FAULT_KEYS],
-  ['reference', new Set(REFERENCE_TOKEN_KEYS)],
+  ['reference', new INTRINSIC_SET_CONSTRUCTOR(REFERENCE_TOKEN_KEYS)],
 ]);
 
 function snapshotListItemRole(role) {
@@ -569,7 +647,7 @@ function snapshotChildRole(role, key) {
  */
 function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   if (PHASE8_SEMANTIC_SNAPSHOTS.has(ir)) return ir;
-  if (ir == null || typeof ir !== 'object' || Array.isArray(ir)) {
+  if (ir == null || typeof ir !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(ir)) {
     throw new TypeError('identity-invalid-semantic-ir');
   }
 
@@ -577,13 +655,13 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
   const pendingFreeze = [];
   const budget = workBudget;
   const consumeCaptureWork = budget.consume;
-  const capturedStrings = new Set();
+  const capturedStrings = new INTRINSIC_SET_CONSTRUCTOR();
   // Property names are primitive strings and are repeatedly observed across
   // every value/definition/origin projection.  The descriptor/key visit is
   // still charged per object below; only the bounded text work is memoized,
   // because the same key spelling requires no second conversion or storage.
-  const capturedPropertyKeys = new Set();
-  const capturedBigints = new Set();
+  const capturedPropertyKeys = new INTRINSIC_SET_CONSTRUCTOR();
+  const capturedBigints = new INTRINSIC_SET_CONSTRUCTOR();
   const capture = (value, role = 'generic') => {
     if (value === null) return null;
     switch (typeof value) {
@@ -612,44 +690,44 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
       default: break;
     }
 
-    if ((isCanonicalMemorySsaProducerArtifact(value) && Object.isFrozen(value))
+    if ((isCanonicalMemorySsaProducerArtifact(value) && INTRINSIC_OBJECT_IS_FROZEN(value))
         || canonicalOriginSetDigest(value) != null) return value;
     let record = records.get(value);
     if (record == null) {
       consumeCaptureWork(1);
-      const prototype = Object.getPrototypeOf(value);
+      const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(value);
       let kind;
       let clone;
       let propertyTarget;
-      if (Array.isArray(value)) {
-        if (prototype !== Array.prototype) throw new TypeError('identity-unsupported-semantic-array');
+      if (INTRINSIC_ARRAY_IS_ARRAY(value)) {
+        if (prototype !== INTRINSIC_ARRAY_PROTOTYPE) throw new TypeError('identity-unsupported-semantic-array');
         kind = 'array';
         // The length descriptor is observed below before any indexed value.
         clone = [];
         propertyTarget = clone;
-      } else if (prototype === Map.prototype) {
+      } else if (prototype === INTRINSIC_MAP_PROTOTYPE) {
         kind = 'map';
-        propertyTarget = new Map();
+        propertyTarget = new INTRINSIC_MAP_CONSTRUCTOR();
         clone = readonlyMap(propertyTarget);
-      } else if (prototype === Set.prototype) {
+      } else if (prototype === INTRINSIC_SET_PROTOTYPE) {
         kind = 'set';
-        propertyTarget = new Set();
+        propertyTarget = new INTRINSIC_SET_CONSTRUCTOR();
         clone = readonlySet(propertyTarget);
-      } else if (prototype === Date.prototype) {
+      } else if (prototype === INTRINSIC_DATE_PROTOTYPE) {
         kind = 'date';
         const sourceDate = SNAPSHOT_DATE_TARGETS.get(value) ?? value;
-        propertyTarget = new Date(Date.prototype.getTime.call(sourceDate));
+        propertyTarget = new INTRINSIC_DATE_CONSTRUCTOR(INTRINSIC_DATE_GET_TIME.call(sourceDate));
         clone = readonlyDate(propertyTarget);
       } else {
-        if (prototype !== Object.prototype && prototype !== null) {
+        if (prototype !== INTRINSIC_OBJECT_PROTOTYPE && prototype !== null) {
           throw new TypeError('identity-unsupported-semantic-metadata');
         }
         kind = 'object';
-        clone = Object.create(prototype);
+        clone = INTRINSIC_OBJECT_CREATE(prototype);
         propertyTarget = clone;
       }
 
-      const reportedKeys = Reflect.ownKeys(value);
+      const reportedKeys = INTRINSIC_REFLECT_OWN_KEYS(value);
       for (const key of reportedKeys) {
         if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
         consumeCaptureWork(1);
@@ -663,12 +741,12 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         clone,
         propertyTarget,
         kind,
-        reported:new Set(reportedKeys),
+        reported:new INTRINSIC_SET_CONSTRUCTOR(reportedKeys),
         reportedKeys,
-        descriptors:new Map(),
-        chargedKeys:new Set(reportedKeys),
-        defined:new Set(),
-        roles:new Set(),
+        descriptors:new INTRINSIC_MAP_CONSTRUCTOR(),
+        chargedKeys:new INTRINSIC_SET_CONSTRUCTOR(reportedKeys),
+        defined:new INTRINSIC_SET_CONSTRUCTOR(),
+        roles:new INTRINSIC_SET_CONSTRUCTOR(),
         length:null,
         omitRootKeys:role === 'ir',
       };
@@ -677,29 +755,29 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
 
       if (kind === 'map') {
         const sourceMap = SNAPSHOT_MAP_TARGETS.get(value) ?? value;
-        const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(sourceMap);
+        const size = INTRINSIC_MAP_SIZE_GETTER.call(sourceMap);
         consumeCaptureWork(size);
         // Fix the intrinsic iteration domain before descending. A descriptor
         // trap on a key/value can mutate its source collection; keeping the
         // iterator live while capturing that child would absorb unbudgeted
         // appended entries.
-        const sourceEntries = Array.from(Map.prototype.entries.call(sourceMap));
+        const sourceEntries = INTRINSIC_ARRAY_FROM.call(null, INTRINSIC_MAP_ENTRIES.call(sourceMap));
         if (sourceEntries.length !== size) {
           throw new TypeError('identity-semantic-snapshot-collection-changed');
         }
         for (const [key, entryValue] of sourceEntries) {
-          Map.prototype.set.call(propertyTarget, capture(key), capture(entryValue));
+          INTRINSIC_MAP_SET.call(propertyTarget, capture(key), capture(entryValue));
         }
       } else if (kind === 'set') {
         const sourceSet = SNAPSHOT_SET_TARGETS.get(value) ?? value;
-        const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get.call(sourceSet);
+        const size = INTRINSIC_SET_SIZE_GETTER.call(sourceSet);
         consumeCaptureWork(size);
-        const sourceValues = Array.from(Set.prototype.values.call(sourceSet));
+        const sourceValues = INTRINSIC_ARRAY_FROM.call(null, INTRINSIC_SET_VALUES.call(sourceSet));
         if (sourceValues.length !== size) {
           throw new TypeError('identity-semantic-snapshot-collection-changed');
         }
         for (const entryValue of sourceValues) {
-          Set.prototype.add.call(propertyTarget, capture(entryValue));
+          INTRINSIC_SET_ADD.call(propertyTarget, capture(entryValue));
         }
       }
     }
@@ -709,7 +787,19 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
     if (record.roles.has(role)) return record.clone;
     record.roles.add(role);
 
-    const keys = new Set(record.reportedKeys);
+    const chargeDescriptor = (key) => {
+      consumeCaptureWork(1);
+      record.chargedKeys.add(key);
+    };
+    rejectHiddenKnownProperties(
+      record.source,
+      record.reported,
+      SNAPSHOT_ROLE_KEYS.get(role),
+      record.descriptors,
+      chargeDescriptor,
+    );
+
+    const keys = new INTRINSIC_SET_CONSTRUCTOR(record.reportedKeys);
     for (const key of SNAPSHOT_ROLE_KEYS.get(role) ?? EMPTY_LIST) keys.add(key);
     if (record.kind === 'array') keys.add('length');
     const itemRole = record.kind === 'array' ? snapshotListItemRole(role) : null;
@@ -731,7 +821,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
           consumeCaptureWork(1);
           record.chargedKeys.add(key);
         }
-        descriptor = Object.getOwnPropertyDescriptor(record.source, key) ?? null;
+        descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(record.source, key) ?? null;
         record.descriptors.set(key, descriptor);
       }
       if (descriptor == null) {
@@ -764,7 +854,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         ? itemRole : snapshotChildRole(role, key);
       const captured = capture(descriptor.value, childRole);
       if (!record.defined.has(key)) {
-        Object.defineProperty(record.propertyTarget, key, {
+        INTRINSIC_OBJECT_DEFINE_PROPERTY(record.propertyTarget, key, {
           value:captured, enumerable:true, configurable:true, writable:true,
         });
         record.defined.add(key);
@@ -772,9 +862,9 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
     }
     if (record.kind === 'array') {
       if (record.length == null) throw new TypeError('identity-unsupported-semantic-array');
-      // Proxy ownKeys may legally omit configurable dense indexes. Probe the
-      // complete canonical index domain from the validated length so a hidden
-      // value cannot collide with a true hole. Charge the whole traversal
+      // Probe the complete canonical index domain from the validated length so
+      // a Proxy that omits a dense value cannot collide with a true hole. Charge
+      // the whole traversal
       // before entering it: the Semantic IR maxReferences authority bounds the
       // cumulative nodes, own keys, Map/Set entries and array-slot visits for
       // this capture call, including role upgrades of a shared array.
@@ -784,7 +874,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
         let descriptor;
         if (record.descriptors.has(key)) descriptor = record.descriptors.get(key);
         else {
-          descriptor = Object.getOwnPropertyDescriptor(record.source, key) ?? null;
+          descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(record.source, key) ?? null;
           record.descriptors.set(key, descriptor);
         }
         if (descriptor == null) {
@@ -793,12 +883,15 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
           }
           continue;
         }
+        if (!record.reported.has(key)) {
+          throw new TypeError('identity-incomplete-semantic-keys');
+        }
         if (!('value' in descriptor) || !descriptor.enumerable) {
           throw new TypeError('identity-unsupported-semantic-descriptor');
         }
         const captured = capture(descriptor.value, itemRole);
         if (!record.defined.has(key)) {
-          Object.defineProperty(record.propertyTarget, key, {
+          INTRINSIC_OBJECT_DEFINE_PROPERTY(record.propertyTarget, key, {
             value:captured, enumerable:true, configurable:true, writable:true,
           });
           record.defined.add(key);
@@ -810,7 +903,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
 
   const snapshot = capture(ir, 'ir');
   for (let index = pendingFreeze.length - 1; index >= 0; index -= 1) {
-    Object.freeze(pendingFreeze[index]);
+    INTRINSIC_OBJECT_FREEZE(pendingFreeze[index]);
   }
   PHASE8_SEMANTIC_SNAPSHOTS.add(snapshot);
   return snapshot;
@@ -840,11 +933,11 @@ function createFastJsonGraphDigester({
   // so an in-place semantic mutation can never reuse a stale identity. All of
   // the strict descriptor/type/cycle checks remain on the path to a digest.
   const memo = new WeakMap();
-  const stringMemo = new Map();
-  const numberMemo = new Map();
-  const bigintMemo = new Map();
-  const memorySsaMemo = new Map();
-  const originSetMemo = new Map();
+  const stringMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const numberMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const bigintMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const memorySsaMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const originSetMemo = new INTRINSIC_MAP_CONSTRUCTOR();
   const projectionMemo = new WeakMap();
   const descriptorMemo = new WeakMap();
   // Field and own-key views are immutable for this call after their strict
@@ -865,21 +958,25 @@ function createFastJsonGraphDigester({
   // encountered again while writing a graph node. Keep that bounded text
   // accounting separate from the transition cache below: a cache hit skips
   // the actual mix loop, while every miss is charged before it runs.
-  const chargedPropertyKeyText = new Set();
+  const chargedPropertyKeyText = new INTRINSIC_SET_CONSTRUCTOR();
   const consumePropertyKeyText = (text) => {
     if (typeof text !== 'string') throw new TypeError('identity-invalid-text-work');
     if (chargedPropertyKeyText.has(text)) return;
     budget.consumeText(text);
     chargedPropertyKeyText.add(text);
   };
-  const semanticDescriptor = (object, key) => {
+  const descriptorMemoFor = (object) => {
     let descriptors = descriptorMemo.get(object);
     if (descriptors == null) {
-      descriptors = new Map();
+      descriptors = new INTRINSIC_MAP_CONSTRUCTOR();
       descriptorMemo.set(object, descriptors);
     }
+    return descriptors;
+  };
+  const semanticDescriptor = (object, key) => {
+    const descriptors = descriptorMemoFor(object);
     if (descriptors.has(key)) return descriptors.get(key);
-    const descriptor = Object.getOwnPropertyDescriptor(object, key) ?? null;
+    const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(object, key) ?? null;
     descriptors.set(key, descriptor);
     return descriptor;
   };
@@ -901,7 +998,7 @@ function createFastJsonGraphDigester({
   // 32-bit lanes make the digest suitable for a persistent artifact key.
   const seeds = [0x811c9dc5, 0x9e3779b9, 0x243f6a88, 0xb7e15162];
   const primes = [0x01000193, 0x85ebca6b, 0xc2b2ae35, 0x27d4eb2f];
-  const TAG = Object.freeze({
+  const TAG = INTRINSIC_OBJECT_FREEZE({
     NULL: 1, UNDEFINED: 2, STRING: 3, FALSE: 4, TRUE: 5,
     NUMBER: 6, NEGATIVE_ZERO: 7, BIGINT: 8, ARRAY: 9,
     ARRAY_ITEM: 10, ARRAY_HOLE: 11, MAP: 12, MAP_ENTRY: 13,
@@ -924,9 +1021,9 @@ function createFastJsonGraphDigester({
     mix(hash, text.length);
     for (let index = 0; index < text.length; index += 1) mix(hash, text.charCodeAt(index));
   };
-  const tokenStringMemo = new Map();
-  const tokenNumberMemo = new Map();
-  const tokenBigintMemo = new Map();
+  const tokenStringMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const tokenNumberMemo = new INTRINSIC_MAP_CONSTRUCTOR();
+  const tokenBigintMemo = new INTRINSIC_MAP_CONSTRUCTOR();
   const tokenObjectMemo = new WeakMap();
   // Property names are transcript data, not caller-controlled executable
   // references. Hash each distinct spelling once and carry that immutable
@@ -934,7 +1031,7 @@ function createFastJsonGraphDigester({
   // hostile stream of unique keys cannot turn one identity call into an
   // unbounded metadata store; uncached keys pay their full text cost again.
   const PROPERTY_KEY_DIGEST_LIMIT = 4096;
-  const propertyKeyDigests = new Map();
+  const propertyKeyDigests = new INTRINSIC_MAP_CONSTRUCTOR();
   const propertyKeyDigest = (text) => {
     const cached = propertyKeyDigests.get(text);
     if (cached != null) return cached;
@@ -1024,7 +1121,7 @@ function createFastJsonGraphDigester({
       case 'boolean': return item ? trueDigest : falseDigest;
       case 'number': {
         if (!Number.isFinite(item)) throw new TypeError('identity-non-finite-number');
-        if (Object.is(item, -0)) return negativeZeroDigest;
+        if (INTRINSIC_OBJECT_IS(item, -0)) return negativeZeroDigest;
         return primitiveDigest(numberMemo, item, TAG.NUMBER, String(item));
       }
       case 'bigint': {
@@ -1053,7 +1150,7 @@ function createFastJsonGraphDigester({
     // once the producer-owned digest is immutable. Serialized/re-signed clones
     // do not carry the private brand and stay on the strict structural path.
     if (isCanonicalMemorySsaProducerArtifact(item)
-        && Object.isFrozen(item)
+        && INTRINSIC_OBJECT_IS_FROZEN(item)
         && typeof item.canonicalDigest === 'string'
         && item.canonicalDigest.trim()) {
       return primitiveDigest(memorySsaMemo, item.canonicalDigest, TAG.MEMORY_SSA, item.canonicalDigest);
@@ -1072,17 +1169,17 @@ function createFastJsonGraphDigester({
       const keys = graphOwnKeys(item);
       consumeReferenceWork(keys.length);
       for (const key of keys) consumePropertyKeyText(key);
-      const prototype = Object.getPrototypeOf(item);
+      const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(item);
       let digest;
-      if (Array.isArray(item)) {
-        if (prototype !== Array.prototype) throw new TypeError('identity-unsupported-semantic-metadata');
+      if (INTRINSIC_ARRAY_IS_ARRAY(item)) {
+        if (prototype !== INTRINSIC_ARRAY_PROTOTYPE) throw new TypeError('identity-unsupported-semantic-metadata');
         const length = semanticArrayLength(item);
         // A sparse array can expose a tiny own-key list with an enormous
         // canonical slot domain. Charge the complete domain before entering
         // the loop so hostile authority metadata fails promptly.
         consumeReferenceWork(length);
-        const entries = Object.create(null);
-        const indexKeys = new Set();
+        const entries = INTRINSIC_OBJECT_CREATE(null);
+        const indexKeys = new INTRINSIC_SET_CONSTRUCTOR();
         const propertyKeys = [];
         for (const key of keys) {
           entries[key] = dataValue(item, key);
@@ -1100,16 +1197,18 @@ function createFastJsonGraphDigester({
             mix(hash, TAG.ARRAY_ITEM);
             writeDigest(hash, visit(entries[key]));
           } else {
+            const descriptor = semanticDescriptor(item, key);
+            if (descriptor != null) throw new TypeError('identity-incomplete-semantic-keys');
             mix(hash, TAG.ARRAY_HOLE);
           }
         }
         writeProperties(hash, entries, propertyKeys, visit, true);
         digest = hash;
-      } else if (prototype === Map.prototype) {
+      } else if (prototype === INTRINSIC_MAP_PROTOTYPE) {
         const map = SNAPSHOT_MAP_TARGETS.get(item) ?? item;
-        const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(map);
+        const size = INTRINSIC_MAP_SIZE_GETTER.call(map);
         consumeReferenceWork(size);
-        const entries = [...Map.prototype.entries.call(map)];
+        const entries = [...INTRINSIC_MAP_ENTRIES.call(map)];
         if (entries.length !== size) throw new TypeError('identity-semantic-map-changed');
         const mapped = entries.map(([key, entryValue]) => ({
           keyDigest: visit(key), valueDigest: visit(entryValue),
@@ -1132,11 +1231,11 @@ function createFastJsonGraphDigester({
         }
         writeProperties(hash, item, keys, visit);
         digest = hash;
-      } else if (prototype === Set.prototype) {
+      } else if (prototype === INTRINSIC_SET_PROTOTYPE) {
         const set = SNAPSHOT_SET_TARGETS.get(item) ?? item;
-        const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get.call(set);
+        const size = INTRINSIC_SET_SIZE_GETTER.call(set);
         consumeReferenceWork(size);
-        const entries = [...Set.prototype.values.call(set)];
+        const entries = [...INTRINSIC_SET_VALUES.call(set)];
         if (entries.length !== size) throw new TypeError('identity-semantic-set-changed');
         const values = entries.map((entryValue) => ({ digest: visit(entryValue) }))
           .sort((left, right) => compareDigest(left.digest, right.digest));
@@ -1148,15 +1247,15 @@ function createFastJsonGraphDigester({
         }
         writeProperties(hash, item, keys, visit);
         digest = hash;
-      } else if (prototype === Date.prototype) {
+      } else if (prototype === INTRINSIC_DATE_PROTOTYPE) {
         const date = SNAPSHOT_DATE_TARGETS.get(item) ?? item;
-        const iso = Date.prototype.toISOString.call(date);
+        const iso = INTRINSIC_DATE_TO_ISO_STRING.call(date);
         const hash = createHash(TAG.DATE);
         writeText(hash, iso);
         writeProperties(hash, item, keys, visit);
         digest = hash;
       } else {
-        if (prototype !== Object.prototype && prototype !== null) {
+        if (prototype !== INTRINSIC_OBJECT_PROTOTYPE && prototype !== null) {
           throw new TypeError('identity-unsupported-semantic-metadata');
         }
         const hash = createHash(TAG.OBJECT);
@@ -1170,16 +1269,16 @@ function createFastJsonGraphDigester({
     }
   };
   const project = (item, skip, knownKeys = skip, requirePlain = false) => {
-    if (item == null || typeof item !== 'object' || Array.isArray(item)) {
+    if (item == null || typeof item !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(item)) {
       if (requirePlain) throw new TypeError('identity-unsupported-semantic-metadata');
       return { digest: visit(item), includedCount: null, values: null };
     }
-    const prototype = Object.getPrototypeOf(item);
-    if (prototype === Map.prototype || prototype === Set.prototype || prototype === Date.prototype) {
+    const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(item);
+    if (prototype === INTRINSIC_MAP_PROTOTYPE || prototype === INTRINSIC_SET_PROTOTYPE || prototype === INTRINSIC_DATE_PROTOTYPE) {
       if (requirePlain) throw new TypeError('identity-unsupported-semantic-metadata');
       return { digest: visit(item), includedCount: null, values: null };
     }
-    if (prototype !== Object.prototype && prototype !== null) {
+    if (prototype !== INTRINSIC_OBJECT_PROTOTYPE && prototype !== null) {
       throw new TypeError('identity-unsupported-semantic-metadata');
     }
     const variants = projectionMemo.get(item);
@@ -1193,20 +1292,21 @@ function createFastJsonGraphDigester({
     active.add(item);
     try {
       const reportedKeys = graphOwnKeys(item);
-      const reported = new Set(reportedKeys);
+      const reported = new INTRINSIC_SET_CONSTRUCTOR(reportedKeys);
       const keys = [...reportedKeys];
       for (const key of reportedKeys) consumePropertyKeyText(key);
+      rejectHiddenKnownProperties(item, reported, knownKeys, descriptorMemoFor(item));
       for (const key of knownKeys) {
         if (!reported.has(key)) keys.push(key);
       }
       keys.sort(codeUnitCompare);
       consumeReferenceWork(keys.length);
-      const values = Object.create(null);
+      const values = INTRINSIC_OBJECT_CREATE(null);
       const included = [];
       for (const key of keys) {
-        // Snapshot each descriptor exactly once. Known schema fields are probed
-        // even when a Proxy omits a configurable key from `ownKeys`; reported
-        // keys may not disappear between the key and descriptor observations.
+        // Snapshot each descriptor exactly once. A known field omitted from
+        // `ownKeys` was rejected above if it exists; absent optional fields are
+        // retained as absent without an ordinary property read.
         const descriptor = semanticDescriptor(item, key);
         if (descriptor == null) {
           if (reported.has(key)) throw new TypeError('identity-unsupported-semantic-descriptor');
@@ -1231,7 +1331,7 @@ function createFastJsonGraphDigester({
         writeDigest(hash, visit(entryValue));
       }
       const result = { digest: hash, includedCount:included.length, values };
-      const next = variants ?? new Map();
+      const next = variants ?? new INTRINSIC_MAP_CONSTRUCTOR();
       // Skip sets are module-local constants (or one definition-local set), so
       // their object identity is the exact projection variant. Avoid rebuilding
       // and sorting a long textual key for every definition in a function.
@@ -1264,7 +1364,7 @@ function createFastJsonGraphDigester({
     }
     if (typeof value === 'number') {
       if (!Number.isSafeInteger(value)) throw new TypeError('identity-invalid-token');
-      const text = Object.is(value, -0) ? '-0' : String(value);
+      const text = INTRINSIC_OBJECT_IS(value, -0) ? '-0' : String(value);
       const cacheKey = text;
       const cached = tokenNumberMemo.get(cacheKey);
       if (cached != null) return cached;
@@ -1317,7 +1417,9 @@ function createFastJsonGraphDigester({
     const cached = variants?.get(keys);
     if (cached != null) return cached;
     consumeReferenceWork(keys.size ?? keys.length);
-    const fields = Object.create(null);
+    const fields = INTRINSIC_OBJECT_CREATE(null);
+    const reported = new INTRINSIC_SET_CONSTRUCTOR(graphOwnKeys(value));
+    rejectHiddenKnownProperties(value, reported, keys, descriptorMemoFor(value));
     for (const key of keys) {
       const descriptor = semanticDescriptor(value, key);
       if (descriptor == null) continue;
@@ -1326,9 +1428,9 @@ function createFastJsonGraphDigester({
       }
       fields[key] = descriptor.value;
     }
-    Object.freeze(fields);
+    INTRINSIC_OBJECT_FREEZE(fields);
     if (variants == null) {
-      variants = new Map();
+      variants = new INTRINSIC_MAP_CONSTRUCTOR();
       fieldMemo.set(value, variants);
     }
     variants.set(keys, fields);
@@ -1336,7 +1438,7 @@ function createFastJsonGraphDigester({
   };
   digest.record = (tag, values) => {
     const code = TAG[tag];
-    if (!Number.isSafeInteger(code) || !Array.isArray(values)) {
+    if (!Number.isSafeInteger(code) || !INTRINSIC_ARRAY_IS_ARRAY(values)) {
       throw new TypeError('identity-invalid-internal-record');
     }
     const reference = createHash(code);
@@ -1346,7 +1448,7 @@ function createFastJsonGraphDigester({
     return reference;
   };
   digest.list = (values) => {
-    if (!Array.isArray(values)) throw new TypeError('identity-invalid-internal-list');
+    if (!INTRINSIC_ARRAY_IS_ARRAY(values)) throw new TypeError('identity-invalid-internal-list');
     const reference = createHash(TAG.ARRAY);
     mix(reference, values.length);
     for (const value of values) {
@@ -1425,12 +1527,12 @@ function memoryIncomingShape(item, digests) {
   if (item == null || typeof item !== 'object') throw new TypeError('identity-invalid-semantic-node');
   const projected = semanticProjectionDigest(item, MEMORY_INCOMING_KEYS, digests);
   const values = projected.values;
-  if (Object.keys(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
+  if (INTRINSIC_OBJECT_KEYS(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
   const metadataDigest = projected.includedCount === 0 ? null : projected.digest;
-  const nodeId = Object.hasOwn(values, 'node') && values.node != null
+  const nodeId = INTRINSIC_OBJECT_HAS_OWN(values, 'node') && values.node != null
     ? optionalReferenceToken(values.node, digests, 'definitionId')
     : null;
-  const definitionId = Object.hasOwn(values, 'definitionId') && values.definitionId != null
+  const definitionId = INTRINSIC_OBJECT_HAS_OWN(values, 'definitionId') && values.definitionId != null
     ? requiredToken(values.definitionId, digests)
     : null;
   if (nodeId == null && definitionId == null) throw new TypeError('identity-required-reference-token');
@@ -1458,17 +1560,17 @@ function memoryReachingEntryShape(entry, digests) {
       throw new TypeError('identity-invalid-semantic-node');
     }
     const instFields = digests.graphDigester.fields(fields.inst, MEMORY_REACHING_INSTRUCTION_KEYS);
-    if (Object.hasOwn(instFields, 'id') && instFields.id != null) {
+    if (INTRINSIC_OBJECT_HAS_OWN(instFields, 'id') && instFields.id != null) {
       instId = requiredToken(instFields.id, digests);
     }
   }
   // Bind the preferred `inst.id` and every direct alias separately. GVN uses
   // inst.id ?? id, but a lower-priority alias must not conceal a mutation of
   // the preferred source.
-  const directId = Object.hasOwn(fields, 'id') ? token(fields.id, digests) : null;
-  const instructionId = Object.hasOwn(fields, 'instructionId')
+  const directId = INTRINSIC_OBJECT_HAS_OWN(fields, 'id') ? token(fields.id, digests) : null;
+  const instructionId = INTRINSIC_OBJECT_HAS_OWN(fields, 'instructionId')
     ? token(fields.instructionId, digests) : null;
-  const definitionId = Object.hasOwn(fields, 'definitionId')
+  const definitionId = INTRINSIC_OBJECT_HAS_OWN(fields, 'definitionId')
     ? token(fields.definitionId, digests) : null;
   if (instId == null && directId == null && instructionId == null && definitionId == null) {
     throw new TypeError('identity-required-reference-token');
@@ -1488,7 +1590,7 @@ function memoryNodeShape(node, digests, memoryCache) {
   if (cached != null) return cached;
   const projection = metadataProjection(node, MEMORY_NODE_KEYS, digests);
   const values = projection.values;
-  if (Object.keys(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
+  if (INTRINSIC_OBJECT_KEYS(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
   const previous = mappedSemanticPropertyList(values, 'previous',
     (item) => requiredReferenceToken(item, digests, 'definitionId'));
   const incomingItems = mappedSemanticPropertyList(values, 'incoming',
@@ -1534,7 +1636,7 @@ function memoryLocationShape(location, digests, memoryCache) {
   if (cached != null) return cached;
   const projection = metadataProjection(location, MEMORY_LOCATION_KEYS, digests);
   const values = projection.values;
-  if (Object.keys(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
+  if (INTRINSIC_OBJECT_KEYS(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
   const digest = digests.graphDigester.record('MEMORY_LOCATION', [
     projection.digest,
     values.key ?? null,
@@ -1568,12 +1670,12 @@ function definitionShape(definition, extraSkip = [], digests = null,
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
   const cached = definitionCache?.get(definition)?.get(cacheKey);
   if (cached != null) return cached;
-  const skipped = extraSkip.length === 0 ? DEFINITION_KEYS : new Set([...DEFINITION_KEYS, ...extraSkip]);
+  const skipped = extraSkip.length === 0 ? DEFINITION_KEYS : new INTRINSIC_SET_CONSTRUCTOR([...DEFINITION_KEYS, ...extraSkip]);
   const knownKeys = extraSkip.length === 0
-    ? DEFINITION_SCHEMA_KEYS : new Set([...DEFINITION_SCHEMA_KEYS, ...extraSkip]);
+    ? DEFINITION_SCHEMA_KEYS : new INTRINSIC_SET_CONSTRUCTOR([...DEFINITION_SCHEMA_KEYS, ...extraSkip]);
   const projection = semanticProjectionDigest(definition, skipped, digests, knownKeys);
   const values = projection.values;
-  if (Object.keys(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
+  if (INTRINSIC_OBJECT_KEYS(values).length === 0) throw new TypeError('identity-invalid-semantic-node');
   const argumentItems = mappedSemanticPropertyList(values, 'args',
     (argument) => argumentShape(argument, digests));
   const incomingItems = mappedSemanticPropertyList(values, 'incoming',
@@ -1608,7 +1710,7 @@ function definitionShape(definition, extraSkip = [], digests = null,
       ? null : memoryReachingEntryShape(values.unknownAliasBarrier, digests),
   ]);
   if (definitionCache != null) {
-    const entries = definitionCache.get(definition) ?? new Map();
+    const entries = definitionCache.get(definition) ?? new INTRINSIC_MAP_CONSTRUCTOR();
     entries.set(cacheKey, digest);
     definitionCache.set(definition, entries);
   }
@@ -1626,7 +1728,7 @@ function definitionReferenceToken(definition, digests) {
   }
   const fields = digests.graphDigester.fields(definition, DEFINITION_REFERENCE_KEYS);
   for (const key of REFERENCE_TOKEN_KEYS) {
-    if (!Object.hasOwn(fields, key) || fields[key] == null) continue;
+    if (!INTRINSIC_OBJECT_HAS_OWN(fields, key) || fields[key] == null) continue;
     const explicit = requiredToken(fields[key], digests);
     return `definition-id:${explicit.length}:${explicit}`;
   }
@@ -1748,9 +1850,9 @@ function irShape(ir, workBudget = null) {
     // to block-local `insts`. It is semantic input, not derived bookkeeping:
     // omitting it lets an in-place instruction mutation reuse a stale product.
     let instructionsDigest = null;
-    if (Object.hasOwn(values, 'instructions')) {
+    if (INTRINSIC_OBJECT_HAS_OWN(values, 'instructions')) {
       if (values.instructions == null) throw new TypeError('identity-invalid-semantic-node');
-      instructionsDigest = Array.isArray(values.instructions)
+      instructionsDigest = INTRINSIC_ARRAY_IS_ARRAY(values.instructions)
         ? digests.graphDigester.list(mappedSemanticList(values.instructions,
           (instruction) => instructionShape(instruction, digests, definitionCache, memoryCache)))
         : semanticDigest(values.instructions, digests);
@@ -1759,10 +1861,10 @@ function irShape(ir, workBudget = null) {
     // their scalar shape when present, while avoiding Maps/Sets used only as
     // derived lookup caches in graph products.
     const semanticListPresence = (key) => {
-      if (!Object.hasOwn(values, key)) {
+      if (!INTRINSIC_OBJECT_HAS_OWN(values, key)) {
         return digests.graphDigester.record('ABSENT', []);
       }
-      if (!Array.isArray(values[key])) throw new TypeError('identity-unsupported-semantic-array');
+      if (!INTRINSIC_ARRAY_IS_ARRAY(values[key])) throw new TypeError('identity-unsupported-semantic-array');
       return digests.graphDigester.record('PRESENT', [semanticDigest(values[key], digests)]);
     };
     const backEdgesDigest = semanticListPresence('backEdges');
@@ -1771,10 +1873,10 @@ function irShape(ir, workBudget = null) {
     // Executable DominanceView indexes are deliberately omitted at capture,
     // but their canonical idom/ipdom sources must participate in publication
     // identity or an in-place dominance mutation can serve a stale artifact.
-    const idomDigest = Object.hasOwn(values, 'idom')
+    const idomDigest = INTRINSIC_OBJECT_HAS_OWN(values, 'idom')
       ? semanticDigest(values.idom, digests) : null;
-    const hasIpdom = Object.hasOwn(values, 'ipdom');
-    const hasIpdomAlias = Object.hasOwn(values, 'immediatePostDominators');
+    const hasIpdom = INTRINSIC_OBJECT_HAS_OWN(values, 'ipdom');
+    const hasIpdomAlias = INTRINSIC_OBJECT_HAS_OWN(values, 'immediatePostDominators');
     const canonicalIpdomDigest = hasIpdom ? semanticDigest(values.ipdom, digests) : null;
     const aliasIpdomDigest = hasIpdomAlias
       ? semanticDigest(values.immediatePostDominators, digests) : null;
@@ -1840,11 +1942,23 @@ export function phase8SemanticSnapshotMatches(rawIr, semanticSnapshot) {
   return expected != null && observed === expected;
 }
 
-function ownDataProperty(source, key) {
+function ownKeySet(source) {
+  if (source == null || (typeof source !== 'object' && typeof source !== 'function')) return null;
+  try {
+    return new INTRINSIC_SET_CONSTRUCTOR(INTRINSIC_REFLECT_OWN_KEYS(source));
+  } catch {
+    return null;
+  }
+}
+
+function ownDataProperty(source, key, reported = null) {
   if (source == null || typeof source !== 'object') return { present: false, value: undefined, malformed: false };
   try {
-    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    const descriptor = INTRINSIC_OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(source, key);
     if (descriptor == null) return { present: false, value: undefined, malformed: false };
+    if (reported != null && !reported.has(key)) {
+      return { present: true, value: undefined, malformed: true };
+    }
     if (!('value' in descriptor) || !descriptor.enumerable) {
       return { present: true, value: undefined, malformed: true };
     }
@@ -1855,10 +1969,16 @@ function ownDataProperty(source, key) {
 }
 
 function identitySourceEntries(source) {
+  const reported = ownKeySet(source);
+  if (source != null && typeof source === 'object' && reported == null) {
+    return IDENTITY_SOURCE_KEYS.map((key) => ({
+      source, key, present: true, value: undefined, malformed: true,
+    }));
+  }
   return IDENTITY_SOURCE_KEYS.map((key) => ({
     source,
     key,
-    ...ownDataProperty(source, key),
+    ...ownDataProperty(source, key, reported),
   }));
 }
 
@@ -1870,7 +1990,7 @@ function identitySourceEntriesFromSnapshot(source, values) {
   return IDENTITY_SOURCE_KEYS.map((key) => ({
     source,
     key,
-    present:Object.hasOwn(values, key),
+    present:INTRINSIC_OBJECT_HAS_OWN(values, key),
     value:values[key],
     malformed:false,
   }));
@@ -1890,11 +2010,11 @@ function identitySourceSnapshots(entries, workBudget = null) {
   try {
     for (const entry of entries) {
       if (!entry.present || entry.value == null) continue;
-      if (typeof entry.value !== 'object' || Array.isArray(entry.value)) return null;
+      if (typeof entry.value !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(entry.value)) return null;
       // One strict projection both validates every unknown nested field and
       // captures every identity field. The plain-record projection observes
-      // the prototype and each known descriptor once, so a stateful Proxy
-      // cannot change container kind or hide an authority field between walks.
+      // the prototype and each known descriptor once, and rejects a Proxy that
+      // reports an incomplete own-key view for an authority field.
       const projection = digester.projectPlain(entry.value, NO_SKIPPED_KEYS, IDENTITY_FIELD_KEYS);
       if (projection.values == null) return null;
       snapshots.push(projection.values);
@@ -1916,7 +2036,9 @@ function field(candidate, ...names) {
 
 function hasMalformedIdentityFields(candidate) {
   if (candidate == null) return false;
-  if (typeof candidate !== 'object' || Array.isArray(candidate)) return true;
+  if (typeof candidate !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(candidate)) return true;
+  const reported = ownKeySet(candidate);
+  if (reported == null) return true;
   const aliases = [
     ['binaryId'], ['functionId'], ['snapshotId'], ['semanticIrId', 'semanticIRId'],
     ['ssaId'], ['analyzerVersion'], ['semanticSchemaVersion'],
@@ -1926,7 +2048,7 @@ function hasMalformedIdentityFields(candidate) {
     for (const names of aliases) {
       let selected = null;
       for (const name of names) {
-        const property = ownDataProperty(candidate, name);
+        const property = ownDataProperty(candidate, name, reported);
         if (!property.present) continue;
         if (property.malformed) return true;
         if (typeof property.value !== 'string' || !property.value.trim()) return true;
@@ -1941,7 +2063,7 @@ function hasMalformedIdentityFields(candidate) {
 }
 
 function sameKnownSourceFields(identity, source) {
-  if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
+  if (source == null || typeof source !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(source)) return true;
   for (const name of REQUIRED_FIELDS) {
     const observed = field(source, name, name === 'semanticIrId' ? 'semanticIRId' : name);
     if (observed != null && observed !== identity[name]) return false;
@@ -1970,7 +2092,7 @@ function shapeBinding(source) {
 }
 
 function sourceIsBoundToShape(source, identity, shapeDigest, values, graphDigester = null) {
-  if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
+  if (source == null || typeof source !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(source)) return true;
   const explicitBinding = shapeBinding(source);
   if (explicitBinding != null) return explicitBinding === shapeDigest;
   const suppliedSemantic = field(source, 'semanticIrId', 'semanticIRId');
@@ -2007,12 +2129,14 @@ function ssaIdentityDigest(semanticIrId, values, graphDigester = null) {
 }
 
 function validatedIdentitySnapshot(identity, workBudget = null) {
-  if (identity == null || typeof identity !== 'object' || Array.isArray(identity)) return null;
+  if (identity == null || typeof identity !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(identity)) return null;
+  const reported = ownKeySet(identity);
+  if (reported == null) return null;
   const budget = workBudget ?? createIdentityWorkBudget();
   const fields = [];
   for (const name of REQUIRED_FIELDS) {
     budget.consume(1);
-    const property = ownDataProperty(identity, name);
+    const property = ownDataProperty(identity, name, reported);
     if (property.malformed || typeof property.value !== 'string') return null;
     budget.consumeText(property.value);
     if (!property.value.trim()) return null;
@@ -2021,7 +2145,7 @@ function validatedIdentitySnapshot(identity, workBudget = null) {
   let shapeDigest = null;
   for (const name of IDENTITY_BINDING_KEYS) {
     budget.consume(1);
-    const property = ownDataProperty(identity, name);
+    const property = ownDataProperty(identity, name, reported);
     if (!property.present) continue;
     if (property.malformed || typeof property.value !== 'string') return null;
     budget.consumeText(property.value);
@@ -2110,7 +2234,7 @@ export function canonicalAnalysisIdentity(context = {}) {
     ?? `ssa:${computedSsaDigest}`;
   const analyzerVersion = firstSourceField(sources, 'analyzerVersion')
     ?? ANALYSIS_IDENTITY_VERSION;
-  const identity = Object.freeze({
+  const identity = INTRINSIC_OBJECT_FREEZE({
     binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion, shapeDigest,
   });
   if (!isValidatedAnalysisIdentity(identity)) return { identity: null, valid: false, reason: 'analysis identity fields are invalid' };
