@@ -157,6 +157,10 @@ export function parseDex(bytes, options = {}) {
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
 
+  // Validate the complete map topology before decoding payloads, while preserving
+  // established payload-specific error authority for malformed variable-size items.
+  validateDexMap(u8, { validateVariableItems: false });
+
   const strings = [];
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;

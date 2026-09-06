@@ -20,6 +20,7 @@ const TYPE_DEBUG_INFO_ITEM = 0x2003;
 const TYPE_ANNOTATION_ITEM = 0x2004;
 const TYPE_ENCODED_ARRAY_ITEM = 0x2005;
 const TYPE_ANNOTATIONS_DIRECTORY_ITEM = 0x2006;
+const TYPE_HIDDENAPI_CLASS_DATA_ITEM = 0xf000;
 
 const FIXED_WIDTH = new Map([
   [TYPE_HEADER_ITEM, 0x70], [TYPE_STRING_ID_ITEM, 4], [TYPE_TYPE_ID_ITEM, 4],
@@ -33,14 +34,17 @@ const VARIABLE_TYPES = new Set([
   TYPE_ANNOTATION_ITEM, TYPE_ENCODED_ARRAY_ITEM, TYPE_ANNOTATIONS_DIRECTORY_ITEM,
 ]);
 
-const KNOWN_TYPES = new Set([...FIXED_WIDTH.keys(), TYPE_MAP_LIST, ...VARIABLE_TYPES]);
+const KNOWN_TYPES = new Set([
+  ...FIXED_WIDTH.keys(), TYPE_MAP_LIST, ...VARIABLE_TYPES, TYPE_HIDDENAPI_CLASS_DATA_ITEM,
+]);
+const HIDDENAPI_DEX_VERSIONS = new Set(['039', '040']);
 
 const ALIGN4_TYPES = new Set([
   TYPE_HEADER_ITEM, TYPE_STRING_ID_ITEM, TYPE_TYPE_ID_ITEM, TYPE_PROTO_ID_ITEM,
   TYPE_FIELD_ID_ITEM, TYPE_METHOD_ID_ITEM, TYPE_CLASS_DEF_ITEM,
   TYPE_CALL_SITE_ID_ITEM, TYPE_METHOD_HANDLE_ITEM, TYPE_MAP_LIST,
   TYPE_TYPE_LIST, TYPE_ANNOTATION_SET_REF_LIST, TYPE_ANNOTATION_SET_ITEM,
-  TYPE_CODE_ITEM, TYPE_ANNOTATIONS_DIRECTORY_ITEM,
+  TYPE_CODE_ITEM, TYPE_ANNOTATIONS_DIRECTORY_ITEM, TYPE_HIDDENAPI_CLASS_DATA_ITEM,
 ]);
 
 const RANGE_ERROR = 'dex-invalid-map-item-range';
@@ -71,7 +75,7 @@ function readUleb128(bytes, offset, limit, code = RANGE_ERROR) {
     const byte = bytes[pos++];
     if (count === 4 && (byte & 0xf0) !== 0) fail(code);
     value += (byte & 0x7f) * factor;
-    if ((byte & 0x80) === 0) return { value, nextOffset:pos };
+    if ((byte & 0x80) === 0) return { value, nextOffset: pos };
     factor *= 0x80;
   }
   fail(code);
@@ -92,7 +96,7 @@ function readSleb128(bytes, offset, limit, code = RANGE_ERROR) {
         if (payload !== 0x00 && payload !== 0x7f && (payload & 0x70) !== 0x00 && (payload & 0x70) !== 0x70) fail(code);
       }
       if ((byte & 0x40) !== 0) value |= -1n << shift;
-      return { value:Number(BigInt.asIntN(32, value)), nextOffset:pos };
+      return { value: Number(BigInt.asIntN(32, value)), nextOffset: pos };
     }
   }
   fail(code);
@@ -113,8 +117,8 @@ function skipEncodedArray(bytes, offset, limit, depth = 0) {
 
 function skipEncodedAnnotation(bytes, offset, limit, depth = 0) {
   if (depth > 64) fail(RANGE_ERROR);
-  let r = readUleb128(bytes, offset, limit); // type_idx
-  r = readUleb128(bytes, r.nextOffset, limit); // size
+  let r = readUleb128(bytes, offset, limit);
+  r = readUleb128(bytes, r.nextOffset, limit);
   const count = r.value;
   let pos = r.nextOffset;
   requireLoopBudget(count, limit - pos, 2);
@@ -140,12 +144,12 @@ function skipEncodedValue(bytes, offset, limit, depth = 0) {
   };
 
   switch (type) {
-    case 0x00: return sized(0); // byte
-    case 0x02: case 0x03: return sized(1); // short / char
+    case 0x00: return sized(0);
+    case 0x02: case 0x03: return sized(1);
     case 0x04: case 0x10: case 0x15: case 0x16:
     case 0x17: case 0x18: case 0x19: case 0x1a: case 0x1b:
-      return sized(3); // int/float and indices
-    case 0x06: case 0x11: return sized(7); // long / double
+      return sized(3);
+    case 0x06: case 0x11: return sized(7);
     case 0x1c:
       if (arg !== 0) fail(RANGE_ERROR);
       return skipEncodedArray(bytes, pos, limit, depth + 1);
@@ -253,11 +257,11 @@ function skipStringData(bytes, offset, limit) {
 }
 
 function skipDebugInfo(bytes, offset, limit) {
-  let r = readUleb128(bytes, offset, limit); // line_start
-  r = readUleb128(bytes, r.nextOffset, limit); // parameters_size
+  let r = readUleb128(bytes, offset, limit);
+  r = readUleb128(bytes, r.nextOffset, limit);
   let pos = r.nextOffset;
   requireLoopBudget(r.value, limit - pos);
-  for (let i = 0; i < r.value; i++) pos = readUleb128(bytes, pos, limit).nextOffset; // uleb128p1
+  for (let i = 0; i < r.value; i++) pos = readUleb128(bytes, pos, limit).nextOffset;
 
   while (pos < limit) {
     const op = bytes[pos++];
@@ -308,8 +312,7 @@ function variableSectionEnd(bytes, view, type, size, offset, limit) {
       if (pos % 4 !== 0) fail('dex-invalid-map-item-alignment');
       pos = skipCodeItem(bytes, view, pos, limit);
       if (i + 1 < size) pos = align4(pos);
-    }
-    else if (type === TYPE_STRING_DATA_ITEM) pos = skipStringData(bytes, pos, limit);
+    } else if (type === TYPE_STRING_DATA_ITEM) pos = skipStringData(bytes, pos, limit);
     else if (type === TYPE_DEBUG_INFO_ITEM) pos = skipDebugInfo(bytes, pos, limit);
     else if (type === TYPE_ANNOTATION_ITEM) pos = skipAnnotationItem(bytes, pos, limit);
     else if (type === TYPE_ENCODED_ARRAY_ITEM) pos = skipEncodedArray(bytes, pos, limit);
@@ -320,12 +323,21 @@ function variableSectionEnd(bytes, view, type, size, offset, limit) {
   return pos;
 }
 
-export function validateDexMap(bytes) {
+function hiddenapiSectionEnd(view, offset, limit) {
+  checkedRange(limit, offset, 4, RANGE_ERROR);
+  const sectionSize = view.getUint32(offset, true);
+  if (sectionSize < 4) fail(RANGE_ERROR);
+  checkedRange(limit, offset, sectionSize, RANGE_ERROR);
+  return offset + sectionSize;
+}
+
+export function validateDexMap(bytes, { validateVariableItems = true } = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   if (u8.length < 0x70) fail('dex-truncated-header');
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const fileSize = view.getUint32(32, true);
   if (fileSize !== u8.length) fail('dex-file-size-mismatch');
+  const dexVersion = String.fromCharCode(u8[4], u8[5], u8[6]);
 
   const mapOff = view.getUint32(52, true);
   const dataSize = view.getUint32(104, true);
@@ -354,6 +366,9 @@ export function validateDexMap(bytes) {
     const offset = view.getUint32(pos + 8, true);
 
     if (!KNOWN_TYPES.has(type)) fail('dex-unsupported-map-item-type');
+    if (type === TYPE_HIDDENAPI_CLASS_DATA_ITEM && !HIDDENAPI_DEX_VERSIONS.has(dexVersion)) {
+      fail('dex-unsupported-map-item-type');
+    }
     if (unused !== 0) fail('dex-invalid-map-item-unused');
     if (byType.has(type)) fail('dex-duplicate-map-item-type');
     if (size === 0) fail('dex-invalid-map-item-size');
@@ -374,6 +389,9 @@ export function validateDexMap(bytes) {
     } else if (type === TYPE_MAP_LIST) {
       if (size !== 1 || offset !== mapOff) fail('dex-invalid-map-list-entry');
       end = mapEnd;
+    } else if (type === TYPE_HIDDENAPI_CLASS_DATA_ITEM) {
+      if (size !== 1) fail('dex-invalid-map-item-size');
+      end = hiddenapiSectionEnd(view, offset, fileSize);
     }
 
     if (type >= 0x1000 && (offset < dataOff || offset >= dataEnd || (end != null && end > dataEnd))) {
@@ -388,7 +406,10 @@ export function validateDexMap(bytes) {
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     const nextOffset = i + 1 < entries.length ? entries[i + 1].offset : (entry.type >= 0x1000 ? dataEnd : fileSize);
-    if (entry.end == null) entry.end = variableSectionEnd(u8, view, entry.type, entry.size, entry.offset, nextOffset);
+    if (entry.end == null) {
+      if (!validateVariableItems) continue;
+      entry.end = variableSectionEnd(u8, view, entry.type, entry.size, entry.offset, nextOffset);
+    }
     if (entry.end > nextOffset) fail('dex-overlapping-map-items');
     if (entry.type >= 0x1000 && entry.end > dataEnd) fail('dex-map-item-outside-data');
   }

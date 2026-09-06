@@ -67,8 +67,8 @@ assert.equal(probe.formatVersion, 'dex-035');
 const parsed = parseDex(dexBytes);
 assert.equal(parsed.strings.length, 3);
 assert.equal(parsed.strings[1], 'LTest;');
-assert.equal(parsed.strings[2], 'foo');
-assert.equal(parsed.classes.length, 1);
+assert.equal(parsed.types[1], 'LTest;');
+assert.equal(parsed.methods[0].name, 'foo');
 assert.equal(parsed.classes[0].classType, 'LTest;');
 assert.equal(parsed.classes[0].directMethods.length, 1);
 assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
@@ -88,8 +88,7 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
 }
 {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
-  // mapOff remains inside data, but the complete map_list extends past dataEnd.
-  view.setUint32(104, 0x90, true); // data=[0x100,0x190), map=[0x178,0x1f4)
+  view.setUint32(104, 0x90, true);
   expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 {
@@ -117,12 +116,6 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
   view.setUint16(stringData, 0x7777, true);
   expectTypeError(bytes, 'dex-unsupported-map-item-type');
 }
-{
-  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const stringData = MAP_OFF + 4 + 6 * 12;
-  // hiddenapi_class_data_item is not structurally validated here, so fail closed as unsupported.
-  view.setUint16(stringData, 0xf000, true);
-  expectTypeError(bytes, 'dex-unsupported-map-item-type');
-}
 for (const type of [0x1002, 0x1003]) {
   const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const item = MAP_OFF + 4 + 6 * 12;
   view.setUint16(item, type, true);
@@ -145,11 +138,17 @@ for (const type of [0x1002, 0x1003]) {
   view.setUint32(52, 0, true);
   expectTypeError(bytes, 'dex-reverse-endian-unsupported');
 }
+{
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer);
+  view.setUint32(52, 0, true);
+  bytes[0x100] = 0xff;
+  expectTypeError(bytes, 'dex-invalid-map-offset');
+}
 
-function buildVariableMapDex(type, payload) {
+function buildVariableMapDex(type, payload, version = '035') {
   const bytes = new Uint8Array(0x180);
   const view = new DataView(bytes.buffer);
-  bytes.set([0x64,0x65,0x78,0x0a,0x30,0x33,0x35,0x00], 0);
+  bytes.set([0x64,0x65,0x78,0x0a,version.charCodeAt(0),version.charCodeAt(1),version.charCodeAt(2),0x00], 0);
   view.setUint32(32, bytes.length, true);
   view.setUint32(36, 0x70, true);
   view.setUint32(40, 0x12345678, true);
@@ -186,9 +185,27 @@ for (const [type, payload] of [
 {
   const bytes = buildVariableMapDex(0x1001, [0,0,0,0]);
   const view = new DataView(bytes.buffer);
-  view.setUint32(0x70, 0x1000, true); // type_list element count escapes into the next map section
+  view.setUint32(0x70, 0x1000, true);
   assert.throws(() => validateDexMap(bytes), /dex-invalid-map-item-range/);
   expectTypeError(bytes, 'dex-invalid-map-item-range');
+}
+{
+  const bytes = buildVariableMapDex(0xf000, [4,0,0,0], '039');
+  assert.equal(validateDexMap(bytes), true);
+  assert.doesNotThrow(() => parseDex(bytes));
+}
+{
+  const bytes = buildVariableMapDex(0xf000, [4,0,0,0], '035');
+  expectTypeError(bytes, 'dex-unsupported-map-item-type');
+}
+{
+  const bytes = buildVariableMapDex(0xf000, [0x94,0,0,0], '039');
+  expectTypeError(bytes, 'dex-overlapping-map-items');
+}
+{
+  const bytes = buildVariableMapDex(0xf000, [0xc1,0,0,0], '039');
+  new DataView(bytes.buffer).setUint32(104, 0xc0, true);
+  expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 
 console.log('  ok dex parser tests passed');
