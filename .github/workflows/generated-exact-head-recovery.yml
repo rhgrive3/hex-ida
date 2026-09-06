@@ -44,11 +44,12 @@ jobs:
             if (String(context.payload.inputs?.full_check ?? 'true') === 'true') workflows.push('invariant-gates.yml');
 
             for (const workflow_id of workflows) {
-              core.info(`#${number}: dispatch ${workflow_id} at ${pr.head.sha}`);
+              core.info(`#${number}: dispatch canonical ${workflow_id} against exact ${pr.head.sha}`);
               await github.rest.actions.createWorkflowDispatch({
                 owner,
                 repo,
                 workflow_id,
-                ref: pr.head.ref,
+                ref: pr.base.ref,
+                inputs: { sha: pr.head.sha },
               });
             }

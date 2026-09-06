@@ -11,6 +11,8 @@ on:
       - 'tools/validation/generated-output-policy.mjs'
       - 'tests/dev-agent/sync-generated-userscript.mjs'
       - 'userscript/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/generated-sync.yml'
       - '.github/workflows/generated-userscript-autofix.yml'
       - '.github/workflows/generated-userscript-main-sync.yml'

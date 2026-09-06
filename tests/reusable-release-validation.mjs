@@ -49,13 +49,6 @@ assert.ok(
 
 console.log("  ok 1-18 reusable workflow assertions");
 
-function extractPaths(text, event) {
-  const match = text.match(new RegExp(event + ":[\\s\\S]*?paths:\\s*\\n([\\s\\S]*?)(?:\\n\\s*\\w+:|\\Z)"));
-  if (!match) return [];
-  const lines = match[1].split("\n").map(l => l.trim()).filter(l => l.startsWith("-"));
-  return lines.map(l => l.replace(/^-\s*['"]?/, "").replace(/['"]?$/, "")).sort();
-}
-
 // Phase 10/11 callers retain exact manual release proof but do not auto-run
 // on development PRs or ordinary main pushes. The reusable verifier remains
 // unchanged and is exercised through workflow_dispatch.
@@ -63,8 +56,8 @@ for (const [phase, text, ownership, verifier, artifact] of [
   ['Phase 10', phase10Text, 'tools/validation/phase10/ownership-check.mjs', 'tools/validation/phase10/verify.mjs', 'phase10-release-evidence'],
   ['Phase 11', phase11Text, 'tools/validation/phase11/ownership-check.mjs', 'tools/validation/phase11/verify.mjs', 'phase11-release-evidence'],
 ]) {
-  assert.deepEqual(extractPaths(text, "push"), [], `${phase} must not auto-run on development pushes`);
-  assert.deepEqual(extractPaths(text, "pull_request"), [], `${phase} must not auto-run on PR synchronization`);
+  assert.doesNotMatch(text, /^  push:/m, `${phase} must not auto-run on development pushes`);
+  assert.doesNotMatch(text, /^  pull_request:/m, `${phase} must not auto-run on PR synchronization`);
   assert.match(text, /^  workflow_dispatch:/m, `${phase} must retain explicit release dispatch`);
   assert.ok(text.includes('sha:'), `${phase} exact SHA input`);
   assert.ok(text.includes('shadow:'), `${phase} shadow input`);
