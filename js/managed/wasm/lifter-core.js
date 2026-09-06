@@ -38,6 +38,17 @@ function functionTypeForIndex(wasmModule, funcIndex) {
   return type;
 }
 
+function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
+  const fixedImmediateBytes = opcode === 0x43 ? 4 : opcode === 0x44 ? 8 : 0;
+  if (fixedImmediateBytes === 0)
+    return { nextOffset: operandOffset, complete: false };
+  const end = operandOffset + fixedImmediateBytes;
+  return {
+    nextOffset: Math.min(end, bytecode.length),
+    complete: end <= bytecode.length,
+  };
+}
+
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
   const importedFuncs = wasmModule.imports.filter((i) => i.desc.kind === 0);
@@ -74,6 +85,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   let opSeq = 0;
   let currentStackHeight = 0;
   let frameSeq = 0;
+  let stoppedOnUnsupported = false;
 
   const functionFrame = { id: `frame_${frameSeq++}`, kind: 'function', startOffset: 0, bodyOffset: 0, stackHeight: 0, params: [], results: funcType.results.slice(), pendingBranches: [], polymorphic: false, elseSeen: false };
   const controlStack = [functionFrame];
@@ -297,16 +309,31 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x7c: case 0x7d: case 0x7e:
         mnemonic = opcode === 0x7c ? 'i64.add' : opcode === 0x7d ? 'i64.sub' : 'i64.mul'; consumedValues.push({id:'rhs',bits:64},{id:'lhs',bits:64}); consume(2); producedValues.push({bits:64}); produce(1); break;
-      default:
-        mnemonic = `wasm_op_0x${opcode.toString(16)}`; completeness = 'partial'; unknownEffects.push({ category:'other', reason:`unsupported-opcode-0x${opcode.toString(16)}` }); break;
+      default: {
+        const boundary = unsupportedInstructionBoundary(bytecode, pos, opcode);
+        pos = boundary.nextOffset;
+        mnemonic = opcode === 0x43 ? 'f32.const' : opcode === 0x44 ? 'f64.const' : `wasm_op_0x${opcode.toString(16)}`;
+        completeness = 'partial';
+        unknownEffects.push({ category:'other', reason:`unsupported-opcode-0x${opcode.toString(16)}` });
+        unknownEffects.push({
+          category:'other',
+          reason: boundary.complete
+            ? 'semantic-lifting-stopped-after-unsupported-instruction'
+            : 'unsupported-instruction-boundary-unresolved',
+        });
+        stoppedOnUnsupported = true;
+        break;
+      }
     }
 
+    if (stoppedOnUnsupported) drafts.length = 0;
     budget.chargeValues(consumedValues.length + producedValues.length);
     const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
     drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects });
+    if (stoppedOnUnsupported) break;
   }
 
-  if (controlStack.length !== 0) fail('wasm-missing-function-end');
+  if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
   for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
     for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
     if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; delete c.__defaultHolder; }
