@@ -708,7 +708,7 @@
             "markers": [
               "const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect'])",
               "const actionInput = input.action ?? 'set'",
-              "!OPERATION_ACTIONS.has(operation.action)",
+              "!OPERATION_ACTIONS.has(action)",
               "operation.action !== 'resurrect'"
             ]
           }
