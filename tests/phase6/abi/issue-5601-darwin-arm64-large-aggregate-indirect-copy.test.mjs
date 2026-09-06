@@ -81,6 +81,21 @@ const scalar = () => ({ type:'uint64_t', bits:64 });
 }
 
 {
+  const compactLead = classify([
+    ...Array.from({ length:8 }, scalar),
+    { type:'uint8_t', bits:8 },
+    aggregate(192),
+  ]);
+  assert.equal(compactLead.arguments[8].location, 'stack');
+  assert.equal(compactLead.arguments[8].offset, 0);
+  assert.equal(compactLead.arguments[8].bytes, 1);
+  assert.equal(compactLead.arguments[9].location, 'stack');
+  assert.equal(compactLead.arguments[9].offset, 8);
+  assert.equal(compactLead.arguments[9].bytes, 8);
+  assert.equal(compactLead.arguments[9].abiClass, 'aggregate-indirect-copy');
+}
+
+{
   const hfa = classify([{
     type:'hfa4', hfa:true, bits:256,
     layout:{
