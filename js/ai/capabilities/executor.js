@@ -284,9 +284,9 @@ function setProjectAnnotation(app, args) {
   if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
 
   const previousProjectAnnotations = app.projectAnnotations;
+  const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
   const projectAnnotations = app.projectAnnotations;
-  const projectAnnotationsLength = projectAnnotations.length;
 
   const previousAutoReport = app.autoReport;
   const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
@@ -297,37 +297,45 @@ function setProjectAnnotation(app, args) {
   if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
   const report = autoReport.report;
   const previousConfirmed = report.confirmed;
+  const confirmedSnapshot = Array.isArray(previousConfirmed) ? previousConfirmed.slice() : null;
   if (!Array.isArray(report.confirmed)) report.confirmed = [];
   const confirmed = report.confirmed;
-  const confirmedLength = confirmed.length;
 
-  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762): replaced
-  // slots are snapshotted so a persistence failure restores prior records.
+  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762). Existing
+  // append-only duplicates are collapsed only after full array snapshots are
+  // captured so failed persistence can restore the exact prior state.
   const id = String(args.id || `annotation:${Date.now()}`);
   const existingIndex = projectAnnotations.findIndex((item) => item?.id === id);
   const previousRecord = existingIndex >= 0 ? projectAnnotations[existingIndex] : undefined;
   const findingIndex = confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
-  const previousFinding = findingIndex >= 0 ? confirmed[findingIndex] : undefined;
 
   const rollback = () => {
     if (Array.isArray(previousProjectAnnotations)) {
-      previousProjectAnnotations.length = projectAnnotationsLength;
-      if (existingIndex >= 0) previousProjectAnnotations[existingIndex] = previousRecord;
+      previousProjectAnnotations.splice(0, previousProjectAnnotations.length, ...projectAnnotationsSnapshot);
     } else app.projectAnnotations = previousProjectAnnotations;
     if (!autoReportWasObject) app.autoReport = previousAutoReport;
     else if (!reportWasObject) autoReport.report = previousReport;
     else if (Array.isArray(previousConfirmed)) {
-      previousConfirmed.length = confirmedLength;
-      if (findingIndex >= 0) previousConfirmed[findingIndex] = previousFinding;
+      previousConfirmed.splice(0, previousConfirmed.length, ...confirmedSnapshot);
     } else report.confirmed = previousConfirmed;
   };
 
   const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: previousRecord?.createdAt || new Date().toISOString() };
-  if (existingIndex >= 0) projectAnnotations[existingIndex] = record;
-  else projectAnnotations.push(record);
+  if (existingIndex >= 0) {
+    projectAnnotations[existingIndex] = record;
+    for (let index = projectAnnotations.length - 1; index > existingIndex; index--) {
+      if (projectAnnotations[index]?.id === id) projectAnnotations.splice(index, 1);
+    }
+  } else projectAnnotations.push(record);
+
   const finding = { ...record, confirmed: true, source: 'project-annotation' };
-  if (findingIndex >= 0) confirmed[findingIndex] = finding;
-  else confirmed.push(finding);
+  if (findingIndex >= 0) {
+    confirmed[findingIndex] = finding;
+    for (let index = confirmed.length - 1; index > findingIndex; index--) {
+      if (confirmed[index]?.source === 'project-annotation' && confirmed[index]?.id === id) confirmed.splice(index, 1);
+    }
+  } else confirmed.push(finding);
+
   let saved;
   try {
     saved = app.workspace.autosave();

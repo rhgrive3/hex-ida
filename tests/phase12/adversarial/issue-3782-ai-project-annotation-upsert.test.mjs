@@ -45,16 +45,21 @@ function proposalStore(proposal) {
 }
 
 const createdAt = '2026-01-01T00:00:00.000Z';
+const duplicateCreatedAt = '2026-02-01T00:00:00.000Z';
+const externalFinding = { id: 'a1', kind: 'note', value: 'external', confirmed: true, source: 'external-analysis' };
 let autosaves = 0;
 const app = {
   projectAnnotations: [
     { id: 'a1', kind: 'note', value: 'old', createdAt },
+    { id: 'a1', kind: 'note', value: 'stale-duplicate', createdAt: duplicateCreatedAt },
   ],
   autoReport: {
     report: {
       confirmed: [
         { id: 'other', kind: 'note', value: 'keep', confirmed: true, source: 'project-annotation' },
         { id: 'a1', kind: 'note', value: 'old', createdAt, confirmed: true, source: 'project-annotation' },
+        externalFinding,
+        { id: 'a1', kind: 'note', value: 'stale-duplicate', createdAt: duplicateCreatedAt, confirmed: true, source: 'project-annotation' },
       ],
       deep: [],
     },
@@ -81,12 +86,16 @@ const applied = await executor.approveAndApply(proposal.id);
 assert.equal(applied.proposal.status, 'applied');
 assert.equal(applied.execution.id, 'a1');
 assert.equal(applied.execution.value, 'new');
-assert.equal(app.projectAnnotations.length, 1, 'updating an id must not append a duplicate annotation');
-assert.equal(app.projectAnnotations[0].value, 'new', 'the canonical first-match annotation must carry the new value');
-assert.equal(app.projectAnnotations[0].createdAt, createdAt, 'updating an annotation must preserve its creation timestamp');
-assert.equal(app.autoReport.report.confirmed.length, 2, 'the confirmed projection must be updated instead of duplicated');
-assert.equal(app.autoReport.report.confirmed.find((item) => item.id === 'a1')?.value, 'new');
+const canonicalAnnotations = app.projectAnnotations.filter((item) => item?.id === 'a1');
+assert.equal(canonicalAnnotations.length, 1, 'updating an id must collapse historical duplicate annotations');
+assert.equal(canonicalAnnotations[0].value, 'new', 'the canonical first-match annotation must carry the new value');
+assert.equal(canonicalAnnotations[0].createdAt, createdAt, 'updating an annotation must preserve the first canonical creation timestamp');
+const canonicalFindings = app.autoReport.report.confirmed.filter((item) => item?.id === 'a1' && item?.source === 'project-annotation');
+assert.equal(canonicalFindings.length, 1, 'the project-annotation projection must collapse historical duplicates');
+assert.equal(canonicalFindings[0].value, 'new');
 assert.equal(app.autoReport.report.confirmed.find((item) => item.id === 'other')?.value, 'keep');
+assert.equal(app.autoReport.report.confirmed.find((item) => item === externalFinding), externalFinding, 'same-id findings from another source must remain untouched');
+assert.equal(externalFinding.value, 'external');
 assert.equal(autosaves, 1);
 
 const created = await capabilityExecutor.execute('annotation.project', {
@@ -97,24 +106,29 @@ const created = await capabilityExecutor.execute('annotation.project', {
 assert.equal(created.id, 'a2');
 assert.equal(app.projectAnnotations.length, 2, 'a new id must still append exactly one annotation');
 assert.equal(app.projectAnnotations.find((item) => item.id === 'a2')?.value, 'fresh');
-assert.equal(app.autoReport.report.confirmed.filter((item) => item.id === 'a2').length, 1);
+assert.equal(app.autoReport.report.confirmed.filter((item) => item.id === 'a2' && item.source === 'project-annotation').length, 1);
 assert.equal(autosaves, 2);
 
 {
-  // Combined #3782/#3762 postcondition: an upsert whose autosave fails must
-  // restore the prior record in place instead of leaving the new value.
+  // Combined #3782/#3762 postcondition: duplicate cleanup is transactional.
+  // A failed autosave must restore the original arrays, identities, ordering,
+  // and historical duplicates exactly.
+  const annotations = [
+    { id: 'b1', kind: 'note', value: 'prior', createdAt },
+    { id: 'b1', kind: 'note', value: 'prior-duplicate', createdAt: duplicateCreatedAt },
+    { id: 'other', kind: 'note', value: 'keep' },
+  ];
+  const external = { id: 'b1', kind: 'note', value: 'external', confirmed: true, source: 'external-analysis' };
+  const confirmed = [
+    { id: 'b1', kind: 'note', value: 'prior', createdAt, confirmed: true, source: 'project-annotation' },
+    external,
+    { id: 'b1', kind: 'note', value: 'prior-duplicate', createdAt: duplicateCreatedAt, confirmed: true, source: 'project-annotation' },
+  ];
+  const annotationsBefore = annotations.slice();
+  const confirmedBefore = confirmed.slice();
   const failingApp = {
-    projectAnnotations: [
-      { id: 'b1', kind: 'note', value: 'prior', createdAt },
-    ],
-    autoReport: {
-      report: {
-        confirmed: [
-          { id: 'b1', kind: 'note', value: 'prior', createdAt, confirmed: true, source: 'project-annotation' },
-        ],
-        deep: [],
-      },
-    },
+    projectAnnotations: annotations,
+    autoReport: { report: { confirmed, deep: [] } },
     workspace: { autosave() { return false; } },
   };
   const failingExecutor = new CapabilityExecutor({ catalog: catalog(), app: failingApp });
@@ -124,11 +138,11 @@ assert.equal(autosaves, 2);
     }),
     /could not be persisted/,
   );
-  assert.equal(failingApp.projectAnnotations.length, 1);
-  assert.equal(failingApp.projectAnnotations[0].value, 'prior', 'failed upsert must restore the prior record');
-  assert.equal(failingApp.projectAnnotations[0].createdAt, createdAt);
-  assert.equal(failingApp.autoReport.report.confirmed.length, 1);
-  assert.equal(failingApp.autoReport.report.confirmed[0].value, 'prior', 'failed upsert must restore the prior finding');
+  assert.equal(failingApp.projectAnnotations, annotations, 'rollback must preserve annotation array identity');
+  assert.equal(failingApp.autoReport.report.confirmed, confirmed, 'rollback must preserve confirmed array identity');
+  assert.deepEqual(failingApp.projectAnnotations, annotationsBefore, 'failed cleanup/upsert must restore historical annotations exactly');
+  assert.deepEqual(failingApp.autoReport.report.confirmed, confirmedBefore, 'failed cleanup/upsert must restore historical findings exactly');
+  assert.equal(failingApp.autoReport.report.confirmed[1], external, 'rollback must preserve unrelated same-id source identity');
 }
 
 console.log('issue-3782-ai-project-annotation-upsert: PASS');
