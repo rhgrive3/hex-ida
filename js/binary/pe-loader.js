@@ -50,7 +50,42 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       );
     }
   }
-  return parseLoadConfigCore(r, dir, image, budget);
+
+  const sectionAt = image.sectionAt;
+  if (typeof sectionAt !== 'function') {
+    return parseLoadConfigCore(r, dir, image, budget);
+  }
+
+  // The core already decides whether a GuardCF target is publishable by asking
+  // sectionAt() and then requiring file backing. Mirror those exact authority
+  // checks here so a rejected nonzero entry also lowers completeness, without
+  // rereading the GuardCF table or changing its budget accounting.
+  const loadConfigImage = Object.create(image);
+  loadConfigImage.sectionAt = (address) => {
+    const target = BigInt(address);
+    const sec = sectionAt.call(image, target);
+    if (!sec?.perms?.execute) {
+      budget.partial(
+        'load-config:guardcf-target-non-executable',
+        `Ignored PE GuardCF target 0x${target.toString(16)} outside an executable section`,
+      );
+      return sec;
+    }
+
+    const delta = target - image.imageBase;
+    const fileBacked = delta > 0n && delta <= 0xffffffffn
+      ? mappedFileRangeForRva(image, Number(delta))
+      : null;
+    if (!fileBacked) {
+      budget.partial(
+        'load-config:guardcf-target-not-file-backed',
+        `Ignored PE GuardCF target 0x${target.toString(16)} outside a file-backed mapping`,
+      );
+    }
+    return sec;
+  };
+
+  return parseLoadConfigCore(r, dir, loadConfigImage, budget);
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
