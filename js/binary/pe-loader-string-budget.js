@@ -25,6 +25,26 @@ function exactCStringAccounting(reader, budget) {
       }
       if (property === 'u32') {
         return (offset) => {
+          if (descriptorCapture?.kind === 'delay-import') {
+            const capture = descriptorCapture;
+            if (!capture.snapshot) {
+              capture.baseOffset = offset;
+              capture.snapshot = Array.from({ length: 8 }, (_, index) => target.u32(offset + index * 4));
+              if (capture.snapshot.every((field) => field === 0)) capture.state.terminated = true;
+              capture.moduleHandleOnly = capture.snapshot[2] !== 0
+                && capture.snapshot.every((field, index) => index === 2 || field === 0);
+            }
+            const index = (offset - capture.baseOffset) / 4;
+            if (Number.isInteger(index) && index >= 0 && index < 8) {
+              let value = capture.snapshot[index];
+              // The delegated core currently skips ModuleHandleRVA (+8). For the one
+              // otherwise-all-zero shape, project that truthiness through `bound`,
+              // which the core uses only in its descriptor-zero predicate.
+              if (index === 5 && capture.moduleHandleOnly) value = capture.snapshot[2];
+              if (index === 7) descriptorCapture = null;
+              return value;
+            }
+          }
           const value = target.u32(offset);
           if (descriptorCapture) {
             descriptorCapture.values.push(value);
@@ -54,7 +74,7 @@ function exactCStringAccounting(reader, budget) {
           const descriptor = reason === 'import-descriptor'
             ? { state: descriptorState.import, expected: 5 }
             : reason === 'delay-import-descriptor'
-              ? { state: descriptorState.delayImport, expected: 7 }
+              ? { state: descriptorState.delayImport, expected: 8, kind: 'delay-import' }
               : null;
           if (descriptor) {
             if (accepted) {

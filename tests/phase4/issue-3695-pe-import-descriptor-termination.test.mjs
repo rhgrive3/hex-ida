@@ -125,6 +125,15 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
 }
 
 {
+  const fixture = delayFixture(0, true);
+  writeU32(fixture.reader.bytes, 8, 1); // nonzero ModuleHandleRVA: not an all-zero terminator
+  parseDelayImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
+  assert.equal(fixture.image.metadata.peMetadata.complete, false);
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:malformed-descriptor'));
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:unterminated-descriptor'));
+}
+
+{
   const fixture = normalFixture(1, false);
   parseImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
   assert.equal(fixture.image.metadata.peImports.complete, false);
