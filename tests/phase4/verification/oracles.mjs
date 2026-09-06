@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../../js/core/artifacts/index.js';
-import { AnalysisScheduler, SchedulerCycleError } from '../../../js/core/scheduler/index.js';
+import { AnalysisScheduler } from '../../../js/core/scheduler/index.js';
 import { BudgetExceededError } from '../../../js/core/budgets/index.js';
 import { ProjectArtifactIndex, createArtifactRef, isArtifactRef } from '../../../js/project/artifact-index.js';
 import { createHexProject, serializeHexProject } from '../../../js/project/index.js';
@@ -210,8 +210,11 @@ async function schedulerOracles(report) {
     const requestA = { descriptor: a, dependencies: [], produce: async () => ({ a: 1 }) };
     const requestB = { descriptor: b, dependencies: [requestA], produce: async () => ({ b: 1 }) }; requestA.dependencies = [requestB];
     let error = null; try { await scheduler.request(requestA); } catch (caught) { error = caught; }
-    if (!(error instanceof SchedulerCycleError)) count(report, 'cycleDetectionFailures');
-    assert.ok(error instanceof SchedulerCycleError); return { path: error.path };
+    if (error?.code !== 'artifact-descriptor-noncanonical') count(report, 'cycleDetectionFailures');
+    assert.equal(error?.code, 'artifact-descriptor-noncanonical');
+    assert.equal(scheduler.stats().producerInvocations, 0);
+    assert.equal(scheduler.stats().dagEdges, 0);
+    return { rejectedAt: error.code };
   });
 
   await addCase(report, 'priority determinism', 'D', 'p4-2', async () => {
