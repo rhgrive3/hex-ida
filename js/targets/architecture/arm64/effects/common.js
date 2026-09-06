@@ -62,7 +62,7 @@ export function strictAddressInput(value) {
   return null;
 }
 
-function decodedAbsoluteTargetOf(op) {
+export function decodedAbsoluteTargetOf(op) {
   const immediate = immediateOf(op);
   if (immediate != null) return immediate;
   // Some current decoded-model fixtures retain an absolute direct target as a

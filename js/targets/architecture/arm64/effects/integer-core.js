@@ -2,6 +2,7 @@ import {
   asUnsigned,
   bitMask,
   createArm64EffectContext,
+  decodedAbsoluteTargetOf,
   immediateOf,
   instructionBits,
   rotateRight,
@@ -238,8 +239,17 @@ function liftMove(ctx, ops, mnemonic, instruction) {
 
   if (mnemonic === 'adr' || mnemonic === 'adrp') {
     if (widthBits !== 64) return ctx.partial(`arm64-${mnemonic}-destination-width-invalid`, ['registers','other']);
-    const target = strictAddressInput(instruction?.pcRelTarget);
-    if (target == null) return ctx.partial(`arm64-${mnemonic}-target-unavailable`, ['registers','other']);
+    let target = strictAddressInput(instruction?.pcRelTarget ?? undefined);
+    if (instruction?.pcRelTarget !== undefined && target == null) {
+      return ctx.partial(`arm64-${mnemonic}-target-unavailable`, ['registers','other']);
+    }
+    const operandTarget = decodedAbsoluteTargetOf(ops[1]);
+    if (target == null) {
+      if (operandTarget == null) return ctx.partial(`arm64-${mnemonic}-target-unavailable`, ['registers','other']);
+      target = operandTarget;
+    } else if (operandTarget != null && operandTarget !== target) {
+      return ctx.partial(`arm64-${mnemonic}-target-evidence-mismatch`, ['registers','other']);
+    }
     result = ctx.constant(64, target);
   } else if (mnemonic === 'mov') {
     result = ctx.readOperand(ops[1], widthBits);

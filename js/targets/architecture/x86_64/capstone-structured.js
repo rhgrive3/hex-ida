@@ -51,7 +51,7 @@
     let cursor = 0;
     const legacy = new Set([0xf0,0xf2,0xf3,0x2e,0x36,0x3e,0x26,0x64,0x65,0x66,0x67]);
     while (cursor < rawBytes.length && legacy.has(rawBytes[cursor])) cursor++;
-    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) cursor++;
+    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) return null;
     const lead = rawBytes[cursor];
     const width = lead === 0xc5 ? 2 : lead === 0xc4 ? 3 : lead === 0x62 ? 4 : 0;
     if (!width || cursor + width > rawBytes.length) return null;
@@ -200,6 +200,11 @@
     const encoding = x86 + ABI.encoding;
     const implicitReads = implicitRegisters(M, handle, detailPointer, 0, 40, 20);
     const implicitWrites = implicitRegisters(M, handle, detailPointer, 42, 82, 20);
+    const groupList = groups(M, handle, detailPointer);
+    const isFpuGroup = groupList.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
+    const normalizedFamily = String(opcodeName || mnemonic || '').toLowerCase();
+    const usesRflags = normalizedFamily.startsWith('fcmov') || ['fcomi', 'fcomip', 'fucomi', 'fucomip'].includes(normalizedFamily);
+    const flagsKind = isFpuGroup && !usesRflags ? 'fpu-flags' : 'eflags';
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
       prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),
@@ -212,13 +217,14 @@
       sibScale:i32(M, x86 + 28),
       sibBase:capstoneString(M, 'cs_reg_name', handle, u32(M, x86 + 32)),
       eflags:i64(M, x86 + 56),
+      flagsKind,
       operandCount,
       operands:Object.freeze(operands),
       implicitReads:implicitReads.names,
       implicitReadCodes:implicitReads.codes,
       implicitWrites:implicitWrites.names,
       implicitWriteCodes:implicitWrites.codes,
-      groups:Object.freeze(groups(M, handle, detailPointer)),
+      groups:Object.freeze(groupList),
       conditionCode:conditionCode(opcodeName),
       encodingOffsets:Object.freeze({
         modrmOffset:u8(M, encoding),
