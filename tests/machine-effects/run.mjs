@@ -66,6 +66,9 @@ if (failures.length > 0) {
   const summary = failures
     .map(({ file, code, signal }) => `${file}:${signal ? `signal=${signal}` : `exit=${code}`}`)
     .join(', ');
+  const diagnosticPath = path.resolve(process.cwd(), 'reports/stage2/machine-effects-failure.txt');
+  fs.mkdirSync(path.dirname(diagnosticPath), { recursive: true });
+  fs.writeFileSync(diagnosticPath, `machine-effects: ${failures.length} file(s) failed: ${summary}\n`);
   throw new Error(`machine-effects: ${failures.length} file(s) failed: ${summary}`);
 }
 
