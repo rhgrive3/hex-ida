@@ -131,6 +131,7 @@ export const TYPE_CASES = Object.freeze([
     truth: {
       structural: {
         kind: 'struct',
+        sizeBytes: 12,
         members: [
           { offset: 0, sizeBytes: 4, memberType: { name: 'int32' } },
           { offset: 8, sizeBytes: 4, memberType: { name: 'int32' } },
