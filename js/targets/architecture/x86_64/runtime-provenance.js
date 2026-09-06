@@ -1,8 +1,10 @@
 const RECEIVER_REVALIDATED_ROWS = new WeakSet();
 const REVALIDATION_WORKER_PATH = '/js/targets/architecture/x86_64/semantic-revalidation-worker.js';
+const PROTECTED_LOGICAL_PATH = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
 
 function isReceiverRevalidationRealm() {
   if (typeof WorkerGlobalScope === 'undefined' || !(globalThis instanceof WorkerGlobalScope)) return false;
+  if (globalThis.__HEX_PROTECTED_WORKER_LOGICAL_PATH__ === PROTECTED_LOGICAL_PATH) return true;
   try {
     const href = globalThis.location?.href;
     if (typeof href !== 'string') return false;
