@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -141,6 +142,30 @@ await check('standard-agent-scope-regression', () => {
   const locked = new ScopeController(snapshot, 'function');
   assert.equal(locked.expandTo('binary', 'must stay locked'), false);
   assert.equal(locked.effectiveScope, 'function');
+});
+
+
+function staticModuleSpecifiers(source) {
+  const matches = [];
+  for (const pattern of [
+    /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm,
+    /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+    /^\s*export\s+(?:\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
+  ]) {
+    for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
+  }
+  return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
+}
+
+await check('dev-context-packet-dependency-boundary', () => {
+  const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
+  assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
+  assert.doesNotMatch(source, /\bimport\s*\(/, 'context packet must not gain dynamic import authority');
+  assert.deepEqual(
+    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';"),
+    ['./side-effect.js', './re-export.js'],
+  );
+  assert.match("void import('./dynamic.js')", /\bimport\s*\(/);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
