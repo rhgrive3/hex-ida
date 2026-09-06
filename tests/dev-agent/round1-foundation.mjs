@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { assertModuleDependencyBoundary, __moduleDependencyBoundaryForTests } from './helpers/module-dependency-boundary.mjs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -144,28 +145,15 @@ await check('standard-agent-scope-regression', () => {
   assert.equal(locked.effectiveScope, 'function');
 });
 
-
-function staticModuleSpecifiers(source) {
-  const matches = [];
-  for (const pattern of [
-    /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm,
-    /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-    /^\s*export\s+(?:\*\s+as\s+(?:[A-Za-z_$][\w$]*|['"][^'"]+['"])|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm,
-  ]) {
-    for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
-  }
-  return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
-}
-
 await check('dev-context-packet-dependency-boundary', () => {
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
-  assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
-  assert.doesNotMatch(source, /\bimport\s*\(/, 'context packet must not gain dynamic import authority');
+  assertModuleDependencyBoundary(source, ['../run/analysis-scope.js']);
+  const parser = __moduleDependencyBoundaryForTests;
   assert.deepEqual(
-    staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';\nexport * as storage from '../storage.js';"),
-    ['./side-effect.js', './re-export.js', '../storage.js'],
+    parser.staticModuleSpecifiers("import './side-effect.js';\nexport { value } /* comment */ from './re-export.js';"),
+    ['./side-effect.js', './re-export.js'],
   );
-  assert.match("void import('./dynamic.js')", /\bimport\s*\(/);
+  assert.equal(parser.hasDynamicImport("void import/* comment */('./dynamic.js')"), true);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
