@@ -22,7 +22,7 @@ function canonicalCondition(cond) {
 }
 
 function canonicalBits(bits, fallback = 64) {
-  if (bits === undefined || bits === null || bits === '') return fallback;
+  if (bits === undefined) return fallback;
   if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0 || bits > 64) return null;
   return bits;
 }
