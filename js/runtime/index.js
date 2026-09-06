@@ -143,7 +143,8 @@ export class RuntimeAnalysisPlatform {
         await adapter.launch(launchSpec,{signal:operation.signal});
       } else if (adapter.capabilities.attach && options.attach) {
         await adapter.attach(options.attach,{signal:operation.signal});
-      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+      } else if (!adapter.capabilities.traceFunction) {
+        if (adapter.capabilities.attach) throw new DebugAdapterError('attach-target-required','adapter requires an attach target before tracing');
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {
