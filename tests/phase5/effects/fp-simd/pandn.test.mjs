@@ -25,7 +25,7 @@ test('legacy PANDN exact semantics match compiler-emitted 66 0f df f3', () => {
 
 test('VPANDN uses independent source and VEX upper-lane rules', () => {
   const bundle = effects('vpandn', [reg('xmm0','write'), reg('xmm1','read'), reg('xmm2','read')], {
-    prefixes:vex2(0xf8),
+    prefixes:vex2(0xf1),
     rawBytes:[0xc5,0xf1,0xdf,0xc2],
     instructionId:'p5-i:vpandn:128',
     mnemonic:'vpandn',
