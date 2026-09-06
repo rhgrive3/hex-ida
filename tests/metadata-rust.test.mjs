@@ -4,9 +4,12 @@ import {
   demangleRustV0,
   demangleRustLegacy,
   demangleRustSymbol,
+  stripLegacyRustPrefix,
+  isRustCandidateSymbol,
   findRustcVersion,
   isRustLayoutStable,
 } from '../js/metadata/rust.js';
+import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
 
 console.log('Testing Rust Metadata Provider...');
 
@@ -236,6 +239,51 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(probe.authoritative, false);
   assert.equal(probe.completeness.present, false);
   assert.equal(probe.identity.verdict, 'identity-unavailable');
+}
+
+
+// 14. Issue #6276: accept one Mach-O decoration for legacy Rust symbols only.
+{
+  for (const [symbol, expected] of [
+    ['_ZN3fooE', 'foo'],
+    ['ZN3fooE', 'foo'],
+    ['__ZN3fooE', 'foo'],
+  ]) {
+    assert.equal(demangleRustLegacy(symbol).demangled, expected);
+    assert.equal(demangleRustSymbol(symbol).demangled, expected);
+  }
+
+  assert.equal(demangleRustSymbol('__RC3foo').demangled, 'foo');
+  assert.equal(stripLegacyRustPrefix('___ZN3fooE'), null);
+  assert.equal(isRustCandidateSymbol('___ZN3fooE'), false);
+  assert.equal(demangleRustSymbol('___ZN3fooE').parsed, false);
+  assert.equal(isRustCandidateSymbol('_Z1fv'), false);
+  assert.equal(isRustCandidateSymbol('_malloc'), false);
+
+  const unified = await parseUnifiedLanguageMetadata({
+    symbols: [{ name: '__ZN3fooE', address: 0x1000n }],
+    sections: [],
+  });
+  assert.ok(unified.ecosystems.includes('rust'));
+  const rust = unified.results.find((entry) => entry.ecosystem === 'rust');
+  assert.equal(rust.provider.cachedParsed.rustSymbols[0].name, 'foo');
+
+  for (const name of ['___ZN3fooE', '___RC3foo', '__ZN3foo', '_ZN3foo']) {
+    assert.equal(demangleRustSymbol(name).parsed, false, name);
+  }
+  for (const value of [null, undefined, false, 1, ['__ZN3fooE'], { toString() { throw new Error('coercion'); } }]) {
+    assert.equal(isRustCandidateSymbol(value), false);
+    assert.equal(stripLegacyRustPrefix(value), null);
+  }
+  for (const symbols of [null, {}, true, 'not-a-symbol-list']) {
+    const result = await parseUnifiedLanguageMetadata({ symbols, sections: [] });
+    assert.equal(result.ecosystems.includes('rust'), false);
+  }
+  const alias = await parseUnifiedLanguageMetadata({
+    symbols: [{ symbol: '__ZN3fooE', address: 0x1000n }],
+    sections: [],
+  });
+  assert.equal(alias.ecosystems.includes('rust'), true);
 }
 
 console.log('Rust Metadata Provider tests passed.');
