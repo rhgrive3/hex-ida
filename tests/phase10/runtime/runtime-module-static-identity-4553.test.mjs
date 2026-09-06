@@ -135,3 +135,26 @@ test('P10 #4553 validation and publication observe one consistent identity snaps
   assert.equal(binaryIdReads, 1);
   assert.equal(sliceIdReads, 1);
 });
+
+for (const identityState of [[], {}, false, 0, 1, '', 'exact ', 'EXACT', 'partial', 'unknown']) {
+  test(`P10 #4553 malformed identityState ${JSON.stringify(identityState)} fails closed even with canonical evidence`, () => {
+    const input = module({
+      identityState,
+      identityEvidenceIds: ['ev:module:1'],
+    });
+    assert.equal(hasProvenRuntimeStaticIdentity(input), false);
+    const binding = normalizeRuntimeModuleBinding(input);
+    assert.equal(binding.identityState, 'unresolved');
+    assert.equal(binding.binaryId, null);
+    assert.equal(binding.sliceId, null);
+    assert.equal(binding.imageId, null);
+  });
+}
+
+test('P10 #4553 nullish identityState with canonical evidence resolves and publishes canonical state', () => {
+  const input = module({ identityState: undefined, identityEvidenceIds: ['ev:module:1'] });
+  assert.equal(hasProvenRuntimeStaticIdentity(input), true);
+  const binding = normalizeRuntimeModuleBinding(input);
+  assert.equal(binding.identityState, 'resolved');
+  assert.equal(binding.binaryId, 'bin_A');
+});

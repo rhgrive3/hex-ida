@@ -16,11 +16,11 @@ export function hasProvenRuntimeStaticIdentity(module) {
   const hasCanonicalStaticIdentity = canonicalIdentity(binaryId) &&
     (sliceId == null || canonicalIdentity(sliceId)) &&
     (imageId == null || canonicalIdentity(imageId));
-  return hasCanonicalStaticIdentity && (
-    identityState === "exact" ||
+  if (!hasCanonicalStaticIdentity) return false;
+  if (identityState != null && identityState !== "exact" && identityState !== "resolved") return false;
+  return identityState === "exact" ||
     identityState === "resolved" ||
-    hasCanonicalIdentityEvidence
-  );
+    hasCanonicalIdentityEvidence;
 }
 
 export function normalizeRuntimeModuleBinding(module, { bindingKey: explicitKey, loadedSequence } = {}) {
@@ -51,7 +51,9 @@ export function normalizeRuntimeModuleBinding(module, { bindingKey: explicitKey,
   const binaryId = trusted ? (identityRead.binaryId ?? null) : null;
   const sliceId = trusted ? (identityRead.sliceId ?? null) : null;
   const imageId = trusted ? (identityRead.imageId ?? null) : null;
-  const identityState = trusted ? (identityRead.identityState ?? "resolved") : "unresolved";
+  const identityState = trusted
+    ? (identityRead.identityState == null ? "resolved" : identityRead.identityState)
+    : "unresolved";
 
   const result = {
     bindingKey: key,
