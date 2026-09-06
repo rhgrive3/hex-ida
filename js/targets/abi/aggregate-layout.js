@@ -285,7 +285,7 @@ function paddingSpan(entry) {
   if (rawOffset === AMBIGUOUS) return null;
   const offset = rawOffset == null ? null : nonNegativeInteger(rawOffset);
   const end = offset == null ? null : safeEnd(offset, bytes);
-  return { offset, bytes, end };
+  return Object.freeze({ offset, bytes, end });
 }
 
 function explicitTotalBytes(parameter, bits) {
@@ -344,7 +344,7 @@ export function canonicalAggregateLayout(parameter) {
     if (alignment == null && descriptorPresent(member, memberLayout, ['alignment', 'align', 'alignmentBytes'])) return null;
     const alignmentNumber = alignment == null ? null : positiveInteger(alignment);
     if (alignment != null && (alignmentNumber == null || byteOffset % alignmentNumber !== 0)) return null;
-    normalizedMembers.push({ ...member, bits:bitsForMember, bytes, byteOffset });
+    normalizedMembers.push(Object.freeze({ ...member, bits:bitsForMember, bytes, byteOffset }));
     spans.push([byteOffset, end]);
     memberBitsTotal += bitsForMember;
     if (!Number.isSafeInteger(memberBitsTotal)) return null;
