@@ -50,4 +50,31 @@ import { EvidenceStore } from '../../js/ai/evidence.js';
   assert.ok(store.sourcePayloads.has(bId));
 }
 
+// Local IDs must never be reused after GC. A same-millisecond reuse can
+// overwrite and then delete the payload referenced by an immutable verified
+// record when the rejected duplicate is cleaned up.
+{
+  const originalNow = Date.now;
+  Date.now = () => 1000;
+  try {
+    const store = new EvidenceStore();
+    store.add({ id: 'a', kind: 'observation', sourceTool: 'test', sourceData: { v: 'a0' } });
+    store.add({ id: 'b', kind: 'observation', sourceTool: 'test', sourceData: { v: 'b0' } });
+    store.restorePersistedConfirmed([
+      { id: 'a', kind: 'observation', status: 'verified', sourceTool: 'test', sourceData: { v: 'verified' } },
+    ]);
+    const verifiedSourceId = store.get('a').sourceRef.evidenceSourceId;
+    assert.deepEqual(store.sourceDataFor('a'), { v: 'verified' });
+
+    store.add({ id: 'a', kind: 'observation', sourceTool: 'test', sourceData: { v: 'rejected' } });
+
+    assert.equal(store.get('a').status, 'verified');
+    assert.equal(store.get('a').sourceRef.evidenceSourceId, verifiedSourceId);
+    assert.deepEqual(store.sourceDataFor('a'), { v: 'verified' });
+    assert.ok(store.sourcePayloads.has(verifiedSourceId));
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
 console.log('issue-6031 EvidenceStore upsert payload GC tests passed');

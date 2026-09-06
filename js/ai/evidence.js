@@ -103,6 +103,7 @@ export class EvidenceStore {
     this.recordOrder = new Map();
     this.statusIds = new Map(EVIDENCE_STATUSES.map((status) => [status, []]));
     this.nextRecordOrder = 0;
+    this.nextSourcePayloadOrder = 0;
     this.sourcePayloads = new Map();
     this.observationStore = options.observationStore || null;
     for (const evidence of initial) this.add(evidence);
@@ -153,7 +154,7 @@ export class EvidenceStore {
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
-        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size]).slice(0, 32)}`;
+        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, this.nextSourcePayloadOrder++]).slice(0, 32)}`;
         this.sourcePayloads.set(localId, input.sourceData);
         createdLocalId = localId;
         sourceRef = { evidenceSourceId: localId, path: '$' };
