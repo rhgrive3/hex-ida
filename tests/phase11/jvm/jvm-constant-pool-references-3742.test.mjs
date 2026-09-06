@@ -16,10 +16,11 @@ const cpDynamic=(tag,bootstrap,nat)=>[tag,(bootstrap>>>8)&255,bootstrap&255,(nat
 const cpModule=(tag,name)=>[tag,(name>>>8)&255,name&255];
 const cpInteger=(value=0)=>{const out=[3];u4(out,value>>>0);return out;};
 const cpLong=(value=0n)=>{const out=[5];for(let shift=56n;shift>=0n;shift-=8n)out.push(Number((value>>shift)&255n));return out;};
+const cpDouble=()=>[6,0,0,0,0,0,0,0,0];
 
-function buildClass(entries,{major=52}={}){
+function buildClass(entries,{major=52,cpCount=null}={}){
   const out=[];u4(out,0xcafebabe);u2(out,0);u2(out,major);
-  let slots=1;for(const entry of entries)slots+=entry[0]===5||entry[0]===6?2:1;u2(out,slots);
+  let slots=1;for(const entry of entries)slots+=entry[0]===5||entry[0]===6?2:1;u2(out,cpCount??slots);
   for(const entry of entries)out.push(...entry);
   u2(out,0x0021);u2(out,2);u2(out,4);u2(out,0);u2(out,0);u2(out,0);u2(out,0);
   return Uint8Array.from(out);
@@ -33,6 +34,8 @@ mustReject([...base,cpInteger(),cpClass(5)]);
 mustReject([...base,utf8('x'),utf8('I'),cpNameAndType(5,6),cpFieldref(1,7)]);
 mustReject([...base,utf8('x'),cpClass(5),cpNameAndType(5,6)]);
 mustReject([...base,cpLong(),cpString(6)]);
+assert.throws(()=>parseJvm(buildClass([...base,cpLong()],{cpCount:6})),/jvm-invalid-cp-reserved-slot/);
+assert.throws(()=>parseJvm(buildClass([...base,cpDouble()],{cpCount:6})),/jvm-invalid-cp-reserved-slot/);
 mustReject([...base,cpMethodHandle(0,2)]);
 mustReject([...base,cpMethodHandle(1,2)]);
 mustReject([...base,utf8('run'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(8,8)],/jvm-invalid-cp-methodhandle-target-name/);
