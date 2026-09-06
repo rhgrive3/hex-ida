@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import { liftJvmMethod } from '../../../js/managed/jvm/lifter.js';
+import { liftJvmMethod as liftJvmMethodCore } from '../../../js/managed/jvm/lifter-core.js';
 
 const CODE_OFFSET = 0x180;
 
-function lift(bytes) {
-  return liftJvmMethod(0, {
+function makeClass(bytes, { offset = CODE_OFFSET } = {}) {
+  const code = {
+    maxStack: 4,
+    maxLocals: 2,
+    bytecode: Uint8Array.from(bytes),
+    exceptionTable: [],
+  };
+  if (offset !== undefined) code.offset = offset;
+  return {
     moduleId: 'managed-mod:test:jvm',
     vmSpecEdition: 'java-se-17',
     thisClassName: 'T',
@@ -12,15 +20,13 @@ function lift(bytes) {
       accessFlags: 0x0008,
       name: 'm',
       descriptor: '()V',
-      code: {
-        maxStack: 4,
-        maxLocals: 2,
-        bytecode: Uint8Array.from(bytes),
-        exceptionTable: [],
-        offset: CODE_OFFSET,
-      },
+      code,
     }],
-  });
+  };
+}
+
+function lift(bytes) {
+  return liftJvmMethod(0, makeClass(bytes));
 }
 
 function assertMalformed(bytes, opcode) {
@@ -67,6 +73,13 @@ assertMalformed([0xb9, 0x00, 0x01, 0x01], 0xb9); // invokeinterface
   assert.equal(fn.bundles[1].producedValues[0].constant, -1);
   assert.equal(fn.bundles[2].mnemonic, 'return');
   assert.equal(fn.bundles[2].completeness, 'exact');
+}
+
+// The core lifter follows the wrapper's default when Code.offset is omitted.
+{
+  const fn = liftJvmMethodCore(0, makeClass([0xb1], { offset: undefined }));
+  assert.equal(fn.bundles[0].origin.byteRanges[0].start, '0');
+  assert.equal(fn.bundles[0].origin.byteRanges[0].end, '1');
 }
 
 console.log('ok issue #3924 JVM truncated operands');
