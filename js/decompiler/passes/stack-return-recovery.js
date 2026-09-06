@@ -177,14 +177,22 @@ function authenticatedCallMemoryEffect(inst, control) {
   // `memKills` is a projection of the canonical memory effect.  Its absence
   // is safe only for a complete call whose canonical summary explicitly says
   // it writes no memory.  A bare array, even an empty one, is not authority.
-  if (completeness !== 'complete' || memoryWrite == null || typeof memoryWrite !== 'object'
-      || Array.isArray(memoryWrite) || !MEMORY_WRITE_SCOPES.has(scope)) return null;
+  if (memoryWrite == null || typeof memoryWrite !== 'object' || Array.isArray(memoryWrite)
+      || !MEMORY_WRITE_SCOPES.has(scope)) return null;
   if (scope === 'none') {
+    if (completeness !== 'complete') return null;
     if (fieldValue(inst, 'memoryBarrier') === true) return null;
     const killsField = ownData(inst, 'memKills');
     if (killsField.present && (!killsField.valid || !Array.isArray(killsField.value) || killsField.value.length)) return null;
     return [];
   }
+  // A partial/unknown ABI summary may still carry an authoritative canonical
+  // effect projection. Require the producer binding and its barrier marker so
+  // an arbitrary hand-written memKills array cannot become proof.
+  if (completeness !== 'complete'
+      && (typeof fieldValue(extra, 'semanticNodeId') !== 'string'
+        || typeof fieldValue(extra, 'summarySource') !== 'string'
+        || fieldValue(inst, 'memoryBarrier') !== true)) return null;
   const killsField = ownData(inst, 'memKills');
   if (!killsField.present || !killsField.valid || !Array.isArray(killsField.value)
       || killsField.value.length === 0) return null;
@@ -677,7 +685,7 @@ function committedStoreBarrier(inst, key, control) {
     const kills = authenticatedCallMemoryEffect(inst, control);
     if (!kills) return true;
     for (const loc of kills) {
-      if (control?.isAborted?.() || loc.kind === 'unknown' || loc.key === key) return true;
+      if (control?.isAborted?.() || loc.key === key) return true;
     }
     return false;
   }
@@ -701,14 +709,31 @@ function storeOfExactValue(ir, blockIndex, value, control) {
     if (!blockInstructions.ok) return null;
     const instructions = [...blockInstructions.value];
     const memoryRows = new Set();
+    const memoryMutations = new Map();
+    const physicalLoads = new Map();
     for (const instruction of instructions) {
       if (control?.isAborted?.()) return null;
       const row = fieldValue(instruction, 'row');
       if (!validRow(row)) return null;
       const op = fieldValue(instruction, 'op');
-      if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
+      if (op === 'load') {
+        const loadKey = fieldValue(fieldValue(instruction, 'loc'), 'key');
+        const mutations = memoryMutations.get(row) || [];
+        if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
+            || loadKey == null || mutation.key === loadKey)) return null;
+        const loads = physicalLoads.get(row) || [];
+        loads.push(loadKey);
+        physicalLoads.set(row, loads);
+      } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
         if (memoryRows.has(row)) return null;
+        const locationKey = op === 'store' ? fieldValue(fieldValue(instruction, 'loc'), 'key') : null;
+        const loads = physicalLoads.get(row) || [];
+        if (loads.some((loadKey) => op !== 'store' || locationKey == null
+            || loadKey == null || locationKey === loadKey)) return null;
         memoryRows.add(row);
+        const mutations = memoryMutations.get(row) || [];
+        mutations.push({ op, key:locationKey });
+        memoryMutations.set(row, mutations);
       }
     }
     instructions.sort((a,b) => fieldValue(b, 'row') - fieldValue(a, 'row'));
@@ -977,7 +1002,7 @@ function unsafeBarrier(inst, key, control) {
     const kills = authenticatedCallMemoryEffect(inst, control);
     if (!kills) return true;
     for (const loc of kills) {
-      if (control?.isAborted?.() || loc.kind === 'unknown' || loc.key === key) return true;
+      if (control?.isAborted?.() || loc.key === key) return true;
     }
     return false;
   }
@@ -991,6 +1016,8 @@ function before(ir, block, row, key, control) {
   if (!instructions.ok || !validBlock(block) || (row != null && !validRow(row))) return null;
   const selected = [];
   const memoryRows = new Set();
+  const memoryMutations = new Map();
+  const physicalLoads = new Map();
   for (const instruction of instructions.value) {
     if (control?.isAborted?.()) return null;
     const instructionBlock = fieldValue(instruction, 'block');
@@ -999,9 +1026,24 @@ function before(ir, block, row, key, control) {
     const instructionRow = fieldValue(instruction, 'row');
     const op = fieldValue(instruction, 'op');
     if (!validRow(instructionRow)) return null;
-    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
+    if (op === 'load') {
+      const loadKey = fieldValue(fieldValue(instruction, 'loc'), 'key');
+      const mutations = memoryMutations.get(instructionRow) || [];
+      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
+          || loadKey == null || mutation.key === loadKey)) return null;
+      const loads = physicalLoads.get(instructionRow) || [];
+      loads.push(loadKey);
+      physicalLoads.set(instructionRow, loads);
+    } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(instructionRow)) return null;
+      const locationKey = op === 'store' ? fieldValue(fieldValue(instruction, 'loc'), 'key') : null;
+      const loads = physicalLoads.get(instructionRow) || [];
+      if (loads.some((loadKey) => op !== 'store' || locationKey == null
+          || loadKey == null || locationKey === loadKey)) return null;
       memoryRows.add(instructionRow);
+      const mutations = memoryMutations.get(instructionRow) || [];
+      mutations.push({ op, key:locationKey });
+      memoryMutations.set(instructionRow, mutations);
     }
     if (row == null || instructionRow < row) selected.push(instruction);
   }

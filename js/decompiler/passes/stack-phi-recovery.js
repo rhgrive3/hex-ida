@@ -613,6 +613,8 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
   if (!instructions.ok || !validBlock(blockIndex) || (beforeRow != null && !validRow(beforeRow))) return null;
   const selected = [];
   const memoryRows = new Set();
+  const memoryMutations = new Map();
+  const physicalLoads = new Map();
   for (const inst of instructions.value) {
     if (control?.isAborted?.()) return null;
     const block = fieldValue(inst, 'block');
@@ -624,12 +626,28 @@ function instructionsBefore(ir, blockIndex, beforeRow, control) {
     // Otherwise the order relation can be forged by a getter or a coercible
     // string and an older value could be published.
     if (!validRow(row)) return null;
-    // Equal rows are normally harmless for value-only instructions, but two
-    // memory effects at one row have no authenticated order. Reject the whole
-    // proof so the result cannot depend on IR array order.
-    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
+    // A physical LOAD colliding with a same-location mutation has no
+    // authenticated order. Unrelated machine memory operations can share a
+    // semantic row (for example a field read and a stack spill), so only the
+    // candidate location collision is ambiguous.
+    if (op === 'load') {
+      const loadKey = fieldValue(fieldValue(inst, 'loc'), 'key');
+      const mutations = memoryMutations.get(row) || [];
+      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
+          || loadKey == null || mutation.key === loadKey)) return null;
+      const loads = physicalLoads.get(row) || [];
+      loads.push(loadKey);
+      physicalLoads.set(row, loads);
+    } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
+      const locationKey = op === 'store' ? fieldValue(fieldValue(inst, 'loc'), 'key') : null;
+      const loads = physicalLoads.get(row) || [];
+      if (loads.some((loadKey) => op !== 'store' || locationKey == null
+          || loadKey == null || locationKey === loadKey)) return null;
       memoryRows.add(row);
+      const mutations = memoryMutations.get(row) || [];
+      mutations.push({ op, key:locationKey });
+      memoryMutations.set(row, mutations);
     }
     if (beforeRow == null || row < beforeRow) selected.push(inst);
   }

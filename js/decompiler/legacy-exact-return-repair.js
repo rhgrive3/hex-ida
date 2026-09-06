@@ -180,6 +180,8 @@ export function exactLegacySameBlockStackStore(load, ir, opts = {}, control = le
   }
   if (storeOccurrences !== 1 || loadOccurrences !== 1) return null;
   const memoryRows = new Set();
+  const memoryMutations = new Map();
+  const physicalLoads = new Map();
   for (const inst of instructions.value) {
     if (control.isAborted()) return null;
     const op = instructionOp(inst);
@@ -192,9 +194,24 @@ export function exactLegacySameBlockStackStore(load, ir, opts = {}, control = le
       if (op === 'call' || op === 'clobber' || op === 'unknown') return null;
       continue;
     }
-    if (['load', 'store', 'call', 'clobber', 'unknown'].includes(op)) {
+    if (op === 'load') {
+      const loadKey = location?.key ?? null;
+      const mutations = memoryMutations.get(row) || [];
+      if (mutations.some((mutation) => mutation.op !== 'store' || mutation.key == null
+          || loadKey == null || mutation.key === loadKey)) return null;
+      const loads = physicalLoads.get(row) || [];
+      loads.push(loadKey);
+      physicalLoads.set(row, loads);
+    } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
       if (memoryRows.has(row)) return null;
+      const locationKey = op === 'store' ? location?.key ?? null : null;
+      const loads = physicalLoads.get(row) || [];
+      if (loads.some((loadKey) => op !== 'store' || locationKey == null
+          || loadKey == null || locationKey === loadKey)) return null;
       memoryRows.add(row);
+      const mutations = memoryMutations.get(row) || [];
+      mutations.push({ op, key:locationKey });
+      memoryMutations.set(row, mutations);
     }
     if (inst === store || inst === load) continue;
     if (row <= storeRow || row >= loadRow) continue;
