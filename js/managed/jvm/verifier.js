@@ -56,7 +56,7 @@ function parseMethodDescriptor(text, isStatic) {
 
 function stackSlots(stack) {
   let slots = 0;
-  for (const value of stack) slots += value === 'long' || value === 'double' || value === 'unknown2' ? 2 : 1;
+  for (const value of stack) slots += value === 'long' || value === 'double' || value === 'unknown2' || value === 'top2' ? 2 : 1;
   return slots;
 }
 
@@ -69,6 +69,56 @@ function statesEqual(a, b) {
   for (let i = 0; i < a.stack.length; i++) if (a.stack[i] !== b.stack[i]) return false;
   for (let i = 0; i < a.locals.length; i++) if ((a.locals[i] ?? null) !== (b.locals[i] ?? null)) return false;
   return true;
+}
+
+function stackCategory(kind) {
+  if (kind === 'long' || kind === 'double' || kind === 'unknown2' || kind === 'top2') return 2;
+  if (kind == null || kind === 'cat2-tail') return null;
+  return 1;
+}
+
+function mergeStackKind(left, right) {
+  if (left === right) return { compatible: true, kind: left };
+  const leftCategory = stackCategory(left);
+  const rightCategory = stackCategory(right);
+  if (leftCategory == null || rightCategory == null || leftCategory !== rightCategory) {
+    return { compatible: false, kind: null };
+  }
+  const joinedTop = leftCategory === 2 ? 'top2' : 'top1';
+  if (left === joinedTop || right === joinedTop) return { compatible: true, kind: joinedTop };
+  const unknown = leftCategory === 2 ? 'unknown2' : 'unknown1';
+  if (left === unknown || right === unknown) return { compatible: true, kind: joinedTop };
+  return { compatible: false, kind: null };
+}
+
+function normalizeCategory2Locals(locals) {
+  for (let i = 0; i < locals.length; i++) {
+    const kind = locals[i];
+    if (kind === 'long' || kind === 'double') {
+      if (locals[i + 1] !== 'cat2-tail') locals[i] = null;
+    } else if (kind === 'cat2-tail') {
+      const head = i > 0 ? locals[i - 1] : null;
+      if (head !== 'long' && head !== 'double') locals[i] = null;
+    }
+  }
+}
+
+function mergeStates(previous, incoming) {
+  if (!previous || !incoming || previous.stack.length !== incoming.stack.length || previous.locals.length !== incoming.locals.length) {
+    return { compatible: false, changed: false, state: previous };
+  }
+
+  const stack = [];
+  for (let i = 0; i < previous.stack.length; i++) {
+    const merged = mergeStackKind(previous.stack[i], incoming.stack[i]);
+    if (!merged.compatible) return { compatible: false, changed: false, state: previous };
+    stack.push(merged.kind);
+  }
+
+  const locals = previous.locals.map((kind, index) => kind === incoming.locals[index] ? kind : null);
+  normalizeCategory2Locals(locals);
+  const state = { stack, locals };
+  return { compatible: true, changed: !statesEqual(previous, state), state };
 }
 
 function popKind(state, expected, errors, offset) {
@@ -199,23 +249,23 @@ function executeBundle(bundle, state, descriptor, errors, unsupported) {
     }
     case 0x57: {
       const top = state.stack[state.stack.length - 1];
-      if (top === 'long' || top === 'double' || top === 'unknown2') errors.push({ code: 'jvm-pop-category2-invalid', offset });
+      if (top === 'long' || top === 'double' || top === 'unknown2' || top === 'top2') errors.push({ code: 'jvm-pop-category2-invalid', offset });
       else popKind(state, null, errors, offset);
       return true;
     }
     case 0x58: {
       const top = state.stack.pop();
       if (top == null) errors.push({ code: 'jvm-stack-underflow', offset, expected: 'category2-or-two-category1' });
-      else if (top !== 'long' && top !== 'double' && top !== 'unknown2') {
+      else if (top !== 'long' && top !== 'double' && top !== 'unknown2' && top !== 'top2') {
         const next = state.stack.pop();
-        if (next == null || next === 'long' || next === 'double' || next === 'unknown2') errors.push({ code: 'jvm-pop2-shape-invalid', offset });
+        if (next == null || next === 'long' || next === 'double' || next === 'unknown2' || next === 'top2') errors.push({ code: 'jvm-pop2-shape-invalid', offset });
       }
       return true;
     }
     case 0x59: {
       const top = state.stack[state.stack.length - 1];
       if (top == null) errors.push({ code: 'jvm-stack-underflow', offset, expected: 'category1' });
-      else if (top === 'long' || top === 'double' || top === 'unknown2') errors.push({ code: 'jvm-dup-category2-invalid', offset });
+      else if (top === 'long' || top === 'double' || top === 'unknown2' || top === 'top2') errors.push({ code: 'jvm-dup-category2-invalid', offset });
       else push(top);
       return true;
     }
@@ -386,9 +436,16 @@ export function verifyJvmMethod(decoded, options = {}) {
         if (!previous) {
           states.set(successor, cloneState(state));
           queue.push(successor);
-        } else if (!statesEqual(previous, state)) {
+          continue;
+        }
+        const merged = mergeStates(previous, state);
+        if (!merged.compatible) {
           errors.push({ code: 'jvm-incompatible-frame-merge', offset: successor });
           break;
+        }
+        if (merged.changed) {
+          states.set(successor, merged.state);
+          queue.push(successor);
         }
       }
     }
