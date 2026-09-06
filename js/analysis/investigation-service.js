@@ -313,6 +313,17 @@ export class InvestigationService {
     this.pinSnapshotId = snapshotId;
   }
 
+  #assertPinMutationCurrent(context, epoch, generation) {
+    this.#syncEpoch();
+    if (generation === this.cacheGeneration
+      && Object.is(epoch, this.cacheEpoch)
+      && analysisBindingCurrent(this.app, context?.binding)) return;
+    const error = new Error('investigation-analysis-binding-changed');
+    error.code = 'ANALYSIS_SNAPSHOT_STALE';
+    error.stale = true;
+    throw error;
+  }
+
   #shared(key, producer, options = {}) {
     abortIfNeeded(options.signal);
     const epoch = this.#syncEpoch();
@@ -593,6 +604,9 @@ export class InvestigationService {
 
   async investigate(goal, options = {}) {
     const context = await this.prepareGoal(goal, options);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
+    assertAnalysisBinding(this.app, context.binding);
     const ranked = rankCandidates({
       goal,
       strings:context.strings,
@@ -640,7 +654,10 @@ export class InvestigationService {
         if (beats(fn, candidate)) candidate = fn;
       }
       pin = candidate;
-      if (!options.signal?.aborted) this.pinCache.set(cacheKey, pin);
+      if (!options.signal?.aborted) {
+        this.#assertPinMutationCurrent(context, epoch, generation);
+        this.pinCache.set(cacheKey, pin);
+      }
     }
     await this.app.analysisQueries.binaryInfo(context.snapshot, {
       signal:options.signal,

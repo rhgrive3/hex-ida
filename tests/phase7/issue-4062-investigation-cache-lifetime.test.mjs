@@ -138,6 +138,68 @@ test('#4062 an epoch switch during investigation clears a pin published by the s
   assert.equal(service.shared.size, 0);
 });
 
+test('#4062 stale pinpoint completion cannot republish an old snapshot after the new epoch has published', async () => {
+  const pinStarted = deferred();
+  const pinGate = deferred();
+  const region = { id:'text', exec:true, vmAddr:0n, size:0x100n, section:'__text' };
+  const cls = {
+    name:'Player', instanceSize:0x20, superName:null, methods:[],
+    ivars:[{ name:'hp', offset:0x8, size:4, type:null }],
+  };
+  const fields = {
+    classCount:1,
+    classes:new Map([[cls.name, cls]]),
+    classInfo:(name) => name === cls.name ? cls : null,
+  };
+  const app = basicApp(1);
+  app.fields = fields;
+  app.store = { get:(key) => key === 'regions' ? [region] : null };
+  app.backend.fieldAccessMany = () => {
+    pinStarted.resolve();
+    return pinGate.promise;
+  };
+  const service = new InvestigationService(app);
+  service.prepareGoal = async (goal) => {
+    const snapshotId = goal.id === 'hp' ? 'snapshot-A' : 'snapshot-B';
+    return {
+      snapshot:{ snapshotId },
+      snapshotId,
+      strings:[],
+      program:null,
+      shapes:null,
+      symbols:null,
+      fields,
+      region,
+      metadata:{ complete:true, reasons:[] },
+      goal,
+      binding:captureAnalysisBinding(app, { fields }),
+      completeness:{ complete:true, reasons:[] },
+    };
+  };
+
+  const staleGoal = { id:'hp', text:'hp', expects:{ numeric:true, store:true, compare:true } };
+  const stale = service.investigate(staleGoal);
+  await pinStarted.promise;
+
+  app.backend.gen = 2;
+  const currentGoal = { id:'current-no-match', text:'definitely no field match', expects:{} };
+  const current = await service.investigate(currentGoal);
+  const staleKey = 'snapshot-A:hp:hp';
+  const currentKey = 'snapshot-B:current-no-match:definitely no field match';
+  assert.equal(service.pinCache.has(currentKey), true,
+    'new epoch request must publish its active snapshot pin before stale pinpoint resumes');
+
+  pinGate.resolve(new Map());
+  await assert.rejects(stale, (error) => error?.code === 'ANALYSIS_SNAPSHOT_STALE',
+    'stale request must fail before republishing its old snapshot pin');
+  assert.equal(service.pinCache.has(staleKey), false,
+    'stale snapshot key must not be republished after epoch invalidation');
+  assert.equal(service.pinCache.has(currentKey), true,
+    'stale completion must not evict the newer snapshot pin');
+  assert.strictEqual(service.pinCache.get(currentKey), current.pin,
+    'new epoch pin identity must remain unchanged after stale completion');
+});
+
 test('#4062 pin cache releases prior snapshots while preserving entries within the active snapshot', async () => {
   const app = basicApp(7);
   const service = new InvestigationService(app);
