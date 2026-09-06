@@ -36,7 +36,7 @@ function base64ToBytes(text) {
     const binary = atob(text);
     if (btoa(binary) !== String(text)) throw new Error('non-canonical');
     const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(0);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
     return out;
   } catch {
     throw new DebugAdapterError('malformed-packet', 'invalid base64 byte payload');
