@@ -246,11 +246,16 @@ export class DebugAdapterRuntimeProvider {
       Number.isSafeInteger(adapterEpoch) && adapterEpoch >= 0 ? adapterEpoch + 1 : 1,
     );
     let session;
+    let disconnectPending = false;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        if (this.adapter.connected) await this.adapter.disconnect();
+        if (disconnectPending || this.adapter.connected) {
+          disconnectPending = true;
+          await this.adapter.disconnect();
+          disconnectPending = false;
+        }
         if (this.activeSession === session) this.activeSession = null;
       },
     });
