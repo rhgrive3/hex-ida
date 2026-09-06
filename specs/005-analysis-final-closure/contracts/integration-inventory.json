@@ -696,7 +696,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -745,7 +744,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -794,7 +792,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
     "js/core/scheduler/analysis-scheduler.js",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -854,10 +851,6 @@
     {
       "path": "js/ai/dev/ui/controls.js",
       "ownerTaskId": "T051"
-    },
-    {
-      "path": "js/collaboration/index.js",
-      "ownerTaskId": "T052"
     },
     {
       "path": "js/core/scheduler/analysis-scheduler.js",

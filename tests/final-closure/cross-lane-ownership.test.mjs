@@ -126,17 +126,16 @@ for (const predicate of [phase11CrossLaneIntegration, phase12CrossLaneIntegratio
   assert.equal(predicate(null), false, 'a missing event must fail closed');
 }
 
-for (const [phase, workflow, expectedTypes] of [
-  ['Phase 11', fs.readFileSync(path.join(ROOT, '.github/workflows/phase11-release-validation.yml'), 'utf8'), 'opened, synchronize, reopened, ready_for_review, labeled, unlabeled'],
-  ['Phase 12', fs.readFileSync(path.join(ROOT, '.github/workflows/phase12-release-validation.yml'), 'utf8'), 'opened, synchronize, reopened, labeled, unlabeled'],
+for (const [phase, workflow] of [
+  ['Phase 11', fs.readFileSync(path.join(ROOT, '.github/workflows/phase11-release-validation.yml'), 'utf8')],
+  ['Phase 12', fs.readFileSync(path.join(ROOT, '.github/workflows/phase12-release-validation.yml'), 'utf8')],
 ]) {
-  const pullRequestTrigger = workflow.slice(
-    workflow.indexOf('  pull_request:'),
-    workflow.indexOf('  workflow_dispatch:'),
-  );
-  assert.ok(pullRequestTrigger.includes(`types: [${expectedTypes}]`), `${phase} must rerun on label changes`);
-  assert.match(pullRequestTrigger, /paths:/, `${phase} must preserve its pull-request path filter`);
-  assert.match(workflow, /cancel-in-progress:\s*true/, `${phase} must cancel stale label-event runs`);
+  // Development mode intentionally removes automatic release-workflow PR
+  // runs. The exact cross-lane predicate remains covered above; release
+  // validation is entered through its explicit SHA dispatch path.
+  assert.doesNotMatch(workflow, /^  pull_request:/m, `${phase} release validation must be dispatch-only`);
+  assert.match(workflow, /^  workflow_dispatch:/m, `${phase} must retain exact-SHA dispatch`);
+  assert.match(workflow, /cancel-in-progress:\s*true/, `${phase} must cancel stale dispatch runs`);
 }
 
 const validNameStatus = Buffer.from('M\0owned/file.js\0R100\0old/name.js\0new/name.js\0');
