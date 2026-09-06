@@ -1,7 +1,10 @@
 const READ_SCOPES = Object.freeze(["auto", "selection", "function", "neighborhood", "binary", "project", "runtime"]);
 
 export function analysisToolContract(toolRegistry, toolName) {
-  const tool = toolRegistry?.get?.(String(toolName));
+  if (typeof toolName !== 'string' || !toolName) {
+    throw new Error(`unknown-analysis-tool:${String(toolName)}`);
+  }
+  const tool = toolRegistry?.get?.(toolName);
   if (!tool) {
     throw new Error(`unknown-analysis-tool:${toolName}`);
   }
@@ -21,30 +24,35 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
   const errors = [];
 
   for (const cap of capabilities) {
-    if (!cap.agentTool) continue;
-    const tool = toolRegistry?.get?.(cap.agentTool);
+    if (cap.agentTool == null) continue;
     const rowErrors = [];
-    const toolPresent = Boolean(tool);
-
-    if (!toolPresent) {
-      rowErrors.push(`missing-tool:${cap.agentTool}`);
+    let tool = null;
+    let toolPresent = false;
+    if (typeof cap.agentTool !== 'string' || !cap.agentTool) {
+      rowErrors.push(`invalid-agent-tool-id:${String(cap.agentTool)}`);
     } else {
-      if (tool.mutability !== "read-only") {
-        rowErrors.push(`analysis-tool-not-read-only:${cap.agentTool}`);
-      }
-      if (tool.needsApproval) {
-        rowErrors.push(`analysis-tool-needs-approval:${cap.agentTool}`);
-      }
+      tool = toolRegistry?.get?.(cap.agentTool);
+      toolPresent = Boolean(tool);
+      if (!toolPresent) {
+        rowErrors.push(`missing-tool:${cap.agentTool}`);
+      } else {
+        if (tool.mutability !== "read-only") {
+          rowErrors.push(`analysis-tool-not-read-only:${cap.agentTool}`);
+        }
+        if (tool.needsApproval) {
+          rowErrors.push(`analysis-tool-needs-approval:${cap.agentTool}`);
+        }
 
-      const seenScopes = new Set();
-      for (const s of tool.scopeSupport || []) {
-        if (!READ_SCOPES.includes(s)) {
-          rowErrors.push(`invalid-tool-scope:${cap.agentTool}:${s}`);
+        const seenScopes = new Set();
+        for (const s of tool.scopeSupport || []) {
+          if (!READ_SCOPES.includes(s)) {
+            rowErrors.push(`invalid-tool-scope:${cap.agentTool}:${s}`);
+          }
+          if (seenScopes.has(s)) {
+            rowErrors.push(`duplicate-tool-scope:${cap.agentTool}:${s}`);
+          }
+          seenScopes.add(s);
         }
-        if (seenScopes.has(s)) {
-          rowErrors.push(`duplicate-tool-scope:${cap.agentTool}:${s}`);
-        }
-        seenScopes.add(s);
       }
     }
 

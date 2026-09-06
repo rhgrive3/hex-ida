@@ -100,7 +100,11 @@ function priorityName(value) {
   for (const [k, v] of Object.entries(ANALYSIS_PRIORITY)) {
     if (v === value) return k;
   }
-  return typeof value === 'string' ? value : 'current';
+  // Unknown numeric priorities are valid scheduling input (priorityValue
+  // accepts any non-negative safe integer). Never fabricate 'current' for
+  // them: return the canonical value itself so lifecycle telemetry matches
+  // the actual queue ordering key.
+  return value;
 }
 
 export class AnalysisScheduler {

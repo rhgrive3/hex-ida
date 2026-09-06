@@ -250,8 +250,18 @@ export class RemoteCollaborationChannel {
   async send(envelope) {
     const checked = this.gate.validate(envelope);
     if (!checked.ok) return { status: 'rejected', reason: checked.reason };
-    await this.transport.send(envelope);
-    return { status: 'sent', envelopeId: envelope.envelopeId };
+    const result = await this.transport.send(envelope);
+    // Fail closed: the canonical HTTP transport only verifies the
+    // authorization proof locally (`verified-and-authorized-for-channel-send`)
+    // and performs no delivery I/O. Never promote verification-only (or any
+    // non-delivery acknowledgement) to `sent`.
+    if (result?.status === 'sent' && result?.envelopeId === envelope.envelopeId) {
+      return Object.freeze({ status: 'sent', envelopeId: envelope.envelopeId });
+    }
+    if (result && typeof result === 'object' && typeof result.status === 'string' && result.status !== 'sent') {
+      return Object.freeze({ status: result.status, envelopeId: envelope.envelopeId });
+    }
+    return Object.freeze({ status: 'rejected', reason: 'remote-transport-delivery-unconfirmed', envelopeId: envelope.envelopeId });
   }
 
   receive(envelope) {
