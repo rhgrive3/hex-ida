@@ -40,13 +40,11 @@ test('the deployed Capstone build really opens RISC-V64 with the compressed exte
 });
 
 test('RISC-V decode support is declared only where the deployed bundle proves it', () => {
-  // Phase 6 declares RISC-V decode through the architecture plugin and the
-  // capability profile. The legacy DEPLOYED_CAPSTONE_SUPPORT map describes the
-  // two architectures the legacy probe worker offers and is left alone here so
-  // no capability is claimed by editing a constant instead of probing.
+  // The preceding bundle probe proves RV64+C can actually be opened with
+  // structured detail, so the deployed capability map must expose the same fact.
   assert.equal(DEPLOYED_CAPSTONE_SUPPORT.arm64, true);
   assert.equal(DEPLOYED_CAPSTONE_SUPPORT.x86_64, true);
-  assert.equal(Object.prototype.hasOwnProperty.call(DEPLOYED_CAPSTONE_SUPPORT, 'riscv64'), false);
+  assert.equal(DEPLOYED_CAPSTONE_SUPPORT.riscv64, true);
 });
 
 test('instruction length comes from the encoding, and malformed widths fail closed', () => {
