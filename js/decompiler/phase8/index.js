@@ -29,7 +29,7 @@ import { DCE_PASS, runDcePass } from './dce.js';
 import { INDUCTION_PASS, runInductionPass } from './induction.js';
 import { STRUCTURING_PASS, runStructuringPass } from './structuring.js';
 import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
-import { PROVIDER_PASS, runProviderPass } from './providers.js';
+import { PROVIDER_INTERFACE_VERSION, PROVIDER_PASS, REGISTERED_PROVIDERS, runProviderPass } from './providers.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
@@ -134,15 +134,30 @@ export function phase8Passes({ stages = null } = {}) {
     .flatMap((stageIndex) => orderWithinStage(byStage.get(stageIndex))));
 }
 
+function providerRegistryMaterial(providers) {
+  return [...providers]
+    .map((provider) => ({
+      id: provider.id,
+      version: provider.version,
+      interfaceVersion: provider.interfaceVersion,
+      kinds: [...(provider.kinds ?? [])].sort(),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id)
+      || String(left.version).localeCompare(String(right.version))
+      || left.kinds.join(',').localeCompare(right.kinds.join(',')));
+}
+
 /**
  * Identity of the whole optimizer set.
  *
- * Adding, removing or version-bumping any pass changes this digest, which is
- * part of Phase 8 artifact key material. That is what makes a result produced by
- * an older optimizer set unservable for a newer one, rather than merely
- * discouraged (EP-005 evidence-invalidation rule).
+ * Adding, removing or changing the contract of any pass changes this digest,
+ * which is part of Phase 8 artifact key material. Provider identity is included
+ * only when the provider pass is present, so provider refinements cannot leave
+ * stale provider-derived artifacts behind or invalidate unrelated stage sets.
  */
-export function passRegistryDigest(passes = phase8Passes()) {
+export function passRegistryDigest(passes = phase8Passes(), providers = REGISTERED_PROVIDERS) {
+  const hasProviderPass = passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
+  const providerRegistry = hasProviderPass ? providerRegistryMaterial(providers) : null;
   return stableDigest(passes.map(({ descriptor }) => ({
     id: descriptor.id,
     version: descriptor.version,
@@ -151,7 +166,12 @@ export function passRegistryDigest(passes = phase8Passes()) {
     consumes: descriptor.consumes,
     preserves: descriptor.preserves,
     invalidates: descriptor.invalidates,
+    produces: descriptor.produces,
     contractVersion: descriptor.contractVersion,
+    ...(descriptor.id === PROVIDER_PASS.id ? {
+      providerInterfaceVersion: PROVIDER_INTERFACE_VERSION,
+      providers: providerRegistry,
+    } : {}),
   })));
 }
 
@@ -218,11 +238,13 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
 export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
   const passes = phase8Passes({ stages: enabledStages });
-  // The digest covers the passes that actually ran. A ledger produced with the
-  // optimizer stages disabled must never be servable for a request that wanted
-  // them, and a digest over the full registry would make those two ledgers
-  // indistinguishable.
-  const registryDigest = passRegistryDigest(passes);
+  // The digest covers the passes and refinement providers that actually ran.
+  // Disabled/custom provider sets therefore cannot reuse a provider artifact
+  // produced under a different refinement registry.
+  const providers = context.opts?.phase8Providers === false
+    ? []
+    : (context.providers ?? REGISTERED_PROVIDERS);
+  const registryDigest = passRegistryDigest(passes, providers);
   let authoritative;
   try {
     authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
