@@ -193,13 +193,16 @@ function captureAnalysisBinding(app, resolved = {}) {
   const epoch = epochOf(app);
   const sliceIndex = strictInteger(storeValue(app, 'sliceIndex'), -1);
   const symbolsGen = strictInteger(symbols?.gen, 0);
+  const program = resolved.program ?? app?.program ?? null;
   return Object.freeze({
     epoch,
     sliceIndex,
     symbols,
     symbolsGen,
     fields:resolved.fields ?? app?.fields ?? null,
-    program:resolved.program ?? app?.program ?? null,
+    program,
+    programPublished:program != null && app?.program === program,
+    programRegionKey:program == null ? null : execRegions(app).map((item) => item.id).join('|'),
     shapes:resolved.shapes ?? app?.shapes ?? null,
     region,
     regionId:region?.id ?? null,
@@ -215,7 +218,16 @@ function analysisBindingCurrent(app, binding) {
   const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
   if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
   if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
-  if (binding.program != null && app?.program !== binding.program) return false;
+  if (binding.program != null) {
+    if (binding.programPublished) {
+      if (app?.program !== binding.program) return false;
+    } else {
+      if (binding.program.symbols !== binding.symbols) return false;
+      const programGen = strictInteger(binding.program.gen, null);
+      if (programGen == null || programGen !== binding.symbolsGen) return false;
+      if (execRegions(app).map((item) => item.id).join('|') !== binding.programRegionKey) return false;
+    }
+  }
   if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
   return (region?.id ?? null) === binding.regionId;

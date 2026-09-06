@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { InvestigationService, __investigationInternalsForTests } from '../../js/analysis/investigation-service.js';
 
-const { budgetProfileCovers } = __investigationInternalsForTests;
+const { budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent } = __investigationInternalsForTests;
 
 function scanFor(region, limits) {
   const callCount = Math.min(3, limits.callLimit);
@@ -155,4 +155,36 @@ test('partial settled stronger profile is retried even while weaker complete cac
   const repaired = await service.buildProgram(larger);
   assert.equal(repaired.completeness.complete, true);
   assert.equal(calls.length, 3);
+});
+
+test('prepareGoal can bind a returned partial profile without replacing a complete app.program', async () => {
+  let failedLarger = false;
+  const { app, service, calls } = flakyFixture({
+    failWhen:(limits) => {
+      if (limits.callLimit !== 4 || failedLarger) return false;
+      failedLarger = true;
+      return true;
+    },
+  });
+  app.fields = {};
+  app.store = { get:(key) => key === 'sliceIndex' ? 0 : null };
+  app.codeRegion = () => app.programRegions()[0];
+  app.analysisQueries = { snapshot:async () => ({ snapshotId:'snapshot-3853-binding' }) };
+  service.collectStrings = async () => Object.assign([], { complete:true });
+
+  const complete = await service.buildProgram(high);
+  assert.equal(complete.completeness.complete, true);
+  assert.strictEqual(app.program, complete);
+  const publishedBinding = captureAnalysisBinding(app, { program:complete, fields:app.fields });
+  assert.equal(analysisBindingCurrent(app, publishedBinding), true);
+  app.program = null;
+  assert.equal(analysisBindingCurrent(app, publishedBinding), false, 'published artifact replacement must remain stale');
+  app.program = complete;
+
+  const context = await service.prepareGoal({ id:'lookup', expects:{} }, larger);
+  assert.equal(context.program.completeness.complete, false);
+  assert.notStrictEqual(context.program, complete);
+  assert.strictEqual(app.program, complete, 'partial profile must not replace the complete published artifact');
+  assert.equal(context.binding.programPublished, false);
+  assert.equal(calls.length, 2);
 });
