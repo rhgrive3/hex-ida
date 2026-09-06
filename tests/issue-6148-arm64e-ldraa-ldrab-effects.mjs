@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { categoryOf } from '../js/arm64.js';
 import {
   isArm64ePointerAuthenticationInstruction,
   liftArm64eEffects,
@@ -21,9 +22,10 @@ for (const mnemonic of authLoadMnemonics) {
   assert.equal(isArm64ePointerAuthenticationInstruction({ mnemonic }), true, `${mnemonic} recognized`);
   assert.equal(inventory.has(mnemonic), true, `${mnemonic} in inventory`);
   assert.equal(arities[mnemonic], 2, `${mnemonic} has arity 2`);
+  assert.equal(categoryOf(mnemonic), 'load', `${mnemonic} is categorized as a load`);
 }
 
-// 2. LDRAA Xt, [Xn]: Key A (APIAKey), 64-bit load, no writeback
+// 2. LDRAA Xt, [Xn]: Data Key A (APDAKey), 64-bit load, no writeback
 const ldraaBundle = liftArm64eEffects({
   mnemonic: 'ldraa',
   instructionId: 'i_ldraa',
@@ -33,10 +35,11 @@ assert.ok(ldraaBundle, 'ldraa produces bundle');
 assert.equal(ldraaBundle.completeness, 'exact-with-intrinsic');
 assert.equal(ldraaBundle.metadata.destinationRegister, 'x0');
 assert.equal(ldraaBundle.metadata.baseRegister, 'x1');
-assert.equal(ldraaBundle.metadata.keyIdentity, 'APIAKey');
+assert.equal(ldraaBundle.metadata.keyIdentity, 'APDAKey');
 assert.equal(ldraaBundle.metadata.preIndex, false);
 assert.equal(ldraaBundle.possibleFaults.some((f) => f.kind === 'pointer-authentication-fault'), true);
 assert.equal(ldraaBundle.possibleFaults.some((f) => f.kind === 'data-abort'), true);
+assert.ok(ldraaBundle.operations.some((op) => op.kind === 'register-read' && op.register.registerId === 'APDAKey'));
 
 // Verify memory read and register write operations
 const memReadOp = ldraaBundle.operations.find((op) => op.kind === 'memory-read');
@@ -47,7 +50,7 @@ assert.ok(destWriteOp, 'register-write to x0 exists');
 const baseWriteOp = ldraaBundle.operations.find((op) => op.kind === 'register-write' && op.register.registerId === 'x1');
 assert.equal(baseWriteOp, undefined, 'no writeback to x1');
 
-// 3. LDRAB Xt, [Xn, #imm]: Key B (APIBKey), no writeback
+// 3. LDRAB Xt, [Xn, #imm]: Data Key B (APDBKey), no writeback
 const ldrabBundle = liftArm64eEffects({
   mnemonic: 'ldrab',
   instructionId: 'i_ldrab',
@@ -56,9 +59,10 @@ const ldrabBundle = liftArm64eEffects({
 assert.ok(ldrabBundle, 'ldrab produces bundle');
 assert.equal(ldrabBundle.metadata.destinationRegister, 'x2');
 assert.equal(ldrabBundle.metadata.baseRegister, 'x3');
-assert.equal(ldrabBundle.metadata.keyIdentity, 'APIBKey');
+assert.equal(ldrabBundle.metadata.keyIdentity, 'APDBKey');
 assert.equal(ldrabBundle.metadata.displacement, '16');
 assert.equal(ldrabBundle.metadata.preIndex, false);
+assert.ok(ldrabBundle.operations.some((op) => op.kind === 'register-read' && op.register.registerId === 'APDBKey'));
 
 // 4. Pre-index variant: writeback to base register
 const preIndexBundle = liftArm64eEffects({
