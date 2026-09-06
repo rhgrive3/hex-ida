@@ -49,6 +49,41 @@ function positiveSafeIntegerScalar(value) {
   return null;
 }
 
+function abortError(signal, fallback = 'Analysis query aborted') {
+  const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
+  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  if (!error.code) error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function requestWithSignal(request, signal) {
+  throwIfAborted(signal);
+  if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  if (!signal?.addEventListener) return Promise.resolve(request);
+  const task = Promise.resolve(request);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request.cancel?.(); } catch { /* best effort */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 function pageOf(page = {}) {
   const rawOffset = page.offset ?? page.start ?? 0;
   const rawLimit = page.limit ?? page.size ?? 200;
@@ -506,7 +541,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async callers(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.callersOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -524,7 +559,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async callees(_snapshot, id, page = {}, options = {}) {
       const range = rangeFor(app, id);
       if (!range.ok || typeof app?.ensureProgram !== 'function') return unsupported(id, range.reason || 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.calleesOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -542,7 +577,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -656,7 +691,9 @@ export function createAppAnalysisQueryAdapter(app) {
         return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
       }
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
-      const value = await app.backend.search(query, options.onProgress);
+      throwIfAborted(options.signal);
+      const request = app.backend.search(query, options.onProgress);
+      const value = await requestWithSignal(request, options.signal);
       return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 
