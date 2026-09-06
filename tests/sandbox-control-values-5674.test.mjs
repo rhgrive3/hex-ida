@@ -47,6 +47,8 @@ test('timeout accepts only positive safe-integer numbers and preserves the 50 ms
   assert.equal(normalizeSandboxTimeout(49), 50);
   assert.equal(normalizeSandboxTimeout(50), 50);
   assert.equal(normalizeSandboxTimeout(30000), 30000);
+  assert.equal(normalizeSandboxTimeout(2_147_483_647), 2_147_483_647);
+  assert.equal(normalizeSandboxTimeout(Number.MAX_SAFE_INTEGER), 2_147_483_647);
 
   for (const value of [['50'], true, '50', 1.5, 0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, {}, new Number(50)]) {
     assert.equal(normalizeSandboxTimeout(value), null, `must reject ${String(value)}`);
