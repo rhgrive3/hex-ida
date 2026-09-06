@@ -3,27 +3,6 @@ name: Phase 7 release validation
 # The permanent Phase 7 verifier, with an exact-SHA dispatch path so proving a
 # specific head never requires creating a throwaway PR (EP-012).
 on:
-  push:
-    branches:
-      - main
-      - 'phase7/**'
-    paths:
-      - 'js/analysis/**'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'tests/phase7/**'
-      - 'tools/validation/phase7/**'
-      - '.github/workflows/phase7-release-validation.yml'
-      - 'package.json'
-  pull_request:
-    paths:
-      - 'js/analysis/**'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'tests/phase7/**'
-      - 'tools/validation/phase7/**'
-      - '.github/workflows/phase7-release-validation.yml'
-      - 'package.json'
   workflow_dispatch:
     inputs:
       sha:
