@@ -233,6 +233,7 @@ export function decodeWorkerAnalysisPayload(payload) {
     throw new TypeError('analysis-artifact-payload-codec-mismatch');
   }
   const references = new Map();
+  const activeReferences = new Set();
   let nextReferenceId = 0;
   const register = (node, out, keys) => {
     if (legacy) {
@@ -244,6 +245,11 @@ export function decodeWorkerAnalysisPayload(payload) {
     if (i !== nextReferenceId || references.has(i)) invalidPayloadNode();
     nextReferenceId++;
     references.set(i, out);
+    activeReferences.add(i);
+    return out;
+  };
+  const complete = (node, out) => {
+    if (!legacy) activeReferences.delete(node.i);
     return out;
   };
   const decode = (node) => {
@@ -282,6 +288,7 @@ export function decodeWorkerAnalysisPayload(payload) {
         exactPayloadKeys(node, ['t', 'i']);
         const i = canonicalReferenceId(node.i);
         if (!references.has(i)) invalidPayloadNode();
+        if (activeReferences.has(i)) throw new TypeError('analysis-artifact-payload-cyclic');
         return references.get(i);
       }
       case 'date': {
@@ -291,22 +298,22 @@ export function decodeWorkerAnalysisPayload(payload) {
         try { iso = date.toISOString(); }
         catch { invalidPayloadNode(); }
         if (iso !== node.v) invalidPayloadNode();
-        return register(node, date, ['t', 'v']);
+        return complete(node, register(node, date, ['t', 'v']));
       }
       case 'array-buffer': {
         const out = canonicalBytes(node.v).buffer;
-        return register(node, out, ['t', 'v']);
+        return complete(node, register(node, out, ['t', 'v']));
       }
       case 'data-view': {
         const bytes = canonicalBytes(node.v);
-        return register(node, new DataView(bytes.buffer), ['t', 'v']);
+        return complete(node, register(node, new DataView(bytes.buffer), ['t', 'v']));
       }
       case 'typed-array': {
         if (typeof node.c !== 'string') invalidPayloadNode();
         const ctor = TYPED_ARRAYS.get(node.c);
         if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${node.c}`);
         const out = new ctor(canonicalTypedArrayValues(node.c, node.v));
-        return register(node, out, ['t', 'c', 'v']);
+        return complete(node, register(node, out, ['t', 'c', 'v']));
       }
       case 'map': {
         const out = register(node, new Map(), ['t', 'v']);
@@ -317,7 +324,7 @@ export function decodeWorkerAnalysisPayload(payload) {
           if (out.has(key)) invalidPayloadNode();
           out.set(key, decode(tuple[1]));
         }
-        return out;
+        return complete(node, out);
       }
       case 'set': {
         const out = register(node, new Set(), ['t', 'v']);
@@ -326,7 +333,7 @@ export function decodeWorkerAnalysisPayload(payload) {
           if (out.has(value)) invalidPayloadNode();
           out.add(value);
         }
-        return out;
+        return complete(node, out);
       }
       case 'array': {
         const entries = wireArray(node.v, { dense:false });
@@ -334,7 +341,7 @@ export function decodeWorkerAnalysisPayload(payload) {
         for (let i = 0; i < entries.length; i++) {
           if (Object.hasOwn(entries, i)) out[i] = decode(entries[i]);
         }
-        return out;
+        return complete(node, out);
       }
       case 'object': {
         if (typeof node.n !== 'boolean') invalidPayloadNode();
@@ -350,7 +357,7 @@ export function decodeWorkerAnalysisPayload(payload) {
           index++;
           Object.defineProperty(out, key, { value:decode(entry), enumerable:true, configurable:true, writable:true });
         }
-        return out;
+        return complete(node, out);
       }
       default: throw new TypeError(`analysis-artifact-payload-node-unsupported:${node.t}`);
     }
