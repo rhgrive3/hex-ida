@@ -144,7 +144,6 @@ await check('standard-agent-scope-regression', () => {
   assert.equal(locked.effectiveScope, 'function');
 });
 
-
 function staticModuleSpecifiers(source) {
   const matches = [];
   for (const pattern of [
@@ -157,15 +156,19 @@ function staticModuleSpecifiers(source) {
   return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
 }
 
+const DYNAMIC_IMPORT_PATTERN = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\(/;
+
 await check('dev-context-packet-dependency-boundary', () => {
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
   assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
-  assert.doesNotMatch(source, /\bimport\s*\(/, 'context packet must not gain dynamic import authority');
+  assert.doesNotMatch(source, DYNAMIC_IMPORT_PATTERN, 'context packet must not gain dynamic import authority');
   assert.deepEqual(
     staticModuleSpecifiers("import './side-effect.js';\nexport { value } from './re-export.js';\nexport * as storage from '../storage.js';"),
     ['./side-effect.js', './re-export.js', '../storage.js'],
   );
-  assert.match("void import('./dynamic.js')", /\bimport\s*\(/);
+  assert.match("void import('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import /* dependency */ ('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import // dependency\n('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
