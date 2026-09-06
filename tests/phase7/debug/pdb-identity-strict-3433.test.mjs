@@ -77,6 +77,9 @@ test('#3433 malformed CodeView components cannot be laundered into an authoritat
     { guid: true, age: 1 },
     { guid: GUID, age: true },
     { guid: GUID, age: -1 },
+    { guid: 'not-a-guid', age: 1 },
+    { guid: 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEZ', age: 1 },
+    { guid: GUID, age: 0x1_0000_0000 },
     { guid: GUID, age: Number.MAX_SAFE_INTEGER + 1 },
   ];
   for (const codeView of malformed) {
