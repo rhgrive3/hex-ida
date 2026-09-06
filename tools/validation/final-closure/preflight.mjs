@@ -97,6 +97,7 @@ const T061_MAINTENANCE_EVIDENCE_PATH = 'specs/005-analysis-final-closure/evidenc
 const T061_MAINTENANCE_TRANSFER_PATH = 'tests/final-closure/t052/canonical-operation-registry.test.mjs';
 const T061_MAINTENANCE_COMPONENT_CODE_PATHS = Object.freeze([
   'package.json',
+  'tools/validation/phase12/denominator-inventory.json',
   'tools/validation/final-closure/preflight.mjs',
   'tests/final-closure/preflight.test.mjs',
   'tests/final-closure/fixture-maintenance.test.mjs',
@@ -111,7 +112,7 @@ const T061_MAINTENANCE_DATA_MODEL_SUFFIX_PREFIX = '\n## T061 Stage A maintenance
 // digest here so a later component cannot rewrite an old section and restore
 // a plausible-looking T061 paragraph at the end of the file.
 const T061_MAINTENANCE_DATA_MODEL_SUFFIX_SHA256 =
-  'e9eb21ec63c25cfc3034d63f8a2178505854d807568f9163d8604d1be0f8309d';
+  '92cd5d2e94f7a1b01b580c42bdfd6bcd8d4ddede0e0077717701f6e424f731dc';
 const ROLLING_GATE_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CHECKPOINT_EVIDENCE_ALLOWED_PATHS = Object.freeze({
   STAGE_A: Object.freeze([

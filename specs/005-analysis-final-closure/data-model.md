@@ -375,14 +375,6 @@ object-key ordering may vary while every current-main field and command stays
 equal. Every command from the authenticated integration package must also
 remain an ordered subsequence of the corresponding candidate command.
 
-When a refetched current-main commit replaces a sealed owner blob during a
-moving-main reconciliation, `verifyTaskHandoffs` may authorize that path only
-with the authenticated `currentMainSha`: it must be an ancestor of the
-integration head, the integration blob must equal the current-main blob, and
-the sealed handoff blob must differ. Generated paths and arbitrary integration
-blobs remain sealed, and omitting `currentMainSha` preserves the original
-fail-closed behavior.
-
 For this data-model path, every C revision MUST retain the complete I
 `data-model.md` byte sequence as an exact prefix. The final C revision MUST
 append only the bounded T061 suffix beginning with this amendment heading;
@@ -394,3 +386,16 @@ reinserted, or followed by unrelated prose.
 The maintenance executor records the canonical runtime ephemeral manifest,
 including ignored paths, before and after every gate. The required candidate
 state callback remains an additional assertion for runtime invariants.
+
+This bounded maintenance also synchronizes the Phase 12 denominator source
+markers from the `js/pattern/index.js` facade to `js/pattern/index-core.js`.
+The correction is a fixture-contract update; it does not change the pattern
+implementation or promote an excluded capability.
+
+When a refetched current-main commit replaces a sealed owner blob during a
+moving-main reconciliation, `verifyTaskHandoffs` may authorize that path only
+with the authenticated `currentMainSha`: it must be an ancestor of the
+integration head, the integration blob must equal the current-main blob, and
+the sealed handoff blob must differ. Generated paths and arbitrary integration
+blobs remain sealed, and omitting `currentMainSha` preserves the original
+fail-closed behavior.

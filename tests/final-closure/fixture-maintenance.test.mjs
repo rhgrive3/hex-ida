@@ -40,6 +40,7 @@ const T061_RECEIPT_SCHEMA = 'hex-final-closure-t061-maintenance-transfer/v1';
 const T061_PRODUCT_SCHEMA = 'hex-final-closure-t061-maintenance-product/v1';
 const T061_MAINTENANCE_PATHS = Object.freeze([
   'package.json',
+  'tools/validation/phase12/denominator-inventory.json',
   PREFLIGHT_PATH,
   PREFLIGHT_TEST_PATH,
   T061_TEST_PATH,
@@ -49,6 +50,7 @@ const T061_MAINTENANCE_PATHS = Object.freeze([
   DATA_MODEL_PATH,
 ]);
 const T061_REQUIRED_COMPONENT_PATHS = Object.freeze([
+  'tools/validation/phase12/denominator-inventory.json',
   PREFLIGHT_PATH,
   T061_TEST_PATH,
   TASKS_PATH,
@@ -275,6 +277,8 @@ function createFixture({ packageTransform = null, dataModelTransform = null, tas
   writeFile(root, PREFLIGHT_PATH, `${sourcePreflight}\n// T061 fixture component boundary\n`);
   const sourceFixtureTest = fs.readFileSync(path.join(SOURCE_ROOT, T061_TEST_PATH), 'utf8');
   writeFile(root, T061_TEST_PATH, `${sourceFixtureTest}\n// T061 fixture replay boundary\n`);
+  writeFile(root, 'tools/validation/phase12/denominator-inventory.json',
+    fs.readFileSync(path.join(SOURCE_ROOT, 'tools/validation/phase12/denominator-inventory.json'), 'utf8'));
   const sourceDataModel = fs.readFileSync(path.join(SOURCE_ROOT, DATA_MODEL_PATH), 'utf8');
   const initialDataModel = splitComponent
     ? readAt(SOURCE_ROOT, PRIOR_COMPONENT_SHA, DATA_MODEL_PATH)
@@ -457,7 +461,8 @@ function createFixture({ packageTransform = null, dataModelTransform = null, tas
   const priorEntryPaths = new Set(priorInventory.entries.map((entry) => entry.path));
   assert.deepEqual(
     pathsAtEvidence.filter((repoPath) => !priorEntryPaths.has(repoPath)),
-    [...T049_GENERATED_PATHS, T061_TEST_PATH, T061_EVIDENCE_PATH]
+    [...T049_GENERATED_PATHS, T061_TEST_PATH, T061_EVIDENCE_PATH,
+      'tools/validation/phase12/denominator-inventory.json']
       .filter((repoPath) => !priorEntryPaths.has(repoPath))
       .sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
     'fixture must account for only the bounded generated and T061 paths',

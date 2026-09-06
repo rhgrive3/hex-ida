@@ -1171,6 +1171,7 @@
       "maintenanceClass": "STAGE_A_MAINTENANCE",
       "allowedPaths": [
         "package.json",
+        "tools/validation/phase12/denominator-inventory.json",
         "tools/validation/final-closure/preflight.mjs",
         "tests/final-closure/preflight.test.mjs",
         "tests/final-closure/fixture-maintenance.test.mjs",
