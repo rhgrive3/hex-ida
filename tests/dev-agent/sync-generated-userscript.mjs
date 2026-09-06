@@ -20,8 +20,8 @@ assert.deepEqual(CANONICAL_GENERATED_OUTPUT_PATHS, [
   'userscript/release-version.json',
 ]);
 
-// Protected main must receive generated output inside the PR transaction, never
-// from a post-merge direct push.
+// During active development main-targeting PRs may keep generated output ephemeral;
+// release remains the explicit committed generated-output transaction.
 assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'push', refName: 'main', changedPaths: [TEMPLATE, RELEASE] }).canCommit, false);
 assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'workflow_dispatch', refName: 'main', changedPaths: [RELEASE] }).canCommit, false);
 assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'push', refName: 'release', changedPaths: [TEMPLATE] }).canCommit, true);
@@ -29,7 +29,7 @@ assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'workflow_dispat
 assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'push', refName: 'release', changedPaths: [TEMPLATE, 'js/app.js'] }).canCommit, false);
 assert.equal(resolveCanonicalGeneratedOutputCommit({ eventName: 'push', refName: 'release', changedPaths: [TEMPLATE], deletedPaths: [RELEASE] }).canCommit, false);
 
-assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/a', baseRef: 'main' }), 'enforce');
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/a', baseRef: 'main' }), 'ephemeral');
 assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/a', baseRef: 'release' }), 'enforce');
 assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'fix/a', baseRef: 'develop' }), 'ephemeral');
 assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'dev-agent-hardening/integration/a', baseRef: 'develop' }), 'enforce');
@@ -96,9 +96,6 @@ try {
   sh(work, ['-c', 'user.name=tester', '-c', 'user.email=tester@example.invalid', 'commit', '-m', 'seed']);
   sh(work, ['push', '-u', 'origin', 'HEAD:refs/heads/main']);
 
-  // A committed deletion can be recreated as an untracked file by the build.
-  // The old exact-diff gate then reports clean, so tracked-file authority must
-  // fail closed before the diff can accept the transaction.
   const deletedOutputWork = path.join(sandbox, 'deleted-output');
   sh(sandbox, ['clone', origin, 'deleted-output']);
   sh(deletedOutputWork, ['rm', '--', RELEASE]);
