@@ -243,5 +243,11 @@
     return publishDecodedRow(Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail }));
   }
 
-  root.HexX86CapstoneStructured = Object.freeze({ ABI, verifyVersion, parseInstruction, hasRuntimeProvenance });
+  const adapter = Object.freeze({ ABI, verifyVersion, parseInstruction, hasRuntimeProvenance });
+  Object.defineProperty(root, 'HexX86CapstoneStructured', {
+    value:adapter,
+    enumerable:true,
+    configurable:false,
+    writable:false,
+  });
 })(globalThis);

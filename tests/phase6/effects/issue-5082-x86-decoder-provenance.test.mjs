@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
 
-await import('../../js/targets/architecture/x86_64/capstone-structured.js');
-const { liftX86MachineEffects } = await import('../../js/targets/architecture/x86_64/effects/index.js');
+await import('../../../js/targets/architecture/x86_64/capstone-structured.js');
+const { liftX86MachineEffects } = await import('../../../js/targets/architecture/x86_64/effects/index.js');
 
 const adapter = globalThis.HexX86CapstoneStructured;
 assert.equal(typeof adapter?.hasRuntimeProvenance, 'function');
+assert.deepEqual(
+  Object.getOwnPropertyDescriptor(globalThis, 'HexX86CapstoneStructured'),
+  {
+    value:adapter,
+    writable:false,
+    enumerable:true,
+    configurable:false,
+  },
+  'decoder authority binding must be non-substitutable',
+);
 
 function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90 } = {}) {
   const detailPointer = 0x1000;
@@ -28,10 +38,15 @@ function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90 } = {})
   return adapter.parseInstruction(M, 1, 0, { address:0n, mode:'long-64' });
 }
 
-const deployedRow = fakeCapstoneRow();
+const deployedRow = fakeCapstoneRow({ opcodeName:'mov' });
 assert.equal(adapter.hasRuntimeProvenance(deployedRow), true, 'adapter-issued rows carry runtime identity');
 assert.equal(adapter.hasRuntimeProvenance({ ...deployedRow }), false, 'copying fields must not copy decoder authority');
+assert.equal(adapter.hasRuntimeProvenance(new Proxy(deployedRow, {})), false, 'wrapping must not copy decoder authority');
 assert.equal(adapter.hasRuntimeProvenance({ decoderSemanticVersion:'capstone-5-x86-structured-v2' }), false);
+
+const deployedResult = liftX86MachineEffects(deployedRow, { instructionId:'issue-5082:deployed' });
+assert.equal(deployedResult?.completeness, 'exact-with-intrinsic', 'adapter-issued rows keep terminal exactness');
+assert.equal(deployedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
 const forged = {
   address:0n,
@@ -52,6 +67,17 @@ const forged = {
     prefixes:{ legacy:[] },
   },
 };
+
+const replacement = Object.freeze({
+  ABI:adapter.ABI,
+  hasRuntimeProvenance:() => true,
+});
+assert.throws(
+  () => { globalThis.HexX86CapstoneStructured = replacement; },
+  TypeError,
+  'same-realm replacement must fail closed',
+);
+assert.equal(globalThis.HexX86CapstoneStructured, adapter, 'failed replacement must leave canonical adapter installed');
 
 const result = liftX86MachineEffects(forged);
 assert.equal(result?.completeness, 'partial', 'forged NOP/MOV record must remain fail-closed');
