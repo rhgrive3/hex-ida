@@ -316,11 +316,31 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
   const byId = new Map(baseline.observations.map((observation) => [observation.id, observation]));
   let semanticMismatchCount = 0;
   let unknownSafetyRegressionCount = 0;
+  let renderProvenanceLossCount = 0;
+  let renderProvenanceUnboundCount = 0;
   const details = [];
 
   for (const observation of observations) {
     const before = byId.get(observation.id);
     if (!before) { details.push({ id: observation.id, kind: 'unbaselined' }); continue; }
+
+    // HEX-C4-03: a semantic render without any provenance map is both lost and
+    // unbound. It must fail the hard-zero gate instead of disappearing behind a
+    // truthy check. Present maps retain the existing loss/snapshot accounting.
+    if (observation.semantic && !observation.renderProvenance) {
+      renderProvenanceLossCount += 1;
+      renderProvenanceUnboundCount += 1;
+      details.push({ id: observation.id, kind: 'render-provenance-missing' });
+    } else if (observation.renderProvenance) {
+      if (Number(observation.renderProvenance.provenanceLoss ?? 0) > 0) {
+        renderProvenanceLossCount += Number(observation.renderProvenance.provenanceLoss);
+        details.push({ id: observation.id, kind: 'render-provenance-loss' });
+      }
+      if (observation.renderProvenance.snapshotId == null) {
+        renderProvenanceUnboundCount += 1;
+        details.push({ id: observation.id, kind: 'render-provenance-missing-snapshot' });
+      }
+    }
 
     if (observation.failure && !before.failure) {
       semanticMismatchCount += 1;
@@ -358,6 +378,8 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
     semanticMismatchCount,
     provenanceLossCount,
     unknownSafetyRegressionCount,
+    renderProvenanceLossCount,
+    renderProvenanceUnboundCount,
     details: details.slice(0, 40),
   };
 }
