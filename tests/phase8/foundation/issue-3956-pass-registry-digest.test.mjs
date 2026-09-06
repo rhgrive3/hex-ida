@@ -61,6 +61,31 @@ test('provider registry changes do not invalidate stage sets without the provide
   assert.equal(passRegistryDigest(passes, before), passRegistryDigest(passes, after));
 });
 
+test('provider-free vertical does not observe provider authority', () => {
+  const createCanonicalAnalysis = () => createAnalysisState({ cfg: {}, ssa: {}, origins: {} });
+  let providerReads = 0;
+  const throwingOutcome = runPhase8Vertical({
+    enabledStages: ['canonical-facts'],
+    analysis: createCanonicalAnalysis(),
+    get providers() {
+      providerReads += 1;
+      throw new Error('unused-provider-authority');
+    },
+  });
+
+  assert.equal(providerReads, 0, 'provider-free stage sets must not read provider authority');
+  assert.equal(throwingOutcome.ledger.published, true,
+    'an unused throwing provider getter must not affect a provider-free vertical');
+
+  const nonIterableOutcome = runPhase8Vertical({
+    enabledStages: ['canonical-facts'],
+    analysis: createCanonicalAnalysis(),
+    providers: 42,
+  });
+  assert.equal(nonIterableOutcome.ledger.published, true,
+    'an unused non-iterable provider value must not affect a provider-free vertical');
+});
+
 test('duplicate provider ids fail closed before registry identity or execution can diverge', () => {
   let executions = 0;
   const first = createProvider({

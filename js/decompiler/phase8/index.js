@@ -248,9 +248,11 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const passes = phase8Passes({ stages: enabledStages });
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
-  // produced under a different refinement registry. Snapshot the selected set
-  // once so a stateful providers accessor cannot change execution after digest.
-  const configuredProviders = context.opts?.phase8Providers === false
+  // produced under a different refinement registry. Provider-free stage sets
+  // must not observe provider authority at all; provider-bearing sets snapshot
+  // that authority once so accessors cannot change execution after digest.
+  const hasProviderPass = passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
+  const configuredProviders = !hasProviderPass || context.opts?.phase8Providers === false
     ? []
     : (context.providers ?? REGISTERED_PROVIDERS);
   const providers = Object.freeze([...configuredProviders]);
