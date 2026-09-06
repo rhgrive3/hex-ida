@@ -60,14 +60,14 @@ function importBudget(name, parser = parseImports) {
   const delay = parser === parseDelayImports;
 
   if (delay) {
-    view.setUint32(0x40, 1, true);
-    view.setUint32(0x44, 0x1060, true);
-    view.setUint32(0x4c, 0x1050, true);
-    view.setUint32(0x50, 0x1040, true);
+    view.setUint32(0x40, 1, true);        // RVA-based delay descriptor
+    view.setUint32(0x44, 0x1060, true);   // library name
+    view.setUint32(0x4c, 0x1050, true);   // IAT
+    view.setUint32(0x50, 0x1040, true);   // INT
   } else {
-    view.setUint32(0x40, 0x1040, true);
-    view.setUint32(0x4c, 0x1060, true);
-    view.setUint32(0x50, 0x1050, true);
+    view.setUint32(0x40, 0x1040, true);   // OriginalFirstThunk
+    view.setUint32(0x4c, 0x1060, true);   // library name
+    view.setUint32(0x50, 0x1050, true);   // FirstThunk
   }
 
   bytes.set(encoder.encode('lib.dll\0'), 0xa0);
@@ -77,7 +77,12 @@ function importBudget(name, parser = parseImports) {
   bytes.set(encoder.encode(`${name}\0`), 0xc2);
 
   const budget = createPEMetadataBudget(image);
-  parser(new ByteView(bytes, { littleEndian: true }), { rva: 0x1000, size: delay ? 64 : 40 }, image, budget);
+  parser(
+    new ByteView(bytes, { littleEndian: true }),
+    { rva: 0x1000, size: delay ? 64 : 40 },
+    image,
+    budget,
+  );
   return { image, budget };
 }
 
@@ -130,7 +135,7 @@ test('#6286 delegated COFF string-table names charge raw bytes', () => {
   const budget = createPEMetadataBudget(image);
   parseCoffSymbols(new ByteView(bytes, { littleEndian: true }), pointer, 1, image, budget);
   assert.equal(image.symbols[0].name, '猫');
-  assert.equal(budget.used.inputBytes, 22);
+  assert.equal(budget.used.inputBytes, 22); // 18-byte record + 3-byte UTF-8 + NUL
 });
 
 test('#6286 no-op delegated parsers preserve lazy metadata creation', () => {

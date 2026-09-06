@@ -76,7 +76,7 @@ function normalFixture(nonzeroDescriptors, includeZeroDescriptor) {
   const nameRva = DIRECTORY_RVA + support;
   const thunkRva = nameRva + 0x20;
   const iatRva = nameRva + 0x30;
-  bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], support);
+  bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], support); // x.dll\0
   for (let i = 0; i < nonzeroDescriptors; i++) {
     const off = i * descriptorSize;
     writeU32(bytes, off, thunkRva);
@@ -95,10 +95,10 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
   const nameRva = DIRECTORY_RVA + support;
   const thunkRva = nameRva + 0x20;
   const iatRva = nameRva + 0x30;
-  bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], support);
+  bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], support); // x.dll\0
   for (let i = 0; i < nonzeroDescriptors; i++) {
     const off = i * descriptorSize;
-    writeU32(bytes, off, 1);
+    writeU32(bytes, off, 1); // dlattrRva: descriptor pointer fields are RVAs
     writeU32(bytes, off + 4, nameRva);
     writeU32(bytes, off + 12, iatRva);
     writeU32(bytes, off + 16, thunkRva);
@@ -126,7 +126,7 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
 
 {
   const fixture = delayFixture(0, true);
-  writeU32(fixture.reader.bytes, 8, 1);
+  writeU32(fixture.reader.bytes, 8, 1); // nonzero ModuleHandleRVA: not an all-zero terminator
   parseDelayImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
   assert.equal(fixture.image.metadata.peMetadata.complete, false);
   assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:malformed-descriptor'));
