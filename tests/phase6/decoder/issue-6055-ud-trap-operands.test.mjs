@@ -26,6 +26,13 @@ function decoded({ family, mnemonic, rawBytes, operands }) {
 }
 
 const reg32 = (id) => ({ type: 'register', access: 'unknown', widthBits: 32, registerId: id });
+const reg64 = (id) => ({ type: 'register', access: 'unknown', widthBits: 64, registerId: id });
+const mem64 = () => ({
+  type: 'memory',
+  access: 'unknown',
+  widthBits: 64,
+  memory: { segment: null, base: 'rax', index: null, scale: 1, displacement: 0n },
+});
 
 function assertTrap(bundle, family) {
   assert.ok(bundle, 'expected a bundle');
@@ -59,4 +66,22 @@ test('6055: malformed UD shapes stay fail-closed', () => {
   assert.equal(threeOp?.completeness, 'partial');
   const ud2WithOps = liftX86ControlEffects(decoded({ family: 'ud2', mnemonic: 'ud2', rawBytes: [0x0f, 0x0b], operands: [reg32('eax')] }));
   assert.equal(ud2WithOps?.completeness, 'partial');
+});
+
+test('6055: UD0/UD1 non-32-bit operands cannot exactify a trap', () => {
+  const wideDestination = liftX86ControlEffects(decoded({
+    family: 'ud0', mnemonic: 'ud0', rawBytes: [0x48, 0x0f, 0xff, 0xc0], operands: [reg64('rax'), reg32('eax')],
+  }));
+  assert.equal(wideDestination?.completeness, 'partial');
+  assert.match(wideDestination?.unknownEffects?.reason ?? '', /operand-shape-unmodelled/);
+
+  const wideRegisterSource = liftX86ControlEffects(decoded({
+    family: 'ud1', mnemonic: 'ud1', rawBytes: [0x48, 0x0f, 0xb9, 0xc0], operands: [reg32('eax'), reg64('rax')],
+  }));
+  assert.equal(wideRegisterSource?.completeness, 'partial');
+
+  const wideMemorySource = liftX86ControlEffects(decoded({
+    family: 'ud0', mnemonic: 'ud0', rawBytes: [0x48, 0x0f, 0xff, 0x00], operands: [reg32('eax'), mem64()],
+  }));
+  assert.equal(wideMemorySource?.completeness, 'partial');
 });
