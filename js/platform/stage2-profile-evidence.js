@@ -39,8 +39,8 @@ function strictString(value, code) {
 }
 function strictSortedStrings(value, code) {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new TypeError(code);
-  return sorted(value);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.trim() !== item)) throw new TypeError(code);
+  return [...new Set(value)].sort();
 }
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
 function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
