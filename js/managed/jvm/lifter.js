@@ -57,6 +57,8 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   while (pc < bytecode.length) {
     const opOffset = pc;
     const opcode = bytecode[pc++];
+    const instructionBoundary = decodeJvmInstructionBoundary(bytecode, opOffset);
+    const semanticOpcode = instructionBoundary.complete ? opcode : -1;
     opSeq++;
 
     const opId = createVMOperationId(methodId, opOffset, opSeq);
@@ -72,7 +74,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     let consumedValues = [];
     let unknownEffects = [];
 
-    switch (opcode) {
+    switch (semanticOpcode) {
       case 0x00: // nop
         mnemonic = 'nop';
         break;
