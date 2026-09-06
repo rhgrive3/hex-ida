@@ -1,5 +1,6 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
+import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -146,8 +147,10 @@ export class AnalysisScheduler {
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
     let artifactId;
-    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
-    catch (error) { return Promise.reject(error); }
+    try {
+      artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
+      assertCanonicalArtifactDescriptor(descriptor);
+    } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
     const priority = priorityValue(request.priority);
@@ -201,21 +204,44 @@ export class AnalysisScheduler {
     return new Promise((resolve,reject)=>{
       let settled=false;
       const listeners=[];
-      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
-        if (settled) return;
+      const detach=(orphaned=false)=>{
+        if (settled) return false;
         settled=true;
         removeSignalListeners(listeners);
         task.consumerCount--; this.activeConsumers--;
-        if (cancelled) this.metrics.cancelledConsumers++;
         if (orphaned&&task.consumerCount===0&&!task.settled&&!task.controller.signal.aborted) {
           this.metrics.orphanCancellations++;
           task.controller.abort(new DOMException('No active consumers','AbortError'));
         }
+        return true;
+      };
+      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
+        if (!detach(orphaned)) return;
+        if (cancelled) this.metrics.cancelledConsumers++;
         fn(value);
+      };
+      const awaitPublishOutcome=(signal)=>{
+        const orphaned=signal!==task.controller.signal;
+        if (!detach(orphaned)) return;
+        task.promise.then(
+          resolve,
+          ()=>{
+            this.metrics.cancelledConsumers++;
+            reject(abortError(signal));
+          },
+        );
+      };
+      const handleAbort=(signal)=>{
+        if (task.phase==='completed') return;
+        if (task.phase==='publish'&&(signal===task.controller.signal||task.consumerCount===1)) {
+          awaitPublishOutcome(signal);
+          return;
+        }
+        finish(reject,abortError(signal),true);
       };
       try {
         for (const signal of active) {
-          const listener=()=>finish(reject,abortError(signal),true);
+          const listener=()=>handleAbort(signal);
           listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
           if (settled) break;
         }
@@ -227,7 +253,7 @@ export class AnalysisScheduler {
       if (settled) { task.promise.catch(()=>{}); return; }
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
-      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
+      if (abortedAfterRegistration) handleAbort(abortedAfterRegistration);
     });
   }
 
@@ -371,7 +397,7 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    budget.checkCancelled(); this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
@@ -390,7 +416,7 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       this.states.set(task.artifactId,'cancelled');
-      const phase = task.phase === 'producer' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
       this.#emit('job.cancelled', task, { phase });
       return;
     }
@@ -424,12 +450,13 @@ export class AnalysisScheduler {
   }
 
   cancel(artifactId, reason=new DOMException('Cancelled','AbortError')) {
-    const task=this.inflight.get(String(artifactId)); if (!task) return false;
+    const id = requireArtifactId(artifactId);
+    const task=this.inflight.get(id); if (!task) return false;
     if (!task.controller.signal.aborted) task.controller.abort(reason);
     return true;
   }
 
-  dependencyIds(artifactId) { return this.dag.get(String(artifactId))||Object.freeze([]); }
-  state(artifactId) { return this.states.get(String(artifactId))||'unknown'; }
+  dependencyIds(artifactId) { return this.dag.get(requireArtifactId(artifactId))||Object.freeze([]); }
+  state(artifactId) { return this.states.get(requireArtifactId(artifactId))||'unknown'; }
   stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
 }

@@ -3,7 +3,9 @@ import { liftX86MachineEffects } from '../../../../js/targets/architecture/x86_6
 let code = 1000;
 let sequence = 0;
 
-export function reg(name, access = 'unknown') { return { type:'register', register:name, access }; }
+// Synthetic operands model decoder records, so include a stable supplementary
+// register code when a name is outside the core physical-state manifest.
+export function reg(name, access = 'unknown') { return { type:'register', register:name, registerCode:1, access }; }
 export function imm(value, widthBits = 8) { return { type:'immediate', value:BigInt(value), widthBits, encodedWidthBits:widthBits, access:'read' }; }
 export function mem(widthBits, { base='rax', index=null, scale=1, displacement=0n, segment=null, addressSizeBits=64, access='read' } = {}) {
   return { type:'memory', widthBits, access, memory:{ base, index, scale, displacement:BigInt(displacement), segment, addressSizeBits } };
@@ -15,7 +17,14 @@ export function evex() { return { legacy:[], rex:null, vector:{ kind:'evex', byt
 
 export function instruction(family, operands = [], options = {}) {
   sequence += 1;
-  const rawBytes = Uint8Array.from(options.rawBytes ?? [0x90]);
+  const prefixes = options.prefixes ?? legacy();
+  const vectorBytes = prefixes?.vector?.bytes || [];
+  const rawPrefixBytes = [
+    ...(prefixes?.legacy || []),
+    ...(prefixes?.rex ? [prefixes.rex] : []),
+    ...vectorBytes,
+  ];
+  const rawBytes = Uint8Array.from(options.rawBytes ?? (rawPrefixBytes.length ? [...rawPrefixBytes, 0x90] : [0x90]));
   const instructionId = options.instructionId ?? `p5-3:test:${family}:${sequence}`;
   return {
     address:BigInt(options.address ?? 0x401000), length:rawBytes.length, rawBytes, mode:'long-64',
@@ -23,7 +32,7 @@ export function instruction(family, operands = [], options = {}) {
     detailAvailable:true, detailStatus:'complete',
     mnemonic:options.mnemonic ?? 'misleading-display-text',
     opStr:options.opStr ?? 'zmm31, [misleading display string]',
-    detail:{ operandCount:operands.length, operands, prefixes:options.prefixes ?? legacy(), implicitReads:options.implicitReads ?? [], implicitWrites:options.implicitWrites ?? [], conditionCode:null },
+    detail:{ operandCount:operands.length, operands, prefixes, implicitReads:options.implicitReads ?? [], implicitWrites:options.implicitWrites ?? [], conditionCode:null },
   };
 }
 
