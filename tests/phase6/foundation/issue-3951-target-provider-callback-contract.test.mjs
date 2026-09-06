@@ -28,19 +28,14 @@ function assertRejectsNonCallable(factory, field) {
   assert.equal(coercions, 0, `${field} validation must not coerce provider objects`);
 }
 
-test('ArchitecturePluginV2 rejects a non-callable decodeProvider before capability minting', () => {
-  assertRejectsNonCallable(
-    (extra) => new ArchitecturePluginV2({ id:'issue-3951-architecture', ...extra }),
-    'decodeProvider',
-  );
-
-  const provider = () => ({ decode:'external' });
-  const plugin = new ArchitecturePluginV2({
-    id:'issue-3951-architecture-valid',
-    decodeProvider:provider,
+test('ArchitecturePluginV2 keeps decodeProvider a provider identity, not a callable hook (#3951 scope)', () => {
+  const external = new ArchitecturePluginV2({
+    id:'issue-3951-architecture-provider',
+    decodeProvider:'capstone/backend',
   });
-  assert.equal(plugin.decodeProvider, provider);
-  assert.equal(plugin.capabilities.decode, 'external');
+  assert.equal(external.decodeProvider, 'capstone/backend',
+    'decodeProvider is a provider identity string and must stay outside the callable-hook contract');
+  assert.equal(external.capabilities.decode, 'external');
 
   const omitted = new ArchitecturePluginV2({ id:'issue-3951-architecture-omitted' });
   assert.equal(omitted.decodeProvider, null);
