@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import {
+  assertModuleDependencyBoundary,
+  __moduleDependencyBoundaryForTests as __depBoundary,
+} from './helpers/module-dependency-boundary.mjs';
 import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
@@ -144,42 +148,31 @@ await check('standard-agent-scope-regression', () => {
   assert.equal(locked.effectiveScope, 'function');
 });
 
-const MODULE_TRIVIA_SOURCE = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]|$))*`;
-
-function staticModuleSpecifiers(source) {
-  const matches = [];
-  for (const pattern of [
-    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}import${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]\s*;?`, 'gm'),
-    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}import${MODULE_TRIVIA_SOURCE}(?!['"(])[\s\S]*?\bfrom${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]`, 'gm'),
-    new RegExp(String.raw`^${MODULE_TRIVIA_SOURCE}export${MODULE_TRIVIA_SOURCE}(?:\*|\{)[\s\S]*?\bfrom${MODULE_TRIVIA_SOURCE}['"]([^'"]+)['"]`, 'gm'),
-  ]) {
-    for (const match of source.matchAll(pattern)) matches.push({ index: match.index, specifier: match[1] });
-  }
-  return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
-}
-
-const DYNAMIC_IMPORT_PATTERN = new RegExp(String.raw`\bimport${MODULE_TRIVIA_SOURCE}\(`);
-
 await check('dev-context-packet-dependency-boundary', () => {
+  // Parser-backed boundary (vm.SourceTextModule): every static spelling
+  // (side-effect, from, export-from, including same-line trailing imports)
+  // is visible, comments/strings never count, dynamic import is scanned.
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
-  assert.deepEqual(staticModuleSpecifiers(source), ['../run/analysis-scope.js']);
-  assert.doesNotMatch(source, DYNAMIC_IMPORT_PATTERN, 'context packet must not gain dynamic import authority');
+  assertModuleDependencyBoundary(source, ['../run/analysis-scope.js']);
+  const { staticModuleSpecifiers, hasDynamicImport } = __depBoundary;
   assert.deepEqual(
     staticModuleSpecifiers([
       "/* lead */ import /* dependency */ './side-effect.js';",
       "import /* dependency */ { value } from './network.js';",
       "export /* dependency */ { value } /* link */ from './re-export.js';",
       "export /* dependency */ * as storage from '../storage.js';",
+      "const marker = 1; import './trailing-same-line.js';",
     ].join('\n')),
-    ['./side-effect.js', './network.js', './re-export.js', '../storage.js'],
+    ['./side-effect.js', './network.js', './re-export.js', '../storage.js', './trailing-same-line.js'],
   );
-  assert.match("void import('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import /* dependency */ ('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import // dependency\n('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import // dependency\r('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import // dependency\r\n('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import // dependency\u2028('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
-  assert.match("void import // dependency\u2029('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.deepEqual(
+    staticModuleSpecifiers("// import './evil.js';\nimport { a } from './ok.js';"),
+    ['./ok.js'],
+    'commented imports must not count as dependencies',
+  );
+  assert.equal(hasDynamicImport("void import('./dynamic.js')"), true);
+  assert.equal(hasDynamicImport("void import /* dependency */ ('./dynamic.js')"), true);
+  assert.equal(hasDynamicImport("// import('./evil.js')"), false);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
