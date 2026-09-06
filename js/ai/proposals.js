@@ -29,6 +29,8 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
+    const revision = fingerprint(input.before);
+    const bindingRevision = fingerprint(binding);
     const executionPayload = snapshotProposalPayload(input);
     const record = {
       id, kind: input.kind,
@@ -41,9 +43,9 @@ export class ProposalStore {
       createdAt: new Date().toISOString(), status: 'pending',
       // Identity/staleness checks use the exact snapshotted value that will be
       // executed, never jsonSafe's display-oriented depth/item truncation.
-      revision: fingerprint(executionPayload.before),
+      revision,
       binding: jsonSafe(binding),
-      bindingRevision: fingerprint(binding),
+      bindingRevision,
     };
     EXECUTION_PAYLOADS.set(record, executionPayload);
     this.records.set(id, record);
@@ -125,6 +127,44 @@ function proposalExecutionView(proposal) {
   return { ...proposal, ...snapshotProposalPayload(payload) };
 }
 
+function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
+  if (!source || typeof source !== 'object' || !target || typeof target !== 'object') return;
+  if (seen.has(source)) return;
+  seen.add(source);
+  if (source instanceof RegExp && target instanceof RegExp) {
+    target.lastIndex = source.lastIndex;
+    return;
+  }
+  if (source instanceof Map && target instanceof Map) {
+    const srcKeys = Array.from(source.keys());
+    const tgtKeys = Array.from(target.keys());
+    for (let i = 0; i < srcKeys.length; i++) {
+      restoreRegExpLastIndex(srcKeys[i], tgtKeys[i], seen);
+      restoreRegExpLastIndex(source.get(srcKeys[i]), target.get(tgtKeys[i]), seen);
+    }
+    return;
+  }
+  if (source instanceof Set && target instanceof Set) {
+    const srcVals = Array.from(source.values());
+    const tgtVals = Array.from(target.values());
+    for (let i = 0; i < srcVals.length; i++) {
+      restoreRegExpLastIndex(srcVals[i], tgtVals[i], seen);
+    }
+    return;
+  }
+  if (Array.isArray(source) && Array.isArray(target)) {
+    for (let i = 0; i < source.length; i++) {
+      restoreRegExpLastIndex(source[i], target[i], seen);
+    }
+    return;
+  }
+  for (const key of Object.keys(source)) {
+    if (key in target) {
+      restoreRegExpLastIndex(source[key], target[key], seen);
+    }
+  }
+}
+
 function snapshotProposalPayload(value) {
   const clone = globalThis.structuredClone;
   if (typeof clone !== 'function') {
@@ -137,6 +177,9 @@ function snapshotProposalPayload(value) {
       before: clone(value.before),
       after: clone(value.after),
     };
+    restoreRegExpLastIndex(value.target, payload.target);
+    restoreRegExpLastIndex(value.before, payload.before);
+    restoreRegExpLastIndex(value.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
   }
