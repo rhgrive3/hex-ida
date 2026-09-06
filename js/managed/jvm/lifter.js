@@ -1,6 +1,7 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { resolveJvmFieldRef } from './field-reference.js';
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -294,19 +295,47 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc += 2;
           const isWrite = opcode === 0xb3 || opcode === 0xb5;
           const isStatic = opcode === 0xb2 || opcode === 0xb3;
+          const field = resolveJvmFieldRef(jvmClass, fieldIdx);
           mnemonic = opcode === 0xb2 ? 'getstatic' : opcode === 0xb3 ? 'putstatic' : opcode === 0xb4 ? 'getfield' : 'putfield';
+
+          const receiver = { id: 'obj', bits: 64, category: 1, valueKind: 'reference' };
+          if (!field) {
+            completeness = 'partial';
+            if (isWrite) consumedValues.push({ id: 'val', typeUnknown: true });
+            else producedValues.push({ id: 'field-value', typeUnknown: true });
+            if (!isStatic) consumedValues.push(receiver);
+            unknownEffects.push(
+              { category: 'types', reason: 'unresolved-jvm-field-reference' },
+              { category: 'stack', reason: 'unresolved-jvm-field-width' },
+              { category: 'memory', reason: 'unresolved-jvm-field-reference' },
+            );
+            break;
+          }
+
+          const value = {
+            bits: field.bits,
+            category: field.category,
+            valueKind: field.valueKind,
+            descriptor: field.descriptor,
+          };
           if (isWrite) {
-            consumedValues.push({ id: 'val' });
-            if (!isStatic) consumedValues.push({ id: 'obj' });
-            currentStackHeight -= isStatic ? 1 : 2;
+            consumedValues.push({ id: 'val', ...value });
+            if (!isStatic) consumedValues.push(receiver);
+            currentStackHeight -= field.slots + (isStatic ? 0 : 1);
           } else {
-            if (!isStatic) consumedValues.push({ id: 'obj' });
-            producedValues.push({ bits: 32 });
-            if (isStatic) currentStackHeight++;
+            if (!isStatic) consumedValues.push(receiver);
+            producedValues.push(value);
+            currentStackHeight += field.slots - (isStatic ? 0 : 1);
           }
           memoryEffects.push({
             space: isStatic ? 'static-field' : 'field',
             cpIndex: fieldIdx,
+            owner: field.owner,
+            name: field.name,
+            descriptor: field.descriptor,
+            valueKind: field.valueKind,
+            valueBits: field.bits,
+            valueCategory: field.category,
             isWrite,
           });
         }
