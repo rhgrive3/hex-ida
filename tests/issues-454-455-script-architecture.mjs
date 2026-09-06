@@ -143,6 +143,7 @@ function fakeApp(architecture, overrides = {}) {
 {
   const program = {
     gen:undefined,
+    completeness:{ complete:true, reasons:[] },
     callSitesTo: (addr, limit) => [{ site:0x2000n, target:addr }].slice(0, limit),
     refSitesTo: () => [],
     functionRange: () => ({ start:0x1000n, end:0x1040n }),
@@ -174,6 +175,7 @@ function fakeApp(architecture, overrides = {}) {
     ensureProgram: async () => program,
     program,
     programKey:'text',
+    programBudgetProfile:{ calls:2_000_000, refs:2_000_000, kindWords:16 * 1024 * 1024 },
     analysisQueries,
   });
   const { api } = createApi(app, () => {});
