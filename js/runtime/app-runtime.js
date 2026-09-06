@@ -137,7 +137,7 @@ export async function runtimePlatformForApp(app) {
     let identity = await runtimeIdentityForApp(app);
     if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
     let state = states.get(app);
-    if (state && state.identityKey !== identity.key) {
+    if (state && (state.identityKey !== identity.key || state.fileToken !== currentFileToken(app))) {
       await disposeState(state);
       if (states.get(app) === state) states.delete(app);
       state = states.get(app) || null;
