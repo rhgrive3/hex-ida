@@ -86,8 +86,14 @@ function skipQuoted(text, start, quote) {
 }
 
 function skipLineComment(text, start) {
-  const newline = text.indexOf('\n', start);
-  return newline === -1 ? text.length : newline + 1;
+  let index = start;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\n' || char === '\u2028' || char === '\u2029') return index + 1;
+    if (char === '\r') return text[index + 1] === '\n' ? index + 2 : index + 1;
+    index++;
+  }
+  return text.length;
 }
 
 function skipBlockComment(text, start) {
