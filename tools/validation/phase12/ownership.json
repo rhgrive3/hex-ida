@@ -103,7 +103,6 @@
       "js/address-provenance.js",
       "js/ai/evidence.js",
       "js/ai/capabilities/executor.js",
-      "js/ai/proposals.js",
       "js/analysis/producer-wait.js",
       "js/analyze.js",
       "js/auto.js",
