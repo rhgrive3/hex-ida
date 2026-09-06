@@ -83,6 +83,32 @@ test('#3932 abbreviation attribute budget fails closed before DIE publication', 
   assert.ok(parsed.diagnostics.includes('abbreviation attribute budget exhausted'));
 });
 
+test('#3932 shared abbreviation budget accrues across distinct table offsets', () => {
+  const twoDeclarationsAtSecondOffset = Uint8Array.from([
+    0x01, 0x11, 0x00, 0x00, 0x00,
+    0x02, 0x2e, 0x00, 0x00, 0x00,
+    0x00,
+  ]);
+  const secondTableOffset = oneAttributeTable.length;
+  const parsed = parseDebugInfo(
+    {
+      debug_info: concat(
+        dwarf4Unit(oneDie, 0),
+        dwarf4Unit(oneDie, secondTableOffset),
+      ),
+      debug_abbrev: concat(oneAttributeTable, twoDeclarationsAtSecondOffset),
+    },
+    { maxRecords: 10, maxAbbrevDeclarations: 2, maxAbbrevAttributes: 10 },
+  );
+
+  assert.equal(parsed.complete, false);
+  assert.equal(parsed.cancelled, false);
+  assert.equal(parsed.units.length, 1);
+  assert.equal(parsed.units[0].abbrevOffset, 0);
+  assert.equal(parsed.dies.size, 1);
+  assert.ok(parsed.diagnostics.includes('abbreviation declaration budget exhausted'));
+});
+
 test('#3932 abbreviation parsing observes cancellation checkpoints', () => {
   let checks = 0;
   const signal = {
