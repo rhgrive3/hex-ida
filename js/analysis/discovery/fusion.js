@@ -19,6 +19,7 @@
 
 import { createAnalysisStatus } from '../status.js';
 import {
+  createDiscoveryEvidence,
   createFunctionCandidate,
   createRegion,
   hasExactStart,
@@ -32,6 +33,11 @@ export const DISCOVERY_DEFAULT_BUDGET = Object.freeze({
   maxCandidates: 200000,
   maxEvidencePerCandidate: 64,
 });
+
+function canonicalEvidence(item, code = 'discovery-fusion-evidence-item-invalid') {
+  if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(code);
+  return createDiscoveryEvidence(item);
+}
 
 /**
  * A registry of evidence producers.
@@ -71,7 +77,13 @@ export class DiscoveryProducerRegistry {
       if (options.signal?.aborted) break;
       const produced = producer.produce(input, options);
       if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
-      for (const item of produced ?? []) evidence.push({ ...item, producerId: producer.id, architectureId: producer.architectureId ?? null });
+      for (const item of produced ?? []) {
+        evidence.push(canonicalEvidence({
+          ...item,
+          producerId: producer.id,
+          architectureId: producer.architectureId ?? null,
+        }, 'discovery-producer-evidence-item-invalid'));
+      }
       producerIds.push(producer.id);
     }
     return { evidence, producerIds };
@@ -95,7 +107,7 @@ function primitiveInteger(value, code) {
 }
 
 function regionSignature(item) {
-  return (item.regions ?? []).map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
+  return item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
 
 function compareEvidence(left, right) {
@@ -211,6 +223,10 @@ function fuseExtent(evidence) {
  */
 export function fuseFunctionCandidates(evidence, options = {}) {
   if (!Array.isArray(evidence)) throw new TypeError('discovery-fusion-evidence-invalid');
+  // Validate and canonicalize before sorting. Comparators are not validation
+  // boundaries: malformed plugin records must fail closed deterministically
+  // instead of invoking methods on attacker-controlled field shapes.
+  const canonical = evidence.map((item) => canonicalEvidence(item));
   // Budget values are analysis-coverage authorities. Only primitive positive
   // safe-integer numbers may define one; structured values must not coerce via
   // the comparison operators' ToNumber (['1'] -> 1, true -> 1).
@@ -239,7 +255,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   }
 
   const byStart = new Map();
-  const orderedEvidence = [...evidence].sort(compareEvidence);
+  const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {
     if (item.start == null) continue;
     const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
