@@ -43,17 +43,33 @@ function requireArtifactId(value) {
   return value;
 }
 
-function hasCallableHooks(target, names) {
-  return target != null && names.every((name) => typeof target[name] === 'function');
+function snapshotCallableHooks(target, names, errorCode) {
+  if (target == null) throw new TypeError(errorCode);
+  const hooks = Object.create(null);
+  try {
+    for (const name of names) {
+      const hook = target[name];
+      if (typeof hook !== 'function') throw new TypeError(errorCode);
+      hooks[name] = (...args) => Reflect.apply(hook, target, args);
+    }
+  } catch {
+    throw new TypeError(errorCode);
+  }
+  return Object.freeze(hooks);
 }
 
 export class ArtifactStore {
+  #backendHooks;
+  #hotCacheHooks;
+
   constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
-    if (!hasCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'])) throw new TypeError('artifact-backend-invalid');
-    if (!hasCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'])) throw new TypeError('artifact-hot-cache-invalid');
+    const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
+    const hotCacheHooks = snapshotCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'], 'artifact-hot-cache-invalid');
     if (!['delete', 'retain'].includes(corruptionPolicy)) throw new TypeError('artifact-corruption-policy-invalid');
     this.backend = backend;
     this.hotCache = hotCache;
+    this.#backendHooks = backendHooks;
+    this.#hotCacheHooks = hotCacheHooks;
     this.corruptionPolicy = corruptionPolicy;
     this.mutations = new Map();
     this.epochs = new Map();
@@ -84,7 +100,7 @@ export class ArtifactStore {
   }
 
   capabilities() {
-    return Object.freeze({ storeVersion:ARTIFACT_STORE_VERSION, ...this.backend.capabilities() });
+    return Object.freeze({ storeVersion:ARTIFACT_STORE_VERSION, ...this.#backendHooks.capabilities() });
   }
 
   #backendSource() {
@@ -130,7 +146,7 @@ export class ArtifactStore {
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
       const epoch = this.#epoch(artifactId);
-      const cached = this.hotCache.get(artifactId);
+      const cached = this.#hotCacheHooks.get(artifactId);
       if (cached) {
         try {
           const payloadBytes = normalizeStoredPayloadBytes(cached.payloadBytes);
@@ -150,7 +166,7 @@ export class ArtifactStore {
           this.metrics.hotHits++;
           return { status:'hit', source:'hot', artifactId, record:validated.record, payload:validated.payload };
         } catch (error) {
-          this.hotCache.delete(artifactId);
+          this.#hotCacheHooks.delete(artifactId);
           if (error instanceof ArtifactCorruptionError) {
             if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
             return this.#invalidResult(artifactId, error, 'hot', cached.record, cached.payloadBytes);
@@ -161,7 +177,7 @@ export class ArtifactStore {
 
       const source = this.#backendSource();
       let raw;
-      try { this.metrics.reads++; raw = await this.backend.getRaw(artifactId); }
+      try { this.metrics.reads++; raw = await this.#backendHooks.getRaw(artifactId); }
       catch (error) { this.metrics.storageFailures++; throw error; }
       aborted(options.signal);
       if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
@@ -184,7 +200,7 @@ export class ArtifactStore {
           return this.#staleDependency(artifactId, source, validated.record, validated.payloadBytes);
         }
         if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
-        this.hotCache.put(
+        this.#hotCacheHooks.put(
           artifactId,
           { record:validated.record, payloadBytes:validated.payloadBytes },
           artifactHotEntrySize(validated.record, validated.payloadBytes),
@@ -221,7 +237,7 @@ export class ArtifactStore {
         if (++ctx.nodesVisited > ctx.maxNodes) return UPSTREAM_BUDGET_EXHAUSTED;
 
         let raw;
-        try { this.metrics.reads++; raw = await this.backend.getRaw(upstreamId); }
+        try { this.metrics.reads++; raw = await this.#backendHooks.getRaw(upstreamId); }
         catch (error) { this.metrics.storageFailures++; throw error; }
         if (!raw) return UPSTREAM_INVALID;
         try {
@@ -247,7 +263,7 @@ export class ArtifactStore {
   async #deleteObservedArtifact(artifactId, record, payloadBytes) {
     if (this.corruptionPolicy !== 'delete') return false;
     return this.#withMutation(artifactId, async () => {
-      this.hotCache.delete(artifactId);
+      this.#hotCacheHooks.delete(artifactId);
       try {
         if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
           return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -268,7 +284,7 @@ export class ArtifactStore {
   async #staleDependency(artifactId, source, record, payloadBytes) {
     this.metrics.staleDependencyMisses++;
     this.metrics.misses++;
-    this.hotCache.delete(artifactId);
+    this.#hotCacheHooks.delete(artifactId);
     await this.#deleteObservedArtifact(artifactId, record, payloadBytes);
     return { status:'miss', source, artifactId, reason:'missing-upstream' };
   }
@@ -278,7 +294,7 @@ export class ArtifactStore {
     const incompatible = INCOMPATIBLE_CODES.has(error.code);
     if (incompatible) this.metrics.incompatibilities++;
     else this.metrics.corruptions++;
-    this.hotCache.delete(artifactId);
+    this.#hotCacheHooks.delete(artifactId);
     await this.#deleteObservedArtifact(artifactId, record, payloadBytes);
     return {
       status:incompatible ? 'incompatible' : 'corrupt',
@@ -320,9 +336,9 @@ export class ArtifactStore {
       aborted(options.signal);
       let writeResult;
       try {
-        writeResult = await this.backend.putAtomic(record, payloadBytes, { signal:options.signal });
+        writeResult = await this.#backendHooks.putAtomic(record, payloadBytes, { signal:options.signal });
       } catch (error) {
-        this.hotCache.delete(artifactId);
+        this.#hotCacheHooks.delete(artifactId);
         if (isAbort(error, options.signal)) this.metrics.cancelledPublishes++;
         else this.metrics.storageFailures++;
         throw error;
@@ -330,11 +346,11 @@ export class ArtifactStore {
 
       if (options.signal?.aborted) {
         this.metrics.cancelledPublishes++;
-        this.hotCache.delete(artifactId);
+        this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
-            else await this.backend.delete(artifactId);
+            else await this.#backendHooks.delete(artifactId);
           } catch { /* cancellation remains the primary result */ }
         }
         throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
@@ -357,17 +373,17 @@ export class ArtifactStore {
         canonicalPayloadBytes = validated.payloadBytes;
         returnedPayload = validated.payload;
       } catch (error) {
-        this.hotCache.delete(artifactId);
+        this.#hotCacheHooks.delete(artifactId);
         if (!writeResult?.duplicate) {
           try {
             if (typeof this.backend.deleteIfMatches === 'function') await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
-            else await this.backend.delete(artifactId);
+            else await this.#backendHooks.delete(artifactId);
           } catch { /* preserve the original post-publication failure */ }
         }
         throw error;
       }
 
-      this.hotCache.put(
+      this.#hotCacheHooks.put(
         artifactId,
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
         artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
@@ -392,9 +408,9 @@ export class ArtifactStore {
   async delete(artifactId) {
     const id = requireArtifactId(artifactId);
     return this.#withMutation(id, async () => {
-      this.hotCache.delete(id);
+      this.#hotCacheHooks.delete(id);
       let deleted;
-      try { deleted = await this.backend.delete(id); }
+      try { deleted = await this.#backendHooks.delete(id); }
       catch (error) { this.metrics.storageFailures++; throw error; }
       if (deleted) this.metrics.deletes++;
       else this.metrics.deleteMisses++;
@@ -404,27 +420,27 @@ export class ArtifactStore {
 
   evictHot(artifactId = null) {
     if (artifactId == null) {
-      this.hotCache.clear();
+      this.#hotCacheHooks.clear();
       return;
     }
     const id = requireArtifactId(artifactId);
     this.#bumpEpoch(id);
-    this.hotCache.delete(id, true);
+    this.#hotCacheHooks.delete(id, true);
     this.#bumpEpoch(id);
   }
 
   async close() {
     const pending = [...this.mutations.values()];
     if (pending.length) await Promise.allSettled(pending);
-    this.hotCache.clear();
-    await this.backend.close();
+    this.#hotCacheHooks.clear();
+    await this.#backendHooks.close();
   }
 
   stats() {
     return Object.freeze({
       storeVersion:ARTIFACT_STORE_VERSION,
       capabilities:this.capabilities(),
-      hotCache:this.hotCache.stats(),
+      hotCache:this.#hotCacheHooks.stats(),
       backend:this.backend.stats?.() ?? {},
       ...this.metrics,
     });
