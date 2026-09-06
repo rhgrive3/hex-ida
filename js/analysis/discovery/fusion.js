@@ -19,6 +19,7 @@
 
 import { createAnalysisStatus } from '../status.js';
 import {
+  createDiscoveryEvidence,
   createFunctionCandidate,
   createRegion,
   hasExactStart,
@@ -32,6 +33,11 @@ export const DISCOVERY_DEFAULT_BUDGET = Object.freeze({
   maxCandidates: 200000,
   maxEvidencePerCandidate: 64,
 });
+
+function canonicalEvidence(item, code = 'discovery-fusion-evidence-item-invalid') {
+  if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(code);
+  return createDiscoveryEvidence(item);
+}
 
 /**
  * A registry of evidence producers.
@@ -69,8 +75,15 @@ export class DiscoveryProducerRegistry {
     const producerIds = [];
     for (const producer of this.for(architectureId)) {
       if (options.signal?.aborted) break;
-      const produced = producer.produce(input, options) ?? [];
-      for (const item of produced) evidence.push({ ...item, producerId: producer.id, architectureId: producer.architectureId ?? null });
+      const produced = producer.produce(input, options);
+      if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
+      for (const item of produced ?? []) {
+        evidence.push(canonicalEvidence({
+          ...item,
+          producerId: producer.id,
+          architectureId: producer.architectureId ?? null,
+        }, 'discovery-producer-evidence-item-invalid'));
+      }
       producerIds.push(producer.id);
     }
     return { evidence, producerIds };
@@ -94,7 +107,7 @@ function primitiveInteger(value, code) {
 }
 
 function regionSignature(item) {
-  return (item.regions ?? []).map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
+  return item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
 
 function compareEvidence(left, right) {
@@ -240,7 +253,7 @@ function fuseExtent(evidence) {
     if (containment) return { regions: [], state: 'unknown', conflicts: [containment] };
     return {
       regions: only.regions,
-      state: authoritative.length > 0 ? 'exact' : considered.length > 1 ? 'probable' : 'heuristic',
+      state: authoritative.length > 0 ? 'exact' : new Set(only.sources).size > 1 ? 'probable' : 'heuristic',
       conflicts: [],
     };
   }
@@ -291,8 +304,12 @@ export function fuseFunctionCandidates(evidence, options = {}) {
     return { candidates: [], status: status('partial', 'cancelled') };
   }
 
+  // Validate and canonicalize before sorting. Comparators are not validation
+  // boundaries: malformed plugin records must fail closed deterministically
+  // instead of invoking methods on attacker-controlled field shapes.
+  const canonical = evidence.map((item) => canonicalEvidence(item));
   const byStart = new Map();
-  const orderedEvidence = [...evidence].sort(compareEvidence);
+  const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {
     if (item.start == null) continue;
     const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
@@ -363,10 +380,8 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 /**
  * Marks candidates whose claimed regions overlap another candidate's start.
  *
- * A region that swallows another function's start is either a false merge or a
- * genuinely shared range (a shared epilogue, a tail-merged block). The fusion
- * cannot tell which, so it records the conflict and withdraws the extent claim
- * symmetrically instead of picking one owner (§12.3).
+ * Explicit `shared` ownership is the only ownership contract that can make an
+ * overlap benign. Exclusive or ambiguous participation remains fail-closed.
  */
 function reconcileOverlaps(candidates, { signal = null } = {}) {
   const n = candidates.length;
@@ -382,12 +397,24 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
         candidateIndex: i,
         start: BigInt(r.start),
         end: BigInt(r.end),
+        ownership: r.ownership,
       });
     }
   }
 
   const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
   starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const sharedAtStart = candidates.map((candidate) => {
+    const start = BigInt(candidate.start);
+    let covered = false;
+    for (const region of candidate.regions) {
+      if (BigInt(region.start) <= start && start < BigInt(region.end)) {
+        covered = true;
+        if (region.ownership !== 'shared') return false;
+      }
+    }
+    return covered;
+  });
 
   for (const reg of regions) {
     if (signal?.aborted) break;
@@ -401,6 +428,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
     for (let k = left; k < starts.length && starts[k].start < reg.end; k++) {
       const otherIdx = starts[k].candidateIndex;
       if (otherIdx !== reg.candidateIndex) {
+        if (reg.ownership === 'shared' && sharedAtStart[otherIdx]) continue;
         swallowed[reg.candidateIndex].push(candidates[otherIdx].start);
       }
     }
@@ -425,6 +453,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
     if (ev.type === 'start') {
       for (const act of active) {
         if (act.candidateIndex !== ev.reg.candidateIndex) {
+          if (act.ownership === 'shared' && ev.reg.ownership === 'shared') continue;
           overlapping[ev.reg.candidateIndex].push(candidates[act.candidateIndex].start);
           overlapping[act.candidateIndex].push(candidates[ev.reg.candidateIndex].start);
         }
