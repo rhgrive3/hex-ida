@@ -156,7 +156,7 @@ function staticModuleSpecifiers(source) {
   return matches.sort((left, right) => left.index - right.index).map(({ specifier }) => specifier);
 }
 
-const DYNAMIC_IMPORT_PATTERN = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\(/;
+const DYNAMIC_IMPORT_PATTERN = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]|$))*\(/;
 
 await check('dev-context-packet-dependency-boundary', () => {
   const source = readFileSync(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url), 'utf8');
@@ -169,6 +169,10 @@ await check('dev-context-packet-dependency-boundary', () => {
   assert.match("void import('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
   assert.match("void import /* dependency */ ('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
   assert.match("void import // dependency\n('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import // dependency\r('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import // dependency\r\n('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import // dependency\u2028('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
+  assert.match("void import // dependency\u2029('./dynamic.js')", DYNAMIC_IMPORT_PATTERN);
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');
