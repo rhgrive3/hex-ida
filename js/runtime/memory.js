@@ -101,7 +101,7 @@ export class RuntimeMemoryMap {
 }
 
 export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = RUNTIME_HEAP_BASE, heapSize = RUNTIME_HEAP_SIZE, globals = [], mappings = [] } = {}) {
-  const normalizedStackSize = strictSize(stackSize, 1 << 20, MAX_REGION_SIZE, 'stack size');
+  const normalizedStackSize = strictSize(stackSize, 1, MAX_REGION_SIZE, 'stack size');
   const map = new RuntimeMemoryMap();
   map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
   map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
