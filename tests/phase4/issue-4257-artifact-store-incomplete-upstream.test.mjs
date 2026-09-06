@@ -114,4 +114,26 @@ function fixture() {
   await store.close();
 }
 
+// Identity-mismatched incomplete upstreams are still rejected under the
+// permissive completeness policy.
+{
+  const { entries, store } = fixture();
+  const upstream = descriptor('identity-mismatch-partial-upstream');
+  const parent = descriptor('identity-mismatch-parent', [upstream.artifactId]);
+
+  await store.publish(upstream, { value:'upstream' }, { completeness:'partial' });
+  await store.publish(parent, { value:'parent' });
+
+  const raw = entries.get(upstream.artifactId);
+  assert.ok(raw, 'published upstream must exist in backend');
+  raw.record.artifactId = 'artifact_issue_4257_wrong_identity';
+
+  store.evictHot(parent.artifactId);
+  const result = await store.get(parent, { allowIncomplete:true });
+  assert.equal(result.status, 'miss');
+  assert.equal(result.reason, 'missing-upstream');
+
+  await store.close();
+}
+
 console.log('issue 4257 artifact incomplete upstream read policy: PASS');
