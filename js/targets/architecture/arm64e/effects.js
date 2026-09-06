@@ -3,6 +3,7 @@ import {
   createIntrinsicEffectSummary,
   createMachineEffectBundle,
   createMachineOperation,
+  createMemoryAccess,
   createRegisterValue,
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
@@ -27,6 +28,8 @@ const SIGN = Object.freeze({
   pacib: { key: 'ib', modifier: 'operand' },
   pacda: { key: 'da', modifier: 'operand' },
   pacdb: { key: 'db', modifier: 'operand' },
+  paciaz: { key: 'ia', destination: 'x30', modifier: 'zero' },
+  pacibz: { key: 'ib', destination: 'x30', modifier: 'zero' },
   paciza: { key: 'ia', modifier: 'zero' },
   pacizb: { key: 'ib', modifier: 'zero' },
   pacdza: { key: 'da', modifier: 'zero' },
@@ -42,6 +45,8 @@ const AUTH = Object.freeze({
   autib: { key: 'ib', modifier: 'operand' },
   autda: { key: 'da', modifier: 'operand' },
   autdb: { key: 'db', modifier: 'operand' },
+  autiaz: { key: 'ia', destination: 'x30', modifier: 'zero' },
+  autibz: { key: 'ib', destination: 'x30', modifier: 'zero' },
   autiza: { key: 'ia', modifier: 'zero' },
   autizb: { key: 'ib', modifier: 'zero' },
   autdza: { key: 'da', modifier: 'zero' },
@@ -82,6 +87,11 @@ const AUTH_EXCEPTION_RETURN = Object.freeze({
   eretab: { key: 'ib' },
 });
 
+const AUTH_LOAD = Object.freeze({
+  ldraa: { key: 'ia' },
+  ldrab: { key: 'ib' },
+});
+
 // This is the production pointer-authentication family registry.  Keep the
 // list beside the dispatch tables so denominator/audit code cannot silently
 // omit a newly supported alias.
@@ -94,6 +104,7 @@ const ARM64E_POINTER_AUTHENTICATION_MNEMONICS = Object.freeze([
   ...Object.keys(AUTH_CALL),
   ...Object.keys(AUTH_RETURN),
   ...Object.keys(AUTH_EXCEPTION_RETURN),
+  ...Object.keys(AUTH_LOAD),
 ]);
 
 function mnemonicOf(decoded) {
@@ -118,8 +129,18 @@ function operandList(decoded) {
   return splitOperands(decoded?.opStr ?? decoded?.op_str ?? decoded?.operandString ?? decoded?.args);
 }
 
+function structuredRegisterIdentity(operand) {
+  if (operand?.k !== 'reg') return null;
+  if (operand.cls === 'sp') return operand.num == null || operand.num === 31 ? 'sp' : null;
+  if (operand.cls === 'zr') return operand.num == null || operand.num === 31 ? 'xzr' : null;
+  if (operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return `x${operand.num}`;
+  return null;
+}
+
 function operandRegisterId(operand) {
   if (operand == null) return null;
+  const structured = structuredRegisterIdentity(operand);
+  if (structured) return structured;
   const raw = typeof operand === 'string'
     ? operand
     : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
@@ -636,6 +657,146 @@ function authenticateExceptionReturn(decoded, context, instructionId, descriptor
   });
 }
 
+function parseArm64eAuthLoadMemory(operand) {
+  if (operand == null) return null;
+  if (typeof operand === 'object' && !Array.isArray(operand)) {
+    if (operand.k !== 'mem' && operand.kind !== 'memory' && operand.base == null) return null;
+    const base = operand.base ?? operand.baseRegister ?? operand.reg;
+    const baseId = pointerRegisterId(base);
+    if (!baseId || baseId === 'xzr') return null;
+    let disp = 0n;
+    if (operand.disp != null || operand.displacement != null || operand.offset != null) {
+      const rawDisp = operand.disp ?? operand.displacement ?? operand.offset;
+      try {
+        disp = typeof rawDisp === 'bigint' ? rawDisp : BigInt(rawDisp);
+      } catch {
+        return null;
+      }
+    }
+    const pre = Boolean(operand.pre ?? operand.preIndex ?? operand.preIndexed);
+    if (disp < -4096n || disp > 4088n || disp % 8n !== 0n) return null;
+    return { baseId, disp, pre };
+  }
+
+  if (typeof operand === 'string') {
+    let str = operand.trim();
+    let pre = false;
+    if (str.endsWith('!')) {
+      pre = true;
+      str = str.slice(0, -1).trim();
+    }
+    if (!str.startsWith('[') || !str.endsWith(']')) return null;
+    const inner = str.slice(1, -1).trim();
+    const parts = inner.split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 0 || parts.length > 2) return null;
+    const baseId = pointerRegisterId(parts[0]);
+    if (!baseId || baseId === 'xzr') return null;
+    let disp = 0n;
+    if (parts.length === 2) {
+      let rawDisp = parts[1];
+      if (rawDisp.startsWith('#')) rawDisp = rawDisp.slice(1).trim();
+      try {
+        disp = BigInt(rawDisp);
+      } catch {
+        return null;
+      }
+    }
+    if (disp < -4096n || disp > 4088n || disp % 8n !== 0n) return null;
+    return { baseId, disp, pre };
+  }
+
+  return null;
+}
+
+function authenticateLoad(decoded, context, instructionId, descriptor) {
+  const operands = operandList(decoded);
+  if (operands.length !== 2) {
+    return partialMissing(decoded, context, instructionId, 'authenticated load operand shape is invalid');
+  }
+  const destId = pointerRegisterId(operands[0]);
+  if (!destId || destId === 'sp') {
+    return partialMissing(decoded, context, instructionId, 'authenticated load: destination register is unavailable');
+  }
+  const mem = parseArm64eAuthLoadMemory(operands[1]);
+  if (!mem) {
+    return partialMissing(decoded, context, instructionId, 'authenticated load: invalid memory operand');
+  }
+  const { baseId, disp, pre: preIndex } = mem;
+
+  const operations = [];
+  const baseValue = readRegister(operations, baseId, `${instructionId}.base`, POINTER_BITS, {
+    stateKind: 'pointer-authentication-pointer',
+  });
+  const zeroModifier = createBitVectorValue(POINTER_BITS, 0n);
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
+  const authBase = tmp(`${instructionId}.authenticated-base`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId: 'arm64e.pointer.authenticate',
+    inputs: [baseValue, zeroModifier, keyValue, architectureState],
+    output: authBase,
+    registersRead: [baseId, keyId, PAUTH_STATE_ID].filter((id) => id !== 'xzr'),
+    metadata: {
+      transform: 'authenticate',
+      keyIdentity: keyId,
+      modifier: { kind: 'constant-zero' },
+      pointerRegister: baseId,
+      architectureStateInput: PAUTH_STATE_ID,
+      cryptographicAlgorithm: 'not-modelled',
+    },
+  }));
+
+  let effectiveAddress = authBase;
+  if (disp !== 0n) {
+    effectiveAddress = tmp(`${instructionId}.effective-address`, POINTER_BITS);
+    operations.push(createMachineOperation({
+      kind: 'value',
+      opcode: 'add',
+      inputs: [authBase, createBitVectorValue(POINTER_BITS, disp)],
+      outputs: [effectiveAddress],
+    }));
+  }
+
+  const loadedValue = tmp(`${instructionId}.loaded-value`, POINTER_BITS);
+  operations.push(createMachineOperation({
+    kind: 'memory-read',
+    access: createMemoryAccess({
+      space: 'memory',
+      addressExpr: effectiveAddress,
+      widthBits: POINTER_BITS,
+      endian: 'little',
+    }),
+    value: loadedValue,
+  }));
+
+  if (destId !== 'xzr') {
+    writeRegister(operations, destId, loadedValue, { keyIdentity: keyId });
+  }
+
+  if (preIndex) {
+    writeRegister(operations, baseId, effectiveAddress, { writeback: true });
+  }
+
+  return baseBundle(decoded, context, instructionId, operations, { kind: 'fallthrough' }, 'exact-with-intrinsic', {
+    possibleFaults: [
+      authFault(mnemonicOf(decoded), keyId, 'data-address'),
+      {
+        kind: 'data-abort',
+        condition: { kind: 'memory-access-fault', access: 'read' },
+        detail: { causes: ['address-size', 'translation', 'access-flag', 'permission', 'external'] },
+      },
+    ],
+    metadata: {
+      transform: 'authenticate',
+      destinationRegister: destId,
+      baseRegister: baseId,
+      keyIdentity: keyId,
+      displacement: String(disp),
+      preIndex,
+      architectureStateInput: PAUTH_STATE_ID,
+    },
+  });
+}
+
 export function isArm64ePointerAuthenticationInstruction(decoded) {
   const mnemonic = mnemonicOf(decoded);
   return mnemonic === 'pacga'
@@ -645,7 +806,8 @@ export function isArm64ePointerAuthenticationInstruction(decoded) {
     || Object.hasOwn(AUTH_BRANCH, mnemonic)
     || Object.hasOwn(AUTH_CALL, mnemonic)
     || Object.hasOwn(AUTH_RETURN, mnemonic)
-    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic);
+    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)
+    || Object.hasOwn(AUTH_LOAD, mnemonic);
 }
 
 export function arm64ePointerAuthenticationMnemonics() {
@@ -669,6 +831,7 @@ export function liftArm64eEffects(decoded, context = {}) {
   if (Object.hasOwn(AUTH_CALL, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_CALL[mnemonic], 'call');
   if (Object.hasOwn(AUTH_RETURN, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_RETURN[mnemonic], 'return');
   if (Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)) return authenticateExceptionReturn(decoded, context, instructionId, AUTH_EXCEPTION_RETURN[mnemonic]);
+  if (Object.hasOwn(AUTH_LOAD, mnemonic)) return authenticateLoad(decoded, context, instructionId, AUTH_LOAD[mnemonic]);
   return null;
 }
 

@@ -82,7 +82,8 @@ export function conditionOf(instruction) {
   // not coerce into a real condition identity.
   if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
-  if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
+  const match = /^(?:b|bc)\.([a-z]+)$/.exec(mnemonic);
+  if (match) return match[1];
   return null;
 }
 
