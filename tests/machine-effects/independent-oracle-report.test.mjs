@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createCorpus } from '../../tools/validation/machine-effects/oracle-corpus.mjs';
@@ -9,6 +12,7 @@ import {
   validateOracleReport,
 } from '../../tools/validation/machine-effects/oracle-report.mjs';
 import {
+  inspectExactHead,
   parseArgs,
   verifyCandidateMergeTree,
   verifyExactHead,
@@ -59,9 +63,9 @@ assert.deepEqual(parseArgs(['--report', 'report.json', '--require-candidate-tree
 });
 
 const currentHead = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'HEAD', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const candidateTreeSha = spawnSync('git', ['merge-tree', '--write-tree', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(candidateTreeSha, /^[0-9a-f]{40}$/);
-const assignedBase = currentHead;
+const assignedBase = spawnSync('git', ['merge-base', 'origin/main', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 assert.match(assignedBase, /^[0-9a-f]{40}$/);
 const corpus = createCorpus(INDEPENDENT_ORACLE_CASE_FIXTURES);
 const results = [];
@@ -183,14 +187,37 @@ const { reportId: ignoredReportId, ...forgedBreadthPayload } = forgedBreadth;
 forgedBreadth.reportId = sha256Digest(forgedBreadthPayload);
 assert.throws(() => validateOracleReport(forgedBreadth), /exact-claim-duplicate|unjustified-mismatch/);
 
-assert.throws(() => verifyExactHead({
-  report,
-  expectedHead: currentHead,
-  expectedBase: assignedBase,
-  expectedCandidateTree: candidateTreeSha,
-  requireClean: false,
-  requireCandidateTree: true,
-}), /report-incomplete-architectural-evidence/);
+// Exact-head verification is intentionally sensitive to git worktree state.
+// The MachineEffects runner executes independent proof files concurrently, so
+// testing against the shared repository cwd would let an unrelated sibling's
+// transient generated/untracked file preempt the semantic assertion below.
+// Keep requireClean=true and isolate only the unit-test worktree.
+const exactHeadWorktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-me-release-worktree-'));
+const exactHeadWorktree = path.join(exactHeadWorktreeRoot, 'worktree');
+try {
+  const addWorktree = spawnSync('git', ['worktree', 'add', '--detach', exactHeadWorktree, currentHead], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+  assert.equal(addWorktree.status, 0, addWorktree.stderr || 'failed to create isolated exact-head worktree');
+  const exactHeadInspection = inspectExactHead({ cwd: exactHeadWorktree, baseSha: assignedBase });
+  assert.equal(exactHeadInspection.clean, true, `isolated exact-head worktree must be clean: ${exactHeadInspection.status}`);
+  const exactHeadFailure = exactHeadInspection.allowlist.valid
+    ? /report-incomplete-architectural-evidence/
+    : /release-changed-file-outside-allowlist/;
+  assert.throws(() => verifyExactHead({
+    cwd: exactHeadWorktree,
+    report,
+    expectedHead: currentHead,
+    expectedBase: assignedBase,
+    expectedCandidateTree: candidateTreeSha,
+    requireClean: true,
+    requireCandidateTree: true,
+  }), exactHeadFailure);
+} finally {
+  spawnSync('git', ['worktree', 'remove', '--force', exactHeadWorktree], { cwd: process.cwd(), encoding: 'utf8' });
+  fs.rmSync(exactHeadWorktreeRoot, { recursive: true, force: true });
+}
 
 assert.throws(() => verifyCandidateMergeTree({
   report,
