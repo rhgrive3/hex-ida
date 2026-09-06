@@ -33,6 +33,18 @@ function list(value) {
 }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
+function checkpointDigest(state, operationIds) { return payloadDigest({ state, operationIds: [...operationIds].sort() }); }
+function validatedCheckpointOperationIds(checkpoint) {
+  if (!Array.isArray(checkpoint?.operationIds)) throw new TypeError('checkpoint-operation-ids-invalid');
+  const operationIds = checkpoint.operationIds.map((operationId) => {
+    const canonical = required(operationId, 'checkpoint-operation-id-invalid');
+    if (canonical !== operationId) throw new TypeError('checkpoint-operation-id-invalid');
+    return operationId;
+  });
+  if (new Set(operationIds).size !== operationIds.length) throw new TypeError('checkpoint-operation-ids-invalid');
+  if (typeof checkpoint.digest !== 'string' || checkpoint.digest !== checkpointDigest(checkpoint.state, operationIds)) throw new TypeError('checkpoint-digest-mismatch');
+  return operationIds;
+}
 // The identity an operationId is bound to: everything that decides state
 // semantics. Two operations sharing an ID must agree on all of it, otherwise
 // replicas silently fork under an identical ID set (#5397).
@@ -363,14 +375,19 @@ export class ChangeLog {
     return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), digest: this.digest() });
   }
 
-  digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort() }); }
+  digest() { return checkpointDigest(this.state, this.operations.keys()); }
   snapshot() { return deepFreeze(cloneState(this.state)); }
   appliedOperationIds() { return Object.freeze([...this.operations.keys()].sort()); }
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
-  const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
+  let checkpointOperationIds = [];
+  if (checkpoint) {
+    if (checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
+    checkpointOperationIds = validatedCheckpointOperationIds(checkpoint);
+  }
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpointOperationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
+  const filtered = checkpoint ? operations.filter((operation) => !checkpointOperationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
 }
@@ -385,11 +402,12 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
   assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
   assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
+  const checkpointOperationIds = validatedCheckpointOperationIds(checkpoint);
+  const checkpointOperations = checkpointOperationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
   const restoreResults = [];
   for (const operation of options.operations || []) {
-    if (checkpoint.operationIds.includes(operation.operationId)) continue;
+    if (checkpointOperationIds.includes(operation.operationId)) continue;
     const result = log.applyOperation(operation);
     restoreResults.push(result);
     // A rejected incremental operation must reach the caller: returning the
