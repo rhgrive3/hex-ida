@@ -45,6 +45,14 @@ export const PROVENANCE_LOSS_REASONS = Object.freeze([
 
 function fail(code) { throw new TypeError(code); }
 
+function maxTargetsPerSet(budget) {
+  const value = budget?.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    fail('points-to-invalid-max-targets-per-set');
+  }
+  return value;
+}
+
 function big(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
@@ -246,6 +254,7 @@ export function pointsToIsBottom(set) {
  * silently dropping a target (dropping one would falsely prove separation).
  */
 export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (a.top || b.top) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons] });
   }
@@ -260,7 +269,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
       evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
     }));
   }
-  if (byRoot.size > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (byRoot.size > targetLimit) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons, 'target-cap'] });
   }
   return createPointsToSet({
@@ -271,6 +280,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
 
 /** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (next.top) return next;
   if (previous == null) return next;
   if (previous.top) return previous;
@@ -288,7 +298,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     }
     return createPointsToTarget({ ...target, offsetRange: widenedRange });
   });
-  if (targets.length > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (targets.length > targetLimit) {
     return topPointsTo('target-cap');
   }
   return createPointsToSet({
