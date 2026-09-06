@@ -210,6 +210,38 @@ test('T013 issued identity provenance rejects caller mutation before publication
   }
 });
 
+test('T013 provenance recheck reads issued fields as data without invoking accessors', () => {
+  const target = { id:1, bits:8 };
+  let armed = false;
+  let getterReads = 0;
+  let issued;
+  const value = new Proxy(target, {
+    ownKeys(object) {
+      if (armed) {
+        Object.defineProperty(issued, 'identity', {
+          get() {
+            getterReads += 1;
+            object.id = 99;
+            return null;
+          },
+          configurable:true,
+        });
+        armed = false;
+      }
+      return Reflect.ownKeys(object);
+    },
+  });
+  const ir = { values:[value], blocks:[], entry:null };
+  const state = seedAnalysisState(ir);
+  issued = canonicalAnalysisIdentity({ analysis:state, ir:semanticSnapshotForAnalysis(state) });
+  assert.equal(issued.valid, true);
+  armed = true;
+  assert.equal(analysisSemanticSnapshotIsCurrent(state, { resolvedAnalysisIdentity:issued }), false,
+    'an accessor installed during the raw witness must invalidate publication');
+  assert.equal(getterReads, 0, 'provenance validation must not execute a caller accessor');
+  assert.equal(target.id, 1, 'the uncalled accessor must not mutate the producer');
+});
+
 test('T013 cached witness and authority traversal share the fixed work budget', () => {
   const makeIr = () => ({ values:[], blocks:[], entry:null,
     extra:new Map(Array.from({ length:125000 }, (_, index) => [index, 0])) });

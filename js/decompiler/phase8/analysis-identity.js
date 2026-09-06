@@ -336,10 +336,19 @@ function markIssuedIdentity(result) {
 function issuedIdentityProof(result) {
   try {
     const proof = ISSUED_IDENTITY_RESULTS.get(result);
-    return proof != null
-      && result.valid === proof.valid
-      && result.identity === proof.identity
-      && result.semanticSnapshot === proof.semanticSnapshot
+    if (proof == null) return null;
+    // The result is returned to callers and its fields are therefore mutable.
+    // Read the exact own data descriptors through the captured intrinsic rather
+    // than invoking a caller-installed getter during the post-witness check.
+    const valid = getOwnPropertyDescriptor(result, 'valid');
+    const identity = getOwnPropertyDescriptor(result, 'identity');
+    const semanticSnapshot = getOwnPropertyDescriptor(result, 'semanticSnapshot');
+    if (valid == null || !('value' in valid)
+        || identity == null || !('value' in identity)
+        || semanticSnapshot == null || !('value' in semanticSnapshot)) return null;
+    return valid.value === proof.valid
+      && identity.value === proof.identity
+      && semanticSnapshot.value === proof.semanticSnapshot
       ? proof : null;
   } catch {
     return null;
