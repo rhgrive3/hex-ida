@@ -22,10 +22,14 @@ export function parseSemver(value) {
   if (typeof value !== "string") throw new TypeError("semver-invalid");
   const match = SEMVER_RE.exec(value.trim());
   if (!match) throw new TypeError("semver-invalid");
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger)) throw new TypeError("semver-invalid");
   return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
+    major,
+    minor,
+    patch,
     raw: value.trim(),
   };
 }
