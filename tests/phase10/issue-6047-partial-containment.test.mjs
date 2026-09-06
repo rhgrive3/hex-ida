@@ -4,7 +4,6 @@ import { fuseFunctionCandidates } from '../../js/analysis/discovery/fusion.js';
 
 const item = (overrides) => ({
   start: '4096',
-  authority: 'authoritative',
   producerId: 'source',
   kind: 'unwind-entry',
   extentRole: 'complete',
@@ -65,7 +64,7 @@ test('6047: disagreeing complete claims still conflict', () => {
 test('6047: lower-tier partials do not disturb an authoritative complete claim', () => {
   const c = fused([
     complete(0x1000, 0x1010),
-    { ...partial(0x2000, 0x2010), authority: 'corroborating' },
+    { ...partial(0x2000, 0x2010), kind: 'symbol-table' },
   ]);
   assert.equal(c.extentState, 'exact');
 });
