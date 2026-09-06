@@ -79,6 +79,9 @@ jobs:
         if: steps.generated-policy.outputs.mode == 'enforce'
         run: git diff --exit-code -- userscript/hex.user.template.js
 
+  # Both embed-browser suites intentionally exercise Chromium and WebKit. Run
+  # them in Playwright's pinned image so every PR does not spend minutes
+  # downloading 100+ MB of WebKit OS packages onto a fresh hosted runner.
   embed-browser:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -104,7 +107,10 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { chromium, webkit } from 'playwright';
-          for (const browserType of [chromium, webkit]) { const browser = await browserType.launch({ headless:true }); await browser.close(); }
+          for (const browserType of [chromium, webkit]) {
+            const browser = await browserType.launch({ headless: true });
+            await browser.close();
+          }
           NODE
       - name: Verify opaque srcdoc module and storage execution
         run: node tests/userscript-srcdoc-probe.mjs

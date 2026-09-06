@@ -25,10 +25,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ui-regression-${{ github.ref }}
+  group: ui-regression-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # All Chromium-hosted suites share one exact dependency/browser setup. The
+  # suites still execute independently and failures are aggregated so an early
+  # failure never hides later diagnostics.
   chromium:
     name: chromium-regressions
     runs-on: ubuntu-latest
@@ -59,6 +62,7 @@ jobs:
           await browser.close();
           NODE
           then
+            echo 'Preinstalled runner libraries are insufficient; installing pinned Chromium OS dependencies.'
             npx --no-install playwright install-deps chromium
           fi
       - name: Run architecture and Chromium suites with complete diagnostics
@@ -68,17 +72,50 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
           import { spawnSync } from 'node:child_process';
-          const suites=[['architecture','npm run ui:test'],['browser-regression','npm run browser'],['analysis-navigation','node tests/ui/analysis-navigation.mjs'],['accessibility','node tests/ui/accessibility.mjs'],['ai-browser','npm run ai:browser']];
-          const failures=[];
-          for (const [name,command] of suites) {
-            const shots=`tests/ui-shots/chromium/${name}`; fs.mkdirSync(shots,{recursive:true});
-            const env={...process.env,CI:'1',UI_SHOTS:shots}; const legacyShots=path.join('tests','.shots');
-            if(name==='browser-regression'){env.KEEP='1';fs.rmSync(legacyShots,{recursive:true,force:true});}
-            const result=spawnSync(command,{shell:true,stdio:'inherit',env});
-            if(name==='browser-regression'&&fs.existsSync(legacyShots)){for(const entry of fs.readdirSync(legacyShots))fs.cpSync(path.join(legacyShots,entry),path.join(shots,entry),{recursive:true});}
-            if(result.error||result.status!==0)failures.push({name,command,status:result.status,error:result.error?.message??null});
+
+          const suites = [
+            ['architecture', 'npm run ui:test'],
+            ['browser-regression', 'npm run browser'],
+            ['analysis-navigation', 'node tests/ui/analysis-navigation.mjs'],
+            ['accessibility', 'node tests/ui/accessibility.mjs'],
+            ['ai-browser', 'npm run ai:browser'],
+          ];
+          const failures = [];
+          for (const [name, command] of suites) {
+            const shots = `tests/ui-shots/chromium/${name}`;
+            fs.mkdirSync(shots, { recursive: true });
+            const env = { ...process.env, CI: '1', UI_SHOTS: shots };
+            const legacyShots = path.join('tests', '.shots');
+            if (name === 'browser-regression') {
+              // tests/browser.mjs predates UI_SHOTS. Preserve its KEEP contract,
+              // then fold those screenshots into the canonical audit artifact.
+              env.KEEP = '1';
+              fs.rmSync(legacyShots, { recursive: true, force: true });
+            }
+            console.log(`::group::${name}: ${command}`);
+            const result = spawnSync(command, {
+              shell: true,
+              stdio: 'inherit',
+              env,
+            });
+            if (name === 'browser-regression' && fs.existsSync(legacyShots)) {
+              for (const entry of fs.readdirSync(legacyShots)) {
+                fs.cpSync(
+                  path.join(legacyShots, entry),
+                  path.join(shots, entry),
+                  { recursive: true },
+                );
+              }
+            }
+            console.log('::endgroup::');
+            if (result.error || result.status !== 0) {
+              failures.push({ name, command, status: result.status, error: result.error?.message ?? null });
+            }
           }
-          if(failures.length){console.error(JSON.stringify(failures));process.exit(1);}
+          if (failures.length) {
+            console.error(`Chromium/UI failures: ${JSON.stringify(failures)}`);
+            process.exit(1);
+          }
           NODE
       - name: Upload Chromium screenshot audit
         if: always()
@@ -89,6 +126,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The two suites that require WebKit stay in Playwright's pinned image, but
+  # share one container instead of paying identical setup on two runners.
   webkit:
     name: webkit-regressions
     runs-on: ubuntu-latest
@@ -110,16 +149,41 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { chromium, webkit } from 'playwright';
-          for(const browserType of [chromium,webkit]){const browser=await browserType.launch({headless:true});await browser.close();}
+          for (const browserType of [chromium, webkit]) {
+            const browser = await browserType.launch({ headless: true });
+            await browser.close();
+          }
           NODE
       - name: Run all WebKit-required suites with complete diagnostics
         shell: bash
         run: |
           node --input-type=module <<'NODE'
-          import fs from 'node:fs'; import { spawnSync } from 'node:child_process';
-          const suites=[['browser','node tests/ui/browser.mjs'],['mobile-state','node tests/ui/mobile-state.mjs']]; const failures=[];
-          for(const [name,command] of suites){const shots=`tests/ui-shots/webkit/${name}`;fs.mkdirSync(shots,{recursive:true});const result=spawnSync(command,{shell:true,stdio:'inherit',env:{...process.env,CI:'1',UI_SHOTS:shots}});if(result.error||result.status!==0)failures.push({name,command,status:result.status,error:result.error?.message??null});}
-          if(failures.length){console.error(JSON.stringify(failures));process.exit(1);}
+          import fs from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+
+          const suites = [
+            ['browser', 'node tests/ui/browser.mjs'],
+            ['mobile-state', 'node tests/ui/mobile-state.mjs'],
+          ];
+          const failures = [];
+          for (const [name, command] of suites) {
+            const shots = `tests/ui-shots/webkit/${name}`;
+            fs.mkdirSync(shots, { recursive: true });
+            console.log(`::group::${name}: ${command}`);
+            const result = spawnSync(command, {
+              shell: true,
+              stdio: 'inherit',
+              env: { ...process.env, CI: '1', UI_SHOTS: shots },
+            });
+            console.log('::endgroup::');
+            if (result.error || result.status !== 0) {
+              failures.push({ name, command, status: result.status, error: result.error?.message ?? null });
+            }
+          }
+          if (failures.length) {
+            console.error(`WebKit/UI failures: ${JSON.stringify(failures)}`);
+            process.exit(1);
+          }
           NODE
       - name: Upload WebKit screenshot audit
         if: always()
@@ -130,6 +194,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Preserve one final browser-matrix authority while avoiding a separate
+  # viewport aggregator plus another status-only aggregator runner.
   browser-matrix:
     name: browser-matrix
     if: always()
@@ -161,4 +227,7 @@ jobs:
           WEBKIT_RESULT: ${{ needs.webkit.result }}
         shell: bash
         run: |
-          if [[ "$CHROMIUM_RESULT" != "success" || "$WEBKIT_RESULT" != "success" ]]; then exit 1; fi
+          if [[ "$CHROMIUM_RESULT" != "success" || "$WEBKIT_RESULT" != "success" ]]; then
+            echo "::error::UI browser regression failed (chromium=$CHROMIUM_RESULT, webkit=$WEBKIT_RESULT)."
+            exit 1
+          fi

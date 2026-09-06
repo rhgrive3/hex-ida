@@ -1,5 +1,8 @@
 name: Phase 11 release validation
 
+# Permanent exact-product verifier for the Managed Frontends phase. Exact-SHA
+# dispatch prevents validation-only PRs (EP-012). Broad repository validation
+# runs only at release boundaries; draft inner-loop pushes stay focused.
 on:
   workflow_dispatch:
     inputs:
@@ -17,22 +20,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: phase11-release-${{ github.ref }}
+  group: phase11-release-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
+    # Stage 1 completion owns the aggregate product candidate. Phase 11's
+    # component ownership gate must not reinterpret that cross-phase diff as a
+    # Phase 11 candidate merely because package.json is shared.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.head_ref != 'completion/stage1-integration' }}
     uses: ./.github/workflows/_phase-release-validation.yml
     with:
       phase_name: "Phase 11"
-      checkout_ref: ${{ inputs.sha }}
-      expected_sha: ${{ inputs.sha }}
-      shadow: ${{ inputs.shadow }}
-      run_broad_regression: true
+      checkout_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      expected_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || '' }}
+      shadow: ${{ github.event_name == 'workflow_dispatch' && inputs.shadow || false }}
+      run_broad_regression: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
       ownership_script: "tools/validation/phase11/ownership-check.mjs"
       verify_script: "tools/validation/phase11/verify.mjs"
       artifact_prefix: "phase11-release-evidence"
-      artifact_suffix: ${{ inputs.sha }}
+      artifact_suffix: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
       evidence_paths: |
         reports/phase11/phase11-release-evidence.json
         reports/phase11/checkpoints.json

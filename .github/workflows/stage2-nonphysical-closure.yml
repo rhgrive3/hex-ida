@@ -66,14 +66,43 @@ jobs:
             echo "required=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           required=false
           while IFS= read -r changed; do
             case "$changed" in
-              js/targets/architecture/*|js/runtime/*|js/managed/*|js/rebuild/*|js/phase12/*|js/platform/stage2-*|js/platform/physical-ipad-evidence.js|js/knowledge/*|js/signature/*|js/pattern/*|js/collaboration/*|tests/machine-effects/*|tests/stage2/*|tests/phase12/*|tools/validation/machine-effects/*|tools/validation/stage2/*|tools/validation/phase6/*|tools/validation/phase10/*|tools/validation/phase11/*|tools/validation/phase12/*|tools/validation/rebuild-independent-oracle.mjs|.github/workflows/stage2-nonphysical-closure.yml|package.json|package-lock.json)
-                required=true; break ;;
+              js/targets/architecture/*|\
+              js/runtime/*|\
+              js/managed/*|\
+              js/rebuild/*|\
+              js/phase12/*|\
+              js/platform/stage2-*|\
+              js/platform/physical-ipad-evidence.js|\
+              js/knowledge/*|\
+              js/signature/*|\
+              js/pattern/*|\
+              js/collaboration/*|\
+              tests/machine-effects/*|\
+              tests/stage2/*|\
+              tests/phase12/*|\
+              tools/validation/machine-effects/*|\
+              tools/validation/stage2/*|\
+              tools/validation/phase6/*|\
+              tools/validation/phase10/*|\
+              tools/validation/phase11/*|\
+              tools/validation/phase12/*|\
+              tools/validation/rebuild-independent-oracle.mjs|\
+              .github/workflows/stage2-nonphysical-closure.yml|\
+              package.json|package-lock.json)
+                required=true
+                break
+                ;;
             esac
           done < <(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+
           echo "required=$required" >> "$GITHUB_OUTPUT"
+          if [[ "$required" == "false" ]]; then
+            echo "Stage 2 semantic/profile inputs are unchanged; skipping native proof providers and full closure validation."
+          fi
 
       - name: Set up Node
         if: steps.impact.outputs.required == 'true'
@@ -81,14 +110,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
       - name: Install active native proof providers
         if: steps.impact.outputs.required == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+
       - name: Install dependencies
         if: steps.impact.outputs.required == 'true'
         run: npm ci --no-audit --no-fund
+
       - name: Assert exact candidate identity
         if: steps.impact.outputs.required == 'true'
         id: identity
@@ -102,6 +134,7 @@ jobs:
           test "$sha" = "$EXPECT_SHA"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
+
       - name: Resolve generated-output ownership policy
         if: steps.impact.outputs.required == 'true'
         id: generated-policy
@@ -109,8 +142,12 @@ jobs:
         run: |
           set -euo pipefail
           mode="$(node tools/validation/generated-output-policy.mjs)"
-          case "$mode" in enforce|ephemeral) ;; *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;; esac
+          case "$mode" in
+            enforce|ephemeral) ;;
+            *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
+          esac
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
       - name: Validate canonical generated artifacts under ownership policy
         if: steps.impact.outputs.required == 'true'
         id: generated-artifacts
@@ -120,6 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run userscript:build
+
           build_identity="$(node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const release = JSON.parse(fs.readFileSync('userscript/release-version.json', 'utf8'));
@@ -130,14 +168,35 @@ jobs:
           NODE
           )"
           echo "build_identity=$build_identity" >> "$GITHUB_OUTPUT"
+
           git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
           unexpected="$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
-          if [[ -n "$unexpected" ]]; then printf '%s\n' "$unexpected" >&2; exit 1; fi
+          if [[ -n "$unexpected" ]]; then
+            echo 'userscript:build changed files outside the generated-output allowlist:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
           case "$GENERATED_MODE" in
-            enforce) git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json; test -z "$(git status --porcelain --untracked-files=no)" ;;
-            ephemeral) git restore --source=HEAD --worktree -- userscript/hex.user.template.js userscript/release-version.json; test -z "$(git status --porcelain --untracked-files=no)" ;;
-            *) exit 1 ;;
+            enforce)
+              git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+              test -z "$(git status --porcelain --untracked-files=no)"
+              ;;
+            ephemeral)
+              git restore --source=HEAD --worktree -- userscript/hex.user.template.js userscript/release-version.json
+              test -z "$(git status --porcelain --untracked-files=no)"
+              ;;
+            *)
+              echo "unknown generated-output policy mode: $GENERATED_MODE" >&2
+              exit 1
+              ;;
           esac
+
+      # The profile evidence collector is the canonical A2 executor. It runs
+      # `tests/machine-effects/run.mjs` as `a2-machine-effects` and records the
+      # command, status, stdout, stderr, and duration in exact profile evidence.
+      # Running the same command immediately before the collector duplicated the
+      # entire A2 denominator and, on non-impact PRs, bypassed the impact guard.
       - name: Collect exact non-physical Stage 2 profile evidence
         if: steps.impact.outputs.required == 'true'
         id: profile
@@ -148,9 +207,13 @@ jobs:
         run: |
           set -euo pipefail
           run_id="exact-${SHA:0:16}"
-          node tools/validation/stage2/profile-evidence-collector.mjs --commit "$SHA" --tree "$TREE" --run-id "$run_id"
+          node tools/validation/stage2/profile-evidence-collector.mjs \
+            --commit "$SHA" \
+            --tree "$TREE" \
+            --run-id "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "profile_path=reports/stage2/profile-evidence-runs/$run_id/profile-evidence.json" >> "$GITHUB_OUTPUT"
+
       - name: Run exact-head Stage 2 verifier and full repository validation
         if: steps.impact.outputs.required == 'true'
         shell: bash
@@ -160,6 +223,7 @@ jobs:
           set -euo pipefail
           node tests/stage2/stage2-release-identity-strict.mjs
           node tools/validation/stage2/verify.mjs --expect-sha "$SHA" --full
+
       - name: Record non-physical candidate identity
         if: steps.impact.outputs.required == 'true'
         shell: bash
@@ -172,14 +236,25 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const profile=JSON.parse(fs.readFileSync(process.env.PROFILE_PATH,'utf8'));
-          const generatedBuildIdentity=String(process.env.GENERATED_BUILD_IDENTITY||'');
-          if (!/^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:[1-9][0-9]*$/.test(generatedBuildIdentity)) throw new TypeError('stage2-generated-build-identity-invalid');
-          const record={schemaVersion:'hex-stage2-nonphysical-candidate/v1',verdict:'BLOCKED_ONLY_ON_PHYSICAL_IPAD_EVIDENCE',candidateCommitSha:process.env.SHA,candidateTreeSha:process.env.TREE,profileEvidenceId:profile.evidenceId,generatedBuildIdentity,remainingBlockers:['S2-IPAD-PHYSICAL']};
-          fs.mkdirSync('reports/stage2',{recursive:true});
-          fs.writeFileSync('reports/stage2/nonphysical-candidate.json',`${JSON.stringify(record,null,2)}\n`);
+          const profile = JSON.parse(fs.readFileSync(process.env.PROFILE_PATH, 'utf8'));
+          const generatedBuildIdentity = String(process.env.GENERATED_BUILD_IDENTITY || '');
+          if (!/^userscript-release:[0-9a-f]{64}:build:[0-9a-f]{24}:serial:[1-9][0-9]*$/.test(generatedBuildIdentity)) {
+            throw new TypeError('stage2-generated-build-identity-invalid');
+          }
+          const record = {
+            schemaVersion: 'hex-stage2-nonphysical-candidate/v1',
+            verdict: 'BLOCKED_ONLY_ON_PHYSICAL_IPAD_EVIDENCE',
+            candidateCommitSha: process.env.SHA,
+            candidateTreeSha: process.env.TREE,
+            profileEvidenceId: profile.evidenceId,
+            generatedBuildIdentity,
+            remainingBlockers: ['S2-IPAD-PHYSICAL'],
+          };
+          fs.mkdirSync('reports/stage2', { recursive: true });
+          fs.writeFileSync('reports/stage2/nonphysical-candidate.json', `${JSON.stringify(record, null, 2)}\n`);
           console.log(JSON.stringify(record));
           NODE
+
       - name: Upload exact proof artifacts
         if: always() && steps.impact.outputs.required == 'true'
         uses: actions/upload-artifact@v4
