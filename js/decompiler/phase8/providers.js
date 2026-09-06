@@ -442,6 +442,10 @@ export function providerAuthorityFailures(facts, view) {
     }
     if (hint.status !== 'accepted') continue;
     const region = hint.regionKey == null ? null : view?.regions?.find((entry) => entry.regionKey === hint.regionKey) ?? null;
+    if (hint.regionKey != null && region == null) {
+      failures.push({ providerId: hint.providerId, problem: 'accepted-for-missing-region', detail: hint.regionKey });
+      continue;
+    }
     if (region == null) continue;
     if (region.conflicts.some((kind) => HARD_CONFLICTS.has(kind))) {
       failures.push({ providerId: hint.providerId, problem: 'accepted-over-hard-conflict', detail: `${hint.name} on ${hint.regionKey}` });
