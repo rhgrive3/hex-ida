@@ -653,14 +653,6 @@ export function probeCil(bytes) {
     }
   }
 
-  // Retain raw metadata-root compatibility for the deliberately minimal
-  // Phase 11 fixture. Real PE images are handled exclusively above.
-  for (let i = 0; i <= u8.length - 4; i += 4) {
-    if (u8[i] === 0x42 && u8[i + 1] === 0x53 && u8[i + 2] === 0x4a && u8[i + 3] === 0x42) {
-      return { supported: true, confidence: 0.9, formatVersion: 'cli-ecma-335', vmSpecEdition: 'clr-v4' };
-    }
-  }
-
   return { supported: false, confidence: 0, reason: 'invalid-signature' };
 }
 
