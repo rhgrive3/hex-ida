@@ -195,18 +195,14 @@ test('T013 issued identity provenance rejects caller mutation before publication
       ir:semanticSnapshotForAnalysis(state),
     });
     assert.equal(issued.valid, true);
-    const originalIdentity = issued.identity;
     mutate(issued);
     const observed = canonicalAnalysisIdentity({
       analysis:state,
       ir,
       resolvedAnalysisIdentity:issued,
     });
-    assert.equal(observed.valid, true);
-    assert.equal(observed.identity.functionId, originalIdentity.functionId,
-      'a rewritten public identity field must not become an issued witness');
-    assert.notEqual(observed.identity, issued.identity,
-      'publication must derive or retrieve the canonical identity after provenance invalidation');
+    assert.equal(observed.valid, false,
+      'a rewritten public identity field must fail closed instead of becoming an issued witness');
   }
 });
 

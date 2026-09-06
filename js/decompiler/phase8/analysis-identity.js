@@ -333,9 +333,13 @@ function markIssuedIdentity(result) {
   }));
   return result;
 }
+function issuedIdentityRecord(result) {
+  try { return ISSUED_IDENTITY_RESULTS.get(result) ?? null; }
+  catch { return null; }
+}
 function issuedIdentityProof(result) {
   try {
-    const proof = ISSUED_IDENTITY_RESULTS.get(result);
+    const proof = issuedIdentityRecord(result);
     if (proof == null) return null;
     // The result is returned to callers and its fields are therefore mutable.
     // Read the exact own data descriptors through the captured intrinsic rather
@@ -2396,7 +2400,10 @@ export function canonicalAnalysisIdentity(context = {}) {
   } : null);
   const contextSourceEntries = identitySourceEntries(context);
   const issuedIdentity = context?.resolvedAnalysisIdentity;
-  const initialIssuedProof = issuedIdentityProof(issuedIdentity);
+  // Only the private record is needed to select the immutable snapshot. The
+  // caller-facing fields are checked after the raw witness, so an accessor or
+  // mutation cannot run before that producer observation or hide it.
+  const initialIssuedProof = issuedIdentityRecord(issuedIdentity);
   const issuedSnapshot = initialIssuedProof?.semanticSnapshot ?? null;
   const publicationWitness = typeof context?.analysis?.get === 'function';
   const canUseIssuedWitness = publicationWitness
