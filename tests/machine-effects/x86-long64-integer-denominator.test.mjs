@@ -97,7 +97,7 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
     for (const [bytes, family, fromBits, toBits, physical, policy] of [
       [[0x66,0x0f,0xb7,0xc3], 'movzx', 16,16,'rax','preserve-unaffected'],
       [[0x66,0x0f,0xbf,0xc3], 'movsx', 16,16,'rax','preserve-unaffected'],
-      [[0x66,0x63,0xc3], 'movsxd', 32,16,'rax','preserve-unaffected'],
+      [[0x66,0x63,0xc3], 'movsxd', 16,16,'rax','preserve-unaffected'],
       [[0x63,0xc3], 'movsxd', 32,32,'rax','zero-extend-32'],
       [[0x48,0x63,0xc3], 'movsxd', 32,64,'rax','replace'],
     ]) {
