@@ -349,7 +349,9 @@ function hierarchyComplete(index, chain) {
 function protocolContextKnown(index, chain, explicit) {
   if (Array.isArray(explicit)) return true;
   if (!hierarchyComplete(index, chain)) return false;
-  if (index.completeness?.classes?.complete === false || index.completeness?.categories?.complete === false) return false;
+  if (index.completeness?.classes?.complete === false) return false;
+  if (index.completeness?.categories?.complete === false) return false;
+  if (index.completeness?.protocols?.complete === false) return false;
   return chain.every((name) => index.classes.get(name)?.[PROTOCOLS_KNOWN] === true);
 }
 

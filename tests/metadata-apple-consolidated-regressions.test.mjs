@@ -272,6 +272,14 @@ import '../js/objc-stub-recovery.js';
   });
   assert.equal(resolveObjcDispatch(partial, { receiverType: 'PartialClass', selector: 'work' }).requirements.length, 2, 'explicitly partial class metadata must not become negative protocol proof');
 
+  const partialProtocols = buildObjcRuntimeIndex({
+    classes: [{ name: 'PartialRegistryClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+    runtimeCompleteness: { classes: { complete: true }, protocols: { complete: false }, categories: { complete: true } },
+  });
+  assert.equal(resolveObjcDispatch(partialProtocols, { receiverType: 'PartialRegistryClass', selector: 'work' }).requirements.length, 2, 'incomplete protocol registry must not enable negative protocol filtering');
+
   console.log('✔ #4253 known-empty ObjC protocol context passed');
 }
 
