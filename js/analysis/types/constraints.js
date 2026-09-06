@@ -254,6 +254,26 @@ export function createTypeClaim(input = {}) {
   return deepFreeze(claim);
 }
 
+function canonicalHardAbiProfile(value) {
+  if (value == null) return null;
+  const abiProfile = strictNonEmpty(value, 'abi-profile-invalid');
+  if (abiProfile.startsWith('unsupported')) fail(`abi-profile-unsupported:${abiProfile}`);
+  return abiProfile;
+}
+
+function bindClaimAbiProfile(claim, abiProfile) {
+  if (abiProfile == null) return claim;
+  const hasClaimProfile = Object.hasOwn(claim.descriptor, 'abiProfile');
+  if (!hasClaimProfile && claim.layer !== 'abi') return claim;
+  if (hasClaimProfile && claim.descriptor.abiProfile === abiProfile) return claim;
+
+  const properties = Object.getOwnPropertyDescriptors(claim.descriptor);
+  properties.abiProfile = { value: abiProfile, enumerable: true, configurable: true, writable: true };
+  const descriptor = Array.isArray(claim.descriptor) ? [] : {};
+  Object.defineProperties(descriptor, properties);
+  return createTypeClaim({ layer: claim.layer, entityId: claim.entityId, descriptor });
+}
+
 export function createHardConstraint(input = {}) {
   const kind = strictNonEmpty(input.kind, 'hard-constraint-kind-required');
   if (!HARD_SET.has(kind)) fail('hard-constraint-invalid-kind');
@@ -263,19 +283,25 @@ export function createHardConstraint(input = {}) {
   // cannot state a hard fact no matter how confident it sounds.
   if (!HARD_ORIGINS.has(origin)) fail(`hard-constraint-origin-not-authoritative:${origin}`);
 
-  const abiProfile = input.abiProfile ?? input.claim?.descriptor?.abiProfile ?? null;
-  if (abiProfile != null && typeof abiProfile === 'string' && abiProfile.startsWith('unsupported')) {
-    fail(`abi-profile-unsupported:${abiProfile}`);
+  const claim = createTypeClaim(input.claim ?? {});
+  const constraintAbiProfile = canonicalHardAbiProfile(input.abiProfile);
+  const claimAbiProfile = canonicalHardAbiProfile(
+    Object.hasOwn(claim.descriptor, 'abiProfile') ? claim.descriptor.abiProfile : null,
+  );
+  if (constraintAbiProfile != null && claimAbiProfile != null && constraintAbiProfile !== claimAbiProfile) {
+    fail('abi-profile-conflict');
   }
+  const abiProfile = constraintAbiProfile ?? claimAbiProfile;
+  const canonicalClaim = bindClaimAbiProfile(claim, abiProfile);
 
   return deepFreeze({
     kind,
     origin,
-    claim: createTypeClaim(input.claim ?? {}),
+    claim: canonicalClaim,
     evidenceIds: idList(input.evidenceIds, 'hard-constraint-invalid-evidence-ids'),
     providerVersion: input.providerVersion == null ? null : String(input.providerVersion),
     buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
-    abiProfile: abiProfile == null ? null : String(abiProfile),
+    abiProfile,
   });
 }
 
