@@ -97,3 +97,41 @@ test('P10 #4553 does not invoke identity coercion hooks', () => {
   normalizeRuntimeModuleBinding(module({ binaryId: hostile }));
   assert.equal(coercions, 0);
 });
+
+for (const [field, drifts] of [
+  ['binaryId', ['bin_A', ['bin_A']]],
+  ['binaryId', ['bin_A', { id: 'bin_A' }]],
+  ['sliceId', ['slice_A', ['slice_A']]],
+  ['imageId', ['image_A', { id: 'image_A' }]],
+]) {
+  test(`P10 #4553 stateful ${field} getter drift cannot retain trusted authority`, () => {
+    let reads = 0;
+    const input = {
+      ...module({ identityState: 'exact' }),
+      get [field]() { return drifts[Math.min(reads++, drifts.length - 1)]; },
+    };
+    assert.equal(hasProvenRuntimeStaticIdentity(input), true);
+    const binding = normalizeRuntimeModuleBinding(input);
+    assert.equal(binding.identityState, 'unresolved');
+    assert.equal(binding.binaryId, null);
+    assert.equal(binding.sliceId, null);
+    assert.equal(binding.imageId, null);
+  });
+}
+
+test('P10 #4553 validation and publication observe one consistent identity snapshot', () => {
+  let binaryIdReads = 0;
+  let sliceIdReads = 0;
+  const input = {
+    ...module({ identityState: 'exact', imageId: 'image_A' }),
+    get binaryId() { binaryIdReads += 1; return 'bin_A'; },
+    get sliceId() { sliceIdReads += 1; return 'slice_A'; },
+  };
+  const binding = normalizeRuntimeModuleBinding(input);
+  assert.equal(binding.identityState, 'exact');
+  assert.equal(binding.binaryId, 'bin_A');
+  assert.equal(binding.sliceId, 'slice_A');
+  assert.equal(binding.imageId, 'image_A');
+  assert.equal(binaryIdReads, 1);
+  assert.equal(sliceIdReads, 1);
+});

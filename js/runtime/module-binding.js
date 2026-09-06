@@ -9,12 +9,16 @@ export function hasProvenRuntimeStaticIdentity(module) {
   const hasCanonicalIdentityEvidence = Array.isArray(identityEvidenceIds) &&
     identityEvidenceIds.length > 0 &&
     identityEvidenceIds.every((id) => typeof id === "string" && id.trim().length > 0);
-  const hasCanonicalStaticIdentity = canonicalIdentity(module?.binaryId) &&
-    (module?.sliceId == null || canonicalIdentity(module.sliceId)) &&
-    (module?.imageId == null || canonicalIdentity(module.imageId));
+  const binaryId = module?.binaryId;
+  const sliceId = module?.sliceId;
+  const imageId = module?.imageId;
+  const identityState = module?.identityState;
+  const hasCanonicalStaticIdentity = canonicalIdentity(binaryId) &&
+    (sliceId == null || canonicalIdentity(sliceId)) &&
+    (imageId == null || canonicalIdentity(imageId));
   return hasCanonicalStaticIdentity && (
-    module?.identityState === "exact" ||
-    module?.identityState === "resolved" ||
+    identityState === "exact" ||
+    identityState === "resolved" ||
     hasCanonicalIdentityEvidence
   );
 }
@@ -31,13 +35,23 @@ export function normalizeRuntimeModuleBinding(module, { bindingKey: explicitKey,
   const staticBase = module?.staticBase ?? module?.imageBase ?? null;
   const pathHint = module?.pathHint ?? module?.path ?? module?.name ?? null;
   const buildIdentity = module?.buildIdentity ?? module?.uuid ?? null;
-  const identityEvidenceIds = Object.freeze(Array.isArray(module?.identityEvidenceIds) ? [...module.identityEvidenceIds] : []);
 
-  const trusted = hasProvenRuntimeStaticIdentity(module);
-  const binaryId = trusted ? (module?.binaryId ?? null) : null;
-  const sliceId = trusted ? (module?.sliceId ?? null) : null;
-  const imageId = trusted ? (module?.imageId ?? null) : null;
-  const identityState = trusted ? (module?.identityState ?? "resolved") : "unresolved";
+  const identityRead = {
+    binaryId: module?.binaryId,
+    sliceId: module?.sliceId,
+    imageId: module?.imageId,
+    identityState: module?.identityState,
+    identityEvidenceIds: module?.identityEvidenceIds,
+  };
+  const identityEvidenceIds = Object.freeze(Array.isArray(identityRead.identityEvidenceIds)
+    ? [...identityRead.identityEvidenceIds]
+    : []);
+
+  const trusted = hasProvenRuntimeStaticIdentity(identityRead);
+  const binaryId = trusted ? (identityRead.binaryId ?? null) : null;
+  const sliceId = trusted ? (identityRead.sliceId ?? null) : null;
+  const imageId = trusted ? (identityRead.imageId ?? null) : null;
+  const identityState = trusted ? (identityRead.identityState ?? "resolved") : "unresolved";
 
   const result = {
     bindingKey: key,
