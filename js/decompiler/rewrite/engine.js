@@ -9,6 +9,18 @@ export const DEFAULT_REWRITE_BUDGET = Object.freeze({
 
 function now() { return globalThis.performance?.now ? globalThis.performance.now() : Date.now(); }
 
+function validTimeBudgetMs(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function validWorkLimit(value, fallback) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
 function validateRule(rule) {
   for (const key of ['name', 'phase', 'match', 'rewrite', 'proof']) {
     if (rule?.[key] == null) throw new TypeError(`rewrite rule missing ${key}`);
@@ -22,6 +34,10 @@ export class RewriteEngine {
   constructor(rules = [], budget = {}) {
     this.rules = rules.map(validateRule);
     this.budget = { ...DEFAULT_REWRITE_BUDGET, ...budget };
+    this.budget.timeBudgetMs = validTimeBudgetMs(this.budget.timeBudgetMs, DEFAULT_REWRITE_BUDGET.timeBudgetMs);
+    this.budget.maxIterations = validWorkLimit(this.budget.maxIterations, DEFAULT_REWRITE_BUDGET.maxIterations);
+    this.budget.nodeBudget = validWorkLimit(this.budget.nodeBudget, DEFAULT_REWRITE_BUDGET.nodeBudget);
+    this.budget.maxApplications = validWorkLimit(this.budget.maxApplications, DEFAULT_REWRITE_BUDGET.maxApplications);
   }
 
   rewrite(root, context = {}) {
