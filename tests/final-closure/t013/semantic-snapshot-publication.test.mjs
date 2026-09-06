@@ -161,9 +161,13 @@ test('T013 cache validation cannot hide a reentrant ownKeys mutation', () => {
 
   const publicationGraph = makeGraph();
   const state = seedAnalysisState(publicationGraph.ir);
+  const resolved = canonicalAnalysisIdentity({
+    analysis:state,
+    ir:semanticSnapshotForAnalysis(state),
+  });
   publicationGraph.setPhase('validate');
-  assert.equal(analysisSemanticSnapshotIsCurrent(state, {}), false,
-    'publication must use one uncached producer witness after a reentrant mutation');
+  assert.equal(analysisSemanticSnapshotIsCurrent(state, { resolvedAnalysisIdentity:resolved }), false,
+    'publication must use a fresh producer witness after a reentrant mutation');
   assert.equal(semanticSnapshotForAnalysis(state).values[0].id, 1);
   assert.equal(publicationGraph.target.id, 99);
 
@@ -183,12 +187,50 @@ test('T013 cached witness and authority traversal share the fixed work budget', 
     extra:new Map(Array.from({ length:125000 }, (_, index) => [index, 0])) });
   const ir = makeIr();
   capturePhase8SemanticSnapshot(ir);
-  assert.equal(canonicalAnalysisIdentity({ ir }).valid, true);
+  const state = seedAnalysisState(ir);
+  const resolved = canonicalAnalysisIdentity({
+    ir:semanticSnapshotForAnalysis(state),
+    analysis:state,
+  });
+  assert.equal(resolved.valid, true);
   const authority = { nested:new Array(1000000) };
-  const warm = canonicalAnalysisIdentity({ ir, analysisIdentity:authority });
-  const cold = canonicalAnalysisIdentity({ ir:makeIr(), analysisIdentity:authority });
+  // The seeded state makes this the real publication path. Its initial capture
+  // is warmed by the public snapshot call above, but publication still takes a
+  // fresh producer witness rather than trusting a finite raw Proxy cache.
+  const warm = canonicalAnalysisIdentity({
+    ir,
+    analysis:state,
+    analysisIdentity:authority,
+    resolvedAnalysisIdentity:resolved,
+  });
+  const coldIr = makeIr();
+  const coldState = seedAnalysisState(coldIr);
+  const coldResolved = canonicalAnalysisIdentity({
+    ir:semanticSnapshotForAnalysis(coldState),
+    analysis:coldState,
+  });
+  const cold = canonicalAnalysisIdentity({
+    ir:coldIr,
+    analysis:coldState,
+    analysisIdentity:authority,
+    resolvedAnalysisIdentity:coldResolved,
+  });
   assert.equal(cold.valid, false);
-  assert.equal(warm.valid, false, 'cache validation must not receive a separate work allowance');
+  assert.equal(warm.valid, false, 'publication witness and authority traversal share one fixed work allowance');
+});
+
+test('T013 documents total-work accounting when a public cache mismatch recaptures', () => {
+  // A cold capture of this graph fits the fixed Semantic IR reference budget.
+  // After mutation, cache validation plus recapture intentionally charge the
+  // same budget and therefore fail closed instead of refunding witness work.
+  const ir = { extra:Array.from({ length:100000 }, () => ({ value:1 })) };
+  assert.doesNotThrow(() => capturePhase8SemanticSnapshot(ir));
+  ir.extra[0].value = 2;
+  assert.throws(
+    () => capturePhase8SemanticSnapshot(ir),
+    /identity-work-budget-exceeded/,
+    'cache mismatch recapture must honor total actual-work accounting',
+  );
 });
 
 test('T013 raw snapshot witness rechecks mutable fields and hidden proxy fields', () => {

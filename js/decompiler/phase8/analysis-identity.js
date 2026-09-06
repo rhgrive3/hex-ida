@@ -314,6 +314,16 @@ const RAW_SNAPSHOT_CACHE = new WeakMap();
 // graphs still take the strict validation path above.
 const SNAPSHOT_SHAPE_DIGEST_CACHE = new WeakMap();
 const SNAPSHOT_IDENTITY_CACHE = new WeakMap();
+// The validation records are derived from the immutable snapshot, rather than
+// looked up through a live producer key. Publication can therefore perform a
+// fresh bounded witness over the raw graph without allocating a second clone.
+const SNAPSHOT_WITNESS_CACHE = new WeakMap();
+// A resolved identity passed back through one Phase 8 vertical is an
+// internally issued proof, rather than an arbitrary caller-provided identity.
+// Publication may reuse its already-derived field digests after the fresh raw
+// witness proves the same shape. Keeping this provenance private avoids
+// accepting a forged `resolvedAnalysisIdentity` as a shortcut.
+const ISSUED_IDENTITY_RESULTS = new WeakSet();
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const getReflectOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const getPrototypeOf = Object.getPrototypeOf;
@@ -582,7 +592,10 @@ function snapshotChildRole(role, key) {
  * value is checked.  Capture accepts only enumerable data descriptors and
  * publishes normalized frozen properties, so writable/configurable flags are
  * not semantic input. A mutation returns false, which makes the caller discard
- * the cache and perform the normal fresh capture path.
+ * the cache and, for public capture, perform the normal fresh capture path.
+ * Live publication never uses this cache validator: it always takes the
+ * uncached producer witness below because a finite witness cannot authenticate
+ * arbitrary Proxy/accessor behavior.
  */
 function rawSnapshotMatches(entry, workBudget) {
   // The original capture already paid the full text/reference budget.  A
@@ -756,6 +769,10 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget, {
       if (matches) return cached.snapshot;
       RAW_SNAPSHOT_CACHE.delete(ir);
       if (rejectOnCacheMismatch) throw new TypeError('identity-live-producer-cache-mismatch');
+      // Public capture intentionally uses total-work accounting. The witness
+      // charge above is not rolled back, so a mismatch recapture must fit in
+      // this same caller budget as the original capture. Cache history never
+      // grants a second allowance after producer mutation.
     }
   }
 
@@ -1061,6 +1078,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget, {
     validationCost,
     validationRecords:Object.freeze(validationRecords),
   });
+  SNAPSHOT_WITNESS_CACHE.set(snapshot, cacheEntry);
   if (reuseCache) RAW_SNAPSHOT_CACHE.set(ir, cacheEntry);
   return snapshot;
 }
@@ -2345,39 +2363,107 @@ export function canonicalAnalysisIdentity(context = {}) {
     values: seededSsa?.values ?? [],
     origin: seededOrigins?.functionOrigin ?? null,
   } : null);
+  const contextSourceEntries = identitySourceEntries(context);
+  const issuedIdentity = context?.resolvedAnalysisIdentity;
+  const issuedSnapshot = issuedIdentity?.semanticSnapshot;
+  const publicationWitness = typeof context?.analysis?.get === 'function';
+  const canUseIssuedWitness = publicationWitness
+    && rawIr !== issuedSnapshot
+    && isPhase8SemanticSnapshot(issuedSnapshot)
+    && issuedIdentity?.valid === true
+    && ISSUED_IDENTITY_RESULTS.has(issuedIdentity)
+    && !contextSourceEntries.some((source) => source.present && source.value == null);
   let ir;
   try {
     if (isPhase8SemanticSnapshot(rawIr)) {
       ir = rawIr;
+    } else if (canUseIssuedWitness) {
+      // The raw producer is still observed on every publication. Reuse only
+      // validation records owned by the internally issued immutable snapshot;
+      // this avoids trusting an arbitrary raw-object cache entry and avoids
+      // allocating a duplicate immutable graph on the hot path. The witness
+      // is intentionally bounded and makes no universal Proxy-authentication
+      // claim: hostile trap behavior outside this finite observation remains a
+      // producer-contract limitation and must fail closed where observed.
+      const witness = SNAPSHOT_WITNESS_CACHE.get(issuedSnapshot);
+      // Bind the immutable witness back to the exact raw root that produced
+      // it. Without this check a caller could pair an issued identity from one
+      // state with a different raw graph and validate the wrong producer.
+      if (witness == null || witness.raw !== rawIr || !rawSnapshotMatches(witness, workBudget)) {
+        throw new TypeError('identity-live-producer-witness-mismatch');
+      }
+      ir = issuedSnapshot;
     } else {
       // Identity derivation is itself an authority boundary. A live producer
       // must never take an unchecked raw snapshot cache hit here. Publication
-      // callers may use the bounded descriptor witness, but any confirmed
-      // mismatch is rejected instead of silently recapturing through a
-      // re-entrant producer trap.
-      const publicationWitness = typeof context?.analysis?.get === 'function';
+      // takes a fresh uncached producer witness on every call; this gives the
+      // publication guard a fresh source observation instead of pretending
+      // that one finite cache traversal authenticates arbitrary live traps.
       ir = capturePhase8SemanticSnapshotWithBudget(rawIr, workBudget, {
-        reuseCache:publicationWitness,
-        rejectOnCacheMismatch:publicationWitness,
+        // A live producer is an authority boundary.  Its cache entry was
+        // created from an earlier, finite observation and cannot authenticate
+        // a later Proxy/accessor trap.  Publication therefore takes a fresh
+        // producer witness on every call; the immutable snapshot and its
+        // derived identity caches remain reusable below.
+        // Direct identity derivation also keeps its historical uncached
+        // behavior. The distinction is useful: public capture may reuse its
+        // own raw cache, while an identity call must issue a fresh witness
+        // before deriving a durable identity regardless of context shape.
+        reuseCache:false,
+        rejectOnCacheMismatch:false,
       });
     }
   } catch {
     return { identity: null, valid: false, reason: 'canonical Semantic IR snapshot is unavailable' };
   }
-  const contextSourceEntries = identitySourceEntries(context);
   if (explicitlyMissingIdentity(contextSourceEntries)) return { identity: null, valid: false, reason: 'analysis identity is null' };
   const contextIdentitySources = identitySourceSnapshots(contextSourceEntries, workBudget);
   if (contextIdentitySources == null || contextIdentitySources.some(hasMalformedIdentityFields)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
+  if (canUseIssuedWitness) {
+    // Unknown authority metadata is still strictly traversed above. It does
+    // not override an internally issued identity unless it carries a known
+    // identity field; those explicit fields take the full canonical path
+    // below so their binding is re-derived rather than assumed.
+    if (!identitySourcesAreCacheable(contextIdentitySources)) {
+      // Continue through the canonical shape/authority checks below.
+    } else {
+      const result = {
+        identity: issuedIdentity.identity,
+        valid: true,
+        reason: null,
+        semanticSnapshot: ir,
+      };
+      ISSUED_IDENTITY_RESULTS.add(result);
+      return result;
+    }
+  }
+  const canReuseIssuedIdentity = issuedIdentity?.valid === true
+    && ISSUED_IDENTITY_RESULTS.has(issuedIdentity)
+    && ir === issuedSnapshot
+    && identitySourcesAreCacheable(contextIdentitySources);
+  if (canReuseIssuedIdentity) {
+    const result = {
+      identity: issuedIdentity.identity,
+      valid: true,
+      reason: null,
+      semanticSnapshot: ir,
+    };
+    ISSUED_IDENTITY_RESULTS.add(result);
+    return result;
+  }
+
   const cachedIdentity = SNAPSHOT_IDENTITY_CACHE.get(ir);
   if (cachedIdentity != null && identitySourcesAreCacheable(contextIdentitySources)) {
-    return {
+    const result = {
       identity: cachedIdentity.identity,
       valid: true,
       reason: null,
       semanticSnapshot: ir,
     };
+    ISSUED_IDENTITY_RESULTS.add(result);
+    return result;
   }
   const shaped = irShape(ir, workBudget);
   if (shaped == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
@@ -2423,7 +2509,9 @@ export function canonicalAnalysisIdentity(context = {}) {
       && identitySourcesAreCacheable(rootIdentitySources)) {
     SNAPSHOT_IDENTITY_CACHE.set(ir, Object.freeze({ identity, shapeDigest }));
   }
-  return { identity, valid: true, reason: null, semanticSnapshot:ir };
+  const result = { identity, valid: true, reason: null, semanticSnapshot:ir };
+  ISSUED_IDENTITY_RESULTS.add(result);
+  return result;
 }
 
 export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS };
