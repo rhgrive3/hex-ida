@@ -166,6 +166,20 @@ test('#3935 a separate own-body unknown prevents fallback pruning', () => {
   assert.notEqual(solved.status.completeness, 'complete');
 });
 
+test('#3935 non-replaceable unknown authority survives even on a resolved call-site id', () => {
+  const caller = fallbackCaller({
+    extraUnknowns: [{ callSiteId: 'call-B', reason: 'unresolved-target' }],
+  });
+  const solved = solve(new Map([['A', caller], ['B', completeSummary('B')]]));
+
+  assert.equal(solved.unknownCallEffects.some((effect) =>
+    effect.callSiteId === 'call-B' && effect.reason === 'summary-missing'), false);
+  assert.ok(solved.unknownCallEffects.some((effect) =>
+    effect.callSiteId === 'call-B' && effect.reason === 'unresolved-target'));
+  assert.ok(solved.memoryWriteRegions.some((effect) => effect.broad));
+  assert.notEqual(solved.status.completeness, 'complete');
+});
+
 test('#3935 a library model can close the local fallback without laundering its authority', () => {
   const caller = fallbackCaller({ targetEntityIds: ['external-B'] });
   const solved = solve(
