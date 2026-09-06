@@ -667,6 +667,14 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const dbiBytes = msf.streams[3]?.read();
     const dbi = parseDbiHeader(dbiBytes);
+    // The DBI age must agree with the Info Stream age (LLVM DbiStreamHeader
+    // contract). A matching Info Stream alone must not launder a foreign-age
+    // DBI's symbols, modules, and section headers into authoritative evidence.
+    if (verdict === 'matched-authoritative' && info != null && dbi != null && info.age !== dbi.age) {
+      verdict = 'identity-mismatch';
+      detail = `PDB DBI age (${dbi.age}) does not match PDB info age (${info.age})`;
+      diagnostics.push(detail);
+    }
     const symbolStream = dbi && dbi.symRecordStreamIndex < msf.streams.length
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;

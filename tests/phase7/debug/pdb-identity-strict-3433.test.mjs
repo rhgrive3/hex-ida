@@ -48,7 +48,9 @@ function buildMinimalPdb(guid = GUID, age = 1) {
   cursor = blockSize * 4;
   view.setUint32(cursor + 4, 56, true);
   view.setUint32(cursor + 8, 0x1000, true);
-  // Stream 3 / block 5 is a zeroed 64-byte DBI header.
+  // Stream 3 / block 5 is an otherwise-zeroed DBI header. Its age is part
+  // of the same PDB identity and must agree with the Info Stream.
+  view.setUint32(blockSize * 5 + 8, age, true);
   return bytes;
 }
 
