@@ -65,6 +65,24 @@ state must provide a separately specified `actual-product-behavior-v1` oracle
 with independent verification and negative behavioral cases. No producer
 behavior or completion PASS is claimed here.
 
+Oracle registration and product acceptance are separate lifecycle decisions.
+Once a future successor supplies the content-bound observer, fixture, result,
+and independent receipt, its oracle may be registered with a `NONPASS` product
+result while T063 is still unimplemented. That result must carry
+`semanticPass: false`, `acceptance: false`, and its blocked finding IDs. The
+canonical component and checkpoint gates may then execute and report their
+actual result; registration alone cannot turn unknown producer behavior into
+PASS. PO-001 through PO-004 therefore block T063/T064 product acceptance and
+semantic PASS, while they do not create a reverse dependency from T062 to the
+T063 implementation.
+
+The registered oracle binds every case's `entrypoint`, `observes`, fixture
+IDs, negative counterexample, and expected outcome to independently authored
+source, fixture, and result blobs. A checkpoint product row also binds the
+effective ownership identity and a fresh Git authentication of the frozen
+predecessor packet. That row binding authenticates governance state only; it
+does not assert producer behavior.
+
 The current oracle preparation is the independently reviewed but explicitly
 unregistered bundle
 `/mnt/workspace/hex-stage-a-evidence/producer-behavior-oracle-independent-review-v2.json`

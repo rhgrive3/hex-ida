@@ -111,6 +111,10 @@ const STAGE_A_CONVERGENCE_HISTORY_SCHEMA =
   'hex-final-closure-stage-a-convergence-history-auth/v1';
 const STAGE_A_CONVERGENCE_EFFECTIVE_BUNDLE_SCHEMA =
   'hex-final-closure-stage-a-convergence-effective-bundle/v1';
+const STAGE_A_CONVERGENCE_CHECKPOINT_BINDING_SCHEMA =
+  'hex-final-closure-stage-a-convergence-checkpoint-binding/v1';
+const STAGE_A_CONVERGENCE_ORACLE_RESULT_STATUS = Object.freeze(['NONPASS', 'PASS']);
+const STAGE_A_CONVERGENCE_ORACLE_REGISTRATION_STATUS = 'REGISTERED';
 const STAGE_A_CONVERGENCE_EFFECTIVE_BUNDLE_CONSUMERS = Object.freeze([
   'validatePreflightContracts',
   'validateComponentLane',
@@ -602,11 +606,11 @@ function concurrentOwnershipErrors(blocks, ownership) {
   return errors;
 }
 
-function sha256Text(value) {
+export function sha256Text(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function canonicalJson(value) {
+export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
   if (value && typeof value === 'object') {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
@@ -1680,6 +1684,10 @@ function validCheckpointRow(row, expectedSequence, errors, shadowValidation = nu
     || !validSha1(row?.checkpointProduct?.treeSha)) {
     errors.push(`checkpoint-product-invalid:${expectedSequence}`);
   }
+  if (row?.stageAConvergenceBinding != null
+    && !stageAConvergenceCheckpointBindingShape(row.stageAConvergenceBinding)) {
+    errors.push(`checkpoint-stage-a-convergence-binding-invalid:${expectedSequence}`);
+  }
   const integrationReconciliation = row?.integrationReconciliation;
   if (integrationReconciliation?.schemaVersion !== PRODUCT_RECONCILIATION_SCHEMA_VERSION
     || !['T049', 'T050'].includes(integrationReconciliation?.ownerTaskId)
@@ -2497,16 +2505,65 @@ function oraclePathIsIndependent(repoPath, ownership) {
   ));
 }
 
+const STAGE_A_CONVERGENCE_ORACLE_ARTIFACT_KEYS = Object.freeze([
+  'path', 'sourceCommitSha', 'sourceTreeSha', 'gitBlobSha1', 'sha256',
+]);
+
+function oracleEntrypointParts(value) {
+  if (typeof value !== 'string') return null;
+  const separator = value.lastIndexOf('#');
+  if (separator <= 0 || separator === value.length - 1) return null;
+  const repoPath = value.slice(0, separator);
+  const symbol = value.slice(separator + 1);
+  if (!validRepoPath(repoPath)
+    || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol)) return null;
+  return Object.freeze({ repoPath, symbol });
+}
+
+function oracleCaseMarkers(row) {
+  const sourceMarker = `HEX_STAGE_A_ORACLE_SOURCE_V1 ${row.id} ${canonicalJson({
+    entrypoint: row.entrypoint,
+    observes: row.observes,
+  })}`;
+  const fixtureMarker = `HEX_STAGE_A_ORACLE_FIXTURE_V1 ${row.id} ${canonicalJson({
+    fixtureIds: row.fixtureIds,
+    negativeCounterexample: row.negativeCounterexample,
+  })}`;
+  const resultMarker = `HEX_STAGE_A_ORACLE_RESULT_V1 ${row.id} ${canonicalJson({
+    expectedOutcome: row.expectedOutcome,
+  })}`;
+  return Object.freeze({ sourceMarker, fixtureMarker, resultMarker });
+}
+
+function hasUniqueOracleMarker(content, marker) {
+  return typeof content === 'string' && occurrenceCount(content, marker) === 1;
+}
+
+function oracleCaseResultShape(value, row) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && exactSet(Object.keys(value), [
+      'caseId', 'entrypoint', 'observes', 'expectedOutcome',
+    ])
+    && value.caseId === row.id
+    && value.entrypoint === row.entrypoint
+    && canonicalJson(value.observes) === canonicalJson(row.observes)
+    && value.expectedOutcome === row.expectedOutcome;
+}
+
 function validateStageAConvergenceOracleContentBindings({ oracle, ownership, root, errors }) {
   const source = oracle?.source;
   const fixture = oracle?.fixture;
+  const results = oracle?.results;
   const independence = oracle?.independence;
-  const sourceKeys = ['path', 'sourceCommitSha', 'sourceTreeSha', 'gitBlobSha1', 'sha256'];
+  const sourceKeys = STAGE_A_CONVERGENCE_ORACLE_ARTIFACT_KEYS;
   const fixtureKeys = [...sourceKeys, 'caseIds'];
+  const resultKeys = [...sourceKeys, 'caseIds', 'status'];
   const independenceKeys = [
     'ownerTaskId', 'reviewerId', 'receiptPath', 'receiptCommitSha',
     'receiptTreeSha', 'receiptGitBlobSha1', 'receiptSha256',
-    'reviewedSourceSha256', 'reviewedFixtureSha256',
+    'reviewedSourceSha256', 'reviewedFixtureSha256', 'reviewedResultsSha256',
   ];
   if (!source || !exactSet(Object.keys(source), sourceKeys)
     || !validSha1(source.sourceCommitSha) || !validSha1(source.sourceTreeSha)
@@ -2521,6 +2578,15 @@ function validateStageAConvergenceOracleContentBindings({ oracle, ownership, roo
     || !oraclePathIsIndependent(fixture.path, ownership)) {
     errors.push('stage-a-convergence-oracle-fixture-binding-invalid');
   }
+  if (!results || !exactSet(Object.keys(results), resultKeys)
+    || !validSha1(results.sourceCommitSha) || !validSha1(results.sourceTreeSha)
+    || !validSha1(results.gitBlobSha1) || !validSha256(results.sha256)
+    || !Array.isArray(results.caseIds)
+    || !exactSet(results.caseIds, oracle?.cases?.map((row) => row.id) || [])
+    || !STAGE_A_CONVERGENCE_ORACLE_RESULT_STATUS.includes(results.status)
+    || !oraclePathIsIndependent(results.path, ownership)) {
+    errors.push('stage-a-convergence-oracle-results-binding-invalid');
+  }
   if (!independence || !exactSet(Object.keys(independence), independenceKeys)
     || !nonemptyBoundedString(independence.ownerTaskId, 80)
     || STAGE_A_CONVERGENCE_TASK_IDS.includes(independence.ownerTaskId)
@@ -2533,18 +2599,21 @@ function validateStageAConvergenceOracleContentBindings({ oracle, ownership, roo
     || !validSha256(independence.receiptSha256)
     || independence.reviewedSourceSha256 !== source?.sha256
     || independence.reviewedFixtureSha256 !== fixture?.sha256
+    || independence.reviewedResultsSha256 !== results?.sha256
     || !oraclePathIsIndependent(independence.receiptPath, ownership)) {
     errors.push('stage-a-convergence-oracle-independence-binding-invalid');
   }
-  if (root && source && fixture && independence
+  if (root && source && fixture && results && independence
     && validSha1(source.sourceCommitSha)
     && validSha1(fixture.sourceCommitSha)
+    && validSha1(results.sourceCommitSha)
     && validSha1(independence.receiptCommitSha)) {
-    const verifyBlob = (label, commitSha, row) => {
+    const verifiedContent = new Map();
+    const verifyBlob = (label, commitSha, row, treeField = 'sourceTreeSha') => {
       try {
         const actual = blobEvidenceAt(root, commitSha, row.path);
         const tree = git(root, ['rev-parse', `${commitSha}^{tree}`]);
-        if (tree !== row.sourceTreeSha && label !== 'receipt') {
+        if (tree !== row[treeField] && label !== 'receipt') {
           errors.push(`stage-a-convergence-oracle-${label}-tree-mismatch`);
         }
         if (label === 'receipt' && tree !== row.receiptTreeSha) {
@@ -2556,18 +2625,63 @@ function validateStageAConvergenceOracleContentBindings({ oracle, ownership, roo
         if (actual.gitBlobSha1 !== expectedBlob || actual.sha256 !== expectedSha256) {
           errors.push(`stage-a-convergence-oracle-${label}-content-mismatch`);
         }
+        if (label !== 'receipt') {
+          const content = runGit(root, ['cat-file', 'blob', actual.gitBlobSha1], { encoding: 'utf8' });
+          if (content.status !== 0) throw new Error('oracle-content-read-failed');
+          verifiedContent.set(label, String(content.stdout));
+        }
       } catch {
         errors.push(`stage-a-convergence-oracle-${label}-missing`);
       }
     };
     verifyBlob('source', source.sourceCommitSha, source);
     verifyBlob('fixture', fixture.sourceCommitSha, fixture);
+    verifyBlob('results', results.sourceCommitSha, results);
     verifyBlob('receipt', independence.receiptCommitSha, {
       path: independence.receiptPath,
       receiptTreeSha: independence.receiptTreeSha,
       receiptGitBlobSha1: independence.receiptGitBlobSha1,
       receiptSha256: independence.receiptSha256,
     });
+
+    const entrypoints = new Set();
+    for (const row of Array.isArray(oracle?.cases) ? oracle.cases : []) {
+      const parts = oracleEntrypointParts(row.entrypoint);
+      const markers = oracleCaseMarkers(row);
+      if (!parts || parts.repoPath !== source?.path) {
+        errors.push(`stage-a-convergence-oracle-case-entrypoint-binding-invalid:${String(row?.id || 'UNKNOWN')}`);
+      } else {
+        entrypoints.add(parts.symbol);
+        const functionPattern = new RegExp(
+          `(?:export\\s+)?(?:async\\s+)?function\\s+${parts.symbol.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*\\(`,
+        );
+        if (!functionPattern.test(verifiedContent.get('source') || '')) {
+          errors.push(`stage-a-convergence-oracle-case-entrypoint-source-mismatch:${row.id}`);
+        }
+      }
+      if (!hasUniqueOracleMarker(verifiedContent.get('source'), markers.sourceMarker)) {
+        errors.push(`stage-a-convergence-oracle-case-source-content-mismatch:${row.id}`);
+      }
+      if (!hasUniqueOracleMarker(verifiedContent.get('fixture'), markers.fixtureMarker)) {
+        errors.push(`stage-a-convergence-oracle-case-fixture-content-mismatch:${row.id}`);
+      }
+      if (!hasUniqueOracleMarker(verifiedContent.get('results'), markers.resultMarker)) {
+        errors.push(`stage-a-convergence-oracle-case-results-content-mismatch:${row.id}`);
+      }
+    }
+    if (entrypoints.size === 0) {
+      errors.push('stage-a-convergence-oracle-entrypoint-source-empty');
+    }
+    if (!/\bexport\s+(?:const|let|var)\s+fixtures\b/.test(verifiedContent.get('fixture') || '')) {
+      errors.push('stage-a-convergence-oracle-fixture-observer-export-missing');
+    }
+    if (!/\bexport\s+(?:const|let|var)\s+results\b/.test(verifiedContent.get('results') || '')) {
+      errors.push('stage-a-convergence-oracle-results-export-missing');
+    }
+    const resultStatusMarker = `HEX_STAGE_A_ORACLE_STATUS_V1 ${results?.status}`;
+    if (!hasUniqueOracleMarker(verifiedContent.get('results'), resultStatusMarker)) {
+      errors.push('stage-a-convergence-oracle-results-status-content-mismatch');
+    }
   }
 }
 
@@ -2615,11 +2729,23 @@ function validateStageAConvergenceOracleRegistration(candidateGates, errors, {
   const oracle = candidateGates.oracleSpecification;
   if (!oracle
     || !exactSet(Object.keys(oracle), [
-      'schemaVersion', 'kind', 'source', 'fixture', 'independence', 'cases',
-      'commandBindings',
+      'schemaVersion', 'kind', 'source', 'fixture', 'results', 'independence',
+      'lifecycle', 'cases', 'commandBindings',
     ])
     || oracle.schemaVersion !== STAGE_A_CONVERGENCE_ORACLE_SCHEMA
     || oracle.kind !== 'actual-product-behavior-v1'
+    || !oracle.lifecycle
+    || !exactSet(Object.keys(oracle.lifecycle), [
+      'registrationStatus', 'productStatus', 'semanticPass', 'acceptance',
+      'blockedFindings', 'resultSha256',
+    ])
+    || oracle.lifecycle.registrationStatus !== STAGE_A_CONVERGENCE_ORACLE_REGISTRATION_STATUS
+    || !STAGE_A_CONVERGENCE_ORACLE_RESULT_STATUS.includes(oracle.lifecycle.productStatus)
+    || typeof oracle.lifecycle.semanticPass !== 'boolean'
+    || typeof oracle.lifecycle.acceptance !== 'boolean'
+    || !Array.isArray(oracle.lifecycle.blockedFindings)
+    || oracle.lifecycle.blockedFindings.some((finding) => !nonemptyBoundedString(finding, 160))
+    || !validSha256(oracle.lifecycle.resultSha256)
     || !Array.isArray(oracle.cases)
     || oracle.cases.length < 8
     || oracle.cases.some((row) => !row
@@ -2628,14 +2754,17 @@ function validateStageAConvergenceOracleRegistration(candidateGates, errors, {
         'observes', 'expectedOutcome',
       ])
       || typeof row.id !== 'string' || !/^[a-z0-9][a-z0-9._-]*$/.test(row.id)
-      || !STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.includes(row.taskId)
-      || !STAGE_A_CONVERGENCE_ORACLE_CASE_KINDS.includes(row.kind)
-      || !nonemptyBoundedString(row.entrypoint, 240)
+    || !STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.includes(row.taskId)
+    || !STAGE_A_CONVERGENCE_ORACLE_CASE_KINDS.includes(row.kind)
+    || !nonemptyBoundedString(row.entrypoint, 240)
       || !Array.isArray(row.fixtureIds) || row.fixtureIds.length === 0
+      || row.fixtureIds.some((fixtureId) => !nonemptyBoundedString(fixtureId, 160))
       || typeof row.negativeCounterexample !== 'string'
       || row.negativeCounterexample.trim() === ''
+      || row.negativeCounterexample.length > 1000
       || !Array.isArray(row.observes)
       || row.observes.length === 0
+      || row.observes.some((observedField) => !nonemptyBoundedString(observedField, 160))
       || !nonemptyBoundedString(row.expectedOutcome, 1000))
     || new Set(oracle.cases.map((row) => row.id)).size !== oracle.cases.length
     || STAGE_A_CONVERGENCE_COMPONENT_TASK_IDS.some((taskId) => {
@@ -2668,20 +2797,44 @@ function validateStageAConvergenceOracleRegistration(candidateGates, errors, {
             || !Array.isArray(gate) || gate.length !== 1
             || gate[0]?.id !== row.gateId
             || canonicalJson(gate[0]?.argv) !== canonicalJson(row.argv)
-            || (kind === 'shadow' && oraclePathIsIndependent(oracleCommandPath(row.argv), ownership) === false);
+            || (kind === 'shadow'
+              && (!exactSet(Object.keys(gate[0] || {}), ['id', 'argv', 'contract', 'contractSha256'])
+                || !validSha256(gate[0]?.contractSha256)
+                || gate[0].contractSha256 !== sha256Text(canonicalJson(gate[0].contract))))
+            || (kind === 'shadow' && canonicalJson(row.argv) !== canonicalJson([
+              'node', 'tools/validation/final-closure/preflight.mjs',
+              '--emit-shadow-evidence', '--task', taskId,
+            ]));
         });
     })) {
     errors.push('stage-a-convergence-actual-oracle-unspecified');
     return false;
   }
-  if (!oracle.source || !oracle.fixture || !oracle.independence) {
+  if (!oracle.source || !oracle.fixture || !oracle.results || !oracle.independence) {
     validateStageAConvergenceOracleContentBindings({ oracle, ownership, root, errors });
     return false;
   }
+  if (oracle.lifecycle.productStatus === 'NONPASS'
+    && (oracle.lifecycle.semanticPass !== false
+      || oracle.lifecycle.acceptance !== false
+      || oracle.lifecycle.blockedFindings.length === 0)) {
+    errors.push('stage-a-convergence-oracle-nonpass-lifecycle-invalid');
+  }
+  if (oracle.lifecycle.productStatus === 'PASS'
+    && (oracle.lifecycle.semanticPass !== true || oracle.lifecycle.blockedFindings.length !== 0)) {
+    errors.push('stage-a-convergence-oracle-pass-lifecycle-invalid');
+  }
+  if (oracle.lifecycle.resultSha256 !== oracle.results.sha256
+    || oracle.results.status !== oracle.lifecycle.productStatus) {
+    errors.push('stage-a-convergence-oracle-result-lifecycle-binding-invalid');
+  }
   const caseIds = new Set(oracle.cases.map((row) => row.id));
   if (oracle.source.path === oracle.fixture.path
+    || oracle.source.path === oracle.results.path
+    || oracle.fixture.path === oracle.results.path
     || oracle.source.path === oracle.independence.receiptPath
     || oracle.fixture.path === oracle.independence.receiptPath
+    || oracle.results.path === oracle.independence.receiptPath
     || oracle.cases.some((row) => row.fixtureIds.some((fixtureId) => {
       return typeof fixtureId !== 'string' || !caseIds.has(fixtureId);
     }))) {
@@ -2936,6 +3089,7 @@ export function validateStageAConvergence({
   const requiredRegistrationActions = [
     'register-T062-T063-T064-task-classes-through-an-append-only-extension',
     'retain-candidate-gates-unregistered-until-an-independent-actual-product-oracle-is-specified',
+    'allow-independent-oracle-registration-with-nonpass-product-result-before-T063-implementation',
     'exclude-convergence-tasks-from-Stage-B-and-T048-dynamic-rule',
     'include-T063-T064-in-Stage-A-checkpoint-component-set',
     'bind-T063-admission-to-exact-T011-and-T017-handoffs',
@@ -3838,6 +3992,118 @@ export function executeRollingProductGates({
     registry: Object.freeze({ ...envelope.registry }),
     results: Object.freeze(results),
     identity: sha256Text(canonicalJson(envelope)),
+  });
+}
+
+/**
+ * Execute the observer entrypoints declared by a registered convergence
+ * oracle.  This is a registration self-test primitive: its result is never a
+ * producer semantic PASS and it deliberately preserves the oracle's product
+ * NONPASS state until an implementation checkpoint supplies real behavior.
+ */
+export function executeStageAConvergenceOracleCases({
+  root = ROOT,
+  oracle,
+  candidateIdentity,
+  caseIds = null,
+  spawn = spawnSync,
+  environment = process.env,
+} = {}) {
+  if (!oracle?.lifecycle
+    || oracle.lifecycle.registrationStatus !== STAGE_A_CONVERGENCE_ORACLE_REGISTRATION_STATUS
+    || !oracle.results
+    || !STAGE_A_CONVERGENCE_ORACLE_RESULT_STATUS.includes(oracle.lifecycle.productStatus)
+    || oracle.lifecycle.resultSha256 !== oracle.results.sha256
+    || oracle.results.status !== oracle.lifecycle.productStatus
+    || !validSha1(candidateIdentity?.headSha)
+    || !validSha1(candidateIdentity?.treeSha)
+    || git(root, ['rev-parse', 'HEAD']) !== candidateIdentity.headSha
+    || git(root, ['rev-parse', 'HEAD^{tree}']) !== candidateIdentity.treeSha) {
+    throw new Error('stage-a-convergence-oracle-self-test-input-invalid');
+  }
+  const selectedIds = caseIds == null
+    ? oracle.cases.map((row) => row.id)
+    : caseIds;
+  if (!Array.isArray(selectedIds)
+    || selectedIds.length === 0
+    || new Set(selectedIds).size !== selectedIds.length) {
+    throw new Error('stage-a-convergence-oracle-self-test-case-set-invalid');
+  }
+  const selected = selectedIds.map((caseId) => oracle.cases.find((row) => row.id === caseId));
+  if (selected.some((row) => !row)) throw new Error('stage-a-convergence-oracle-self-test-case-missing');
+  const contentErrors = [];
+  validateStageAConvergenceOracleContentBindings({
+    oracle,
+    ownership: null,
+    root,
+    errors: contentErrors,
+  });
+  if (contentErrors.length > 0) {
+    throw new Error(`stage-a-convergence-oracle-self-test-content-invalid:${contentErrors.join(',')}`);
+  }
+  const assertCandidate = () => {
+    if (git(root, ['rev-parse', 'HEAD']) !== candidateIdentity.headSha
+      || git(root, ['rev-parse', 'HEAD^{tree}']) !== candidateIdentity.treeSha
+      || git(root, ['status', '--porcelain', '--untracked-files=all']) !== '') {
+      throw new Error('stage-a-convergence-oracle-self-test-candidate-mutated');
+    }
+  };
+  const results = [];
+  for (const row of selected) {
+    const parts = oracleEntrypointParts(row.entrypoint);
+    if (!parts) throw new Error(`stage-a-convergence-oracle-self-test-entrypoint-invalid:${row.id}`);
+    assertCandidate();
+    const refsBefore = persistentRefSnapshot(root);
+    const child = spawn('node', [parts.repoPath, '--case-id', row.id], {
+      cwd: root,
+      env: { ...process.env, ...environment },
+      shell: false,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024,
+    });
+    const refsAfter = persistentRefSnapshot(root);
+    assertOnlyAllowedRefChanges(refsBefore, refsAfter, []);
+    assertCandidate();
+    if (child?.error || child?.status !== 0 || child?.signal != null) {
+      throw new Error(`stage-a-convergence-oracle-self-test-entrypoint-failed:${row.id}`);
+    }
+    let observed;
+    try {
+      observed = JSON.parse(String(child.stdout || '').trim());
+    } catch {
+      throw new Error(`stage-a-convergence-oracle-self-test-result-json-invalid:${row.id}`);
+    }
+    if (!oracleCaseResultShape(observed, row)) {
+      throw new Error(`stage-a-convergence-oracle-self-test-observation-mismatch:${row.id}`);
+    }
+    results.push(Object.freeze({
+      caseId: row.id,
+      entrypoint: row.entrypoint,
+      observed,
+      expectedOutcome: row.expectedOutcome,
+      status: 'SELF_TEST_PASS',
+    }));
+  }
+  return Object.freeze({
+    schemaVersion: 'hex-final-closure-stage-a-convergence-oracle-self-test/v1',
+    status: 'SELF_TEST_PASS',
+    productStatus: oracle.lifecycle.productStatus,
+    semanticPass: false,
+    acceptance: false,
+    candidateIdentity: Object.freeze({ ...candidateIdentity }),
+    caseCount: results.length,
+    results: Object.freeze(results),
+    identity: sha256Text(canonicalJson({
+      schemaVersion: 'hex-final-closure-stage-a-convergence-oracle-self-test/v1',
+      status: 'SELF_TEST_PASS',
+      productStatus: oracle.lifecycle.productStatus,
+      semanticPass: false,
+      acceptance: false,
+      candidateIdentity: { ...candidateIdentity },
+      caseCount: results.length,
+      results,
+    })),
   });
 }
 
@@ -5669,6 +5935,15 @@ function verifyCheckpointProductProof(root, row, cumulativeTaskIds) {
   if (canonicalJson(row.generation) !== canonicalJson(expectedGeneration)) {
     throw new Error(`checkpoint-generation-evidence-mismatch:${row.sequence}`);
   }
+  if (row.stageAConvergenceBinding != null) {
+    try {
+      verifyStageAConvergenceCheckpointBinding({ root, row });
+    } catch (error) {
+      throw new Error(
+        `checkpoint-stage-a-convergence-binding-mismatch:${row.sequence}:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const candidateIdentity = Object.freeze({
     headSha: row.checkpointProduct.commitSha,
     treeSha: row.checkpointProduct.treeSha,
@@ -6758,6 +7033,182 @@ export function verifyTaskHandoffs(root, result, integrationHeadSha, {
   });
 }
 
+export function effectiveStageAConvergenceOwnershipIdentity({
+  ownershipText,
+  stageAConvergence,
+} = {}) {
+  if (typeof ownershipText !== 'string') return null;
+  return sha256Text(canonicalJson({
+    schemaVersion: STAGE_A_CONVERGENCE_EFFECTIVE_BUNDLE_SCHEMA,
+    baseRegistrySha256: sha256Text(ownershipText),
+    extensionIdentity: stageAConvergence?.identity ?? null,
+    extensionStatus: stageAConvergence?.candidateGates?.status ?? null,
+  }));
+}
+
+function stageAConvergenceHistoryAuthenticationIdentity(stageAConvergence, authentication) {
+  return sha256Text(canonicalJson({
+    schemaVersion: STAGE_A_CONVERGENCE_HISTORY_SCHEMA,
+    stageContractIdentity: canonicalStageAConvergenceDigest(stageAConvergence),
+    predecessor: stageAConvergence?.predecessor ?? null,
+    authenticated: authentication?.authenticated === true,
+    observed: {
+      headSha: authentication?.headSha ?? null,
+      treeSha: authentication?.treeSha ?? null,
+      blobs: authentication?.blobs ?? null,
+    },
+  }));
+}
+
+function stageAConvergenceCheckpointBindingShape(value) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && exactSet(Object.keys(value), [
+      'schemaVersion', 'productIdentity', 'stageContractIdentity',
+      'effectiveOwnershipIdentity', 'historyAuthenticationIdentity',
+      'historyAuthentication',
+    ])
+    && value.schemaVersion === STAGE_A_CONVERGENCE_CHECKPOINT_BINDING_SCHEMA
+    && value.productIdentity
+    && exactSet(Object.keys(value.productIdentity), ['headSha', 'treeSha'])
+    && validSha1(value.productIdentity.headSha)
+    && validSha1(value.productIdentity.treeSha)
+    && validSha256(value.stageContractIdentity)
+    && validSha256(value.effectiveOwnershipIdentity)
+    && validSha256(value.historyAuthenticationIdentity)
+    && value.historyAuthentication
+    && exactSet(Object.keys(value.historyAuthentication), [
+      'authenticated', 'predecessor', 'observedHeadSha', 'observedTreeSha',
+      'observedBlobIdentity',
+    ])
+    && value.historyAuthentication.authenticated === true
+    && value.historyAuthentication.predecessor
+    && exactSet(Object.keys(value.historyAuthentication.predecessor), ['headSha', 'treeSha'])
+    && validSha1(value.historyAuthentication.predecessor.headSha)
+    && validSha1(value.historyAuthentication.predecessor.treeSha)
+    && validSha1(value.historyAuthentication.observedHeadSha)
+    && validSha1(value.historyAuthentication.observedTreeSha)
+    && validSha256(value.historyAuthentication.observedBlobIdentity);
+}
+
+/**
+ * Re-derive the effective Stage A extension and its authenticated historical
+ * packet for a checkpoint product.  The field is optional on frozen rows, but
+ * every new convergence product row must carry this binding.  This helper is
+ * deliberately independent of product semantic status: it authenticates the
+ * execution bundle and history, never a producer behavior result.
+ */
+export function deriveStageAConvergenceCheckpointBinding({
+  root = ROOT,
+  row,
+  stageAConvergence = null,
+} = {}) {
+  const productIdentity = Object.freeze({
+    headSha: row?.checkpointProduct?.commitSha,
+    treeSha: row?.checkpointProduct?.treeSha,
+  });
+  if (!validSha1(productIdentity.headSha) || !validSha1(productIdentity.treeSha)) {
+    throw new Error('stage-a-convergence-checkpoint-product-identity-invalid');
+  }
+  if (git(root, ['rev-parse', `${productIdentity.headSha}^{tree}`]) !== productIdentity.treeSha) {
+    throw new Error('stage-a-convergence-checkpoint-product-tree-mismatch');
+  }
+  const committedContract = readJsonAt(
+    root,
+    productIdentity.headSha,
+    STAGE_A_CONVERGENCE_CONTRACT_PATH,
+  );
+  const contract = stageAConvergence || committedContract;
+  if (stageAConvergence != null
+    && canonicalJson(committedContract) !== canonicalJson(stageAConvergence)) {
+    throw new Error('stage-a-convergence-checkpoint-contract-drift');
+  }
+  if (contract?.status !== 'ACTIVE' || contract?.candidateGates?.status !== 'REGISTERED') {
+    throw new Error('stage-a-convergence-checkpoint-extension-inactive');
+  }
+  const ownershipText = readTextAt(
+    root,
+    productIdentity.headSha,
+    STAGE_A_CONVERGENCE_HISTORY_PATHS.ownership,
+  );
+  const baseOwnership = JSON.parse(ownershipText);
+  const historyErrors = [];
+  const authentication = authenticateStageAConvergenceHistory({
+    root,
+    stageAConvergence: contract,
+    errors: historyErrors,
+  });
+  if (!authentication.authenticated || historyErrors.length > 0) {
+    throw new Error(`stage-a-convergence-checkpoint-history-invalid:${historyErrors.join(',')}`);
+  }
+  const ownershipErrors = [];
+  materializeStageAConvergenceOwnership({
+    ownership: baseOwnership,
+    stageAConvergence: contract,
+    errors: ownershipErrors,
+  });
+  if (ownershipErrors.length > 0) {
+    throw new Error(`stage-a-convergence-checkpoint-effective-bundle-invalid:${ownershipErrors.join(',')}`);
+  }
+  const stageContractIdentity = canonicalStageAConvergenceDigest(contract);
+  const effectiveOwnershipIdentity = effectiveStageAConvergenceOwnershipIdentity({
+    ownershipText,
+    stageAConvergence: contract,
+  });
+  const historyAuthenticationIdentity = stageAConvergenceHistoryAuthenticationIdentity(
+    contract,
+    authentication,
+  );
+  const binding = {
+    schemaVersion: STAGE_A_CONVERGENCE_CHECKPOINT_BINDING_SCHEMA,
+    productIdentity: { ...productIdentity },
+    stageContractIdentity,
+    effectiveOwnershipIdentity,
+    historyAuthenticationIdentity,
+    historyAuthentication: {
+      authenticated: true,
+      predecessor: {
+        headSha: authentication.headSha,
+        treeSha: authentication.treeSha,
+      },
+      observedHeadSha: authentication.headSha,
+      observedTreeSha: authentication.treeSha,
+      observedBlobIdentity: sha256Text(canonicalJson(authentication.blobs)),
+    },
+  };
+  if (!stageAConvergenceCheckpointBindingShape(binding)) {
+    throw new Error('stage-a-convergence-checkpoint-binding-derivation-invalid');
+  }
+  return Object.freeze({
+    ...binding,
+    productIdentity: Object.freeze({ ...binding.productIdentity }),
+    historyAuthentication: Object.freeze({
+      ...binding.historyAuthentication,
+      predecessor: Object.freeze({ ...binding.historyAuthentication.predecessor }),
+    }),
+  });
+}
+
+export function verifyStageAConvergenceCheckpointBinding({
+  root = ROOT,
+  row,
+  stageAConvergence = null,
+} = {}) {
+  if (!stageAConvergenceCheckpointBindingShape(row?.stageAConvergenceBinding)) {
+    throw new Error('stage-a-convergence-checkpoint-binding-shape-invalid');
+  }
+  const expected = deriveStageAConvergenceCheckpointBinding({
+    root,
+    row,
+    stageAConvergence,
+  });
+  if (canonicalJson(expected) !== canonicalJson(row.stageAConvergenceBinding)) {
+    throw new Error('stage-a-convergence-checkpoint-binding-mismatch');
+  }
+  return expected;
+}
+
 function contractBundle(root, commitSha = null) {
   const text = (relativePath) => (commitSha == null
     ? fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -6781,12 +7232,10 @@ function contractBundle(root, commitSha = null) {
       errors: ownershipErrors,
     })
     : baseOwnership;
-  const effectiveOwnershipIdentity = sha256Text(canonicalJson({
-    schemaVersion: STAGE_A_CONVERGENCE_EFFECTIVE_BUNDLE_SCHEMA,
-    baseRegistrySha256: sha256Text(ownershipText),
-    extensionIdentity: stageAConvergence?.identity ?? null,
-    extensionStatus: stageAConvergence?.candidateGates?.status ?? null,
-  }));
+  const effectiveOwnershipIdentity = effectiveStageAConvergenceOwnershipIdentity({
+    ownershipText,
+    stageAConvergence,
+  });
   const integrationInventory = json('specs/005-analysis-final-closure/contracts/integration-inventory.json');
   const t025Handoff = integrationInventory?.taskHandoffs?.T025;
   const roadmapMatrixPath = 'specs/005-analysis-final-closure/evidence/roadmap-matrix.md';
@@ -6865,6 +7314,33 @@ function effectiveOwnershipAt(root, commitSha) {
     throw new Error(`stage-a-convergence-effective-bundle-invalid:${errors.join(',')}`);
   }
   return ownership;
+}
+
+/**
+ * Build the same bundle consumed by canonical preflight while substituting a
+ * review-only registered successor.  The substitution is in-memory; callers
+ * still need a real Git commit for every referenced oracle artifact.
+ */
+export function stageAConvergenceContractBundle({
+  root = ROOT,
+  stageAConvergence = null,
+} = {}) {
+  const bundle = contractBundle(root);
+  if (stageAConvergence == null) return bundle;
+  const errors = [];
+  const ownership = materializeStageAConvergenceOwnership({
+    ownership: bundle.baseOwnership,
+    stageAConvergence,
+    errors,
+  });
+  if (errors.length > 0) {
+    throw new Error(`stage-a-convergence-self-test-bundle-invalid:${errors.join(',')}`);
+  }
+  return Object.freeze({
+    ...bundle,
+    stageAConvergence,
+    ownership,
+  });
 }
 
 function validateComponentLane({ authority, bundle, root, candidateHeadSha, stageBApplicability }) {
@@ -7839,11 +8315,20 @@ export function runComponentGates({
   root = ROOT,
   environment = process.env,
   spawn = spawnSync,
+  authorityOverride = null,
+  preflightOverride = null,
+  bundleOverride = null,
+  oracleSelfTest = null,
 } = {}) {
-  const authority = githubInvocationAuthority(environment);
+  if (!oracleSelfTest
+    && (authorityOverride != null || preflightOverride != null
+      || bundleOverride != null)) {
+    throw new Error('component-gates-test-overrides-require-self-test');
+  }
+  const authority = authorityOverride || githubInvocationAuthority(environment);
   if (!authority || authority.mode !== 'component') throw new Error('component-gates-event-required');
-  const preflight = runPreflight({ root, environment });
-  const bundle = contractBundle(root, authority.baseSha);
+  const preflight = preflightOverride || runPreflight({ root, environment });
+  const bundle = bundleOverride || contractBundle(root, authority.baseSha);
   const taskGates = bundle.ownership.candidateGates.tasks[authority.taskId];
   if (!taskGates) throw new Error(`component-gates-task-missing:${authority.taskId}`);
   const initialEphemeral = checkpointRuntimeEphemeralManifest(root);
@@ -7911,9 +8396,31 @@ export function runComponentGates({
       }));
     }
   }
+  const oracleSelfTestReport = oracleSelfTest
+    ? executeStageAConvergenceOracleCases({
+      root,
+      oracle: oracleSelfTest.oracle,
+      candidateIdentity: {
+        headSha: preflight.headSha,
+        treeSha: preflight.treeSha,
+      },
+      caseIds: oracleSelfTest.caseIds
+        || oracleSelfTest.oracle?.cases
+          ?.filter((row) => row.taskId === authority.taskId)
+          .map((row) => row.id),
+      spawn,
+      environment,
+    })
+    : null;
   return Object.freeze({
     schemaVersion: 'hex-final-closure-component-gate-report/v1',
-    verdict: 'COMPONENT_GATES_GREEN',
+    verdict: oracleSelfTest ? 'SELF_TEST_COMPONENT_GATES_PASS' : 'COMPONENT_GATES_GREEN',
+    ...(oracleSelfTest && {
+      selfTestOnly: true,
+      productStatus: oracleSelfTest.oracle?.lifecycle?.productStatus ?? 'NONPASS',
+      productSemanticPass: false,
+      productAcceptance: false,
+    }),
     taskId: authority.taskId,
     candidateCommitSha: preflight.headSha,
     candidateTreeSha: preflight.treeSha,
@@ -7921,6 +8428,7 @@ export function runComponentGates({
     componentActualChangedPaths: preflight.componentActualChangedPaths,
     componentInventoryDigest: preflight.componentInventoryDigest,
     initialCandidateGateDigest: preflight.initialCandidateGateDigest,
+    ...(oracleSelfTestReport && { oracleSelfTest: oracleSelfTestReport }),
     results: Object.freeze(results),
   });
 }

@@ -144,6 +144,7 @@
     "requiredActions": [
       "register-T062-T063-T064-task-classes-through-an-append-only-extension",
       "retain-candidate-gates-unregistered-until-an-independent-actual-product-oracle-is-specified",
+      "allow-independent-oracle-registration-with-nonpass-product-result-before-T063-implementation",
       "exclude-convergence-tasks-from-Stage-B-and-T048-dynamic-rule",
       "include-T063-T064-in-Stage-A-checkpoint-component-set",
       "bind-T063-admission-to-exact-T011-and-T017-handoffs",
@@ -237,7 +238,7 @@
   },
   "identity": {
     "algorithm": "sha256-canonical-json-without-identity-v1",
-    "sha256": "ee33cbcbbe15cba1eb90679c2dcc08f503e19e021b19dcf75bb1dcaa95e1faa7"
+    "sha256": "ab085ca8d4c0b972a6f50f8ed243943a4acf89698646afdb8f986badf20f8f12"
   },
   "historicalAuthentication": {
     "schemaVersion": "hex-final-closure-stage-a-convergence-history-auth/v1",
