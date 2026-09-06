@@ -296,9 +296,34 @@ function noStorageAndNoModelCallWasIntroduced() {
   // Structural: representation may reuse the canonical pure scope normalizer,
   // but it must not acquire storage/network/model dependencies of its own.
   const text = readSource(new URL('../../js/ai/dev/protocol/context-packet.js', import.meta.url));
-  const imports = [...text.matchAll(/^\s*import\s+.*?from\s+['"]([^'"]+)['"];?\s*$/gm)].map((match) => match[1]);
-  assert.deepEqual(imports, ['../run/analysis-scope.js'], 'only the canonical pure scope normalizer may be shared');
+  const dependencies = staticModuleSpecifiers(text);
+  assert.deepEqual(dependencies, ['../run/analysis-scope.js'],
+    'only the canonical pure scope normalizer may be shared');
+  assert.doesNotMatch(text, /\bimport\s*\(/, 'dynamic imports are forbidden in the representation layer');
   assert.equal(/\beval\s*\(/.test(text), false, 'no eval');
+
+  // Negative regressions: every static dependency spelling is visible to the
+  // allowlist, and dynamic import cannot silently acquire runtime authority.
+  assert.deepEqual(staticModuleSpecifiers("import './storage.js';"), ['./storage.js']);
+  assert.deepEqual(staticModuleSpecifiers("import {\n  value,\n} from './network.js';"), ['./network.js']);
+  assert.deepEqual(staticModuleSpecifiers("export { value } from './model.js';"), ['./model.js']);
+  assert.match("void import('./model.js')", /\bimport\s*\(/);
+}
+
+function staticModuleSpecifiers(source) {
+  const matches = [];
+  for (const [kind, pattern] of [
+    ['import', /^\s*import\s*['"]([^'"]+)['"]\s*;?/gm],
+    ['import', /^\s*import\s+[^;]*?\s+from\s+['"]([^'"]+)['"]\s*;?/gm],
+    ['export', /^\s*export\s+(?:\*\s+as\s+[A-Za-z_$][\w$]*|\*|\{[^;]*?\})\s+from\s+['"]([^'"]+)['"]\s*;?/gm],
+  ]) {
+    for (const match of source.matchAll(pattern)) matches.push({ kind, index:match.index, specifier:match[1] });
+  }
+  const parsedImports = matches.filter((match) => match.kind === 'import').length;
+  const importDeclarations = [...source.matchAll(/^\s*import\b(?!\s*\()/gm)].length;
+  assert.equal(parsedImports, importDeclarations,
+    'every static import declaration must be parsed before dependency authority is checked');
+  return matches.sort((left,right)=>left.index-right.index).map(({specifier})=>specifier);
 }
 
 function payloadOf(prompt) {
