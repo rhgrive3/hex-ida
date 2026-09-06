@@ -83,6 +83,33 @@ function barrierClose(platform) {
     [replacementEvidence],
     'runtime evidence lookup must observe the converged replacement state',
   );
+
+  // Identity re-read after disposal: changing the hash while the replacement
+  // is registered must converge onto a further replacement, not the stale one.
+  const closeB = barrierClose(a);
+  setHash('hash-C');
+  const third = runtimePlatformForApp(app);
+  await closeB.entered;
+  closeB.release();
+  const c = await third;
+  assert.notEqual(c, a, 'replacement identity must be re-read after old-state disposal');
+  assert.equal(await runtimePlatformForApp(app), c, 're-read replacement must be registered');
+  const reReadEvidence = {
+    sliceIdentity:c.options.sliceIdentity,
+    binaryHash:'hash-C',
+    source:'re-read-replacement',
+  };
+  c.evidence.push(reReadEvidence);
+  assert.deepEqual(runtimeEvidenceForApp(app), [reReadEvidence]);
+
+  // A failed transition must not poison the per-app lane: a later valid
+  // identity still converges on a fresh replacement.
+  setHash('');
+  await assert.rejects(() => runtimePlatformForApp(app), /binary identity is unavailable/);
+  setHash('hash-D');
+  const d = await runtimePlatformForApp(app);
+  assert.notEqual(d, c, 'recovery transition must build a fresh platform');
+  assert.equal(await runtimePlatformForApp(app), d, 'recovered replacement must remain registered');
   await resetAppRuntime(app);
 }
 
