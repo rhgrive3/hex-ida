@@ -235,10 +235,11 @@ function normalizeUse(input) {
 }
 
 function cfgMap(cfg, functionId) {
-  if (!cfg) return null;
+  if (cfg == null) return null;
+  cfg = object(cfg, 'memory-ssa-invalid-cfg');
   const cfgFunctionId = nonEmpty(cfg.functionId, 'memory-ssa-cfg-function-mismatch');
   if (cfgFunctionId !== functionId) fail('memory-ssa-cfg-function-mismatch');
-  return new Map((cfg.blocks ?? []).map((block) => [block.id, block]));
+  return new Map(array(cfg.blocks ?? [], 'memory-ssa-invalid-cfg-blocks').map((block) => [block.id, block]));
 }
 
 export function createMemorySsaContract(input, options = {}) {
