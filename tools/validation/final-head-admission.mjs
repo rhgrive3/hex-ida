@@ -45,6 +45,10 @@ function trustedReviewerSet(values = []) {
   return new Set(values.map((value) => string(value).trim().toLowerCase()).filter(Boolean));
 }
 
+function normalizedContextList(values = []) {
+  return [...new Set(values.map((value) => string(value).trim()).filter(Boolean))];
+}
+
 function isAdmissionStatus(status) {
   return string(status?.context) === FINAL_HEAD_ADMISSION_CONTEXT;
 }
@@ -118,6 +122,7 @@ export function evaluateFinalHeadAdmission({
   checkRuns = [],
   unresolvedReviewThreads = 0,
   trustedAutoReviewers = [],
+  requiredStatusContexts = [],
 } = {}) {
   if (!/^[0-9a-f]{40}$/i.test(string(headSha))) {
     throw new TypeError('final-head-admission-invalid-head-sha');
@@ -126,7 +131,9 @@ export function evaluateFinalHeadAdmission({
   const blockers = [];
   const pending = [];
   const latest = latestStatuses(statuses);
+  const latestStatusByContext = new Map(latest.map((status) => [string(status?.context), status]));
   const trustedReviewers = trustedReviewerSet(trustedAutoReviewers);
+  const requiredContexts = normalizedContextList(requiredStatusContexts);
   const exactAutoReviews = latestExactAutoReviews(reviews, headSha, trustedReviewers);
   const exactAutoApprovals = exactAutoReviews.filter((review) => autoVerdict(review) === 'APPROVED');
   const exactAutoChanges = exactAutoReviews.filter((review) => autoVerdict(review) === 'CHANGES_REQUESTED');
@@ -154,12 +161,30 @@ export function evaluateFinalHeadAdmission({
     }
   }
 
+  if (requiredContexts.length === 0) {
+    pending.push('no required CI status contexts configured');
+  }
+  let missingRequiredStatusCount = 0;
+  for (const context of requiredContexts) {
+    const required = latestStatusByContext.get(context);
+    if (!required) {
+      missingRequiredStatusCount += 1;
+      pending.push(`required CI status missing: ${context}`);
+      continue;
+    }
+    const state = statusState(required);
+    if (state === 'failure') blockers.push(`CI status failed: ${context}`);
+    else if (state === 'pending') pending.push(`CI status pending: ${context}`);
+  }
+
   const ciStatuses = latest.filter((status) => !isAdmissionStatus(status) && !isCodeRabbitStatus(status));
   const ciChecks = checkRuns.filter((check) => !isAdmissionCheck(check) && !isCodeRabbitCheck(check));
   if (ciStatuses.length + ciChecks.length === 0) {
     pending.push('missing exact-head CI evidence');
   }
 
+  // Required contexts prevent early success while late CI contexts have not
+  // appeared yet. Once present, any additional observed CI failure also blocks.
   for (const status of ciStatuses) {
     const state = statusState(status);
     const context = string(status?.context) || 'unnamed-status';
@@ -192,6 +217,8 @@ export function evaluateFinalHeadAdmission({
       exactAutoApprovalCount: exactAutoApprovals.length,
       exactAutoChangesRequestedCount: exactAutoChanges.length,
       trustedAutoReviewerCount: trustedReviewers.size,
+      requiredStatusContextCount: requiredContexts.length,
+      missingRequiredStatusCount,
       unresolvedReviewThreads: Number(unresolvedReviewThreads) || 0,
       codeRabbitEvidenceCount: reviewEvidence.length,
       ciStatusCount: ciStatuses.length,
