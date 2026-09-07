@@ -69,6 +69,7 @@ export class CapabilityExecutor {
   #approvalStateNow(id, args, platform) {
     this.verifyBinding(this.catalog.get(id), args, platform);
     const state = { binaryId: this.currentBinaryId() ?? null };
+    if (id.startsWith('patch.')) Object.assign(state, { app: this.#approvalIdentity(this.app), patchSet: this.#approvalIdentity(this.app?.patches) });
     if (id === 'patch.apply') {
       // Bind the immutable current Blob by identity. Arbitrary Blob arguments
       // cannot be represented by the proposal's canonical argument fingerprint.

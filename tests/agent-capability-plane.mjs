@@ -110,6 +110,22 @@ await assert.rejects(patchOwner.approveAndApply(replacedFile.id), /changed after
 await assert.rejects(patchOwner.proposeCapability('patch.apply', { file: app.file }, { evidenceIds: ['e1'] }), /without a file argument/);
 await assert.rejects(patchOwner.proposeCapability('project.restore-known', {}, { evidenceIds: ['e1'] }), /Unsupported capability proposal/);
 
+// Same binary, bytes, Blob, and patch metadata do not authorize another app's
+// patch set. Approval names the exact mutation owner as well as its value.
+const otherApp = fakeApp();
+otherApp.file = app.file;
+const otherExecutor = createCapabilityExecutor({ catalog, app: otherApp, binaryId: 'bin-A' });
+const patchArgs = { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] };
+await approved(executor, 'patch.create', patchArgs);
+await approved(otherExecutor, 'patch.create', patchArgs);
+for (const [id, args] of [['patch.revert', { fileOffset: '0' }], ['patch.apply', {}]]) {
+  const pending = await patchOwner.proposeCapability(id, args, { evidenceIds: ['e1'] });
+  const wrongOwner = createProposalExecutor({ store: patchStore, capabilityExecutor: otherExecutor, app: otherApp });
+  await assert.rejects(wrongOwner.approveAndApply(pending.id), /changed after it was created/);
+  assert.equal(app.patches.size, 1);
+  assert.equal(otherApp.patches.size, 1);
+}
+
 const knownTools = new Set(HEX_CAPABILITIES.filter((item) => item.agentTool).map((item) => item.agentTool));
 const available = catalog.agent({ toolRegistry: { has: (name) => knownTools.has(name) } });
 assert.ok(available.some((item) => item.id === 'analysis.backward-slice'));
