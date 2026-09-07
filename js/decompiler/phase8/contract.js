@@ -353,7 +353,18 @@ function isNonEmptyString(value) {
  * Guaranteed never to call `.toString()`, `.valueOf()`, getters, or convert
  * objects into strings or numbers.
  */
-function isCanonicalPassResultOwned(result) {
+function isCanonicalList(values) {
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i - 1] >= values[i]) return false;
+  }
+  return true;
+}
+
+function isDescriptorAuthorizedList(values, allowed) {
+  return isCanonicalList(values) && values.every((key) => allowed.includes(key));
+}
+
+function isCanonicalPassResultOwned(result, descriptor = null) {
   try {
     if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
     const keys = Reflect.ownKeys(result);
@@ -429,6 +440,19 @@ function isCanonicalPassResultOwned(result) {
       return false;
     }
 
+    // `preserved` is derived from the invoked descriptor by createPassResult;
+    // accepting a caller-supplied policy list would let the transaction commit
+    // with one authority while its published ledger names another. The other
+    // policy lists are observations, so they may be subsets, but every entry
+    // must be declared by the invoked descriptor and retain analysisList's
+    // sorted/unique canonical form.
+    if (descriptor != null) {
+      if (!Array.isArray(descriptor.preserves) || result.preserved.length !== descriptor.preserves.length
+        || result.preserved.some((key, index) => key !== descriptor.preserves[index])) return false;
+      if (!Array.isArray(descriptor.invalidates) || !isDescriptorAuthorizedList(result.invalidated, descriptor.invalidates)) return false;
+      if (!Array.isArray(descriptor.produces) || !isDescriptorAuthorizedList(result.produced, descriptor.produces)) return false;
+    }
+
     return true;
   } catch {
     return false;
@@ -443,9 +467,9 @@ function isCanonicalPassResultOwned(result) {
  * check and publication decision, so a caller-owned accessor cannot validate
  * one value and substitute another before commit.
  */
-export function snapshotCanonicalPassResult(result) {
+export function snapshotCanonicalPassResult(result, descriptor = null) {
   const snapshot = snapshotPassResultData(result);
-  return snapshot != null && isCanonicalPassResultOwned(snapshot) ? snapshot : null;
+  return snapshot != null && isCanonicalPassResultOwned(snapshot, descriptor) ? snapshot : null;
 }
 
 /** Returns whether an untrusted pass result is a canonical, owned data value. */

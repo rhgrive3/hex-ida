@@ -21,6 +21,16 @@ const descriptor = createPassDescriptor({
   produces: ['ranges'],
 });
 
+const invalidatingDescriptor = createPassDescriptor({
+  id: 'issue-3875-policy-authority',
+  version: '1',
+  stage: 'scalar-optimization',
+  consumes: [],
+  preserves: [],
+  invalidates: ['ssa'],
+  produces: ['ranges'],
+});
+
 function canonicalResult() {
   return createPassResult({
     descriptor,
@@ -31,20 +41,42 @@ function canonicalResult() {
   });
 }
 
-function runWithResult(result) {
+function runWithResult(result, passDescriptor = descriptor) {
   const state = createAnalysisState({
     cfg: Object.freeze({ blocks: [] }),
     ssa: Object.freeze({ values: ['pre-existing'] }),
   });
   const before = state.snapshot();
   const outcome = runPassTransaction(state, {
-    descriptor,
+    descriptor: passDescriptor,
     run(_context, _budget, area) {
       area.stage('ranges', Object.freeze({ source: 'issue-3875-pass-a' }));
       return result;
     },
   });
   return { state, before, outcome };
+}
+
+function assertRefusedPolicy(result, passDescriptor) {
+  const { state, before, outcome } = runWithResult(result, passDescriptor);
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.result, null);
+  assert.equal(outcome.stopReason, `malformed-result:${passDescriptor.id}`);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.deepEqual(outcome.staged, []);
+  assert.deepEqual(state.snapshot(), before);
+  assert.equal(state.version('ssa'), before.ssa);
+  assert.equal(state.get('ranges'), null);
+  assert.equal(
+    transactionDigest(outcome),
+    transactionDigest({
+      committed: false,
+      result: null,
+      invalidated: Object.freeze([]),
+      staged: Object.freeze([]),
+      stopReason: `malformed-result:${passDescriptor.id}`,
+    }),
+  );
 }
 
 function assertRefusedIdentity(overrides, stopReason = `result-descriptor-mismatch:${descriptor.id}`) {
@@ -115,6 +147,26 @@ test('result contractVersion is bound to the invoked descriptor', () => {
   assertRefusedIdentity(
     { contractVersion: descriptor.contractVersion + 1 },
     `malformed-result:${descriptor.id}`,
+  );
+});
+
+test('descriptor policy metadata is bound before commit and digesting', () => {
+  const canonical = createPassResult({
+    descriptor: invalidatingDescriptor,
+    status: 'changed',
+    changed: true,
+    completeness: 'complete',
+    produced: ['ranges'],
+    invalidated: ['ssa'],
+  });
+
+  assertRefusedPolicy(
+    Object.freeze({ ...canonical, preserved: ['cfg'] }),
+    invalidatingDescriptor,
+  );
+  assertRefusedPolicy(
+    Object.freeze({ ...canonical, invalidated: ['cfg'] }),
+    invalidatingDescriptor,
   );
 });
 

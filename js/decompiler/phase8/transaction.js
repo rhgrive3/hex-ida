@@ -165,8 +165,8 @@ function aborted(budget) {
   catch { return true; }
 }
 
-function isPassResultShapeUsable(result) {
-  return snapshotCanonicalPassResult(result);
+function isPassResultShapeUsable(result, descriptor) {
+  return snapshotCanonicalPassResult(result, descriptor);
 }
 
 /**
@@ -226,7 +226,7 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
 
   // Validate untrusted pass output before any later contract check can
   // dereference it. This must remain before descriptor-identity validation.
-  const ownedResult = isPassResultShapeUsable(result);
+  const ownedResult = isPassResultShapeUsable(result, descriptor);
   if (ownedResult == null) {
     return Object.freeze({
       committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
