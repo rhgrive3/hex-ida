@@ -352,9 +352,10 @@ test('classification never executes caller-owned Symbol.toStringTag getters', ()
   assert.equal(reads, 0, 'caller-owned toStringTag getter must never run');
   assert.equal(descriptorId, null);
 
-  assert.doesNotThrow(
+  assert.throws(
     () => createPhase8ArtifactDescriptor({ ...BASE, options: { decoy: plainProbe } }),
-    'plain objects spoofing the Map tag cannot enter the Map branch and stay plain options',
+    /phase8-artifact-options-embedded-own-property:object:Symbol\(Symbol.toStringTag\)/,
+    'plain objects spoofing the Map tag carry an enumerable symbol-key payload and fail closed',
   );
 
   const tagged = [1, 2, 3];
@@ -371,4 +372,31 @@ test('classification never executes caller-owned Symbol.toStringTag getters', ()
     'arrays carrying Symbol.toStringTag fail closed without reading it',
   );
   assert.equal(reads, 0);
+});
+
+test('plain objects cannot carry enumerable symbol-key payload into artifact keys', () => {
+  const s = Symbol('semanticMode');
+  const signed = { mode: 1 };
+  signed[s] = 'signed';
+  const unsigned = { mode: 1 };
+  unsigned[s] = 'unsigned';
+
+  let minted = null;
+  assert.throws(
+    () => {
+      const d = createPhase8ArtifactDescriptor({ ...BASE, options: signed });
+      minted = d.artifactId;
+    },
+    /phase8-artifact-options-embedded-own-property:object:Symbol\(semanticMode\)/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: unsigned }),
+    /phase8-artifact-options-embedded-own-property:object:Symbol\(semanticMode\)/,
+  );
+  assert.equal(minted, null, 'colliding artifactId must never be minted for symbol payload');
+
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { mode: 1 } }),
+    'plain string-keyed objects stay accepted',
+  );
 });

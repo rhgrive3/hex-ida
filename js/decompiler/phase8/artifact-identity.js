@@ -248,8 +248,15 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
 
     const proto = Object.getPrototypeOf(value);
     const out = Object.create(proto);
-    for (const [key, descriptor] of Object.entries(descriptors)) {
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
       if (!descriptor.enumerable) continue;
+      // The core canonicalizer reads plain objects via string Object.keys()
+      // only, so an enumerable symbol-key property is invisible key material:
+      // fail closed instead of minting a colliding identity.
+      if (typeof key === 'symbol') {
+        fail(`phase8-artifact-options-embedded-own-property:object:${String(key)}`);
+      }
       const item = snapshotDataProperty(key, descriptor);
       Object.defineProperty(out, key, { value:item, enumerable:true, configurable:true, writable:true });
     }
