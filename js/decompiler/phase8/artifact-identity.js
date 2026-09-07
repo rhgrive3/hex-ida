@@ -55,12 +55,134 @@ const FORBIDDEN_KEY_FIELDS = Object.freeze([
   'columnWidth', 'prettyColumnWidth', 'theme', 'locale', 'language', 'selection', 'scrollTop', 'highlight',
 ]);
 
-function assertNoPresentationState(config) {
-  if (!config || typeof config !== 'object') return;
-  for (const key of Object.keys(config)) {
-    if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase8-artifact-presentation-state-in-key:${key}`);
-    const value = config[key];
-    if (value && typeof value === 'object' && !Array.isArray(value)) assertNoPresentationState(value);
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'buffer',
+)?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = typeof SharedArrayBuffer === 'function'
+  ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get
+  : null;
+
+function isSharedArrayBuffer(value) {
+  if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function viewBackingBuffer(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER === 'function') {
+    try {
+      return TYPED_ARRAY_BUFFER_GETTER.call(value);
+    } catch {}
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function') {
+    try {
+      return DATA_VIEW_BUFFER_GETTER.call(value);
+    } catch {}
+  }
+  fail('phase8-artifact-options-view-invalid');
+}
+
+function isArrayIndex(key) {
+  if (!/^(0|[1-9]\d*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < 0xffffffff;
+}
+
+/**
+ * Built-in containers (Map/Set/views/ArrayBuffer/Date) are canonicalized by
+ * their intrinsic state only, so an enumerable own property attached to them
+ * is invisible key material: two options objects that differ only there would
+ * collide on the same artifactId. Fail closed instead of dropping the caller's
+ * semantic payload. Out-of-range index properties on typed-array views carry
+ * no intrinsic state and stay exempt.
+ */
+function failOnEnumerableOwnProperties(descriptors, label, { allowArrayIndex = false } = {}) {
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable) continue;
+    if (allowArrayIndex && typeof key === 'string' && isArrayIndex(key)) continue;
+    fail(`phase8-artifact-options-embedded-own-property:${label}:${String(key)}`);
+  }
+}
+
+function snapshotArtifactOptions(value, active = new WeakSet()) {
+  if (!value || typeof value !== 'object') return value;
+  if (active.has(value)) fail('phase8-artifact-options-cycle');
+  if (isSharedArrayBuffer(value)) fail('phase8-artifact-options-shared-buffer');
+  active.add(value);
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const snapshotDataProperty = (key, descriptor) => {
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        fail(`phase8-artifact-options-accessor:${key}`);
+      }
+      if (descriptor.enumerable && FORBIDDEN_KEY_FIELDS.includes(key)) {
+        fail(`phase8-artifact-presentation-state-in-key:${key}`);
+      }
+      return snapshotArtifactOptions(descriptor.value, active);
+    };
+
+    if (value instanceof Map) {
+      failOnEnumerableOwnProperties(descriptors, 'map');
+      const out = new Map();
+      for (const [key, entryValue] of Map.prototype.entries.call(value)) {
+        out.set(snapshotArtifactOptions(key, active), snapshotArtifactOptions(entryValue, active));
+      }
+      return out;
+    }
+    if (value instanceof Set) {
+      failOnEnumerableOwnProperties(descriptors, 'set');
+      const out = new Set();
+      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active));
+      return out;
+    }
+    if (ArrayBuffer.isView(value)) {
+      const backingBuffer = viewBackingBuffer(value);
+      if (isSharedArrayBuffer(backingBuffer)) fail('phase8-artifact-options-shared-buffer');
+      failOnEnumerableOwnProperties(descriptors, 'view', { allowArrayIndex: true });
+      if (typeof structuredClone === 'function') return structuredClone(value);
+      const bytes = new Uint8Array(backingBuffer, value.byteOffset, value.byteLength).slice().buffer;
+      if (value instanceof DataView) return new DataView(bytes);
+      const Constructor = Object.getPrototypeOf(value)?.constructor;
+      if (typeof Constructor !== 'function') fail('phase8-artifact-options-view-invalid');
+      return new Constructor(bytes);
+    }
+    if (value instanceof ArrayBuffer) {
+      failOnEnumerableOwnProperties(descriptors, 'arraybuffer');
+      return ArrayBuffer.prototype.slice.call(value, 0);
+    }
+    if (value instanceof Date) {
+      failOnEnumerableOwnProperties(descriptors, 'date');
+      return new Date(Date.prototype.getTime.call(value));
+    }
+    if (Array.isArray(value)) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0) fail('phase8-artifact-options-array-length-invalid');
+      const out = new Array(length);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (key === 'length' || (!descriptor.enumerable && !isArrayIndex(key))) continue;
+        const item = snapshotDataProperty(key, descriptor);
+        Object.defineProperty(out, key, { value:item, enumerable:descriptor.enumerable, configurable:true, writable:true });
+      }
+      return out;
+    }
+
+    const proto = Object.getPrototypeOf(value);
+    const out = Object.create(proto);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (!descriptor.enumerable) continue;
+      const item = snapshotDataProperty(key, descriptor);
+      Object.defineProperty(out, key, { value:item, enumerable:true, configurable:true, writable:true });
+    }
+    return out;
+  } finally {
+    active.delete(value);
   }
 }
 
@@ -78,8 +200,7 @@ export function createPhase8ArtifactDescriptor(input = {}) {
   if (!KIND_SET.has(kind)) fail(`phase8-artifact-unknown-kind:${kind}`);
   const classes = PHASE8_ARTIFACT_KINDS[kind];
 
-  const options = input.options ?? {};
-  assertNoPresentationState(options);
+  const options = snapshotArtifactOptions(input.options ?? {});
 
   const keyExtras = {
     phase8SchemaVersion: PHASE8_ARTIFACT_SCHEMA_VERSION,
