@@ -116,7 +116,8 @@ export function functionPaths(program, from, to, opts) {
     result.visited++;
     const head = path[path.length - 1];
     if (head === to) { result.paths.push(path); continue; }
-    if (path.length >= maxDepth) { reasons.add('depth-limit'); continue; }
+    // The source is depth zero; only traversed call edges consume depth.
+    if (path.length - 1 >= maxDepth) { reasons.add('depth-limit'); continue; }
 
     let range = null;
     try {
