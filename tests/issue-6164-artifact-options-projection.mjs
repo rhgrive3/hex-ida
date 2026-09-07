@@ -77,6 +77,23 @@ test('issue-6164: kinds without an option class ignore unrelated analysis option
   );
 });
 
+test('issue-6164: option-free kinds reject presentation state before projection', () => {
+  const debugBase = {
+    kind: 'phase7.debug.facts',
+    binaryId: 'binary_1',
+    snapshotId: 'snapshot_1',
+    analyzerId: 'phase7.debug',
+    analyzerVersion: '1.0.0',
+    semanticSchemaVersion: '2',
+    debugProviderVersion: '1.0.0',
+    debugBuildIdentity: 'build_a',
+  };
+  assert.throws(
+    () => artifactIdFor({ ...debugBase, options: { tabId: 'ui-tab-1' } }),
+    /phase7-artifact-presentation-state-in-key/,
+  );
+});
+
 test('issue-6164: absent, empty, and projected-empty options hash identically', () => {
   const withOptions = artifactIdFor(base({ options: {} }));
   const without = artifactIdFor(base());
