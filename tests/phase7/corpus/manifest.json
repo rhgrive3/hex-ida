@@ -316,7 +316,7 @@
   },
   "typeCorpus": {
     "id": "phase7-type-corpus",
-    "version": 1,
+    "version": 2,
     "cases": [
       {
         "id": "t-access-width",
@@ -650,5 +650,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d"
+  "manifestDigest": "4a4cac5f36cf8cdd32928fca4c32463c"
 }
