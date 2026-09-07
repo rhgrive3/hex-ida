@@ -16,7 +16,7 @@ for await (const m of frontend.enumerateMethods(image)) {
 assert.equal(methods.length, 1);
 
 const decoded = await frontend.decodeMethod(methods[0], { image });
-// This raw-metadata fixture omits MethodDef/#Blob signature authority. Its
+// This minimal PE/CLI fixture omits #Blob method-signature authority. Its
 // bytecode returns one int32 local; state that contract explicitly for the
 // positive pipeline rather than certifying an unknown return shape as valid.
 const unknownReturn = await frontend.validateMethod(decoded);

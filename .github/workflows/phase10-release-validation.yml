@@ -4,39 +4,6 @@ name: Phase 10 release validation
 # dispatch prevents validation-only PRs (EP-012). Broad repository validation
 # runs only at release boundaries; draft inner-loop pushes stay focused.
 on:
-  push:
-    branches:
-      - main
-      - "phase10/**"
-    paths:
-      - "js/runtime/**"
-      - "js/debug/**"
-      - "js/adapters/**"
-      - "js/runtime-evidence/**"
-      - "js/core/identity/**"
-      - "js/core/evidence/**"
-      - "tests/phase10/**"
-      - "tests/runtime-platform.mjs"
-      - "tests/runtime-evidence-fusion.mjs"
-      - "tools/validation/phase10/**"
-      - ".github/workflows/phase10-release-validation.yml"
-      - ".github/workflows/_phase-release-validation.yml"
-      - "package.json"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "js/runtime/**"
-      - "js/debug/**"
-      - "js/adapters/**"
-      - "js/runtime-evidence/**"
-      - "js/core/identity/**"
-      - "js/core/evidence/**"
-      - "tests/phase10/**"
-      - "tests/runtime-platform.mjs"
-      - "tests/runtime-evidence-fusion.mjs"
-      - "tools/validation/phase10/**"
-      - ".github/workflows/phase10-release-validation.yml"
-      - "package.json"
   workflow_dispatch:
     inputs:
       sha:

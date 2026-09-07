@@ -1,43 +1,6 @@
 name: Generated userscript sync
 
 on:
-  pull_request:
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'scripts/sync-generated-userscript.mjs'
-      - 'tools/validation/generated-output-policy.mjs'
-      - 'tests/dev-agent/sync-generated-userscript.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
-      - '.github/workflows/generated-userscript-autofix.yml'
-      - '.github/workflows/generated-userscript-main-sync.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'scripts/sync-generated-userscript.mjs'
-      - 'tools/validation/generated-output-policy.mjs'
-      - 'tests/dev-agent/sync-generated-userscript.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
-      - '.github/workflows/generated-userscript-autofix.yml'
-      - '.github/workflows/generated-userscript-main-sync.yml'
   workflow_dispatch:
 
 permissions:
