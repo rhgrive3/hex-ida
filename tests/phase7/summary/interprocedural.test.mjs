@@ -473,8 +473,8 @@ test('same semantic escapes union evidence across propagated and model records (
     memoryWriteRegions: [],
     escapes: [
       { kind: 'return-escape', target: 'shared-target', evidenceIds: ['model-evidence'] },
-      { kind: 'kind\\u0000left', target: 'target', evidenceIds: ['separator-evidence'] },
-      { kind: 'kind', target: 'left\\u0000target', evidenceIds: ['separator-evidence'] },
+      { kind: 'kind\u0000left', target: 'target', evidenceIds: ['separator-evidence'] },
+      { kind: 'kind', target: 'left\u0000target', evidenceIds: ['separator-evidence'] },
     ],
   });
   const solved = solveInterproceduralSummaries({
@@ -495,9 +495,9 @@ test('same semantic escapes union evidence across propagated and model records (
   });
   assert.equal(escapes.length, 3, 'same semantic escapes merge, but separator-bearing identities remain distinct');
   assert.equal(escapes.filter((escape) =>
-    escape.kind === 'kind\\u0000left' && escape.target === 'target').length, 1);
+    escape.kind === 'kind\u0000left' && escape.target === 'target').length, 1);
   assert.equal(escapes.filter((escape) =>
-    escape.kind === 'kind' && escape.target === 'left\\u0000target').length, 1);
+    escape.kind === 'kind' && escape.target === 'left\u0000target').length, 1);
 });
 test('cancellation publishes nothing complete', () => {
   const controller = new AbortController();
