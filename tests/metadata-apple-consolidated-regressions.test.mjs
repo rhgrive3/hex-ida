@@ -6,6 +6,7 @@ import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '
 import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
 import { buildObjcRuntimeModel } from '../js/objc.js';
 import '../js/objc-stub-recovery.js';
+import './issue-5882-objc-stub-recovery-typed-limits.mjs';
 
 // --- Test 1: #3444 Objective-C selector index rejects non-string selector ---
 {
