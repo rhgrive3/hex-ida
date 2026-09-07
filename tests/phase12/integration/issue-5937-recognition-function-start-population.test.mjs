@@ -49,6 +49,32 @@ test('ensureRecognition executes actual function starts, names, windows, and com
     'recognition results must be cached by generation');
 });
 
+test('ensureRecognition discards state when symbol generation changes during build', async () => {
+  const sym = new SymbolIndex({
+    addrs:new BigUint64Array([0x1000n]),
+    kinds:new Uint8Array([1]),
+    flags:new Uint8Array([0]),
+    names:['_named'],
+    funcs:new BigUint64Array([0x1000n, 0x1100n]),
+    functionStartsComplete:true,
+    regions:[textRegion],
+  });
+  const app = recognitionApp(sym);
+  let changed = false;
+  app.knowledge = {
+    propagate: async () => {
+      if (!changed) {
+        changed = true;
+        sym.rename(0x1000n, '_updated-during-build');
+      }
+      return { propagated:false };
+    },
+  };
+  const state = await ensureRecognitionState(app, { maxFunctions:10, knowledgeLimit:1 });
+  assert.equal(state, null, 'a symbol-index mutation must invalidate the in-flight state');
+  assert.equal(app.recognition, null, 'an invalidated state must never enter the cache');
+});
+
 test('ensureRecognition stays incomplete when function discovery is incomplete', async () => {
   const sym = new SymbolIndex({
     addrs:new BigUint64Array(0), kinds:new Uint8Array(0), flags:new Uint8Array(0), names:[],

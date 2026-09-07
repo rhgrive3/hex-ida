@@ -152,13 +152,17 @@ export async function ensureRecognitionState(app, options = {}) {
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
     if (epoch !== app.backend.gen || sym !== app.symbols) return null;
+    // Symbol metadata can change while the async state build yields. Pin the
+    // generation after optional metadata producers finish and reject any
+    // snapshot that crosses a symbol-index mutation.
+    const symbolGen = sym.gen;
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
-      isCurrent:() => epoch === app.backend.gen && sym === app.symbols,
+      isCurrent:() => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen,
     });
-    if (state == null) return null;
-    if (epoch === app.backend.gen && sym === app.symbols) app.recognition = state;
+    if (state == null || sym.gen !== symbolGen) return null;
+    if (epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen) app.recognition = state;
     return state;
   })();
   app.recognitionBusy = pending;
