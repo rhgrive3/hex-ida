@@ -16,15 +16,21 @@ const EXTRA_API_TABLE = [
   // nanopb public C API. These routines encode/decode protobuf wire data.
   { id:'nanopb', re:/^_?pb_[A-Za-z0-9_]+$/, cat:'runtime', args:null, ret:null, effect:'convert' },
 
-  // Security.framework public namespace not already covered by the precise
-  // SecKey/SecTrust/SecItem entries in blocks.js.
-  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:'crypto' },
+  // Security.framework public namespace fallback for entries not covered by the
+  // precise SecKey/SecTrust entries in blocks-base.js or specific Security helpers.
+  // The broad Sec* namespace indicates the security subsystem, but does not prove
+  // cryptographic operations, so effect is kept null unless precisely known.
+  { id:'security_certificate_copy_data', re:/^_?SecCertificateCopyData$/, cat:'crypto', args:['certificate'], ret:'ptr', effect:'read' },
+  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:null },
 
   // stdio routines with stable standard/POSIX meaning but heterogeneous ABI.
   { id:'stdio_runtime', re:/^_?(?:fflush|fileno|fputs|fgets|getc|fgetc|ferror|fputc|clearerr|flockfile|ungetc|funlockfile|setvbuf|fscanf|vfprintf|popen|tmpfile|pclose|freopen|setbuf|__srget|ftello)$/, cat:'io', args:null, ret:null, effect:'io' },
 
   // POSIX/Darwin descriptors, directories and filesystem operations.
-  { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|basename|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
+  { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
+
+  // basename returns a pointer to the basename component and may modify the input path.
+  { id:'libc_basename', re:/^_?basename$/, cat:'string', args:['path'], ret:'ptr', effect:'write' },
 
   // C string/search/conversion APIs missed by the existing narrower table.
   { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strcoll|strnstr|strcasestr|memmem|atof|atoll|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
@@ -66,7 +72,14 @@ const EXTRA_API_TABLE = [
   { id:'posix_process', re:/^_?(?:__darwin_check_fd_set_overflow|waitpid|sigsetjmp|setjmp|siglongjmp|__longjmp|__setjmp|sigaltstack|sigprocmask|raise|fork|execl|getuid|getgid|getegid|geteuid|getpwuid_r|tcsetattr|tcgetattr|syscall|sleep|getpagesize|setenv)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   { id:'audio_file', re:/^_?AudioFile[A-Za-z0-9_]*$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
-  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|vImage[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
+  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
+
+  // A scale routine is a known pixel-buffer transform; keep that precise effect.
+  { id:'accelerate_vimage_scale', re:/^_?vImageScale_[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:'convert' },
+  // The wider vImage namespace proves image-processing ownership, not one uniform
+  // side effect. Unknown members therefore stay fail-closed instead of being
+  // promoted to UI or conversion effects solely from their symbol prefix.
+  { id:'accelerate_vimage', re:/^_?vImage[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:null },
 
   // GoogleUtilities logging exports.
   { id:'google_utilities_log', re:/^_?GUL(?:OSLog|SetLogger|IsLoggable)[A-Za-z0-9_]*$/, cat:'log', args:null, ret:null, effect:'log' },
@@ -106,11 +119,27 @@ const EXTRA_API_TABLE = [
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
 ];
 
+for (const entry of EXTRA_API_TABLE) {
+  if (entry.args) Object.freeze(entry.args);
+  Object.freeze(entry);
+}
+Object.freeze(EXTRA_API_TABLE);
+
+function publicEntry(entry) {
+  // Keep RegExp compatibility without handing callers the private matcher that
+  // decides future classifications. RegExp has mutable internal slots (for
+  // example via legacy compile()), so a frozen entry alone is not sufficient.
+  const re = new RegExp(entry.re.source, entry.re.flags);
+  Object.freeze(re);
+  const args = entry.args == null ? null : Object.freeze([...entry.args]);
+  return Object.freeze({ ...entry, re, args });
+}
+
 export function extraApiInfo(name) {
   if (typeof name !== 'string') return null;
   const clean = name.trim();
   if (!clean) return null;
-  for (const entry of EXTRA_API_TABLE) if (entry.re.test(clean)) return entry;
+  for (const entry of EXTRA_API_TABLE) if (entry.re.test(clean)) return publicEntry(entry);
   return null;
 }
 
