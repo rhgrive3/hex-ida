@@ -266,9 +266,17 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
 function conditionFromFlags(inst, state, ir, opts, memo, active) {
   // Semantic-v2 compatibility carries the comparison result explicitly as a
   // value whose defining instruction is CMP. Prefer that architecture-neutral
-  // proof. The legacy nzcv register identity remains a fallback for the old IR.
-  const carrierArg = (inst.args || []).find((a) => a?.value?.def?.op === OP.CMP)
-    ?? (inst.args || []).find((a) => a?.value?.reg === 'nzcv');
+  // proof. SEL has two data arms before its flags carrier, while CBR keeps its
+  // flags carrier at the last argument; choosing the first CMP would let a
+  // data arm hijack the condition. The legacy nzcv register identity remains
+  // a fallback for old IR that does not retain the defining CMP.
+  const args = inst.args || [];
+  const positionalCarrier = inst.op === OP.SEL ? args[2]
+    : inst.op === OP.CBR ? args.at(-1)
+      : null;
+  const carrierArg = positionalCarrier?.value?.def?.op === OP.CMP
+    ? positionalCarrier
+    : args.find((a) => a?.value?.reg === 'nzcv');
   const carrier = carrierArg?.value ?? null;
   return conditionFromCmp(carrier?.def, inst.cond, state, ir, opts, memo, active);
 }
