@@ -110,7 +110,9 @@ test('runtime signal setup is failure-atomic and snapshots listener authority (#
       addEventListener(_type, listener) { listener(); },
       removeEventListener() { throw new Error('detach-failed'); },
     };
-    await assert.rejects(platform.traceFunction(0x1000n, { signal }), invalidSignalError);
+    // A throwing caller-owned detach is best-effort cleanup: it must not mask
+    // the operation outcome thrown from inside the operation body.
+    await assert.rejects(platform.traceFunction(0x1000n, { signal }), /cancelled/);
     assert.equal(session.controllers.size, 0);
   }
 });

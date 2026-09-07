@@ -63,15 +63,13 @@ function operationController(session, externalSignal) {
   return {
     signal:controller.signal,
     release() {
-      let detachError = null;
+      // Detachment is best-effort cleanup of a caller-owned signal; a throwing
+      // removeEventListener must not mask the operation outcome, because
+      // release() runs from consumer finally blocks.
       try {
         if (authority && listener) Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
-      } catch {
-        detachError = invalidExternalSignal();
-      } finally {
-        session.releaseController(controller);
-      }
-      if (detachError) throw detachError;
+      } catch {}
+      session.releaseController(controller);
     }
   };
 }
