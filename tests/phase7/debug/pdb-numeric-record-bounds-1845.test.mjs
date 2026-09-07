@@ -6,6 +6,8 @@ function tpi(recordBytes) {
   const view = new DataView(bytes.buffer);
   view.setUint32(4, 56, true);
   view.setUint32(8, 0x1000, true);
+  view.setUint32(12, 0x1001, true);           // lastIndex: one declared record
+  view.setUint32(16, recordBytes.length, true); // typeRecordBytes
   bytes.set(recordBytes, 56);
   return bytes;
 }
