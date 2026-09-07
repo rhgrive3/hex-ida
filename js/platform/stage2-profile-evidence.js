@@ -44,6 +44,7 @@ function strictSortedStrings(value, code) {
 }
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
 function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
+function isCanonicalString(value) { return typeof value === 'string' && value.length > 0 && value.trim() === value; }
 function isCanonicalStringArray(value, { allowEmpty = true } = {}) {
   if (!Array.isArray(value)) return false;
   if (!allowEmpty && value.length === 0) return false;
@@ -211,9 +212,9 @@ export function createStage2ProfileEvidence(input = {}) {
 
 export function validateStage2ProfileEvidence(record, expected = {}) {
   if (!record || record.schemaVersion !== STAGE2_PROFILE_EVIDENCE_SCHEMA) return { ok: false, reason: 'stage2-profile-evidence-schema-invalid' };
-  if (!/^[0-9a-f]{40}$/.test(record.commitSha || '')) return { ok: false, reason: 'stage2-profile-evidence-commit-invalid' };
-  if (!/^[0-9a-f]{40}$/.test(record.treeSha || '')) return { ok: false, reason: 'stage2-profile-evidence-tree-invalid' };
-  if (!Number.isFinite(Date.parse(record.generatedAt || ''))) return { ok: false, reason: 'stage2-profile-evidence-time-invalid' };
+  if (!isCanonicalString(record.commitSha) || !/^[0-9a-f]{40}$/.test(record.commitSha)) return { ok: false, reason: 'stage2-profile-evidence-commit-invalid' };
+  if (!isCanonicalString(record.treeSha) || !/^[0-9a-f]{40}$/.test(record.treeSha)) return { ok: false, reason: 'stage2-profile-evidence-tree-invalid' };
+  if (!isCanonicalString(record.generatedAt) || !Number.isFinite(Date.parse(record.generatedAt))) return { ok: false, reason: 'stage2-profile-evidence-time-invalid' };
   if (record.evidenceId !== identity(record)) return { ok: false, reason: 'stage2-profile-evidence-tampered' };
   if (expected.commitSha != null && (typeof expected.commitSha !== 'string' || expected.commitSha.length === 0 || expected.commitSha.trim() !== expected.commitSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-commit-invalid' };
   if (expected.treeSha != null && (typeof expected.treeSha !== 'string' || expected.treeSha.length === 0 || expected.treeSha.trim() !== expected.treeSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-tree-invalid' };
@@ -241,13 +242,35 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
       failures.push(`${id}:denominator-lock-missing`);
       continue;
     }
-    if (!isCanonicalStringArray(item.profileIds, { allowEmpty: false })) failures.push(`${id}:profile-identities-invalid`);
-    if (!isCanonicalStringArray(item.coveredUnitIds, { allowEmpty: false })) failures.push(`${id}:covered-unit-identities-invalid`);
-    if (!isCanonicalStringArray(item.realFixtureIdentities, { allowEmpty: false })) failures.push(`${id}:real-fixture-missing`);
-    if (!isCanonicalStringArray(item.negativeTestIdentities, { allowEmpty: false })) failures.push(`${id}:negative-tests-missing`);
-    if (!isCanonicalStringArray(item.evidenceIdentities, { allowEmpty: false })) failures.push(`${id}:evidence-identity-missing`);
-    if (!isCanonicalStringArray(item.providerProfileIds, { allowEmpty: !(id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) })) failures.push(`${id}:provider-profile-missing`);
-    if (!isCanonicalStringArray(item.independentOracleIdentities)) failures.push(`${id}:independent-oracle-identities-invalid`);
+    const profileIdsValid = isCanonicalStringArray(item.profileIds, { allowEmpty: false });
+    const coveredUnitIdsValid = isCanonicalStringArray(item.coveredUnitIds, { allowEmpty: false });
+    const realFixtureIdentitiesValid = isCanonicalStringArray(item.realFixtureIdentities, { allowEmpty: false });
+    const negativeTestIdentitiesValid = isCanonicalStringArray(item.negativeTestIdentities, { allowEmpty: false });
+    const evidenceIdentitiesValid = isCanonicalStringArray(item.evidenceIdentities, { allowEmpty: false });
+    const providerProfileIdsValid = isCanonicalStringArray(item.providerProfileIds, { allowEmpty: !(id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) });
+    const independentOracleIdentitiesValid = isCanonicalStringArray(item.independentOracleIdentities);
+    if (!profileIdsValid) failures.push(`${id}:profile-identities-invalid`);
+    if (!coveredUnitIdsValid) failures.push(`${id}:covered-unit-identities-invalid`);
+    if (!realFixtureIdentitiesValid) failures.push(`${id}:real-fixture-missing`);
+    if (!negativeTestIdentitiesValid) failures.push(`${id}:negative-tests-missing`);
+    if (!evidenceIdentitiesValid) failures.push(`${id}:evidence-identity-missing`);
+    if (!providerProfileIdsValid) failures.push(`${id}:provider-profile-missing`);
+    if (!independentOracleIdentitiesValid) failures.push(`${id}:independent-oracle-identities-invalid`);
+    const candidateCommitValid = isCanonicalString(item.candidateCommitSha) && /^[0-9a-f]{40}$/.test(item.candidateCommitSha);
+    const candidateTreeValid = isCanonicalString(item.candidateTreeSha) && /^[0-9a-f]{40}$/.test(item.candidateTreeSha);
+    const denominatorIdValid = isCanonicalString(item.denominatorId);
+    const denominatorLockHashValid = isCanonicalString(item.denominatorLockHash);
+    const implementationIdentityValid = isCanonicalString(item.implementationIdentity);
+    if (!candidateCommitValid) failures.push(`${id}:candidate-commit-invalid`);
+    if (!candidateTreeValid) failures.push(`${id}:candidate-tree-invalid`);
+    if (!denominatorIdValid) failures.push(`${id}:denominator-id-invalid`);
+    if (!denominatorLockHashValid) failures.push(`${id}:denominator-lock-invalid`);
+    if (!implementationIdentityValid) failures.push(`${id}:implementation-identity-missing`);
+    if (!profileIdsValid || !coveredUnitIdsValid || !realFixtureIdentitiesValid || !negativeTestIdentitiesValid
+      || !evidenceIdentitiesValid || !providerProfileIdsValid || !independentOracleIdentitiesValid
+      || !candidateCommitValid || !candidateTreeValid || !denominatorIdValid || !denominatorLockHashValid || !implementationIdentityValid) {
+      continue;
+    }
     if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-'))
       && (!Array.isArray(item.providerProfileIds) || !item.providerProfileIds.some((value) => providerProfileAllowed(id, value)))) {
       failures.push(`${id}:provider-profile-invalid`);
