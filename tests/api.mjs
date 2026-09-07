@@ -53,6 +53,7 @@ process.stdout.write(`API classification: ${passed} regressions ok\n`);
 
 // These API-family regressions are part of the authoritative `npm test`
 // denominator because package.json executes this owner runner directly.
+await import('./issue-1809-libc-effect-classification.mjs');
 await import('./issue-6178-basename-effect-classification.mjs');
 await import('./issue-6182-security-framework-crypto-classification.mjs');
 await import('./issue-6189-accelerate-vimage-classification.mjs');
