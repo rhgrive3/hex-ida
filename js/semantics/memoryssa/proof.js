@@ -162,7 +162,7 @@ export function canonicalAliasProof({
   const canonicalIssuerText = (value) => (typeof value === 'string' ? value : null);
   let issuerId = provider.analyzerId == null ? null : canonicalIssuerText(provider.analyzerId);
   let issuerVersion = provider.analyzerVersion == null ? null : canonicalIssuerText(provider.analyzerVersion);
-  if (!issuerId || !CANONICAL_ALIAS_ISSUERS.has(issuerId) || !issuerVersion.trim()
+  if (!issuerId || !CANONICAL_ALIAS_ISSUERS.has(issuerId) || !issuerVersion || !issuerVersion.trim()
       || CANONICAL_ALIAS_ISSUER_VERSIONS[issuerId] !== issuerVersion) return null;
   const relation = typeof result.relation === 'string' ? result.relation : '';
   if (!['must', 'no', 'may', 'unknown'].includes(relation)) return null;
