@@ -172,7 +172,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   if (producer === null) return null;
   const condition = canonicalCondition(cond);
   if (condition === null) return null;
-  const width = canonicalBits(bits);
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   if (!left || !right) return null;
   sub = producer;
@@ -238,7 +238,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
 
 export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
   if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
-  const width = canonicalBits(bits);
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   const left = expr.variable(leftText, width, null, source);
   const right = expr.variable(rightText, width, null, source);
