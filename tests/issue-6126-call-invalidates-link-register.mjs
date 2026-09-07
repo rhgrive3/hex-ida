@@ -40,6 +40,22 @@ test('#6126: BL exposes its implicit X30 write and BLR tracks its link', () => {
   assert.equal(x0.value, 0x1008n);
 });
 
+test('#6126: malformed or missing call addresses invalidate X30 without inventing a link', () => {
+  for (const address of [null, undefined, '', '  ', true, [], {}, Number.MAX_SAFE_INTEGER + 1, -1n]) {
+    const instructions = rows([
+      [0, 0x1000n, 'mov', 'x30, #0x1111'],
+      [1, address, 'bl', '#0x2000'],
+    ]);
+    const df = analyzeDataFlow(instructions, {});
+    assert.equal(df.finalRegs.has('x30'), false);
+    assert.equal(df.flows.some((flow) => flow.kind === 'call-link'), false);
+  }
+  for (const address of [0n, 0, '0', '0x0']) {
+    const df = analyzeDataFlow(rows([[0, address, 'bl', '#0x2000']]), {});
+    assert.equal(df.finalRegs.get('x30')?.value, 4n);
+  }
+});
+
 test('#6126: authenticated link forms classify as calls and write the link register', () => {
   for (const mnemonic of ['blraa', 'blrab', 'blraaz', 'blrabz']) {
     const insn = makeInstruction({ row: 0, address: 0x1000n, mn: mnemonic, ops: callOperands(mnemonic) });

@@ -593,6 +593,9 @@ const CALLER_SAVED = 18;   // x0〜x17 は呼び出しで壊れる（x18 はプ�
 function toLinkReturnAddress(address) {
   try {
     if (address == null) return null;
+    if (typeof address === 'number' && !Number.isSafeInteger(address)) return null;
+    if (typeof address === 'string' && !/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(address.trim())) return null;
+    if (!['bigint', 'number', 'string'].includes(typeof address)) return null;
     const pc = typeof address === 'bigint' ? address : BigInt(address);
     if (pc < 0n) return null;
     return pc + 4n;
