@@ -203,8 +203,7 @@ test('T052 constructor rejects malformed, colliding, and mismatched hydration', 
       projectIdentity: base.projectIdentity,
       pending: [['op:different-key', rawOperation('op:hydrated-key')]],
     }),
-    (error) => error instanceof TypeError
-      && /(?:operation|changelog)-pending-id-mismatch/.test(error.message),
+    (error) => error instanceof TypeError && error.message === 'operation-pending-id-mismatch',
   );
 
   assert.throws(
