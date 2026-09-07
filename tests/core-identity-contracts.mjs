@@ -7,6 +7,10 @@ import {
 import { createOriginSet, mergeOriginSets, createTransformRecord } from '../js/core/identity/origin.js';
 import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/identity/snapshot.js';
 
+// Keep issue-specific regressions in both the core contract gate and Phase 10 discovery.
+import './phase10/identity/issue-4315-snapshot-derived-identity.test.mjs';
+import './phase10/identity/issue-4321-origin-range-identities.test.mjs';
+
 // Stable identity exactness regressions live in this contract suite.
 const bytes = new TextEncoder().encode('same binary content');
 const binaryA = await createBinaryId(bytes);

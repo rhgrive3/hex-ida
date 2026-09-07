@@ -40,6 +40,7 @@ export function createPEMetadataBudget(image, options = {}) {
   const meta = image.metadata.peMetadata ||= { complete:true, reasons:[] };
   meta.limits = { ...limits };
   meta.used = used;
+  let nextTimeCheck = 1024;
   const fail = (reason) => { markPEPartial(image, `budget:${reason}`, `PE metadata budget exhausted: ${reason}`); return false; };
   const budget = {
     limits, used, signal,
@@ -47,7 +48,10 @@ export function createPEMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (signal?.aborted) return fail('aborted');
       const nextOps = used.operations + (cost.operations || 0);
-      if ((nextOps & 1023) === 0 && Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      if (nextOps >= nextTimeCheck) {
+        nextTimeCheck = nextOps + 1024;
+        if (Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      }
       for (const key of ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes']) {
         const next = used[key] + (cost[key] || 0);
         if (!Number.isFinite(next) || next < 0 || next > limits[key]) return fail(`${reason}:${key}`);
