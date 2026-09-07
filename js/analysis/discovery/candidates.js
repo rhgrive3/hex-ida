@@ -55,6 +55,7 @@ function address(value, code) {
   if (value == null) fail(code);
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) fail(code);
+  if (type === 'string' && value.trim().length === 0) fail(code);
   try {
     const result = BigInt(value);
     if (result < 0n) fail(code);
