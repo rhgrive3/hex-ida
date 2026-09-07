@@ -56,6 +56,11 @@ function materializeRuntimeValue(value, seen = new WeakMap()) {
   if (value instanceof Date) return new Date(value.getTime());
   if (value instanceof RegExp) return new RegExp(value.source, value.flags);
   if (value instanceof ArrayBuffer) return value.slice(0);
+  if (value instanceof DataView) {
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const ownedBytes = Uint8Array.from(bytes);
+    return new DataView(ownedBytes.buffer);
+  }
   if (ArrayBuffer.isView(value)) return new value.constructor(value);
 
   const output = Array.isArray(value) ? [] : {};

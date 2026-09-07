@@ -123,3 +123,47 @@ test('InstrumentationProvider uses one owned envelope snapshot for filtering, co
     await session.close();
   }
 });
+
+
+test('InstrumentationProvider snapshots DataView envelope bytes without aliasing caller storage', async () => {
+  const backing = new Uint8Array([0xaa, 0x11, 0x22, 0x33, 0xbb]);
+  const view = new DataView(backing.buffer, 1, 3);
+  let filtered = null;
+  const provider = new InstrumentationProvider(makeBackend(), {
+    eventFilter(event) { filtered = event; return true; },
+  });
+  const session = await provider.openSession({
+    processKey: 'envelope-dataview-process',
+    binaryId: 'envelope-dataview-binary',
+    sessionNonce: 'envelope-dataview-session',
+  });
+  try {
+    const installed = await session.facets.instrumentation.installProbe({ address: 0x4000n });
+    const observed = session.facets.instrumentation.events.ingest({
+      type: 'event',
+      event: 'instrumentation-observation',
+      data: { sequence: 8, probeHandle: 7, view },
+    });
+
+    assert.ok(filtered?.data?.view instanceof DataView);
+    assert.notEqual(filtered.data.view, view);
+    assert.ok(filtered.data.view.buffer instanceof ArrayBuffer);
+    assert.notEqual(filtered.data.view.buffer, view.buffer);
+    assert.deepEqual(
+      Array.from(new Uint8Array(filtered.data.view.buffer, filtered.data.view.byteOffset, filtered.data.view.byteLength)),
+      [0x11, 0x22, 0x33],
+    );
+    assert.deepEqual(observed.interventionIds, [installed.intervention.interventionId]);
+    assert.deepEqual(observed.payload.view, [0x11, 0x22, 0x33]);
+
+    backing.fill(0);
+    assert.deepEqual(
+      Array.from(new Uint8Array(filtered.data.view.buffer, filtered.data.view.byteOffset, filtered.data.view.byteLength)),
+      [0x11, 0x22, 0x33],
+      'owned correlation/filter snapshot must not alias later caller mutation',
+    );
+    assert.deepEqual(observed.payload.view, [0x11, 0x22, 0x33]);
+  } finally {
+    await session.close();
+  }
+});
