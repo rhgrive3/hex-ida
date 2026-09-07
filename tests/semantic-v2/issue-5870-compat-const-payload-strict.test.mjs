@@ -47,6 +47,7 @@ test('#5870/#5847: malformed payloads do not become integer or float facts', () 
   for (const payload of ['', '   ', true, false, [], ['15'], {}, 'Infinity', '1e309', '1e-999', '-1e-999', 2 ** 53]) {
     const { inst, primaryOutput } = projectionFor(payload);
     assert.equal(inst?.extra?.value, null, 'malformed payload must not become an integer');
+    assert.equal(primaryOutput?.const, null, 'malformed payload must not populate output.const');
     assert.equal(inst?.extra?.float, undefined, 'malformed payload must not become a float');
     assert.equal(primaryOutput?.float, undefined, 'malformed payload must not populate output.float');
     assert.equal(primaryOutput?.floatConst, undefined, 'malformed payload must not populate output.floatConst');
