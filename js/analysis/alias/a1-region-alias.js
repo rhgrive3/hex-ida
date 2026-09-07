@@ -62,6 +62,13 @@ function widthBytes(region) {
  */
 export function provenAddressSpace(region) {
   if (!region) return null;
+  // A rooted-offset region may carry an explicit proven space from its
+  // canonical proof (tls/io-rooted descriptors, #5901). Only space-less
+  // rooted-offsets are flat memory by construction.
+  if (region.kind === 'rooted-offset') {
+    if (typeof region.addressSpace === 'string' && region.addressSpace.trim()) return region.addressSpace.trim();
+    return FLAT_MEMORY_SPACE;
+  }
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
     const space = typeof region.addressSpace === 'string' ? region.addressSpace.trim() : null;

@@ -88,6 +88,13 @@ export function installSharedWorkerBinaryIdentity(app) {
       current = null;
       this._binaryIdPromise = null;
     }
+    // Last-waiter cancellation aborts the producer without retiring it
+    // synchronously. It must never accept a fresh consumer: attach here would
+    // inherit the old consumer's AbortError (#5788).
+    if (current && !current.settled && current.controller.signal.aborted) {
+      current = null;
+      this._binaryIdPromise = null;
+    }
 
     if (!current) {
       const controller = new AbortController();

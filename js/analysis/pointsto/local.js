@@ -484,13 +484,15 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
+  // Only canonical wire-contract fields are read here. Extra fields a forged
+  // serialized summary might carry (addressSpace/separationClass/
+  // separationAuthority) are not producer-emittable and must never become
+  // target authority (#5956).
   return createPointsToTarget({
-    addressSpace: provenance.addressSpace == null ? 'memory' : String(provenance.addressSpace),
+    addressSpace: 'memory',
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
     rootIdentity: provenance.rootIdentity ?? null,
     rootEntityId: String(rootEntityId),
-    separationClass: provenance.separationClass ?? null,
-    separationAuthority: provenance.separationAuthority ?? null,
     offsetRange: exactRange(offset),
     widthBits,
     evidenceIds,
@@ -790,9 +792,12 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (!alternatives.length) return topPointsTo('unresolved-call');
 
       // Canonical Semantic IR carries the argument list independently from a
-      // runtime target value. Old fixtures predate that field, so node.inputs is
-      // retained only as a compatibility fallback.
-      const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
+      // runtime target value; an explicit empty array means a zero-argument
+      // call, not a missing field. node.inputs is retained only as a legacy
+      // fallback for fixtures that predate the canonical field entirely.
+      const argumentIds = Array.isArray(node.call?.arguments)
+        ? node.call.arguments
+        : node.inputs;
       let merged = BOTTOM_POINTS_TO;
       for (const prov of alternatives) {
         let candidate;

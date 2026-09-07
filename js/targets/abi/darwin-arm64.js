@@ -9,7 +9,9 @@ import {
 const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ipados','macos','tvos','watchos','visionos']);
 
 function callPrototypeOf(insn, opts) {
-  let proto = insn?.callPrototype || null;
+  // Calls may arrive through the production functionPrototype field while
+  // older callers still provide callPrototype. Normalize both to one source.
+  let proto = insn?.callPrototype || insn?.functionPrototype || null;
   if (!proto) {
     try { proto = opts?.callPrototypeFor?.(insn?.callTarget ?? null, insn) || null; } catch { proto = null; }
   }
@@ -100,8 +102,10 @@ function parameterClass(param) {
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
-  let alignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0 ? explicitAlignment : 1;
-  if (!(Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0)) {
+  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
+    ? explicitAlignment : null;
+  let alignmentBytes = explicitAlignmentBytes ?? 1;
+  if (explicitAlignmentBytes == null) {
     if (bytes >= 16) alignmentBytes = 16;
     else if (bytes >= 8) alignmentBytes = 8;
     else if (bytes >= 4) alignmentBytes = 4;
@@ -115,7 +119,7 @@ function parameterClass(param) {
     vector, fp, members, elementBits,
     elementBytes:homogeneousElementBytes
       ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
-    bits, bytes, alignmentBytes, signed,
+    bits, bytes, alignmentBytes, explicitAlignmentBytes, signed,
   };
 }
 
@@ -273,9 +277,18 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     }
 
-    stackOffset = alignUp(stackOffset, c.alignmentBytes);
-    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, c.elementBytes ?? 0) : null;
-    const stackBytes = c.homogeneous ? homogeneousStackElementBytes * c.members
+    const stackAlignmentBytes = c.homogeneous
+      ? Math.max(c.elementBytes ?? 1, c.explicitAlignmentBytes ?? 0)
+      : c.alignmentBytes;
+    stackOffset = alignUp(stackOffset, stackAlignmentBytes);
+    /* Apple ARM64 stack arguments consume compact slots of their natural
+     * layout, not 8-byte-padded registers ("Function arguments may consume
+     * slots on the stack that are not multiples of 8 bytes"). An HFA/HVA that
+     * spills keeps its canonical member packing (float[4] = 16 bytes at
+     * offsets 0/4/8/12) and the next argument starts right after it, so the
+     * per-member slot width is the element's own size, never a widened 8. */
+    const homogeneousStackElementBytes = c.homogeneous ? (c.elementBytes ?? 0) : null;
+    const stackBytes = c.homogeneous ? Math.max(c.bytes ?? 0, homogeneousStackElementBytes * c.members)
       : c.aggregate ? Math.max(8, Math.ceil((c.aggregateBytes ?? c.bytes) / 8) * 8)
         : c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
     const entry = {
@@ -283,7 +296,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       location:'stack',
       offset:stackOffset,
       bytes:stackBytes,
-      alignmentBytes:c.alignmentBytes,
+      alignmentBytes:stackAlignmentBytes,
       abiClass:c.aggregate ? 'aggregate' : c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : c.fp ? 'fp' : c.pointer ? 'pointer' : 'integer',
       pointer:c.pointer,
       bits:c.bits,

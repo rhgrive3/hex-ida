@@ -232,6 +232,44 @@ function canonicalReturnProvenance(values) {
 }
 
 /**
+ * Canonical return provenance shape, shared by the producer and the consumer
+ * identity gate (#5956).
+ *
+ * `createReturnProvenance()` stores exactly these fields with exactly these
+ * types; anything else on the wire is not part of the FunctionSummary
+ * contract. A serialized lookalike must not smuggle extra fields (in
+ * particular `addressSpace`/`separationClass`/`separationAuthority`) past the
+ * consumer boundary, where a points-to consumer would otherwise read them as
+ * proof authority the canonical producer never emits.
+ */
+const RETURN_PROVENANCE_KINDS = Object.freeze(['unknown', 'arg', 'root', 'allocation']);
+const RETURN_PROVENANCE_FIELDS = Object.freeze([
+  'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+]);
+
+export function isCanonicalReturnProvenance(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!RETURN_PROVENANCE_KINDS.includes(value.kind)) return false;
+  for (const key of Object.keys(value)) {
+    if (!RETURN_PROVENANCE_FIELDS.includes(key)) return false;
+  }
+  for (const field of ['argIndex', 'returnIndex']) {
+    const index = value[field];
+    if (index != null && (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0)) return false;
+  }
+  if (value.offset != null && (typeof value.offset !== 'string' || !/^-?\d+$/.test(value.offset))) return false;
+  for (const field of ['rootEntityId', 'allocationSiteId']) {
+    const identity = value[field];
+    if (identity != null && (typeof identity !== 'string' || !identity.trim())) return false;
+  }
+  if (value.kind === 'root' || value.kind === 'allocation') {
+    const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
+    if (typeof identity !== 'string' || !identity.trim()) return false;
+  }
+  return true;
+}
+
+/**
  * Checks the identity envelope before a consumer treats a summary as current.
  * Completeness is intentionally separate: a current partial summary is still
  * not an exact answer, while a complete summary from another snapshot is
@@ -260,15 +298,11 @@ export function summaryIdentityMatches(summary, {
     if (!Array.isArray(summary[field])) return false;
   }
   if (!summary.returnProvenance.every((value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    for (const field of ['rootEntityId', 'allocationSiteId']) {
-      if (value[field] != null && (typeof value[field] !== 'string' || !value[field].trim())) return false;
-    }
-    if (value.kind === 'root' || value.kind === 'allocation') {
-      const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
-      if (typeof identity !== 'string' || !identity.trim()) return false;
-    }
-    return true;
+    // The return provenance must match the canonical wire contract exactly:
+    // no extra fields (an unproven `addressSpace`/`separation*` on a
+    // serialized summary is not authority), canonical kinds only, and the
+    // kind-specific identity shape the producer emits (#5956).
+    return isCanonicalReturnProvenance(value);
   })) return false;
   if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
   const status = summary.status;
