@@ -164,16 +164,31 @@ function resultBatch(rows) {
   return { results: rows, complete: true, returned: rows.length, total: rows.length };
 }
 
-function makeIncrementalTools(path, target, stored, staged, targetRepeat = 3) {
+function chunks(rows, size = 8) {
+  const out = [];
+  for (let index = 0; index < rows.length; index += size) out.push(rows.slice(index, index + size));
+  return out;
+}
+
+function paddedBatches(rows) {
+  const out = chunks(rows);
+  while (out.length < 16) out.push([]);
+  return out.slice(0, 16);
+}
+
+function makeIncrementalTools(path, target, stored, staged, customBatches = null) {
   let functionCall = 0;
   let stringCall = 0;
   let xrefCall = 0;
   let callerCall = 0;
   let calleeCall = 0;
-  const searchBatches = [
-    [...stored, ...staged, ...(targetRepeat >= 1 ? [{ addr: target }] : [])],
-    targetRepeat >= 2 ? [{ addr: target }] : [],
-    targetRepeat >= 3 ? [{ addr: target }] : [],
+  const searchBatches = customBatches || [
+    ...chunks(stored),
+    ...chunks(staged),
+    [{ addr: target }],
+    [{ addr: target }],
+    [{ addr: target }],
+    [],
   ];
   const graphStored = Array.from({ length: 24 }, (_, index) => ({
     addr: 0xc0000000n + BigInt(index * 0x10),
@@ -227,10 +242,21 @@ function makeIncrementalTools(path, target, stored, staged, targetRepeat = 3) {
 
 const incrementalQuery = {
   ...query,
-  entity: { terms: ['one'] },
-  context: { terms: ['two'] },
-  event: { terms: ['three'] },
+  entity: { terms: Array.from({ length: 16 }, (_, index) => `term-${index}`) },
+  context: { terms: [] },
+  event: { terms: [] },
 };
+
+function incrementalOptions(pathTools, maxExpansions = 0) {
+  return {
+    tools: pathTools,
+    maxFunctions: 2,
+    maxDisassembly: 16,
+    maxSearchResults: 8,
+    maxExpansions,
+    timeoutMs: 1000,
+  };
+}
 
 test('issue-5910: repeated incremental evidence is aggregated on every source path before admission', async () => {
   const stored = Array.from({ length: 48 }, (_, index) => ({
@@ -240,22 +266,26 @@ test('issue-5910: repeated incremental evidence is aggregated on every source pa
     addr: 0x60000000n + BigInt(index * 0x10),
   }));
   const target = 0x9700n;
+  const expectedPool = {
+    function: ['lexical', 48, 36],
+    string: ['string', 48, 24],
+    xref: ['string', 48, 30],
+    graph: ['graph', 24, 3],
+  };
 
-  for (const path of ['function', 'string', 'xref', 'graph']) {
+  for (const path of Object.keys(expectedPool)) {
     const pathTarget = path === 'graph' ? target + 1n : target;
     const pathTools = makeIncrementalTools(path, pathTarget, stored, staged);
-    const result = await planAnalysisGoal(incrementalQuery, {}, {
-      tools: pathTools,
-      maxFunctions: 2,
-      maxDisassembly: 16,
-      maxSearchResults: 8,
-      maxExpansions: path === 'graph' ? 2 : 0,
-      timeoutMs: 1000,
-    });
+    const result = await planAnalysisGoal(
+      incrementalQuery,
+      {},
+      incrementalOptions(pathTools, path === 'graph' ? 2 : 0),
+    );
+    const [pool, cap, score] = expectedPool[path];
     const candidate = result.candidates.find((row) => row.address === pathTarget);
     assert.ok(candidate, `${path}: repeated incremental evidence must survive a full pool`);
-    const expected = path === 'graph' ? 3 : path === 'xref' ? 30 : path === 'string' ? 24 : 36;
-    assert.equal(candidate.sourcePoolScores[path === 'function' ? 'lexical' : path === 'xref' ? 'string' : path], expected,
+    assert.equal(result.candidateSources.stored[pool], cap, `${path}: existing cap must remain bounded`);
+    assert.equal(candidate.sourcePoolScores[pool], score,
       `${path}: aggregate score must be compared atomically`);
   }
 });
@@ -268,43 +298,43 @@ test('issue-5910: incremental evidence is permutation-invariant with an equal-th
     addr: 0x80000000n + BigInt(index * 0x10),
   }));
   const target = 0x9800n;
-  const options = {
-    maxFunctions: 2,
-    maxDisassembly: 16,
-    maxSearchResults: 8,
-    maxExpansions: 0,
-    timeoutMs: 1000,
-  };
-
-  const ordered = await planAnalysisGoal(incrementalQuery, {}, {
-    ...options,
-    tools: makeIncrementalTools('function', target, stored, staged),
-  });
+  const orderedBatches = paddedBatches([
+    ...stored,
+    ...staged,
+    { addr: target },
+    { addr: target },
+    { addr: target },
+  ]);
+  const ordered = await planAnalysisGoal(incrementalQuery, {}, incrementalOptions(
+    makeIncrementalTools('function', target, stored, staged, orderedBatches),
+  ));
   const orderedTarget = ordered.candidates.find((row) => row.address === target);
   assert.equal(orderedTarget?.sourcePoolScores.lexical, 36);
 
-  const permutedTools = makeIncrementalTools('function', target, stored, staged);
-  let call = 0;
-  permutedTools.search_functions = async () => {
-    const parts = [
-      [...stored.slice(0, 16), ...staged.slice(0, 16), { addr: target }],
-      [...stored.slice(16, 32), ...staged.slice(16, 32), { addr: target }],
-      [...stored.slice(32), ...staged.slice(32), { addr: target }],
-    ];
-    return resultBatch(parts[call++] || []);
-  };
-  const permuted = await planAnalysisGoal(incrementalQuery, {}, {
-    ...options,
-    tools: permutedTools,
-  });
+  const permutedRows = [];
+  for (let index = 0; index < stored.length; index++) {
+    permutedRows.push(stored[index]);
+    if (index === 0) permutedRows.push({ addr: target });
+    permutedRows.push(staged[index]);
+    if (index === 24) permutedRows.push({ addr: target });
+  }
+  permutedRows.push({ addr: target });
+  const permuted = await planAnalysisGoal(incrementalQuery, {}, incrementalOptions(
+    makeIncrementalTools('function', target, stored, staged, paddedBatches(permutedRows)),
+  ));
   const permutedTarget = permuted.candidates.find((row) => row.address === target);
   assert.equal(permutedTarget?.sourcePoolScores.lexical, 36,
     'the same incremental evidence multiset must be arrival-order invariant');
 
-  const negative = await planAnalysisGoal(incrementalQuery, {}, {
-    ...options,
-    tools: makeIncrementalTools('function', 0x9900n, stored, staged, 1),
-  });
+  const negative = await planAnalysisGoal(incrementalQuery, {}, incrementalOptions(
+    makeIncrementalTools(
+      'function',
+      0x9900n,
+      stored,
+      staged,
+      paddedBatches([...stored, ...staged, { addr: 0x9900n }]),
+    ),
+  ));
   assert.equal(
     negative.candidates.some((row) => row.address === 0x9900n),
     false,
