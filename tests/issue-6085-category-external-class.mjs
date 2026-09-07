@@ -161,6 +161,29 @@ test('issue #6085 - binaryImage imports provide bind identity without explicit b
   assert.equal(extra.categories[0].targetClass, 'NSString');
 });
 
+test('issue #6085 - incomplete chained-fixup imports do not promote category owners', async () => {
+  const mem = buildMem();
+  const read = makeRead(mem);
+  const sections = {
+    categoryList: { vmAddr: BigInt(CATLIST), size: 8n },
+    binaryImage: {
+      imports: [{ name: '_OBJC_CLASS_$_NSString', sites: [{ address: BigInt(CLS_STORAGE) }] }],
+      metadata: { chainedFixups: { importsComplete: false, bindingSitesComplete: false } },
+    },
+  };
+  const extra = await parseObjcExtendedMetadata(read, sections, {
+    classes: [],
+    resolvePointer: async (raw, ctx) => {
+      if (BigInt(ctx?.address) === BigInt(CLS_STORAGE)) return null;
+      return BigInt(raw);
+    },
+    validateImplementation: async () => ({ ok: true }),
+    requireImplementationProof: false,
+  });
+  assert.equal(extra.categories[0].className, null,
+    'partial loader coverage must not be treated as authoritative category identity');
+});
+
 test('issue #6085 - metaclass and non-class binds are not promoted', async () => {
   const mem = buildMem();
   const read = makeRead(mem);
