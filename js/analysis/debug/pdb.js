@@ -837,8 +837,14 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
     + dbi.sourceInfoSize
     + dbi.typeServerMapSize
     + dbi.ecSubstreamSize;
+  const optionalDbgHeaderSize = Number(dbi.optionalDbgHeaderSize);
+  if (!Number.isSafeInteger(optionalDbgHeaderSize) || optionalDbgHeaderSize < 0) return null;
+  if (optionalHeaderOffset + optionalDbgHeaderSize > dbiBytes.length) return null;
   // The optional debug header is an array of stream indices; index 5 is the
-  // original section header stream.
+  // original section header stream. Reading it requires the DBI header to
+  // actually declare that entry: beyond the declared extent the bytes belong
+  // to other substreams and must never mint section mapping authority (#5822).
+  if (optionalDbgHeaderSize < (5 + 1) * 2) return null;
   const entryOffset = optionalHeaderOffset + 5 * 2;
   if (entryOffset + 2 > dbiBytes.length) return null;
   const streamIndex = view.getUint16(entryOffset, true);
