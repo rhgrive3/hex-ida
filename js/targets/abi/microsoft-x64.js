@@ -322,6 +322,12 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
       }
       const indirect = !exactSmallAggregate;
       aggregateProven = true;
+      // A by-reference vector temporary must keep the builtin vector's
+      // alignment (__m128 -> 16, __m256 -> 32, __m512 -> 64); a flat 16
+      // understates the requirement for 256-bit values (issue #6022).
+      const temporaryAlignment = indirect
+        ? (classified.vector ? Math.max(16, Math.ceil(classified.bits / 8)) : 16)
+        : undefined;
       const abiValueClass = indirect ? (classified.vector ? 'vector-indirect' : 'aggregate-indirect') : 'integer-aggregate';
       if (registerPosition) {
         const reg = INTEGER_ARGUMENT_REGISTERS[position];
@@ -333,7 +339,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
           bits:indirect ? 64 : classified.bits,
           bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)),
           pointeeBits:indirect ? classified.bits : undefined,
-          requiredTemporaryAlignment:indirect ? 16 : undefined,
+          requiredTemporaryAlignment:temporaryAlignment,
           pieces:[{ pieceIndex:0, order:0, reg, abiClass:abiValueClass,
             bits:indirect ? 64 : classified.bits,
             bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)), byteOffset:0 }],
@@ -346,7 +352,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
           bytes:8, abiClass:abiValueClass, pointer:indirect,
           bits:indirect ? 64 : classified.bits,
           pointeeBits:indirect ? classified.bits : undefined,
-          requiredTemporaryAlignment:indirect ? 16 : undefined,
+          requiredTemporaryAlignment:temporaryAlignment,
           pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:abiValueClass,
             bits:indirect ? 64 : classified.bits, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true,
