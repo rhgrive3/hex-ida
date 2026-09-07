@@ -147,11 +147,7 @@ function mergeShapeMaps(maps, reasons = []) {
   return out;
 }
 function recognitionInputKey(app) {
-  // Knowledge state participates in recognition results (KnowledgeDB.propagate
-  // bakes knowledge/names/confidence into records), so a semantic knowledge
-  // mutation must change the cache identity (#5723). Pure reads never advance
-  // KnowledgeDB.revision.
-  return [Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0), Number(app?.symbols?.gen ?? 0), Number(app?.knowledge?.revision ?? 0), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
+  return [Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0), Number(app?.symbols?.gen ?? 0), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
 }
 
 
