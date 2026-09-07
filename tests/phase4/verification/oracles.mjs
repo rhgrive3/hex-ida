@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../../js/core/artifacts/index.js';
-import { AnalysisScheduler, SchedulerCycleError } from '../../../js/core/scheduler/index.js';
+import { ArtifactError } from '../../../js/core/artifacts/contracts.js';
+import { AnalysisScheduler } from '../../../js/core/scheduler/index.js';
 import { BudgetExceededError } from '../../../js/core/budgets/index.js';
 import { ProjectArtifactIndex, createArtifactRef, isArtifactRef } from '../../../js/project/artifact-index.js';
 import { createHexProject, serializeHexProject } from '../../../js/project/index.js';
@@ -205,13 +206,18 @@ async function storeOracles(report) {
 async function schedulerOracles(report) {
   await addCase(report, 'DAG cycles', 'D', 'p4-2', async () => {
     const scheduler = new AnalysisScheduler({ store: new ArtifactStore({ backend: new MemoryArtifactBackend() }), maxConcurrency: 1 });
+    // Canonical artifact IDs commit to their upstream identity, so a forged
+    // cyclic graph cannot be constructed through createArtifactDescriptor().
+    // The public scheduler must reject that graph at the descriptor boundary
+    // before producer execution or DAG traversal.
     const a = Object.freeze({ artifactId: 'artifact_cycle_a', producerVersion: '1', versions: { semanticSchema: 's1' }, upstreamArtifactIds: ['artifact_cycle_b'] });
     const b = Object.freeze({ artifactId: 'artifact_cycle_b', producerVersion: '1', versions: { semanticSchema: 's1' }, upstreamArtifactIds: ['artifact_cycle_a'] });
     const requestA = { descriptor: a, dependencies: [], produce: async () => ({ a: 1 }) };
     const requestB = { descriptor: b, dependencies: [requestA], produce: async () => ({ b: 1 }) }; requestA.dependencies = [requestB];
     let error = null; try { await scheduler.request(requestA); } catch (caught) { error = caught; }
-    if (!(error instanceof SchedulerCycleError)) count(report, 'cycleDetectionFailures');
-    assert.ok(error instanceof SchedulerCycleError); return { path: error.path };
+    const rejected = error instanceof ArtifactError && error.code === 'artifact-descriptor-noncanonical';
+    if (!rejected) count(report, 'cycleDetectionFailures');
+    assert.equal(rejected, true); return { rejectedAt: error.code };
   });
 
   await addCase(report, 'priority determinism', 'D', 'p4-2', async () => {

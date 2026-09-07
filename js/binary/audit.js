@@ -1,7 +1,13 @@
-function sectionHasMappedAddress(sec) {
-  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
-  if (sec?.source === 'unmapped-section') return false;
-  return true;
+import { sectionHasMappedAddress } from './model.js';
+
+export { sectionHasMappedAddress } from './model.js';
+
+function isExecutableMappedAddress(image, address) {
+  const sec = image.sectionAt?.(address);
+  if (sec && sectionHasMappedAddress(sec) && sec.perms?.execute) return true;
+  const seg = image.segmentAt?.(address);
+  if (seg && seg.perms?.execute) return true;
+  return false;
 }
 
 export function auditBinary(image) {
@@ -40,8 +46,7 @@ export function auditBinary(image) {
     const key = f.address.toString();
     if (functionAddresses.has(key)) issues.push(issue('error', 'duplicate-function', `duplicate function at ${hex(f.address)}`));
     functionAddresses.add(key);
-    const sec = image.sectionAt(f.address) || image.segmentAt(f.address);
-    if (sec && sec.perms.execute) stats.executableFunctions++;
+    if (isExecutableMappedAddress(image, f.address)) stats.executableFunctions++;
     else {
       stats.unmappedFunctions++;
       if (f.source !== 'entrypoint') issues.push(issue('warning', 'function-outside-exec', `${hex(f.address)} (${f.source}) is outside executable mapped memory`));
@@ -61,8 +66,9 @@ export function auditBinary(image) {
   const unprovenZeroEntrypoint = image.entrypoint === 0n
     && image.metadata?.entrypointZeroEvidence === 'zero-sentinel-unproven';
   if (image.entrypoint != null && !unprovenZeroEntrypoint) {
-    const sec = image.sectionAt(image.entrypoint) || image.segmentAt(image.entrypoint);
-    if (!sec || !sec.perms.execute) issues.push(issue('warning', 'entrypoint-not-executable', `entrypoint ${hex(image.entrypoint)} is not in executable mapped memory`));
+    if (!isExecutableMappedAddress(image, image.entrypoint)) {
+      issues.push(issue('warning', 'entrypoint-not-executable', `entrypoint ${hex(image.entrypoint)} is not in executable mapped memory`));
+    }
   }
 
   const errors = issues.filter((x) => x.level === 'error').length;
@@ -78,7 +84,7 @@ export function capabilitiesOf(image) {
     architecture: image.arch,
     endianness: image.endian,
     bits: image.bits,
-    addressMapping: image.segments.some((x) => x.fileSize > 0n) || image.sections.some((x) => x.fileSize > 0n),
+    addressMapping: image.segments.some((x) => x.fileSize > 0n) || image.sections.some((x) => x.fileSize > 0n && sectionHasMappedAddress(x)),
     sections: image.sections.length,
     imports: { count: image.imports.length, sites: importSites, sources: sources(image.imports) },
     exports: { count: image.exports.length, sources: sources(image.exports) },

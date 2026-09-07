@@ -43,6 +43,10 @@ export function createRiscv64DecodedInstruction(input = {}) {
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
 
+  // `rawBytes` is authoritative for `fields`, so the canonical bytes must
+  // never share mutable storage with any caller. `Object.freeze` cannot seal
+  // typed-array elements, so every read publishes a fresh defensive copy and
+  // caller mutation can never desynchronize the encoding from `fields`.
   return Object.freeze({
     architecture: 'riscv64',
     mode,
@@ -53,7 +57,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     address,
     size,
     length: size,
-    rawBytes,
+    get rawBytes() { return rawBytes.slice(); },
     // Display-only. Never read by the lifter or by any generic consumer.
     mnemonic: String(input.mnemonic ?? ''),
     opStr: String(input.opStr ?? ''),

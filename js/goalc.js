@@ -98,6 +98,8 @@ const ENTITY_EXTRA = [
 const SHAPES = {
   /* 読んで、計算して、同じところへ書き戻す。増減はほぼ必ずこの形。 */
   RMW: 'read-modify-write',
+  /* 既存値を読まず、値をそのまま書き込む。 */
+  WRITE: 'write',
   /* 何かを作って返す（乱数から等級を決める、など）。 */
   PRODUCE: 'produce',
   /* しきい値と比べて分かれる。 */
@@ -126,7 +128,7 @@ function expectationOf(action, entityGoal) {
         steps: ['read', 'arithmetic', 'store'],
       });
     case 'set':
-      return Object.assign(base, { memory: ['store'], shape: SHAPES.RMW, steps: ['value', 'store'] });
+      return Object.assign(base, { memory: ['store'], shape: SHAPES.WRITE, steps: ['value', 'store'] });
     case 'decide':
       return Object.assign(base, {
         calls: RANDOM_CALLS.slice(),

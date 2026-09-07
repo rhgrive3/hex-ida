@@ -94,10 +94,10 @@ test('finite long-64 integer denominator decodes completely and every integer-ow
 test('MOV extension operand-size states preserve partial-register and 32-bit write semantics', async () => {
   const session = await createCapstoneX86Session();
   try {
-    for (const [bytes, family, fromBits, toBits, physical, policy] of [
+    for (const [bytes, family, fromBits, toBits, physical, policy, decoderSourceWidthBits = null] of [
       [[0x66,0x0f,0xb7,0xc3], 'movzx', 16,16,'rax','preserve-unaffected'],
       [[0x66,0x0f,0xbf,0xc3], 'movsx', 16,16,'rax','preserve-unaffected'],
-      [[0x66,0x63,0xc3], 'movsxd', 32,16,'rax','preserve-unaffected'],
+      [[0x66,0x63,0xc3], 'movsxd', 16,16,'rax','preserve-unaffected',32],
       [[0x63,0xc3], 'movsxd', 32,32,'rax','zero-extend-32'],
       [[0x48,0x63,0xc3], 'movsxd', 32,64,'rax','replace'],
     ]) {
@@ -107,6 +107,7 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
       assert.notEqual(bundle.completeness, 'partial');
       assert.equal(bundle.metadata.fromBits, fromBits);
       assert.equal(bundle.metadata.toBits, toBits);
+      assert.equal(bundle.metadata.decoderSourceWidthBits ?? null, decoderSourceWidthBits);
       const [write] = writes(bundle, physical);
       assert.ok(write, `${family} ${toBits} physical write`);
       assert.equal(write.metadata.writePolicy, policy);
@@ -157,6 +158,10 @@ test('implicit multiply/divide/sign-extension, flags, count masks and divide fau
       assert.equal(fault.condition.anyOf[1].signed,signed);
       assert.equal(flagWrites(bundle).length,6);
       assert.ok(flagWrites(bundle).every((operation) => operation.metadata.definedness === 'undefined'));
+      const undefinedFlagSources = bundle.operations.filter((operation) => operation.kind === 'intrinsic' && operation.intrinsicId.startsWith('x86.flag.undefined.'));
+      assert.equal(undefinedFlagSources.length,6);
+      assert.ok(undefinedFlagSources.every((operation) => operation.undefinedResult?.class === 'fully'
+        && operation.undefinedResult.widthBits === 1 && operation.undefinedResult.mask === '0x1'));
     }
 
     const cqo = effect(session,[0x48,0x99],'implicit:cqo');

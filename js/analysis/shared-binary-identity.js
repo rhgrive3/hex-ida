@@ -30,6 +30,7 @@ function scheduleBackground(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(() => finish(resolve), { timeout:250 });
     } else {
@@ -60,6 +61,7 @@ function waitForEntry(entry, signal) {
     };
     signal?.addEventListener('abort', onAbort, { once:true });
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -77,6 +79,7 @@ export function installSharedWorkerBinaryIdentity(app) {
   backend.ensureBinaryId = function ensureSharedBinaryId(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
+    abortIfNeeded(options.signal);
 
     const file = this.file;
     const epoch = Number(this.gen ?? this.analysisEpoch ?? 0);

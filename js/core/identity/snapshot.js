@@ -8,13 +8,17 @@ function required(value, code) {
   return text;
 }
 function exactRevision(value, fallback, code) {
-  const resolved = value ?? fallback;
+  const resolved = value === undefined ? fallback : value;
   if (typeof resolved === 'number') {
-    if (!Number.isSafeInteger(resolved)) fail(code);
+    if (!Number.isSafeInteger(resolved) || resolved < 0) fail(code);
     return String(resolved);
   }
-  if (typeof resolved === 'bigint') return String(resolved);
-  return required(resolved, code);
+  if (typeof resolved === 'bigint') {
+    if (resolved < 0n) fail(code);
+    return String(resolved);
+  }
+  if (typeof resolved !== 'string' || !/^(0|[1-9]\d*)$/.test(resolved)) fail(code);
+  return resolved;
 }
 function exactJson(value) {
   validateCanonicalIdentityNumbers(value);
@@ -42,14 +46,17 @@ export function createDeterminismMetadata(input = {}) {
   });
 }
 
+/** Derive immutable analysis-state identity and verify any ID supplied by an importer. */
 export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
   const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');
   const analysisEpoch = exactRevision(input.analysisEpoch, '0', 'snapshot-analysis-epoch-invalid');
   const artifactVersions = exactJson(input.artifactVersions ?? {});
-  const snapshotId = input.snapshotId == null
-    ? `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`
-    : required(input.snapshotId, 'snapshot-id-required');
+  const snapshotId = `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`;
+  // Imported IDs are assertions about this state, not an override of it.
+  if (input.snapshotId != null && required(input.snapshotId, 'snapshot-id-required') !== snapshotId) {
+    fail('snapshot-identity-mismatch');
+  }
   return deepFreeze({
     snapshotId,
     binaryId,

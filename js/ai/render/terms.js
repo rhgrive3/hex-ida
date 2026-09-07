@@ -36,7 +36,7 @@ function definition(entry, onOpen) {
   const box = h('div', 'ai-term-def');
   box.append(h('strong', 'ai-term-def-name', entry.term));
   box.append(h('span', 'ai-term-def-text', entry.short));
-  if (onOpen) {
+  if (typeof onOpen === 'function') {
     const more = h('button', 'ai-term-more', pick('くわしく', 'More'));
     more.type = 'button';
     more.addEventListener('click', () => onOpen(entry.id));

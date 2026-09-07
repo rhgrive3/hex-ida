@@ -1,7 +1,7 @@
 export const ARTIFACT_HOT_CACHE_VERSION = 'hex-artifact-hot-cache-v1';
 
 function canonicalArtifactId(value) {
-  if (typeof value !== 'string' || value.length === 0) throw new TypeError('artifact-hot-cache-id-invalid');
+  if (typeof value !== 'string' || value !== value.trim() || value.length === 0) throw new TypeError('artifact-hot-cache-id-invalid');
   return value;
 }
 
@@ -33,8 +33,6 @@ export class ArtifactHotCache {
       return null;
     }
     this.metrics.hits++;
-    // Map insertion order is the entire LRU clock. This is deterministic for a
-    // deterministic access sequence and never depends on wall-clock time.
     this.entries.delete(id);
     this.entries.set(id, entry);
     return entry.value;

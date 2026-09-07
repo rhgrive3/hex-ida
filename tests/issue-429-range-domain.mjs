@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { expr, structuralKey } from '../js/decompiler/ast/nodes.js';
 import { RewriteEngine } from '../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../js/decompiler/rewrite/rules.js';
-import { normalizeRangeDomain } from '../js/range-domain.js';
+import { normalizeIntegerValue, normalizeRangeDomain, rangeWithDomain } from '../js/range-domain.js';
 
 const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs:1000, nodeBudget:4096, maxIterations:16 });
 const rw = (e) => engine.rewrite(e).root;
@@ -42,4 +42,14 @@ assert.deepEqual(
 );
 assert.equal(normalizeRangeDomain({ min:-1n, max:1n, bits:32, signed:true }, 32, false), null);
 
-console.log('issue #429 range-domain regressions passed');
+// #3293: structured/non-number bit widths must not be coerced into valid widths.
+assert.equal(normalizeIntegerValue(0x1ffn, '8', false), 0x1ffn);
+assert.equal(normalizeIntegerValue(0x1ffn, 8, false), 0xffn);
+for (const bits of ['8', true, [32], { valueOf: () => 16 }, NaN, Infinity, 0, -1, 65, 1.5]) {
+  assert.equal(rangeWithDomain(0n, 1n, bits, false).bits, 64);
+}
+for (const bits of [1, 8, 32, 64]) {
+  assert.equal(rangeWithDomain(0n, 1n, bits, false).bits, bits);
+}
+
+console.log('issue #429/#3293 range-domain regressions passed');

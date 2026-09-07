@@ -22,6 +22,27 @@ function required(value, code) {
   return text;
 }
 
+function profileCollection(value, code) {
+  if (value == null) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new TypeError(code);
+  const profiles = [];
+  for (const profile of value) {
+    if (typeof profile !== 'string' || !profile.trim()) throw new TypeError(code);
+    profiles.push(profile.trim());
+  }
+  return Object.freeze([...new Set(profiles)].sort());
+}
+
+function isCanonicalProfileCollection(value) {
+  if (!Array.isArray(value)) return false;
+  try {
+    const normalized = profileCollection(value, 'ipad-evidence-profile-collection-invalid');
+    return JSON.stringify(value) === JSON.stringify(normalized);
+  } catch {
+    return false;
+  }
+}
+
 function evidencePayload(record) {
   return {
     schemaVersion: record.schemaVersion,
@@ -146,8 +167,8 @@ export function createPhysicalIPadEvidence(input = {}) {
     fixtureIdentity: required(input.fixtureIdentity, 'ipad-evidence-fixture-required'),
     scenarioEvidenceIdentity: required(input.scenarioEvidenceIdentity, 'ipad-evidence-scenario-output-required'),
     checks: deepFreeze(checks),
-    runtimeProfilesExercised: Object.freeze([...(input.runtimeProfilesExercised || [])].map(String).filter(Boolean).sort()),
-    rebuildProfilesExercised: Object.freeze([...(input.rebuildProfilesExercised || [])].map(String).filter(Boolean).sort()),
+    runtimeProfilesExercised: profileCollection(input.runtimeProfilesExercised, 'ipad-evidence-runtime-profiles-invalid'),
+    rebuildProfilesExercised: profileCollection(input.rebuildProfilesExercised, 'ipad-evidence-rebuild-profiles-invalid'),
     notesDigest: input.notesDigest == null ? null : String(input.notesDigest),
   };
   return deepFreeze({ ...record, evidenceId: evidenceIdentity(record) });
@@ -161,11 +182,19 @@ export function validatePhysicalIPadEvidence(record, expected = {}) {
   if (!/^[0-9a-f]{40}$/.test(record.treeSha)) return { ok: false, reason: 'ipad-evidence-tree-invalid' };
   const timestamp = Date.parse(record.testedAt);
   if (!Number.isFinite(timestamp) || !/^\d{4}-\d{2}-\d{2}T/.test(record.testedAt)) return { ok: false, reason: 'ipad-evidence-tested-at-invalid' };
+  if (!isCanonicalProfileCollection(record.runtimeProfilesExercised)) return { ok: false, reason: 'ipad-evidence-runtime-profiles-invalid' };
+  if (!isCanonicalProfileCollection(record.rebuildProfilesExercised)) return { ok: false, reason: 'ipad-evidence-rebuild-profiles-invalid' };
   const expectedEvidenceId = evidenceIdentity(record);
   if (record.evidenceId !== expectedEvidenceId) return { ok: false, reason: 'ipad-evidence-tampered', expectedEvidenceId, observedEvidenceId: record.evidenceId };
   if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-commit' };
   if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'ipad-evidence-stale-tree' };
   if (expected.buildIdentity && record.buildIdentity !== expected.buildIdentity) return { ok: false, reason: 'ipad-evidence-build-mismatch' };
+  for (const [field, reason] of [
+    ['runtimeIdentity', 'ipad-evidence-runtime-mismatch'],
+    ['deviceModel', 'ipad-evidence-device-mismatch'],
+    ['iPadOSVersion', 'ipad-evidence-ipados-mismatch'],
+    ['webKitVersion', 'ipad-evidence-webkit-mismatch'],
+  ]) if (expected[field] != null && record[field] !== expected[field]) return { ok: false, reason };
   if (!ARTIFACT_IDENTITY.test(record.fixtureIdentity)) return { ok: false, reason: 'ipad-evidence-fixture-identity-invalid' };
   if (!ARTIFACT_IDENTITY.test(record.scenarioEvidenceIdentity)) return { ok: false, reason: 'ipad-evidence-scenario-output-identity-invalid' };
   if (typeof expected.resolveEvidenceIdentity !== 'function') return { ok: false, reason: 'ipad-evidence-identity-resolver-required' };

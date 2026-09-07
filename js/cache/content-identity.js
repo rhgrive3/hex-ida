@@ -131,7 +131,7 @@ export async function sha256BlobHex(blob, options = {}) {
     reads++;
     bytesRead += bytes.byteLength;
     largestRead = Math.max(largestRead, bytes.byteLength);
-    options.onProgress?.({ bytesRead, totalBytes:blob.size, reads });
+    if (typeof options.onProgress === 'function') options.onProgress({ bytesRead, totalBytes:blob.size, reads });
   }
   throwIfAborted(signal);
   return Object.freeze({ hex:hash.hexDigest(), bytesRead, reads, largestRead, chunkBytes });

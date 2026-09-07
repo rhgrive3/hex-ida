@@ -47,7 +47,11 @@ function validImm12WithOptionalLsl12(op) {
   const immediate = immediateOf(op);
   if (immediate == null || immediate < 0n || immediate > 0xfffn) return false;
   if (op.shift == null) return true;
-  return String(op.shift.op || '').toLowerCase() === 'lsl' && Number(op.shift.amount) === 12;
+  return typeof op.shift.op === 'string'
+    && op.shift.op.toLowerCase() === 'lsl'
+    && typeof op.shift.amount === 'number'
+    && Number.isInteger(op.shift.amount)
+    && op.shift.amount === 12;
 }
 
 function rotateRightElement(value, amount, widthBits) {
@@ -138,9 +142,11 @@ function isGpSourceOfWidth(operand, widthBits) {
 function isLogicalShiftedGpSource(operand, widthBits) {
   if (!isGpOrZrRegister(operand) || structuredRegisterWidth(operand) !== widthBits || operand.extend != null) return false;
   if (operand.shift == null) return true;
-  const kind = String(operand.shift.op || '').toLowerCase();
-  const amount = Number(operand.shift.amount ?? 0);
-  return ['lsl','lsr','asr','ror'].includes(kind) && Number.isInteger(amount) && amount >= 0 && amount < widthBits;
+  if (typeof operand.shift.op !== 'string') return false;
+  const kind = operand.shift.op.toLowerCase();
+  const amount = operand.shift.amount ?? 0;
+  return ['lsl','lsr','asr','ror'].includes(kind)
+    && typeof amount === 'number' && Number.isInteger(amount) && amount >= 0 && amount < widthBits;
 }
 
 function addSubImmediateEncodingFailure(instruction) {
@@ -379,7 +385,7 @@ function addressImmediateEncodingFailure(instruction) {
     || destination.shift != null || destination.extend != null) {
     return `arm64-${mnemonic}-destination-unencodable`;
   }
-  if (!['imm','other'].includes(String(targetOperand?.k || ''))
+  if ((targetOperand?.k !== 'imm' && targetOperand?.k !== 'other')
     || targetOperand?.shift != null || targetOperand?.extend != null) {
     return `arm64-${mnemonic}-target-operand-unencodable`;
   }

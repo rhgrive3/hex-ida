@@ -145,6 +145,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         bundleCompleteness: bundle.completeness,
         sourceEffectId: effect.sourceEffectId,
         ...(operation == null ? {} : { operationKind: operation.kind }),
+        ...(operation?.undefinedResult == null ? {} : { undefinedResult: operation.undefinedResult }),
         ...(operation?.metadata == null ? {} : { operationMetadata: operation.metadata }),
         ...(bundle.metadata == null ? {} : { bundleMetadata: bundle.metadata }),
         ...(bundle.possibleFaults.length ? { possibleFaults: bundle.possibleFaults } : {}),

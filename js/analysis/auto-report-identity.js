@@ -1,3 +1,5 @@
+import { createBinaryIdFromDigest } from '../core/identity/index.js';
+
 const INSTALL_VERSION = 'auto-report-identity/v2';
 const STATE = new WeakMap();
 
@@ -14,9 +16,21 @@ function projectRevision(app) {
   const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
   return nonNegativeIdentity(project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision, 0);
 }
+function canonicalContentBinaryId(value) {
+  if (value === null || value === undefined || typeof value !== 'string') return null;
+  try { return createBinaryIdFromDigest(value); }
+  catch { return null; }
+}
+function binaryIdentity(app) {
+  const backendBinaryId = app?.backend?.binaryId;
+  if (backendBinaryId !== null && backendBinaryId !== undefined) return backendBinaryId;
+  const contentHash = app?.backend?.contentHash;
+  if (contentHash !== null && contentHash !== undefined) return canonicalContentBinaryId(contentHash);
+  return storeValue(app, 'fileInfo')?.binaryId ?? null;
+}
 function liveIdentity(app, currentSnapshotId = null) {
   return Object.freeze({
-    binaryId:app?.backend?.binaryId ?? app?.backend?.contentHash ?? storeValue(app, 'fileInfo')?.binaryId ?? null,
+    binaryId:binaryIdentity(app),
     sliceIndex:sliceIdentity(storeValue(app, 'sliceIndex'), -1),
     analysisEpoch:nonNegativeIdentity(app?.backend?.gen ?? app?.analysisEpoch, 0),
     projectRevision:projectRevision(app),

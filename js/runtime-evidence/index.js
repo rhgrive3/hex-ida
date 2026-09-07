@@ -2,7 +2,7 @@ import { boundedInteger } from '../debug/adapter.js';
 import { GROUP } from '../evidence.js';
 
 function nowIso() { return new Date().toISOString(); }
-function safeConfidence(value, fallback = 0.5) { const n=Number(value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : fallback; }
+function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
 function addressValue(value) {
   if (typeof value === 'bigint') return value;
@@ -48,7 +48,12 @@ function attachFactExtractionMetadata(facts, metadata) {
 }
 
 export function traceToSemanticFacts(trace, context = {}) {
-  const events = trace && Array.isArray(trace.events) ? trace.events : Array.isArray(trace) ? trace : [];
+  let events = [];
+  if (Array.isArray(trace)) events = trace;
+  else if (trace && typeof trace === 'object') {
+    if (trace.events != null && !Array.isArray(trace.events)) throw new TypeError('runtime trace events must be an array');
+    events = trace.events || [];
+  }
   const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
   const group = context.provenanceGroup || `trace:${idPart(context.sessionId || 'session')}:${idPart(context.traceId || 'trace')}`;
   const facts = [];

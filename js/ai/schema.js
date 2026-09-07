@@ -99,8 +99,8 @@ export function aiBudget(mode, overrides = {}) {
   const out = { ...base };
   for (const key of Object.keys(base)) {
     if (overrides[key] == null) continue;
-    const value = Number(overrides[key]);
-    if (!Number.isFinite(value)) continue;
+    const value = overrides[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
     const minimum = key === 'timeoutMs' || key === 'contextBytes' ? 1 : 0;
     out[key] = Math.min(base[key], Math.max(minimum, Math.floor(value)));
   }

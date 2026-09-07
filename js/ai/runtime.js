@@ -27,6 +27,7 @@ export class AIRuntime {
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
     this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
     this.storeNamespaces = new Map();
+    this.storeNamespaceOwners = new Map();
     this.contextBroker = options.contextBroker || new ContextBroker(this.localContext, options.contextOptions);
     this.planner = options.planner === false ? null : (options.planner || planAnalysisGoal);
     this.development = !!options.development;
@@ -47,6 +48,7 @@ export class AIRuntime {
       stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
     }
     this.storeNamespaces.set(key, stores);
+    this.storeNamespaceOwners.set(key, String(session.id));
     return stores;
   }
 
@@ -86,8 +88,10 @@ export class AIRuntime {
   async releaseSession(sessionId, { deletePersisted = false } = {}) {
     if (sessionId == null) return false;
     const id = String(sessionId);
-    for (const key of Array.from(this.storeNamespaces.keys())) {
-      if (key.endsWith(`::${id}`)) this.storeNamespaces.delete(key);
+    for (const [key, ownerId] of Array.from(this.storeNamespaceOwners.entries())) {
+      if (ownerId !== id) continue;
+      this.storeNamespaces.delete(key);
+      this.storeNamespaceOwners.delete(key);
     }
     if (deletePersisted) await this.sessionStore.delete(id);
     else this.sessionStore.sessions?.delete?.(id);

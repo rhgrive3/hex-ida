@@ -15,10 +15,10 @@ export function providerCapabilities(provider) {
 }
 
 export function measureWirePayload({ messages = [], context = {}, tools = [], meta = {} } = {}) {
-  const semanticContextBytes = bytes(context);
-  const toolSchemaBytes = bytes(tools);
-  const historyBytes = bytes(messages);
-  const wireBytes = bytes({ ...meta, messages, context, tools });
+  const semanticContextBytes = serializedByteLength(context);
+  const toolSchemaBytes = serializedByteLength(tools);
+  const historyBytes = serializedByteLength(messages);
+  const wireBytes = serializedByteLength({ ...meta, messages, context, tools });
   return {
     semanticContextBytes, toolSchemaBytes, historyBytes, wireBytes,
     estimatedInputTokens: Math.ceil(wireBytes / 4),
@@ -29,7 +29,7 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
   const usage = measureWirePayload(payload);
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
   const contextTokens = positiveLimit(capabilities.contextTokens, SAFE_PROVIDER_CAPABILITIES.contextTokens);
-  const outputTokens = Math.max(0, finiteNumber(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens));
+  const outputTokens = nonNegativeLimit(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens);
   const maxTokens = Math.max(1, contextTokens - outputTokens);
   if (usage.wireBytes > maxBytes || usage.estimatedInputTokens > maxTokens) {
     throw new AIError('context_too_large', 'The complete provider payload exceeds the safe input budget.', { ...usage, maxBytes, maxTokens });
@@ -39,7 +39,7 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
 
 export function semanticBudgetFor({ messages = [], tools = [], meta = {}, capabilities = SAFE_PROVIDER_CAPABILITIES, configuredBytes = 128 * 1024 } = {}) {
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
-  const overhead = bytes({ ...meta, messages, context: {}, tools });
+  const overhead = serializedByteLength({ ...meta, messages, context: {}, tools });
   const available = maxBytes - overhead - 2048;
   if (available < 4096) {
     throw new AIError('context_too_large', 'Messages and tool schemas leave no safe semantic-context budget.', { maxBytes, overhead, available });
@@ -64,16 +64,16 @@ function wireReplacer(_key, value) {
   return typeof value === 'bigint' ? `0x${value.toString(16)}` : value;
 }
 
-function bytes(value) {
+export function serializedByteLength(value) {
   let text;
   try {
     text = JSON.stringify(value, wireReplacer);
   } catch (error) {
     // A payload that cannot be serialized cannot be sent either. Fail closed
     // rather than reporting a size for something that has none.
-    throw new AIError('provider_error', 'The provider payload could not be serialized for budget measurement.', { reason: String(error?.message || error) });
+    throw new AIError('provider_error', 'The AI payload could not be serialized for budget measurement.', { reason: String(error?.message || error) });
   }
   return new TextEncoder().encode(text ?? 'null').byteLength;
 }
-function finiteNumber(value, fallback) { return typeof value === 'number' && Number.isFinite(value) ? value : fallback; }
+function nonNegativeLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback; }
 function positiveLimit(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback; }
