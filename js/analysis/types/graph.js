@@ -419,21 +419,36 @@ export class TypeConstraintGraph {
 
   /** Every layer's answer for one entity. */
   solveEntity(entityId, { signal = null, sccContext = null } = {}) {
-    const layers = this.entities.get(entityId);
+    /*
+     * Entity identity is a string contract. A structured value must not be
+     * String()-coerced into a canonical-looking result label (#5781): the
+     * Map lookup above uses raw identity, so `['A']` would miss the evidence
+     * stored for 'A' yet return a result labelled entityId:'A' — an
+     * unsupported answer attributed to an entity it never examined.
+     */
+    const canonicalEntityId = typeof entityId === 'string' && entityId.length > 0 ? entityId : '';
+    if (canonicalEntityId === '') {
+      return createTypeResult({
+        entityId: '',
+        status: this.#status('unsupported', 'unsupported-input'),
+        layers: {},
+      });
+    }
+    const layers = this.entities.get(canonicalEntityId);
     if (!layers) {
       return createTypeResult({
-        entityId,
+        entityId: canonicalEntityId,
         status: this.#status('unsupported', 'evidence-missing'),
         layers: {},
       });
     }
     if (signal?.aborted) {
-      return createTypeResult({ entityId, status: this.#status('partial', 'cancelled'), layers: {} });
+      return createTypeResult({ entityId: canonicalEntityId, status: this.#status('partial', 'cancelled'), layers: {} });
     }
 
     const effectiveSccContext = sccContext ?? {
-      isRecursive: this.dependenciesOf(entityId).has(entityId),
-      sccMembers: [entityId],
+      isRecursive: this.dependenciesOf(canonicalEntityId).has(canonicalEntityId),
+      sccMembers: [canonicalEntityId],
     };
 
     const solvedLayers = {};
@@ -441,7 +456,7 @@ export class TypeConstraintGraph {
     for (const layer of TYPE_LAYERS) {
       const bucket = layers.get(layer);
       if (!bucket) continue;
-      const solved = solveLayer(entityId, layer, bucket, {
+      const solved = solveLayer(canonicalEntityId, layer, bucket, {
         signal,
         maxComparisons: this.limits.maxComparisonsPerLayer,
         maxContradictions: this.limits.maxContradictionsPerLayer,

@@ -19,6 +19,7 @@ export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
 const ROOT_KINDS = new Set(GENERIC_ROOT_DESCRIPTOR_KINDS);
 const MAX_DERIVATION_DEPTH = 128;
 const INVALID_ROOT_DESCRIPTOR = Symbol('invalid-root-descriptor');
+const CONFLICTING_ROOT_DESCRIPTORS = Symbol('conflicting-root-descriptors');
 const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
 
 function identityString(value, { trim = false } = {}) {
@@ -232,9 +233,27 @@ function semanticDescriptorCandidates(value, node, variable) {
 }
 
 function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace) {
-  for (const candidate of semanticDescriptorCandidates(value, node, variable)) {
-    const normalized = normalizeGenericDescriptor(candidate);
-    return normalized ?? INVALID_ROOT_DESCRIPTOR;
+  const semantic = semanticDescriptorCandidates(value, node, variable);
+  if (semantic.length) {
+    /*
+     * All proof-grade candidates participate. The old first-match-wins
+     * priority made the same contradictory evidence set yield different
+     * exact roots depending on which slot (value/node/attributes/variable
+     * metadata) each descriptor was stored in (#5802). Policy: malformed
+     * candidates are ignored (existing safe side), a single valid candidate
+     * (or several that normalize identically) is used, and genuinely
+     * conflicting candidates fail closed.
+     */
+    let chosen = null;
+    let conflicting = false;
+    for (const candidate of semantic) {
+      const normalized = normalizeGenericDescriptor(candidate);
+      if (normalized == null) continue;
+      if (chosen == null) { chosen = normalized; continue; }
+      if (stableDigest(chosen) !== stableDigest(normalized)) conflicting = true;
+    }
+    if (conflicting) return CONFLICTING_ROOT_DESCRIPTORS;
+    return chosen ?? INVALID_ROOT_DESCRIPTOR;
   }
 
   const keys = [
@@ -292,6 +311,7 @@ function stripSeparationMetadata(proof) {
 
 function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, widthBits) {
   if (descriptor === INVALID_ROOT_DESCRIPTOR) return unknown('canonical-root-descriptor-invalid');
+  if (descriptor === CONFLICTING_ROOT_DESCRIPTORS) return unknown('canonical-root-descriptor-conflict');
   if (!descriptor) return null;
   const addressSpace = descriptor.addressSpace ?? expectedAddressSpace ?? 'memory';
   if (expectedAddressSpace != null && descriptor.addressSpace != null && String(expectedAddressSpace) !== descriptor.addressSpace) {

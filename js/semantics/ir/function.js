@@ -152,18 +152,26 @@ export function createSemanticIrFunction(input, options = {}) {
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
 
+  /*
+   * Canonical serialization must not depend on the host ICU locale: a default
+   * localeCompare() ranks 'ä' vs 'z' differently under de_DE and sv_SE, which
+   * flipped block/value/node/unknown ordering and changed the canonical
+   * serialization output for the same IR (#5765). UTF-16 code-unit order is
+   * the fixed total order.
+   */
+  const compareCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
     contractVersion: SEMANTIC_IR_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-ir-function-id-required'),
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
-    blocks: rawBlocks.map(normalizeBlock).sort((a, b) => a.id.localeCompare(b.id)),
-    values: rawValues.map(createSemanticValue).sort((a, b) => a.id.localeCompare(b.id)),
-    nodes: rawNodes.map(createSemanticNode).sort((a, b) => a.id.localeCompare(b.id)),
+    blocks: rawBlocks.map(normalizeBlock).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    values: rawValues.map(createSemanticValue).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    nodes: rawNodes.map(createSemanticNode).sort((a, b) => compareCodeUnit(a.id, b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)
-      .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
+      .sort((a, b) => compareCodeUnit(stableStringify(a), stableStringify(b))),
     origin: requiredOrigin(input, 'semantic-ir-function-origin-required'),
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');
