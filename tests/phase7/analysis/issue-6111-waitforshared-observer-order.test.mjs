@@ -25,6 +25,7 @@ function makeRaceSignal(reason) {
 }
 
 {
+  let cancelCalls = 0;
   const unhandled = [];
   const onUnhandled = (error) => unhandled.push(error);
   process.on('unhandledRejection', onUnhandled);
@@ -32,10 +33,13 @@ function makeRaceSignal(reason) {
     const app = {
       backend: {
         gen: 1,
-        async guessFunctions() {
+        guessFunctions() {
           let rejectFn;
           const pending = new Promise((_, reject) => { rejectFn = reject; });
-          pending.cancel = () => rejectFn(new Error('producer aborted'));
+          pending.cancel = () => {
+            cancelCalls++;
+            rejectFn(new Error('producer aborted'));
+          };
           return pending;
         },
       },
@@ -47,6 +51,7 @@ function makeRaceSignal(reason) {
     installDemandDrivenAnalysis(app);
     const reason = Object.assign(new Error('consumer abort'), { name: 'AbortError' });
     await assert.rejects(app.ensureFunctions(null, { signal: makeRaceSignal(reason) }), (e) => e === reason);
+    assert.equal(cancelCalls, 1, 'registration-race last waiter must cancel the backend request');
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(unhandled.length, 0, `race cancel must not leave unhandled rejection: ${unhandled.map((e) => e?.message)}`);
   } finally {
