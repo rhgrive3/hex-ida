@@ -62,6 +62,30 @@ if (typeof Blob !== 'undefined') {
 }
 
 {
+  let release;
+  let startedResolve;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const source = asByteSource({
+    size: 1n,
+    maxReadLength: 16,
+    async read() {
+      startedResolve();
+      await gate;
+      return Uint8Array.of(0x41);
+    },
+  });
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('in-flight-read-abort'), { code: 'IN_FLIGHT_ABORT' });
+  const pending = source.readExactly(0n, 1, { signal: controller.signal });
+  await started;
+  assert.equal(controller.signal.aborted, false, 'the delegate read must start before abort');
+  controller.abort(reason);
+  release();
+  await assert.rejects(pending, (error) => error === reason, 'post-read abort must preserve reason identity');
+}
+
+{
   const source = new MemoryByteSource(Uint8Array.of(0x41));
   const bytes = await source.readExactly(0n, 1, {});
   assert.equal(bytes[0], 0x41);
