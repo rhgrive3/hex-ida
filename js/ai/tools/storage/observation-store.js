@@ -29,8 +29,20 @@ export function analysisBinding(context = {}, extra = {}) {
     context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
   ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
+  // Fixed fallbacks are display/validation defaults, not cache authority:
+  // two contexts that both fail to resolve their identities are different
+  // analyses, so the binding reports what is missing (#5887). The store
+  // instance scopes unresolved keys per context generation; resolved keys
+  // keep hashing the real identities alone.
+  const missing = [];
+  if (binaryIdentity === 'binary:unknown') missing.push('binaryIdentity');
+  if (analysisRevision === 'analysis:0') missing.push('analysisRevision');
+  if (sliceIdentity === 'slice:default') missing.push('sliceIdentity');
+  if (projectRevision === 'project:0') missing.push('projectRevision');
+  if (runtimeSession === 'runtime:none') missing.push('runtimeSession');
+  const resolved = missing.length === 0;
   const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
-  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
+  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, resolved, missing, key };
 }
 
 function parsePath(path) {
@@ -101,11 +113,23 @@ export class ObservationStore {
     this.records = new Map();
     this.cache = new Map();
     this.sequence = 0;
+    // Unresolved-identity contexts must not share one binding: this
+    // per-generation key makes every unknown context its own scope, so a
+    // cached result from context A can never be a hit in context B (#5887).
+    this.contextGeneration = 0;
   }
 
-  binding(extra = {}) { return analysisBinding(this.context, extra); }
+  binding(extra = {}) {
+    const binding = analysisBinding(this.context, extra);
+    // Only unresolved bindings are scoped to this context generation:
+    // resolved identities are already exact, so known→known same-identity
+    // cache hits keep working across setContext() calls (#5887 acceptance 6).
+    if (binding.resolved) return binding;
+    const key = shortHash({ unresolvedBinding: binding.key, generation: this.contextGeneration });
+    return { ...binding, key };
+  }
 
-  setContext(context) { this.context = context || {}; return this; }
+  setContext(context) { this.context = context || {}; this.contextGeneration += 1; return this; }
 
   pin(detailRef) {
     const record = this.records.get(String(detailRef || ''));
