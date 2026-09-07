@@ -175,24 +175,24 @@ function testImage(bytes = new Uint8Array(128)) {
 }
 
 {
-  const bytes = new Uint8Array(0x300), dv = new DataView(bytes.buffer);
+  const bytes = new Uint8Array(0x9000), dv = new DataView(bytes.buffer);
   dv.setUint32(0, 0xcafebabe, false); dv.setUint32(4, 2, false);
   const CPU_ARM64 = 0x0100000c;
   const writeFat = (p, subtype, off) => {
     dv.setUint32(p, CPU_ARM64, false); dv.setUint32(p + 4, subtype, false);
-    dv.setUint32(p + 8, off, false); dv.setUint32(p + 12, 32, false); dv.setUint32(p + 16, 0, false);
+    dv.setUint32(p + 8, off, false); dv.setUint32(p + 12, 32, false); dv.setUint32(p + 16, 14, false);
   };
-  writeFat(8, 2, 0x100); writeFat(28, 0, 0x200);
+  writeFat(8, 2, 0x4000); writeFat(28, 0, 0x8000);
   const writeThin = (off, subtype) => {
     dv.setUint32(off, 0xfeedfacf, true);
     dv.setInt32(off + 4, CPU_ARM64, true); dv.setInt32(off + 8, subtype, true);
     dv.setUint32(off + 12, 2, true); dv.setUint32(off + 16, 0, true);
     dv.setUint32(off + 20, 0, true); dv.setUint32(off + 24, 0, true); dv.setUint32(off + 28, 0, true);
   };
-  writeThin(0x100, 2); writeThin(0x200, 0);
+  writeThin(0x4000, 2); writeThin(0x8000, 0);
   const parsed = await parseMachOSource(new MemoryByteSource(bytes), { sliceIndex:1 });
   assert.equal(parsed.metadata.subtypeBase, 0);
-  assert.equal(parsed.metadata.fat.selected.offset, 0x200n);
+  assert.equal(parsed.metadata.fat.selected.offset, 0x8000n);
 }
 
 {

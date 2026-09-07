@@ -1,15 +1,62 @@
-/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata. */
+/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata.
+ *
+ * Source provenance identity is typed per field. Canonical producers emit:
+ *   addresses -> BigInt (or safe non-negative integer), rows -> safe
+ *   non-negative integers, and ir/ssaDefs/ssaUses -> primitive string IDs or
+ *   safe non-negative integers. Anything else is malformed metadata and is
+ *   dropped at the boundary: coercing it with String() would let an Array,
+ *   boolean or object alias a canonical identity and merge unrelated evidence.
+ */
+const EXPRESSION_KINDS = new Set([
+  'const', 'float-const', 'var', 'unary', 'binary', 'compare',
+  'select', 'call', 'load', 'field', 'index', 'intrinsic',
+]);
+
+export function isExpressionNode(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (() => {
+      try {
+        return EXPRESSION_KINDS.has(value.kind);
+      } catch {
+        return false;
+      }
+    })();
+}
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
+function canonicalIdentity(v, { allowBigInt = false, allowString = false } = {}) {
+  if (allowBigInt && typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  if (allowString && typeof v === 'string') return v;
+  return null;
+}
+function canonicalList(values, options = {}) {
+  if (values == null) return [];
+  const list = Array.isArray(values) ? values : [values];
+  const out = [];
+  for (const v of list) {
+    const canonical = canonicalIdentity(v, options);
+    if (canonical !== null && !out.some((z) => z === canonical)) out.push(canonical);
+  }
+  return out;
+}
 export function sourceOf(source = null) {
   if (!source) return { addresses: [], rows: [], ir: [], ssaDefs: [], ssaUses: [], evidence: [] };
-  const one = (v) => v == null ? [] : Array.isArray(v) ? v.slice() : [v];
-  return { addresses: one(source.addresses ?? source.address), rows: one(source.rows ?? source.row), ir: one(source.ir ?? source.irId), ssaDefs: one(source.ssaDefs ?? source.ssaDef), ssaUses: one(source.ssaUses ?? source.ssaUse), evidence: freezeArray(source.evidence) };
+  return {
+    addresses: canonicalList(source.addresses ?? source.address, { allowBigInt: true }),
+    rows: canonicalList(source.rows ?? source.row),
+    ir: canonicalList(source.ir ?? source.irId, { allowString: true }),
+    ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef, { allowString: true }),
+    ssaUses: canonicalList(source.ssaUses ?? source.ssaUse, { allowString: true }),
+    evidence: freezeArray(source.evidence),
+  };
 }
 export function mergeSource(...sources) {
   const out = sourceOf();
   for (const s of sources) {
     const x = sourceOf(s);
-    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => String(z) === String(v))) out[k].push(v);
+    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => z === v)) out[k].push(v);
     out.evidence.push(...x.evidence);
   }
   return out;
@@ -87,13 +134,19 @@ function semanticTag(n) {
 // result-def identity in source metadata, which is the authoritative fallback.
 const anonymousLoadIds = new WeakMap();
 let nextAnonymousLoadId = 1;
+function loadSourceIdentity(v) {
+  return typeof v === 'string' ? `s:${JSON.stringify(v)}` : String(v);
+}
+function loadSourceIdentityList(values) {
+  return values.map(loadSourceIdentity).sort().join(',');
+}
 function loadValueIdentity(n) {
   if (n?.memoryVersion != null) return `mem:${scalar(n.memoryVersion)}`;
   if (n?.loadIdentity != null) return `load:${scalar(n.loadIdentity)}`;
   const source = sourceOf(n?.source);
-  if (source.ssaDefs.length) return `ssa:${source.ssaDefs.map(String).sort().join(',')}`;
-  if (source.ir.length) return `ir:${source.ir.map(String).sort().join(',')}`;
-  if (source.rows.length) return `row:${source.rows.map(String).sort().join(',')}`;
+  if (source.ssaDefs.length) return `ssa:${loadSourceIdentityList(source.ssaDefs)}`;
+  if (source.ir.length) return `ir:${loadSourceIdentityList(source.ir)}`;
+  if (source.rows.length) return `row:${loadSourceIdentityList(source.rows)}`;
   let id = anonymousLoadIds.get(n);
   if (id == null) { id = nextAnonymousLoadId++; anonymousLoadIds.set(n, id); }
   return `anon:${id}`;

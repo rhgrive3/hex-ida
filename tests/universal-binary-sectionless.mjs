@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { openBinary, auditBinary, fingerprintImage } from '../js/binary/index.js';
+import { repairElfZeroAddressFunctionSeeds } from '../js/binary/elf.js';
 import { makeElf64Fixture } from './universal-binary.mjs';
 
 export function makeSectionlessElf64Fixture() {
@@ -44,7 +45,7 @@ function issue74To85Regressions() {
 
   const merged=makeElf64Fixture(), mv=new DataView(merged.buffer); mv.setBigUint64(32,0x40n,true); mv.setUint16(56,1,true); mv.setUint32(0x40,2,true); mv.setUint32(0x44,6,true); mv.setBigUint64(0x48,0x1c0n,true); mv.setBigUint64(0x50,0x404000n,true); mv.setBigUint64(0x60,32n,true); mv.setBigUint64(0x68,32n,true); mv.setBigUint64(0x70,8n,true); mv.setUint16(60,7,true); const mp=0x280+6*64; mv.setUint32(mp+4,4,true); mv.setBigUint64(mp+32,0n,true); mv.setUint32(mp+40,3,true); mv.setBigUint64(mp+56,24n,true); const mergedImage=openBinary(merged); assert.ok(mergedImage.metadata.programDynamic);
 
-  const eh=makeElf64Fixture(), ev=new DataView(eh.buffer); ev.setBigUint64(32,0x40n,true); ev.setUint16(56,1,true); ev.setUint32(0x40,0x6474e550,true); ev.setUint32(0x44,4,true); ev.setBigUint64(0x48,0x200n,true); ev.setBigUint64(0x50,0x405000n,true); ev.setBigUint64(0x60,16n,true); ev.setBigUint64(0x68,16n,true); ev.setBigUint64(0x70,4n,true); eh.set([1,0xff,3,3],0x200); ev.setUint32(0x204,1,true); ev.setUint32(0x208,0x401000,true); ev.setUint32(0x20c,0,true); const ehImage=openBinary(eh); assert.equal(ehImage.metadata.ehFrameHeader?.declaredFunctions,1); assert.ok(ehImage.functions.find(f=>f.address===0x401000n)?.sources?.includes('unwind'));
+  const eh=makeElf64Fixture(), ev=new DataView(eh.buffer); ev.setUint16(56,2,true); const ehPh=0x40+56; ev.setUint32(ehPh,0x6474e550,true); ev.setUint32(ehPh+4,4,true); ev.setBigUint64(ehPh+8,0x200n,true); ev.setBigUint64(ehPh+16,0x405000n,true); ev.setBigUint64(ehPh+32,16n,true); ev.setBigUint64(ehPh+40,16n,true); ev.setBigUint64(ehPh+48,4n,true); eh.set([1,0xff,3,3],0x200); ev.setUint32(0x204,1,true); ev.setUint32(0x208,0x401000,true); ev.setUint32(0x20c,0,true); const ehImage=openBinary(eh); assert.equal(ehImage.metadata.ehFrameHeader?.declaredFunctions,1); assert.ok(ehImage.functions.find(f=>f.address===0x401000n)?.sources?.includes('unwind'));
 
   const syment=makeSectionlessElf64Fixture(), syv=new DataView(syment.buffer); syv.setBigUint64(0x200+4*16+8,8n,true); const sy=openBinary(syment); assert.ok(sy.warnings.some(x=>x.includes('DT_SYMENT')));
   const relent=makeSectionlessElf64Fixture(), rv=new DataView(relent.buffer); rv.setBigUint64(0x200+8*16+8,8n,true); const ri=openBinary(relent); assert.ok(ri.warnings.some(x=>x.includes('entry size'))); assert.equal(ri.relocations.length,0);
@@ -86,6 +87,92 @@ function issues2095_2139_2163Regressions() {
   }
 }
 
+function issue566SectionProvenanceRegression() {
+  const makeImage = ({ section = null, sectionIndex = null, symbolSize = 4n, kind = 'function', name = 'zero', type = 3, segmentList = null } = {}) => {
+    const sections = section ? [{ index:2, address:0n, size:8n, perms:{ read:true, execute:true }, ...section }] : [];
+    const segments = segmentList ?? [{ address:0n, size:0x100n, perms:{ read:true, execute:true } }];
+    return {
+      metadata:{ type },
+      sections,
+      segments,
+      functions: [],
+      symbols: [{ defined:true, kind, name, address:0n, size:symbolSize, sectionIndex }],
+      sectionAt(address) {
+        return sections.find((candidate) => address >= candidate.address && address < candidate.address + candidate.size) || null;
+      },
+      segmentAt(address) {
+        return segments.find((candidate) => address >= candidate.address && address < candidate.address + candidate.size) || null;
+      },
+    };
+  };
+
+  let image = makeImage({ section:{ perms:{ read:true, execute:false } }, sectionIndex:2, name:'nonexec0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit non-executable section must not fall back to overlapping PT_LOAD');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'nonalloc0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime non-ALLOC executable section must not seed through overlapping PT_LOAD');
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'unmapped0', segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime executable section without PT_LOAD ownership must fail closed');
+
+  image = makeImage({
+    section:{},
+    sectionIndex:2,
+    symbolSize:4n,
+    name:'partial-segment0',
+    segmentList:[{ address:0n, size:2n, perms:{ read:true, execute:true } }],
+  });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'runtime PT_LOAD must contain the full symbol extent');
+
+  image = makeImage({ section:{ address:1n }, sectionIndex:2, name:'outside-section0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit executable section that excludes address zero must not fall back to overlapping PT_LOAD');
+
+  image = makeImage({ section:{ size:2n }, sectionIndex:2, symbolSize:4n, name:'oversized0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'explicit section extent failure must not fall back to a broader PT_LOAD');
+
+  image = makeImage({ sectionIndex:9, name:'missing-section0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'unresolved explicit section identity must fail closed');
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'good0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1);
+  assert.equal(image.functions[0].name, 'good0');
+  assert.equal(image.functions[0].exactFunctionStart, true);
+
+  image = makeImage({ section:{}, sectionIndex:2, name:'exec-good0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_EXEC allocated executable section inside PT_LOAD must retain exact seed authority');
+  assert.equal(image.functions[0].name, 'exec-good0');
+  assert.equal(image.functions[0].exactFunctionStart, true);
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'exec-nonalloc0', type:2 });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 0, 'ET_EXEC non-ALLOC executable section must fail closed');
+
+  image = makeImage({ section:{}, sectionIndex:2, kind:'indirect-function', name:'resolver0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1);
+  assert.equal(image.functions[0].name, 'resolver0$resolver');
+  assert.equal(image.functions[0].source, 'ifunc-resolver');
+
+  image = makeImage({ section:{ perms:{ read:false, execute:true } }, sectionIndex:2, name:'reloc0', type:1, segmentList:[] });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'ET_REL must retain section-relative executable authority without PT_LOAD');
+  assert.equal(image.functions[0].name, 'reloc0');
+
+  image = makeImage({ sectionIndex:null, name:'sectionless0' });
+  repairElfZeroAddressFunctionSeeds(image);
+  assert.equal(image.functions.length, 1, 'sectionless symbol must retain executable segment fallback');
+  assert.equal(image.functions[0].name, 'sectionless0');
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const image=openBinary(makeSectionlessElf64Fixture());
   assert.equal(image.format,'elf');
@@ -103,5 +190,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   assert.ok(fingerprintImage(image).bytes>0);
   issue74To85Regressions();
   issues2095_2139_2163Regressions();
+  issue566SectionProvenanceRegression();
   console.log('universal-binary-sectionless: PASS');
 }

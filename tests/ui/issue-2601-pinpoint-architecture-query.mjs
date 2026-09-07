@@ -69,9 +69,16 @@ const activeSignal = new AbortController().signal;
 {
   const { app, calls, legacy } = appFor({ architecture:'arm64e', fixedInstructionSize:4, queryValue:null, withQueries:false });
   const analyze = makePinpointAnalyzer(app, region, null, legacy);
+  assert.deepEqual(await analyze(0x1000n, 0x1010n), { legacy:true });
+  assert.equal(calls.startRow, 0);
+  assert.equal(calls.legacy, 1);
   assert.deepEqual(await analyze(0x1004n, 0x1010n), { legacy:true });
   assert.equal(calls.startRow, 1);
-  assert.equal(calls.legacy, 1);
+  assert.equal(calls.legacy, 2);
+  for (const address of [0x1001n, 0x1002n, 0x1003n, 0x1005n]) {
+    assert.equal(await analyze(address, 0x1010n), null);
+  }
+  assert.equal(calls.legacy, 2);
 }
 
 {

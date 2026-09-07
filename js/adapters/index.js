@@ -19,7 +19,14 @@ function registerDelta(before, after) {
   for (const key of Object.keys(after || {})) if (before[key] !== after[key]) out[key] = { before:before[key], after:after[key] };
   return out;
 }
+// Structured EmulatorFault/memory-access codes (js/emu.js, js/runtime/memory.js)
+// whose identity must decide the stop taxonomy instead of the human-readable
+// message (issue #5838).
+const FAULT_CODES = new Set(['unmapped-memory', 'memory-read-failed', 'oob', 'permission', 'mmio-unknown']);
 function classifyStop(result) {
+  const code = result && (result.faultCode != null ? result.faultCode : result.code);
+  const structured = code != null ? String(code) : null;
+  if (structured && FAULT_CODES.has(structured)) return { kind:'fault', code:structured, message:String(result.stopped || '') };
   const reason = String(result && result.stopped || '');
   if (!reason) return { kind:'paused', message:null };
   if (/命令ぶん進んだ|timeout/i.test(reason)) return { kind:'timeout', message:reason };
@@ -58,6 +65,18 @@ function registerSelector(reg) {
   if (typeof reg !== 'string' || !isRegisterName(reg)) throw new DebugAdapterError('invalid-register', 'unsupported register selector');
   return reg;
 }
+function registerWriteValue(reg, value) {
+  let normalized;
+  if (typeof value === 'bigint') normalized = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) normalized = BigInt(value);
+  else if (typeof value === 'string' && (/^[0-9]+$/.test(value) || /^0x[0-9a-f]+$/i.test(value))) normalized = BigInt(value);
+  else throw new DebugAdapterError('invalid-register-value', 'register value must be a non-negative integer scalar');
+  const bits = reg.startsWith('w') ? 32n : 64n;
+  if (normalized < 0n || normalized >= (1n << bits)) {
+    throw new DebugAdapterError('invalid-register-value', `${reg} register value exceeds ${bits}-bit unsigned range`);
+  }
+  return normalized;
+}
 function memoryReadSize(size, fallback) {
   const value = size == null ? fallback : size;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
@@ -77,6 +96,20 @@ function initialMemoryValue(value) {
   if (typeof value === 'string' && /^-?[0-9]+$/.test(value)) return BigInt(value);
   if (typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value)) return BigInt(value);
   throw new DebugAdapterError('invalid-argument', 'initial memory value must be an integer scalar');
+}
+function resumeSignal(value) {
+  if (value == null) return null;
+  if ((typeof value !== 'object' && typeof value !== 'function')
+    || typeof value.addEventListener !== 'function'
+    || typeof value.removeEventListener !== 'function') {
+    throw new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible');
+  }
+  return value;
+}
+function resumeProgressCallback(value) {
+  if (value == null) return null;
+  if (typeof value !== 'function') throw new DebugAdapterError('invalid-argument', 'onProgress must be a function');
+  return value;
 }
 
 function remoteArray(result, key, max, name) {
@@ -131,7 +164,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.memoryMap = null;
     this.breakpoints = new Map();
     this.traceBuffer = new TraceRingBuffer(options.trace || {});
-    this.traceState = { suppressMemory:false };
+    this.traceState = { suppressMemory:false, runMemoryEvents:null };
     this.epoch = 0;
     this.launchGeneration = 0;
     this.initialRegisters = null;
@@ -150,12 +183,12 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
     const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
-      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
+      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? []
     });
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
-    const traceState = { suppressMemory:false };
+    const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
     emu.heap = heapBase;
     let initializing = true;
@@ -163,14 +196,22 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     emu.load = async (addr,size) => {
       const region = memoryMap.assert(addr,size,'read');
       const value = await rawLoad(addr,size);
-      if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) traceBuffer.push({ type:'memory-read', address:BigInt(addr), size, region:region.kind, value });
+      if (!initializing && spec.traceMemoryReads && !traceState.suppressMemory) {
+        const event = { type:'memory-read', address:BigInt(addr), size, region:region.kind, value };
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+      }
       return value;
     };
     emu.store = async (addr,size,value) => {
       const region = memoryMap.assert(addr,size,'write');
       const before = await rawLoad(addr,size);
       await rawStore(addr,size,value);
-      if (!initializing && !traceState.suppressMemory) traceBuffer.push({ type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) });
+      if (!initializing && !traceState.suppressMemory) {
+        const event = { type:'memory-write', address:BigInt(addr), size, region:region.kind, before, after:BigInt.asUintN(size * 8, BigInt(value)) };
+        const accepted = traceBuffer.push(event);
+        if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
+      }
     };
     await sandbox.setup(address, {
       args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
@@ -207,7 +248,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.activeRun = null;
     }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
-    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false }; this.traceCursor = 0; this.branchCursor = 0;
+    this.traceBuffer = new TraceRingBuffer(this.options.trace || {}); this.traceState = { suppressMemory:false, runMemoryEvents:null }; this.traceCursor = 0; this.branchCursor = 0;
     return super.disconnect();
   }
   async pause() {
@@ -225,7 +266,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
     if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume' };
+    const signal = resumeSignal(options.signal);
+    const onProgress = resumeProgressCallback(options.onProgress);
+    const traceState = this.traceState;
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(signal && signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
+    traceState.runMemoryEvents = run.memoryEvents;
     this.activeRun = run;
     this.cancelled = run.cancelled;
     if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
@@ -237,9 +282,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       run.sandbox.emulator.stopped = 'cancelled';
       if (this.activeRun === run) this.cancelled = true;
     };
-    if (options.signal && !run.cancelled) {
-      options.signal.addEventListener('abort', onAbort, { once:true });
-      if (options.signal.aborted) onAbort();
+    if (signal && !run.cancelled) {
+      signal.addEventListener('abort', onAbort, { once:true });
+      if (signal.aborted) onAbort();
     }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
@@ -248,19 +293,20 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
-        if (options.onProgress) options.onProgress(n);
+        if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
       }
-      this.lastResult = this._normalizeResult(result); return this.lastResult;
+      this.lastResult = this._normalizeResult(result, run.memoryEvents); return this.lastResult;
     } finally {
+      if (traceState.runMemoryEvents === run.memoryEvents) traceState.runMemoryEvents = null;
       if (this.activeRun === run) {
         this.activeRun = null;
         this.running = false;
         this.cancelled = run.cancelled;
       }
-      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
   }
   async stepInto() {
@@ -286,7 +332,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
       for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
       this.traceCursor = (sandbox.emulator.trace || []).length;
-      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
+      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop(raw) };
     } finally {
       if (this.activeRun === run) {
         this.activeRun = null;
@@ -322,7 +368,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async writeRegister(reg,value) {
     this.require('writeRegister');
     const name = registerSelector(reg);
-    const sandbox = this.ensureSandbox(); const v = BigInt(value);
+    const sandbox = this.ensureSandbox(); const v = registerWriteValue(name, value);
     if (name === 'pc') sandbox.emulator.pc = asAddress(v,'pc'); else sandbox.setRegister(name,v);
     return { register:name, value:name === 'pc' ? sandbox.emulator.pc : sandbox.getRegister(name) };
   }
@@ -338,14 +384,30 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async writeMemory(address,bytes) {
     this.require('writeMemory');
     const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const traceState = this.traceState;
+    const WRITE_LIMIT = 256*1024;
     let data;
     if (bytes instanceof Uint8Array) data = bytes;
     else {
-      const source = Array.from(bytes || []);
-      for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
-      data = Uint8Array.from(source);
+      // Bound the input consumption to the limit before materializing (#5750):
+      // Array.from would enumerate an arbitrary Iterable to the end, letting
+      // huge/infinite iterators bypass the "bounded remote write" contract.
+      const iterator = bytes?.[Symbol.iterator];
+      if (typeof iterator === 'function' && typeof bytes !== 'string') {
+        data = new Uint8Array(WRITE_LIMIT + 1);
+        let n = 0;
+        for (const byte of bytes) {
+          if (n >= WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+          if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
+          data[n++] = byte;
+        }
+        data = data.subarray(0, n);
+      } else {
+        const source = Array.from(bytes || []);
+        for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
+        data = Uint8Array.from(source);
+      }
     }
-    if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+    if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
     const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
@@ -368,13 +430,15 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async trace(options = {}) { if (options.run) await this.resume(options); return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 }); }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
-  _normalizeResult(result) {
+  _normalizeResult(result, memoryEvents = []) {
     const fullTrace = result.trace || [];
     const trace = fullTrace.slice(this.traceCursor); this.traceCursor = fullTrace.length;
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
+    const loads = memoryEvents.filter((e) => e.type === 'memory-read');
+    const stores = memoryEvents.filter((e) => e.type === 'memory-write');
     for (const e of trace) {
-      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      if (e?.type === 'call') continue;
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
@@ -385,8 +449,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const e of returns) this.traceBuffer.push(e);
     const finalRegisters = cloneRegisters(this.sandbox.emulator);
     const traceSnapshot = this.traceBuffer.snapshot();
-    const loads = traceSnapshot.events.filter((e) => e.type === 'memory-read');
-    const stores = traceSnapshot.events.filter((e) => e.type === 'memory-write');
     const sourceTrace = result.traceMeta || {};
     const sourceDropped = Number.isSafeInteger(Number(sourceTrace.dropped)) && Number(sourceTrace.dropped) > 0 ? Number(sourceTrace.dropped) : 0;
     const sourceTruncated = sourceTrace.truncated === true || sourceDropped > 0;
@@ -445,7 +507,12 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) this.nextEpoch();
     return { disconnected:true };
   }
-  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
+  setEpoch(epoch) {
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 0) return this.epoch;
+    this.protocol.setEpoch(epoch);
+    this.epoch = epoch;
+    return this.epoch;
+  }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
@@ -458,12 +525,15 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})}
+  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
+  }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
-  writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
+  writeRegister(reg,value,threadId){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
-  async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
+  async writeMemory(address,bytes){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
+    data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
+    if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
@@ -475,14 +545,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
 }
 export class FridaCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
 }
 
 export class ReplayAdapter extends DebugAdapter {
-  constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
+  constructor(recording = {}, options = {}) { super({ id:options.id??'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return remoteRegisters(this.recording.registers||{})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}

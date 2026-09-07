@@ -72,7 +72,7 @@ export function createHexProject(input = {}) {
       investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
-    navigation: normalizeNavigation(input.navigation || {}),
+    navigation: normalizeNavigation(input.navigation ?? {}),
   };
   project.analysis.cacheReferences = sanitizeCacheReferences(project);
   return project;
@@ -236,7 +236,7 @@ export function normalizeHexProjectV1(project) {
         : {},
       cacheReferences: list(project.analysis?.cacheReferences, 'analysis.cacheReferences'),
     },
-    navigation: normalizeNavigation(project.navigation || {}),
+    navigation: normalizeNavigation(project.navigation ?? {}),
   };
 
   normalized.analysis.cacheReferences = sanitizeCacheReferences(normalized);

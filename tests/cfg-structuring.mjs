@@ -58,6 +58,44 @@ const nonTerm = analyzeGraph([[1, 2], [1], []], 0);
 assert(nonTerm.immediatePostDominators[0] == null,
   'post-dominator invented across a non-terminating path');
 
+// #6310: a shared prefix must remain eligible even when a later branch can
+// either exit normally or enter a closed non-terminating SCC.
+const mixedTermination = analyzeGraph([
+  [1],
+  [2, 3],
+  [],
+  [3],
+], 0);
+assert(mixedTermination.immediatePostDominators[0] === 1,
+  'shared prefix lost its immediate post-dominator');
+assert(mixedTermination.postDominators[0].has(1),
+  'shared prefix lost a valid post-dominator');
+assert(!mixedTermination.postDominators[1].has(2),
+  'normal exit became a false post-dominator across a non-terminating branch');
+assert([...mixedTermination.nonTerminatingReachable].sort((a, b) => a - b).join(',') === '0,1,3',
+  'non-terminating reachability reporting changed');
+
+const pureInfinite = analyzeGraph([[0]], 0);
+assert(pureInfinite.immediatePostDominators[0] == null,
+  'pure infinite loop gained a synthetic immediate post-dominator');
+assert([...pureInfinite.postDominators[0]].join(',') === '0',
+  'pure infinite loop gained a false original-node post-dominator');
+
+const multipleNonTerminatingSinks = analyzeGraph([
+  [1],
+  [2],
+  [3, 4, 5],
+  [],
+  [4],
+  [5],
+], 0);
+assert(multipleNonTerminatingSinks.immediatePostDominators[0] === 1,
+  'first shared prefix disappeared with multiple non-terminating sinks');
+assert(multipleNonTerminatingSinks.immediatePostDominators[1] === 2,
+  'second shared prefix disappeared with multiple non-terminating sinks');
+assert(multipleNonTerminatingSinks.immediatePostDominators[2] == null,
+  'mixed normal/non-terminating split gained a false immediate post-dominator');
+
 // Indirect branches are not statically connected to their jump-table targets.
 // The decompiler must still preserve both the `br` itself and every block in
 // the function range instead of silently dropping the disconnected chunk.

@@ -126,7 +126,8 @@ export function featureLabelOf(id) {
 
 /** 文字列 1 本が、どの機能の手がかりになるか。当てはまらなければ空。 */
 export function classifyString(text) {
-  const s = String(text || '');
+  if (typeof text !== 'string') return [];
+  const s = text;
   if (s.length < 3) return [];
   const out = [];
   for (const f of FEATURES) {
@@ -139,6 +140,7 @@ export function classifyString(text) {
 export function detectEngine(strings) {
   for (const e of ENGINES) {
     for (const s of strings) {
+      if (typeof s?.text !== 'string') continue;
       if (e.re.test(s.text)) {
         return { id: e.id, note: pick(e.ja, e.en), sample: s.text, addr: s.addr };
       }
@@ -256,6 +258,7 @@ export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
     const s = strings[i];
     if (!detectedEngine) {
       for (const e of ENGINES) {
+        if (typeof s?.text !== 'string') continue;
         if (e.re.test(s.text)) {
           detectedEngine = { id: e.id, note: pick(e.ja, e.en), sample: s.text, addr: s.addr };
           break;

@@ -11,6 +11,19 @@ function firstDefined(value, keys) {
   return undefined;
 }
 
+function firstNonNull(sources, key) {
+  for (const source of sources) if (source?.[key] != null) return source[key];
+  return undefined;
+}
+
+function safeCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function safeCoverage(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
 export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY_LIMIT, stringLimit = DEFAULT_STRING_LIMIT, objectLimit = 64 } = {}) {
   if (depth > 6) return '[detailRef]';
   if (typeof value === 'string') return value.length > stringLimit ? `${value.slice(0, stringLimit)}…` : value;
@@ -30,15 +43,25 @@ export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY
 export function completenessOf(result) {
   const explicit = result?.completeness && typeof result.completeness === 'object' ? result.completeness : null;
   const rows = arrayOf(result, ['results', 'functions', 'sites', 'updates', 'nodes', 'paths', 'blocks', 'callers', 'callees', 'observations', 'candidates']);
-  const returned = Number(explicit?.returned ?? result?.returned ?? rows.length ?? 0);
-  const totalValue = explicit?.total ?? result?.total;
-  const total = totalValue == null ? (result?.truncated ? null : returned) : Math.max(0, Number(totalValue) || 0);
-  const complete = explicit?.complete ?? result?.complete ?? !Boolean(result?.truncated);
-  const coverageValue = explicit?.coverage ?? result?.coverage;
-  const coverage = Number.isFinite(Number(coverageValue)) ? Math.max(0, Math.min(1, Number(coverageValue))) :
+  const sources = [explicit, result];
+  const returnedValue = firstNonNull(sources, 'returned');
+  const totalValue = firstNonNull(sources, 'total');
+  const completeValue = firstNonNull(sources, 'complete');
+  const coverageValue = firstNonNull(sources, 'coverage');
+  const truncatedValue = firstNonNull([result], 'truncated');
+  const malformed = (returnedValue !== undefined && safeCount(returnedValue) == null)
+    || (totalValue !== undefined && safeCount(totalValue) == null)
+    || (completeValue !== undefined && typeof completeValue !== 'boolean')
+    || (coverageValue !== undefined && safeCoverage(coverageValue) == null)
+    || (truncatedValue !== undefined && typeof truncatedValue !== 'boolean');
+  if (malformed) return { complete: false, returned: 0, total: null, coverage: null, reason: 'malformed-completeness' };
+  const returned = returnedValue === undefined ? rows.length : returnedValue;
+  const total = totalValue === undefined ? (truncatedValue === true ? null : returned) : totalValue;
+  const complete = completeValue === undefined ? truncatedValue !== true : completeValue;
+  const coverage = coverageValue !== undefined ? safeCoverage(coverageValue) :
     (total != null && total > 0 ? Math.min(1, returned / total) : (complete ? 1 : null));
   const reason = explicit?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
-  return { complete: Boolean(complete), returned: Math.max(0, Number.isFinite(returned) ? returned : 0), total, coverage, reason };
+  return { complete, returned, total, coverage, reason };
 }
 
 function withEnvelope(data, meta = {}) {

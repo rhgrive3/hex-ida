@@ -133,7 +133,7 @@ function budgetOf(opts) {
     maxFunctions: explicitLimit(opts && opts.maxFunctions, 48, 0),
     maxDisassembly: explicitLimit(opts && opts.maxDisassembly, 50000, 0),
     timeoutMs: explicitLimit(opts && opts.timeoutMs, 10000, 1),
-    isCancelled: opts && opts.isCancelled || (() => false),
+    isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
   };
 }
 
@@ -141,7 +141,7 @@ function normalizeToolRequest(step) {
   if (!step || typeof step !== 'object') return null;
   const tool = step.tool || step.name;
   if (typeof tool !== 'string' || !tool) return null;
-  let args = step.args || step.arguments || [];
+  let args = step.args ?? step.arguments ?? [];
   if (!Array.isArray(args)) args = [args];
   return { tool, args };
 }

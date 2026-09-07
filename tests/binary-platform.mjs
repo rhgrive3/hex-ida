@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { BinaryImage, ByteView, auditBinary, openBinary, openBinarySource } from '../js/binary/index.js';
+import { functionSeed, mergeFunctionSeeds } from '../js/binary/model.js';
 import { makeElf64Fixture, makePe64Fixture } from './universal-binary.mjs';
 import { makeSectionlessElf64Fixture } from './universal-binary-sectionless.mjs';
 import { parseEhFrameHeader } from '../js/binary/elf-unwind.js';
@@ -46,6 +47,26 @@ function issue86To97Regressions(){
   const noEntry=makePe64Fixture(), nev=new DataView(noEntry.buffer); nev.setUint32(0x84+20+16,0,true); const nei=openBinary(noEntry); assert.equal(nei.entrypoint,null); assert.equal(nei.functions.some(f=>f.source==='entrypoint'),false);
 }
 
+function issue3598FunctionSeedConfidenceRegressions() {
+  for (const confidence of [['1'], true, false, '0.8', { valueOf() { return 1; } }]) {
+    assert.equal(functionSeed(0x1000n, { confidence }).confidence, 0.5);
+  }
+  assert.equal(functionSeed(0x1000n, { confidence: 0.8 }).confidence, 0.8);
+  assert.equal(functionSeed(0x1000n, { confidence: 2 }).confidence, 1);
+  assert.equal(functionSeed(0x1000n, { confidence: -1 }).confidence, 0);
+
+  const merged = mergeFunctionSeeds([
+    { address: 0x1000n, source: 'symbol', name: 'good', confidence: 0.9 },
+    { address: 0x1000n, source: 'symbol', name: 'malformed', confidence: ['1'] },
+  ]);
+  assert.equal(merged[0].name, 'good');
+  assert.equal(merged[0].confidence, 0.9);
+
+  const extent = functionSeed(0x2000n, {
+    source: 'symbol', confidence: 0.75, size: 4n, extentConfidence: ['1'],
+  });
+  assert.equal(extent.extentConfidence, 0.5);
+}
 
 function peUnwindFragmentRegressions() {
   const makeImage = () => {
@@ -73,10 +94,11 @@ function peUnwindFragmentRegressions() {
     view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);view.setUint32(0x204,0,true);
     view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);view.setUint32(0x214,0,true);
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:16},image,0xaa64);
-    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
+    // ARM64 .xdata bit 22 is the low bit of Epilog Count, not a fragment flag.
+    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n,0x10002000n]);
     assert.equal(image.functions[0].size,64n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].size,32n);
+    assert.equal(image.functions[1].size,32n);
+    assert.deepEqual(image.metadata.exceptionDirectory.fragments,[]);
   }
   {
     const {bytes,view,image}=makeImage();
@@ -109,4 +131,5 @@ function peUnwindFragmentRegressions() {
 }
 peUnwindFragmentRegressions();
 issue86To97Regressions();
+issue3598FunctionSeedConfidenceRegressions();
 console.log('binary-platform: PASS');

@@ -38,11 +38,39 @@
   const OPERAND_REG = 1;
   const OPERAND_IMM = 2;
   const OPERAND_MEM = 3;
+  const DECODE_MODES = new Set(['rv64im', 'rv64imc']);
 
   function u8(M, pointer) { return M.getValue(pointer, 'i8') & 0xff; }
   function u16(M, pointer) { return M.getValue(pointer, 'i16') & 0xffff; }
   function u32(M, pointer) { return M.getValue(pointer, 'i32') >>> 0; }
   function i64(M, pointer) { return BigInt(M.getValue(pointer, 'i64')); }
+  function u64FromI64(M, pointer) { return BigInt.asUintN(64, i64(M, pointer)); }
+
+  function requiredString(value, code) {
+    if (typeof value !== 'string') throw new TypeError(code);
+    const text = value.trim();
+    if (!text) throw new TypeError(code);
+    return text;
+  }
+
+  function decodeMode(value) {
+    if (value == null) return 'rv64imc';
+    const mode = requiredString(value, 'riscv64-decoder-invalid-mode');
+    if (!DECODE_MODES.has(mode)) throw new TypeError('riscv64-decoder-unsupported-mode');
+    return mode;
+  }
+
+  function optionalIdentity(value, code) {
+    return value == null ? null : requiredString(value, code);
+  }
+
+  function optionalInstructionAlignment(value) {
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+      throw new TypeError('riscv64-decoder-invalid-instruction-alignment');
+    }
+    return value;
+  }
 
   function registerName(M, handle, id) {
     if (!id) return null;
@@ -99,10 +127,14 @@
   function parseInstruction(M, handle, instructionPointer, options = {}) {
     const size = u16(M, instructionPointer + ABI.size);
     if (size !== 2 && size !== 4) throw new Error(`riscv64-decoder-invalid-instruction-length:${size}`);
-    const address = i64(M, instructionPointer + 8);
-    const expected = BigInt(options.address);
+    const address = u64FromI64(M, instructionPointer + 8);
+    const expected = BigInt.asUintN(64, BigInt(options.address));
     if (address !== expected) throw new Error(`riscv64-decoder-address-mismatch:${address}:${expected}`);
     const rawBytes = Uint8Array.from({ length: size }, (_unused, index) => u8(M, instructionPointer + ABI.instructionBytes + index));
+    const mode = decodeMode(options.mode);
+    const isaIdentity = optionalIdentity(options.isaIdentity, 'riscv64-decoder-invalid-isa-identity');
+    const isaEvidence = optionalIdentity(options.isaEvidence, 'riscv64-decoder-invalid-isa-evidence');
+    const instructionAlignment = optionalInstructionAlignment(options.instructionAlignment);
     return Object.freeze({
       address,
       size,
@@ -111,10 +143,10 @@
       mnemonic: M.UTF8ToString(instructionPointer + ABI.mnemonic),
       opStr: M.UTF8ToString(instructionPointer + ABI.opStr),
       architecture: 'riscv64',
-      mode: String(options.mode || 'rv64imc'),
-      ...(options.isaIdentity == null ? {} : { isaIdentity:String(options.isaIdentity) }),
-      ...(options.isaEvidence == null ? {} : { isaEvidence:String(options.isaEvidence) }),
-      ...(options.instructionAlignment == null ? {} : { instructionAlignment:Number(options.instructionAlignment) }),
+      mode,
+      ...(isaIdentity == null ? {} : { isaIdentity }),
+      ...(isaEvidence == null ? {} : { isaEvidence }),
+      ...(instructionAlignment == null ? {} : { instructionAlignment }),
       ...(options.compressedInstructions == null ? {} : { compressedInstructions:options.compressedInstructions === true }),
       decoderSemanticVersion: 'capstone-5-riscv64-word-exact-v1',
       capstoneInstructionId: u32(M, instructionPointer),

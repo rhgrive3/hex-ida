@@ -12,12 +12,18 @@ on:
       - 'js/userscript/dev/**'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: agent-loop-resilience-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   resilience:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

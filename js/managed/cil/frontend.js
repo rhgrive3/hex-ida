@@ -1,7 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
-import { createManagedValidationReport } from '../shared/validation.js';
 import { liftCilMethod } from './lifter.js';
+import { validateCilEffectFunction } from './validation.js';
 import { parseCil, probeCil } from './parser.js';
 
 export class CilFrontend {
@@ -59,18 +59,7 @@ export class CilFrontend {
   }
 
   async validateMethod(decoded, context = {}) {
-    const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
-    const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const status = hasUnknowns ? 'partial' : hasPartials ? 'partial' : 'valid';
-    return createManagedValidationReport({
-      targetId: decoded.methodId,
-      status,
-      completeness: {
-        structural: 'complete',
-        specValidation: 'valid',
-        semanticEffect: status === 'valid' ? 'complete' : 'partial',
-      },
-    });
+    return validateCilEffectFunction(decoded, context);
   }
 
   async liftMethod(decoded, validation, context = {}) {

@@ -34,10 +34,74 @@ function nonNegativeSafeInteger(value, fallback = 0) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+// Snapshot identity generations are authority-bearing: an explicitly present
+// invalid value must never collapse into another valid generation (e.g. 0).
+// Only a missing value falls back to the default.
+function identityGeneration(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+
 function positiveSafeIntegerScalar(value) {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
   if (typeof value === 'bigint') return value > 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
   return null;
+}
+
+function abortError(signal, fallback = 'Analysis query aborted') {
+  const reason = signal?.reason;
+  let message = fallback;
+  if (reason instanceof Error) {
+    try { message = reason.message || String(reason) || fallback; } catch { /* use fallback */ }
+  } else if (reason != null) {
+    try { message = String(reason) || fallback; } catch { /* use fallback */ }
+  }
+  // Never mutate signal.reason: it can be frozen, shared, or otherwise
+  // caller-owned. A fresh normalized error also prevents one consumer's
+  // cancellation metadata from leaking into another consumer.
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function requestWithSignal(request, signal) {
+  if (!request || typeof request.then !== 'function') {
+    throwIfAborted(signal);
+    return Promise.resolve(request);
+  }
+  const task = Promise.resolve(request);
+  // A producer can abort synchronously while creating its request. Once a
+  // cancelable request exists, observe it and cancel it before normalizing the
+  // consumer abort; the pre-abort search check still prevents new work.
+  if (signal?.aborted) {
+    try { request.cancel?.(); } catch { /* best effort */ }
+    void task.catch(() => {});
+    throw abortError(signal);
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request.cancel?.(); } catch { /* best effort */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
 }
 
 function pageOf(page = {}) {
@@ -49,17 +113,52 @@ function pageOf(page = {}) {
   };
 }
 
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
+
+function nextPageOffset(offset, advance) {
+  const next = offset + Math.max(1, advance);
+  return Number.isSafeInteger(next) && next > offset ? next : null;
+}
+
+function unsupportedPage(id, page, reason) {
+  const { offset, limit } = pageOf(page);
+  return {
+    value:[],
+    functionId:id,
+    page:{ offset, limit, returned:0, total:0, next:null },
+    status:{ completeness:'unsupported', reason, paged:true },
+  };
+}
 function unsupported(id, reason) {
   return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
 }
 
+const COMPLETENESS_ORDER = Object.freeze({
+  complete: 0,
+  partial: 1,
+  truncated: 2,
+  unsupported: 3,
+});
+
 function completenessOf(value, fallback = 'complete') {
-  if (value?.status?.completeness) return value.status.completeness;
-  if (value?.unsupported === true) return 'unsupported';
-  if (value?.truncated === true) return 'truncated';
-  if (value?.completeness?.complete === false || value?.complete === false || value?.partial === true) return 'partial';
-  if (typeof value?.completeness === 'string') return value.completeness;
-  return fallback;
+  const evidence = [];
+  const statusCompleteness = value?.status?.completeness;
+  const topLevelCompleteness = value?.completeness;
+  if (typeof statusCompleteness === 'string') evidence.push(statusCompleteness);
+  if (typeof topLevelCompleteness === 'string') evidence.push(topLevelCompleteness);
+  if (value?.unsupported === true) evidence.push('unsupported');
+  if (value?.truncated === true) evidence.push('truncated');
+  if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
+
+  const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  if (hasInvalidString) recognized.push('partial');
+  if (recognized.length === 0) return fallback;
+  return recognized.reduce((strongest, item) => (
+    COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
+  ));
 }
 
 function wrap(value, completeness = null, status = {}) {
@@ -90,9 +189,14 @@ function artifactVersions(app) {
 }
 
 function currentInfo(app) { return storeValue(app, 'fileInfo'); }
+function validSliceIndex(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return -1;
+}
 function currentSlice(app) {
-  const index = Number(storeValue(app, 'sliceIndex') ?? -1);
-  return index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
+  const index = validSliceIndex(storeValue(app, 'sliceIndex'));
+  return index !== null && index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
 }
 function architectureOf(app) {
   const value = storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '';
@@ -232,14 +336,18 @@ export function createAppAnalysisQueryAdapter(app) {
   const abiFor = async (architecture) => {
     const descriptor = descriptorMetadata(app);
     const metadata = await metadataSummary();
-    const explicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
-    const bits = Number(descriptor.bits ?? metadata?.summary?.bits ?? 64);
+    const rawExplicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
+    const explicit = typeof rawExplicit === 'string' && rawExplicit.trim() ? rawExplicit.trim() : null;
+    const rawBits = descriptor.bits ?? metadata?.summary?.bits;
+    const bits = rawBits == null ? 64 : (typeof rawBits === 'number' && Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : null);
     let platform = normalizePlatform(descriptor.platform ?? metadata?.summary?.platform);
     if (architecture === 'riscv64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'riscv-explicit-abi-invalid' };
       if (explicit) {
-        const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:String(explicit) });
+        const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:explicit });
         return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unix', evidence:'explicit' } : { supported:false, reason:'riscv-explicit-abi-unsupported' };
       }
+      if (bits == null) return { supported:false, reason:'riscv-bits-invalid' };
       const flags = metadata?.metadata?.flags;
       if (flags == null) return { supported:false, reason:'riscv-elf-flags-unavailable' };
       const selected = riscvAbiFromElfFlags(flags, { bits });
@@ -248,8 +356,9 @@ export function createAppAnalysisQueryAdapter(app) {
         : { supported:false, reason:selected?.reason || 'riscv-abi-unproven' };
     }
     if (architecture === 'x86_64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'x86-64-explicit-abi-invalid' };
       platform ??= formatOf(app) === 'pe' ? 'windows' : formatOf(app) === 'elf' ? 'unix' : null;
-      const plugin = resolveABIPlugin({ architecture, platform, ...(explicit ? { abiId:String(explicit) } : {}) });
+      const plugin = resolveABIPlugin({ architecture, platform, ...(explicit ? { abiId:explicit } : {}) });
       return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unknown', evidence:explicit ? 'explicit' : 'format-platform' } : { supported:false, reason:'x86-64-abi-unproven' };
     }
     return { supported:false, reason:`semantic-function-unsupported-architecture:${architecture || 'unknown'}` };
@@ -289,7 +398,12 @@ export function createAppAnalysisQueryAdapter(app) {
     const length = Number(budgeted ? BigInt(X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) : span);
     const abi = await abiFor(architecture);
     if (!abi.supported) return unsupported(id, abi.reason);
-    const sliceIndex = Math.max(0, Number(storeValue(app, 'sliceIndex') ?? 0));
+    const rawSliceIndex = storeValue(app, 'sliceIndex');
+    const validatedSlice = validSliceIndex(rawSliceIndex);
+    if (rawSliceIndex != null && (validatedSlice === null || validatedSlice < 0)) {
+      return unsupported(id, 'invalid-slice-index');
+    }
+    const sliceIndex = validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : 0;
     const requestedCompleteness = budgeted || range.complete === false ? 'partial' : 'complete';
     const canonical = await app.backend.analyzeSemanticFunction({
       address:range.start, length, architecture, abiId:abi.abiId, platform:abi.platform, sliceIndex,
@@ -343,7 +457,7 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const projectRevision = project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0;
       const analysisEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? 0;
-      return { binaryId:binaryId.trim(), projectRevision:nonNegativeSafeInteger(projectRevision, 0), artifactVersions:artifactVersions(app), analysisEpoch:nonNegativeSafeInteger(analysisEpoch, 0) };
+      return { binaryId:binaryId.trim(), projectRevision:identityGeneration(projectRevision, 'analysis-query-project-revision-invalid'), artifactVersions:artifactVersions(app), analysisEpoch:identityGeneration(analysisEpoch, 'analysis-query-epoch-invalid') };
     },
 
     async binaryInfo(snapshot) {
@@ -353,7 +467,10 @@ export function createAppAnalysisQueryAdapter(app) {
         binaryId:snapshot.binaryId, name:info?.name ?? storeValue(app, 'file')?.name ?? null,
         size:info?.size ?? storeValue(app, 'file')?.size ?? null,
         formatId:formatOf(app) || (info?.format ?? null), architecture:architectureOf(app) || null,
-        sliceIndex:Number(storeValue(app, 'sliceIndex') ?? -1),
+        sliceIndex:(() => {
+          const validatedSlice = validSliceIndex(storeValue(app, 'sliceIndex'));
+          return validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : -1;
+        })(),
         capability:storeValue(app, 'capability') ?? slice?.capability ?? info?.capability ?? null,
         regions:(storeValue(app, 'regions') || []).map((r) => ({ id:r.id, name:r.name ?? null, section:r.section ?? null, vmAddr:r.vmAddr, size:r.size, exec:r.exec === true, read:r.read === true, write:r.write === true })),
       };
@@ -366,7 +483,11 @@ export function createAppAnalysisQueryAdapter(app) {
       const rawNeedle = query.text ?? query.name ?? '';
       if (typeof rawNeedle !== 'string') return unsupported(null, 'function-query-text-invalid');
       const needle = rawNeedle.trim().toLowerCase();
+      const hasAddress = Object.prototype.hasOwnProperty.call(query, 'address') && query.address != null;
       const exactAddress = addressOf(query.address);
+      if (hasAddress && (exactAddress == null || exactAddress < 0n)) {
+        return unsupported(null, 'function-query-address-invalid');
+      }
       const { offset, limit } = pageOf(page);
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
       const indexComplete = symbols.functionStartsComplete === true && count === symbols.funcs.length;
@@ -428,11 +549,19 @@ export function createAppAnalysisQueryAdapter(app) {
       const request = range && typeof range === 'object' ? range : { functionId:range };
       let start = addressOf(request.start ?? request.address);
       let end = addressOf(request.end);
+      // A functionId projection must inherit the function-range completeness:
+      // `ok:true` means a safe bounded window exists, not that the whole
+      // function body was proven (#5996). An explicit caller-supplied
+      // {start,end} range keeps the read-completeness contract of that range.
+      let rangeComplete = true;
+      let rangeReason = null;
       if (start == null && request.functionId != null) {
         const fnRange = rangeFor(app, request.functionId);
         if (!fnRange.ok) return unsupported(request.functionId, fnRange.reason);
         start = fnRange.start;
         end = fnRange.end;
+        rangeComplete = fnRange.complete !== false;
+        rangeReason = fnRange.reason ?? null;
       }
       if (start == null) return unsupported(null, 'instruction-range-start-required');
       const rawLength = request.length ?? (end == null ? 4096 : end - start);
@@ -444,7 +573,8 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          return paged(rows, page, truncated ? 'truncated' : 'complete', { reason:truncated ? 'instruction-read-budget' : null });
+          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
@@ -475,7 +605,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async callers(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.callersOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -484,16 +614,42 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.callersOf(address, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      // MAX_PAGE bounds a single page (via pageOf), never the cumulative
+      // offset: the producer only serves a leading prefix, so reaching an
+      // offset beyond MAX_PAGE requires fetching the full prefix.
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.callersOf(address, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
+      const queryLimited = source?.queryLimited === true;
+      const result = paged(
+        sourceRows,
+        page,
+        source?.complete === false || queryLimited ? 'partial' : 'complete',
+        { reason:source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) },
+      );
+      if (source?.queryLimited === true && result.page.next == null) {
+        // A capped producer may expose one empty boundary page at exactly its
+        // current prefix length. Advance once so offset=5000 does not repeat
+        // itself, but stop when the producer's entire prefix is already below
+        // the requested offset: there is no evidence for another page and an
+        // unconditional cursor would create an infinite empty continuation.
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
       return result;
     },
 
     async callees(_snapshot, id, page = {}, options = {}) {
       const range = rangeFor(app, id);
       if (!range.ok || typeof app?.ensureProgram !== 'function') return unsupported(id, range.reason || 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.calleesOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -503,7 +659,11 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const { offset, limit } = pageOf(page);
       const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      // The scan only covers the validated range; an unproven function extent
+      // (analysis window or region clip) keeps the query partial (#5991).
+      const rangeIncomplete = range.complete === false;
+      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
+      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
       return result;
     },
@@ -511,7 +671,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -528,7 +688,11 @@ export function createAppAnalysisQueryAdapter(app) {
         ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const complete = refs.complete !== false && calls.complete !== false;
-      return paged(rows, page, complete ? 'complete' : 'partial', { reason:refs.incompleteReason ?? calls.incompleteReason ?? null });
+      const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, complete ? 'complete' : 'partial', {
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        ...(queryLimited ? { truncationReason:'query-limit' } : {}),
+      });
     },
 
     async types(_snapshot, scope, _page = {}, options = {}) {
@@ -543,13 +707,25 @@ export function createAppAnalysisQueryAdapter(app) {
     },
 
     async evidence(_snapshot, query = {}, page = {}, options = {}) {
-      if (typeof app?.getEvidence === 'function') {
-        const value = await app.getEvidence(query, options);
-        return value == null ? unsupported(query?.functionId ?? null, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
-      }
       const rawTarget = query?.functionId ?? query?.address ?? null;
       const targetAddress = addressOf(rawTarget);
-      const targetId = targetAddress != null ? functionId(targetAddress) : (rawTarget != null ? String(rawTarget) : null);
+      // Only a canonical address or an explicitly allowed string identity may
+      // select evidence. A structured value must never coerce through String()
+      // into another function's id, and an explicitly invalid target fails
+      // closed instead of scanning unfiltered or loading garbage.
+      const targetId = targetAddress != null ? functionId(targetAddress)
+        : (typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : null);
+      if (rawTarget != null && targetAddress == null && targetId == null) {
+        return unsupported(rawTarget, 'evidence-target-invalid');
+      }
+      if (typeof app?.getEvidence === 'function') {
+        const providerQuery = { ...query };
+        delete providerQuery.functionId;
+        delete providerQuery.address;
+        if (targetId != null) providerQuery.functionId = targetId;
+        const value = await app.getEvidence(providerQuery, options);
+        return value == null ? unsupported(targetId, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
+      }
 
       const rows = [];
       const deep = app?.autoReport?.report?.deep || [];
@@ -558,7 +734,8 @@ export function createAppAnalysisQueryAdapter(app) {
       } else {
         for (const item of deep) {
           const itemAddr = addressOf(item?.functionId ?? item?.address ?? item?.addr ?? item?.startAddress);
-          const itemFnId = item?.functionId != null ? String(item.functionId) : (itemAddr != null ? functionId(itemAddr) : null);
+          const itemFnId = typeof item?.functionId === 'string' && item.functionId.trim() ? item.functionId.trim()
+            : (itemAddr != null ? functionId(itemAddr) : null);
           if ((targetAddress != null && itemAddr != null && itemAddr === targetAddress) ||
               (targetId != null && itemFnId === targetId)) {
             rows.push(item);
@@ -608,7 +785,9 @@ export function createAppAnalysisQueryAdapter(app) {
         return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
       }
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
-      const value = await app.backend.search(query, options.onProgress);
+      throwIfAborted(options.signal);
+      const request = app.backend.search(query, options.onProgress);
+      const value = await requestWithSignal(request, options.signal);
       return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 

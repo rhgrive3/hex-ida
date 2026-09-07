@@ -71,10 +71,12 @@ assert.match(worker,/active\.has\(requestKey\)/); assert.match(worker,/candidate
  const blob=new BlobByteSource(new Blob([Uint8Array.of(1,2,3)])); const pre=new AbortController(); pre.abort();
  await assert.rejects(()=>blob.readExactly(0n,1,{signal:pre.signal}),(e)=>e?.name==='AbortError');
 
- let backendResolve, backendReads=0;
- const shared={size:16n,maxReadLength:16,async read(_o,n,opts){backendReads++; assert.equal(opts?.signal,undefined); return new Promise((resolve)=>{backendResolve=()=>resolve(new Uint8Array(n).fill(7));});}};
+ let backendResolve, backendReads=0, backendSignal=null;
+ const shared={size:16n,maxReadLength:16,async read(_o,n,opts){backendReads++; backendSignal=opts?.signal??null; return new Promise((resolve)=>{backendResolve=()=>resolve(new Uint8Array(n).fill(7));});}};
  const cached=new CachedByteSource(shared,{pageSize:16,maxCachedBytes:16}); const a=new AbortController(), b=new AbortController();
- const first=cached.read(0n,4,{signal:a.signal}), second=cached.read(0n,4,{signal:b.signal}); a.abort(); await assert.rejects(first,ByteSourceCancelledError); backendResolve();
+ const first=cached.read(0n,4,{signal:a.signal}), second=cached.read(0n,4,{signal:b.signal});
+ assert.equal(backendReads,1); assert.equal(typeof backendResolve,'function'); assert.ok(backendSignal&&typeof backendSignal.aborted==='boolean'); assert.notEqual(backendSignal,a.signal); assert.notEqual(backendSignal,b.signal);
+ a.abort(); await assert.rejects(first,ByteSourceCancelledError); assert.equal(backendSignal.aborted,false); backendResolve();
  assert.deepEqual([...await second],[7,7,7,7]); assert.equal(backendReads,1);
 }
 // #110 scalar-valid UTF-8 only.

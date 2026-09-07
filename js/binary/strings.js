@@ -17,11 +17,11 @@ function utf8At(bytes, p, end) {
   if(cp<min || cp>0x10ffff || (cp>=0xd800&&cp<=0xdfff)) return null;
   return {cp,bytes:n};
 }
-function utf16At(bytes,p,end,be){
+function utf16At(bytes,p,end){
   if(p+2>end) return null;
-  const u=be?(bytes[p]<<8)|bytes[p+1]:bytes[p]|(bytes[p+1]<<8);
+  const u=bytes[p]|(bytes[p+1]<<8);
   if(u>=0xd800&&u<=0xdbff){
-    if(p+4>end) return null; const v=be?(bytes[p+2]<<8)|bytes[p+3]:bytes[p+2]|(bytes[p+3]<<8);
+    if(p+4>end) return null; const v=bytes[p+2]|(bytes[p+3]<<8);
     if(v<0xdc00||v>0xdfff) return null;
     return {cp:0x10000+((u-0xd800)<<10)+(v-0xdc00),bytes:4};
   }
@@ -39,14 +39,57 @@ function chooseUtf16Encodings(image,option){
   if(option==='both') return ['utf16le','utf16be'];
   return [image?.endian==='big'?'utf16be':'utf16le'];
 }
+function fileRange(item, limit){
+  const start=Number(item?.fileOffset??0), size=Number(item?.fileSize??0);
+  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(size)||start<0||size<=0||start>=limit) return null;
+  const end=Math.min(limit,start+size);
+  return end>start?{start,end}:null;
+}
+function mergeCoverage(ranges){
+  const sorted=ranges.map((x)=>({start:x.start,end:x.end})).sort((a,b)=>a.start-b.start||a.end-b.end), out=[];
+  for(const range of sorted){
+    const last=out[out.length-1];
+    if(!last||range.start>last.end) out.push(range);
+    else if(range.end>last.end) last.end=range.end;
+  }
+  return out;
+}
+function subtractCoverage(range,coverage){
+  const out=[]; let cursor=range.start;
+  for(const covered of coverage){
+    if(covered.end<=cursor) continue;
+    if(covered.start>=range.end) break;
+    if(covered.start>cursor) out.push({start:cursor,end:Math.min(covered.start,range.end)});
+    if(covered.end>cursor) cursor=Math.min(covered.end,range.end);
+    if(cursor>=range.end) break;
+  }
+  if(cursor<range.end) out.push({start:cursor,end:range.end});
+  return out;
+}
+function mappedScanRanges(image,byteLength,includeExecutable){
+  const sections=Array.isArray(image.sections)?image.sections:[], segments=Array.isArray(image.segments)?image.segments:[];
+  if(!sections.length&&!segments.length) return [{start:0,size:byteLength,section:null}];
+  const sectionRanges=sections.map((item)=>({item,range:fileRange(item,byteLength)})).filter((x)=>x.range);
+  const coverage=mergeCoverage(sectionRanges.map((x)=>x.range));
+  const ranges=[];
+  for(const {item,range} of sectionRanges){
+    if(!includeExecutable&&item.perms?.execute) continue;
+    ranges.push({start:range.start,size:range.end-range.start,section:item.name||null});
+  }
+  for(const item of segments){
+    if(!includeExecutable&&item.perms?.execute) continue;
+    const range=fileRange(item,byteLength); if(!range) continue;
+    for(const gap of subtractCoverage(range,coverage)) ranges.push({start:gap.start,size:gap.end-gap.start,section:null});
+  }
+  ranges.sort((a,b)=>a.start-b.start||a.size-b.size);
+  return ranges;
+}
 
 export function scanStrings(image, opts = {}) {
   const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
   const utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
-  const ranges=[];
-  if(image.sections.length){ for(const x of image.sections){ if(!x.fileSize) continue; if(!includeExecutable&&x.perms&&x.perms.execute) continue; ranges.push({start:Number(x.fileOffset),size:Number(x.fileSize),section:x.name}); } }
-  else ranges.push({start:0,size:bytes.length,section:null});
+  const ranges=mappedScanRanges(image,bytes.length,includeExecutable);
   const out=[], seen=new Set();
   for(const range of ranges){
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));

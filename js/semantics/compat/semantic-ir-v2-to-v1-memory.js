@@ -9,6 +9,7 @@ import {
   forwardMemoryValue,
 } from '../memoryssa/queries.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
+import { forwardExactStackOperandIdentity } from '../memoryssa/operand-forwarding.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
@@ -140,6 +141,61 @@ function canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataByI
   return memoryNode.inst?.op === V1_OP.STORE ? memoryNode.inst : null;
 }
 
+function hasProjectedConsumerBeyondLoad(source) {
+  if (!source?.dst) return false;
+  const pending = [source.dst];
+  const seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    for (const use of value.uses ?? []) {
+      if (!use || use === source) continue;
+      if (use.block !== source.block || use.row !== source.row) return true;
+      if (use.op !== V1_OP.MOV || !use.dst || (use.args?.length ?? 0) !== 1) return true;
+      pending.push(use.dst);
+    }
+  }
+  return false;
+}
+
+function valueDependsOnProjectedPhi(value, active = new Set()) {
+  if (!value || active.has(value)) return false;
+  if (value.kind === V1_VK.PHI || value.def?.op === V1_OP.PHI) return true;
+  active.add(value);
+  const result = (value.def?.args ?? []).some((arg) => valueDependsOnProjectedPhi(arg?.value, active));
+  active.delete(value);
+  return result;
+}
+
+function storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId) {
+  if (!operandProof?.storedSourceEntityId) return true;
+  const store = instructionBySemanticId.get(String(operandProof.storedSourceEntityId)) ?? null;
+  if (!store || !Number.isSafeInteger(store.block)) return true;
+  const predecessors = projected.blocks?.[store.block]?.pred;
+  // graphFacts() populates pred from the validated canonical CFG whenever one
+  // is supplied by the semantic pipeline. A missing/malformed predecessor set
+  // cannot authorize symbolic identity publication, so fail closed here.
+  return !Array.isArray(predecessors) || predecessors.length > 1;
+}
+
+function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
+  for (const arg of source.args ?? []) {
+    const prior = arg?.value;
+    if (prior && Array.isArray(prior.uses)) prior.uses = prior.uses.filter((use) => use !== source);
+  }
+  source.op = V1_OP.MOV;
+  source.sub = 'memory-forward';
+  source.args = [makeArg(forwardedValue)];
+  addUse(forwardedValue, source);
+  source.memoryOperandForwarding = proof;
+  source.extra = {
+    ...source.extra,
+    memoryOperandForwarding: proof,
+    originalMemoryOp: V1_OP.LOAD,
+  };
+}
+
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
   propagateScalarConstants(projected);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
@@ -236,6 +292,14 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     || memorySsa.buildVersion != null;
   if (forwardingEligible) {
     const queriedLoads = new Set();
+    const loadUseCounts = new Map();
+    const deferredStackOperandRewrites = new Map();
+    for (const use of memorySsa.uses) {
+      const source = instructionBySemanticId.get(use.sourceEntityId);
+      if (source?.op === V1_OP.LOAD) {
+        loadUseCounts.set(source, (loadUseCounts.get(source) ?? 0) + 1);
+      }
+    }
     for (const use of memorySsa.uses) {
       const source = instructionBySemanticId.get(use.sourceEntityId);
       if (!source || source.op !== V1_OP.LOAD) continue;
@@ -269,9 +333,34 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         memoryForwarding: mergedFact,
         memoryForwardingContext: currentContext,
       };
-      const compatibilityStore = canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById);
+
+      let forwardedStackOperand = false;
+      if (mergedFact.status !== 'exact' && canonicalIr != null && source.loc?.kind === V1_MK.STACK) {
+        const operandProof = forwardExactStackOperandIdentity(memorySsa, use, canonicalIr);
+        const forwardedValue = operandProof?.exact === true
+          ? valuesById.get(String(operandProof.storedValueId ?? '')) ?? null
+          : null;
+        const preservesCompatibilityLoad = valueDependsOnProjectedPhi(forwardedValue)
+          || storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId)
+          || !hasProjectedConsumerBeyondLoad(source);
+        if (loadUseCounts.get(source) === 1
+            && forwardedValue && !preservesCompatibilityLoad
+            && String(source.dst?.semanticValueId ?? source.dst?.sourceSemanticValueId ?? '') !== '') {
+          // Do not mutate the projected LOAD while MemorySSA uses are still
+          // being folded. Multiple region rows can share one sourceEntityId;
+          // changing the opcode here would make later rows disappear from the
+          // merged fact. A multi-use LOAD stays explicit because one legacy
+          // instruction cannot publish distinct per-region operand proofs.
+          deferredStackOperandRewrites.set(source, { forwardedValue, operandProof });
+          forwardedStackOperand = true;
+        }
+      }
+
+      const compatibilityStore = source.op === V1_OP.LOAD
+        ? canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById)
+        : null;
       if (compatibilityStore) source.reachingStore = compatibilityStore;
-      if (mergedFact.status !== 'exact') {
+      if (mergedFact.status !== 'exact' && !forwardedStackOperand) {
         delete source.compatStackCallPreservation;
         // A non-exact value must stay unknown, but a same-range canonical
         // MemorySSA store may still be retained as legacy structural metadata
@@ -283,6 +372,12 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
           source.unknownAliasBarrier = source.unknownAliasBarrier ?? source.memUse ?? null;
         }
       }
+    }
+    for (const [source, { forwardedValue, operandProof }] of deferredStackOperandRewrites) {
+      // Deferral allowed the structural compatibility link to be populated in
+      // the loop. The MOV publishes only the canonical operand proof.
+      delete source.reachingStore;
+      replaceLoadWithForwardedValue(source, forwardedValue, operandProof);
     }
     // A proof-bearing artifact with no canonical use for a projected load is a
     // malformed/incomplete handoff, not permission to revive the old
