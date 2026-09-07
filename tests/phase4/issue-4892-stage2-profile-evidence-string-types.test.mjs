@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stableDigest } from '../../js/core/identity/index.js';
 import {
   STAGE2_PROFILE_EVIDENCE_IDS,
   createStage2CapabilityProofs,
@@ -92,6 +93,16 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function rawEvidenceId(value) {
+  return `stage2-profile-evidence:${stableDigest({
+    schemaVersion: value.schemaVersion,
+    commitSha: value.commitSha,
+    treeSha: value.treeSha,
+    generatedAt: value.generatedAt,
+    items: value.items,
+  })}`;
+}
+
 const denominatorInput = makeDenominatorInput();
 const denominatorLock = createStage2DenominatorLock(denominatorInput, {
   scope: SCOPE,
@@ -155,7 +166,58 @@ assert.throws(
   'structured expected treeSha cannot mint capability proof',
 );
 
+const rawValidationOptions = {
+  denominatorLock,
+  scope: SCOPE,
+  resolveInventoryIdentity: inventoryIdentity,
+  resolveDenominatorUnitIds: denominatorUnits,
+  resolveEvidenceIdentity: (identity) => identity,
+};
+
+const rawStructuredShaRecord = clone(record);
+const rawCommitSha = [COMMIT_SHA];
+const rawTreeSha = [TREE_SHA];
+rawStructuredShaRecord.commitSha = rawCommitSha;
+rawStructuredShaRecord.treeSha = rawTreeSha;
+for (const item of Object.values(rawStructuredShaRecord.items)) {
+  item.candidateCommitSha = rawCommitSha;
+  item.candidateTreeSha = rawTreeSha;
+}
+rawStructuredShaRecord.evidenceId = rawEvidenceId(rawStructuredShaRecord);
+const rawStructuredShaValidation = validateStage2ProfileEvidence(rawStructuredShaRecord, rawValidationOptions);
+assert.equal(rawStructuredShaValidation.ok, false);
+assert.equal(rawStructuredShaValidation.reason, 'stage2-profile-evidence-commit-invalid');
+assert.throws(
+  () => createStage2CapabilityProofs(rawStructuredShaValidation),
+  /stage2-profile-validation-authority-required/,
+  'direct raw structured SHA evidence cannot mint capability proof',
+);
+
+const rawStructuredTimeRecord = clone(record);
+rawStructuredTimeRecord.generatedAt = [GENERATED_AT];
+rawStructuredTimeRecord.evidenceId = rawEvidenceId(rawStructuredTimeRecord);
+const rawStructuredTimeValidation = validateStage2ProfileEvidence(rawStructuredTimeRecord, rawValidationOptions);
+assert.equal(rawStructuredTimeValidation.ok, false);
+assert.equal(rawStructuredTimeValidation.reason, 'stage2-profile-evidence-time-invalid');
+assert.throws(
+  () => createStage2CapabilityProofs(rawStructuredTimeValidation),
+  /stage2-profile-validation-authority-required/,
+  'direct raw structured generatedAt cannot mint capability proof',
+);
+
 const targetId = 'S1-A2-NATIVE';
+const rawStructuredItem = clone(record);
+rawStructuredItem.items[targetId].denominatorId = [rawStructuredItem.items[targetId].denominatorId];
+rawStructuredItem.evidenceId = rawEvidenceId(rawStructuredItem);
+const rawStructuredItemValidation = validateStage2ProfileEvidence(rawStructuredItem, rawValidationOptions);
+assert.equal(rawStructuredItemValidation.ok, false);
+assert.ok(rawStructuredItemValidation.failures?.includes(`${targetId}:denominator-id-invalid`));
+assert.throws(
+  () => createStage2CapabilityProofs(rawStructuredItemValidation),
+  /stage2-profile-validation-authority-required/,
+  'direct raw structured item identity cannot mint capability proof',
+);
+
 const structuredCases = [
   ['commitSha', (input) => { input.commitSha = [COMMIT_SHA]; }],
   ['treeSha', (input) => { input.treeSha = [TREE_SHA]; }],
