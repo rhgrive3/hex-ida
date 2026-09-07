@@ -1,15 +1,17 @@
 /* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata.
  *
  * Source provenance identity is typed per field. Canonical producers emit:
- *   addresses -> BigInt (or safe non-negative integer), rows/ir/ssaDefs/ssaUses
- *   -> safe non-negative integers. Anything else is malformed metadata and is
+ *   addresses -> BigInt (or safe non-negative integer), rows -> safe
+ *   non-negative integers, and ir/ssaDefs/ssaUses -> primitive string IDs or
+ *   safe non-negative integers. Anything else is malformed metadata and is
  *   dropped at the boundary: coercing it with String() would let an Array,
  *   boolean or object alias a canonical identity and merge unrelated evidence.
  */
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
-function canonicalIdentity(v, { allowBigInt = false } = {}) {
+function canonicalIdentity(v, { allowBigInt = false, allowString = false } = {}) {
   if (allowBigInt && typeof v === 'bigint') return v >= 0n ? v : null;
   if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  if (allowString && typeof v === 'string') return v;
   return null;
 }
 function canonicalList(values, options = {}) {
@@ -27,9 +29,9 @@ export function sourceOf(source = null) {
   return {
     addresses: canonicalList(source.addresses ?? source.address, { allowBigInt: true }),
     rows: canonicalList(source.rows ?? source.row),
-    ir: canonicalList(source.ir ?? source.irId),
-    ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef),
-    ssaUses: canonicalList(source.ssaUses ?? source.ssaUse),
+    ir: canonicalList(source.ir ?? source.irId, { allowString: true }),
+    ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef, { allowString: true }),
+    ssaUses: canonicalList(source.ssaUses ?? source.ssaUse, { allowString: true }),
     evidence: freezeArray(source.evidence),
   };
 }
@@ -115,13 +117,19 @@ function semanticTag(n) {
 // result-def identity in source metadata, which is the authoritative fallback.
 const anonymousLoadIds = new WeakMap();
 let nextAnonymousLoadId = 1;
+function loadSourceIdentity(v) {
+  return typeof v === 'string' ? `s:${JSON.stringify(v)}` : String(v);
+}
+function loadSourceIdentityList(values) {
+  return values.map(loadSourceIdentity).sort().join(',');
+}
 function loadValueIdentity(n) {
   if (n?.memoryVersion != null) return `mem:${scalar(n.memoryVersion)}`;
   if (n?.loadIdentity != null) return `load:${scalar(n.loadIdentity)}`;
   const source = sourceOf(n?.source);
-  if (source.ssaDefs.length) return `ssa:${source.ssaDefs.map(String).sort().join(',')}`;
-  if (source.ir.length) return `ir:${source.ir.map(String).sort().join(',')}`;
-  if (source.rows.length) return `row:${source.rows.map(String).sort().join(',')}`;
+  if (source.ssaDefs.length) return `ssa:${loadSourceIdentityList(source.ssaDefs)}`;
+  if (source.ir.length) return `ir:${loadSourceIdentityList(source.ir)}`;
+  if (source.rows.length) return `row:${loadSourceIdentityList(source.rows)}`;
   let id = anonymousLoadIds.get(n);
   if (id == null) { id = nextAnonymousLoadId++; anonymousLoadIds.set(n, id); }
   return `anon:${id}`;

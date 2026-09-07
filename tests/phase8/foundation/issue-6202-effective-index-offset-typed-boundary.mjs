@@ -26,8 +26,13 @@ assert.equal(effectiveIndexOffset(1n, 'uxtw', -1), null);
 assert.equal(effectiveIndexOffset(1n, 'uxtw', Number.MAX_SAFE_INTEGER), null);
 assert.equal(effectiveIndexOffset(1n, 'uxtw', 5), null);
 
-// 3. Unknown extend selector stays fail-closed.
+// 3. Unknown extend selectors stay fail-closed in semantic and presentation helpers.
 assert.equal(effectiveIndexOffset(1n, 'rubbish', 2), null);
+assert.equal(renderExtendedIndex('x0', 'rubbish'), '__arm64_index_rubbish(x0)');
+assert.equal(
+  renderIndexedMemory('x1', 'x0', { extend: 'rubbish', scale: 0 }),
+  'memory[x1 + __arm64_index_rubbish(x0)]',
+);
 
 // 4. Canonical typed inputs keep their existing results.
 assert.equal(effectiveIndexOffset(1n, 'uxtw', 2), 4n);
