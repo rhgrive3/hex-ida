@@ -73,6 +73,31 @@ test('ABIPlugin rejects non-callable executable hooks at the constructor boundar
   }
 });
 
+test('ABIPlugin rejects class constructors and bound class constructors as executable hooks', () => {
+  class NotACallback { static tag = 'issue-3951-class'; }
+  const BoundClass = NotACallback.bind(null);
+
+  for (const [label, hook] of [['class constructor', NotACallback], ['bound class constructor', BoundClass]]) {
+    assert.throws(
+      () => new ABIPlugin({ id:'issue-3951-class-hook', architectureId:'x86_64', platformPredicate:hook }),
+      /platformPredicate must be an invocable callback, not a class constructor/,
+      `${label} must fail fast at construction instead of TypeError at invocation`,
+    );
+  }
+
+  const ordinary = function hookCallback() { return true; };
+  const arrow = () => true;
+  const boundOrdinary = ordinary.bind(null);
+  let accepted = 0;
+  for (const hook of [ordinary, arrow, boundOrdinary]) {
+    const plugin = new ABIPlugin({ id:'issue-3951-invocable-hook', architectureId:'x86_64', platformPredicate:hook });
+    assert.equal(plugin.platformPredicate, hook, 'invocable ordinary/arrow/bound functions must retain identity');
+    assert.equal(plugin.platformPredicate({ platform:'linux' }), true);
+    accepted += 1;
+  }
+  assert.equal(accepted, 3);
+});
+
 test('ABIPlugin preserves documented callback defaults when hooks are omitted', () => {
   const plugin = new ABIPlugin({ id:'issue-3951-abi-defaults', architectureId:'x86_64' });
 

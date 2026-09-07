@@ -13,7 +13,25 @@ function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.
 function normalizeABIHook(value, name, fallback = null) {
   if (value == null) return fallback;
   if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  if (isClassConstructorSource(value) || isBoundClassConstructor(value)) {
+    throw new TypeError(`${name} must be an invocable callback, not a class constructor`);
+  }
   return value;
+}
+
+function isClassConstructorSource(value) {
+  try { return /^class[\s{;]/.test(Function.prototype.toString.call(value)); }
+  catch { return false; }
+}
+
+function isBoundClassConstructor(value) {
+  if (typeof value.name !== 'string' || !value.name.startsWith('bound ')) return false;
+  try {
+    Reflect.apply(value, undefined, []);
+    return false;
+  } catch (error) {
+    return error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message);
+  }
 }
 
 function canonicalCallingConvention(value) {
