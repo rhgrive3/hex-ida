@@ -6,6 +6,19 @@ import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 
+function terminationAlias(raw) {
+  switch (raw) {
+    case 'limit': return 'timeout';
+    case 'cancel': return 'cancelled';
+    case 'crash':
+    case 'oob':
+    case 'unmapped': return 'fault';
+    case 'complete':
+    case 'success': return 'return';
+    default: return null;
+  }
+}
+
 function ownedClone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
@@ -22,16 +35,11 @@ function ownedClone(value) {
 }
 
 function terminationOf(result = {}) {
-  const candidate = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
-  if (typeof candidate !== 'string') return 'exception';
-  const raw = candidate.toLowerCase();
+  const value = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
+  if (typeof value !== 'string') return 'exception';
+  const raw = value.trim().toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
-  if (/unsupported/.test(raw)) return 'unsupported';
-  if (/timeout|limit/.test(raw)) return 'timeout';
-  if (/cancel/.test(raw)) return 'cancelled';
-  if (/fault|crash|oob|unmapped/.test(raw)) return 'fault';
-  if (/return|complete|success/.test(raw)) return 'return';
-  return 'exception';
+  return terminationAlias(raw) ?? 'exception';
 }
 
 function completenessFor(termination) {
@@ -111,35 +119,49 @@ export class EmulatorProvider {
       const timeoutMs = boundedInteger(runOptions.timeoutMs, 2000, 10, 60000, 'timeoutMs');
       const controller = session.controller();
       let externalAbort = null;
+      let externalCancelled = false;
       if (runOptions.signal) {
-        externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
+        externalAbort = () => {
+          externalCancelled = true;
+          if (!controller.signal.aborted) controller.abort('cancelled');
+        };
         if (runOptions.signal.aborted) externalAbort();
         else {
           runOptions.signal.addEventListener('abort', externalAbort, { once: true });
           if (runOptions.signal.aborted) externalAbort();
         }
       }
+      let timeoutTriggered = false;
       let timer = null;
-      if (!controller.signal.aborted) timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+      if (!controller.signal.aborted) {
+        timer = setTimeout(() => {
+          if (controller.signal.aborted) return;
+          timeoutTriggered = true;
+          controller.abort('timeout');
+        }, timeoutMs);
+      }
       session.setState('running');
       let raw;
+      let abortTermination = null;
       try {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') } };
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
         else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
         else {
           await this.engine.launch(input, { signal: controller.signal });
           raw = await this.engine.resume({ ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
         }
       } catch (error) {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') }, error: String(error?.message || error) };
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
         else raw = { stop: { kind: 'exception' }, error: String(error?.message || error) };
       } finally {
+        if (timeoutTriggered) abortTermination = 'timeout';
+        else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
         if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
         session.releaseController(controller);
       }
 
-      const termination = terminationOf(raw || {});
+      const termination = abortTermination ?? terminationOf(raw || {});
       const completeness = completenessFor(termination);
       const eventSource = raw?.events != null ? raw.events : raw?.trace?.events;
       if (eventSource != null && !Array.isArray(eventSource)) {
