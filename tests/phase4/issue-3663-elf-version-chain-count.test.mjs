@@ -29,7 +29,7 @@ function imageFor(bytes) {
   return { segments: [{ address: BASE, fileOffset: 0, fileSize: bytes.length }], metadata: {}, warnings: [] };
 }
 function parseVerdef({ declared, records }) {
-  const bytes = new Uint8Array(192);
+  const bytes = new Uint8Array(TABLE + Math.max(1, records) * 28);
   writeU16(bytes, 0, 2);
   for (let i = 0; i < records; i++) {
     const p = TABLE + i * 28;
@@ -47,7 +47,7 @@ function parseVerdef({ declared, records }) {
   return { out, image };
 }
 function parseVerneed({ declared, records }) {
-  const bytes = new Uint8Array(224);
+  const bytes = new Uint8Array(TABLE + Math.max(1, records) * 32);
   writeU16(bytes, 0, 3);
   for (let i = 0; i < records; i++) {
     const p = TABLE + i * 32;
