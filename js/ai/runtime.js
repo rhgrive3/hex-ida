@@ -7,7 +7,7 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore } from './session-core/index.js';
 import { sanitizeActions, addressText } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, monotonicNow, presentAnswer } from './control/runtime-support.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -97,7 +97,7 @@ export class AIRuntime {
       mode: request.mode, style: request.style,
       answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan), confidence, evidence: finalEvidence, hypotheses, actions,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
-      usage: { modelCalls, toolCalls, elapsedMs: Date.now() - started, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
+      usage: { modelCalls, toolCalls, elapsedMs: Math.max(0, Math.round(monotonicNow() - started)), contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
       scope: { requested: request.scope, effective: effectiveScope }, turnSnapshotId: snapshot.id,
       limits: { exhausted: !!budgetReason, reason: limitReason || undefined },
     };

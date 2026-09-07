@@ -8,7 +8,7 @@ import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../bu
 import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
-  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
+  ensureRunning, humanError, maxWireUsage, memoryAnchor, monotonicNow, normalizeError, providerDiagnostics,
   remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
@@ -46,7 +46,9 @@ export async function executeTurn(input = {}, options = {}) {
     const turnTimeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
       ? Math.min(budget.timeoutMs, Math.floor(providerDefault))
       : budget.timeoutMs;
-    const started = Date.now(), activity = [], observations = [];
+    // Elapsed-time authority for the whole turn: monotonic, so wall-clock
+    // corrections cannot exhaust the budget early or inflate subtask budgets.
+    const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
@@ -116,7 +118,7 @@ export async function executeTurn(input = {}, options = {}) {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
             maxSearchResults: request.maxSearchResults || 40,
             timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
-            isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
+            isCancelled: () => !!signal?.aborted || monotonicNow() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
           assertLiveBindingsUnchanged(this.localContext, snapshot);
