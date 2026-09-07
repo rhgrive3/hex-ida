@@ -4,6 +4,7 @@ import { recoverExactStackPhiExpressions } from '../js/decompiler/passes/stack-p
 
 const BASE = 0x100000000n;
 const KEY = 'stack:sp:e0:-16:s4';
+const RECOVERY_OPTIONS = Object.freeze({ deterministicTransforms:true, decompilerNodeBudget:4096 });
 
 function stackLoad(row = null, address = null, ir = null) {
   return expr.load({ kind:'stack', key:KEY }, 32, { row, address, ir });
@@ -44,7 +45,7 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
 // Multiple physical RETs must recover independently, never from the final RET globally.
 {
   const result = linearResult([11, 22]);
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   assert.match(result.cAst.body[0].text, /return 11;/);
   assert.match(result.cAst.body[1].text, /return 22;/);
   assert.notEqual(result.cAst.body[0].text, result.cAst.body[1].text);
@@ -56,7 +57,7 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
   const result = linearResult([11, 22]);
   const firstRet = result.ir.instructions.find((x) => x.op === 'ret' && x.block === 0);
   result.cAst.body[0] = retNode('return -1;', expr.constant(-1n, 32, true), firstRet, true);
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   assert.equal(result.cAst.body[0].text, 'return -1;');
   assert.match(result.cAst.body[1].text, /return 22;/);
 }
@@ -67,7 +68,7 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
   const returns = result.ir.instructions.filter((x) => x.op === 'ret');
   result.cAst.body[0] = retNode('return -1;', expr.constant(-1n, 32, true), returns[0], true);
   result.cAst.body[1] = retNode('return 0;', expr.constant(0n, 32, true), returns[1], true);
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   assert.equal(result.cAst.body[0].text, 'return -1;');
   assert.equal(result.cAst.body[1].text, 'return 0;');
   assert.match(result.cAst.body[2].text, /return 33;/);
@@ -76,7 +77,7 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
 // With multiple RETs, missing source provenance is ambiguous and must fail closed.
 {
   const result = linearResult([11, 22], { ambiguous:true });
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   assert.deepEqual(result.cAst.body.map((x) => x.text), ['return local_0;', 'return local_1;']);
   assert.equal(result.metrics.rewrittenExpressions, 0);
 }
@@ -84,14 +85,14 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
 // A single AST return + single physical RET retains the old safe fallback.
 {
   const result = linearResult([11], { ambiguous:true });
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   assert.match(result.cAst.body[0].text, /return 11;/);
 }
 
 // Return mapping is source-based, not dependent on cAst array order.
 {
   const result = linearResult([11, 22], { order:[1, 0] });
-  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  recoverExactStackPhiExpressions(result, RECOVERY_OPTIONS);
   const byRow = new Map(result.cAst.body.map((node) => [node.source.rows[0], node.text]));
   const returns = result.ir.instructions.filter((instruction) => instruction.op === 'ret');
   assert.match(byRow.get(returns[0].row), /return 11;/);
@@ -128,10 +129,23 @@ function linearResult(values, { ambiguous=false, order=null } = {}) {
     rewriteProof:[], metrics:{rewrittenExpressions:0},
   };
   const rowOfAddress=(addr)=>Number((BigInt(addr)-BASE)/4n);
-  recoverExactStackPhiExpressions(result,{decompilerTimeBudgetMs:50,rowOfAddress});
+  recoverExactStackPhiExpressions(result,{ ...RECOVERY_OPTIONS, rowOfAddress });
   assert.match(result.cAst.body[0].text,/\?/);
   assert.match(result.cAst.body[0].text,/11/);
   assert.match(result.cAst.body[0].text,/22/);
+}
+
+// Recovery remains fail-closed when deterministic work is exhausted or cancelled.
+{
+  const zeroBudget = linearResult([11, 22]);
+  recoverExactStackPhiExpressions(zeroBudget, { ...RECOVERY_OPTIONS, decompilerNodeBudget:0 });
+  assert.deepEqual(zeroBudget.cAst.body.map((node) => node.text), ['return local_0;', 'return local_1;']);
+  assert.equal(zeroBudget.metrics.rewrittenExpressions, 0);
+
+  const aborted = linearResult([11, 22]);
+  recoverExactStackPhiExpressions(aborted, { ...RECOVERY_OPTIONS, shouldAbort:() => true });
+  assert.deepEqual(aborted.cAst.body.map((node) => node.text), ['return local_0;', 'return local_1;']);
+  assert.equal(aborted.metrics.rewrittenExpressions, 0);
 }
 
 console.log('issue #142 multi-return stack-phi recovery: PASS');
