@@ -1,5 +1,31 @@
 # Stage A Recovery Matrix
 
+## Development reconciliation — 2026-09-07
+
+Observed committed integration head: `8d06021ce`. The user-authorized speed
+amendment separates implementation acceptance from the final combined-product
+and release checks. The ten original rows remain present below as history.
+
+| Recovery row | Development disposition | Current implementation and focused evidence | Remaining combined/release work |
+| --- | --- | --- | --- |
+| REC-3382 | IMPLEMENTED | T011 (`de942da6e`): live reaching-definition and PHI-spill proof; saved field value survives an unknown call. Compiler-truth and semantic regressions pass. | Combined decompiler/Phase 8 run and final product identity. |
+| REC-3255-C | IMPLEMENTED | Same canonical T011 consumer; private MemorySSA proof and bounded pass/rewrite handling retained. No duplicate consumer was added. | Same combined gate as REC-3382. |
+| REC-3255-P8 | IMPLEMENTED | T012 identity/GVN 118 tests pass; T013 budget suite 5/5 and actual interactive/optimizer measurements pass focused regressions. Profile v4 applies the authorized 150 ms ceiling. | Full three-repetition frozen-corpus timing and hard-zero counters. |
+| REC-P8-S | REPLACED | Composite snapshot was not merged. Owned T011/T012 changes were selectively recovered in `de942da6e` and `16271a328`, with additional current-tree fixes. | Combined verification of those implementations. |
+| REC-SYM01 | IMPLEMENTED | T014 bounded tiered provider plus T032 canonical profile v2. Unchanged-source differential: 25,476 queries / 50,952 backend results, both tests pass. Actual Chromium/WebKit Worker routes pass. | Final build/runtime and applicable target-device evidence. |
+| REC-X02 | IMPLEMENTED | T015/T036 (`697ad06a1`): intrinsic-safe Apple metadata and Mach-O integration; focused Apple, F6 and reparse tests pass. | Broad real dyld/Apple corpus and target/device validation. |
+| REC-X03 | IMPLEMENTED | T016/T035: immutable ambiguity-preserving artifact and public rebuild consumer validation; discovery 87/87 and consumer tests pass. | Combined rebuild/Phase 7/12 verification. |
+| REC-ME01 | IMPLEMENTED | T017 (`8d06021ce`): strict uncertainty transport and raw BSF/BSR binding. All affected Phase 5/6 files and closure pass; 1486 exact / 1 partial INT / 0 unowned. | External full ISA/formal/QEMU/hardware evidence; T027 owns any remaining functional delta. |
+| REC-C2-U | SUPERSEDED, REVALIDATED | Existing canonical unknown-partition implementation retained; current unknown-partition and read-only SCCP tests pass. Weaker snapshot was not replayed. | Include unchanged canonical regression in final batch. |
+| REC-ME-ORACLE | IMPLEMENTED | T017 oracle test passes with real modern Git candidate-merge-tree computation; nonempty identity and negative report checks preserved. No read-tree approximation accepted. | Full same-binary denominator and independent external truth; T026/T027 follow-up. |
+
+These dispositions are not a release PASS. The current outstanding checks are
+tracked once in `../development-debt.md`; historical receipt reconstruction is
+retired. The C2 recovery row is closed as superseded implementation, with its
+current regression retained.
+
+## Original handoff observation
+
 **Observed main**: `47f8a44469a5826b6199501a153a12439a280d13`
 **Handoff**: `origin/wip/recovery-handoff-20260904` at
 `84d277a962515031c1bcc4eba0dca4c44c41f0b7`

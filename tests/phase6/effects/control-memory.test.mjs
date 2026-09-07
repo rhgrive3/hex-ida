@@ -181,21 +181,28 @@ test('fence records its exact predecessor and successor sets', () => {
   assert.deepEqual(barrier.scope.successor, ['read', 'write']);
 });
 
-test('reserved FENCE fields fail closed instead of becoming exact barriers', () => {
-  // The base encoding reserves rd and rs1, and only fm=0000 or the complete
-  // FENCE.TSO tuple is standard in RV64IMC. These nearby words must not share
-  // the exact barrier semantics of canonical FENCE.
+test('forward-compatible FENCE fields preserve exact barrier semantics', () => {
+  // #6005 keeps the raw predecessor/successor sets while normalizing
+  // forward-compatible rd/rs1 and unsupported fm fields. These are canonical
+  // little-endian instruction bytes, so the assertion covers decoder fields,
+  // MachineEffects ownership, and the resulting barrier scope together.
   const cases = [
-    { name: 'nonzero rd', bytes: [0x8f, 0x00, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
-    { name: 'nonzero rs1', bytes: [0x0f, 0x80, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
-    { name: 'reserved fm', bytes: [0x0f, 0x00, 0x30, 0x13], reason: 'riscv64-reserved-fence-mode' },
-    { name: 'noncanonical FENCE.TSO successor', bytes: [0x0f, 0x00, 0x20, 0x83], reason: 'riscv64-reserved-fence-mode' },
+    { name: 'nonzero rd', bytes: [0x8f, 0x00, 0x30, 0x03], predecessor: ['read', 'write'], successor: ['read', 'write'], fenceMode: 'normal' },
+    { name: 'nonzero rs1', bytes: [0x0f, 0x80, 0x30, 0x03], predecessor: ['read', 'write'], successor: ['read', 'write'], fenceMode: 'normal' },
+    { name: 'reserved fm', bytes: [0x0f, 0x00, 0x30, 0x13], predecessor: ['read', 'write'], successor: ['read', 'write'], fenceMode: 'normal' },
+    { name: 'noncanonical FENCE.TSO successor', bytes: [0x0f, 0x00, 0x20, 0x83], predecessor: ['read', 'write'], successor: ['read'], fenceMode: 'normal' },
+    { name: 'forward-compatible FENCE.TSO register', bytes: [0x8f, 0x00, 0x30, 0x83], predecessor: ['read', 'write'], successor: ['read', 'write'], fenceMode: 'tso' },
   ];
   for (const item of cases) {
     const { decoded, bundle } = liftBytes(item.bytes);
-    assert.equal(decoded.fields.supported, false, item.name);
-    assert.equal(decoded.fields.reason, item.reason, item.name);
-    assert.equal(bundle, null, `${item.name} must not produce exact MachineEffects`);
+    assert.equal(decoded.fields.supported, true, item.name);
+    assert.equal(decoded.fields.op, 'fence', item.name);
+    assert.equal(bundle.completeness, 'exact', item.name);
+    const barrier = bundle.operations.find((operation) => operation.kind === 'barrier');
+    assert.ok(barrier, `${item.name} must produce an exact barrier`);
+    assert.deepEqual(barrier.scope.predecessor, item.predecessor, item.name);
+    assert.deepEqual(barrier.scope.successor, item.successor, item.name);
+    assert.equal(barrier.scope.fenceMode, item.fenceMode, item.name);
   }
 
   const tso = liftBytes([0x0f, 0x00, 0x30, 0x83]);
@@ -211,5 +218,13 @@ test('FENCE.I remains unsupported outside the frozen RV64IMC profile', () => {
   assert.equal(decoded.fields.extension, 'Zifencei');
   assert.equal(decoded.fields.reason, 'riscv64-zifencei-outside-phase6-profile');
   assert.equal(bundle, null, 'out-of-profile FENCE.I must never become an exact MachineEffects bundle');
+  assert.equal(classifyMachineEffectsCoverage('riscv64', decoded).status, 'unsupported');
+});
+
+test('reserved miscellaneous-memory funct3 remains unsupported', () => {
+  const { decoded, bundle } = liftBytes([0x0f, 0x20, 0x00, 0x00]);
+  assert.equal(decoded.fields.supported, false);
+  assert.equal(decoded.fields.reason, 'riscv64-reserved-misc-mem-funct3');
+  assert.equal(bundle, null);
   assert.equal(classifyMachineEffectsCoverage('riscv64', decoded).status, 'unsupported');
 });

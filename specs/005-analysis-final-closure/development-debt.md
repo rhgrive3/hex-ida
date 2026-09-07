@@ -1,7 +1,7 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011–T017, T028, T032, T035–T036 and T053–T056: the ledger is now 32/61.
+implementation completed T011–T018, T027–T028, T032, T035–T036 and T053–T056: the ledger is now 34/61.
 Product implementation and final release acceptance are separate. No full
 release gate has been run for this development batch.
 
@@ -52,3 +52,9 @@ T055 batch artifact: regenerated only the corrected type-corpus manifest (v1 →
 T017 implementation: strict undefined descriptors and real-byte BSF/BSR effects pass; x86 closure remains 1486 exact / 1 explicit partial INT boundary / 0 unowned. All affected Phase 5/6 fp/SIMD/integer/control and three Phase 6 fixture files, core compatibility and closure pass together (1.7 s). Malformed nested uncertainty is rejected before generic IR attribute normalization; dedicated/transport/bit-scan tests pass (0.4 s). Oracle-report test passes with actual modern `git merge-tree --write-tree` (19.5 s); no read-tree proxy is used. Bounded BattleCats label counts are 51 malloc_size + 5 os_log_type_enabled + 3 os_log_create, with exact-name negatives; this is classification coverage, not a new real-binary execution claim. The agent broad ME pipeline through head is not counted as PASS.
 
 Browser development batch: pinned Playwright 1.62.1 with actual Chromium and WebKit module Workers passes SAT/UNSAT, wide routing and proof/identity checks (15.0 s). This is Linux browser evidence, not physical-iPad or deployment evidence.
+
+T018 reconciles all ten recovery rows against the implemented development branch and explicitly retains combined/release checks. Current unknown-partition and SCCP regressions pass; the superseded C2 snapshot is not replayed.
+
+T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING external corpus/twin artifacts: five binary rows are still explicitly UNMEASURED, which is not a terminal no-edit success.
+
+Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun awaits the in-progress T030 structuring module becoming importable.
