@@ -99,7 +99,7 @@ export class InvestigationSessionStore {
     const next = { ...current.investigationMemory };
     for (const key of MEMORY_KEYS) {
       if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
-      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key], key);
+      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key]);
     }
     return this.update(id, { investigationMemory: next });
   }
@@ -178,11 +178,15 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
 }
 
 function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit) : []; }
-function mergeUnique(current, incoming, key) {
+function mergeUnique(current, incoming) {
   const values = [...bounded(current, 100), ...bounded(incoming, 100)];
-  const seen = new Set();
-  return values.filter((item) => {
+  const latest = new Map();
+  for (const item of values) {
     const id = typeof item === 'string' ? item : String(item?.id ?? item?.claim ?? item?.summary ?? JSON.stringify(item));
-    if (seen.has(id)) return false; seen.add(id); return true;
-  }).slice(-64);
+    // Refresh both the snapshot and its retention order. A recently updated
+    // item must not be evicted merely because its first occurrence was old.
+    latest.delete(id);
+    latest.set(id, item);
+  }
+  return [...latest.values()].slice(-64);
 }

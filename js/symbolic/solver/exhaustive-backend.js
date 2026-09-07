@@ -155,13 +155,14 @@ function deriveFixedBindings(constraints) {
 }
 
 function assignmentModel(symbols, assignments) {
-  const byName = new Map();
-  for (const symbol of symbols) {
-    const value = assignments.get(symbol.key);
-    if (!byName.has(symbol.name)) byName.set(symbol.name, value);
-    else byName.set(symbol.symbolId, value);
-  }
-  return Object.fromEntries(byName.entries());
+  // Solver binding identity is canonical symbolId. Keying the model by display
+  // name lets one symbol's name collide with another symbol's symbolId, which
+  // evaluateExpr() resolves id-first — an alias that let the exact backend
+  // prove SAT formulas UNSAT. Symbols must stay independent bindings keyed by
+  // symbolId only (name is presentation metadata, never a binding key).
+  return Object.fromEntries(
+    symbols.map((symbol) => [symbol.symbolId || symbol.name, assignments.get(symbol.key)]),
+  );
 }
 
 function evaluateAll(query, model) {

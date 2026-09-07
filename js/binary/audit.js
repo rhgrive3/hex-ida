@@ -1,8 +1,6 @@
-export function sectionHasMappedAddress(sec) {
-  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
-  if (sec?.source === 'unmapped-section') return false;
-  return true;
-}
+import { sectionHasMappedAddress } from './model.js';
+
+export { sectionHasMappedAddress } from './model.js';
 
 function isExecutableMappedAddress(image, address) {
   const sec = image.sectionAt?.(address);
