@@ -117,6 +117,9 @@ export function parseMsf(bytes) {
   if (numBlocks * blockSize > data.length + blockSize) {
     return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
   }
+  if (numDirectoryBytes < 4) {
+    return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
+  }
 
   const readBlock = (index) => {
     const start = index * blockSize;
@@ -287,12 +290,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
-  while (offset + 4 <= bytes.length && symbols.length < budget.maxRecords) {
+  let recordCount = 0;
+  while (offset + 4 <= bytes.length && recordCount < budget.maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > bytes.length) break;
+    recordCount += 1;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
     // known-kind record must fail closed instead of reading the next record's
@@ -347,6 +352,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const headerSize = view.getUint32(4, true);
   const firstIndex = view.getUint32(8, true);
+  if (headerSize < 56 || headerSize > bytes.length) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
   let offset = headerSize;
   let index = firstIndex;
 
@@ -495,18 +503,26 @@ function parseFieldList(view, bytes, start, end) {
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
-function describeTypeIndex(index, types, depth = 0) {
+export function describeTypeIndex(index, types, depth = 0) {
   if (depth > 16) return { name: 'unknown', complete: false };
   if (index < 0x1000) {
     const primitive = PRIMITIVE_TYPES[index];
-    // The high nibble of a primitive index encodes an indirection mode; 0x0600
-    // is a 64-bit pointer to the base type in the low bits.
-    if (!primitive && (index & 0x0700) === 0x0600) {
+    if (primitive) return { ...primitive, complete: true };
+    // The high nibble of a primitive index encodes an indirection mode:
+    // 0x0400: NearPointer32, 0x0500: FarPointer32, 0x0600: NearPointer64, 0x0700: NearPointer128
+    const mode = index & 0x0700;
+    if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
+      const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
       const target = describeTypeIndex(index & 0x00ff, types, depth + 1);
-      return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+      const isKnown = target.name !== 'unknown' && target.complete;
+      return {
+        name: isKnown ? `${target.name} *` : 'unknown *',
+        widthBits,
+        class: 'pointer',
+        complete: isKnown,
+      };
     }
-    if (!primitive) return { name: 'unknown', complete: false };
-    return { ...primitive, complete: true };
+    return { name: 'unknown', complete: false };
   }
   const record = types.get(index);
   if (!record) return { name: 'unknown', complete: false };
@@ -520,7 +536,26 @@ function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'pointer') {
     const target = describeTypeIndex(record.referent, types, depth + 1);
-    return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+    const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
+    const sizeBytes = (attrs >> 13) & 0x3f;
+    const pointerKind = attrs & 0x1f;
+    let widthBits = sizeBytes > 0 ? sizeBytes * 8 : null;
+    if (widthBits == null) {
+      if (pointerKind === 0x0a || pointerKind === 0x0b) widthBits = 32;
+      else if (pointerKind === 0x0c) widthBits = 64;
+    }
+    const isContradictory = sizeBytes > 0 && (
+      ((pointerKind === 0x0a || pointerKind === 0x0b) && sizeBytes !== 4) ||
+      (pointerKind === 0x0c && sizeBytes !== 8)
+    );
+    const isMalformed = widthBits == null || widthBits === 0 || isContradictory;
+    const complete = !isMalformed && target.complete;
+    return {
+      name: `${target.name} *`,
+      widthBits: isMalformed ? null : widthBits,
+      class: 'pointer',
+      complete,
+    };
   }
   if (record.kind === 'modifier') {
     const target = describeTypeIndex(record.underlying, types, depth + 1);
@@ -536,6 +571,17 @@ function describeTypeIndex(index, types, depth = 0) {
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
   }
   return { name: 'unknown', complete: false };
+}
+
+function expectedCodeViewIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const guid = value.guid;
+  const age = value.age;
+  if (typeof guid !== 'string') return null;
+  const normalizedGuid = guid.trim().toUpperCase();
+  if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(normalizedGuid)) return null;
+  if (typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0 || age > 0xffffffff) return null;
+  return `${normalizedGuid}/${age}`;
 }
 
 export class PdbDebugInfoProvider extends DebugInfoProvider {
@@ -575,7 +621,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
           verdict: 'companion-missing',
           providerId: this.id, providerVersion: this.version,
           method: 'codeview-guid-age',
-          expected: expectedCodeView ? `${expectedCodeView.guid}/${expectedCodeView.age}` : null,
+          expected: expectedCodeViewIdentity(expectedCodeView),
           observed: null,
           detail: expectedCodeView?.path
             ? `the binary references a PDB but its bytes were not supplied`
@@ -601,13 +647,17 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const info = parsePdbInfoStream(msf.streams[1].read());
     const observed = info ? `${info.guid}/${info.age}` : null;
-    const expected = expectedCodeView ? `${String(expectedCodeView.guid).toUpperCase()}/${expectedCodeView.age}` : null;
+    const expected = expectedCodeViewIdentity(expectedCodeView);
 
     let verdict;
     let detail = null;
     if (expected == null || observed == null) {
       verdict = 'identity-unavailable';
-      detail = expected == null ? 'the binary carries no CodeView debug directory entry' : 'the PDB has no info stream';
+      detail = expected == null
+        ? (expectedCodeView == null
+          ? 'the binary carries no CodeView debug directory entry'
+          : 'the binary CodeView GUID/age is malformed')
+        : 'the PDB has no info stream';
     } else if (expected === observed) {
       verdict = 'matched-authoritative';
     } else {

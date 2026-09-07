@@ -1,11 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
-
-function fail(code) { throw new TypeError(code); }
-
-function checkedRange(limit, offset, size, code) {
-  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
-}
+import { validateDexMap } from './map-validation.js';
+import { checkedRange, fail } from './validation-utils.js';
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
@@ -18,14 +14,24 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
+
 export function probeDex(bytes) {
   if (!bytes || bytes.length < 40) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (u8[0] === 0x64 && u8[1] === 0x65 && u8[2] === 0x78 && u8[3] === 0x0a && u8[7] === 0x00) {
-    const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
-    return { supported: true, confidence: 1.0, formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (u8[0] !== 0x64 || u8[1] !== 0x65 || u8[2] !== 0x78 || u8[3] !== 0x0a || u8[7] !== 0x00) {
+    return { supported: false, confidence: 0, reason: 'invalid-magic' };
   }
-  return { supported: false, confidence: 0, reason: 'invalid-magic' };
+  if (u8[4] < 0x30 || u8[4] > 0x39 || u8[5] < 0x30 || u8[5] > 0x39 || u8[6] < 0x30 || u8[6] > 0x39) {
+    return { supported: false, confidence: 0, reason: 'invalid-version' };
+  }
+
+  const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
+  const versionInfo = { formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (!SUPPORTED_DEX_VERSIONS.has(vStr)) {
+    return { supported: false, confidence: 0, reason: 'unsupported-version', ...versionInfo };
+  }
+  return { supported: true, confidence: 1.0, ...versionInfo };
 }
 
 function readUleb128(bytes, offset) {
@@ -151,6 +157,10 @@ export function parseDex(bytes, options = {}) {
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
 
+  // Validate the complete map topology before decoding payloads, while preserving
+  // established payload-specific error authority for malformed variable-size items.
+  validateDexMap(u8, { validateVariableItems: false });
+
   const strings = [];
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;
@@ -241,6 +251,8 @@ export function parseDex(bytes, options = {}) {
     }
     classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,directMethods,virtualMethods});
   }
+
+  validateDexMap(u8);
 
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
   return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,rawBytes:u8});
