@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
-import { INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { createAnalysisState, INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
 
 /**
  * A minimal IR carrying exactly the canonical facts the identity pass declares
@@ -65,9 +65,12 @@ test('cancellation observed after a pass still withholds the whole ledger', () =
 
 test('an incomplete optimizer run cannot overwrite a prior complete result', () => {
   const ir = { ...CONTEXT.ir, blocks: [{ id: 'entry', index: 0 }] };
-  const state = seedAnalysisState(ir);
+  const seed = seedAnalysisState(ir);
   const priorRanges = Object.freeze({ completeness: 'complete', marker: 'authoritative' });
-  state.__write('ranges', priorRanges);
+  const state = createAnalysisState({
+    ...Object.fromEntries(seed.available().map(key => [key, seed.get(key)])),
+    ranges: priorRanges,
+  });
   const before = state.snapshot();
   const { ledger, analysis } = runPhase8Vertical({
     ...CONTEXT,

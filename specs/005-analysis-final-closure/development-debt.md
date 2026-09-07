@@ -57,4 +57,4 @@ T018 reconciles all ten recovery rows against the implemented development branch
 
 T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING external corpus/twin artifacts: five binary rows are still explicitly UNMEASURED, which is not a terminal no-edit success.
 
-Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun awaits the in-progress T030 structuring module becoming importable.
+Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun also passes after the T030 syntax correction.
