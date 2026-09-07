@@ -211,7 +211,9 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
   };
   const finish = (fields) => ({ fields, completeness });
   if (address == null) return finish([]);
-  const addr=BigInt(address), h=await exact(read,addr,16);
+  const addr=BigInt(address);
+  let h;
+  try { h=await exact(read,addr,16); } catch { h=null; }
   if (!h) { completeness.complete=false; completeness.reason='descriptor-header-unreadable'; return finish([]); }
   const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000);
   if (recordSize<12) { completeness.invalidHeader=true; completeness.complete=false; completeness.reason='descriptor-record-size-invalid'; return finish([]); }
@@ -219,7 +221,9 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
   completeness.declared=count;
   const out=[];
   for(let i=0;i<count;i++){
-    const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);
+    const at=addr+16n+BigInt(i*recordSize);
+    let r;
+    try { r=await exact(read,at,12); } catch { r=null; }
     if(!r){completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;completeness.complete=false;completeness.reason='field-record-unreadable';return finish(out);}
     const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));
     const typeInfo=typeTarget==null?null:await readSwiftMangledName(read,typeTarget,{...options,compilerMetadata:true});
