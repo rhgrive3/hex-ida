@@ -164,6 +164,15 @@ test('declared option groups still enter the artifact identity (#6164)', () => {
   assert.equal(withPointsTo(10), withPointsTo(10));
 });
 
+test('alias option changes affect each kind that declares them (#6164)', () => {
+  for (const kind of ['phase7.alias.region', 'phase7.pointsto.local']) {
+    const descriptor = (keepAllLocals) => createPhase7ArtifactDescriptor(base({
+      kind, options: { aliasOptions: { keepAllLocals } },
+    })).artifactId;
+    assert.notEqual(descriptor(true), descriptor(false), kind);
+  }
+});
+
 test('options keys outside the known option classes fail closed (#6164)', () => {
   assert.throws(
     () => createPhase7ArtifactDescriptor(base({ options: { maxIterations: 9 } })),
