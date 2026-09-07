@@ -32,7 +32,9 @@ export function machoSymbolTruth(image) {
   const metadata = image.metadata || {};
   const reasons = [];
   const components = [metadata.machoMetadata, metadata.chainedFixups, metadata.exportTrie, metadata.dyldBindings];
-  const hasAffirmativeCompleteness = components.some((value) => value && typeof value === 'object' && !Array.isArray(value) && value.complete === true);
+  const hasUnknownPresentComponent = components.some((value) => value != null && (
+    typeof value !== 'object' || Array.isArray(value) || value.complete !== true
+  ));
   statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
   statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
   statusReasons(metadata.exportTrie, 'export-trie', reasons);
