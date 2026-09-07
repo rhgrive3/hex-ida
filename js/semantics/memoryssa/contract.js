@@ -248,6 +248,14 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-contract-version-mismatch');
   }
 
+  const functionId = nonEmpty(input.functionId, 'memory-ssa-function-id-required');
+  const cfg = options.cfg;
+  // Block IDs are function-local. A foreign CFG cannot authorize this contract
+  // merely because its block/predecessor names happen to match.
+  if (cfg != null && (typeof cfg !== 'object' || Array.isArray(cfg) || cfg.functionId !== functionId)) {
+    fail('memory-ssa-cfg-function-mismatch');
+  }
+
   const regions = array(input.regions, 'memory-ssa-regions-required')
     .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -276,7 +284,7 @@ export function createMemorySsaContract(input, options = {}) {
     definitionById.set(definition.id, definition);
   }
 
-  const blocks = cfgMap(options.cfg);
+  const blocks = cfgMap(cfg);
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -333,7 +341,7 @@ export function createMemorySsaContract(input, options = {}) {
 
   return deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'memory-ssa-function-id-required'),
+    functionId,
     regions,
     definitions,
     uses,

@@ -3,7 +3,13 @@ import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const PROPOSAL_CAPABILITIES = Object.freeze({
+  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
+  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
+});
 const EXECUTION_PAYLOADS = new WeakMap();
+const PROPOSAL_AUTHORITIES = new WeakMap();
+const EXECUTION_AUTHORIZATIONS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -16,7 +22,8 @@ export class ProposalStore {
   }
 
   create(input = {}) {
-    if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
+    const kind = input.kind;
+    if (!PROPOSAL_KINDS.has(kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${kind}`);
     // A truthy non-array must never reach property access with a native
     // TypeError: malformed tool input stays inside the invalid_tool_call
     // domain-error boundary on the deterministic-evidence validation path.
@@ -27,19 +34,27 @@ export class ProposalStore {
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (Object.prototype.hasOwnProperty.call(input, 'id')) {
-      if (typeof input.id !== 'string' || !input.id) throw new AIError('invalid_tool_call', 'Proposal id must be a non-empty string.');
-      id = input.id;
+      const inputId = input.id;
+      if (typeof inputId !== 'string' || !inputId) throw new AIError('invalid_tool_call', 'Proposal id must be a non-empty string.');
+      id = inputId;
       if (this.records.has(id)) throw new AIError('invalid_tool_call', `Proposal id already exists: ${id}`);
     } else {
       do id = `proposal_${proposalSequence++}`;
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const revision = fingerprint(input.before);
-    const bindingRevision = fingerprint(binding);
     const executionPayload = snapshotProposalPayload(input);
+    const revision = fingerprint(executionPayload.before);
+    const bindingRevision = fingerprint(binding);
+    const authority = Object.freeze({
+      id,
+      kind,
+      capability: PROPOSAL_CAPABILITIES[kind],
+      revision,
+      bindingRevision,
+    });
     const record = {
-      id, kind: input.kind,
+      id, kind,
       // The public record stays bounded for display/wire consumers. Mutation
       // authority is held separately in EXECUTION_PAYLOADS.
       target: jsonSafe(executionPayload.target),
@@ -54,83 +69,174 @@ export class ProposalStore {
       bindingRevision,
     };
     EXECUTION_PAYLOADS.set(record, executionPayload);
+    PROPOSAL_AUTHORITIES.set(record, authority);
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
-    return record;
+    return proposalSnapshot(record);
   }
 
   approve(id) {
-    const proposal = this.require(id);
+    const proposal = requireProposalRecord(this, id);
+    const authority = proposalAuthority(proposal);
     if (proposal.status !== 'pending') throw new AIError('approval_required', 'Only pending proposals can be approved.');
-    proposal.status = 'approved';
     const token = randomToken();
-    this.approvals.set(proposal.id, token);
-    this.audit.push({ type: 'proposal-approved', proposalId: proposal.id, timestamp: new Date().toISOString() });
-    return { proposal, approvalToken: token };
+    proposal.status = 'approved';
+    this.approvals.set(authority.id, token);
+    this.audit.push({ type: 'proposal-approved', proposalId: authority.id, timestamp: new Date().toISOString() });
+    return { proposal: proposalSnapshot(proposal), approvalToken: token };
   }
 
   reject(id) {
-    const proposal = this.require(id);
-    if (proposal.status !== 'pending' && proposal.status !== 'approved') return proposal;
+    const proposal = requireProposalRecord(this, id);
+    const authority = proposalAuthority(proposal);
+    if (proposal.status !== 'pending' && proposal.status !== 'approved') return proposalSnapshot(proposal);
     proposal.status = 'rejected';
-    this.approvals.delete(proposal.id);
-    this.audit.push({ type: 'proposal-rejected', proposalId: proposal.id, timestamp: new Date().toISOString() });
-    return proposal;
+    this.approvals.delete(authority.id);
+    this.audit.push({ type: 'proposal-rejected', proposalId: authority.id, timestamp: new Date().toISOString() });
+    return proposalSnapshot(proposal);
   }
 
   async apply(id, { approvalToken, currentState, apply } = {}) {
-    const proposal = this.require(id);
-    if (proposal.status !== 'approved' || this.approvals.get(proposal.id) !== approvalToken) throw new AIError('approval_required', 'A valid user approval token is required.');
+    const proposal = requireProposalRecord(this, id);
+    const authority = proposalAuthority(proposal);
+    if (proposal.status !== 'approved' || this.approvals.get(authority.id) !== approvalToken) throw new AIError('approval_required', 'A valid user approval token is required.');
 
     // Consume approval and move to the in-flight state synchronously before any
     // await. A second caller with the same token can no longer pass validation.
     proposal.status = 'applying';
-    this.approvals.delete(proposal.id);
-    this.audit.push({ type: 'proposal-applying', proposalId: proposal.id, timestamp: new Date().toISOString() });
+    this.approvals.delete(authority.id);
+    this.audit.push({ type: 'proposal-applying', proposalId: authority.id, timestamp: new Date().toISOString() });
 
-    if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
+    if (authority.bindingRevision !== fingerprint(this.binding?.() || null)) {
       proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      this.audit.push({ type: 'proposal-binding-mismatch', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
     }
 
-    if (fingerprint(currentState) !== proposal.revision) {
+    if (fingerprint(currentState) !== authority.revision) {
       proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
     }
     if (typeof apply !== 'function') {
       proposal.status = 'failed';
       throw new AIError('tool_failed', 'No mutation adapter is available.');
     }
+    let authorization = null;
     try {
-      await apply(proposalExecutionView(proposal));
+      const executionProposal = proposalExecutionView(proposal);
+      authorization = issueProposalAuthorization(this, proposal, executionProposal, approvalToken);
+      await apply(executionProposal, authorization);
       proposal.status = 'applied';
-      this.audit.push({ type: 'proposal-applied', proposalId: proposal.id, timestamp: new Date().toISOString() });
-      return proposal;
+      this.audit.push({ type: 'proposal-applied', proposalId: authority.id, timestamp: new Date().toISOString() });
+      return proposalSnapshot(proposal);
     } catch (error) {
       proposal.status = 'failed';
-      this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
+    } finally {
+      if (authorization) EXECUTION_AUTHORIZATIONS.delete(authorization);
     }
   }
 
-  require(id) {
-    if (typeof id !== 'string' || !id) throw new AIError('invalid_tool_call', 'Unknown proposal.');
-    const value = this.records.get(id);
-    if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
-    return value;
-  }
+  require(id) { return proposalSnapshot(requireProposalRecord(this, id)); }
   has(id) { return typeof id === 'string' && !!id && this.records.has(id); }
-  get(id) { return typeof id === 'string' && !!id ? this.records.get(id) || null : null; }
-  all() { return Array.from(this.records.values()); }
-  executionView(id) { return proposalExecutionView(this.require(id)); }
+  get(id) {
+    if (typeof id !== 'string' || !id) return null;
+    const value = this.records.get(id);
+    return value ? proposalSnapshot(value) : null;
+  }
+  all() { return Array.from(this.records.values(), (proposal) => proposalSnapshot(proposal)); }
+  executionView(id) { return proposalExecutionView(requireProposalRecord(this, id)); }
 }
+
+export function proposalCapability(proposal) {
+  return PROPOSAL_CAPABILITIES[proposal?.kind] || null;
+}
+
+export function proposalArguments(proposal) {
+  const target = proposalTarget(proposal?.target);
+  if (proposal?.kind === 'rename' || proposal?.kind === 'comment' || proposal?.kind === 'type') return { ...target, value: proposal.after };
+  if (proposal?.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
+  if (proposal?.kind === 'patch') return { ...target, before: proposalBytes(proposal.before), after: proposalBytes(proposal.after) };
+  return { ...target, value: proposal?.after };
+}
+
+export function consumeProposalAuthorization(authorization, capability, args) {
+  if (!authorization || typeof authorization !== 'object') return false;
+  const record = EXECUTION_AUTHORIZATIONS.get(authorization);
+  if (!record) return false;
+
+  // A branded authorization is single-use even when the attempted capability
+  // or arguments are wrong. This prevents a leaked authority from being probed
+  // and then replayed with a corrected mutation.
+  EXECUTION_AUTHORIZATIONS.delete(authorization);
+  try {
+    if (authorization.kind !== 'proposal' || authorization.token !== record.token || authorization.proposalId !== record.proposalId) return false;
+    if (record.store.records.get(record.proposalId) !== record.proposal || record.proposal.status !== 'applying') return false;
+    const authority = proposalAuthority(record.proposal);
+    if (authority.id !== record.proposalId || authority.capability !== record.capability || authority.bindingRevision !== record.bindingRevision) return false;
+    if (record.capability !== capability) return false;
+    if (fingerprint(record.store.binding?.() || null) !== record.bindingRevision) return false;
+    return fingerprint(args) === record.argumentsRevision;
+  } catch {
+    return false;
+  }
+}
+
+function issueProposalAuthorization(store, proposal, executionProposal, approvalToken) {
+  const authority = proposalAuthority(proposal);
+  const capability = authority.capability;
+  if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${authority.kind}`);
+  const authorization = Object.freeze({ kind: 'proposal', token: approvalToken, proposalId: authority.id });
+  EXECUTION_AUTHORIZATIONS.set(authorization, {
+    store,
+    proposal,
+    proposalId: authority.id,
+    token: approvalToken,
+    capability,
+    argumentsRevision: fingerprint(proposalArguments(executionProposal)),
+    bindingRevision: authority.bindingRevision,
+  });
+  return authorization;
+}
+
+function requireProposalRecord(store, id) {
+  if (typeof id !== 'string' || !id) throw new AIError('invalid_tool_call', 'Unknown proposal.');
+  const value = store.records.get(id);
+  if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
+  return value;
+}
+
+function proposalAuthority(proposal) {
+  const authority = PROPOSAL_AUTHORITIES.get(proposal);
+  if (!authority) throw new AIError('tool_failed', 'Proposal authority metadata is unavailable.');
+  return authority;
+}
+
+function proposalSnapshot(proposal) {
+  const authority = proposalAuthority(proposal);
+  return {
+    ...proposal,
+    id: authority.id,
+    kind: authority.kind,
+    target: jsonSafe(proposal.target),
+    before: jsonSafe(proposal.before),
+    after: jsonSafe(proposal.after),
+    evidenceIds: Array.isArray(proposal.evidenceIds) ? [...proposal.evidenceIds] : [],
+    revision: authority.revision,
+    binding: jsonSafe(proposal.binding),
+    bindingRevision: authority.bindingRevision,
+  };
+}
+
+function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
+function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
   if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
-  return { ...proposal, ...snapshotProposalPayload(payload) };
+  return { ...proposalSnapshot(proposal), ...snapshotProposalPayload(payload) };
 }
 
 function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
