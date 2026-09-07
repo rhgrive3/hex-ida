@@ -194,4 +194,11 @@ console.log('symbol identity regression: PASS');
   });
   assert.equal(Object.getPrototypeOf(proto.witnessModel), Object.prototype);
   assert.deepEqual(Object.getOwnPropertyDescriptor(proto.witnessModel, '__proto__').value, { safe:true });
+
+  assert.throws(() => createSymbolicEvidence({
+    ...base, witnessModel:new Map([[1,'number'],['1','string']]),
+  }), /map key projection collision/);
+  assert.throws(() => createSymbolicEvidence({
+    ...base, origins:new Map([[1,['origin-number']],['1',['origin-string']]]),
+  }), /map key projection collision/);
 }
