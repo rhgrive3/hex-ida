@@ -226,7 +226,14 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
     );
     if (!alternatives.length) return null;
-    const argumentIds = callNode.call?.arguments?.length ? callNode.call.arguments : callNode.inputs;
+    // Canonical Semantic IR carries the argument list independently from a
+    // runtime target value; an explicit empty array means a zero-argument
+    // call, not a missing field. `callNode.inputs` is a legacy fallback for
+    // fixtures that predate the canonical field, never an argument source
+    // when the canonical field exists.
+    const argumentIds = Array.isArray(callNode.call?.arguments)
+      ? callNode.call.arguments
+      : callNode.inputs;
     const composed = [];
     for (const provenance of alternatives) {
       let offset;
