@@ -162,6 +162,7 @@ test('#5883 an explicit argument list still transfers arg provenance', () => {
 test('#5883 local summary composition does not compose a target-only input as arg 0', () => {
   const { ir } = zeroArgIndirectCallIr();
   ir.inputs = ['fnptr'];
+  ir.nodes.push({ id: 'return0', blockId: 'entry', kind: 'return', inputs: ['ret0'] });
   // fnptr is a caller input, but the call carries canonical arguments: [].
   // The target value must not become argument 0 of this zero-argument call.
   const { summary } = buildLocalFunctionSummary(ir, null, { definitions: [], uses: [] }, null, {
@@ -170,6 +171,8 @@ test('#5883 local summary composition does not compose a target-only input as ar
   });
   assert.ok(summary, 'the caller summary still publishes');
   const composed = summary.returnProvenance ?? [];
+  assert.ok(composed.some((prov) => prov.kind === 'unknown' && prov.returnIndex === 0),
+    'a zero-argument call must retain unknown return provenance');
   assert.ok(!composed.some((prov) => prov.kind === 'arg' && prov.argIndex === 0 && prov.returnIndex === 0),
     'a zero-argument call must not manufacture kind:arg provenance from the callee target');
 });
