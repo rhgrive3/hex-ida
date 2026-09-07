@@ -27,15 +27,35 @@ function dyldBindingReasons(value, out) {
   }
 }
 
+function metadataObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function dyldBindingCompleteness(value) {
+  if (value == null) return { affirmative: false, unknown: false };
+  if (!metadataObject(value)) return { affirmative: false, unknown: true };
+  const hasStreams = Object.prototype.hasOwnProperty.call(value, 'streams');
+  if (hasStreams && !metadataObject(value.streams)) return { affirmative: false, unknown: true };
+  const streams = hasStreams ? value.streams : value;
+  const entries = Object.entries(streams).filter(([kind]) => kind !== 'complete' && kind !== 'streams');
+  const unknownStream = entries.some(([, status]) => !metadataObject(status) || status.complete !== true);
+  if (value.complete === false) return { affirmative: false, unknown: true };
+  if (value.complete === true) return { affirmative: true, unknown: unknownStream };
+  return { affirmative: entries.length > 0 && !unknownStream, unknown: entries.length === 0 || unknownStream };
+}
+
 export function machoSymbolTruth(image) {
   if (!image || image.format !== 'macho') return null;
   const metadata = image.metadata || {};
   const reasons = [];
   const components = [metadata.machoMetadata, metadata.chainedFixups, metadata.exportTrie, metadata.dyldBindings];
-  const hasAffirmativeCompleteness = components.some((value) => value && typeof value === 'object' && !Array.isArray(value) && value.complete === true);
-  const hasUnknownPresentComponent = components.some((value) => value != null && (
-    typeof value !== 'object' || Array.isArray(value) || value.complete !== true
-  ));
+  const componentStatuses = components.map((value, index) => index === 3
+    ? dyldBindingCompleteness(value)
+    : value == null
+      ? { affirmative: false, unknown: false }
+      : { affirmative: metadataObject(value) && value.complete === true, unknown: !metadataObject(value) || value.complete !== true });
+  const hasAffirmativeCompleteness = componentStatuses.some((status) => status.affirmative);
+  const hasUnknownPresentComponent = componentStatuses.some((status) => status.unknown);
   statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
   statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
   statusReasons(metadata.exportTrie, 'export-trie', reasons);

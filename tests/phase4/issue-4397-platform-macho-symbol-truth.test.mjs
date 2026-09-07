@@ -45,6 +45,20 @@ const explicitIncomplete = machoSymbolTruth({
 assert.equal(explicitIncomplete.complete, false);
 assert.deepEqual(explicitIncomplete.reasons, ['metadata-budget:incomplete']);
 
+const legacyDyldStreams = machoSymbolTruth({
+  format:'macho',
+  metadata:{ machoMetadata:{ complete:true }, dyldBindings:{ lazy:{ complete:true } } },
+});
+assert.equal(legacyDyldStreams.complete, true);
+assert.deepEqual(legacyDyldStreams.reasons, []);
+
+const unknownDyldStream = machoSymbolTruth({
+  format:'macho',
+  metadata:{ machoMetadata:{ complete:true }, dyldBindings:{ lazy:{} } },
+});
+assert.equal(unknownDyldStream.complete, false);
+assert.ok(unknownDyldStream.reasons.includes('symbol-metadata-unavailable'));
+
 const complete = machoSymbolTruth({
   format:'macho',
   metadata:{
