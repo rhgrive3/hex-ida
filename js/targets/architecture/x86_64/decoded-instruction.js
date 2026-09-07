@@ -10,19 +10,28 @@ const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed',
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value !== 'bigint') throw new TypeError(code);
 }
 
 function text(value, code, { empty = false } = {}) {
   const out = String(value ?? '').trim();
   if (!empty && !out) throw new TypeError(code);
   return out;
+}
+
+function instructionIdOf(value) {
+  if (value == null) return value;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  const instructionId = value.trim();
+  if (!instructionId) throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  return instructionId;
 }
 
 function detailStatusOf(value, detailAvailable) {
@@ -132,7 +141,12 @@ function normalizeOperand(input, index) {
         base,
         index:indexRegister,
         scale,
-        displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
+        displacement:bigint(
+          raw.displacement === undefined
+            ? (raw.disp === undefined ? 0n : raw.disp)
+            : raw.displacement,
+          'x86-decoded-instruction-invalid-displacement',
+        ),
         segment,
         addressSizeBits:integer(raw.addressSizeBits ?? 64, 'x86-decoded-instruction-invalid-address-size', { min:16, max:64 }),
       }),
@@ -209,7 +223,7 @@ export function createX86DecodedInstruction(input = {}) {
     // publishes a fresh defensive copy.
     get rawBytes() { return rawBytes.slice(); },
     mode,
-    instructionId:input.instructionId,
+    instructionId:instructionIdOf(input.instructionId),
     // Capstone SKIPDATA records carry instruction id 0 by contract
     // (cs_insn.id is 0 in Skipdata mode). The zero code is admitted only
     // for skipdata records and must be exactly 0; every other record keeps
