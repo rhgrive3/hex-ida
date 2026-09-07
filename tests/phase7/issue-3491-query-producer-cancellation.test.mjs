@@ -76,8 +76,14 @@ function cancellablePending() {
   const adapter = createAppAnalysisQueryAdapter(app);
   await assert.rejects(
     adapter.search(null, { text: 'needle' }, {}, { signal }),
-    (error) => error === reason,
+    (error) => {
+      assert.notEqual(error, reason, 'abort normalization must not reuse caller-owned reason');
+      assert.equal(error?.name, 'AbortError');
+      assert.equal(error?.message, reason.message);
+      return true;
+    },
   );
+  assert.equal(reason.name, 'AbortError', 'registration-race must not mutate the caller reason');
   assert.equal(request.cancelCount, 1, 'post-registration abort must not orphan the request');
 }
 
