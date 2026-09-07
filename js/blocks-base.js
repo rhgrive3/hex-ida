@@ -398,11 +398,16 @@ function targetOf(base, ops) {
   const isBranchImm = base === 'b' || base === 'bl' || /^b\.[a-z]{2}$/.test(base) ||
     base === 'cbz' || base === 'cbnz' || base === 'tbz' || base === 'tbnz';
   if (isBranchImm || base === 'adr' || base === 'adrp') {
+    const isBitTestBranch = base === 'tbz' || base === 'tbnz';
+    // TBZ/TBNZ have a fixed three-operand shape: register, bit index, target.
+    // If the architectural target is absent or malformed, do not reinterpret
+    // the bit index as a branch destination.
+    if (isBitTestBranch && (ops.length !== 3 || ops[2].k !== 'imm')) return null;
     // The last immediate is the architectural target (the preceding
     // immediate in TBZ/TBNZ is the bit index).  Zero is a valid address, but
     // negative values remain invalid target evidence and must not make us
     // fall back to that bit index.
-    const target = [...ops].reverse().find((op) => op.k === 'imm');
+    const target = isBitTestBranch ? ops[2] : [...ops].reverse().find((op) => op.k === 'imm');
     return target && target.value != null && target.value >= 0n ? target.value : null;
   }
   if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {

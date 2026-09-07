@@ -31,12 +31,14 @@ assert.equal(referenceTarget('bl', '#0x0'), 0n, 'bl to address 0 must keep its t
 assert.equal(referenceTarget('b.eq', '#0x0'), 0n, 'conditional branch to 0 must keep its target');
 assert.equal(referenceTarget('cbz', 'x0, #0x0'), 0n, 'cbz to address 0 must keep its target');
 assert.equal(referenceTarget('tbz', 'x0, #3, #0x0'), 0n, 'tbz must report the branch target, not the bit index');
+assert.equal(referenceTarget('tbnz', 'x0, #3, #0x0'), 0n, 'tbnz must report the branch target, not the bit index');
 assert.equal(referenceTarget('adr', 'x0, #0x0'), 0n, 'adr of address 0 must keep its target');
 assert.equal(referenceTarget('adrp', 'x0, #0x0'), 0n, 'adrp of page 0 must keep its target');
 assert.equal(referenceTarget('ldr', 'x0, #0x0'), 0n, 'literal load from address 0 must keep its target');
 // 通常の正のアドレスは今までどおり。
 assert.equal(referenceTarget('b', '#0x1000'), 0x1000n);
 assert.equal(referenceTarget('tbz', 'x0, #3, #0x1000'), 0x1000n);
+assert.equal(referenceTarget('tbnz', 'x0, #3, #0x1000'), 0x1000n);
 // 参照を持たない命令は今までどおり null。
 assert.equal(referenceTarget('add', 'x0, x1, #4'), null);
 assert.equal(referenceTarget('ret', ''), null);
@@ -49,6 +51,7 @@ const zeroTargets = [
   ['b.eq', '#0x0', 'branchTarget'],
   ['cbz', 'x0, #0x0', 'branchTarget'],
   ['tbz', 'x0, #3, #0x0', 'branchTarget'],
+  ['tbnz', 'x0, #3, #0x0', 'branchTarget'],
   ['adr', 'x0, #0x0', 'pcRelTarget'],
   ['adrp', 'x0, #0x0', 'pcRelTarget'],
   ['ldr', 'x0, #0x0', 'pcRelTarget'],
@@ -68,9 +71,22 @@ assert.ok(cfg.backEdges.some((edge) => edge.from === 1 && edge.to === 0),
 
 // Truly negative target evidence remains unknown. In particular, TBZ/TBNZ
 // must not mistake their preceding bit index for the rejected target.
-for (const [mn, ops] of [['b', '#-0x4'], ['tbz', 'x0, #3, #-0x4']]) {
+for (const [mn, ops] of [
+  ['b', '#-0x4'],
+  ['tbz', 'x0, #3, #-0x4'],
+  ['tbnz', 'x0, #3, #-0x4'],
+]) {
   const insn = makeInstruction({ row:0, address:0x1000n, mn, ops });
   assert.equal(insn.branchTarget, null, `${mn} negative target must stay unknown`);
+}
+
+// A missing or malformed TBZ/TBNZ target must stay unknown instead of
+// reinterpreting the bit index as a branch destination.
+for (const mn of ['tbz', 'tbnz']) {
+  const missing = makeInstruction({ row:0, address:0x1000n, mn, ops:'x0, #3' });
+  assert.equal(missing.branchTarget, null, `${mn} missing target must stay unknown`);
+  const malformed = makeInstruction({ row:0, address:0x1000n, mn, ops:'x0, #3, label' });
+  assert.equal(malformed.branchTarget, null, `${mn} malformed target must stay unknown`);
 }
 console.log('  ok 1b blocks-base address-zero targets and CFG edges (#3597)');
 
