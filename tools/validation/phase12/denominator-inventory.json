@@ -706,9 +706,9 @@
             "type": "source-includes",
             "path": "js/collaboration/index.js",
             "markers": [
-              "action || 'set'",
-              "operation.action === 'remove'",
-              "operation.action === 'resolve'",
+              "const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect'])",
+              "const actionInput = input.action ?? 'set'",
+              "!OPERATION_ACTIONS.has(action)",
               "operation.action !== 'resurrect'"
             ]
           }
@@ -808,12 +808,20 @@
             "end": "\n  }\n\n  accept(envelope)",
             "regex": "reason: '([^']+)'",
             "expected": [
+              "remote-envelope-shape-invalid",
               "remote-envelope-schema-unsupported",
               "remote-operation-schema-unsupported",
+              "remote-project-identity-required",
+              "remote-binary-identity-invalid",
+              "remote-session-identity-required",
+              "remote-actor-identity-required",
+              "remote-device-identity-required",
+              "remote-message-id-required",
               "remote-wrong-project",
               "remote-wrong-binary",
               "remote-wrong-session",
               "remote-sequence-invalid",
+              "remote-message-id-invalid",
               "remote-envelope-identity-mismatch",
               "remote-actor-revoked",
               "remote-actor-unauthorized",

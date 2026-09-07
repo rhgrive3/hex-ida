@@ -48,16 +48,19 @@ export function verifyRewrite(original, rewritten, opts = {}) {
   const variables = [...collectVariables(original), ...collectVariables(rewritten)];
   const names = [...new Set(variables)];
   let checked = 0;
+  let skipped = 0;
   for (const bits of widths) {
     for (let i = 0; i < seeds.length; i++) {
       const env = {};
       for (let j = 0; j < names.length; j++) env[names[j]] = u(seeds[(i + j) % seeds.length], bits);
       const a = evaluateExpression(original, env), b = evaluateExpression(rewritten, env);
-      if (a == null || b == null) continue;
+      if (a == null || b == null) { skipped++; continue; }
       checked++;
       if (u(a, original.bits || bits) !== u(b, rewritten.bits || bits)) return { equivalent: false, checked, counterexample: { bits, env, original: a, rewritten: b } };
     }
   }
+  if (checked === 0) return { equivalent: null, checked, skipped, reason: 'no-evaluable-samples' };
+  if (skipped > 0) return { equivalent: null, checked, skipped, reason: 'incomplete-evaluator-coverage' };
   return { equivalent: true, checked };
 }
 
@@ -84,5 +87,6 @@ export async function verifyWithFunctionSandbox(adapter, original, rewritten, ca
     const b = await adapter.execute(rewritten, c);
     if (JSON.stringify(a) !== JSON.stringify(b)) mismatches.push({ input: c, original: a, rewritten: b });
   }
+  if (cases.length === 0) return { available: true, equivalent: null, checked: 0, mismatches, reason: 'no-cases' };
   return { available: true, equivalent: mismatches.length === 0, checked: cases.length, mismatches: mismatches.slice(0, 8) };
 }

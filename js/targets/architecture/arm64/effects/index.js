@@ -453,7 +453,14 @@ function normalizedInstruction(decoded, context) {
   const normalizedPcRelTarget = addressImmediate && decoded.pcRelTarget == null
     ? (adrImmediate ?? directTargetOf(decoded))
     : decoded.pcRelTarget;
-  if (instructionId == null && origin == null && mode == null && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
+  // Preserve the original object when it already carries the required
+  // identity fields.  Rebuilding an otherwise-complete instruction here
+  // would launder proxy traps/accessor evidence before the immediate
+  // authority snapshot gets a chance to fail closed.
+  const needsIdentityAugmentation = (decoded.instructionId == null && instructionId != null)
+    || (decoded.origin == null && origin != null)
+    || (decoded.mode == null && mode != null);
+  if (!needsIdentityAugmentation && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
   return {
     ...decoded,
     ...(instructionId == null ? {} : { instructionId }),

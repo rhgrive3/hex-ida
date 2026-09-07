@@ -4,6 +4,66 @@ function printableAscii(c) {
   return c === 9 || (c >= 0x20 && c <= 0x7e);
 }
 
+function printableCodePoint(cp) {
+  if (cp === 9) return true;
+  if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
+  if (cp >= 0xd800 && cp <= 0xdfff) return false;
+  return cp <= 0x10ffff;
+}
+
+function utf8At(bytes, p, end = bytes.length) {
+  const b0 = bytes[p];
+  if (b0 < 0x80) return { cp: b0, bytes: 1 };
+  let n;
+  let min;
+  let cp;
+  if (b0 >= 0xc2 && b0 <= 0xdf) { n = 2; min = 0x80; cp = b0 & 0x1f; }
+  else if (b0 >= 0xe0 && b0 <= 0xef) { n = 3; min = 0x800; cp = b0 & 0x0f; }
+  else if (b0 >= 0xf0 && b0 <= 0xf4) { n = 4; min = 0x10000; cp = b0 & 0x07; }
+  else return null;
+  if (p + n > end) return null;
+  for (let i = 1; i < n; i++) {
+    const b = bytes[p + i];
+    if ((b & 0xc0) !== 0x80) return null;
+    cp = (cp << 6) | (b & 0x3f);
+  }
+  if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+  return { cp, bytes: n };
+}
+
+function incompleteUtf8Prefix(bytes, p, end = bytes.length) {
+  const b0 = bytes[p];
+  let n = 0;
+  if (b0 >= 0xc2 && b0 <= 0xdf) n = 2;
+  else if (b0 >= 0xe0 && b0 <= 0xef) n = 3;
+  else if (b0 >= 0xf0 && b0 <= 0xf4) n = 4;
+  if (!n || p + n <= end) return false;
+  for (let i = p + 1; i < end; i++) {
+    if ((bytes[i] & 0xc0) !== 0x80) return false;
+  }
+  return true;
+}
+
+function utf16At(bytes, p, end = bytes.length, be = false) {
+  if (p + 2 > end) return null;
+  const unit = be ? (bytes[p] << 8) | bytes[p + 1] : bytes[p] | (bytes[p + 1] << 8);
+  if (unit >= 0xd800 && unit <= 0xdbff) {
+    if (p + 4 > end) return null;
+    const next = be ? (bytes[p + 2] << 8) | bytes[p + 3] : bytes[p + 2] | (bytes[p + 3] << 8);
+    if (next < 0xdc00 || next > 0xdfff) return null;
+    return { cp: 0x10000 + ((unit - 0xd800) << 10) + (next - 0xdc00), bytes: 4 };
+  }
+  if (unit >= 0xdc00 && unit <= 0xdfff) return null;
+  return { cp: unit, bytes: 2 };
+}
+
+function incompleteUtf16Prefix(bytes, p, end = bytes.length, be = false) {
+  if (p >= end) return false;
+  if (p + 2 > end) return true;
+  const unit = be ? (bytes[p] << 8) | bytes[p + 1] : bytes[p] | (bytes[p + 1] << 8);
+  return unit >= 0xd800 && unit <= 0xdbff && p + 4 > end;
+}
+
 function finiteNumberOption(value, fallback, { zeroUsesDefault = false } = {}) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   if (zeroUsesDefault && value === 0) return fallback;
@@ -26,7 +86,7 @@ export async function scanSourceStrings(image, input, opts = {}) {
 
   for (const range of ranges) {
     let offset = range.start;
-    let asciiCarry = new Uint8Array(0);
+    let utf8Carry = new Uint8Array(0);
     const utf16Carries = new Map(utf16Encodings.map((enc) => [enc, new Uint8Array(0)]));
 
     while (offset < range.end && !capped) {
@@ -41,14 +101,14 @@ export async function scanSourceStrings(image, input, opts = {}) {
       }
       const isFinalBlock = offset + BigInt(block.length) >= range.end || !block.length;
 
-      const asciiBytes = asciiCarry.length ? concat(asciiCarry, block) : block;
-      const asciiBase = offset - BigInt(asciiCarry.length);
-      const asciiRes = scanAscii(image, asciiBytes, asciiBase, range, min, max, out, seen, limit, isFinalBlock);
-      if (asciiRes.capped) {
+      const utf8Bytes = utf8Carry.length ? concat(utf8Carry, block) : block;
+      const utf8Base = offset - BigInt(utf8Carry.length);
+      const utf8Res = scanUtf8(image, utf8Bytes, utf8Base, range, min, max, out, seen, limit, isFinalBlock);
+      if (utf8Res.capped) {
         capped = true;
         break;
       }
-      asciiCarry = asciiBytes.slice(asciiRes.unfinishedStart);
+      utf8Carry = utf8Bytes.slice(utf8Res.unfinishedStart);
 
       for (const encoding of utf16Encodings) {
         const carry = utf16Carries.get(encoding);
@@ -93,22 +153,37 @@ function mappedRanges(image, sourceSize, includeExecutable) {
   return ranges;
 }
 
-function scanAscii(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock) {
+function scanUtf8(image, bytes, base, range, min, max, out, seen, limit, isFinalBlock) {
   let unfinishedStart = bytes.length;
   for (let p = 0; p < bytes.length;) {
-    if (!printableAscii(bytes[p])) { p++; continue; }
+    const first = utf8At(bytes, p);
+    if (!first || !printableCodePoint(first.cp)) {
+      if (!isFinalBlock && !first && incompleteUtf8Prefix(bytes, p) && base + BigInt(bytes.length) < range.end) {
+        unfinishedStart = p;
+        break;
+      }
+      p++;
+      continue;
+    }
     const start = p;
     let q = p;
-    while (q < bytes.length && q - start < max && printableAscii(bytes[q])) q++;
-    if (!isFinalBlock && q === bytes.length && q - start < max && base + BigInt(q) < range.end) {
+    let chars = 0;
+    while (q < bytes.length && chars < max) {
+      const x = utf8At(bytes, q);
+      if (!x || !printableCodePoint(x.cp)) break;
+      q += x.bytes;
+      chars++;
+    }
+    if (!isFinalBlock && chars < max && base + BigInt(bytes.length) < range.end
+      && (q === bytes.length || incompleteUtf8Prefix(bytes, q))) {
       unfinishedStart = start;
       break;
     }
-    if (q - start >= min) {
+    if (chars >= min) {
       const { capped } = tryEmit(image, bytes, base, start, q - start, 'utf8', range, out, seen, limit);
       if (capped) return { unfinishedStart: bytes.length, capped: true };
     }
-    p = q < bytes.length && printableAscii(bytes[q]) ? q : Math.max(q + 1, p + 1);
+    p = chars >= max ? q : Math.max(q + (q < bytes.length ? 1 : 0), p + 1);
   }
   return { unfinishedStart, capped: false };
 }
@@ -123,16 +198,29 @@ function chooseUtf16Encodings(image, option) {
 
 function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock) {
   const be = encoding === 'utf16be';
-  const printableAt = (p) => p + 1 < bytes.length && (be ? bytes[p] === 0 && printableAscii(bytes[p + 1]) : printableAscii(bytes[p]) && bytes[p + 1] === 0);
   let unfinishedStart = bytes.length;
-  let lastCovered = 0;
-  for (let p = 0; p + 1 < bytes.length;) {
-    if (!printableAt(p)) { p++; continue; }
+  for (let p = 0; p < bytes.length;) {
+    const first = utf16At(bytes, p, bytes.length, be);
+    if (!first || !printableCodePoint(first.cp)) {
+      if (!isFinalBlock && !first && incompleteUtf16Prefix(bytes, p, bytes.length, be)
+        && base + BigInt(bytes.length) < range.end) {
+        unfinishedStart = p;
+        break;
+      }
+      p++;
+      continue;
+    }
     const start = p;
     let q = p;
     let chars = 0;
-    while (q + 1 < bytes.length && chars < max && printableAt(q)) { chars++; q += 2; }
-    if (!isFinalBlock && q + 1 >= bytes.length && chars < max && base + BigInt(q) < range.end) {
+    while (q < bytes.length && chars < max) {
+      const x = utf16At(bytes, q, bytes.length, be);
+      if (!x || !printableCodePoint(x.cp)) break;
+      q += x.bytes;
+      chars++;
+    }
+    if (!isFinalBlock && chars < max && base + BigInt(bytes.length) < range.end
+      && (q === bytes.length || incompleteUtf16Prefix(bytes, q, bytes.length, be))) {
       unfinishedStart = start;
       break;
     }
@@ -140,13 +228,7 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
       const { capped } = tryEmit(image, bytes, base, start, q - start, encoding, range, out, seen, limit);
       if (capped) return { unfinishedStart: bytes.length, capped: true };
     }
-    lastCovered = q;
-    p = chars === max && printableAt(q) ? q : Math.max(q + 1, p + 1);
-  }
-  if (unfinishedStart === bytes.length && !isFinalBlock && bytes.length > 0 && base + BigInt(bytes.length) < range.end) {
-    if (lastCovered < bytes.length) {
-      unfinishedStart = bytes.length - 1;
-    }
+    p = chars >= max ? q : Math.max(q + (q < bytes.length ? 1 : 0), p + 1);
   }
   return { unfinishedStart, capped: false };
 }
