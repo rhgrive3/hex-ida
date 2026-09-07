@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fuseFunctionCandidates, DiscoveryProducerRegistry, DISCOVERY_DEFAULT_BUDGET } from '../js/analysis/discovery/fusion.js';
+import { fuseFunctionCandidates, DiscoveryProducerRegistry, DISCOVERY_DEFAULT_BUDGET } from '../../../js/analysis/discovery/fusion.js';
 
 const mk = (pid, ev) => ({
   kind: 'export', authority: 'authoritative', extentRole: 'complete', start: '4096',

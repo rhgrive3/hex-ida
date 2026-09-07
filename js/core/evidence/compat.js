@@ -131,12 +131,7 @@ export function canonicalEvidenceToLegacyAi(node) {
   if (payload.entityId != null) out.entityId = payload.entityId;
   if (payload.functionId != null) out.functionId = payload.functionId;
   if (payload.instructionId != null) out.instructionId = payload.instructionId;
-  // Canonical binary binding is authoritative at the node level. A legacy
-  // record may duplicate binaryId/binaryHash in its payload, but a canonical
-  // node created through the core API carries only the top-level field —
-  // dropping it would lose the binary scope on conversion (#5782).
-  if (canonical.binaryId != null) out.binaryId = canonical.binaryId;
-  else if (payload.binaryId != null) out.binaryId = payload.binaryId;
+  if (payload.binaryId != null) out.binaryId = payload.binaryId;
   if (payload.binaryHash != null) out.binaryHash = payload.binaryHash;
   if (canonical.completeness != null) out.completeness = canonical.completeness;
   if (canonical.confidence != null) out.confidence = canonical.confidence;
