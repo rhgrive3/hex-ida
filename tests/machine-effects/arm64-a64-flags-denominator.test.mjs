@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -12,6 +11,7 @@ import {
   validateArm64A64FlagsDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-flags-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24); }
 function temporaryId(value) { return value?.kind === 'temporary' ? value.temporaryId : null; }
@@ -102,8 +102,7 @@ try {
 } finally { session.close(); }
 assert.equal(count, denominator.encodingCaseCount);
 
-const llvmMc=['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate)=>fs.existsSync(candidate));
-assert.ok(llvmMc);
+const llvmMc=resolveLlvmTool18('llvm-mc');
 const oracle=spawnSync(llvmMc,['--triple=aarch64','--show-encoding'],{
   input:'cmp x0, x1\ncmp x0, x1, uxtx #4\ncmp x0, #4095, lsl #12\ncmn w0, w1\ntst x0, x1, ror #63\ntst x0, #0x8000000000000001\nccmp x0, x1, #15, nv\nccmn w0, #31, #0, eq\n',encoding:'utf8',
 });

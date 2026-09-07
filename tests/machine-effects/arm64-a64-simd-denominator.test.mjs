@@ -23,30 +23,25 @@ import {
 } from '../../tools/validation/machine-effects/arm64-a64-simd-denominator.mjs';
 import { validateArm64A64DecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
-function executable(candidates) {
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
-}
 function assembleWithLlvmMc(source, directory) {
   const objectPath = path.join(directory, 'simd-denominator.o');
-  const llvmMc = executable(['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc','/usr/local/bin/llvm-mc']);
+  let llvmMc = null;
+  try { llvmMc = resolveLlvmTool18('llvm-mc'); } catch {}
   if (llvmMc) {
     const result = spawnSync(llvmMc, ['--triple=aarch64','--mattr=+fullfp16','--filetype=obj','-o',objectPath], { input:source, encoding:'utf8' });
     assert.equal(result.status, 0, `LLVM MC AArch64 assembly failed:\n${result.stderr}`);
     return { objectPath, oracle:'llvm-mc' };
   }
-  const clang = executable(['/usr/local/swift/usr/bin/clang','/usr/bin/clang-18','/usr/bin/clang','/usr/local/bin/clang']);
-  assert.ok(clang, 'LLVM MC or Clang integrated LLVM MC AArch64 oracle is required');
+  const clang = resolveLlvmTool18('clang');
   const result = spawnSync(clang, ['--target=aarch64-none-elf','-march=armv8.2-a+fp16','-x','assembler','-c','-o',objectPath,'-'], { input:source, encoding:'utf8' });
   assert.equal(result.status, 0, `Clang integrated LLVM MC AArch64 assembly failed:\n${result.stderr}`);
   return { objectPath, oracle:'clang-integrated-llvm-mc' };
 }
 function objectTextBytes(objectPath, directory) {
   const binaryPath = path.join(directory, 'simd-denominator.bin');
-  const objcopy = executable([
-    '/usr/bin/llvm-objcopy-18','/usr/bin/llvm-objcopy','/usr/local/bin/llvm-objcopy','/usr/local/swift/usr/bin/llvm-objcopy',
-  ]);
-  assert.ok(objcopy, 'llvm-objcopy is required for the SIMD denominator oracle');
+  const objcopy = resolveLlvmTool18('llvm-objcopy');
   const result = spawnSync(objcopy, ['-O','binary','--only-section=.text',objectPath,binaryPath], { encoding:'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return fs.readFileSync(binaryPath);

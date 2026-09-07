@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -17,6 +16,7 @@ import {
   validateArm64A64SystemDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-system-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 const CANONICAL_MEMORY_OWNER = new Set(['dmb','dsb','isb','clrex']);
 const ENVIRONMENT_REGISTERS = Object.freeze([
@@ -163,8 +163,7 @@ try {
 assert.equal(count, denominator.encodingCaseCount);
 assert.deepEqual([...observed].sort(), [...ARM64_SYSTEM_EFFECT_MNEMONICS].sort(), 'every system registry mnemonic must be emitted by deployed Capstone');
 
-const llvmMc = ['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate) => fs.existsSync(candidate));
-assert.ok(llvmMc, 'LLVM MC 18 AArch64 oracle is required');
+const llvmMc = resolveLlvmTool18('llvm-mc');
 const oracleInput = [...onePerMnemonic.values()].map((word) => (
   [...bytes32(word)].map((byte) => `0x${byte.toString(16).padStart(2, '0')}`).join(' ')
 )).join('\n');

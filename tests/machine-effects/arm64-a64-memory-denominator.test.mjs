@@ -20,17 +20,15 @@ import {
 } from '../../tools/validation/machine-effects/arm64-a64-memory-denominator.mjs';
 import { validateArm64A64DecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word) {
   const value = Number(word) >>> 0;
   return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, value >>> 24);
 }
-function executable(candidates) { return candidates.find((candidate) => fs.existsSync(candidate)); }
 function assembleCases(cases) {
-  const clang = executable(['/usr/bin/clang-18','/usr/bin/clang','/usr/local/swift/usr/bin/clang']);
-  const objdump = executable(['/usr/bin/llvm-objdump-18','/usr/bin/llvm-objdump','/usr/local/swift/usr/bin/llvm-objdump']);
-  assert.ok(clang, 'LLVM/Clang AArch64 integrated assembler is required');
-  assert.ok(objdump, 'LLVM objdump AArch64 disassembler is required');
+  const clang = resolveLlvmTool18('clang');
+  const objdump = resolveLlvmTool18('llvm-objdump');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arm64-memory-denominator-'));
   const source = path.join(directory, 'memory.s');
   const object = path.join(directory, 'memory.o');

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -18,6 +17,7 @@ import {
   validateArm64A64FpDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-fp-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word){const value=Number(word)>>>0;return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24);}
 function instruction(raw,id){return {instructionId:id,address:raw.address,mnemonic:raw.mnemonic,operands:raw.opStr,opStr:raw.opStr,ops:parseOperands(raw.opStr),mode:'a64',origin:{instructionIds:[id]}};}
@@ -137,8 +137,7 @@ try{
 }finally{session.close();}
 assert.equal(count,denominator.encodingCaseCount);
 
-const llvmMc=['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate)=>fs.existsSync(candidate));
-assert.ok(llvmMc,'LLVM MC 18 AArch64 oracle is required');
+const llvmMc=resolveLlvmTool18('llvm-mc');
 const onePerFamily=new Map();for(const item of arm64A64FpEncodingCases())if(!onePerFamily.has(item.familyId))onePerFamily.set(item.familyId,item.word);
 const oracleInput=[...onePerFamily.values()].map((word)=>[...bytes32(word)].map((byte)=>`0x${byte.toString(16).padStart(2,'0')}`).join(' ')).join('\n');
 const oracle=spawnSync(llvmMc,['--disassemble','--triple=aarch64','--mattr=+fullfp16'],{input:`${oracleInput}\n`,encoding:'utf8'});

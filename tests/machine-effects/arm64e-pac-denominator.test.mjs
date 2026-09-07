@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -12,6 +11,7 @@ import {
   validateArm64ePacDenominator,
 } from '../../tools/validation/machine-effects/arm64e-pac-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24); }
 const denominator = validateArm64ePacDenominator();
@@ -62,8 +62,7 @@ const spModifier=liftArm64eEffects({instructionId:'arm64e-pac:pacga-sp',mnemonic
 assert.equal(spModifier.completeness,'exact-with-intrinsic');
 assert.equal(spModifier.operations.some((operation)=>operation.kind==='register-read'&&operation.register?.registerId==='sp'),true);
 
-const llvmMc=['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate)=>fs.existsSync(candidate));
-assert.ok(llvmMc);
+const llvmMc=resolveLlvmTool18('llvm-mc');
 const sampleWords=ARM64E_PAC_ENCODING_FAMILIES.map(({match})=>match);
 const oracleInput=sampleWords.map((word)=>[...bytes32(word)].map((byte)=>`0x${byte.toString(16).padStart(2,'0')}`).join(' ')).join('\n');
 const oracle=spawnSync(llvmMc,['--disassemble','--triple=aarch64','--mattr=+pauth'],{input:`${oracleInput}\n`,encoding:'utf8'});

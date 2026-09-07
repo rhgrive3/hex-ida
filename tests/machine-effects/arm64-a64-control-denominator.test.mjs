@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -12,6 +11,7 @@ import {
   validateArm64A64ControlDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-control-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word) {
   const value = Number(word) >>> 0;
@@ -95,8 +95,7 @@ assert.equal(count, denominator.encodingCaseCount);
 // LLVM MC is independent of both the bundled Capstone decoder and the
 // MachineEffects implementation. Sample every encoding family, aliases and
 // boundary forms through its AArch64 disassembler.
-const llvmMc = ['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate) => fs.existsSync(candidate));
-assert.ok(llvmMc, 'LLVM MC 18 AArch64 oracle is required');
+const llvmMc = resolveLlvmTool18('llvm-mc');
 const oracleWords = [
   0x14000001,0x94000001,0x54000020,0x34000020,0xb5000021,
   0x36000022,0xb7080023,0xd61f0060,0xd63f0080,0xd65f03c0,

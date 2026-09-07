@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { parseOperands } from '../../js/arm64.js';
@@ -14,6 +13,7 @@ import {
   validateArm64A64IntegerDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-integer-denominator.mjs';
 import { createCapstoneArm64Session } from './helpers/arm64-capstone-session.mjs';
+import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 
 function bytes32(word) {
   const value = Number(word) >>> 0;
@@ -137,8 +137,7 @@ assert.equal(count, denominator.encodingCaseCount - 2);
 // LLVM MC is independent of both bundled Capstone and MachineEffects. Sample
 // every standard encoding row through the disassembler, then bind the newer
 // CSSC row through LLVM's explicit architectural feature gate.
-const llvmMc = ['/usr/bin/llvm-mc-18','/usr/bin/llvm-mc'].find((candidate) => fs.existsSync(candidate));
-assert.ok(llvmMc, 'LLVM MC 18 AArch64 oracle is required');
+const llvmMc = resolveLlvmTool18('llvm-mc');
 const onePerFamily = new Map();
 for (const item of arm64A64IntegerEncodingCases()) if (!onePerFamily.has(item.familyId)) onePerFamily.set(item.familyId,item.word);
 const standardWords = [...onePerFamily].filter(([id]) => id !== 'abs-cssc').map(([,word]) => word);
