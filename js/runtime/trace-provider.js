@@ -1,3 +1,4 @@
+2cb57b32afb4c5cee5f9cd2c9d34f233a43042fb
 import { deepFreeze, stableStringify } from '../core/identity/index.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
