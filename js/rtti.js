@@ -4,7 +4,7 @@ const OPERATORS={nw:'operator new',na:'operator new[]',dl:'operator delete',da:'
 
 export function demangleCxx(name){
   if(typeof name !== 'string' || !name)return null;
-  const s=name.replace(/^_/,'');
+  const s=name.startsWith('__Z')?name.slice(1):name;
   if(!s.startsWith('_Z'))return null;
   const p={s,i:2,subs:[]};
   try{
