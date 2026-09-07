@@ -484,13 +484,15 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
+  // Only canonical wire-contract fields are read here. Extra fields a forged
+  // serialized summary might carry (addressSpace/separationClass/
+  // separationAuthority) are not producer-emittable and must never become
+  // target authority (#5956).
   return createPointsToTarget({
-    addressSpace: provenance.addressSpace == null ? 'memory' : String(provenance.addressSpace),
+    addressSpace: 'memory',
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
     rootIdentity: provenance.rootIdentity ?? null,
     rootEntityId: String(rootEntityId),
-    separationClass: provenance.separationClass ?? null,
-    separationAuthority: provenance.separationAuthority ?? null,
     offsetRange: exactRange(offset),
     widthBits,
     evidenceIds,
