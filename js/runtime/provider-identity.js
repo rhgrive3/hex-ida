@@ -156,8 +156,12 @@ export class RuntimeModuleBindingTable {
     if (active && active.unloadedSequence == null) {
       throw new DebugAdapterError('module-binding-already-loaded', `runtime module binding is already loaded: ${bindingKey}`, { bindingKey, generation: active.generation });
     }
+    const bindingInput = { ...input, bindingKey };
+    if (bindingInput.unloadedSequence != null) {
+      throw new DebugAdapterError('invalid-module-sequence', 'runtime module load cannot include unloadedSequence', { bindingKey });
+    }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    const binding = normalizeBinding({ ...input, bindingKey }, this.runtimeSessionId, generation);
+    const binding = normalizeBinding(bindingInput, this.runtimeSessionId, generation);
     this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);
