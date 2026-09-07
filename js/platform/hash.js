@@ -4,6 +4,28 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
+// A valid class expression may put a comment between `class` and its name or
+// body. The slash alternative is intentionally syntax-only: Function#toString
+// has already returned source for a function-valued input, so this does not
+// attempt to execute or inspect the constructor.
+const DIRECT_CLASS_SOURCE = /^\s*class(?:\s|\/|\{)/;
+
+function optionalProgressCallback(value) {
+  if (typeof value !== 'function') return null;
+  try {
+    // The linked issue's public boundary is `typeof value === 'function'`.
+    // Direct class syntax is the one constructor-only form that can be
+    // identified without running user code; opaque function values retain the
+    // existing callback behavior because standard reflection cannot distinguish
+    // a bound ordinary callback from a bound class constructor.
+    const source = Function.prototype.toString.call(value);
+    if (DIRECT_CLASS_SOURCE.test(source)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
   const error = new Error('hash cancelled');
@@ -14,6 +36,7 @@ function throwIfAborted(signal) {
 
 export async function hashByteSource(input, options = {}) {
   const source = asByteSource(input);
+  const onProgress = optionalProgressCallback(options.onProgress);
   throwIfAborted(options.signal);
   const chunkSize = Math.min(options.chunkSize ?? 1024 * 1024, source.maxReadLength);
   if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
@@ -29,7 +52,7 @@ export async function hashByteSource(input, options = {}) {
       hash = (hash * FNV_PRIME) & MASK64;
     }
     offset += BigInt(bytes.length);
-    options.onProgress?.({ done: offset, total: source.size });
+    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
   return `fnv1a64:${source.size.toString(16)}:${hash.toString(16).padStart(16, '0')}`;
 }
@@ -37,6 +60,9 @@ export async function hashByteSource(input, options = {}) {
 export function hashBytes(bytes) {
   let hash = FNV_OFFSET;
   for (const b of bytes || []) {
+    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
+      throw new TypeError('hashBytes byte must be an integer 0..255');
+    }
     hash ^= BigInt(b);
     hash = (hash * FNV_PRIME) & MASK64;
   }
@@ -56,6 +82,7 @@ function bytesHex(bytes) {
  */
 export async function sha256TreeByteSource(input, options = {}) {
   const source = asByteSource(input);
+  const onProgress = optionalProgressCallback(options.onProgress);
   throwIfAborted(options.signal);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) {
@@ -75,7 +102,7 @@ export async function sha256TreeByteSource(input, options = {}) {
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
     digests.push(new Uint8Array(await subtle.digest('SHA-256', bytes)));
     offset += BigInt(bytes.byteLength);
-    options.onProgress?.({ done: offset, total: source.size });
+    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
 
   const header = new TextEncoder().encode(

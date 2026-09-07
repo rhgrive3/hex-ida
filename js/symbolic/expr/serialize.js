@@ -30,14 +30,14 @@ import {
 export const EXPR_SCHEMA_VERSION = '1.0.0';
 export const EXPR_DAG_VERSION = '1.0.0';
 
-function canonicalizeObject(obj) {
+export function canonicalizeObject(obj) {
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
   if (Array.isArray(obj)) {
     return obj.map(canonicalizeObject);
   }
-  const sorted = {};
+  const sorted = Object.create(null);
   for (const key of Object.keys(obj).sort()) {
     sorted[key] = canonicalizeObject(obj[key]);
   }
@@ -149,10 +149,39 @@ function sortFromPlain(plain) {
  * first so traversal order cannot mint a replacement that collides with an id
  * already present in the payload.
  */
-function reserveCanonicalFreshSymbolIds(plain) {
+function sortKey(sort) {
+  return sort.kind === SORT_KIND.BOOL ? 'bool' : `bv:${sort.width}`;
+}
+
+/*
+ * Fresh symbols bind to solver environments by symbolId, so one deserialize
+ * operation must never produce two nodes sharing a symbolId with divergent
+ * declarations. The same id may legitimately reappear (DAG sharing), but only
+ * with an identical name and sort; anything else would split structural
+ * identity from binding identity and is rejected as malformed.
+ */
+function assertConsistentFreshSymbolDeclaration(seen, plain) {
+  const symbolId = typeof plain.symbolId === 'string' ? plain.symbolId : null;
+  if (symbolId == null || symbolId.trim() === '') return;
+  const declaration = { name: plain.name, sort: sortKey(sortFromPlain(plain)) };
+  const existing = seen.get(symbolId);
+  if (existing) {
+    if (existing.name !== declaration.name || existing.sort !== declaration.sort) {
+      throw new TypeError(
+        `plainToExpr: conflicting fresh symbol declaration for symbolId '${symbolId}'`
+        + ` (${existing.name}/${existing.sort} vs ${declaration.name}/${declaration.sort})`,
+      );
+    }
+    return;
+  }
+  seen.set(symbolId, declaration);
+}
+
+function reserveCanonicalFreshSymbolIds(plain, seen = new Map()) {
   if (!plain || typeof plain !== 'object') return;
   switch (plain.kind) {
     case EXPR_KIND.FRESH_SYMBOL:
+      assertConsistentFreshSymbolDeclaration(seen, plain);
       if (typeof plain.symbolId === 'string' && plain.symbolId.trim() !== '') {
         restoreFreshSymbol(sortFromPlain(plain), plain.name, plain.symbolId, plain.meta || {});
       }
@@ -160,21 +189,21 @@ function reserveCanonicalFreshSymbolIds(plain) {
     case EXPR_KIND.UNARY:
     case EXPR_KIND.EXTRACT:
     case EXPR_KIND.CAST:
-      reserveCanonicalFreshSymbolIds(plain.arg);
+      reserveCanonicalFreshSymbolIds(plain.arg, seen);
       return;
     case EXPR_KIND.BINARY:
     case EXPR_KIND.COMPARE:
     case EXPR_KIND.CONCAT:
-      reserveCanonicalFreshSymbolIds(plain.left);
-      reserveCanonicalFreshSymbolIds(plain.right);
+      reserveCanonicalFreshSymbolIds(plain.left, seen);
+      reserveCanonicalFreshSymbolIds(plain.right, seen);
       return;
     case EXPR_KIND.CONNECTIVE:
-      for (const arg of plain.args || []) reserveCanonicalFreshSymbolIds(arg);
+      for (const arg of plain.args || []) reserveCanonicalFreshSymbolIds(arg, seen);
       return;
     case EXPR_KIND.ITE:
-      reserveCanonicalFreshSymbolIds(plain.cond);
-      reserveCanonicalFreshSymbolIds(plain.thenExpr);
-      reserveCanonicalFreshSymbolIds(plain.elseExpr);
+      reserveCanonicalFreshSymbolIds(plain.cond, seen);
+      reserveCanonicalFreshSymbolIds(plain.thenExpr, seen);
+      reserveCanonicalFreshSymbolIds(plain.elseExpr, seen);
       return;
     default:
       return;
@@ -188,9 +217,21 @@ function plainNodeToExpr(plain) {
   switch (plain.kind) {
     case EXPR_KIND.CONST:
       if (sort.kind === SORT_KIND.BOOL) {
+        if (typeof plain.value !== 'boolean') {
+          throw new TypeError(`deserializeExprDag: Bool const value must be a boolean, got ${typeof plain.value}`);
+        }
         return createBool(plain.value);
       }
-      return createBv(sort.width, BigInt(plain.value));
+      if (typeof plain.value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(plain.value)) {
+        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+      }
+      {
+        const value = createBv(sort.width, BigInt(plain.value));
+        if (plain.value !== `0x${value.value.toString(16)}`) {
+          throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+        }
+        return value;
+      }
 
     case EXPR_KIND.FRESH_SYMBOL:
       // Restore the saved canonical symbolId. Discarding a present malformed ID

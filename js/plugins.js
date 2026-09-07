@@ -7,9 +7,30 @@
  * the startup module graph and load only when a plugin is actually installed
  * or run, so the startup boundary below is dynamic-import only.
  */
+import { stableDigest } from './core/identity/index.js';
+
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
+
+// A persisted v3 manifest must be provably derived from the source it claims:
+// install() records digests of the source and of the canonical discovery
+// result, and the restore fast path verifies both before trusting the
+// persisted definitions (#6080). Without this binding, drifted/corrupted
+// metadata executes defs[index] of a DIFFERENT plugin than the displayed name.
+function manifestSourceDigest(source) { return stableDigest(source); }
+function manifestDefinitionsDigest(definitions) { return stableDigest(definitions); }
+function manifestIsBound(record) {
+  return record.sourceDigest === manifestSourceDigest(record.source)
+    && record.definitionsDigest === manifestDefinitionsDigest(record.definitions);
+}
+function selectedPluginIsBound(plugin, installation) {
+  if (!installation || installation.source !== plugin.source || !Array.isArray(installation.definitions)) return false;
+  const definition = installation.definitions.find((candidate) => candidate?.index === plugin.index);
+  return !!definition
+    && definition.name === plugin.name
+    && definition.description === plugin.description;
+}
 let fallbackInstallSeq = 1;
 
 let scriptSandboxPromise = null;
@@ -26,6 +47,27 @@ function loadScriptSandbox() {
 function newInstallId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `install_${Date.now().toString(36)}_${(fallbackInstallSeq++).toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+function snapshotRegistryState(host) {
+  return {
+    plugins: host.plugins.slice(),
+    installations: new Map(host.installations),
+  };
+}
+
+function restoreRegistryState(host, snapshot) {
+  host.plugins = snapshot.plugins;
+  host.installations.clear();
+  for (const [id, installation] of snapshot.installations) {
+    host.installations.set(id, installation);
+  }
+}
+
+function saveRegistryOrRollback(host, snapshot) {
+  const saved = host.save();
+  if (!saved.ok) restoreRegistryState(host, snapshot);
+  return saved;
 }
 
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
@@ -84,6 +126,19 @@ export class PluginHost {
         if (!p || typeof p.source !== 'string') continue;
         // v3 manifest fast path: restore registry directly without sandbox execution
         if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+          // #6080: the fast path is only sound while the persisted definitions
+          // are provably the discovery result of the persisted source. A
+          // manifest without (or failing) the source/definitions binding falls
+          // back to real discovery so the executed defs[index] always matches
+          // the displayed metadata.
+          if (!manifestIsBound(p)) {
+            await this.install(p.source, p.origin || '保存されたもの', {
+              silent: true,
+              installationId: p.installationId,
+              enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+            });
+            continue;
+          }
           const installationId = String(p.installationId);
           const enabled = Array.isArray(p.enabledIndexes)
             ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
@@ -106,6 +161,8 @@ export class PluginHost {
             origin: p.origin || '保存されたもの',
             definitions: p.definitions,
             enabledIndexes: Array.from(enabled),
+            sourceDigest: p.sourceDigest,
+            definitionsDigest: p.definitionsDigest,
           });
           continue;
         }
@@ -138,19 +195,24 @@ export class PluginHost {
         origin: inst.origin,
         definitions: inst.definitions || [],
         enabledIndexes: activeIndexes,
+        ...(inst.sourceDigest == null ? {} : { sourceDigest: inst.sourceDigest }),
+        ...(inst.definitionsDigest == null ? {} : { definitionsDigest: inst.definitionsDigest }),
       });
     }
     for (const p of this.plugins) {
       if (seen.has(p.installationId)) continue;
       seen.add(p.installationId);
       const activePlugins = this.plugins.filter((x) => x.installationId === p.installationId);
+      const definitions = activePlugins.map((x) => ({ index: x.index, name: x.name, description: x.description }));
       list.push({
         v: 3,
         installationId: p.installationId,
         source: p.source,
         origin: p.origin,
-        definitions: activePlugins.map((x) => ({ index: x.index, name: x.name, description: x.description })),
+        definitions,
         enabledIndexes: activePlugins.map((x) => x.index),
+        sourceDigest: manifestSourceDigest(p.source),
+        definitionsDigest: manifestDefinitionsDigest(definitions),
       });
     }
     try {
@@ -179,6 +241,8 @@ export class PluginHost {
       name: def.name,
       description: def.description,
     }));
+    const sourceDigest = manifestSourceDigest(source);
+    const definitionsDigest = manifestDefinitionsDigest(definitions);
     const all = definitions.map((def) => ({
       id: `${installationId}:${def.index}`,
       installationId,
@@ -194,6 +258,7 @@ export class PluginHost {
        a fresh installation may not. */
     if (!added.length && !enabled) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
 
+    const before = !opts.silent ? snapshotRegistryState(this) : null;
     this.installations.set(installationId, {
       v: 3,
       installationId,
@@ -201,14 +266,14 @@ export class PluginHost {
       origin: origin || '不明',
       definitions,
       enabledIndexes: added.map((p) => p.index),
+      sourceDigest,
+      definitionsDigest,
     });
 
-    const before = this.plugins.slice();
     this.plugins.push(...added);
     if (!opts.silent) {
-      const saved = this.save();
+      const saved = saveRegistryOrRollback(this, before);
       if (!saved.ok) {
-        this.plugins = before;
         return { error: 'プラグインを保存できませんでした: ' + saved.error, persistenceError: true };
       }
     }
@@ -241,12 +306,11 @@ export class PluginHost {
   }
 
   clear() {
-    const before = this.plugins.slice();
+    const before = snapshotRegistryState(this);
     this.plugins = [];
     this.installations.clear();
-    const saved = this.save();
+    const saved = saveRegistryOrRollback(this, before);
     if (!saved.ok) {
-      this.plugins = before;
       return { ok: false, error: saved.error, persistenceError: true };
     }
     return { ok: true };
@@ -255,12 +319,20 @@ export class PluginHost {
   async run(id, out, options = {}) {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
+    // The manifest check protects restore, but the public registry objects can
+    // still be mutated after load. Never execute a selected entry whose source
+    // or display metadata has drifted from its canonical installation record.
+    const installation = this.installations.get(p.installationId);
+    if (!selectedPluginIsBound(p, installation)) {
+      return { error: 'プラグイン定義が保存内容と一致しません。再読み込みしてください。' };
+    }
     const signal = options?.signal ?? null;
     if (signal?.aborted) return { error:'キャンセルされました。', aborted:true };
     const { createApi, runInSandbox } = await loadScriptSandbox();
     const { api, print } = createApi(this.app, out, options);
     return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
-      out: (...args) => print(...args), signal });
+      out: (...args) => print(...args),
+      expectedDefinition: { name: p.name, description: p.description }, signal });
   }
 }
 

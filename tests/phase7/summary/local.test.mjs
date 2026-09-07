@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { summaryIsPure, summaryMayWriteRegion } from '../../../js/analysis/summary/contract.js';
+import { createFunctionSummary, summaryIsPure, summaryMayWriteRegion } from '../../../js/analysis/summary/contract.js';
 import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
 import { buildFixture, regionOf } from '../corpus/fixtures.mjs';
 
@@ -68,13 +68,20 @@ test('a resolved callee summary folds in with proven authority', () => {
   const built = buildFixture('pure-call-no-barrier');
   const callNode = built.ir.nodes.find((node) => node.kind === 'call');
   assert.ok(callNode, 'the fixture must contain a call to fold into');
-  // The fixture's call carries no target entity, so the fold path is exercised
-  // through an explicit mapping keyed the way a resolved callee would be.
+  const calleeId = callNode.call.targetEntityIds[0];
+  assert.ok(calleeId, 'the known pure-call fixture must identify its callee');
+  const callee = createFunctionSummary({ ...donor, functionId: calleeId,
+    status: { ...donor.status, snapshotId: 'snapshot-resolved-callee' } });
   const { summary } = buildLocalFunctionSummary(built.ir, built.cfg, built.ssa, built.memorySsa, {
+    snapshotId: 'snapshot-resolved-callee',
     resolveRegion: built.resolveRegion,
-    calleeSummaries: new Map([['fn_absent', donor]]),
+    calleeSummaries: new Map([[calleeId, callee]]),
   });
   assert.equal(summary.status.completeness, 'complete');
+  assert.ok(summary.directCalls.some((call) => call.summaryId === calleeId));
+  for (const effect of callee.memoryWriteRegions) {
+    assert.ok(summary.memoryWriteRegions.some((folded) => folded.regionId === effect.regionId));
+  }
 });
 
 test('cancellation produces no summary at all', () => {

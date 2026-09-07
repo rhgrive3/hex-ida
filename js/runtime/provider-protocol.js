@@ -64,6 +64,33 @@ function normalizeFacetList(value) {
   return out.sort();
 }
 
+function invalidRequestSignal() {
+  return new DebugAdapterError('invalid-argument', 'provider request signal must be AbortSignal-compatible');
+}
+
+function readSignalAborted(signal) {
+  let aborted;
+  try { aborted = signal.aborted; }
+  catch { throw invalidRequestSignal(); }
+  if (typeof aborted !== 'boolean') throw invalidRequestSignal();
+  return aborted;
+}
+
+function requestSignal(value) {
+  if (value == null) return null;
+  let addEventListener;
+  let removeEventListener;
+  try {
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+  } catch {
+    throw invalidRequestSignal();
+  }
+  if (typeof addEventListener !== 'function' || typeof removeEventListener !== 'function') throw invalidRequestSignal();
+  readSignalAborted(value);
+  return value;
+}
+
 export function validateProviderPacket(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DebugAdapterError('malformed-provider-data', 'provider packet must be an object');
   const packet = decodeWireValue(encodeWireValue(input));
@@ -170,6 +197,7 @@ export class RuntimeProviderProtocolClient {
 
   async request(method, payload = null, options = {}) {
     if (this.closed) throw new DebugAdapterError('disconnected', 'provider protocol client is closed');
+    const signal = requestSignal(options.signal);
     if (this.pending.size >= this.maxPending) throw new DebugAdapterError('backpressure', 'provider pending request limit reached');
     const id = this.#allocateId();
     const packet = validateProviderPacket({
@@ -184,20 +212,26 @@ export class RuntimeProviderProtocolClient {
     });
     const timeoutMs = boundedInteger(options.timeoutMs, this.timeoutMs, 10, 60000, 'timeoutMs');
     return new Promise((resolve, reject) => {
-      const pending = { resolve, reject, signal: options.signal, abort: null, timer: null, epoch: this.epoch };
+      const pending = { resolve, reject, signal, abort: null, timer: null, epoch: this.epoch };
       this.pending.set(id, pending);
       pending.timer = setTimeout(() => {
         this.#finish(id, pending, new DebugAdapterError('timeout', `provider request timed out: ${method}`));
         try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
       }, timeoutMs);
-      if (options.signal) {
+      if (signal) {
         pending.abort = () => {
+          if (this.pending.get(id) !== pending) return;
           this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`));
           try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
         };
-        options.signal.addEventListener('abort', pending.abort, { once: true });
-        if (options.signal.aborted) {
-          pending.abort();
+        try {
+          signal.addEventListener('abort', pending.abort, { once: true });
+          if (readSignalAborted(signal)) {
+            pending.abort();
+            return;
+          }
+        } catch {
+          this.#finish(id, pending, invalidRequestSignal());
           return;
         }
       }
@@ -211,6 +245,10 @@ export class RuntimeProviderProtocolClient {
     let packet;
     try { packet = validateProviderPacket(input); }
     catch { return false; }
+    if (packet.type === 'close') {
+      this.close();
+      return true;
+    }
     if (packet.type === 'event-batch') {
       if (packet.epoch !== this.epoch) return false;
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
@@ -219,15 +257,33 @@ export class RuntimeProviderProtocolClient {
     if (!['response', 'error'].includes(packet.type)) return false;
     const pending = this.pending.get(packet.id);
     if (!pending || packet.epoch !== pending.epoch || packet.epoch !== this.epoch) return false;
-    if (packet.type === 'error') this.#finish(packet.id, pending, new DebugAdapterError(packet.code || 'provider-failure', packet.message || 'provider request failed', packet.details || null));
-    else this.#finish(packet.id, pending, null, packet.result);
+    if (packet.type === 'error') {
+      // `code` and `message` become DebugAdapterError identity fields.
+      // Structured wire values must not be laundered into that identity.
+      const code = typeof packet.code === 'string' && packet.code ? packet.code : 'provider-failure';
+      const message = typeof packet.message === 'string' && packet.message ? packet.message : 'provider request failed';
+      this.#finish(packet.id, pending, new DebugAdapterError(code, message, packet.details || null));
+    } else this.#finish(packet.id, pending, null, packet.result);
     return true;
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
-    for (const [id, pending] of this.pending) this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+    // A client close must cancel in-flight work on the wire as well as reject
+    // local promises, otherwise the provider keeps executing orphaned requests.
+    for (const [id, pending] of [...this.pending]) {
+      this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+      try {
+        this.transport.send(validateProviderPacket({
+          protocol: RUNTIME_PROVIDER_PROTOCOL,
+          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+          type: 'cancel',
+          id,
+          epoch: pending.epoch,
+        }));
+      } catch {}
+    }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
     this.listeners.clear();
@@ -243,7 +299,9 @@ export class RuntimeProviderProtocolClient {
     if (!this.pending.has(id) && pending.timer == null) return;
     clearTimeout(pending.timer);
     pending.timer = null;
-    if (pending.signal && pending.abort) pending.signal.removeEventListener('abort', pending.abort);
+    if (pending.signal && pending.abort) {
+      try { pending.signal.removeEventListener('abort', pending.abort); } catch {}
+    }
     this.pending.delete(id);
     if (error) pending.reject(error); else pending.resolve(value);
   }

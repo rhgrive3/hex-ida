@@ -127,10 +127,8 @@ const partialCases = [
   malformed({ family:'jrcxz', operands:[{type:'immediate',value:0x6000n,access:'read'}], prefixes:[0x67], addressSizeBits:32, bytes:[0x67,0xe3,0] }),
   malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', prefixes:[0xf0], bytes:[0xf0,0x74,0] }),
   malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', prefixes:[0xf2,0xf3], bytes:[0xf2,0xf3,0x74,0] }),
-  malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', addressSizeBits:16, bytes:[0x74,0] }),
   malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', prefixes:[0x67], addressSizeBits:64, bytes:[0x67,0x74,0] }),
   malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', vector:{kind:'vex2',bytes:[0xc5,0xf8]} }),
-  createX86DecodedInstruction({ instructionId:'x86-control-negative:rex', instructionCode:1, instructionFamily:'je', address:0x5000n, length:2, rawBytes:Uint8Array.from([0x74,0]), mode:'long-64', detailAvailable:true, detailStatus:'complete', detail:{ operandCount:1, operands:[{type:'immediate',value:0x6000n,access:'read'}], implicitReads:[], implicitWrites:[], conditionCode:'e', addressSizeBits:64, prefixes:{legacy:[],rex:0xff,vector:null} } }),
   malformed({ family:'call', operands:[{type:'immediate',value:0x6000n,access:'read'}], featureState:{cet:{shadowStackEnabled:true}} }),
   malformed({ family:'ret', operands:[], featureState:{mpx:{enabled:true,bndPreserve:false}} }),
   malformed({ family:'jmp', operands:[{type:'immediate',value:0x6000n,access:'read'}], featureProfileId:'x86_64:long-64+cet-shadow-stack' }),
@@ -142,6 +140,17 @@ for (const instruction of partialCases) {
   assert.equal(bundle.controlEffect.kind, 'unknown', bundle.unknownEffects?.reason);
 }
 
+// #6002: a 16-bit effective address size cannot exist in long-64 mode, so the
+// canonical boundary rejects it instead of producing an unmodelled instruction.
+assert.throws(
+  () => malformed({ family:'je', operands:[{type:'immediate',value:0x6000n,access:'read'}], conditionCode:'e', addressSizeBits:16, bytes:[0x74,0] }),
+  /invalid-address-size/,
+);
+// #6037: only 0x40-0x4F is the REX prefix domain; 0xff is not a REX byte.
+assert.throws(
+  () => createX86DecodedInstruction({ instructionId:'x86-control-negative:rex', instructionCode:1, instructionFamily:'je', address:0x5000n, length:2, rawBytes:Uint8Array.from([0x74,0]), mode:'long-64', detailAvailable:true, detailStatus:'complete', detail:{ operandCount:1, operands:[{type:'immediate',value:0x6000n,access:'read'}], implicitReads:[], implicitWrites:[], conditionCode:'e', addressSizeBits:64, prefixes:{legacy:[],rex:0xff,vector:null} } }),
+  /invalid-rex/,
+);
 assert.throws(() => malformed({ mode:'legacy-32', family:'jmp', operands:[{type:'immediate',value:0x6000n,access:'read'}] }), /mode-unsupported/);
 assert.throws(() => createX86DecodedInstruction({
   instructionId:'x86-control-negative:operand-count', instructionCode:1, instructionFamily:'jmp',

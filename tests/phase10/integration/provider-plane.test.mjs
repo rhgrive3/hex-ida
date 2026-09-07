@@ -99,11 +99,11 @@ test('P10.I runtime evidence can contradict a static claim only after verified m
     runtimeSessionId: 'runtime_fixture', providerId: 'trace', providerVersion: '1', sessionEpoch: 1,
     kind: 'basic-block', payload: { address: '0x1010' }, completeness: 'bounded', observationMode: 'observed',
   };
-  const unresolvedEvidence = bridge.eventToEvidence(event, { state: 'unresolved', targetEntityIds: [], evidenceIds: [] });
+  const unresolvedEvidence = bridge.eventToEvidence(event, { runtimeSessionId: event.runtimeSessionId, state: 'unresolved', targetEntityIds: [], evidenceIds: [] });
   assert.equal(bridge.linkClaim('claim:branch', unresolvedEvidence.id, 'contradicts', { state: 'unresolved', targetEntityIds: [] }).linked, false);
   assert.equal(graph.evaluateClaim('claim:branch').verdict, 'unknown');
 
-  const resolution = { state: 'exact', method: 'verified-module-offset', binaryId, staticAddress: 0x1010n, targetEntityIds: ['function:fixture'], evidenceIds: ['evidence:mapping'] };
+  const resolution = { runtimeSessionId: event.runtimeSessionId, state: 'exact', method: 'verified-module-offset', binaryId, staticAddress: 0x1010n, targetEntityIds: ['function:fixture'], evidenceIds: ['evidence:mapping'] };
   const resolvedEvidence = bridge.eventToEvidence({ ...event, eventId: 'event:resolved' }, resolution);
   assert.equal(bridge.linkClaim('claim:branch', resolvedEvidence.id, 'contradicts', resolution).linked, true);
   assert.equal(graph.evaluateClaim('claim:branch').verdict, 'contradicted');
