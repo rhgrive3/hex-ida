@@ -122,4 +122,21 @@ function parseVerneed({ declared, records }) {
   assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_VERDEFNUM declares 65537 records but 1 were reachable'));
 }
 
+{
+  const { image } = parseVerdef({ declared: 65_537, records: 65_537 });
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.equal(image.metadata.symbolVersions.complete, false);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes(
+    'DT_VERDEFNUM declares 65537 records but 65536 were reachable',
+  ));
+}
+{
+  const { image } = parseVerneed({ declared: 65_537, records: 65_537 });
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.equal(image.metadata.symbolVersions.complete, false);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes(
+    'DT_VERNEEDNUM declares 65537 records but 65536 were reachable',
+  ));
+}
+
 console.log('issue #3663 ELF version chain count regression PASS');
