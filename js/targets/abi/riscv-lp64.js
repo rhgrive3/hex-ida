@@ -755,6 +755,11 @@ function createClassifier(profile) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
+    // The psABI size threshold is the aggregate's total (physical) size: an
+    // aggregate larger than 2*XLEN is returned in caller-provided memory, so
+    // the hidden a0 result pointer applies regardless of padding. The padded
+    // guard below only covers aggregates that would otherwise be direct (#6040).
+    if (aggregate && aggregateLayout?.bytes > 2 * XLEN / 8) return indirectResult();
     if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
       return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
