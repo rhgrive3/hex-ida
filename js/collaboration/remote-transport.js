@@ -66,7 +66,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
         try {
           const cancellation = response.body?.cancel?.(error);
           cancellation?.catch?.(() => {});
-        }
+        } catch { /* cancellation is best effort */ }
       }
       throw error;
     }
@@ -86,7 +86,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
         try {
           const cancellation = reader.cancel();
           cancellation?.catch?.(() => {});
-        }
+        } catch { /* cancellation is best effort */ }
         throw new Error('remote-transport-response-budget-exceeded');
       }
       received.push(chunk);
@@ -100,7 +100,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
       try {
         const cancellation = reader.cancel(error);
         cancellation?.catch?.(() => {});
-      }
+      } catch { /* cancellation is best effort */ }
     }
     throw error;
   }
