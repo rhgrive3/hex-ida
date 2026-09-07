@@ -8,6 +8,7 @@ const expectedFnv = await hashByteSource(source(), { chunkSize: 2 });
 const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 
 class ProgressCallback {}
+const CommentedProgressCallback = class/* progress callback */ Commented {};
 class WrappedProgressCallback {}
 let proxyClassApplyCount = 0;
 const proxyWrappedClass = new Proxy(WrappedProgressCallback, {
@@ -19,7 +20,7 @@ const proxyWrappedClass = new Proxy(WrappedProgressCallback, {
 const boundClass = WrappedProgressCallback.bind(null);
 for (const onProgress of [
   undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'),
-  ProgressCallback, class {}, proxyWrappedClass, boundClass,
+  ProgressCallback, CommentedProgressCallback, class {}, proxyWrappedClass, boundClass,
 ]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);

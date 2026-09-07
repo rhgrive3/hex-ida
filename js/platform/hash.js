@@ -5,7 +5,11 @@ const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
 const explicitProgressCallbacks = new WeakMap();
-const DIRECT_CLASS_SOURCE = /^\s*class(?:\s|\{)/;
+// A valid class expression may put a comment between `class` and its name or
+// body. The slash alternative is intentionally syntax-only: Function#toString
+// has already returned source for a function-valued input, so this does not
+// attempt to execute or inspect the constructor.
+const DIRECT_CLASS_SOURCE = /^\s*class(?:\s|\/|\{)/;
 // Bound functions and Proxy-wrapped functions deliberately stringify as native
 // code. Treat every such opaque callable as unsafe by default: the standard
 // reflection API cannot distinguish a bound ordinary callback from a bound
