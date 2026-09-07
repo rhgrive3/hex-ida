@@ -34,6 +34,25 @@ test('#5972 fuse re-derives authority from the code even for mutated factory ite
   assert.equal(applied.id, false);
 });
 
+test('#5972 static evidence cannot mint adapter-only verified authority', () => {
+  const fusion = fuse([evidence('runtime-field-verified', 1, {}, 18)]);
+  const applied = fusion.items.find((it) => it.code === 'runtime-field-verified');
+  assert.ok(applied, 'wrong-factory item remains weak evidence rather than gaining adapter authority');
+  assert.equal(applied.family, FAMILY.CONTEXT);
+  assert.equal(applied.kind, 'inference');
+  assert.equal(applied.id, false);
+  assert.equal(fusion.verified, 0);
+});
+
+test('#5972 post-mint code mutation cannot switch producer authority', () => {
+  const item = evidence('fn-numeric');
+  item.code = 'runtime-field-verified';
+  assert.throws(
+    () => fuse([item]),
+    (err) => err instanceof TypeError && err.message === 'evidence-code-mutated',
+  );
+});
+
 test('#5972 registered codes keep table lr when the factory receives none', () => {
   const fusion = fuse([evidence('field-name-asked')]);
   const item = fusion.items.find((it) => it.code === 'field-name-asked');

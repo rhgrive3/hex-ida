@@ -434,10 +434,15 @@ export const ADAPTER_EVIDENCE = Object.freeze({
   'runtime-branch-verified': { family: FAMILY.VERIFIED, kind: 'verified', id: false },
 });
 
-/* 動的アダプタ証拠と evidence() の出力だけが fuse() に渡されることを示す印。
- * 列挙不可なので JSON 化や spread で視けることはない。生の object が証拠の
- * authority（family/kind/id）を名乗って fuse() に入ることを防ぐ（#5972）。 */
-const FACTORY_BRAND = Symbol('hex-evidence-factory');
+/*
+ * fuse() が受理する factory 出力の producer と mint 時 code を、caller から
+ * コピー/改変できない module-private metadata に束縛する（#5972）。WeakMap は
+ * spread/JSON/Object.getOwnPropertySymbols() のどれにも露出せず、通常 evidence と
+ * dynamic adapter evidence の provenance を別 authority として保持する。
+ */
+const FACTORY_PROVENANCE = new WeakMap();
+const STATIC_EVIDENCE_FACTORY = Symbol('hex-static-evidence-factory');
+const ADAPTER_EVIDENCE_FACTORY = Symbol('hex-adapter-evidence-factory');
 
 /**
  * 動的アダプタ証拠の型付き契約。
@@ -456,7 +461,7 @@ export function adapterEvidence(code, strength, detail, lr) {
     id: info.id,
     detail: detail || null,
   };
-  Object.defineProperty(item, FACTORY_BRAND, { value: true });
+  FACTORY_PROVENANCE.set(item, { producer: ADAPTER_EVIDENCE_FACTORY, code });
   return item;
 }
 
@@ -489,7 +494,7 @@ export function evidence(code, strength, detail, lr) {
     id: !!(info && info.id),
     detail: detail || null,
   };
-  Object.defineProperty(item, FACTORY_BRAND, { value: true });
+  FACTORY_PROVENANCE.set(item, { producer: STATIC_EVIDENCE_FACTORY, code });
   return item;
 }
 
@@ -642,25 +647,28 @@ export function fuse(items, opts) {
      * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
      * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
      * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
-     * factory 出力は authority を code から再導出し、呼び出し側の主張は
-     * family/kind/id に限って採用しない。lr だけは実測チャネルとして
-     * factory が明示的に渡した値を優先する（family cap が歯止めになる）。
+     * factory 出力は mint 時 producer + code から authority を再導出し、
+     * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
+     * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
+     * （family cap が歯止めになる）。
      */
-    if (!x || x[FACTORY_BRAND] !== true) {
+    const provenance = x && FACTORY_PROVENANCE.get(x);
+    if (!provenance) {
       throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
     }
-    const adapter = Object.hasOwn(ADAPTER_EVIDENCE, x.code)
-      ? ADAPTER_EVIDENCE[x.code]
-      : null;
-    const info = adapter || EVIDENCE[x.code] || null;
+    if (!Object.is(provenance.code, x.code)) {
+      throw new TypeError('evidence-code-mutated');
+    }
+    const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
+      ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
+      : (EVIDENCE[provenance.code] || null);
     /*
-     * family/kind/id の authority は表が持つ。表に無い code は factory と同じ
-     * 弱さの既定（CONTEXT / inference / 非識別）に落ちる。verified や id を
-     * 名乗れるのは表に登録されている code だけなので、生の object でも
-     * factory 出力でも、表の外側から confirmed を捏造する道は残らない。
+     * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
+     * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
+     * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
      */
     return {
-      code: x.code,
+      code: provenance.code,
       strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
       lr: finitePositiveLr(x.lr, info ? finitePositiveLr(info.lr, 1) : 1),
       family: info ? info.family : FAMILY.CONTEXT,
