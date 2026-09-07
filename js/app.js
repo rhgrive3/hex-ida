@@ -1226,15 +1226,22 @@ class App {
     const pending=(async()=>{
       try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
       if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=new Array(count);
+      /* The recognition population is the function-start collection
+         (issue #5937), not the named-symbol collection: `addrs` also holds
+         data/stub/pointer symbols and can be empty while `funcs` carries the
+         complete function starts of a stripped binary. Names come from the
+         symbol lookup at the function start, sizes from the function-window
+         contract (proven extent or containment bound), never from the
+         distance to the next *named* symbol. */
+      const total=sym?.functionCount||0, count=Math.min(total,max), functions=new Array(count);
       for(let i=0;i<count;i++){
         if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-        const address=sym.addrs[i], name=sym.names?.[i]||null;
-        const next=i+1<total?sym.addrs[i+1]:null;
+        const address=sym.funcs[i], name=sym.nameAt?.(address)||null;
+        const windowEnd=sym.functionWindowBound?.(address)||null;
         const owner=this.fields?.ownerOf?.(address)||null;
         const swiftName=name&&/^(.*)::method_(\d+)$/.exec(name);
         functions[i]={
-          address,name,size:next!=null&&next>address?Number(next-address):0,
+          address,name,size:windowEnd!=null&&windowEnd>address?Number(windowEnd-address):0,
           objc:owner?.className?{class:owner.className}:{},
           swift:swiftName?{typeDescriptor:swiftName[1]}:{},
           strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[],
@@ -1266,8 +1273,10 @@ class App {
         };
       });
       const state={
-        gen:sym.gen,records,total,scannedCount:count,complete:count===total,
-        truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,
+        gen:sym.gen,records,total,scannedCount:count,
+        complete:count===total&&sym.functionStartsComplete===true,
+        truncationReason:count===total?(sym.functionStartsComplete===true?null:'function-discovery-incomplete'):'function-budget',
+        binaryHash:this.backend.contentHash||null,
         knowledge:this.knowledge,knowledgeScanned:knowledgeCount,knowledgeMatches,knowledgeAmbiguous,
         knowledgeComplete:knowledgeCount===ranked.length,
       };
