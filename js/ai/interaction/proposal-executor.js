@@ -1,9 +1,6 @@
 import { AIError } from '../schema.js';
+import { proposalArguments, proposalCapability } from '../proposals.js';
 
-const KIND_CAPABILITY = Object.freeze({
-  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
-  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
-});
 const NOTE_BACKED_KINDS = new Set(['rename', 'comment', 'type', 'struct-field']);
 const NOTE_READY_TIMEOUT_MS = 10_000;
 
@@ -20,12 +17,10 @@ export class ProposalExecutor {
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
-      apply: async (item) => {
-        const capability = KIND_CAPABILITY[item.kind];
+      apply: async (item, authorization) => {
+        const capability = proposalCapability(item);
         if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${item.kind}`);
-        execution = await this.capabilityExecutor.execute(capability, proposalArguments(item), {
-          authorization: { kind: 'proposal', token: approvalToken, proposalId: item.id },
-        });
+        execution = await this.capabilityExecutor.execute(capability, proposalArguments(item), { authorization });
         await this.verifyPostcondition(item, execution);
       },
     });
@@ -90,14 +85,6 @@ async function awaitNoteStoreReady(app) {
   return app.notes;
 }
 
-function proposalArguments(proposal) {
-  const target = targetObject(proposal.target);
-  if (proposal.kind === 'rename' || proposal.kind === 'comment') return { ...target, value: proposal.after };
-  if (proposal.kind === 'type') return { ...target, value: proposal.after };
-  if (proposal.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
-  if (proposal.kind === 'patch') return { ...target, before: byteArray(proposal.before), after: byteArray(proposal.after) };
-  return { ...target, value: proposal.after };
-}
 function targetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
 function findStructField(app, target) {
   const struct = app?.notes?.structs?.find?.((item) => item?.name === String(target.struct || target.name || ''));

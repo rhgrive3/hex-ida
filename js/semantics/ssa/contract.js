@@ -152,6 +152,14 @@ export function createSemanticSsaContract(input, options = {}) {
     fail('semantic-ssa-contract-version-mismatch');
   }
 
+  const functionId = nonEmpty(input.functionId, 'semantic-ssa-function-id-required');
+  const cfg = options.cfg;
+  // Block IDs are function-local. A foreign CFG cannot authorize this contract
+  // merely because its block/predecessor names happen to match.
+  if (cfg != null && (typeof cfg !== 'object' || Array.isArray(cfg) || cfg.functionId !== functionId)) {
+    fail('semantic-ssa-cfg-function-mismatch');
+  }
+
   const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
   const rawUses = array(input.uses, 'semantic-ssa-uses-required');
   const maxDefinitions = limit(options, 'maxDefinitions');
@@ -204,7 +212,7 @@ export function createSemanticSsaContract(input, options = {}) {
     definitionIds.add(definition.definitionId);
   }
 
-  const cfgInfo = cfgMaps(options.cfg);
+  const cfgInfo = cfgMaps(cfg);
   const useIds = new Set();
   for (const use of uses) {
     assertNotAborted(options);
@@ -259,7 +267,7 @@ export function createSemanticSsaContract(input, options = {}) {
 
   return deepFreeze({
     contractVersion: SEMANTIC_SSA_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'semantic-ssa-function-id-required'),
+    functionId,
     definitions,
     uses,
     useDefLinks,

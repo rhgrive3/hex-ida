@@ -16,7 +16,8 @@ export const MANAGED_RUNTIME_REQUIRED_CAPABILITIES = Object.freeze([
 ]);
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -124,14 +125,19 @@ export function validateManagedRuntimeState(binding, state = {}) {
   if (threads.length > binding.maxThreads) return { ok: false, reason: 'managed-runtime-thread-budget-exceeded' };
   for (const thread of threads) {
     if (!thread || typeof thread !== 'object' || Array.isArray(thread)) return { ok: false, reason: 'managed-runtime-thread-invalid' };
-    const frames = Array.isArray(thread?.frames) ? thread.frames : [];
+    const frames = thread.frames ?? [];
+    if (!Array.isArray(frames)) return { ok: false, reason: 'managed-runtime-frames-invalid' };
     if (frames.length > binding.maxFramesPerThread) return { ok: false, reason: 'managed-runtime-frame-budget-exceeded' };
     for (const frame of frames) {
       if (!frame || typeof frame !== 'object' || Array.isArray(frame)) return { ok: false, reason: 'managed-runtime-frame-invalid' };
-      if (frame.moduleIdentity == null || String(frame.moduleIdentity).trim() === '') return { ok: false, reason: 'managed-runtime-frame-module-required' };
-      if (String(frame.moduleIdentity) !== binding.runtimeModuleIdentity) return { ok: false, reason: 'managed-runtime-frame-module-mismatch' };
-      if ((Array.isArray(frame.locals) ? frame.locals.length : 0) > binding.maxLocalsPerFrame) return { ok: false, reason: 'managed-runtime-local-budget-exceeded' };
-      if ((Array.isArray(frame.operandStack) ? frame.operandStack.length : 0) > binding.maxOperandStack) return { ok: false, reason: 'managed-runtime-stack-budget-exceeded' };
+      if (typeof frame.moduleIdentity !== 'string' || !frame.moduleIdentity.trim()) return { ok: false, reason: 'managed-runtime-frame-module-required' };
+      if (frame.moduleIdentity !== binding.runtimeModuleIdentity) return { ok: false, reason: 'managed-runtime-frame-module-mismatch' };
+      const locals = frame.locals ?? [];
+      const operandStack = frame.operandStack ?? [];
+      if (!Array.isArray(locals)) return { ok: false, reason: 'managed-runtime-locals-invalid' };
+      if (!Array.isArray(operandStack)) return { ok: false, reason: 'managed-runtime-operand-stack-invalid' };
+      if (locals.length > binding.maxLocalsPerFrame) return { ok: false, reason: 'managed-runtime-local-budget-exceeded' };
+      if (operandStack.length > binding.maxOperandStack) return { ok: false, reason: 'managed-runtime-stack-budget-exceeded' };
     }
   }
   return { ok: true, threads };
@@ -144,10 +150,10 @@ export function validateManagedRuntimeObservation(binding, observation, options 
   if (!observation || typeof observation.payload !== 'object' || observation.payload == null || Array.isArray(observation.payload)) {
     return { ok: false, reason: 'managed-runtime-observation-payload-invalid' };
   }
-  if (observation.payload.moduleIdentity == null || String(observation.payload.moduleIdentity).trim() === '') {
+  if (typeof observation.payload.moduleIdentity !== 'string' || !observation.payload.moduleIdentity.trim()) {
     return { ok: false, reason: 'managed-runtime-observation-module-required' };
   }
-  if (String(observation.payload.moduleIdentity) !== binding.runtimeModuleIdentity) {
+  if (observation.payload.moduleIdentity !== binding.runtimeModuleIdentity) {
     return { ok: false, reason: 'managed-runtime-observation-module-mismatch' };
   }
   const { observationId, ...payload } = observation;
