@@ -1,6 +1,6 @@
 # Stage B residual coverage
 
-Development reconciliation source: `11873792c4c1b9fdca1cfa28aec1fbd87c7b9032`.
+Development reconciliation source: `571e46c0037363ba859b09c8119642dfed38152d`.
 Authority: the 2026-09-07 development-speed amendment; historical Stage A main
 promotion and fanout receipts are not execution locks.
 

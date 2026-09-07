@@ -103,3 +103,12 @@ limited environment-sensitive observations, not a proven whole-corpus speedup.
 No second nine-minute full performance run was started; current full-threshold
 acceptance remains open. Profile files are under the task-owned
 `/mnt/workspace/.dev-state/hex-development-batch/` directory.
+
+Final development batch on source571e46c00: canonical Phase7 suite PASS (45.5s)
+including the earlier three repaired failures; combined build PASS (2.8s);
+current generated host/release-version validation PASS (1.2s). Generated runtime
+buildId is `dd8deed2e9f1d8262fa0554a`. Earlier failing Phase7 observations remain
+historical; this successful combined run supersedes them for development.
+T026 and cold-performance/release acceptance remain open. No protected-main
+promotion, hosted deployment, physical-device acceptance or full `npm run check`
+completion is claimed. User tmp work is untouched.

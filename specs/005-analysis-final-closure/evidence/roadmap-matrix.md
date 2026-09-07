@@ -1,6 +1,6 @@
 # Stage B Roadmap Reconciliation Matrix
 
-Current development source: `11873792c4c1b9fdca1cfa28aec1fbd87c7b9032` (`perf/development-gate-policy`).
+Current development source: `571e46c0037363ba859b09c8119642dfed38152d` (`perf/development-gate-policy`).
 Canonical roadmap: `docs/解析ツール改善.md.txt` (unchanged by this reconciliation).
 Reconciliation date: 2026-09-07.
 
