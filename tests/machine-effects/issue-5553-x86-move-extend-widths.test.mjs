@@ -77,14 +77,18 @@ function assertRejectedRegisterCase(family, destination, source) {
   );
 }
 
-// The full architecturally valid register width matrix from #5553 stays exact.
+// The canonical decoder-supported register width matrix from #5553 stays
+// exact. The raw-byte denominator independently exercises 0x66 0f b7/bf
+// register forms and confirms these 16->16 cases as exact copy semantics.
 for (const [family, destination, source, fromBits, toBits] of [
   ['movzx', 'ax', 'bl', 8, 16],
+  ['movzx', 'ax', 'bx', 16, 16],
   ['movzx', 'eax', 'bl', 8, 32],
   ['movzx', 'rax', 'bl', 8, 64],
   ['movzx', 'eax', 'bx', 16, 32],
   ['movzx', 'rax', 'bx', 16, 64],
   ['movsx', 'ax', 'bl', 8, 16],
+  ['movsx', 'ax', 'bx', 16, 16],
   ['movsx', 'eax', 'bl', 8, 32],
   ['movsx', 'rax', 'bl', 8, 64],
   ['movsx', 'eax', 'bx', 16, 32],
@@ -98,8 +102,8 @@ for (const [family, destination, source, fromBits, toBits] of [
 
 // Invalid architectural width pairs from #5553 fail closed.
 for (const [family, destination, source] of [
-  ['movzx', 'ax', 'bx'],
-  ['movsx', 'ax', 'bx'],
+  ['movzx', 'rax', 'eax'],
+  ['movsx', 'ax', 'eax'],
   ['movsxd', 'ax', 'ebx'],
   ['movsxd', 'rax', 'bx'],
   ['movsxd', 'eax', 'bx'],
