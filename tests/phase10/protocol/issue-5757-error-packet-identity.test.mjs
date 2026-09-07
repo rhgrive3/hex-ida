@@ -8,7 +8,7 @@ import {
   RUNTIME_PROVIDER_PROTOCOL,
   RUNTIME_PROVIDER_PROTOCOL_VERSION,
   RuntimeProviderProtocolClient,
-} from '../js/runtime/provider-protocol.js';
+} from '../../../js/runtime/provider-protocol.js';
 
 function packet(type, extra = {}) {
   return { protocol: RUNTIME_PROVIDER_PROTOCOL, version: RUNTIME_PROVIDER_PROTOCOL_VERSION, type, ...extra };

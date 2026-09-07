@@ -8,7 +8,7 @@ import {
   RUNTIME_PROVIDER_PROTOCOL,
   RUNTIME_PROVIDER_PROTOCOL_VERSION,
   RuntimeProviderProtocolClient,
-} from '../js/runtime/provider-protocol.js';
+} from '../../../js/runtime/provider-protocol.js';
 
 class FakeTransport {
   constructor() { this.sent = []; this.listener = null; this.unsubscribed = false; }
