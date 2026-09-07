@@ -178,7 +178,7 @@ requireExports(pluginApi, 'js/platform/plugin-api.js', [
   const aiFiles = walk('js/ai').filter((file) => file !== mutationExecutor);
   assertNoImport(aiFiles, ({ resolved }) => resolved === 'js/patch.js' || resolved.startsWith('js/patch/'), 'AI bypasses the approval-gated mutation executor');
   const executorSource = source(mutationExecutor);
-  assert.match(executorSource, /entry\.requiresApproval\s*&&\s*!validAuthorization\(options\.authorization\)/, 'AI mutation executor must enforce approval before execution');
+  assert.match(executorSource, /entry\.requiresApproval\s*&&\s*!consumeProposalAuthorization\(options\.authorization/, 'AI mutation executor must enforce proposal-store authorization before execution');
   assert.match(executorSource, /value\?\.kind\s*===\s*['"]proposal['"]/, 'AI mutation authorization must remain proposal-scoped');
 
   const decompilerCore = source('js/decompiler/pipeline-core.js');
