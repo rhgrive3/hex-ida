@@ -126,6 +126,119 @@ function makeDriftRuntime(local, mutate) {
 }
 
 {
+  // A binding switch while the first final persistence operation is pending
+  // must fail closed before later memory/result writes or a normal return.
+  const local = { binaryHash: 'A', projectId: 'P1' };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const originalUpdateMemory = runtime.sessionStore.updateMemory.bind(runtime.sessionStore);
+  const originalUpdate = runtime.sessionStore.update.bind(runtime.sessionStore);
+  let finalMemoryWrites = 0;
+  let finalResultWrites = 0;
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') {
+      await Promise.resolve();
+      local.binaryHash = 'B';
+    }
+    return originalAppend(id, message);
+  };
+  runtime.sessionStore.updateMemory = async (id, patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'confirmedFacts')) finalMemoryWrites++;
+    return originalUpdateMemory(id, patch);
+  };
+  runtime.sessionStore.update = async (id, patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'confirmedFindings')) finalResultWrites++;
+    return originalUpdate(id, patch);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo' }),
+    (error) => error?.type === 'scope_violation',
+    'post-finalization binding drift must escape as scope_violation',
+  );
+  assert.equal(finalMemoryWrites, 0, 'binding drift must stop before final memory update');
+  assert.equal(finalResultWrites, 0, 'binding drift must stop before final result update');
+}
+
+{
+  // A rejected final write still runs the post-write binding guard. When the
+  // binding drifted before rejection, scope_violation must win over the write
+  // error rather than allowing stale completion to escape.
+  const local = { binaryHash: 'A', projectId: 'P1' };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const writeError = new Error('append failed');
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') {
+      local.binaryHash = 'B';
+      throw writeError;
+    }
+    return originalAppend(id, message);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo' }),
+    (error) => error?.type === 'scope_violation',
+    'binding drift on a rejected final write must fail closed',
+  );
+}
+
+{
+  // If the binding is stable, the original persistence rejection must remain
+  // observable to the caller.
+  const local = { binaryHash: 'A', projectId: 'P1' };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const writeError = new Error('append failed');
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') throw writeError;
+    return originalAppend(id, message);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo' }),
+    (error) => error === writeError,
+    'stable rejected final write must preserve the original rejection',
+  );
+}
+
+{
+  // A runtime identity observed after the snapshot must not be re-read into
+  // the old turn's memory anchor.
+  const local = { binaryHash: 'A', projectId: 'P1', runtimeSessionKnown: false };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalUpdateMemory = runtime.sessionStore.updateMemory.bind(runtime.sessionStore);
+  let finalMemoryPatch = null;
+  runtime.sessionStore.updateMemory = async (id, patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'confirmedFacts')) {
+      local.runtimeSessionKnown = true;
+      local.runtimeSessionId = 'runtime-new';
+      finalMemoryPatch = patch;
+    }
+    return originalUpdateMemory(id, patch);
+  };
+  const result = await runtime.turn({ mode: 'agent', goal: 'find function foo' });
+  assert.ok(result?.sessionId, 'stable binary/project turn must complete');
+  assert.equal(finalMemoryPatch?.anchor?.runtimeSessionId, null,
+    'final memory must retain snapshot-only unknown runtime identity');
+  assert.equal(finalMemoryPatch?.anchor?.runtimeSessionState, 'unknown',
+    'final memory must retain snapshot-only runtime state');
+}
+
+{
   // Stable control: unchanged bindings complete normally through the same fixture.
   const local = { binaryHash: 'A', projectId: 'P1' };
   const runtime = new AIRuntime({
