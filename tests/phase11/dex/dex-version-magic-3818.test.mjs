@@ -1,19 +1,14 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
+import { buildMinimalDex as buildMappedDex } from './dex-parser.test.mjs';
 
 function buildMinimalDex(version, terminator = 0x00) {
   assert.equal(version.length, 3);
-  const bytes = new Uint8Array(0x70);
-  bytes.set([0x64, 0x65, 0x78, 0x0a], 0);
+  const bytes = buildMappedDex().slice();
   bytes[4] = version.charCodeAt(0);
   bytes[5] = version.charCodeAt(1);
   bytes[6] = version.charCodeAt(2);
   bytes[7] = terminator;
-
-  const view = new DataView(bytes.buffer);
-  view.setUint32(32, bytes.length, true);
-  view.setUint32(36, 0x70, true);
-  view.setUint32(40, 0x12345678, true);
   return bytes;
 }
 

@@ -5,6 +5,7 @@ import { fuseFunctionCandidates, regionFromSize } from '../../js/analysis/discov
 
 const extentState = 'exact';
 const evidence = (producerId, ownership = 'exclusive') => ({
+  kind: 'loader-function-start',
   producerId,
   start: 4096,
   extentState,
@@ -12,6 +13,8 @@ const evidence = (producerId, ownership = 'exclusive') => ({
 });
 
 test('issue-3101: fusion rejects structured/boolean start coercion instead of BigInt()-ing it', () => {
+  assert.equal(fuseFunctionCandidates([evidence('x')]).candidates.length, 1,
+    'the ordinary evidence fixture must pass canonical evidence validation');
   const malformed = [
     { producerId: 'x', start: [4096], extentState, regions: [{ start: '4096', end: '4112', ownership: 'exclusive' }] },
     { producerId: 'x', start: { valueOf: () => 4096 }, extentState, regions: [{ start: '4096', end: '4112', ownership: 'exclusive' }] },
@@ -19,7 +22,7 @@ test('issue-3101: fusion rejects structured/boolean start coercion instead of Bi
     { producerId: 'x', start: 4096.5, extentState, regions: [{ start: '4096', end: '4112', ownership: 'exclusive' }] },
   ];
   for (const item of malformed) {
-    assert.throws(() => fuseFunctionCandidates([item]), /discovery-fusion-invalid-start/,
+    assert.throws(() => fuseFunctionCandidates([{ ...evidence('x'), ...item }]), /^TypeError: discovery-evidence-invalid-start$/,
       `start ${JSON.stringify(item.start)} must be rejected`);
   }
 });

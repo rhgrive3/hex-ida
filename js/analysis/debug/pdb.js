@@ -117,6 +117,9 @@ export function parseMsf(bytes) {
   if (numBlocks * blockSize > data.length + blockSize) {
     return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
   }
+  if (numDirectoryBytes < 4) {
+    return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
+  }
 
   const readBlock = (index) => {
     const start = index * blockSize;
@@ -205,24 +208,51 @@ export function parsePdbInfoStream(bytes) {
  * getting one size wrong silently points at the wrong stream.
  */
 export const DBI_HEADER_SIZE = 64;
+const DBI_MIN_VERSION_HEADER = 19990903;
 
 export function parseDbiHeader(bytes) {
   if (!bytes || bytes.length < DBI_HEADER_SIZE) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const versionSignature = view.getInt32(0, true);
+  const versionHeader = view.getUint32(4, true);
+  // A length-only check can turn a corrupt stream 3 into authoritative DBI
+  // provenance. Match the native PDB reader's minimum structural gate before
+  // using its age or stream indices for symbol authority.
+  if (versionSignature !== -1 || versionHeader < DBI_MIN_VERSION_HEADER) return null;
+  const moduleSubstreamSize = view.getInt32(24, true);
+  const sectionContributionSize = view.getInt32(28, true);
+  const sectionMapSize = view.getInt32(32, true);
+  const sourceInfoSize = view.getInt32(36, true);
+  const typeServerMapSize = view.getInt32(40, true);
+  const optionalDbgHeaderSize = view.getInt32(48, true);
+  const ecSubstreamSize = view.getInt32(52, true);
+  const substreamSizes = [
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
+  ];
+  if (substreamSizes.some((size) => size < 0)) return null;
+  const declaredLength = DBI_HEADER_SIZE
+    + substreamSizes.reduce((total, size) => total + size, 0);
+  if (declaredLength !== bytes.length) return null;
   return {
-    versionSignature: view.getInt32(0, true),
-    versionHeader: view.getUint32(4, true),
+    versionSignature,
+    versionHeader,
     age: view.getUint32(8, true),
     globalStreamIndex: view.getUint16(12, true),
     publicStreamIndex: view.getUint16(16, true),
     symRecordStreamIndex: view.getUint16(20, true),
-    moduleSubstreamSize: view.getInt32(24, true),
-    sectionContributionSize: view.getInt32(28, true),
-    sectionMapSize: view.getInt32(32, true),
-    sourceInfoSize: view.getInt32(36, true),
-    typeServerMapSize: view.getInt32(40, true),
-    optionalDbgHeaderSize: view.getInt32(48, true),
-    ecSubstreamSize: view.getInt32(52, true),
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
   };
 }
 
@@ -287,12 +317,14 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
-  while (offset + 4 <= bytes.length && symbols.length < budget.maxRecords) {
+  let recordCount = 0;
+  while (offset + 4 <= bytes.length && recordCount < budget.maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > bytes.length) break;
+    recordCount += 1;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
     // known-kind record must fail closed instead of reading the next record's
@@ -347,6 +379,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const headerSize = view.getUint32(4, true);
   const firstIndex = view.getUint32(8, true);
+  if (headerSize < 56 || headerSize > bytes.length) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
   let offset = headerSize;
   let index = firstIndex;
 
@@ -495,18 +530,26 @@ function parseFieldList(view, bytes, start, end) {
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
-function describeTypeIndex(index, types, depth = 0) {
+export function describeTypeIndex(index, types, depth = 0) {
   if (depth > 16) return { name: 'unknown', complete: false };
   if (index < 0x1000) {
     const primitive = PRIMITIVE_TYPES[index];
-    // The high nibble of a primitive index encodes an indirection mode; 0x0600
-    // is a 64-bit pointer to the base type in the low bits.
-    if (!primitive && (index & 0x0700) === 0x0600) {
+    if (primitive) return { ...primitive, complete: true };
+    // The high nibble of a primitive index encodes an indirection mode:
+    // 0x0400: NearPointer32, 0x0500: FarPointer32, 0x0600: NearPointer64, 0x0700: NearPointer128
+    const mode = index & 0x0700;
+    if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
+      const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
       const target = describeTypeIndex(index & 0x00ff, types, depth + 1);
-      return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+      const isKnown = target.name !== 'unknown' && target.complete;
+      return {
+        name: isKnown ? `${target.name} *` : 'unknown *',
+        widthBits,
+        class: 'pointer',
+        complete: isKnown,
+      };
     }
-    if (!primitive) return { name: 'unknown', complete: false };
-    return { ...primitive, complete: true };
+    return { name: 'unknown', complete: false };
   }
   const record = types.get(index);
   if (!record) return { name: 'unknown', complete: false };
@@ -520,7 +563,26 @@ function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'pointer') {
     const target = describeTypeIndex(record.referent, types, depth + 1);
-    return { name: `${target.name} *`, widthBits: 64, class: 'pointer', complete: target.complete };
+    const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
+    const sizeBytes = (attrs >> 13) & 0x3f;
+    const pointerKind = attrs & 0x1f;
+    let widthBits = sizeBytes > 0 ? sizeBytes * 8 : null;
+    if (widthBits == null) {
+      if (pointerKind === 0x0a || pointerKind === 0x0b) widthBits = 32;
+      else if (pointerKind === 0x0c) widthBits = 64;
+    }
+    const isContradictory = sizeBytes > 0 && (
+      ((pointerKind === 0x0a || pointerKind === 0x0b) && sizeBytes !== 4) ||
+      (pointerKind === 0x0c && sizeBytes !== 8)
+    );
+    const isMalformed = widthBits == null || widthBits === 0 || isContradictory;
+    const complete = !isMalformed && target.complete;
+    return {
+      name: `${target.name} *`,
+      widthBits: isMalformed ? null : widthBits,
+      class: 'pointer',
+      complete,
+    };
   }
   if (record.kind === 'modifier') {
     const target = describeTypeIndex(record.underlying, types, depth + 1);
@@ -536,6 +598,17 @@ function describeTypeIndex(index, types, depth = 0) {
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
   }
   return { name: 'unknown', complete: false };
+}
+
+function expectedCodeViewIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const guid = value.guid;
+  const age = value.age;
+  if (typeof guid !== 'string') return null;
+  const normalizedGuid = guid.trim().toUpperCase();
+  if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(normalizedGuid)) return null;
+  if (typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0 || age > 0xffffffff) return null;
+  return `${normalizedGuid}/${age}`;
 }
 
 export class PdbDebugInfoProvider extends DebugInfoProvider {
@@ -575,7 +648,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
           verdict: 'companion-missing',
           providerId: this.id, providerVersion: this.version,
           method: 'codeview-guid-age',
-          expected: expectedCodeView ? `${expectedCodeView.guid}/${expectedCodeView.age}` : null,
+          expected: expectedCodeViewIdentity(expectedCodeView),
           observed: null,
           detail: expectedCodeView?.path
             ? `the binary references a PDB but its bytes were not supplied`
@@ -601,13 +674,17 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const info = parsePdbInfoStream(msf.streams[1].read());
     const observed = info ? `${info.guid}/${info.age}` : null;
-    const expected = expectedCodeView ? `${String(expectedCodeView.guid).toUpperCase()}/${expectedCodeView.age}` : null;
+    const expected = expectedCodeViewIdentity(expectedCodeView);
 
     let verdict;
     let detail = null;
     if (expected == null || observed == null) {
       verdict = 'identity-unavailable';
-      detail = expected == null ? 'the binary carries no CodeView debug directory entry' : 'the PDB has no info stream';
+      detail = expected == null
+        ? (expectedCodeView == null
+          ? 'the binary carries no CodeView debug directory entry'
+          : 'the binary CodeView GUID/age is malformed')
+        : 'the PDB has no info stream';
     } else if (expected === observed) {
       verdict = 'matched-authoritative';
     } else {
@@ -621,6 +698,25 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
     const symbols = parseSymbolRecords(symbolStream, budget);
+    // The DBI header is part of the identity/authority boundary: matching
+    // CodeView and Info Stream data must not launder symbols from a missing or
+    // truncated DBI into authoritative evidence (#6042).
+    if (verdict === 'matched-authoritative' && dbi == null) {
+      verdict = 'identity-unavailable';
+      detail = 'PDB DBI header is missing or truncated';
+      symbols.complete = false;
+      diagnostics.push(detail);
+    } else if (info && dbi && dbi.age !== info.age) {
+      // The DBI stream header repeats the PDB Info stream age. An internally
+      // inconsistent PDB must not stay authoritative: the DBI picks the
+      // symbol/module/section-header streams the readers trust (#6042).
+      diagnostics.push(`PDB DBI stream age ${dbi.age} does not match the info stream age ${info.age}`);
+      symbols.complete = false;
+      if (verdict === 'matched-authoritative') {
+        verdict = 'identity-mismatch';
+        detail = 'PDB DBI stream age is inconsistent with the info stream age';
+      }
+    }
 
     // Procedure symbols live in the per-module streams. Each module stream
     // begins with a 4-byte signature before its symbol records.
@@ -780,6 +876,19 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 function findSectionHeaderStream(msf, dbi, dbiBytes) {
   if (!dbi || !dbiBytes) return null;
   const view = new DataView(dbiBytes.buffer, dbiBytes.byteOffset, dbiBytes.byteLength);
+  const precedingSubstreamSizes = [
+    dbi.moduleSubstreamSize,
+    dbi.sectionContributionSize,
+    dbi.sectionMapSize,
+    dbi.sourceInfoSize,
+    dbi.typeServerMapSize,
+    dbi.ecSubstreamSize,
+  ];
+  // These fields are signed in the DBI header. Reject malformed sizes before
+  // summing them: a negative component could move the optional header into
+  // earlier bytes and make unrelated data look like stream-index authority.
+  if (precedingSubstreamSizes.some((size) =>
+    !Number.isSafeInteger(size) || size < 0)) return null;
   const optionalHeaderOffset = DBI_HEADER_SIZE
     + dbi.moduleSubstreamSize
     + dbi.sectionContributionSize
@@ -787,8 +896,19 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
     + dbi.sourceInfoSize
     + dbi.typeServerMapSize
     + dbi.ecSubstreamSize;
+  if (!Number.isSafeInteger(optionalHeaderOffset)
+    || optionalHeaderOffset < DBI_HEADER_SIZE
+    || optionalHeaderOffset > dbiBytes.length) return null;
+  const optionalDbgHeaderSize = Number(dbi.optionalDbgHeaderSize);
+  if (!Number.isSafeInteger(optionalDbgHeaderSize) || optionalDbgHeaderSize < 0) return null;
+  const optionalHeaderEnd = optionalHeaderOffset + optionalDbgHeaderSize;
+  if (!Number.isSafeInteger(optionalHeaderEnd)
+    || optionalHeaderEnd > dbiBytes.length) return null;
   // The optional debug header is an array of stream indices; index 5 is the
-  // original section header stream.
+  // original section header stream. Reading it requires the DBI header to
+  // actually declare that entry: beyond the declared extent the bytes belong
+  // to other substreams and must never mint section mapping authority (#5822).
+  if (optionalDbgHeaderSize < (5 + 1) * 2) return null;
   const entryOffset = optionalHeaderOffset + 5 * 2;
   if (entryOffset + 2 > dbiBytes.length) return null;
   const streamIndex = view.getUint16(entryOffset, true);

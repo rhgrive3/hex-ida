@@ -5,18 +5,40 @@ import {
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
 
-function constantPayload(node) {
+const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
+
+function finiteFloatValue(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return value;
+  }
+  if (typeof value !== 'string' || !STRICT_FLOAT_LITERAL.test(value)) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const significand = value.split(/[eE]/, 1)[0];
+  if (number === 0 && /[1-9]/.test(significand)) return null;
+  return number;
+}
+
+function constantPayload(node, machineType = null) {
   const attrs = node?.attributes || {};
   const metadata = node?.metadata || {};
   const operation = attrs.machineEffects?.operationMetadata || {};
+  const constKind = attrs.constKind ?? metadata.constKind ?? null;
+  const isFloat = machineType?.kind === 'float' || constKind === 'float';
   const raw = attrs.value ?? attrs.constant ?? attrs.address
     ?? operation.value ?? operation.constant ?? operation.address
     ?? metadata.value ?? metadata.constant ?? metadata.address;
   if (raw == null) return { value: null, float: null, constKind: null };
   const integer = safeBigInt(raw);
-  if (integer != null) return { value: integer, float: null, constKind: attrs.constKind ?? metadata.constKind ?? null };
-  const number = Number(raw);
-  if (Number.isFinite(number)) return { value: null, float: number, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
+  if (integer != null && !isFloat) return { value: integer, float: null, constKind };
+  const number = finiteFloatValue(raw);
+  // An integer-valued float such as 2^53 is valid when the canonical type says
+  // float, even though JavaScript cannot use it as an exact integer identity.
+  if (number != null
+      && (!Number.isInteger(number) || Number.isSafeInteger(number) || isFloat)) {
+    return { value: null, float: number, constKind: constKind ?? 'float' };
+  }
   return { value: null, float: null, constKind: null };
 }
 
@@ -61,7 +83,10 @@ function conditionFromCompare(node) {
 
 function constForValue(valueId, context) {
   const producer = context.producerByValueId.get(valueId) ?? null;
-  return producer?.kind === 'const' ? constantPayload(producer).value : null;
+  const machineType = producer?.outputs?.[0] == null
+    ? null
+    : context.valuesById.get(producer.outputs[0])?.machineType ?? null;
+  return producer?.kind === 'const' ? constantPayload(producer, machineType).value : null;
 }
 
 function comparisonCarrier(valueId, context, active = new Set()) {
@@ -273,7 +298,7 @@ export function projectNode(node, context) {
 
   switch (node.kind) {
     case 'const': {
-      const c = constantPayload(node);
+      const c = constantPayload(node, primaryOutput?.machineType);
       setBasic(V1_OP.CONST, null, []);
       inst.extra.value = c.value;
       if (c.float != null) { inst.extra.float = c.float; inst.extra.constKind = c.constKind || 'float'; }

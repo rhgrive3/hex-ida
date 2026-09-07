@@ -7,6 +7,10 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
 const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
+// Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
+// and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
+const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -19,9 +23,26 @@ function bigint(value, code) {
 }
 
 function text(value, code, { empty = false } = {}) {
-  const out = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const out = value.trim();
   if (!empty && !out) throw new TypeError(code);
   return out;
+}
+
+// Semantic allow-list tokens at the decoder trust boundary must be primitive
+// strings: `String()` coercion would let arbitrary objects/arrays mint
+// canonical `register`/`write`/`long-64` authority from `toString()`.
+function token(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+
+function instructionIdOf(value) {
+  if (value == null) return value;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  const instructionId = value.trim();
+  if (!instructionId) throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  return instructionId;
 }
 
 function detailStatusOf(value, detailAvailable) {
@@ -32,6 +53,19 @@ function detailStatusOf(value, detailAvailable) {
   return status;
 }
 
+function conditionCodeOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-condition-code');
+  return value.toLowerCase();
+}
+
+function addressSizeBitsOf(value, mode) {
+  const allowed = ADDRESS_SIZE_BITS_BY_MODE[mode];
+  const size = integer(value, 'x86-decoded-instruction-invalid-address-size', { min:1, max:64 });
+  if (!allowed || !allowed.includes(size)) throw new TypeError('x86-decoded-instruction-invalid-address-size');
+  return size;
+}
+
 function bytesOf(input, length) {
   const bytes = input instanceof Uint8Array ? input.slice() : Uint8Array.from(input || []);
   if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
@@ -39,9 +73,17 @@ function bytesOf(input, length) {
 }
 
 function accessOf(value) {
-  const access = String(value ?? 'unknown');
+  const access = token(value ?? 'unknown', 'x86-decoded-instruction-invalid-access');
   if (!ACCESS.has(access)) throw new TypeError('x86-decoded-instruction-invalid-access');
   return access;
+}
+
+function segmentOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  const segment = value.toLowerCase();
+  if (!SEGMENT_REGISTERS.has(segment)) throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  return segment;
 }
 
 function supplementaryRegisterShape(value, hintedWidthBits) {
@@ -80,9 +122,9 @@ function registerOf(value, code, { decoderRegisterCode = null, widthBits = null 
   });
 }
 
-function normalizeOperand(input, index) {
+function normalizeOperand(input, index, mode) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-decoded-instruction-invalid-operand');
-  const type = String(input.type ?? input.kind ?? 'invalid').toLowerCase();
+  const type = token(input.type ?? input.kind ?? 'invalid', 'x86-decoded-instruction-invalid-operand-type').toLowerCase();
   if (!OPERAND_TYPES.has(type)) throw new TypeError('x86-decoded-instruction-invalid-operand-type');
   const widthBits = input.widthBits == null ? null : integer(input.widthBits, 'x86-decoded-instruction-invalid-operand-width', { min:1, max:4096 });
   const common = { index, type, access:accessOf(input.access), ...(widthBits == null ? {} : { widthBits }) };
@@ -106,7 +148,7 @@ function normalizeOperand(input, index) {
     const raw = input.memory && typeof input.memory === 'object' ? input.memory : input;
     const base = raw.base == null ? null : registerOf(raw.base, 'x86-decoded-instruction-unknown-memory-base', { decoderRegisterCode:raw.baseCode ?? raw.base?.decoderRegisterCode, widthBits:raw.base?.viewBits });
     const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index', { decoderRegisterCode:raw.indexCode ?? raw.index?.decoderRegisterCode, widthBits:raw.index?.viewBits });
-    const segment = raw.segment == null ? null : String(raw.segment).toLowerCase();
+    const segment = segmentOf(raw.segment);
     const scale = raw.scale == null ? 1 : integer(raw.scale, 'x86-decoded-instruction-invalid-memory-scale', { min:1, max:8 });
     if (![1,2,4,8].includes(scale)) throw new TypeError('x86-decoded-instruction-invalid-memory-scale');
     return Object.freeze({
@@ -117,16 +159,26 @@ function normalizeOperand(input, index) {
         scale,
         displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
         segment,
-        addressSizeBits:integer(raw.addressSizeBits ?? 64, 'x86-decoded-instruction-invalid-address-size', { min:16, max:64 }),
+        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? 64, mode),
       }),
     });
   }
   return Object.freeze(common);
 }
 
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
 function prefixBytesOf(input, code) {
   if (input == null) return new Uint8Array();
-  if (input instanceof Uint8Array) return input.slice();
+  if (ArrayBuffer.isView(input)) {
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    if (tag !== 'Uint8Array') throw new TypeError(code);
+    try { return Uint8Array.from(input); } catch { throw new TypeError(code); }
+  }
   if (!Array.isArray(input)) throw new TypeError(code);
   const bytes = new Uint8Array(input.length);
   for (let index = 0; index < input.length; index += 1) {
@@ -160,9 +212,13 @@ export function createX86DecodedInstruction(input = {}) {
   if (!X86_DECODE_MODES.includes(mode)) throw new TypeError('x86-decoded-instruction-mode-unsupported');
   const rawDetail = input.detail && typeof input.detail === 'object' ? input.detail : {};
   const rawOperands = rawDetail.operands ?? input.structuredOperands ?? (Array.isArray(input.operands) ? input.operands : []);
-  const operands = rawOperands.map(normalizeOperand);
+  const operands = rawOperands.map((operand, index) => normalizeOperand(operand, index, mode));
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
+  // Strip provider-zero/nullish address-size metadata from the copied detail.
+  // It means "not stated" and must not survive the raw detail spread as
+  // canonical width authority.
+  const { addressSizeBits:rawAddressSizeBits, ...detailWithoutAddressSizeBits } = rawDetail;
   // `detailStatus` is the single authority for decoder-detail availability.
   // Only canonical primitive status tokens are accepted: structured values
   // must never acquire exact-detail authority through String() coercion.
@@ -181,19 +237,24 @@ export function createX86DecodedInstruction(input = {}) {
     // publishes a fresh defensive copy.
     get rawBytes() { return rawBytes.slice(); },
     mode,
-    instructionId:input.instructionId,
+    instructionId:instructionIdOf(input.instructionId),
     instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
     detailStatus,
     detail:Object.freeze({
-      ...rawDetail,
+      ...detailWithoutAddressSizeBits,
+      // The provider leaves addressSizeBits 0 when Capstone does not populate
+      // `addr_size` (no memory operand); 0 is "not stated", not a width.
+      ...(rawAddressSizeBits == null || rawAddressSizeBits === 0
+        ? {}
+        : { addressSizeBits:addressSizeBitsOf(rawAddressSizeBits, mode) }),
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
       operandCount,
       operands:Object.freeze(operands),
       implicitReads:Object.freeze((rawDetail.implicitReads ?? input.implicitReads ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-read', { decoderRegisterCode:rawDetail.implicitReadCodes?.[index] }))),
       implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
-      conditionCode:(rawDetail.conditionCode ?? input.conditionCode) == null ? null : String(rawDetail.conditionCode ?? input.conditionCode).toLowerCase(),
+      conditionCode:conditionCodeOf(rawDetail.conditionCode ?? input.conditionCode),
     }),
     detailAvailable:detailStatus === 'complete',
     mnemonic:String(input.mnemonic ?? ''),

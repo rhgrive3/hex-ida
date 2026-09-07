@@ -266,6 +266,9 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
         kind: 'rooted-offset',
         rootEntityId: String(rootProof.rootEntityId),
         offset: offset.toString(),
+        // Keep the proof's non-memory storage domain (#5901).
+        ...(typeof rootProof.addressSpace === 'string' && rootProof.addressSpace && rootProof.addressSpace !== 'memory'
+          ? { addressSpace: rootProof.addressSpace } : {}),
         metadata: {
           canonicalAddressIncludesOperationDisplacement: true,
           ...(rootProof.rootIdentity?.storageClass == null ? {} : {
@@ -349,8 +352,12 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     const rootEntityId = optionalIdentityString(descriptor.rootEntityId ?? descriptor.rootId, 'root-entity-id');
     const offset = toBigIntString(descriptor.offset ?? 0);
     if (!rootEntityId || offset == null || (!scope.functionId && !scope.binaryId)) return null;
-    canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth };
-    specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset };
+    // A rooted-offset region must keep the storage domain its canonical proof
+    // proved (#5901): a tls/io-rooted region is not flat memory and must not
+    // share an identity with a same-root memory region.
+    const rootedSpace = optionalIdentityString(descriptor.addressSpace, 'address-space');
+    canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
+    specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
   } else {
     const explicitSpace = optionalIdentityString(descriptor.addressSpace ?? addressSpace, 'address-space');
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
@@ -384,7 +391,12 @@ export function deriveMemoryRegion(input = {}) {
   const origin = normalizedOrigin(input.origin);
   const functionId = optionalIdentityString(input.functionId, 'function-id');
   const binaryId = uniqueBinaryId(origin, input.binaryId);
-  const widthBits = Number(memory.widthBits ?? input.widthBits);
+  const rawWidthBits = memory.widthBits ?? input.widthBits;
+  const widthBits = typeof rawWidthBits === 'number'
+    && Number.isSafeInteger(rawWidthBits)
+    && rawWidthBits > 0
+    ? rawWidthBits
+    : null;
   const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
   const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');
   const descriptor = normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);

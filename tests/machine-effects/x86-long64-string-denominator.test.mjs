@@ -149,13 +149,15 @@ try {
     assert.match(bundle.unknownEffects.reason,/implicit-state-unmodelled/);
   }
 
-  // Invalid address-size state is never guessed from mnemonic/opcode.
+  // A 16-bit effective address size cannot exist in long-64 mode (#6002), so
+  // the canonical boundary now rejects it instead of emitting an instruction
+  // whose address-size state the effects layer would leave unmodelled.
   {
     const [decoded] = session.decode(Uint8Array.of(0xa4),0x500040n);
-    const instruction = createX86DecodedInstruction({ ...decoded, detail:{ ...decoded.detail, addressSizeBits:16 }, instructionId:'x86-string:negative:a16' });
-    const bundle = liftX86MachineEffects(instruction);
-    assert.equal(bundle.completeness,'partial');
-    assert.match(bundle.unknownEffects.reason,/address-size-unmodelled/);
+    assert.throws(
+      () => createX86DecodedInstruction({ ...decoded, detail:{ ...decoded.detail, addressSizeBits:16 }, instructionId:'x86-string:negative:a16' }),
+      /invalid-address-size/,
+    );
   }
 
   // A string family with a non-string structured operand shape fails closed.

@@ -48,9 +48,10 @@ test('#3549 matched-authoritative authority is bound to provider/version/build',
   assert.equal(isDebugRecordAuthoritative(matched, record({ providerVersion: '2' })), false);
   assert.equal(isDebugRecordAuthoritative(matched, record({ buildIdentity: 'build-B' })), false);
 
-  // Existing records that predate per-record build identity remain compatible
-  // when their provider and provider version still identify the matched source.
-  assert.equal(isDebugRecordAuthoritative(matched, record({ buildIdentity: null })), true);
+  // Once the matched identity names an observed build, omitting per-record
+  // build provenance is not enough to claim hard authority. A legacy record
+  // can remain visible as soft evidence, but it cannot be exact for this build.
+  assert.equal(isDebugRecordAuthoritative(matched, record({ buildIdentity: null })), false);
 });
 
 test('#3549 matched-partial coverage cannot bypass source binding', () => {
@@ -59,7 +60,7 @@ test('#3549 matched-partial coverage cannot bypass source binding', () => {
   assert.equal(isDebugRecordAuthoritative(partial, record({ providerId: 'provider-B' })), false);
   assert.equal(isDebugRecordAuthoritative(partial, record({ providerVersion: '2' })), false);
   assert.equal(isDebugRecordAuthoritative(partial, record({ buildIdentity: 'build-B' })), false);
-  assert.equal(isDebugRecordAuthoritative(partial, record({ buildIdentity: null })), true);
+  assert.equal(isDebugRecordAuthoritative(partial, record({ buildIdentity: null })), false);
 });
 
 test('#3549 authoritativeRecords filters records from another matched source', () => {
@@ -76,5 +77,5 @@ test('#3549 authoritativeRecords filters records from another matched source', (
 
   const provider = new FixtureProvider();
   const page = provider.authoritativeRecords(result(), provider.types, null);
-  assert.deepEqual(page.records.map((entry) => entry.entityId), ['same-source', 'legacy-null-build']);
+  assert.deepEqual(page.records.map((entry) => entry.entityId), ['same-source']);
 });

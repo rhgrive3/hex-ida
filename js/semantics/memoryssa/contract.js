@@ -147,6 +147,10 @@ export function createMemoryRegionRef(input) {
   } else if (kind === 'rooted-offset') {
     out.rootEntityId = nonEmpty(input.rootEntityId, 'memory-ssa-region-root-required');
     out.offset = signedIntegerString(input.offset ?? 0, 'memory-ssa-invalid-region-offset');
+    // A rooted-offset region may carry the storage domain its canonical proof
+    // proved (tls/io-rooted descriptors, #5901). Flat-memory rooted-offsets
+    // omit the field, matching the historical shape.
+    if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
     if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
@@ -248,6 +252,14 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-contract-version-mismatch');
   }
 
+  const functionId = nonEmpty(input.functionId, 'memory-ssa-function-id-required');
+  const cfg = options.cfg;
+  // Block IDs are function-local. A foreign CFG cannot authorize this contract
+  // merely because its block/predecessor names happen to match.
+  if (cfg != null && (typeof cfg !== 'object' || Array.isArray(cfg) || cfg.functionId !== functionId)) {
+    fail('memory-ssa-cfg-function-mismatch');
+  }
+
   const regions = array(input.regions, 'memory-ssa-regions-required')
     .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -276,7 +288,7 @@ export function createMemorySsaContract(input, options = {}) {
     definitionById.set(definition.id, definition);
   }
 
-  const blocks = cfgMap(options.cfg);
+  const blocks = cfgMap(cfg);
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -292,12 +304,14 @@ export function createMemorySsaContract(input, options = {}) {
       if (!prior) fail('memory-ssa-dangling-phi-definition');
       if (prior.regionId !== definition.regionId) fail('memory-ssa-cross-region-definition-link');
     }
-    if (definition.kind !== 'memory-phi' || !blocks) continue;
+    if (definition.kind !== 'memory-phi') continue;
+    // Predecessor uniqueness is structural, independent of optional CFG proof.
+    const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
+    if (new Set(incomingPreds).size !== incomingPreds.length) fail('memory-ssa-duplicate-phi-predecessor');
+    if (!blocks) continue;
     if (definition.blockId == null) fail('memory-ssa-phi-block-required');
     const block = blocks.get(definition.blockId);
     if (!block) fail('memory-ssa-invalid-definition-block');
-    const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
-    if (new Set(incomingPreds).size !== incomingPreds.length) fail('memory-ssa-duplicate-phi-predecessor');
     for (const pred of incomingPreds) {
       work();
       if (!block.predecessors.includes(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
@@ -331,7 +345,7 @@ export function createMemorySsaContract(input, options = {}) {
 
   return deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'memory-ssa-function-id-required'),
+    functionId,
     regions,
     definitions,
     uses,

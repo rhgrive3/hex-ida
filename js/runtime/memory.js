@@ -53,6 +53,7 @@ export class MemoryRegion {
     this.name = spec.name == null ? null : String(spec.name).slice(0, 256);
     this.permissions = normalizePermissions(spec.permissions);
     this.objectId = spec.objectId == null ? null : String(spec.objectId).slice(0, 256);
+    Object.freeze(this);
   }
   contains(address, size = 1) {
     const a = asAddress(address); const n = BigInt(strictSize(size, 1, MAX_REGION_SIZE, 'memory size'));
@@ -100,10 +101,11 @@ export class RuntimeMemoryMap {
 }
 
 export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = RUNTIME_HEAP_BASE, heapSize = RUNTIME_HEAP_SIZE, globals = [], mappings = [] } = {}) {
+  const normalizedStackSize = strictSize(stackSize, 1, MAX_REGION_SIZE, 'stack size');
   const map = new RuntimeMemoryMap();
   map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
   map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
-  map.map({ start:asAddress(stackTop,'stackTop') - BigInt(stackSize), size:stackSize, kind:'stack', permissions:'rw', name:'stack' });
+  map.map({ start:asAddress(stackTop,'stackTop') - BigInt(normalizedStackSize), size:normalizedStackSize, kind:'stack', permissions:'rw', name:'stack' });
   for (const g of regionCollection(globals, 'globals')) map.map({ ...g, kind:g.kind == null ? 'global' : g.kind });
   for (const m of regionCollection(mappings, 'mappings')) map.map(m);
   return map;

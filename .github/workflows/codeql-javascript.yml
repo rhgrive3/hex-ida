@@ -19,23 +19,6 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/codeql-javascript.yml'
-  pull_request:
-    paths:
-      - 'js/ai/**'
-      - 'js/binary/**'
-      - 'js/bytesource/**'
-      - 'js/collaboration/**'
-      - 'js/debug/**'
-      - 'js/runtime/**'
-      - 'js/runtime-evidence/**'
-      - 'js/userscript/**'
-      - 'js/sandbox.js'
-      - 'js/plugins.js'
-      - 'js/script.js'
-      - 'worker*.js'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/codeql-javascript.yml'
   schedule:
     - cron: '17 18 * * 0'
 

@@ -179,8 +179,12 @@ function persistedSessionForConversation(persistence, conversationId, context) {
     return true;
   });
   if (conversationId != null) {
+    // An explicit conversation identity is authoritative: reuse only the exact
+    // persisted session of THIS conversation. Falling back to "the single
+    // compatible session" would let a new chat adopt another conversation's
+    // investigation memory and rewrite its ownership (#6011).
     const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));
-    if (exact) return String(exact.id);
+    return exact ? String(exact.id) : null;
   }
   return compatible.length === 1 ? String(compatible[0].id) : null;
 }
