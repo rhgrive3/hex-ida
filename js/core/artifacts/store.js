@@ -222,11 +222,19 @@ export class ArtifactStore {
     }
   }
 
+  #validatedEpochsStable(context) {
+    for (const [artifactId, epoch] of context.validatedEpochs) {
+      if (epoch !== this.#epoch(artifactId)) return false;
+    }
+    return true;
+  }
+
   async #upstreamsValid(record, options, context = null) {
     if (options.verifyUpstreams === false) return UPSTREAM_VALID;
     const ctx = context || {
       activePath: new Set(),
       validated: new Set(),
+      validatedEpochs: new Map(),
       maxNodes: Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000,
       nodesVisited: 0,
     };
@@ -270,6 +278,7 @@ export class ArtifactStore {
             return UPSTREAM_MUTATED;
           }
           ctx.validated.add(upstreamId);
+          ctx.validatedEpochs.set(upstreamId, upstreamEpochBefore);
         } catch (error) {
           if (error instanceof ArtifactCorruptionError) {
             this.metrics.validationFailures++;
@@ -277,6 +286,10 @@ export class ArtifactStore {
           }
           throw error;
         }
+      }
+      if (!this.#validatedEpochsStable(ctx)) {
+        this.metrics.mutationRetries++;
+        return UPSTREAM_MUTATED;
       }
       return UPSTREAM_VALID;
     } finally {

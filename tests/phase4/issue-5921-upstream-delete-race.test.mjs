@@ -86,3 +86,33 @@ console.log('issue-5921-upstream-delete-race: PASS');
 }
 
 console.log('issue-5921-upstream-publish-race: PASS');
+
+{
+  const entries = new Map();
+  const first = descriptor('upstream-sibling-first');
+  const second = descriptor('upstream-sibling-second');
+  const parent = descriptor('upstream-sibling-parent', {
+    upstreamArtifactIds:[first.artifactId, second.artifactId],
+  });
+  const backend = new UpstreamBlockingBackend({ entries }, second.artifactId);
+  const store = new ArtifactStore({ backend });
+
+  await store.publish(first, { value:'first' });
+  await store.publish(second, { value:'second' });
+  await store.publish(parent, { value:'parent' });
+
+  const reading = store.get(parent);
+  // The first dependency has already been validated when the second read is
+  // held. Mutating that completed sibling must still invalidate the snapshot.
+  await backend.entered;
+  await store.delete(first.artifactId);
+  assert.equal(entries.has(first.artifactId), false);
+  backend.releaseResolve();
+
+  const result = await reading;
+  assert.equal(result.status, 'miss');
+  assert.equal(result.reason, 'missing-upstream');
+  assert.ok(store.metrics.mutationRetries > 0, 'a validated sibling epoch race must retry');
+}
+
+console.log('issue-5921-upstream-sibling-delete-race: PASS');
