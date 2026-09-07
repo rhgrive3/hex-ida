@@ -124,6 +124,49 @@ test('the floating-point ABI is selected from ELF flags, never assumed', () => {
   assert.equal(hard.partial, true, 'lp64d small-aggregate flattening is not proven and must stay partial');
 });
 
+test('hard-float profiles return proven non-flattenable small aggregates via the integer convention (#6039)', () => {
+  const integerOnly = {
+    returnType: 'struct S', aggregate: true, returnBits: 64,
+    layout: { bits: 64, bytes: 8, padding: [], members: [{ type: 'uint64_t', bits: 64, bytes: 8, byteOffset: 0 }] },
+  };
+  for (const abiId of ['lp64f', 'lp64d']) {
+    const result = abiPlugin(abiId).classifyFunctionReturn({ functionPrototype: integerOnly });
+    assert.equal(result.partial, undefined, `${abiId}: a decided non-flattenable aggregate must not degrade to partial`);
+    assert.equal(result.reg, 'x10', `${abiId}: integer convention returns the aggregate in a0`);
+    assert.equal(result.bits, 64);
+    assert.equal(result.aggregate, true);
+    assert.deepEqual(result.pieces.map((piece) => piece.abiClass), ['aggregate-integer']);
+  }
+
+  // A union is never flattened by the hardware floating-point convention, even
+  // with FP-looking members; with union identity declared it returns by the
+  // integer convention.
+  const union = {
+    returnType: 'union U', aggregate: true, returnBits: 64, bytes: 8,
+    members: [{ type: 'uint32_t', bits: 32, bytes: 4, byteOffset: 0 }, { type: 'float', bits: 32, bytes: 4, byteOffset: 4 }],
+  };
+  const unionResult = abiPlugin('lp64d').classifyFunctionReturn({ functionPrototype: union });
+  assert.equal(unionResult.partial, undefined);
+  assert.equal(unionResult.reg, 'x10');
+  assert.equal(unionResult.bits, 64);
+  assert.equal(unionResult.aggregate, true);
+  assert.deepEqual(unionResult.pieces.map((piece) => piece.abiClass), ['aggregate-integer']);
+
+  // Eligible floating aggregates keep the exact hard-float path.
+  const eligible = abiPlugin('lp64d').classifyFunctionReturn({ functionPrototype: {
+    returnType: 'struct M', aggregate: true, returnBits: 128,
+    layout: { bits: 128, bytes: 16, padding: [], members: [
+      { type: 'double', bits: 64, bytes: 8, byteOffset: 0 }, { type: 'uint64_t', bits: 64, bytes: 8, byteOffset: 8 },
+    ] },
+  } });
+  assert.equal(eligible.abiClass, 'aggregate-hard-float-flattened');
+  assert.deepEqual(eligible.regs, ['f10', 'x10']);
+
+  // Without member evidence the classification is still unproven, not exact.
+  const unproven = abiPlugin('lp64d').classifyFunctionReturn({ functionPrototype: { returnType: 'struct X', aggregate: true, returnBits: 64 } });
+  assert.equal(unproven.partial, true);
+});
+
 test('the ABI resolves for riscv64 and never leaks across architectures', () => {
   assert.equal(resolveABIPlugin({ architecture: 'riscv64', platform: 'linux' }).id, 'lp64');
   assert.equal(resolveABIPlugin({ architecture: 'riscv64', abiId: 'lp64d' }).id, 'lp64d');

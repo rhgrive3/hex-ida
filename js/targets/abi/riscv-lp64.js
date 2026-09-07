@@ -751,7 +751,11 @@ function createClassifier(profile) {
       if (bits > 2 * XLEN) return indirectResult();
       const members = aggregateLayout?.members
         ?? aggregateMembers(prototype.returnAggregate || prototype);
-      if (hardFloat && members) {
+      // psABI: a union is never flattened by the hardware floating-point
+      // convention, even when its members look FP-eligible. With union
+      // identity declared, go straight to the integer convention (#6039).
+      const unionDeclared = /\bunion\b/.test(`${type} ${abiClass}`);
+      if (hardFloat && members && !unionDeclared) {
         const classifiedMembers = members.map((member) => parameterClass(member));
         const memberLayout = aggregateLayout
           ? { bytes:aggregateLayout.bytes, members:aggregateLayout.members }
@@ -785,8 +789,14 @@ function createClassifier(profile) {
           });
           return { reg:parts[0].reg, regs:parts.map((part)=>part.reg), parts, pieces:parts, bits, bytes:memberLayout.bytes, aggregate:true, abiClass:'aggregate-hard-float-flattened' };
         }
+        /* Members are classified and the member layout is proven, so FP
+         * flattening ineligibility is a decided fact. psABI's hardware
+         * floating-point convention returns such aggregates (and passes them
+         * as a first named argument) by the integer calling convention, so the
+         * return side must fall through to the integer path instead of
+         * degrading a known classification to partial (#6039). */
       }
-      if (hardFloat) return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
+      if (hardFloat && !members) return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
       const regs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
       const pieces = regs.map((reg, pieceIndex) => aggregatePiece({
         pieceIndex,
