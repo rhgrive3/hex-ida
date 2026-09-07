@@ -56,8 +56,8 @@ const cancelled = new AbortController();
 cancelled.abort(new Error('cancel-before-discovery'));
 await assert.rejects(
   api.functions(firstSnapshot, {}, { offset:0, limit:20 }, { signal:cancelled.signal }),
-  error => error?.name === 'AbortError',
-  'an already-aborted query must terminate before any discovery work starts',
+  error => error === cancelled.signal.reason,
+  'an already-aborted query must preserve its exact reason before any discovery work starts',
 );
 assert.equal(discoveryCalls, 0, 'cancellation must not bootstrap function discovery');
 
