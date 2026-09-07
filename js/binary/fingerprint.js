@@ -19,11 +19,23 @@ function fnv1a64State(bytes, seed = null) {
     hi = Number((seed >> 32n) & 0xffffffffn) >>> 0;
     lo = Number(seed & 0xffffffffn) >>> 0;
   } else if (typeof seed === 'object' && seed) {
-    // The {hi, lo} form is the resumable internal hash state: both limbs must
-    // be present, primitive, canonical uint32 numbers. Number()/>>>0 coercion
-    // would launder missing fields, arrays, booleans, fractions and negatives
-    // into a valid-looking seed (#5922).
-    const hiLimb = seed.hi, loLimb = seed.lo;
+    // Only a record with own data properties may supply resumable limbs.
+    // Do not invoke accessors or coerce structured values while validating
+    // this hash identity boundary (#5922).
+    let proto, hiDescriptor, loDescriptor;
+    try {
+      proto = Object.getPrototypeOf(seed);
+      hiDescriptor = Object.getOwnPropertyDescriptor(seed, 'hi');
+      loDescriptor = Object.getOwnPropertyDescriptor(seed, 'lo');
+    } catch {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    if (Array.isArray(seed) || (proto !== Object.prototype && proto !== null)
+      || !hiDescriptor || !loDescriptor
+      || !Object.hasOwn(hiDescriptor, 'value') || !Object.hasOwn(loDescriptor, 'value')) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    const hiLimb = hiDescriptor.value, loLimb = loDescriptor.value;
     if (!Number.isSafeInteger(hiLimb) || hiLimb < 0 || hiLimb > 0xffffffff
       || !Number.isSafeInteger(loLimb) || loLimb < 0 || loLimb > 0xffffffff) {
       throw new TypeError('FNV seed must be BigInt or {hi, lo}');

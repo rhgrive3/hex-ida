@@ -22,6 +22,22 @@ test('#5922 malformed object seeds are rejected, not coerced', () => {
   assert.throws(() => fnv1a64(new Uint8Array(), 'seed'), TypeError);
 });
 
+test('#5922 only own data-property record seeds are accepted', () => {
+  const arraySeed = [];
+  arraySeed.hi = 0;
+  arraySeed.lo = 0;
+  assert.throws(() => fnv1a64(new Uint8Array(), arraySeed), TypeError);
+
+  const inheritedSeed = Object.create({ hi: 0, lo: 0 });
+  assert.throws(() => fnv1a64(new Uint8Array(), inheritedSeed), TypeError);
+
+  const accessorSeed = { lo: 0 };
+  Object.defineProperty(accessorSeed, 'hi', {
+    get() { throw new Error('getter must not run'); },
+  });
+  assert.throws(() => fnv1a64(new Uint8Array(), accessorSeed), TypeError);
+});
+
 test('#5922 zero limbs remain expressible explicitly', () => {
   // {hi:0, lo:0} is a legitimate explicit seed and must keep working.
   assert.equal(typeof fnv1a64(new Uint8Array(), { hi: 0, lo: 0 }), 'bigint');
