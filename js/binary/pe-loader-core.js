@@ -351,22 +351,36 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
-
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
-  if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
+  if(!dir||!dir.rva||dir.size===0)return; const budget=ensureBudget(image,sharedBudget);
+  if(dir.size<8){budget.partial('relocations:malformed-block','Malformed PE base-relocation block: directory is shorter than a block header');return;}
+  if((dir.size&3)!==0){budget.partial('relocations:malformed-block','Malformed PE base-relocation block: directory size is not 4-byte aligned');return;}
+  if((dir.rva&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at unaligned RVA 0x${dir.rva.toString(16)}`);return;}
   const span=mappedFileSpanForRva(image,dir.rva,dir.size);if(!span){budget.partial('relocations:directory-span','PE base-relocation directory crosses a mapped boundary');return;}
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);
+  if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);return;}
   while(off+8<=end){
+    if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:32},'relocation-block'))break;
-    const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
+    const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||(blockSize&3)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     const count=(blockSize-8)/2;
     for(let i=0;i<count;i++){
       if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
       const raw=r.u16(off+8+i*2),type=raw>>>12,within=raw&0xfff;if(!type)continue;if(!allowed.has(type)){image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva+within).toString(16)}`);continue;}
-      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend:null,section:null,source:'PE-base-reloc'});
+      let addend=null;
+      if(type===4){
+        if(i+1>=count){budget.partial('relocations:highadj-payload',`Malformed PE HIGHADJ base relocation without its second adjustment slot at RVA 0x${(pageRva+within).toString(16)}`);break;}
+        // HIGHADJ occupies two 16-bit slots. Preserve the previous conservative
+        // budget charge for the payload slot even though it is not a record.
+        if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
+        addend=BigInt(r.i16(off+8+(i+1)*2));
+        i++;
+      }
+      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
   }
+  if(off<end&&off+8>end)budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}: ${end-off} trailing byte(s)`);
 }
 
 export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
