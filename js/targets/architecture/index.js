@@ -121,7 +121,7 @@ export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
   id:'arm64', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64']), registerFile:()=>ARM64_REGISTERS,
   decodeProvider:'capstone/backend', liftExact:liftArm64MachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
-  directControlTarget:arm64DirectControlTarget,
+  directControlTarget:arm64DirectControlTarget, supportedInstructionEndianness:Object.freeze(['little']),
   // Phase 2 exposes exact low-level effects where implemented. Coverage is not
   // complete yet, so the proven legacy v1 path remains active and MachineEffects
   // stays a shadow semantic source until the compatibility differential is zero.
@@ -132,7 +132,7 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
   id:'arm64e', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64','arm64e']), registerFile:()=>ARM64_REGISTERS,
   decodeProvider:'capstone/backend', liftExact:liftArm64eMachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
-  directControlTarget:arm64DirectControlTarget,
+  directControlTarget:arm64DirectControlTarget, supportedInstructionEndianness:Object.freeze(['little']),
   capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-partial' },
 });
 
@@ -140,7 +140,7 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  directControlTarget:x86DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']),
+  directControlTarget:x86DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']), supportedInstructionEndianness:Object.freeze(['little']),
   // P5-5's bounded variable-length viewer implementation is integrated and
   // verified under tests/phase5/viewer/**. Public capability promotion is kept
   // conservative because the frozen global capability regression is outside
@@ -160,7 +160,7 @@ export const RISCV64_ARCHITECTURE = registerArchitecturePlugin({
   id:'riscv64', semanticVersion:RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:RISCV64_INSTRUCTION_ALIGNMENT, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['rv64im','rv64imc']), registerFile:riscv64RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftRiscv64MachineEffects, classifyControlFlow:riscv64ControlFlow,
-  directControlTarget:riscv64DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']),
+  directControlTarget:riscv64DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']), supportedInstructionEndianness:Object.freeze(['little']),
   capabilities:{ decode:'external-structured-v1', exactEffects:'exact-for-rv64imc-profile', semanticAnalysis:'phase6-shared-middle-end' },
 });
 
