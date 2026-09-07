@@ -222,9 +222,24 @@ function serializable(value, code) {
   return jsonSafe(value);
 }
 
+// Machine payloads are exact integer facts, not generic coercions (#5830):
+// BigInt('')/BigInt(false)/BigInt([]) would launder malformed decoder or
+// lifter output into a real-looking constant. Accept only explicit integer
+// primitives (bigint, safe integer number, strict integer string).
 function bigintValue(value, code) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { fail(code); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(text)) {
+      try { return BigInt(text); } catch { fail(code); }
+    }
+    fail(code);
+  }
+  fail(code);
 }
 
 function undefinedResultMask(value) {
