@@ -49,7 +49,8 @@ try {
     },
   });
   const approved = store.approve(proposal.id);
-  assert.equal(approved.proposal, proposal);
+  assert.equal(approved.proposal.id, 'proposal-3773');
+  assert.equal(approved.proposal.status, 'approved');
   assert.equal(approved.approvalToken, 'approval-test-token');
   assert.equal(store.get(proposal.id).status, 'approved');
   assert.equal(store.approvals.get(proposal.id), 'approval-test-token');
