@@ -9,6 +9,10 @@ import { symbolicExecute } from './executor.js';
 export const DEFAULT_OBJECT_BASE = 0x0000600000001000n;
 export const DEFAULT_SANDBOX_STEPS = 20000;
 export const MAX_SANDBOX_STEPS = 1000000;
+// Synthetic object memory is pre-mapped at setup, before any step budget or
+// timeout applies, so it needs its own hard cap. 16 MiB is the documented
+// backing limit (see setup below) and the adapter-layer maximum.
+export const MAX_SANDBOX_OBJECT_SIZE = 16 * 1024 * 1024;
 
 function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
 
@@ -26,7 +30,7 @@ function boundedObjectSize(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
     return 0x10000;
   }
-  return Math.max(0x100, value);
+  return Math.min(Math.max(0x100, value), MAX_SANDBOX_OBJECT_SIZE);
 }
 
 function normalizeWatch(watch, objectBase) {
@@ -142,7 +146,7 @@ export class FunctionSandbox {
     }
     this._setupCount++;
     // Synthetic object memory is explicit. Chunk into 1 MiB mappings so
-    // maxObjectSize up to 16 MiB can be backed without exceeding single-mapping limit.
+    // maxObjectSize up to MAX_SANDBOX_OBJECT_SIZE can be backed without exceeding single-mapping limit.
     const CHUNK_SIZE = 1024 * 1024;
     let remaining = this.maxObjectSize;
     let currentBase = objectBase;

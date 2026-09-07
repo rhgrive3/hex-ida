@@ -1,23 +1,44 @@
 const CACHE = new WeakMap();
 
 function abortError(signal, fallback = 'Field-access search aborted') {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  if (signal?.reason instanceof Error) return signal.reason;
+  const reason = signal?.reason !== undefined ? signal.reason : fallback;
+  const error = new Error(String(reason));
+  error.name = 'AbortError';
   return error;
 }
 
 function resultState(result) {
-  const complete = result?.complete !== false && result?.truncated !== true;
+  const unsupported = result?.unsupported === true;
+  const complete = result?.complete === true && result?.truncated !== true && !unsupported;
   return {
     complete,
-    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || 'field-access-incomplete'),
+    ...(unsupported ? { unsupported:true } : {}),
+    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || (unsupported ? 'field-access-unsupported' : 'field-access-incomplete')),
   };
 }
 
+function backendGeneration(backend) {
+  try {
+    const generation = backend?.analysisEpoch;
+    return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+  } catch {
+    return null;
+  }
+}
+
 function cacheFor(backend) {
-  let map = CACHE.get(backend);
-  if (!map) { map = new Map(); CACHE.set(backend, map); }
-  return map;
+  const generation = backendGeneration(backend);
+  if (generation == null) {
+    CACHE.delete(backend);
+    return new Map();
+  }
+  let state = CACHE.get(backend);
+  if (!state || state.generation !== generation) {
+    state = { generation, entries:new Map() };
+    CACHE.set(backend, state);
+  }
+  return state.entries;
 }
 
 function artifactKey(region, offset, size) {
@@ -30,6 +51,7 @@ function validBackendResult(result) {
   if (!Array.isArray(result.results)) return false;
   if (result.complete != null && typeof result.complete !== 'boolean') return false;
   if (result.truncated != null && typeof result.truncated !== 'boolean') return false;
+  if (result.unsupported != null && typeof result.unsupported !== 'boolean') return false;
   return true;
 }
 
@@ -125,7 +147,9 @@ export async function fieldAccessAcrossExecutableRegions(app, offset, size, {
 
   const parts = new Map();
   const completedIds = new Set();
-  const publish = () => onPartial?.(aggregate(parts, regions, completedIds));
+  const publish = () => {
+    if (typeof onPartial === 'function') onPartial(aggregate(parts, regions, completedIds));
+  };
   const runOne = async (region) => {
     if (signal?.aborted) throw abortError(signal);
     const part = await fieldAccessRegion(app.backend, region, offset, size, { signal });

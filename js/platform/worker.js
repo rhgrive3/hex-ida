@@ -26,8 +26,21 @@ let pointerImages = new Map();
 let currentEpoch = 0;
 let openChain = Promise.resolve();
 const active = new Map();
+const scheduled = new Set();
 
 function cooperativeYield() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+
+function selectedFatSliceIndex(binaryImage) {
+  const fat = binaryImage?.metadata?.fat;
+  const selected = fat?.selected;
+  const slices = fat?.slices;
+  if (!selected || !Array.isArray(slices)) return -1;
+  return slices.findIndex((slice) =>
+    BigInt(slice.offset) === BigInt(selected.offset)
+    && BigInt(slice.size) === BigInt(selected.size)
+    && slice.cpu === selected.cpu
+    && slice.subtype === selected.subtype);
+}
 async function waitForForegroundDrain(epoch) {
   // Background metadata performs many small paged reads. Do not enqueue the
   // next page while any interactive request for the same binary epoch is live.
@@ -38,12 +51,20 @@ async function waitForForegroundDrain(epoch) {
   }
 }
 
+function cancellationMatches(msg, entry) {
+  return (msg.requestId == null || msg.requestId === entry.id)
+    && (msg.epoch == null || msg.epoch === entry.epoch);
+}
+
 self.onmessage = async (event) => {
   const msg = event.data;
   if (!msg || typeof msg.t !== 'string') return;
   if (msg.t === 'cancel') {
+    for (const entry of scheduled) {
+      if (cancellationMatches(msg, entry)) entry.cancelled = true;
+    }
     for (const entry of active.values()) {
-      if ((msg.requestId == null || msg.requestId === entry.id) && (msg.epoch == null || msg.epoch === entry.epoch)) entry.controller.abort();
+      if (cancellationMatches(msg, entry)) entry.controller.abort();
     }
     return;
   }
@@ -52,11 +73,15 @@ self.onmessage = async (event) => {
     currentEpoch = msg.epoch;
     for (const entry of active.values()) if (entry.epoch !== currentEpoch) entry.controller.abort();
   }
+  const scheduledEntry = { id:msg.id, epoch:msg.epoch, cancelled:false };
+  scheduled.add(scheduledEntry);
   const execute = async () => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
+    if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const priority = msg.priority === 'background' ? 'background' : 'current';
     if (priority === 'background') await waitForForegroundDrain(msg.epoch);
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
+    if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const controller = new AbortController();
     const requestKey = msg.id == null ? null : `${msg.epoch}:${msg.id}`;
     if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
@@ -66,7 +91,7 @@ self.onmessage = async (event) => {
   };
   try {
     const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
-    const resolved = await result;
+    const resolved = await result.finally(() => scheduled.delete(scheduledEntry));
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
     post({ t: 'err', id: msg.id, epoch: msg.epoch, error: error?.message || String(error) });
@@ -168,6 +193,12 @@ async function openFile(msg, signal) {
     descriptor = candidateDescriptor;
     regions = candidateRegions;
     pointerImages = new Map();
+    const selectedSliceIndex = selectedFatSliceIndex(candidateImage);
+    if (selectedSliceIndex >= 0) {
+      pointerImages.set(selectedSliceIndex, candidateImage);
+      candidateDescriptor.platform.selectedSliceIndex = selectedSliceIndex;
+      candidateDescriptor.platform.selectedSliceParseReused = true;
+    }
     if (previousSource && previousSource !== candidateSource) previousSource.clear?.();
     return candidateDescriptor;
   } catch (error) {
@@ -233,11 +264,8 @@ async function analyzeImage(msg, signal) {
   if (!image) return emptyAnalysis();
   let selected = image;
   if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {
-    selected = await parseMachOSource(source, {
-      sliceIndex: msg.sliceIndex,
-      signal,
-      ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
-    });
+    selected = await pointerImageForSlice(msg.sliceIndex, signal);
+    if (!selected) return emptyAnalysis();
   }
   if (signal.aborted) throw new Error('Analysis cancelled');
   return analysisFromBinaryImage(selected);

@@ -19,6 +19,16 @@ function normalizeArchitectureAddress(value) {
   try { return BigInt(text); } catch { return null; }
 }
 
+function ownTruthy(object, key) {
+  return object != null && Object.prototype.hasOwnProperty.call(object, key) && !!object[key];
+}
+
+function normalizeAdapterHook(value, name, fallback = null) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  return value;
+}
+
 export class ArchitectureAdapter {
   constructor(definition) {
     const id = canonicalArchitectureId(definition?.id);
@@ -27,32 +37,35 @@ export class ArchitectureAdapter {
     this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
     this.fixedInstructionSize = normalizeArchitecturePositiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
     this.viewerCompatible = !!definition.viewerCompatible;
-    this.decode = definition.decode || null;
-    this.assemble = definition.assemble || null;
-    this.controlFlow = definition.controlFlow || (() => null);
-    this.callKind = definition.callKind || (() => null);
-    this.returnKind = definition.returnKind || (() => null);
-    this.rowForAddress = definition.rowForAddress || ((region, address) => {
+    this.decode = normalizeAdapterHook(definition.decode, 'decode');
+    this.assemble = normalizeAdapterHook(definition.assemble, 'assemble');
+    this.controlFlow = normalizeAdapterHook(definition.controlFlow, 'controlFlow', () => null);
+    this.callKind = normalizeAdapterHook(definition.callKind, 'callKind', () => null);
+    this.returnKind = normalizeAdapterHook(definition.returnKind, 'returnKind', () => null);
+    this.rowForAddress = normalizeAdapterHook(definition.rowForAddress, 'rowForAddress', (region, address) => {
       if (this.fixedInstructionSize == null || !region) return null;
       const normalizedAddress = normalizeArchitectureAddress(address);
       if (normalizedAddress == null) return null;
       const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
+      const alignment = BigInt(this.instructionAlignment);
+      if (normalizedAddress % alignment !== 0n) return null;
       if (rel < 0n || rel + size > BigInt(region.size)) return null;
       if (rel % size !== 0n) return null;
       const row = rel / size;
       if (row > MAX_SAFE_ROW) return null;
       return Number(row);
     });
-    this.addressForRow = definition.addressForRow || ((region, row) => {
+    this.addressForRow = normalizeAdapterHook(definition.addressForRow, 'addressForRow', (region, row) => {
       if (this.fixedInstructionSize == null || !region) return null;
       const n = row;
       if (!Number.isSafeInteger(n) || n < 0) return null;
       const size = BigInt(this.fixedInstructionSize);
       const address = BigInt(region.vmAddr) + BigInt(n) * size;
+      if (address % BigInt(this.instructionAlignment) !== 0n) return null;
       return address + size <= BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
     });
-    this.validateInstructionPlacement = definition.validateInstructionPlacement || ((region, address, length) => {
+    this.validateInstructionPlacement = normalizeAdapterHook(definition.validateInstructionPlacement, 'validateInstructionPlacement', (region, address, length) => {
       if (this.fixedInstructionSize == null) return unsupportedArchitectureResult('assemble', this.id);
       if (!region) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       const normalizedAddress = normalizeArchitectureAddress(address);
@@ -60,7 +73,8 @@ export class ArchitectureAdapter {
       const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
-      if (rel % BigInt(this.instructionAlignment) !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
+      const alignment = BigInt(this.instructionAlignment);
+      if (normalizedAddress % alignment !== 0n || rel % alignment !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
       return { ok:true };
@@ -99,8 +113,8 @@ function legacyDefinition(plugin) {
     instructionAlignment: plugin.instructionAlignment,
     fixedInstructionSize: plugin.fixedInstructionSize,
     viewerCompatible: plugin.viewerCompatible,
-    decode: plugin.decode,
-    assemble: plugin.assemble,
+    decode: plugin.decode || undefined,
+    assemble: plugin.assemble || undefined,
     controlFlow,
     callKind(instruction) { return controlFlow(instruction) === 'call' ? 'call' : null; },
     returnKind(instruction) { return controlFlow(instruction) === 'return' ? 'return' : null; },
@@ -118,26 +132,25 @@ function projectAdapter(plugin) {
 }
 
 export function registerArchitectureAdapter(definition, { replace = false } = {}) {
-  const id = canonicalArchitectureId(definition?.id);
-  if (!id) throw new TypeError('architecture id is required');
-
+  const adapter = new ArchitectureAdapter(definition);
   const pluginDef = {
-    id,
-    instructionAlignment: definition.instructionAlignment,
-    fixedInstructionSize: definition.fixedInstructionSize,
-    viewerCompatible: definition.viewerCompatible,
-    decode: definition.decode,
-    assemble: definition.assemble,
-    classifyControlFlow: definition.controlFlow || (() => null),
+    id: adapter.id,
+    instructionAlignment: adapter.instructionAlignment,
+    fixedInstructionSize: adapter.fixedInstructionSize,
+    viewerCompatible: adapter.viewerCompatible,
+    decode: adapter.decode,
+    assemble: adapter.assemble,
+    classifyControlFlow: adapter.controlFlow,
     semanticVersion: 'legacy-adapter-v1',
     capabilities: {
-      decode: definition.decode ? 'native' : 'unsupported',
+      decode: adapter.decode ? 'native' : 'unsupported',
       exactEffects: 'unsupported',
       semanticAnalysis: 'unsupported',
     },
   };
-  registerArchitecturePlugin(pluginDef, { replace });
-  return architectureAdapter(id);
+  const plugin = registerArchitecturePlugin(pluginDef, { replace });
+  ADAPTER_CACHE.set(plugin, adapter);
+  return adapter;
 }
 
 export function architectureAdapter(id) {
@@ -149,11 +162,11 @@ export function architectureCapability(image, engine = {}) {
   const architecture = canonicalArchitectureId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
   const target = architecturePluginV2(architecture);
-  const engineSupported = !!engine[architecture] || (architecture === 'arm64e' && !!engine.arm64);
+  const engineSupported = ownTruthy(engine, architecture) || (architecture === 'arm64e' && ownTruthy(engine, 'arm64'));
   const legacyArm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
   const semanticCapability = target?.capabilities?.semanticAnalysis || 'unsupported';
   const arm64Analysis = legacyArm64Analysis && semanticCapability !== 'unsupported';
-  const emulationSupported = !!engine.emulation?.[architecture];
+  const emulationSupported = ownTruthy(engine?.emulation, architecture);
   const analysisLevel = arm64Analysis ? (architecture === 'arm64e' ? 'partial' : 'full') : 'unsupported';
   return Object.freeze({
     format: image?.format || 'unknown', architecture, endianness: image?.endian || 'unknown', bits: Number(image?.bits || 0),

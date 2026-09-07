@@ -64,9 +64,8 @@ function fail(code) { throw new TypeError(code); }
 
 function positiveLimit(value, fallback, code) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
 }
 
 function defaultAlign(sizeBytes) {
@@ -76,6 +75,34 @@ function defaultAlign(sizeBytes) {
   if (size >= 4) return 4;
   if (size >= 2) return 2;
   return 1;
+}
+
+const MAX_SAFE_LAYOUT_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+function exactStructuralInteger(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+function structuralIntegerWire(value) {
+  return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value.toString();
+}
+
+function defaultStructuralAlign(sizeBytes) {
+  const size = exactStructuralInteger(sizeBytes, 0n);
+  if (size == null || size <= 0n) return 1n;
+  if (size >= 8n) return 8n;
+  if (size >= 4n) return 4n;
+  if (size >= 2n) return 2n;
+  return 1n;
 }
 
 function mergedEvidenceIds(left, right) {
@@ -168,26 +195,36 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (desc.sizeBytes != null && desc.offset == null) explicitSize = Number(desc.sizeBytes);
-      if (desc.alignBytes != null && desc.offset == null) explicitAlign = Number(desc.alignBytes);
+      if (desc.sizeBytes != null && desc.offset == null) {
+        explicitSize = exactStructuralInteger(desc.sizeBytes);
+        if (explicitSize == null) return null;
+      }
+      if (desc.alignBytes != null && desc.offset == null) {
+        explicitAlign = exactStructuralInteger(desc.alignBytes);
+        if (explicitAlign == null) return null;
+      }
     }
 
     const membersByOffset = new Map();
     for (const member of rawMembers) {
-      const offset = Number(member.offset ?? 0);
-      const existing = membersByOffset.get(offset);
+      const offset = exactStructuralInteger(member.offset, 0n);
+      if (offset == null) return null;
+      const key = offset.toString();
+      const existing = membersByOffset.get(key);
       if (existing) {
-        if (stableStringify(existing) !== stableStringify(member)) return null;
+        if (stableStringify(existing.member) !== stableStringify(member)) return null;
       } else {
-        membersByOffset.set(offset, member);
+        membersByOffset.set(key, { offset, member });
       }
     }
 
-    const members = [...membersByOffset.values()].sort((left, right) => {
-      const leftOffset = Number(left.offset ?? 0);
-      const rightOffset = Number(right.offset ?? 0);
-      return leftOffset - rightOffset || stableStringify(left).localeCompare(stableStringify(right));
-    });
+    const members = [...membersByOffset.values()]
+      .sort((left, right) => {
+        if (left.offset < right.offset) return -1;
+        if (left.offset > right.offset) return 1;
+        return stableStringify(left.member).localeCompare(stableStringify(right.member));
+      })
+      .map((entry) => entry.member);
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -203,29 +240,42 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       return m;
     });
 
-    let maxAlign = explicitAlign ?? 1;
+    let maxAlign = explicitAlign ?? 1n;
     for (const m of updatedMembers) {
-      const mAlign = Number(m.alignBytes ?? defaultAlign(m.sizeBytes));
+      let mAlign = null;
+      if (m.alignBytes == null) {
+        mAlign = defaultStructuralAlign(m.sizeBytes);
+      } else {
+        mAlign = exactStructuralInteger(m.alignBytes);
+        if (mAlign == null) return null;
+      }
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
-    let calculatedSize = explicitSize ?? 0;
+    let calculatedSize = explicitSize ?? 0n;
     if (updatedMembers.length > 0) {
-      const maxOffsetSpan = Math.max(...updatedMembers.map((m) => Number(m.offset ?? 0) + Number(m.sizeBytes ?? 0)));
-      calculatedSize = maxAlign > 1
-        ? Math.ceil(maxOffsetSpan / maxAlign) * maxAlign
+      let maxOffsetSpan = 0n;
+      for (const m of updatedMembers) {
+        const offset = exactStructuralInteger(m.offset, 0n);
+        const size = exactStructuralInteger(m.sizeBytes, 0n);
+        if (offset == null || size == null) return null;
+        const span = offset + size;
+        if (span > maxOffsetSpan) maxOffsetSpan = span;
+      }
+      calculatedSize = maxAlign > 1n
+        ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
         : maxOffsetSpan;
       if (explicitSize != null && explicitSize > calculatedSize) calculatedSize = explicitSize;
     }
 
-    const baseDescriptor = updatedMembers[0] ?? descriptors[0];
+    const calculatedSizeWire = structuralIntegerWire(calculatedSize);
+    const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
-      ...baseDescriptor,
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: baseDescriptor.sizeBytes ?? calculatedSize,
-      totalSizeBytes: calculatedSize,
-      alignBytes: maxAlign,
+      sizeBytes: calculatedSizeWire,
+      totalSizeBytes: calculatedSizeWire,
+      alignBytes: maxAlignWire,
       isRecursive,
       recursiveIdentity: isRecursive ? entityId : null,
       sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
