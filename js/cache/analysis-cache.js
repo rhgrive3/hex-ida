@@ -254,6 +254,10 @@ export class AnalysisCache {
           try { db?.close?.(); } catch { /* best effort */ }
           return;
         }
+        db.onversionchange = () => {
+          try { db?.close?.(); } catch { /* best effort */ }
+          if (this._db === db) this._db = null;
+        };
         settled = true;
         resolve(db);
       };
