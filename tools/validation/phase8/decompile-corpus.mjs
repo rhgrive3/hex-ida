@@ -280,6 +280,18 @@ export function observationOf(entry, outcome) {
       version:result.phase8Projection.version,
       transformCount:result.phase8Projection.transformCount,
     },
+    // HEX-C4-03: the render provenance map is validated at observation time so
+    // provenance loss and stale bindings are fail-closed safety counters, not
+    // silent consumer assumptions.
+    renderProvenance:result?.renderProvenance == null ? null : {
+      version:result.renderProvenance.version,
+      snapshotId:result.renderProvenance.snapshotId,
+      completeness:result.renderProvenance.completeness,
+      reasons:[...(result.renderProvenance.reasons ?? [])],
+      entities:Object.keys(result.renderProvenance.entities ?? {}).length,
+      provenanceLoss:result.renderProvenance.counts?.provenanceLoss ?? null,
+      truncated:result.renderProvenance.budget?.truncated === true,
+    },
   };
 }
 

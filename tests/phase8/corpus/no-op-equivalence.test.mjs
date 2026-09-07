@@ -83,6 +83,16 @@ test('the direct baseline comparator keeps its three hard safety counters at zer
   }
 });
 
+test('HEX-C4-03 render provenance never publishes loss or unbound identities', () => {
+  const counters = safetyCounters(observations, baseline);
+  assert.equal(counters.renderProvenanceLossCount, 0, `${counters.renderProvenanceLossCount} render provenance losses: ${JSON.stringify(counters.details)}`);
+  assert.equal(counters.renderProvenanceUnboundCount, 0, `${counters.renderProvenanceUnboundCount} unbound render provenance maps: ${JSON.stringify(counters.details)}`);
+  for (const observation of observations.filter((item) => item.semantic)) {
+    assert.ok(observation.renderProvenance, `no render provenance published for ${observation.id}`);
+    assert.equal(observation.renderProvenance.completeness, 'complete', `${observation.id} render provenance incomplete: ${JSON.stringify(observation.renderProvenance.reasons)}`);
+  }
+});
+
 test('the final quality vector makes both required strict improvements without directional regressions', () => {
   const before = qualityVector(baseline.observations);
   const after = qualityVector(observations);
