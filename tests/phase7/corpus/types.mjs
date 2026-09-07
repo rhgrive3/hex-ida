@@ -128,7 +128,7 @@ export const TYPE_CASES = Object.freeze([
       { kind: 'debug-type', origin: 'debug-matched', claim: structural('entity_struct', 8, 4, { name: 'int32' }), debug: true },
     ],
     soft: [],
-    truth: { structural: { offset: 0, sizeBytes: 12 } },
+    truth: { structural: { kind: 'struct', sizeBytes: 12, totalSizeBytes: 12 } },
     expectCertain: ['structural'],
     noDebug: { truth: {}, expectCertain: [] },
   },
