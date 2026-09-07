@@ -39,7 +39,7 @@ export function machoSymbolTruth(image) {
   statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
   statusReasons(metadata.exportTrie, 'export-trie', reasons);
   dyldBindingReasons(metadata.dyldBindings, reasons);
-  if (!hasAffirmativeCompleteness && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
+  if (hasUnknownPresentComponent && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
   const unique = [...new Set(reasons)].slice(0, 64);
   return {
     source: 'BinaryImage', normalized: true, complete: unique.length === 0, reasons: unique,
