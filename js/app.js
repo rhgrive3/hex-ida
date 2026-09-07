@@ -144,7 +144,10 @@ export async function buildRecognitionState({
 export async function ensureRecognitionState(app, options = {}) {
   const sym = app?.symbols;
   if (!sym || sym === EMPTY_INDEX) return null;
-  if (app.recognition && app.recognition.gen === sym.gen) return app.recognition;
+  // The recognition state bakes in knowledge propagation results, so a
+  // knowledge mutation must invalidate the legacy cache as well (#5723).
+  const knowledgeRev = Number(app.knowledge?.revision ?? 0);
+  if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
   if (app.recognitionBusy) return app.recognitionBusy;
   const epoch = app.backend.gen;
   const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
@@ -162,7 +165,10 @@ export async function ensureRecognitionState(app, options = {}) {
       isCurrent:() => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen,
     });
     if (state == null || sym.gen !== symbolGen) return null;
-    if (epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen) app.recognition = state;
+    if (epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen) {
+      app.recognition = state;
+      app.recognitionKnowledgeRev = knowledgeRev;
+    }
     return state;
   })();
   app.recognitionBusy = pending;
