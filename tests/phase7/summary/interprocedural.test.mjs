@@ -245,6 +245,8 @@ test('a library model fills in a callee the binary does not define', () => {
   const solved = solveInterproceduralSummaries({
     roots: ['fn_caller'], localSummaries: locals,
     libraryModels: new Map([['fn_absent', {
+      modelSchema: 'phase7-library-model',
+      modelVersion: '1',
       memoryWriteRegions: [{ regionId: 'region_model', regionKind: 'global-absolute', source: 'library-model' }],
       noreturn: false, mayThrow: false,
     }]]),
@@ -252,6 +254,21 @@ test('a library model fills in a callee the binary does not define', () => {
   const summary = solved.summaries.get('fn_caller');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
   assert.equal(summary.status.completeness, 'complete');
+});
+
+test('an unproven library model cannot bypass the unknown-call fallback (#6074)', () => {
+  const locals = buildSummaryGraph('missing-callee-summary');
+  for (const impostor of [null, undefined, {}, { modelSchema: 'phase7-library-model' }, { modelVersion: '1' }, []]) {
+    const solved = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', impostor]]),
+    });
+    const summary = solved.summaries.get('fn_caller');
+    assert.ok(summary.unknownCallEffects.some((effect) =>
+      effect.reason === 'library-model-missing' && effect.targetEntityIds.includes('fn_absent')),
+    `an unproven model ${JSON.stringify(impostor)} must fall back to unknown-call`);
+    assert.notEqual(summary.status.completeness, 'complete');
+  }
 });
 
 test('cancellation publishes nothing complete', () => {

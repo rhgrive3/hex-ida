@@ -193,6 +193,21 @@ function unionKnowledge(values) {
 }
 
 /**
+ * Minimum proof that a library-model entry is a versioned external model and
+ * not an accidental empty/shapeless value (P7-INV-004). A model that cannot
+ * prove its identity is never consulted: an unproven model is exactly as
+ * trustworthy as a missing one, and a missing callee falls back to the
+ * conservative unknown-call effect.
+ */
+function isProvenLibraryModel(model) {
+  if (!model || typeof model !== 'object' || Array.isArray(model)) return false;
+  return typeof model.modelVersion === 'string'
+    && !!model.modelVersion.trim()
+    && typeof model.modelSchema === 'string'
+    && !!model.modelSchema.trim();
+}
+
+/**
  * Solves interprocedural summaries for the components reachable from `roots`.
  *
  * `localSummaries` maps functionId to its P7-3a local summary. `libraryModels`
@@ -361,7 +376,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       const model = models.get(target);
-      if (model && !locals.has(target)) {
+      if (model && !locals.has(target) && isProvenLibraryModel(model)) {
         // A library model applies only where the binary does not define the
         // callee, so it can never override contradictory binary evidence.
         reads.push(model.memoryReadRegions ?? []);
@@ -390,7 +405,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       }
       if (component.includes(candidate)) continue;
       const model = models.get(candidate);
-      if (model && !locals.has(candidate)) {
+      if (model && !locals.has(candidate) && isProvenLibraryModel(model)) {
         reads.push(model.memoryReadRegions ?? []);
         writes.push(model.memoryWriteRegions ?? []);
         noreturn.push(model.noreturn ?? 'unknown');
