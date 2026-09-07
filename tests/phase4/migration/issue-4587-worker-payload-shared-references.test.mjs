@@ -57,6 +57,26 @@ function assertTopology(value) {
   assertTopology(decodeWorkerAnalysisPayload(persisted));
 }
 
+// Sparse arrays are outside #4587 scope; reject them before producing a wire payload that canonical JSON would mutate.
+{
+  const sparse = [];
+  sparse[1] = 'x';
+  assert.throws(
+    () => encodeWorkerAnalysisPayload(sparse),
+    /analysis-artifact-payload-sparse-array-unsupported/,
+  );
+
+  const sparseWire = [];
+  sparseWire[1] = { t:'string', v:'x' };
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{ t:'array', i:0, v:sparseWire },
+    }),
+    /analysis-artifact-payload-node-invalid/,
+  );
+}
+
 // The old v1 wire format remains readable while v2 gets a new artifact identity.
 {
   const legacy = {

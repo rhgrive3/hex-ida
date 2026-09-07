@@ -205,7 +205,12 @@ export function encodeWorkerAnalysisPayload(value) {
         return { t:'map', i, v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
       }
       if (input instanceof Set) return { t:'set', i, v:[...input.values()].map(encode) };
-      if (Array.isArray(input)) return { t:'array', i, v:input.map(encode) };
+      if (Array.isArray(input)) {
+        for (let index = 0; index < input.length; index++) {
+          if (!Object.hasOwn(input, index)) throw new TypeError('analysis-artifact-payload-sparse-array-unsupported');
+        }
+        return { t:'array', i, v:input.map(encode) };
+      }
       const proto = Object.getPrototypeOf(input);
       if (proto !== Object.prototype && proto !== null) throw new TypeError(`analysis-artifact-object-prototype-unsupported:${input.constructor?.name || 'unknown'}`);
       return {
@@ -336,7 +341,7 @@ export function decodeWorkerAnalysisPayload(payload) {
         return complete(node, out);
       }
       case 'array': {
-        const entries = wireArray(node.v, { dense:false });
+        const entries = wireArray(node.v, { dense:referenceAware });
         const out = register(node, new Array(entries.length), ['t', 'v']);
         for (let i = 0; i < entries.length; i++) {
           if (Object.hasOwn(entries, i)) out[i] = decode(entries[i]);
