@@ -88,8 +88,19 @@ function normalizeCursorIndex(value) {
 
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
+  // currentFunction is consumed as BigInt by the workspace apply; validating
+  // the integer representation HERE (at parse time) prevents a malformed value
+  // from failing mid-apply, after notes/patches were already persisted (#5953).
+  let currentFunction = value.currentFunction ?? null;
+  if (currentFunction != null) {
+    if (typeof currentFunction !== 'string' && typeof currentFunction !== 'number' && typeof currentFunction !== 'bigint') {
+      throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    }
+    try { currentFunction = BigInt(currentFunction); }
+    catch { throw new ProjectFormatError('navigation.currentFunction must be an integer'); }
+  }
   return {
-    currentFunction: value.currentFunction ?? null,
+    currentFunction,
     history: list(value.history, 'navigation.history').slice(-500),
     cursorIndex: normalizeCursorIndex(value.cursorIndex),
     bookmarks: list(value.bookmarks, 'navigation.bookmarks').slice(-500),
