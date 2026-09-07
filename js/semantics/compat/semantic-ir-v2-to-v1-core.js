@@ -68,18 +68,6 @@ export function safeBigInt(value) {
     if ((value.kind === 'absolute-address' || value.kind === 'address') && value.value != null) return safeBigInt(value.value);
     return null;
   }
-  // Only canonical numeric representations may mint a constant. BigInt('')
-  // is 0n and BigInt(true/false) is 1n/0n, so empty strings and booleans
-  // would otherwise materialize as concrete constants (#5847/#5870). Decimal,
-  // hex, octal and binary literal strings stay valid.
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (text === '') return null;
-    if (/^[+-]?[0-9]+$/.test(text)) return BigInt(text);
-    if (/^[+-]?0[xXoObB][0-9a-fA-F]+$/.test(text)) return BigInt(text);
-    return null;
-  }
-  if (typeof value === 'boolean') return null;
   try { return typeof value === 'bigint' ? value : BigInt(value); } catch { return null; }
 }
 function machineWidth(type) {

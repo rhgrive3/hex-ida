@@ -15,10 +15,8 @@ function constantPayload(node) {
   if (raw == null) return { value: null, float: null, constKind: null };
   const integer = safeBigInt(raw);
   if (integer != null) return { value: integer, float: null, constKind: attrs.constKind ?? metadata.constKind ?? null };
-  // The float fallback must not materialize empty strings or booleans as
-  // concrete constants: Number('') === 0 and Number(true) === 1 (#5847).
-  const numeric = typeof raw === 'number' || (typeof raw === 'string' && raw.trim() !== '') ? Number(raw) : NaN;
-  if (Number.isFinite(numeric)) return { value: null, float: numeric, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
+  const number = Number(raw);
+  if (Number.isFinite(number)) return { value: null, float: number, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
   return { value: null, float: null, constKind: null };
 }
 
