@@ -56,6 +56,7 @@ for (const [label, impl] of contradictory) {
     { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'p', transactionId: 't', outputHash: 'h', outputIdentity: 'i', binaryId: 'b', format: 'elf', architecture: 'arm64', loaderVersion: 'l', sourceHash: 's' }) },
   );
   assert.equal(published.status, 'rejected', `${label} must not publish`);
+  assert.equal(published.reason, 'rebuild-v2-validation-not-green', `${label} must be rejected by the validation gate`);
 }
 
 // Consistent positive shapes stay accepted.
