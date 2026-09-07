@@ -204,8 +204,9 @@ function comparisonForBranch(branch) {
   };
 }
 
-function rmwFacts(ir, out) {
-  for (const r of readModifyWrite(ir)) {
+function rmwFacts(ir, out, precomputedRmw = null) {
+  const proofs = Array.isArray(precomputedRmw) ? precomputedRmw : readModifyWrite(ir);
+  for (const r of proofs) {
     const chain = r.chain || [];
     const evidence = uniqueEvidence([
       instructionEvidence(r.load, 'read'),
@@ -413,11 +414,14 @@ function sourceSinkFacts(ir, out) {
   }
 }
 
-export function semanticFacts(ir) {
+export function semanticFacts(ir, options = null) {
   if (!ir || !ir.instructions) return [];
   if (factCache.has(ir)) return factCache.get(ir);
+  const precomputedRmw = Array.isArray(options?.readModifyWriteProofs)
+    ? options.readModifyWriteProofs
+    : null;
   const out = [];
-  memoryFacts(ir, out); rmwFacts(ir, out); controlFacts(ir, out); sourceSinkFacts(ir, out);
+  memoryFacts(ir, out); rmwFacts(ir, out, precomputedRmw); controlFacts(ir, out); sourceSinkFacts(ir, out);
   out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
   factCache.set(ir, out);
   return out;

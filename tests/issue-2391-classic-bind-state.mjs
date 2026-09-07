@@ -44,9 +44,9 @@ function fixture(stream, source = 'bind') {
   return { status, image };
 }
 
-// SET_DYLIB_ORDINAL_IMM 1; SET_SYMBOL "_ok"; SET_SEGMENT 0 + 0; DO_BIND; DONE
+// SET_DYLIB_ORDINAL_IMM 1; SET_SYMBOL "_ok"; SET_TYPE pointer; SET_SEGMENT 0 + 0; DO_BIND; DONE
 {
-  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x70, 0x00, 0x90, 0x00]));
+  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x51, 0x70, 0x00, 0x90, 0x00]));
   assert.equal(status.complete, true);
   assert.equal(status.decodedBinds, 1);
   assert.equal(image.imports.length, 1);
@@ -73,6 +73,44 @@ function fixture(stream, source = 'bind') {
   assert.equal(status.complete, true);
   assert.equal(status.decodedBinds, 0);
   assert.equal(image.imports.length, 0);
+  assert.equal(image.metadata.dyldBindings.streams['bind'].complete, true);
+}
+
+// Lazy-bind streams carry dyld's implicit pointer type without SET_TYPE_IMM.
+{
+  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x70, 0x00, 0x90, 0x00]), 'lazy-bind');
+  assert.equal(status.complete, true);
+  assert.equal(status.decodedBinds, 1);
+  assert.equal(image.imports[0].type, 1);
+}
+
+// A normal bind without SET_TYPE_IMM has no bind type under dyld's state machine
+// (issue #5834): it must fail closed instead of laundering into a pointer bind.
+{
+  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x70, 0x00, 0x90, 0x00]));
+  assert.equal(status.complete, false);
+  assert.equal(status.decodedBinds, 0);
+  assert.equal(image.imports.length, 0);
+  assert.ok(image.warnings.some((x) => x.includes('unknown bind type 0')));
+}
+
+// A DO_BIND before SET_SEGMENT_AND_OFFSET_ULEB has no bind location (issue #5835):
+// segment 0 + offset 0 defaults must not mint a bind site.
+{
+  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x51, 0x90, 0x00]));
+  assert.equal(status.complete, false);
+  assert.equal(status.decodedBinds, 0);
+  assert.equal(image.imports.length, 0);
+  assert.ok(image.warnings.some((x) => x.includes('outside segment 0')));
+}
+
+// An unknown BIND_TYPE must fail closed instead of minting a canonical import (issue #5831).
+{
+  const { status, image } = fixture(Uint8Array.from([0x11, 0x40, 0x5f, 0x6f, 0x6b, 0x00, 0x54, 0x70, 0x00, 0x90, 0x00]));
+  assert.equal(status.complete, false);
+  assert.equal(status.decodedBinds, 0);
+  assert.equal(image.imports.length, 0);
+  assert.ok(image.warnings.some((x) => x.includes('unknown bind type 4')));
 }
 
 // A second DO_BIND while collecting a size-1 threaded table is overflow, not an ordinary bind.

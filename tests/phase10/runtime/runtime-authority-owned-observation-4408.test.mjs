@@ -165,4 +165,3 @@ test('P10 runtime authority tracker isolates Uint8Array and ArrayBuffer payloads
   assert.equal(tracker.snapshot().observations[0].payload.bytes[0], 1);
   assert.equal(tracker.observations[0].observationId, accepted.observationId);
 });
-

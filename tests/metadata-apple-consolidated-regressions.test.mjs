@@ -125,7 +125,49 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #6105 RTTI demangler non-string validation passed');
 }
 
-// --- Test 5: #6062 unified metadata dispatcher provider discovery parity ---
+// --- Test 5: #3608 Swift 4 legacy prefix survives Darwin normalization ---
+{
+  assert.equal(demangleSwift('_T04Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_T04Test3'), null, 'truncated legacy component must fail closed');
+  assert.equal(demangleSwift('_T00'), null, 'zero-length legacy component must fail closed');
+  assert.equal(demangleSwift('_T0C'), null, 'nameless legacy symbol must fail closed');
+  assert.equal(demangleSwift('_T4Test3Foo'), null, 'bare legacy marker must fail closed');
+  assert.equal(readableName('_T04Test3Foo'), 'Test.Foo');
+
+  // Existing modern Swift spellings keep their accepted normalization.
+  assert.equal(demangleSwift('_$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_foo'), null);
+  console.log('✔ #3608 Swift legacy prefix normalization passed');
+}
+
+// --- Test 6: #3632 canonical Itanium prefix survives Darwin normalization ---
+{
+  assert.equal(isMangled('_Z3foov'), true);
+  assert.equal(demangleCxx('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('__Z3foov'), 'foo()');
+  assert.equal(readableName('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_foo'), null);
+  assert.equal(demangleCxx('___Z3foov'), null);
+  console.log('✔ #3632 canonical Itanium prefix normalization passed');
+}
+
+// --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
+{
+  // These are compiler-emitted names (g++ -std=c++20), including pointer arguments.
+  assert.equal(demangleCxx('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(demangleCxx('_Z2f8Du'), 'f8(char8_t)');
+  assert.equal(demangleCxx('_Z3f32Di'), 'f32(char32_t)');
+  assert.equal(demangleCxx('_Z4fp16PDs'), 'fp16(char16_t *)');
+  assert.equal(demangleCxx('_Z3fp8PDu'), 'fp8(char8_t *)');
+  assert.equal(readableName('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(readableName('_Z2f8Du'), 'f8(char8_t)');
+  console.log('✔ #4036 Itanium Ds/Du builtin mappings passed');
+}
+
+// --- Test 7: #6062 unified metadata dispatcher provider discovery parity ---
 {
   // Rust discovery via __R and ZN
   const rustV0 = await parseUnifiedLanguageMetadata({
@@ -386,3 +428,8 @@ import '../js/objc-stub-recovery.js';
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');
+
+// Keep ObjC provider cancellation regressions in the canonical metadata gate.
+await import('./issue-6270-objc-methodlist-cancellation.mjs');
+await import('./objc-provider-cancellation-3808.test.mjs');
+await import('./test-objc-metadata-demand-cancellation.mjs');

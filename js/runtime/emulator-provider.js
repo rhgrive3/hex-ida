@@ -20,6 +20,7 @@ function terminationAlias(raw) {
 }
 
 function ownedClone(value) {
+  if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError('value is not replay-recordable');
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(ownedClone);
@@ -32,6 +33,14 @@ function ownedClone(value) {
     Object.defineProperty(out, key, { value: ownedClone(item), enumerable: true, configurable: true, writable: true });
   }
   return out;
+}
+
+function recordableClone(value) {
+  try {
+    return ownedClone(value);
+  } catch (error) {
+    throw new DebugAdapterError('emulator-replay-options-invalid', `replay options are not recordable: ${String(error?.message || error)}`);
+  }
 }
 
 function terminationOf(result = {}) {
@@ -106,17 +115,28 @@ export class EmulatorProvider {
       provider: this,
       request,
       close: async () => {
-        try { if (typeof this.engine.disconnect === 'function') await this.engine.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (typeof this.engine.disconnect === 'function') await this.engine.disconnect();
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});
     const evidence = new RuntimeEvidenceBridge();
     let lastRun = null;
+    let activeRun = null;
 
     const run = async (input = {}, runOptions = {}) => {
+      if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
+      const runToken = {};
+      activeRun = runToken;
+      try {
       const maxSteps = boundedInteger(runOptions.maxSteps, 20000, 1, 1000000, 'maxSteps');
       const timeoutMs = boundedInteger(runOptions.timeoutMs, 2000, 10, 60000, 'timeoutMs');
+      const { signal: _nonReplayableSignal, ...replayableRunOptions } = runOptions;
+      const replayOptions = { ...replayableRunOptions, maxSteps, timeoutMs };
+      // Snapshot replay-effective options before engine execution. A callback,
+      // symbol, Proxy, or other non-cloneable option must fail closed before
+      // the engine can succeed and only then make run() throw while recording.
+      const recordedOptions = recordableClone(replayOptions);
       const controller = session.controller();
       let externalAbort = null;
       let externalCancelled = false;
@@ -145,10 +165,10 @@ export class EmulatorProvider {
       let abortTermination = null;
       try {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
-        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...replayOptions, signal: controller.signal });
         else {
           await this.engine.launch(input, { signal: controller.signal });
-          raw = await this.engine.resume({ ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+          raw = await this.engine.resume({ ...replayOptions, signal: controller.signal });
         }
       } catch (error) {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
@@ -214,8 +234,11 @@ export class EmulatorProvider {
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
       const ownedRaw = ownedClone(raw ?? null);
-      lastRun = deepFreeze({ input: ownedClone(input), options: { maxSteps, timeoutMs }, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      lastRun = deepFreeze({ input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
+      } finally {
+        if (activeRun === runToken) activeRun = null;
+      }
     };
 
     const emulator = Object.freeze({

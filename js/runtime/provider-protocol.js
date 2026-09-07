@@ -245,6 +245,10 @@ export class RuntimeProviderProtocolClient {
     let packet;
     try { packet = validateProviderPacket(input); }
     catch { return false; }
+    if (packet.type === 'close') {
+      this.close();
+      return true;
+    }
     if (packet.type === 'event-batch') {
       if (packet.epoch !== this.epoch) return false;
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
@@ -253,15 +257,33 @@ export class RuntimeProviderProtocolClient {
     if (!['response', 'error'].includes(packet.type)) return false;
     const pending = this.pending.get(packet.id);
     if (!pending || packet.epoch !== pending.epoch || packet.epoch !== this.epoch) return false;
-    if (packet.type === 'error') this.#finish(packet.id, pending, new DebugAdapterError(packet.code || 'provider-failure', packet.message || 'provider request failed', packet.details || null));
-    else this.#finish(packet.id, pending, null, packet.result);
+    if (packet.type === 'error') {
+      // `code` and `message` become DebugAdapterError identity fields.
+      // Structured wire values must not be laundered into that identity.
+      const code = typeof packet.code === 'string' && packet.code ? packet.code : 'provider-failure';
+      const message = typeof packet.message === 'string' && packet.message ? packet.message : 'provider request failed';
+      this.#finish(packet.id, pending, new DebugAdapterError(code, message, packet.details || null));
+    } else this.#finish(packet.id, pending, null, packet.result);
     return true;
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
-    for (const [id, pending] of this.pending) this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+    // A client close must cancel in-flight work on the wire as well as reject
+    // local promises, otherwise the provider keeps executing orphaned requests.
+    for (const [id, pending] of [...this.pending]) {
+      this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+      try {
+        this.transport.send(validateProviderPacket({
+          protocol: RUNTIME_PROVIDER_PROTOCOL,
+          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+          type: 'cancel',
+          id,
+          epoch: pending.epoch,
+        }));
+      } catch {}
+    }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
     this.listeners.clear();

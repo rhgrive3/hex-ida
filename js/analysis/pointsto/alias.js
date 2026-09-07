@@ -13,7 +13,7 @@
  */
 
 import { createAliasResult, mayAlias, unknownAlias } from '../alias/result.js';
-import { rangeRelation } from './lattice.js';
+import { provenSeparationAuthority, rangeRelation } from './lattice.js';
 
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
@@ -122,8 +122,11 @@ export function pointsToAlias(left, right, options = {}) {
         // A manually-constructed/root-name-only target therefore cannot mint
         // separation authority (#1806), while the Phase 7 frozen corpus keeps its
         // two exact distinct-storage cases through explicit provenance (#1848).
-        const descriptorSeparated = a.separationAuthority === 'root-descriptor'
-          && b.separationAuthority === 'root-descriptor'
+        // The authority is verified against the target's proof brand, not the
+        // stored string — a plain caller-supplied `separationAuthority` is not
+        // evidence (#6066).
+        const descriptorSeparated = provenSeparationAuthority(a) === 'root-descriptor'
+          && provenSeparationAuthority(b) === 'root-descriptor'
           && a.separationClass === b.separationClass
           && ['global-like', 'heap-like', 'tls-like'].includes(a.separationClass)
           && a.rootEntityId != null && b.rootEntityId != null

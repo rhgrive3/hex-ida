@@ -19,6 +19,7 @@
 
 import { deepFreeze } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
+import { provenSeparationAuthority } from '../pointsto/lattice.js';
 
 export const ESCAPE_ANALYZER_ID = 'phase7.summary.escape';
 export const ESCAPE_ANALYZER_VERSION = '1.0.0';
@@ -102,6 +103,15 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
   if (allocationRootKeys.has(target.rootKey)) return 'local-allocation';
   if (target.rootKind === 'stack-like') return 'local-frame';
   if (target.rootKind === 'absolute') return 'global';
+  /* The canonical root descriptor's storage class is producer-held evidence
+   * (issue #5892): `global-like` normalizes to a `rooted` proof, but it is a
+   * global storage root, not an incoming argument. Only descriptor-backed
+   * authority counts — a `separationClass` without that authority must not
+   * mint a global, so an ordinary `rooted` target stays `incoming`. The
+   * authority is verified against the target's proof brand (#6066), not the
+   * stored string. */
+  if (provenSeparationAuthority(target) === 'root-descriptor'
+    && target.separationClass === 'global-like') return 'global';
   if (target.rootKind === 'rooted') return 'incoming';
   return 'unknown';
 }

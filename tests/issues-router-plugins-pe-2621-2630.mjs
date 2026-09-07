@@ -101,17 +101,24 @@ try {
     const host = new PluginHost(fakeApp);
     await host.ready;
 
-    // Pre-seed v3 manifest into localStorage
+    // Pre-seed v3 manifest into localStorage.
+    // Since #6080 the fast path requires the source/definitions binding
+    // digests that save() writes; a digest-less manifest re-discovers.
+    const { stableDigest } = await import('../js/core/identity/index.js');
+    const v3Source = 'hex.plugin({ name: "FastPlugin", description: "demo" });';
+    const v3Definitions = [
+      { index: 0, name: 'FastPlugin', description: 'demo' },
+    ];
     const v3Data = [
       {
         v: 3,
         installationId: 'test-uuid-1',
-        source: 'hex.plugin({ name: "FastPlugin", description: "demo" });',
+        source: v3Source,
         origin: 'test',
-        definitions: [
-          { index: 0, name: 'FastPlugin', description: 'demo' },
-        ],
+        definitions: v3Definitions,
         enabledIndexes: [0],
+        sourceDigest: stableDigest(v3Source),
+        definitionsDigest: stableDigest(v3Definitions),
       },
     ];
     localStorage.setItem('hex.plugins', JSON.stringify(v3Data));
