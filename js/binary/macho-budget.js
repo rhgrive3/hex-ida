@@ -25,10 +25,12 @@ export function markMachOMetadataPartial(image, reason) {
  * `records: NaN` made `next > limits.records` permanently false and removed the
  * ceiling entirely, while `stringBytes: NaN` leaked a non-finite value out
  * through `remainingStringBytes` and `remaining()` into bounded decode paths
- * (#1376). A limit is only a limit if it is a finite positive integer; anything
- * else falls back to the declared default rather than disabling the budget.
+ * (#1376). Preserve explicit numeric zero as a zero budget (#4299), without
+ * turning omitted or coercive zero values (null/false/blank) into zero limits.
+ * Other values retain the positive-integer compatibility policy.
  */
 function metadataLimit(value, fallback) {
+  if (value === 0) return 0;
   const n = Number(value);
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
@@ -53,12 +55,16 @@ export function createMachOMetadataBudget(image, options = {}) {
   const meta = metadataOf(image);
   meta.limits = { ...limits }; meta.used = used;
   let nextTimeCheck = 1024;
-  const stop = (reason) => { markMachOMetadataPartial(image, `budget:${reason}`); return false; };
+  // Budget exhaustion is irreversible for this instance, unlike partial metadata.
+  let stopped = false;
+  const stop = (reason) => { stopped = true; markMachOMetadataPartial(image, `budget:${reason}`); return false; };
   return {
     limits, used, signal,
+    get stopped() { return stopped; },
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
     remaining(key) { return Math.max(0, Number(limits[key] ?? 0) - Number(used[key] ?? 0)); },
     take(cost = {}, reason = 'metadata') {
+      if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
       const opCost = Math.max(0, Number(cost.operations || 0));
       if (used.operations + opCost >= nextTimeCheck) {

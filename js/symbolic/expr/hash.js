@@ -13,8 +13,14 @@ import {
   sortToString,
   sameSort,
 } from './kinds.js';
+import { canonicalizeObject } from './serialize.js';
 
 const hashCache = new WeakMap();
+
+function canonicalDetailJson(detail) {
+  if (detail == null) return '';
+  return JSON.stringify(canonicalizeObject(detail));
+}
 
 function sha256Hex(data) {
   return stableDigest(data);
@@ -42,7 +48,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
-      canonicalRep = `UNKNOWN:${sortStr}:${node.reason}:${node.detail ? JSON.stringify(node.detail) : ''}`;
+      canonicalRep = `UNKNOWN:${sortStr}:${node.reason}:${canonicalDetailJson(node.detail)}`;
       break;
 
     case EXPR_KIND.UNARY:
@@ -105,7 +111,7 @@ export function structuralEquals(a, b) {
       return a.name === b.name;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
-      return a.reason === b.reason && JSON.stringify(a.detail) === JSON.stringify(b.detail);
+      return a.reason === b.reason && canonicalDetailJson(a.detail) === canonicalDetailJson(b.detail);
 
     case EXPR_KIND.UNARY:
       return a.op === b.op && structuralEquals(a.arg, b.arg);
