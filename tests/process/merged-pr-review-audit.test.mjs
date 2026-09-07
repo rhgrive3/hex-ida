@@ -103,4 +103,63 @@ function basePr(overrides = {}) {
   assert(result.findings.some((item) => item.code === 'FAILED_EXACT_HEAD_CHECK_AT_MERGE'));
 }
 
+for (const state of ['PENDING', 'EXPECTED']) {
+  const result = classifyPullRequest(basePr({
+    reviews: [{
+      author: { login: 'reviewer' },
+      state: 'APPROVED',
+      submittedAt: '2026-09-04T13:01:00Z',
+      commit: { oid: '14fe9cdee5adcb9a068a661409bc80c1547ba288' },
+    }],
+    checkContexts: [{
+      __typename: 'StatusContext',
+      context: `legacy-${state.toLowerCase()}`,
+      state,
+      createdAt: '2026-09-04T13:00:00Z',
+    }],
+  }), []);
+  assert(result.findings.some((item) => item.code === 'CHECKS_STILL_RUNNING_AT_MERGE'), `${state} status must remain unfinished`);
+  assert(result.findings.some((item) => item.code === 'NO_SUCCESSFUL_EXACT_HEAD_CHECK_BEFORE_MERGE'), `${state} status must not count as success`);
+}
+
+{
+  const result = classifyPullRequest(basePr({
+    reviews: [{
+      author: { login: 'reviewer' },
+      state: 'APPROVED',
+      submittedAt: '2026-09-04T13:01:00Z',
+      commit: { oid: '14fe9cdee5adcb9a068a661409bc80c1547ba288' },
+    }],
+    checkContexts: [
+      {
+        __typename: 'StatusContext',
+        context: 'legacy-error',
+        state: 'ERROR',
+        createdAt: '2026-09-04T13:00:00Z',
+      },
+      {
+        __typename: 'CheckRun',
+        name: 'cancelled-check',
+        status: 'COMPLETED',
+        conclusion: 'CANCELLED',
+        startedAt: '2026-09-04T13:00:00Z',
+        completedAt: '2026-09-04T13:01:30Z',
+      },
+      {
+        __typename: 'CheckRun',
+        name: 'stale-check',
+        status: 'COMPLETED',
+        conclusion: 'STALE',
+        startedAt: '2026-09-04T13:00:00Z',
+        completedAt: '2026-09-04T13:01:40Z',
+      },
+    ],
+  }), []);
+  const failure = result.findings.find((item) => item.code === 'FAILED_EXACT_HEAD_CHECK_AT_MERGE');
+  assert(failure);
+  assert(failure.checks.includes('legacy-error'));
+  assert(failure.checks.includes('cancelled-check'));
+  assert(failure.checks.includes('stale-check'));
+}
+
 console.log('merged PR review audit regression: PASS');

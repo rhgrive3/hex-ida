@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const API_VERSION = '2022-11-28';
 const CODERABBIT_RE = /^coderabbitai(?:\[bot\])?$/i;
-const HARD_FAILURES = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+const HARD_FAILURES = new Set(['failure', 'error', 'timed_out', 'action_required', 'startup_failure', 'cancelled', 'stale']);
 
 function currentDateInZone(timeZone, now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -91,12 +91,14 @@ function normalizeCheck(node) {
     };
   }
   if (node?.__typename === 'StatusContext') {
+    const state = String(node.state || '').toLowerCase();
+    const pending = state === 'pending' || state === 'expected';
     return {
       name: node.context || 'unnamed-status',
-      status: String(node.state || '').toLowerCase(),
-      conclusion: String(node.state || '').toLowerCase() || null,
+      status: state,
+      conclusion: pending ? null : (state || null),
       startedAt: node.createdAt || null,
-      completedAt: node.createdAt || null,
+      completedAt: pending ? null : (node.createdAt || null),
       url: node.targetUrl || null,
     };
   }
