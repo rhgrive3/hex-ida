@@ -10,6 +10,10 @@ import {
 const HEAD = '1340a18dd3f13b9a54f3e75b763cfbd8743202e7';
 const OLD = '8ee3431a41c3c836b1979eeac6a033c67e4c1eb1';
 const TRUSTED = 'rhgrive3';
+const REQUIRED = [
+  'ci/circleci: phase7-ownership',
+  'ci/circleci: migration-guardrails',
+];
 const auto = (sha, verdict = 'APPROVED', author = TRUSTED, at = '2026-09-07T00:00:00Z') => ({
   state: 'COMMENTED',
   commit_id: sha,
@@ -27,7 +31,11 @@ const greenEvidence = () => ({
   ],
   checkRuns: [check('PR fast gate')],
 });
-const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [TRUSTED], ...input });
+const evaluate = (input) => evaluateFinalHeadAdmission({
+  trustedAutoReviewers: [TRUSTED],
+  requiredStatusContexts: REQUIRED,
+  ...input,
+});
 
 // Reproduces the #6570 landing class: approval was for an older head and the
 // final head carried a red ownership status. Both facts must be visible.
@@ -68,7 +76,8 @@ const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [
   assert.ok(result.pending.includes('missing exact-head AUTO approval'));
 }
 
-// With no trusted-reviewer configuration the evaluator fails safe as pending.
+// With no trusted-reviewer/required-context configuration the evaluator fails
+// safe as pending rather than silently admitting an underconfigured caller.
 {
   const result = evaluateFinalHeadAdmission({
     headSha: HEAD,
@@ -77,9 +86,11 @@ const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [
   });
   assert.equal(result.state, 'pending');
   assert.ok(result.pending.includes('no trusted AUTO reviewer configured'));
+  assert.ok(result.pending.includes('no required CI status contexts configured'));
 }
 
-// Exact-head trusted approval + CodeRabbit + CI + resolved review threads is admitted.
+// Exact-head trusted approval + CodeRabbit + complete required CI + resolved
+// review threads is admitted.
 {
   const result = evaluate({
     headSha: HEAD,
@@ -90,6 +101,23 @@ const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [
   assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoApprovalCount, 1);
   assert.equal(result.evidence.trustedAutoReviewerCount, 1);
+  assert.equal(result.evidence.missingRequiredStatusCount, 0);
+}
+
+// Do not transiently succeed just because one required CI context appeared
+// before the others were created for the final head.
+{
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('CodeRabbit', 'success'),
+    ],
+  });
+  assert.equal(result.state, 'pending');
+  assert.equal(result.evidence.missingRequiredStatusCount, 1);
+  assert.ok(result.pending.includes('required CI status missing: ci/circleci: migration-guardrails'));
 }
 
 // Only the latest review from a reviewer is active. An older changes-requested
@@ -148,7 +176,11 @@ const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [
   const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
-    statuses: [status('CodeRabbit', 'success'), status('ci/circleci: phase7-ownership', 'pending')],
+    statuses: [
+      status('CodeRabbit', 'success'),
+      status('ci/circleci: phase7-ownership', 'pending'),
+      status('ci/circleci: migration-guardrails', 'success'),
+    ],
   });
   assert.equal(result.state, 'pending');
   assert.ok(result.pending.includes('CI status pending: ci/circleci: phase7-ownership'));
@@ -171,6 +203,7 @@ const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [
       status(FINAL_HEAD_ADMISSION_CONTEXT, 'pending'),
       status('CodeRabbit', 'success'),
       status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
     ],
     checkRuns: [check(FINAL_HEAD_ADMISSION_CHECK_NAME, 'failure')],
   });
