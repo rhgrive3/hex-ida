@@ -72,6 +72,10 @@ export function assemble(text, at) {
   if (mn === 'mov' || mn === 'movz') {
     const dst = regInfo(ops[0]); const d = dst && dst.num; const imm = immOf(ops[1]);
     if (d == null) return { error: '書き込み先のレジスタが読めません。' };
+    // MOVZ has no register-source form. Falling through to the register MOV
+    // encoding silently rewrote the mnemonic — `movz x0, x1` assembled to the
+    // ORR alias of `mov x0, x1` (#5798).
+    if (mn === 'movz' && imm == null) return { error: 'movz の右側は即値（#0〜#65535）で指定してください。' };
     if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d); }
     const srcReg = regInfo(ops[1]); const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };

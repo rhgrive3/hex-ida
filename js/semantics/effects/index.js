@@ -223,8 +223,19 @@ function serializable(value, code) {
 }
 
 function bigintValue(value, code) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { fail(code); }
+  // Machine payloads are exact facts: only bigint, safe integer, or a strict
+  // integer literal grammar may become a canonical machine value. ECMAScript
+  // BigInt() coercion would launder '' -> 0, booleans -> 0/1, and arrays ->
+  // their single element (#5830).
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) {
+    try { return BigInt(value); } catch { fail(code); }
+  }
+  fail(code);
 }
 
 function undefinedResultMask(value) {
