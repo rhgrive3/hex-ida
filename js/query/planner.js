@@ -97,6 +97,10 @@ function aggregateCandidateEvidence(rows, read) {
   return Array.from(grouped.values());
 }
 
+function queueCandidateEvidence(rowsByPool, pool, address, source, term, weight, coverage = 1) {
+  rowsByPool[pool].push({ address, source, term, weight, coverage });
+}
+
 function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity, aggregate = null) {
   const addr = asAddr(address);
   if (addr == null) return;
@@ -361,29 +365,56 @@ function classifyPrior(c) {
 }
 async function candidatePools(query, tools, ctx, b) {
   const pools = Object.fromEntries(POOL_ORDER.map((name) => [name, new Map()]));
+  // Search results arrive in several calls (one per term and, for strings,
+  // one per xref target). Keep the whole bounded operation's rows together so
+  // one address is scored atomically before the pool cap is applied.
+  const discoveryRows = { lexical: [], string: [] };
   const terms = uniqueTerms(query);
   for (const term of terms) {
     if (expired(b)) break;
     const fs = await invokeTool(tools, 'search_functions', b, term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     const fCoverage = noteSearch(b, 'search_functions', term, fs);
-    for (const row of fs.results || []) addCandidate(pools, 'lexical', resultAddress(row), 'function-name', term, 12, fCoverage, sourcePoolCap(b, 'lexical'));
+    for (const row of fs.results || []) {
+      queueCandidateEvidence(discoveryRows, 'lexical', resultAddress(row), 'function-name', term, 12, fCoverage);
+    }
 
     const ss = await invokeTool(tools, 'search_strings', b, term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     const sCoverage = noteSearch(b, 'search_strings', term, ss);
     for (const row of ss.results || []) {
       const direct = explicitFunctionAddress(row);
-      if (direct != null) addCandidate(pools, 'string', direct, 'string-reference', term, 8, sCoverage, sourcePoolCap(b, 'string'));
+      if (direct != null) {
+        queueCandidateEvidence(discoveryRows, 'string', direct, 'string-reference', term, 8, sCoverage);
+      }
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
         const xr = await invokeTool(tools, 'get_xrefs', b, target, { limit: b.maxSearchResults });
         if (expired(b)) break;
         const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
-        for (const fn of xr.functions || []) addCandidate(pools, 'string', fn.addr != null ? fn.addr : fn.function, 'string-xref', term, 10, xCoverage, sourcePoolCap(b, 'string'));
+        for (const fn of xr.functions || []) {
+          queueCandidateEvidence(
+            discoveryRows,
+            'string',
+            fn.addr != null ? fn.addr : fn.function,
+            'string-xref',
+            term,
+            10,
+            xCoverage,
+          );
+        }
       }
     }
   }
+  // Aggregate every incremental source path before bounded top-k admission.
+  // This retains repeated same-address evidence across terms/xrefs while the
+  // existing per-pool cap remains unchanged.
+  for (const pool of ['lexical', 'string']) {
+    for (const aggregate of aggregateCandidateEvidence(discoveryRows[pool], (row) => row)) {
+      addCandidateAggregate(pools, pool, aggregate, sourcePoolCap(b, pool));
+    }
+  }
+
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
   const priorRows = Object.fromEntries(POOL_ORDER.map((pool) => [pool, []]));
   for (const c of priors) {
@@ -415,14 +446,35 @@ async function expandCallNeighborhood(pools, tools, b) {
   if (b.maxFunctions === 0 || b.maxExpansions === 0) return;
   const initial = seedCandidates(pools, b.maxExpansions);
   const graphCap = Math.max(24, b.maxFunctions * 4, b.maxExpansions * 8);
+  const graphRows = [];
+  // The number of seeds and each tool's existing result limit bound this
+  // collection. Aggregate before graphCap admission so repeated callers or
+  // callees are not rejected one row at a time.
   for (const c of initial) {
-    if (expired(b) || pools.graph.size >= graphCap) break;
+    if (expired(b)) break;
     const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
     if (expired(b)) break;
-    for (const row of callers.results || []) addCandidate(pools, 'graph', row.addr ?? row.function ?? row.functionAddress, 'caller', null, 2, 1, graphCap);
+    for (const row of callers.results || []) {
+      graphRows.push({
+        address: row.addr ?? row.function ?? row.functionAddress,
+        source: 'caller',
+        weight: 2,
+        coverage: 1,
+      });
+    }
     const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
     if (expired(b)) break;
-    for (const row of callees.results || []) addCandidate(pools, 'graph', row.addr ?? row.function ?? row.functionAddress, 'callee', null, 1, 1, graphCap);
+    for (const row of callees.results || []) {
+      graphRows.push({
+        address: row.addr ?? row.function ?? row.functionAddress,
+        source: 'callee',
+        weight: 1,
+        coverage: 1,
+      });
+    }
+  }
+  for (const aggregate of aggregateCandidateEvidence(graphRows, (row) => row)) {
+    addCandidateAggregate(pools, 'graph', aggregate, graphCap);
   }
   b.sourceTotals.graph = Math.max(b.sourceTotals.graph, pools.graph.size);
 }

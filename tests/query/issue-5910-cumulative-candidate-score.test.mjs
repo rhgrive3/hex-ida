@@ -158,3 +158,150 @@ test('issue-5910: a full staged pool aggregates a candidate before top-k admissi
   );
   assert.equal(belowThreshold.candidateSources.stored.recognition, 48);
 });
+
+
+function resultBatch(rows) {
+  return { results: rows, complete: true, returned: rows.length, total: rows.length };
+}
+
+function makeIncrementalTools(path, target, stored, staged) {
+  let functionCall = 0;
+  let stringCall = 0;
+  let xrefCall = 0;
+  let callerCall = 0;
+  let calleeCall = 0;
+  const searchBatches = [
+    [...stored, ...staged, { addr: target }],
+    [{ addr: target }],
+    [{ addr: target }],
+  ];
+  const graphStored = Array.from({ length: 24 }, (_, index) => ({
+    addr: 0xc0000000n + BigInt(index * 0x10),
+  }));
+  const graphStaged = Array.from({ length: 24 }, (_, index) => ({
+    addr: 0xd0000000n + BigInt(index * 0x10),
+  }));
+  return {
+    ...tools,
+    async search_functions() {
+      if (path === 'function') return resultBatch(searchBatches[functionCall++] || []);
+      if (path === 'graph') {
+        const rows = functionCall++ < 2 ? [{ addr: 0xe0000000n + BigInt(functionCall) }] : [];
+        return resultBatch(rows);
+      }
+      return resultBatch([]);
+    },
+    async search_strings() {
+      if (path === 'string') return resultBatch(searchBatches[stringCall++] || []);
+      if (path === 'xref') return resultBatch([{ stringAddress: 0xf000n }]);
+      return resultBatch([]);
+    },
+    async get_xrefs() {
+      if (path !== 'xref') return { functions: [] };
+      return { functions: searchBatches[xrefCall++] || [] };
+    },
+    async get_callers() {
+      if (path !== 'graph') return resultBatch([]);
+      if (callerCall++ === 0) return resultBatch(graphStored.slice(0, 12));
+      if (callerCall === 2) return resultBatch(graphStaged.slice(0, 12));
+      return resultBatch([]);
+    },
+    async get_callees() {
+      if (path !== 'graph') return resultBatch([]);
+      if (calleeCall++ === 0) return resultBatch(graphStored.slice(12));
+      return resultBatch([
+        ...graphStaged.slice(12),
+        { addr: target },
+        { addr: target },
+        { addr: target },
+      ]);
+    },
+  };
+}
+
+const incrementalQuery = {
+  ...query,
+  entity: { terms: ['one'] },
+  context: { terms: ['two'] },
+  event: { terms: ['three'] },
+};
+
+test('issue-5910: repeated incremental evidence is aggregated on every source path before admission', async () => {
+  const stored = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0x50000000n + BigInt(index * 0x10),
+  }));
+  const staged = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0x60000000n + BigInt(index * 0x10),
+  }));
+  const target = 0x9700n;
+
+  for (const path of ['function', 'string', 'xref', 'graph']) {
+    const pathTarget = path === 'graph' ? target + 1n : target;
+    const pathTools = makeIncrementalTools(path, pathTarget, stored, staged);
+    const result = await planAnalysisGoal(incrementalQuery, {}, {
+      tools: pathTools,
+      maxFunctions: 2,
+      maxDisassembly: 16,
+      maxSearchResults: 8,
+      maxExpansions: path === 'graph' ? 2 : 0,
+      timeoutMs: 1000,
+    });
+    const candidate = result.candidates.find((row) => row.address === pathTarget);
+    assert.ok(candidate, `${path}: repeated incremental evidence must survive a full pool`);
+    const expected = path === 'graph' ? 3 : path === 'xref' ? 30 : path === 'string' ? 24 : 36;
+    assert.equal(candidate.sourcePoolScores[path === 'function' ? 'lexical' : path === 'xref' ? 'string' : path], expected,
+      `${path}: aggregate score must be compared atomically`);
+  }
+});
+
+test('issue-5910: incremental evidence is permutation-invariant with an equal-threshold negative control', async () => {
+  const stored = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0x70000000n + BigInt(index * 0x10),
+  }));
+  const staged = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0x80000000n + BigInt(index * 0x10),
+  }));
+  const target = 0x9800n;
+  const options = {
+    maxFunctions: 2,
+    maxDisassembly: 16,
+    maxSearchResults: 8,
+    maxExpansions: 0,
+    timeoutMs: 1000,
+  };
+
+  const ordered = await planAnalysisGoal(incrementalQuery, {}, {
+    ...options,
+    tools: makeIncrementalTools('function', target, stored, staged),
+  });
+  const orderedTarget = ordered.candidates.find((row) => row.address === target);
+  assert.equal(orderedTarget?.sourcePoolScores.lexical, 36);
+
+  const permutedTools = makeIncrementalTools('function', target, stored, staged);
+  let call = 0;
+  permutedTools.search_functions = async () => {
+    const parts = [
+      [...stored.slice(0, 16), ...staged.slice(0, 16), { addr: target }],
+      [...stored.slice(16, 32), ...staged.slice(16, 32), { addr: target }],
+      [...stored.slice(32), ...staged.slice(32), { addr: target }],
+    ];
+    return resultBatch(parts[call++] || []);
+  };
+  const permuted = await planAnalysisGoal(incrementalQuery, {}, {
+    ...options,
+    tools: permutedTools,
+  });
+  const permutedTarget = permuted.candidates.find((row) => row.address === target);
+  assert.equal(permutedTarget?.sourcePoolScores.lexical, 36,
+    'the same incremental evidence multiset must be arrival-order invariant');
+
+  const negative = await planAnalysisGoal(incrementalQuery, {}, {
+    ...options,
+    tools: makeIncrementalTools('function', 0x9900n, stored, staged),
+  });
+  assert.equal(
+    negative.candidates.some((row) => row.address === 0x9900n),
+    false,
+    'a single equal-to-weakest incremental fragment must remain rejected',
+  );
+});
