@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { buildSelectorIndex, resolveSelectorStub } from '../js/apple/selector-stubs.js';
 import { FieldIndex } from '../js/fields.js';
-import { formatObjcMessage, objcMessage } from '../js/apple/objc-runtime.js';
+import { buildObjcRuntimeIndex, formatObjcMessage, objcMessage, resolveObjcDispatch } from '../js/apple/objc-runtime.js';
 import { demangleCxx, demangleSwift, readableName, shortName, isMangled } from '../js/rtti.js';
 import { parseUnifiedLanguageMetadata } from '../js/metadata/index.js';
+import { buildObjcRuntimeModel } from '../js/objc.js';
 import '../js/objc-stub-recovery.js';
 
 // --- Test 1: #3444 Objective-C selector index rejects non-string selector ---
@@ -224,6 +225,164 @@ import '../js/objc-stub-recovery.js';
   assert.deepEqual(unterminated, [], 'region-end without a NUL terminator must fail closed');
 
   console.log('✔ #3629 ObjC stub selector termination proof passed');
+}
+
+// --- Test 7: #4253 known-empty ObjC protocol context must not mean unrestricted ---
+{
+  const requirements = [
+    { name: 'P', methods: [{ sel: 'work', types: 'v@:' }] },
+    { name: 'Q', methods: [{ sel: 'work', types: 'v@:' }] },
+  ];
+
+  const knownEmpty = buildObjcRuntimeIndex({
+    classes: [{ name: 'PlainClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  const emptyResult = resolveObjcDispatch(knownEmpty, { receiverType: 'PlainClass', selector: 'work' });
+  assert.deepEqual(emptyResult.requirements, [], 'known protocols:[] must filter unrelated requirements to empty');
+  assert.equal(emptyResult.confidence, 0.1);
+  assert.equal(emptyResult.reason, 'selector implementation not present in parsed metadata');
+
+  const adopted = buildObjcRuntimeIndex({
+    classes: [{ name: 'ConformingClass', superName: null, protocols: ['P'], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  const adoptedResult = resolveObjcDispatch(adopted, { receiverType: 'ConformingClass', selector: 'work' });
+  assert.deepEqual(adoptedResult.requirements.map((x) => x.className), ['P'], 'known non-empty conformance must keep only adopted protocol requirements');
+
+  const explicitResult = resolveObjcDispatch(adopted, { receiverType: null, selector: 'work', protocols: ['Q'] });
+  assert.deepEqual(explicitResult.requirements.map((x) => x.className), ['Q'], 'explicit protocol context must remain authoritative');
+
+  const unknownReceiver = buildObjcRuntimeIndex({ classes: [], protocols: requirements, categories: [] });
+  assert.equal(resolveObjcDispatch(unknownReceiver, { selector: 'work' }).requirements.length, 2, 'truly unknown receiver/protocol context must preserve all requirements');
+
+  const legacyMissingConformance = buildObjcRuntimeIndex({
+    classes: [{ name: 'LegacyClass', superName: null, methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+  });
+  assert.equal(resolveObjcDispatch(legacyMissingConformance, { receiverType: 'LegacyClass', selector: 'work' }).requirements.length, 2, 'missing protocols property must remain conservative for #3983 compatibility');
+
+  const partial = buildObjcRuntimeIndex({
+    classes: [{ name: 'PartialClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+    runtimeCompleteness: { classes: { complete: false }, categories: { complete: true } },
+  });
+  assert.equal(resolveObjcDispatch(partial, { receiverType: 'PartialClass', selector: 'work' }).requirements.length, 2, 'explicitly partial class metadata must not become negative protocol proof');
+
+  const partialProtocols = buildObjcRuntimeIndex({
+    classes: [{ name: 'PartialRegistryClass', superName: null, protocols: [], methods: [], classMethods: [] }],
+    protocols: requirements,
+    categories: [],
+    runtimeCompleteness: { classes: { complete: true }, protocols: { complete: false }, categories: { complete: true } },
+  });
+  assert.equal(resolveObjcDispatch(partialProtocols, { receiverType: 'PartialRegistryClass', selector: 'work' }).requirements.length, 2, 'incomplete protocol registry must not enable negative protocol filtering');
+
+  console.log('✔ #4253 known-empty ObjC protocol context passed');
+}
+
+
+// --- Regression: #3605 Objective-C facade proof options cannot be overridden ---
+{
+  const CLASS_LIST = 0x1000n;
+  const CLASS = 0x2000n;
+  const CLASS_RO = 0x3000n;
+  const CLASS_NAME = 0x4000n;
+  const CLASS_METHODS = 0x5000n;
+  const CLASS_SELECTOR = 0x6000n;
+  const CLASS_IMP = 0x7000n;
+  const CATEGORY_LIST = 0x8000n;
+  const CATEGORY = 0x8100n;
+  const CATEGORY_NAME = 0x8200n;
+  const CATEGORY_METHODS = 0x8300n;
+  const CATEGORY_SELECTOR = 0x8400n;
+  const CATEGORY_IMP = 0x7100n;
+
+  function fixture({ classMethod = false, categoryMethod = false } = {}) {
+    const memory = new Uint8Array(0x10000);
+    const view = new DataView(memory.buffer);
+    const u32 = (address, value) => view.setUint32(Number(address), value, true);
+    const u64 = (address, value) => view.setBigUint64(Number(address), BigInt(value), true);
+    const cstring = (address, value) => {
+      memory.set(new TextEncoder().encode(value), Number(address));
+      memory[Number(address) + value.length] = 0;
+    };
+
+    u64(CLASS_LIST, CLASS);
+    u64(CLASS + 32n, CLASS_RO);
+    u32(CLASS_RO + 8n, 32);
+    u64(CLASS_RO + 24n, CLASS_NAME);
+    if (classMethod) u64(CLASS_RO + 32n, CLASS_METHODS);
+    cstring(CLASS_NAME, 'Victim');
+
+    if (classMethod) {
+      u32(CLASS_METHODS, 24);
+      u32(CLASS_METHODS + 4n, 1);
+      u64(CLASS_METHODS + 8n, CLASS_SELECTOR);
+      u64(CLASS_METHODS + 16n, 0n);
+      u64(CLASS_METHODS + 24n, CLASS_IMP);
+      cstring(CLASS_SELECTOR, 'legacyEvil');
+    }
+
+    const sections = { architecture: 'arm64', executableRanges: [] };
+    if (categoryMethod) {
+      sections.categoryList = { vmAddr: CATEGORY_LIST, size: 8n };
+      u64(CATEGORY_LIST, CATEGORY);
+      u64(CATEGORY, CATEGORY_NAME);
+      u64(CATEGORY + 8n, CLASS);
+      u64(CATEGORY + 16n, CATEGORY_METHODS);
+      cstring(CATEGORY_NAME, 'Injected');
+      u32(CATEGORY_METHODS, 24);
+      u32(CATEGORY_METHODS + 4n, 1);
+      u64(CATEGORY_METHODS + 8n, CATEGORY_SELECTOR);
+      u64(CATEGORY_METHODS + 16n, 0n);
+      u64(CATEGORY_METHODS + 24n, CATEGORY_IMP);
+      cstring(CATEGORY_SELECTOR, 'categoryEvil');
+    }
+
+    const read = async (address, length) => {
+      const start = Number(address);
+      if (!Number.isSafeInteger(start) || start < 0 || length < 0 || start >= memory.length) return null;
+      return memory.subarray(start, Math.min(memory.length, start + length));
+    };
+    return { read, classList: { vmAddr: CLASS_LIST, size: 8n }, sections };
+  }
+
+  const maliciousOptions = {
+    requireImplementationProof: false,
+    validateImplementation: () => ({ ok: true }),
+  };
+
+  const legacy = fixture({ classMethod: true });
+  const legacyModel = await buildObjcRuntimeModel(
+    legacy.read, legacy.classList, legacy.sections, null, 0n, null, maliciousOptions,
+  );
+  assert.equal(legacyModel.implementationProofRequired, true);
+  assert.equal(legacyModel.classes[0].methods[0].implementationProven, false);
+  assert.equal(legacyModel.classes[0].methods[0].implementationValidationReason, 'method-imp-not-executable');
+  assert.deepEqual(legacyModel.names, []);
+
+  const extended = fixture({ categoryMethod: true });
+  const extendedModel = await buildObjcRuntimeModel(
+    extended.read, extended.classList, extended.sections, null, 0n, null, maliciousOptions,
+  );
+  assert.equal(extendedModel.categories[0].instanceMethods[0].implementationProven, false);
+  assert.equal(extendedModel.categories[0].instanceMethods[0].implementationValidationReason, 'method-imp-not-executable');
+  assert.deepEqual(extendedModel.names, []);
+
+  const valid = fixture({ classMethod: true, categoryMethod: true });
+  valid.sections.executableRanges = [{ vmAddr: CLASS_IMP, size: 0x200n }];
+  const validModel = await buildObjcRuntimeModel(
+    valid.read, valid.classList, valid.sections, null, 0n, null, maliciousOptions,
+  );
+  assert.equal(validModel.classes[0].methods[0].implementationProven, true);
+  assert.equal(validModel.categories[0].instanceMethods[0].implementationProven, true);
+  assert.deepEqual(validModel.names.map((entry) => entry.addr), [CLASS_IMP, CATEGORY_IMP]);
+
+  console.log('✔ #3605 ObjC implementation proof option authority passed');
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');

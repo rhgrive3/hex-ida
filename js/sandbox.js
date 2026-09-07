@@ -20,6 +20,7 @@ const WORKER_PRELUDE = String.raw`
   "use strict";
   const nativeImportScripts = globalThis.importScripts.bind(globalThis);
   const nativePostMessage = globalThis.postMessage.bind(globalThis);
+  const nativeStructuredClone = globalThis.structuredClone.bind(globalThis);
   const NativeObjectPrototype = Object.prototype;
   const NativeSet = Set;
   const nativeArrayIsArray = Array.isArray.bind(Array);
@@ -30,6 +31,7 @@ const WORKER_PRELUDE = String.raw`
   const nativeNow = Date.now.bind(Date);
   const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);
   const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);
+  const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);
   const nativeArrayPop = Function.prototype.call.bind(Array.prototype.pop);
   const nativeArrayPush = Function.prototype.call.bind(Array.prototype.push);
   const nativeArrayBufferByteLength = Function.prototype.call.bind(
@@ -152,16 +154,66 @@ const WORKER_PRELUDE = String.raw`
     const type = typeof value;
     if (type === 'string') return Math.min(limit, value.length * 2);
     if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-    if (type !== 'object' || seen.has(value)) return 0;
-    seen.add(value);
+    if (type !== 'object' || nativeSetHas(seen, value)) return 0;
+    nativeSetAdd(seen, value);
     let n = 16;
-    const values = Array.isArray(value) ? value : Object.values(value);
-    for (const item of values) {
-      n += measure(item, seen, limit - n);
+    const isArray = nativeArrayIsArray(value);
+    const isView = nativeArrayBufferIsView(value);
+    let isArrayBuffer = false;
+    try { nativeArrayBufferByteLength(value); isArrayBuffer = true; } catch {}
+    if (isView) {
+      let buffer = null;
+      try { buffer = nativeTypedArrayBuffer(value); }
+      catch { try { buffer = nativeDataViewBuffer(value); } catch {} }
+      if (!buffer) { nativeSetDelete(seen, value); return limit; }
+      try { nativeArrayBufferByteLength(buffer); }
+      catch { nativeSetDelete(seen, value); return limit; }
+    }
+    if (!isArray && !isView && !isArrayBuffer) {
+      let proto;
+      try { proto = nativeGetPrototypeOf(value); }
+      catch { nativeSetDelete(seen, value); return limit; }
+      if (proto !== NativeObjectPrototype && proto !== null) {
+        nativeSetDelete(seen, value);
+        return limit;
+      }
+    }
+    let keys;
+    try { keys = nativeKeys(value); }
+    catch { nativeSetDelete(seen, value); return limit; }
+    for (const key of keys) {
+      let descriptor;
+      try { descriptor = nativeDescriptor(value, key); }
+      catch { nativeSetDelete(seen, value); return limit; }
+      if (!descriptor || typeof descriptor.get === 'function' || typeof descriptor.set === 'function') {
+        nativeSetDelete(seen, value);
+        return limit;
+      }
+      if (!isView) {
+        const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
+        if (!isIndex) {
+          n += Math.min(limit - n, key.length * 2);
+          if (n >= limit) break;
+        }
+      }
+      n += measure(descriptor.value, seen, limit - n);
       if (n >= limit) break;
     }
-    seen.delete(value);
+    nativeSetDelete(seen, value);
     return n;
+  };
+
+  const prepareRpcArgs = (args, remainingUnits) => {
+    if (remainingUnits < 0) return null;
+    const limit = remainingUnits + 1;
+    const preflightUnits = measure(args, new NativeSet(), limit);
+    if (preflightUnits > remainingUnits) return null;
+    let ownedArgs;
+    try { ownedArgs = nativeStructuredClone(args); }
+    catch { return null; }
+    const units = measure(ownedArgs, new NativeSet(), limit);
+    if (units > remainingUnits) return null;
+    return { args: ownedArgs, units };
   };
 
   const rpc = (method, args) => new Promise((resolve, reject) => {
@@ -179,15 +231,16 @@ const WORKER_PRELUDE = String.raw`
       reject(new Error('RPC総数の上限を超えました。'));
       return;
     }
-    argumentUnits += measure(args);
-    if (argumentUnits > MAX_ARGUMENT_UNITS) {
+    const prepared = prepareRpcArgs(args, MAX_ARGUMENT_UNITS - argumentUnits);
+    if (!prepared) {
       send({ t: 'budgetExceeded', error: 'RPC引数サイズの上限を超えました。' });
       reject(new Error('RPC引数サイズの上限を超えました。'));
       return;
     }
+    argumentUnits += prepared.units;
     const id = seq++;
     waiting.set(id, { resolve, reject });
-    send({ t: 'rpc', id, method, args });
+    send({ t: 'rpc', id, method, args: prepared.args });
   });
 
   const emulatorProxy = (id) => Object.freeze({
@@ -297,7 +350,7 @@ const WORKER_POSTLUDE = String.raw`
 
 function workerProgram(source, mode, index) {
   const user = JSON.stringify(String(source || ''));
-  const safeIndex = Math.max(0, Math.trunc(Number(index) || 0));
+  const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
   let body;
   if (mode === 'discover' || mode === 'plugin') {
     body = `
@@ -501,10 +554,28 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
   if (type !== 'object' || seen.has(value)) return 0;
   seen.add(value);
   let n = 16;
-  const values = Array.isArray(value) ? value : Object.values(value);
-  for (const item of values) {
-    n += valueSize(item, seen, limit - n);
-    if (n >= limit) break;
+  const isArray = Array.isArray(value);
+  if (isArray) {
+    for (const key of Object.keys(value)) {
+      const isIndex = key !== '4294967295' && key === '' + (key >>> 0);
+      if (!isIndex) {
+        n += Math.min(limit - n, key.length * 2);
+        if (n >= limit) break;
+      }
+      n += valueSize(value[key], seen, limit - n);
+      if (n >= limit) break;
+    }
+  } else {
+    for (const key of Object.keys(value)) {
+      n += Math.min(limit - n, key.length * 2);
+      if (n >= limit) break;
+    }
+    if (n < limit) {
+      for (const item of Object.values(value)) {
+        n += valueSize(item, seen, limit - n);
+        if (n >= limit) break;
+      }
+    }
   }
   seen.delete(value);
   return n;
@@ -558,9 +629,29 @@ function isAbortSignalLike(signal) {
   }
 }
 
+function normalizeSandboxIndex(mode, index) {
+  if (mode !== 'plugin') return 0;
+  return typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+function normalizeSandboxTimeout(timeout) {
+  if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0) return null;
+  return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
+}
+
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+  const safeIndex = normalizeSandboxIndex(mode, index);
+  if (safeIndex == null) {
+    return Promise.resolve({ error: 'プラグイン定義番号が無効です。' });
+  }
+  const safeTimeout = normalizeSandboxTimeout(timeout);
+  if (safeTimeout == null) {
+    return Promise.resolve({ error: '実行時間制限が無効です。' });
   }
 
   return new Promise((resolve) => {
@@ -643,7 +734,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
-      Math.max(50, Number(timeout) || 30000)
+      safeTimeout
     );
 
     channel.port1.onmessage = async (e) => {
@@ -654,7 +745,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         return;
       }
       if (m.t === 'ready') {
-        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index });
+        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index: safeIndex });
       } else if (m.t === 'print') {
         if (!Array.isArray(m.args)) return failBudget('不正なsandbox出力を受信したため停止しました。');
         const now = Date.now();

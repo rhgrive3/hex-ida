@@ -88,6 +88,7 @@ function payloadByteLength(raw) {
 
 export class MemoryArtifactBackend {
   constructor({ entries = new Map(), reason = 'explicit-memory-backend' } = {}) {
+    if (!(entries instanceof Map)) throw new TypeError('artifact-memory-backend-entries-invalid');
     this.entries = entries;
     this.reason = reason;
     this.metrics = {
