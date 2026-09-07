@@ -50,7 +50,10 @@ assert.deepEqual(classifyJvmFieldDescriptor('Ljava/lang/String;'), {
 assert.deepEqual(classifyJvmFieldDescriptor('[[I'), {
   descriptor: '[[I', bits: 64, category: 1, slots: 1, valueKind: 'reference',
 });
-for (const invalid of ['V', 'Lfoo.bar;', 'L/foo;', 'Lfoo//bar;', '[V', '[[', `${'['.repeat(256)}I`]) {
+for (const invalid of [
+  'V', 'Lfoo.bar;', 'L/foo;', 'Lfoo//bar;', '[V', '[[', `${'['.repeat(256)}I`,
+  'constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__',
+]) {
   assert.equal(classifyJvmFieldDescriptor(invalid), null, `must reject invalid field descriptor ${invalid}`);
 }
 
