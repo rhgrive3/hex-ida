@@ -166,4 +166,3 @@ test('#3932 mid-parse cancellation revokes matched debug authority', () => {
   assert.equal(result.status.stopReason, 'cancelled');
   assert.ok(result.diagnostics.includes('debug parse cancelled'));
 });
-
