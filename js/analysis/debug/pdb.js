@@ -208,24 +208,51 @@ export function parsePdbInfoStream(bytes) {
  * getting one size wrong silently points at the wrong stream.
  */
 export const DBI_HEADER_SIZE = 64;
+const DBI_MIN_VERSION_HEADER = 19990903;
 
 export function parseDbiHeader(bytes) {
   if (!bytes || bytes.length < DBI_HEADER_SIZE) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const versionSignature = view.getInt32(0, true);
+  const versionHeader = view.getUint32(4, true);
+  // A length-only check can turn a corrupt stream 3 into authoritative DBI
+  // provenance. Match the native PDB reader's minimum structural gate before
+  // using its age or stream indices for symbol authority.
+  if (versionSignature !== -1 || versionHeader < DBI_MIN_VERSION_HEADER) return null;
+  const moduleSubstreamSize = view.getInt32(24, true);
+  const sectionContributionSize = view.getInt32(28, true);
+  const sectionMapSize = view.getInt32(32, true);
+  const sourceInfoSize = view.getInt32(36, true);
+  const typeServerMapSize = view.getInt32(40, true);
+  const optionalDbgHeaderSize = view.getInt32(48, true);
+  const ecSubstreamSize = view.getInt32(52, true);
+  const substreamSizes = [
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
+  ];
+  if (substreamSizes.some((size) => size < 0)) return null;
+  const declaredLength = DBI_HEADER_SIZE
+    + substreamSizes.reduce((total, size) => total + size, 0);
+  if (declaredLength !== bytes.length) return null;
   return {
-    versionSignature: view.getInt32(0, true),
-    versionHeader: view.getUint32(4, true),
+    versionSignature,
+    versionHeader,
     age: view.getUint32(8, true),
     globalStreamIndex: view.getUint16(12, true),
     publicStreamIndex: view.getUint16(16, true),
     symRecordStreamIndex: view.getUint16(20, true),
-    moduleSubstreamSize: view.getInt32(24, true),
-    sectionContributionSize: view.getInt32(28, true),
-    sectionMapSize: view.getInt32(32, true),
-    sourceInfoSize: view.getInt32(36, true),
-    typeServerMapSize: view.getInt32(40, true),
-    optionalDbgHeaderSize: view.getInt32(48, true),
-    ecSubstreamSize: view.getInt32(52, true),
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
   };
 }
 
@@ -237,30 +264,41 @@ export function parseDbiHeader(bytes) {
  */
 export function parseModuleInfo(bytes, dbi) {
   const modules = [];
-  if (!bytes || !dbi || dbi.moduleSubstreamSize <= 0) return modules;
+  // A silently truncated scan is indistinguishable from an empty module list
+  // unless the scan reports its own completeness (#5746/#5744): missing module
+  // entries mean missing per-module procedure symbols, so the caller must not
+  // treat the provider evidence as complete.
+  let complete = true;
+  if (!dbi || dbi.moduleSubstreamSize <= 0) return { modules, complete };
+  // A declared module substream with no backing bytes is truncated evidence,
+  // not a complete empty list (#5746/#5744).
+  if (!bytes) return { modules, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, bytes.length);
+  const declaredEnd = DBI_HEADER_SIZE + dbi.moduleSubstreamSize;
+  const end = Math.min(declaredEnd, bytes.length);
+  if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
     const streamIndex = view.getInt16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
-    if (!moduleNameEntry) break;
+    if (!moduleNameEntry) { complete = false; break; }
     const objectNameEntry = cstringWithNext(bytes, moduleNameEntry.next, end);
-    if (!objectNameEntry) break;
+    if (!objectNameEntry) { complete = false; break; }
     let cursor = objectNameEntry.next;
     // Entries are aligned to 4 bytes.
     cursor = (cursor + 3) & ~3;
+    if (cursor <= offset || cursor > end) { complete = false; break; }
     modules.push({
       streamIndex,
       symbolByteSize,
       moduleName: moduleNameEntry.value,
       objectName: objectNameEntry.value,
     });
-    if (cursor <= offset) break;
     offset = cursor;
   }
-  return modules;
+  if (end - offset >= 4 || (offset === DBI_HEADER_SIZE && end > offset)) complete = false;
+  return { modules, complete };
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
@@ -671,10 +709,34 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
     const symbols = parseSymbolRecords(symbolStream, budget);
+    // The DBI header is part of the identity/authority boundary: matching
+    // CodeView and Info Stream data must not launder symbols from a missing or
+    // truncated DBI into authoritative evidence (#6042).
+    if (verdict === 'matched-authoritative' && dbi == null) {
+      verdict = 'identity-unavailable';
+      detail = 'PDB DBI header is missing or truncated';
+      symbols.complete = false;
+      diagnostics.push(detail);
+    } else if (info && dbi && dbi.age !== info.age) {
+      // The DBI stream header repeats the PDB Info stream age. An internally
+      // inconsistent PDB must not stay authoritative: the DBI picks the
+      // symbol/module/section-header streams the readers trust (#6042).
+      diagnostics.push(`PDB DBI stream age ${dbi.age} does not match the info stream age ${info.age}`);
+      symbols.complete = false;
+      if (verdict === 'matched-authoritative') {
+        verdict = 'identity-mismatch';
+        detail = 'PDB DBI stream age is inconsistent with the info stream age';
+      }
+    }
 
     // Procedure symbols live in the per-module streams. Each module stream
     // begins with a 4-byte signature before its symbol records.
-    const modules = parseModuleInfo(dbiBytes, dbi);
+    const moduleInfo = parseModuleInfo(dbiBytes, dbi);
+    const modules = moduleInfo.modules;
+    if (!moduleInfo.complete) {
+      symbols.complete = false;
+      diagnostics.push('DBI module substream is malformed: the module list is incomplete');
+    }
     for (const module of modules) {
       const declaredSize = module.symbolByteSize;
       if (declaredSize < 4) {
@@ -830,6 +892,19 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 function findSectionHeaderStream(msf, dbi, dbiBytes) {
   if (!dbi || !dbiBytes) return null;
   const view = new DataView(dbiBytes.buffer, dbiBytes.byteOffset, dbiBytes.byteLength);
+  const precedingSubstreamSizes = [
+    dbi.moduleSubstreamSize,
+    dbi.sectionContributionSize,
+    dbi.sectionMapSize,
+    dbi.sourceInfoSize,
+    dbi.typeServerMapSize,
+    dbi.ecSubstreamSize,
+  ];
+  // These fields are signed in the DBI header. Reject malformed sizes before
+  // summing them: a negative component could move the optional header into
+  // earlier bytes and make unrelated data look like stream-index authority.
+  if (precedingSubstreamSizes.some((size) =>
+    !Number.isSafeInteger(size) || size < 0)) return null;
   const optionalHeaderOffset = DBI_HEADER_SIZE
     + dbi.moduleSubstreamSize
     + dbi.sectionContributionSize
@@ -837,8 +912,19 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
     + dbi.sourceInfoSize
     + dbi.typeServerMapSize
     + dbi.ecSubstreamSize;
+  if (!Number.isSafeInteger(optionalHeaderOffset)
+    || optionalHeaderOffset < DBI_HEADER_SIZE
+    || optionalHeaderOffset > dbiBytes.length) return null;
+  const optionalDbgHeaderSize = Number(dbi.optionalDbgHeaderSize);
+  if (!Number.isSafeInteger(optionalDbgHeaderSize) || optionalDbgHeaderSize < 0) return null;
+  const optionalHeaderEnd = optionalHeaderOffset + optionalDbgHeaderSize;
+  if (!Number.isSafeInteger(optionalHeaderEnd)
+    || optionalHeaderEnd > dbiBytes.length) return null;
   // The optional debug header is an array of stream indices; index 5 is the
-  // original section header stream.
+  // original section header stream. Reading it requires the DBI header to
+  // actually declare that entry: beyond the declared extent the bytes belong
+  // to other substreams and must never mint section mapping authority (#5822).
+  if (optionalDbgHeaderSize < (5 + 1) * 2) return null;
   const entryOffset = optionalHeaderOffset + 5 * 2;
   if (entryOffset + 2 > dbiBytes.length) return null;
   const streamIndex = view.getUint16(entryOffset, true);

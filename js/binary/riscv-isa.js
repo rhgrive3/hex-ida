@@ -1,10 +1,32 @@
 const MAX_ATTRIBUTE_BYTES = 1024 * 1024;
 
+// Current public RISC-V attribute tags known to this parser (psABI §Attributes).
+// Unknown tags with (tag % 128) < 64 are mandatory and must fail the parse;
+// unknown tags with (tag % 128) >= 64 may be skipped by odd/even value shape.
+const KNOWN_RISCV_ATTRIBUTE_TAGS = new Set([4, 5, 6, 8, 10, 12, 14, 16]);
+
 function bytesOf(input) {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  return Uint8Array.from(input || []);
+  if (input == null) return new Uint8Array();
+
+  let iterator;
+  try { iterator = input[Symbol.iterator]; } catch { return null; }
+  if (typeof iterator !== 'function') return null;
+
+  const values = [];
+  try {
+    for (const value of input) {
+      if (values.length >= MAX_ATTRIBUTE_BYTES
+        || typeof value !== 'number'
+        || !Number.isInteger(value)
+        || value < 0
+        || value > 0xff) return null;
+      values.push(value);
+    }
+  } catch { return null; }
+  return Uint8Array.from(values);
 }
 
 function readU32(bytes, offset, littleEndian) {
@@ -47,8 +69,36 @@ function strictAddress(value) {
   } catch { return null; }
 }
 
+function strictIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function strictRiscvProfile(value) {
+  const normalized = typeof value?.canonical === 'string'
+    ? normalizeRiscvIsaString(value.canonical)
+    : null;
+  if (!value || typeof value !== 'object'
+    || !normalized
+    || !Number.isSafeInteger(value.xlen)
+    || (value.xlen !== 32 && value.xlen !== 64)
+    || typeof value.compressedInstructions !== 'boolean'
+    || !Number.isSafeInteger(value.instructionAlignment)
+    || (value.instructionAlignment !== 2 && value.instructionAlignment !== 4)
+    || normalized.xlen !== value.xlen
+    || normalized.compressedInstructions !== value.compressedInstructions
+    || normalized.instructionAlignment !== value.instructionAlignment
+    || (value.evidence != null && typeof value.evidence !== 'string')) return null;
+  return {
+    canonical:value.canonical,
+    xlen:value.xlen,
+    compressedInstructions:value.compressedInstructions,
+    instructionAlignment:value.instructionAlignment,
+  };
+}
+
 export function normalizeRiscvIsaString(input) {
-  const canonical = String(input ?? '').trim().toLowerCase();
+  if (typeof input !== 'string') return null;
+  const canonical = input.trim().toLowerCase();
   const match = /^rv(32|64)([a-z0-9]+(?:_[a-z0-9]+)*)$/.exec(canonical);
   if (!match) return null;
   const xlen = Number(match[1]);
@@ -76,9 +126,10 @@ export function normalizeRiscvIsaString(input) {
 
 export function parseRiscvAttributes(input, options = {}) {
   const bytes = bytesOf(input);
-  if (!bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
+  if (!bytes || !bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
   const littleEndian = options.littleEndian !== false;
   let cursor = 1;
+  let found = null;
   while (cursor + 4 <= bytes.length) {
     const subsectionStart = cursor;
     const subsectionLength = readU32(bytes, cursor, littleEndian);
@@ -106,8 +157,10 @@ export function parseRiscvAttributes(input, options = {}) {
             const arch = readNtbs(bytes, attributeCursor, subsubEnd);
             if (!arch) return null;
             const normalized = normalizeRiscvIsaString(arch.value);
-            if (normalized) return Object.freeze({ ...normalized, evidence:'elf-attribute' });
+            if (normalized && !found) found = Object.freeze({ ...normalized, evidence:'elf-attribute' });
             attributeCursor = arch.next;
+          } else if (!KNOWN_RISCV_ATTRIBUTE_TAGS.has(attr.value) && (attr.value % 128) < 64) {
+            return null;
           } else if ((attr.value & 1) === 1) {
             const stringValue = readNtbs(bytes, attributeCursor, subsubEnd);
             if (!stringValue) return null;
@@ -123,11 +176,16 @@ export function parseRiscvAttributes(input, options = {}) {
     }
     cursor = subsectionEnd;
   }
-  return null;
+  // A valid section is fully consumed: 1-3 trailing bytes after the last
+  // subsection are garbage, not evidence, and must fail the parse instead of
+  // returning a prefix match.
+  if (cursor !== bytes.length) return null;
+  return found;
 }
 
 export function parseRiscvMappingSymbol(name) {
-  const text = String(name ?? '');
+  if (typeof name !== 'string') return null;
+  const text = name;
   const base = text.replace(/\.[^.]*$/, '');
   if (base === '$d') return Object.freeze({ kind:'data', isa:null });
   if (base === '$x') return Object.freeze({ kind:'instruction', isa:null });
@@ -145,28 +203,37 @@ export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   let selected = null;
   const target = strictAddress(address);
   if (target === null) return options.allowAssumed === false ? null : fallback;
-  const containingSection = (metadata.sections || []).find((section) => {
-    try { return target >= BigInt(section.start) && target < BigInt(section.end); }
-    catch { return false; }
+  const sections = Array.isArray(metadata.sections) ? metadata.sections : [];
+  const containingSection = sections.find((section) => {
+    const start = section?.start == null ? null : strictAddress(section.start);
+    const end = section?.end == null ? null : strictAddress(section.end);
+    return start !== null && end !== null && target >= start && target < end;
   }) || null;
-  for (const mapping of metadata.mappings || []) {
-    let mappingAddress;
-    try { mappingAddress = BigInt(mapping.address); } catch { continue; }
+  const mappings = Array.isArray(metadata.mappings) ? metadata.mappings : [];
+  for (const mapping of mappings) {
+    if (!mapping || typeof mapping !== 'object') continue;
+    const mappingAddress = mapping.address == null ? null : strictAddress(mapping.address);
+    if (mappingAddress === null) continue;
     if (mappingAddress > target) break;
-    if (containingSection && mapping.sectionIndex != null && Number(mapping.sectionIndex) !== Number(containingSection.sectionIndex)) continue;
+    const mappingSectionIndex = mapping.sectionIndex == null ? null : strictIndex(mapping.sectionIndex);
+    if (mapping.sectionIndex != null && mappingSectionIndex === null) continue;
+    const containingSectionIndex = containingSection?.sectionIndex == null ? null : strictIndex(containingSection.sectionIndex);
+    if (containingSection && mappingSectionIndex != null && mappingSectionIndex !== containingSectionIndex) continue;
     if (containingSection && mapping.sectionIndex == null) continue;
     if (!containingSection && Array.isArray(metadata.sections) && metadata.sections.length && mapping.sectionIndex != null) continue;
     selected = mapping;
   }
   if (selected?.kind === 'data') return Object.freeze({ code:false, exact:true, evidence:'mapping-symbol-data' });
+  if (selected && selected.kind !== 'instruction') return options.allowAssumed === false ? null : fallback;
   const base = selected?.isa || metadata.file || null;
   if (!base) return options.allowAssumed === false ? null : fallback;
+  const normalized = strictRiscvProfile(base);
+  if (!normalized) return options.allowAssumed === false ? null : fallback;
+  const evidence = selected?.isa ? 'mapping-symbol' : (base.evidence ?? metadata.evidence ?? 'elf-attribute');
+  if (typeof evidence !== 'string' || evidence.trim() === '') return options.allowAssumed === false ? null : fallback;
   return Object.freeze({
-    canonical:String(base.canonical),
-    xlen:Number(base.xlen),
-    compressedInstructions:base.compressedInstructions === true,
-    instructionAlignment:Number(base.instructionAlignment),
-    evidence:selected?.isa ? 'mapping-symbol' : String(base.evidence || metadata.evidence || 'elf-attribute'),
+    ...normalized,
+    evidence,
     exact:true,
     code:true,
   });

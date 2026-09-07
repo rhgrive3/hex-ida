@@ -1,4 +1,5 @@
 export const MAX_REQUEST_BYTES = 512 * 1024;
+export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const MAX_CONTEXT_CHARS = 160000;
 export const REQUEST_TIMEOUT_MS = 110000;
 export const MAX_UPSTREAM_ATTEMPTS = 3;
@@ -55,7 +56,14 @@ export async function acquireDistributedQuota(request, env, sessionId) {
   }
 }
 export async function releaseDistributedQuota(lease) { if (!lease?.stub || !lease.token) return; try { await lease.stub.release(lease.token); } catch (error) { console.error('[ai-quota] release failed', { message: error?.message || String(error) }); } }
-export async function readUpstreamFailure(response) { let code = null; try { const body = await response.json(); if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null; } catch { try { await response.body?.cancel(); } catch {} } return { code: typeof code === 'string' ? code.slice(0, 80) : null }; }
+export async function readUpstreamFailure(response, limit = MAX_RESPONSE_BYTES) {
+  let code = null;
+  try {
+    const body = JSON.parse(await readLimitedText(response, limit));
+    if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null;
+  } catch { try { await response.body?.cancel(); } catch {} }
+  return { code: typeof code === 'string' ? code.slice(0, 80) : null };
+}
 export function isRetryableUpstreamFailure(status, code) { return RETRYABLE_UPSTREAM_STATUSES.has(status) && !(status === 429 && code === 'quota_exceeded'); }
 export function retryDelayMs(attempt, retryAfter) { const after = parseRetryAfterMs(retryAfter); if (after != null) return Math.min(after, RETRY_MAX_DELAY_MS); const exponential = Math.min(RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)), RETRY_MAX_DELAY_MS); return Math.min(exponential + Math.floor(Math.random() * Math.min(250, Math.max(1, exponential / 4))), RETRY_MAX_DELAY_MS); }
 export function parseRetryAfterMs(value) { if (typeof value !== 'string' || !value.trim()) return null; const seconds = Number(value); if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000); const when = Date.parse(value); return Number.isFinite(when) ? Math.max(0, when - Date.now()) : null; }
