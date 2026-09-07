@@ -79,6 +79,13 @@ function edgeKey(edge) {
   return `${edge.to}\u0000${edge.kind}\u0000${stableStringify(edge.metadata ?? null)}`;
 }
 
+// Canonical CFG ordering must be a fixed total order, not a collation: block
+// ids and edge keys freeze into the published graph, so a locale-dependent
+// comparator would make the same input serialize differently per host (#5763).
+function compareCanonicalText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function normalizePredecessors(input) {
   if (input == null) return null;
   const values = array(input, 'semantic-cfg-invalid-predecessors').map((value) => {
@@ -96,7 +103,7 @@ function normalizeBlock(input) {
   assertAllowedKeys(input, new Set(['id', 'successors', 'predecessors']), 'semantic-cfg-unexpected-block-field');
   const successors = array(input.successors ?? [], 'semantic-cfg-invalid-successors')
     .map(normalizeEdge)
-    .sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
+    .sort((a, b) => compareCanonicalText(edgeKey(a), edgeKey(b)));
   const keys = successors.map(edgeKey);
   if (new Set(keys).size !== keys.length) fail('semantic-cfg-duplicate-edge');
   return {
@@ -122,7 +129,7 @@ export function createSemanticCfg(input, options = {}) {
 
   const rawBlocks = array(input.blocks, 'semantic-cfg-blocks-required');
   if (rawBlocks.length > limit(options, 'maxBlocks')) fail('semantic-cfg-budget-exceeded-maxBlocks');
-  const blocks = rawBlocks.map(normalizeBlock).sort((a, b) => a.id.localeCompare(b.id));
+  const blocks = rawBlocks.map(normalizeBlock).sort((a, b) => compareCanonicalText(a.id, b.id));
   const blockById = new Map();
   for (const block of blocks) {
     assertNotAborted(options);
@@ -275,7 +282,7 @@ export function analyzeSemanticDominance(cfg, options = {}) {
       continue;
     }
     const strict = [...dom.get(id)].filter((candidate) => candidate !== id);
-    strict.sort((a, b) => dom.get(b).size - dom.get(a).size || a.localeCompare(b));
+    strict.sort((a, b) => dom.get(b).size - dom.get(a).size || compareCanonicalText(a, b));
     idom.set(id, strict[0] ?? null);
   }
 
