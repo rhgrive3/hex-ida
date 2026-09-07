@@ -1,5 +1,5 @@
 import { stableDigest } from '../../core/identity/index.js';
-import { expr, mergeSource } from '../ast/nodes.js';
+import { expr } from '../ast/nodes.js';
 
 export const EGRAPH_LIMITS = Object.freeze({
   inputNodes:2048, eNodes:4096, eClasses:2048, saturationIterations:8,
@@ -99,7 +99,20 @@ export function generateEGraphCandidates(root, options = {}) {
     };
     const rootId=visit(root);
     const inputDigest=stableDigest(nodes.map(n=>[key(n),n.source??null]));
-    const origins=mergeSource(...nodes.map(n=>n.source));
+    const origins={addresses:[],rows:[],ir:[],ssaDefs:[],ssaUses:[],evidence:[]};
+    const originFields={addresses:'address',rows:'row',ir:'irId',ssaDefs:'ssaDef',ssaUses:'ssaUse'};
+    const originSets=Object.fromEntries(Object.keys(originFields).map(name=>[name,new Set()]));
+    for(const n of nodes) {
+      check();
+      for(const [name,alias] of Object.entries(originFields)) {
+        const values=n.source?.[name]??n.source?.[alias]??[];
+        for(const value of Array.isArray(values)?values:[values]) {
+          check();const identity=String(value);
+          if(!originSets[name].has(identity)) {originSets[name].add(identity);origins[name].push(value);}
+        }
+      }
+      for(const evidence of n.source?.evidence??[]) {check();origins.evidence.push(evidence);}
+    }
     if(!origins.ir.length&&!origins.addresses.length&&!origins.rows.length)stop('origin-required');
     const union = (a,b) => {
       check();a=find(a);b=find(b);if(a===b)return false;
@@ -150,9 +163,9 @@ export function generateEGraphCandidates(root, options = {}) {
     if(!extracted||extracted.cost>=metrics.inputNodes)return result('complete');
     if(limits.extractedCandidates<1)stop('budget');
     check();
-    const freeze = n => {if(!n||typeof n!=='object'||Object.isFrozen(n))return n;for(const value of Object.values(n))freeze(value);return Object.freeze(n);};
+    const freeze = n => {check();if(!n||typeof n!=='object'||Object.isFrozen(n))return n;for(const value of Object.values(n))freeze(value);return Object.freeze(n);};
     const candidate=Object.freeze({expression:freeze(extracted.expression),origin:freeze(origins),inputDigest,proofRequired:true});
-    ISSUED.add(candidate);metrics.extractedCandidates=1;
+    check();ISSUED.add(candidate);metrics.extractedCandidates=1;
     return result('complete',[candidate]);
   } catch(error) {
     const reason=error?.message??'unsupported';
