@@ -125,7 +125,10 @@ test('#6308 null range is fail-closed with a reason', () => {
 
 test('#6308 existing completeness and truncation semantics are preserved', () => {
   const program = programIndexLike();
-  const partial = functionPaths({ ...program, graphCompleteness: { callsComplete: false } }, 0x1000n, 0x3000n, { maxDepth: 1 });
+  // One edge now reaches 0x3000. A different sink still requires expansion
+  // beyond that edge budget, independently of the incomplete source graph.
+  const partial = functionPaths({ ...program, graphCompleteness: { callsComplete: false } }, 0x1000n, 0x4000n, { maxDepth: 1 });
+  assert.deepEqual(partial.paths, []);
   assert.ok(partial.reasons.includes('depth-limit'));
   assert.ok(partial.reasons.includes('program-calls-incomplete'));
   assert.equal(partial.complete, false);
