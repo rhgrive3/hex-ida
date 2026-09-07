@@ -79,10 +79,23 @@ function hasIntrinsic(getter, value, ...args) {
   }
 }
 
-function isMap(value) { return hasIntrinsic(MAP_SIZE_GETTER, value); }
-function isSet(value) { return hasIntrinsic(SET_SIZE_GETTER, value); }
-function isArrayBuffer(value) { return hasIntrinsic(ARRAY_BUFFER_BYTE_LENGTH_GETTER, value); }
-function isDate(value) { return hasIntrinsic(DATE_GET_TIME, value); }
+// `instanceof` and realm-local prototype getters both fail on cross-realm
+// built-ins (Node vm, iframes): the receiver check throws even though the
+// object is a genuine Map/Set/ArrayBuffer/Date of another realm. The internal
+// [[Class]] tag is realm-independent, so use it as the classifier and verify
+// the intrinsic accessor still operates below.
+function intrinsicTag(value) {
+  try {
+    return Object.prototype.toString.call(value);
+  } catch {
+    return '';
+  }
+}
+
+function isMap(value) { return intrinsicTag(value) === '[object Map]' && hasIntrinsic(MAP_SIZE_GETTER, value); }
+function isSet(value) { return intrinsicTag(value) === '[object Set]' && hasIntrinsic(SET_SIZE_GETTER, value); }
+function isArrayBuffer(value) { return intrinsicTag(value) === '[object ArrayBuffer]' && hasIntrinsic(ARRAY_BUFFER_BYTE_LENGTH_GETTER, value); }
+function isDate(value) { return intrinsicTag(value) === '[object Date]' && hasIntrinsic(DATE_GET_TIME, value); }
 
 function isSharedArrayBuffer(value) {
   if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function') return false;
@@ -204,7 +217,13 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
     }
     if (isArrayBuffer(value)) {
       failOnEnumerableOwnProperties(descriptors, 'arraybuffer');
-      const out = ArrayBuffer.prototype.slice.call(value, 0);
+      // slice() preserves the source realm, so a foreign ArrayBuffer would
+      // come back unclassifiable to the core canonicalizer; copy the bytes
+      // into a local ArrayBuffer instead. The captured intrinsic getter (the
+      // same one that classified the value) is realm-safe, while the direct
+      // prototype-method form throws on foreign receivers.
+      const out = new ArrayBuffer(ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value));
+      new Uint8Array(out).set(new Uint8Array(value));
       done.set(value, out);
       return out;
     }
