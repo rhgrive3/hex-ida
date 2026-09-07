@@ -209,11 +209,13 @@ function collectCategoryBindImports(sections, opts) {
 
 function categoryBindImportsAreComplete(sections, opts) {
   for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const imports = src?.imports;
+    if (!Array.isArray(imports) || imports.length === 0) continue;
     const chainedFixups = src?.metadata?.chainedFixups;
-    if (!chainedFixups || typeof chainedFixups !== 'object') continue;
-    if (chainedFixups.complete === false
-      || chainedFixups.importsComplete === false
-      || chainedFixups.bindingSitesComplete === false) return false;
+    if (!chainedFixups || typeof chainedFixups !== 'object'
+      || chainedFixups.complete !== true
+      || chainedFixups.importsComplete !== true
+      || chainedFixups.bindingSitesComplete !== true) return false;
   }
   return true;
 }
