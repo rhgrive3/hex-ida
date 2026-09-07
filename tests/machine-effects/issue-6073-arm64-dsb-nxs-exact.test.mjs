@@ -29,7 +29,7 @@ function lift(mnemonic, option) {
 }
 
 function liftAtomic(mnemonic, option) {
-  const operand = option ? { k:'other', text:option } : null;
+  const operand = option && typeof option === 'object' ? option : option ? { k:'other', text:option } : null;
   return liftArm64AtomicEffects({
     instructionId:`arm64-dsb-nxs-atomic-${mnemonic}-${option || 'none'}`,
     architectureId:'arm64',
@@ -176,5 +176,24 @@ test('#6073: canonical dispatcher preserves standard barrier owners', () => {
     const bundle = lift(mnemonic, option);
     assert.ok(['exact', 'exact-with-intrinsic'].includes(bundle.completeness), `${mnemonic} remains exact`);
     assert.ok(bundle.operations.some((x) => x.kind === kind), `${mnemonic} retains its ${kind} effect`);
+  }
+});
+
+
+test('#6073: all supported immediate selectors have the same scope in both owners', () => {
+  for (const mnemonic of ['dmb', 'dsb', 'isb']) {
+    const selectors = [...Array(16).keys(), ...(mnemonic === 'dsb' ? [16, 20, 24, 28] : [])];
+    for (const selector of selectors) {
+      const operand = { k:'imm', value:BigInt(selector), text:`#${selector}` };
+      const atomic = liftAtomic(mnemonic, operand);
+      const system = liftSystem(mnemonic, operand);
+      assert.equal(atomic.completeness, 'exact');
+      assert.equal(system.completeness, 'exact');
+      const scope = (bundle) => {
+        const value = bundle.operations.find((op) => op.kind === 'barrier').scope;
+        return { domain:value.domain, access:value.access, nonXs:value.nonXs };
+      };
+      assert.deepEqual(scope(system), scope(atomic), `${mnemonic} #${selector}`);
+    }
   }
 });

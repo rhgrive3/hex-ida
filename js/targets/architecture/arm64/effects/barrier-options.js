@@ -39,6 +39,8 @@ export const ARM64_DSB_NXS_OPTIONS = frozenScopes({
   synxs:{ domain:'full-system', access:'all', nonXs:true },
 });
 
+const STORE_BYPASS_SCOPE = Object.freeze({ domain:'speculation', access:'store-bypass' });
+
 const DSB_NXS_OPTION_BY_CRM = Object.freeze({
   16:'oshnxs',
   20:'nshnxs',
@@ -48,6 +50,7 @@ const DSB_NXS_OPTION_BY_CRM = Object.freeze({
 
 export function arm64BarrierScope(option) {
   if (typeof option !== 'string') return null;
+  if (option === 'ssbb' || option === 'pssbb') return STORE_BYPASS_SCOPE;
   if (Object.prototype.hasOwnProperty.call(DATA_BARRIER_SCOPES, option)) return DATA_BARRIER_SCOPES[option];
   if (Object.prototype.hasOwnProperty.call(ARM64_DSB_NXS_OPTIONS, option)) return ARM64_DSB_NXS_OPTIONS[option];
   return null;
@@ -61,7 +64,9 @@ export function arm64BarrierOptionFromText(mnemonic, raw) {
   if (mnemonic === 'dmb') return arm64BarrierScope(option) && Object.prototype.hasOwnProperty.call(DATA_BARRIER_SCOPES, option)
     ? { option, crm:null, reservedEncoding:false }
     : null;
-  if (mnemonic === 'dsb') return arm64BarrierScope(option) ? { option, crm:null, reservedEncoding:false } : null;
+  if (mnemonic === 'dsb') return Object.prototype.hasOwnProperty.call(DATA_BARRIER_SCOPES, option) || Object.prototype.hasOwnProperty.call(ARM64_DSB_NXS_OPTIONS, option)
+    ? { option, crm:null, reservedEncoding:false }
+    : null;
   return null;
 }
 

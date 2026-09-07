@@ -280,7 +280,8 @@ function barrier(instruction, context, mnemonic, ops) {
     ...(canonicalScope || { domain:option }),
     ...(selected?.crm == null ? {} : { crm:selected.crm }),
     ...(selected?.reservedEncoding ? { reservedEncoding:true } : {}),
-    semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+    semantics:option === 'ssbb' || option === 'pssbb' ? 'speculation-store-bypass'
+      : mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
   };
   return bundle(instruction, context, {
     operations:[createMachineOperation({ kind:'barrier', scope })],
