@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createSymbolicEvidence } from '../js/symbolic/evidence/symbolic-evidence.js';
+import { ExhaustiveBvBackend } from '../js/symbolic/solver/exhaustive-backend.js';
 import { SymbolIndex } from '../js/symbols.js';
 import { ProgramIndex } from '../js/program.js';
 import { readFile } from 'node:fs/promises';
@@ -165,3 +167,31 @@ function makeIndex() {
 }
 
 console.log('symbol identity regression: PASS');
+
+
+// #5774: Map projection is independent of insertion order and keeps own-data keys.
+{
+  const backend = new ExhaustiveBvBackend();
+  const base = {
+    queryKind:'edge-feasibility', claimKind:'edge-feasibility',
+    proofStatement:'Edge is infeasible',
+    queryHash:'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    solverStatus:'sat', preconditionStatus:'satisfiable',
+    validationStatus:'validated', verdict:'refuted',
+    backendId:backend.id, backendVersion:backend.version,
+    proofAuthority:backend.proofAuthority,
+    capabilityFingerprint:backend.capabilityFingerprint(),
+    targetEntities:['func:0x1000'],
+  };
+  const forward = createSymbolicEvidence({ ...base, witnessModel:new Map([['x',1n],['y',2n]]) });
+  const reverse = createSymbolicEvidence({ ...base, witnessModel:new Map([['y',2n],['x',1n]]) });
+  assert.deepEqual(forward.witnessModel, reverse.witnessModel);
+  assert.equal(JSON.stringify(forward.witnessModel), JSON.stringify(reverse.witnessModel));
+  assert.deepEqual(forward.witnessModel, { x:'0x1', y:'0x2' });
+
+  const proto = createSymbolicEvidence({
+    ...base, witnessModel:new Map([['__proto__',{ safe:true }]]),
+  });
+  assert.equal(Object.getPrototypeOf(proto.witnessModel), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(proto.witnessModel, '__proto__').value, { safe:true });
+}
