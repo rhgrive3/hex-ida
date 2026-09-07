@@ -120,8 +120,10 @@ export function createClaimNode(input = {}) {
   const confirmedByEvidenceIds = stringArray(input.confirmedByEvidenceIds, 'evidence-invalid-confirmation-ids');
   const requestedVerdict = enumValue(input.verdict, EVIDENCE_VERDICTS, 'unknown', 'evidence-invalid-verdict');
   let verdict = requestedVerdict;
-  if (contradictingEvidenceIds.length || requestedVerdict === 'contradicted') verdict = 'contradicted';
-  else if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
+  // Reference existence is not contradiction authority (#6168): a declared
+  // contradictingEvidenceIds entry only becomes a verdict through
+  // EvidenceGraph.evaluateClaim(), which validates scope applicability.
+  if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
   else if (requestedVerdict === 'supported' && !supportingEvidenceIds.length) verdict = 'unverified';
   const targetEntityIds = stringArray(input.targetEntityIds, 'evidence-invalid-targets');
   const scope = input.scope == null ? null : jsonSafe(input.scope);
@@ -159,8 +161,25 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
+// Shared claim-scope applicability policy. An evidence node may only act as
+// authoritative support/contradiction/confirmation for a claim when their
+// declared scopes do not conflict: matching binaryId when both declare one,
+// and intersecting targetEntityIds when both declare targets. Undeclared
+// scope (null binaryId / empty targetEntityIds) imposes no constraint so
+// graph data that does not carry scope keeps its existing semantics.
+export function isEvidenceApplicableToClaim(evidence, claim) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return false;
+  if (!claim || typeof claim !== 'object' || Array.isArray(claim)) return false;
+  if (evidence.binaryId != null && claim.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
+  if (claim.targetEntityIds.length && evidence.targetEntityIds.length) {
+    const claimTargets = new Set(claim.targetEntityIds);
+    if (!evidence.targetEntityIds.some((entityId) => claimTargets.has(entityId))) return false;
+  }
+  return true;
+}
+
 export function canConfirmClaim(evidence, claim) {
-  if (!evidence || typeof evidence !== 'object') return false;
+  if (!isEvidenceApplicableToClaim(evidence, claim)) return false;
   if (evidence.deterministic !== true) return false;
   if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
     return false;
@@ -261,17 +280,24 @@ export class EvidenceGraph {
     for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
       if (!this.#nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
     }
-    const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
-    const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const knownContradictions = [...contradicting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return isEvidenceApplicableToClaim(node, claim);
+    });
+    const knownSupport = [...supporting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return isEvidenceApplicableToClaim(node, claim);
+    });
     const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => {
       const node = this.#nodes.get(evidenceId);
       return canConfirmClaim(node, claim);
     });
     let verdict = claim.verdict;
-    if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
+    if (claim.verdict === 'contradicted') verdict = 'contradicted';
+    else if (knownContradictions.length) verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
     else if (knownSupport.length) verdict = 'supported';
-    else if (supporting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';
+    else if (supporting.size || contradicting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';
     else verdict = 'unknown';
     return deepFreeze({
       verdict,
