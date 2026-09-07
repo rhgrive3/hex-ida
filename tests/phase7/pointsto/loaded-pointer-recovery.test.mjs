@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/build.js';
-import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { MEMORY_SSA_BUILD_VERSION, buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
 import { reachingConcreteStore } from '../../../js/semantics/memoryssa/queries.js';
 import { classifySemanticMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { A2_ANALYZER_VERSION, analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
@@ -182,7 +182,7 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     scalarSsaBuildVersion: '1.0.0',
     scalarSsaDigest,
     memorySsaId: 'mssa-loaded-pointer-fixture',
-    memorySsaBuildVersion: '1.0.0',
+    memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: 'memoryssa-fixture',
   };
   const memorySsa = buildMemorySsa(ir, cfg, {

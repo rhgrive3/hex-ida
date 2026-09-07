@@ -83,6 +83,7 @@ jobs:
   # them in Playwright's pinned image so every PR does not spend minutes
   # downloading 100+ MB of WebKit OS packages onto a fresh hosted runner.
   embed-browser:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:

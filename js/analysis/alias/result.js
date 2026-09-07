@@ -156,8 +156,14 @@ export function createAliasResult(input = {}) {
     if (relation === 'no' && !reasonCodes.some((code) => SEPARATION_PROOFS.has(code))) {
       fail('alias-result-no-alias-requires-separation-proof');
     }
+    if (relation === 'no' && reasonCodes.some((code) => IDENTITY_PROOFS.has(code))) {
+      fail('alias-result-no-alias-conflicting-identity-proof');
+    }
     if (relation === 'must' && !reasonCodes.some((code) => IDENTITY_PROOFS.has(code))) {
       fail('alias-result-must-alias-requires-identity-proof');
+    }
+    if (relation === 'must' && reasonCodes.some((code) => SEPARATION_PROOFS.has(code))) {
+      fail('alias-result-must-alias-conflicting-separation-proof');
     }
   }
 

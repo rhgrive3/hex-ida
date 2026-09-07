@@ -399,7 +399,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
-  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = 1, addend = 0n, segIndex = 0, segOffset = 0n;
+  // Classic bind state mirrors dyld's BindOpcodes state machine: only
+  // lazy-bind streams carry an implicit pointer type, and a bind location exists
+  // only after SET_SEGMENT_AND_OFFSET_ULEB has run.
+  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
   let threadedTable = null, threadedTableLimit = 0;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
@@ -409,18 +412,28 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     image.warnings.push(`${source}: ${message}`);
   };
+  const validDylibOrdinal = () => {
+    if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (libOrdinal > 0 && libOrdinal > libraryCount) { fail(`dylib ordinal ${libOrdinal} exceeds dependency count ${libraryCount}`); return false; }
+    return true;
+  };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
+    if (!locationSet) return false;
     const seg = segments[segIndex];
     return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (!validDylibOrdinal()) return;
     if (threadedTable) {
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
       return;
     }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
     if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
@@ -467,9 +480,18 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
       break;
-    } else if (op === 0x10) libOrdinal = imm;
-    else if (op === 0x20) { const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); }
-    else if (op === 0x30) libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+    } else if (op === 0x10) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm;
+    }
+    else if (op === 0x20) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value);
+    }
+    else if (op === 0x30) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+    }
     else if (op === 0x40) {
       const x = rawCString(r, p, end);
       // The symbol C-string is a variable-length cost: charge its raw bytes to
@@ -481,7 +503,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
-    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; locationSet = true; }
     else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
     else if (op === 0x90) { bind(); segOffset += ptrSize; }
     else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
@@ -500,6 +522,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
         const x = r.uleb(p, 10, end); p = x.next;
         if (x.value > 65536n) { fail('threaded ordinal table exceeds 65536 entries'); break; }
         threadedTableLimit = Number(x.value); threadedTable = [];
+        // Threaded bind entries are pointer-form chained fixups: the stream has
+        // no SET_TYPE_IMM opcode, so the implicit pointer type applies here.
+        type = 1;
       } else if (imm === 1) applyThreaded();
       else { fail(`unknown threaded bind subopcode 0x${imm.toString(16)}`, byte); break; }
     } else { fail(`unknown dyld bind opcode 0x${op.toString(16)}`, byte); break; }
@@ -540,15 +565,23 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
         if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported: importedX.text || null, source: 'exports-trie' });
+          const imported = importedX.text || null;
+          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
         } else {
-          const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next; const exportKind = flags & 0x03;
-          const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
-          const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
-          const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-          if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-          if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-          if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          const exportKind = flags & 0x03;
+          if (exportKind === 3) {
+            markPartial(`unsupported export kind ${exportKind}`);
+          } else {
+            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
+            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
+            if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          }
         }
       }
       p = terminalEnd; if (p >= end) return;

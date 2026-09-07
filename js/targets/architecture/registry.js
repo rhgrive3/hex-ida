@@ -21,12 +21,20 @@ function normalizeArchitectureHook(value, name, fallback = null) {
   return value;
 }
 
+function normalizeArchitectureSemanticVersion(value) {
+  if (value == null) return '1';
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new TypeError('architecture semanticVersion must be a non-empty string');
+  }
+  return value;
+}
+
 export class ArchitecturePluginV2 {
   constructor(definition = {}) {
     const id = canonicalArchitectureId(definition.id);
     if (!id) throw new TypeError('architecture id is required');
     this.id = id;
-    this.semanticVersion = String(definition.semanticVersion || '1');
+    this.semanticVersion = normalizeArchitectureSemanticVersion(definition.semanticVersion);
     this.modes = normalizeArchitectureHook(definition.modes, 'modes', () => Object.freeze([]));
     this.registerFile = normalizeArchitectureHook(definition.registerFile, 'registerFile', () => Object.freeze([]));
     this.physicalAddressSpaces = normalizeArchitectureHook(definition.physicalAddressSpaces, 'physicalAddressSpaces', () => Object.freeze(['register','memory','code','unique']));
@@ -39,6 +47,10 @@ export class ArchitecturePluginV2 {
     this.validateEncoding = normalizeArchitectureHook(definition.validateEncoding, 'validateEncoding');
     this.supportedMemoryEndianness = Object.freeze([...new Set(
       (Array.isArray(definition.supportedMemoryEndianness) ? definition.supportedMemoryEndianness : [])
+        .map((value) => canonicalArchitectureId(value)).filter(Boolean)
+    )]);
+    this.supportedInstructionEndianness = Object.freeze([...new Set(
+      (Array.isArray(definition.supportedInstructionEndianness) ? definition.supportedInstructionEndianness : [])
         .map((value) => canonicalArchitectureId(value)).filter(Boolean)
     )]);
     this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');

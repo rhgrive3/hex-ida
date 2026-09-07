@@ -1,6 +1,7 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { decodeDexInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -90,6 +91,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
   while (pc < insnsSize) {
     const codeUnitOffset = pc * 2; // byte offset relative to code start
     const opByteOffset = insnsStart + codeUnitOffset;
+    const boundary = decodeDexInstructionBoundary(view, insnsStart, pc, insnsSize);
     const insn = view.getUint16(insnsStart + pc * 2, true);
     const opcode = insn & 0xff;
     const formatByte = (insn >> 8) & 0xff;
@@ -107,9 +109,17 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
-    let insnLen = 1; // in 16-bit code units
+    let insnLen = boundary.length; // in 16-bit code units
 
-    switch (opcode) {
+    if (boundary.kind === 'payload') {
+      mnemonic = boundary.mnemonic;
+      completeness = 'partial';
+      unknownEffects.push({ category: 'other', reason: 'dex-data-payload' });
+    } else if (boundary.kind === 'unknown') {
+      mnemonic = `dex_op_0x${opcode.toString(16)}`;
+      completeness = 'partial';
+      unknownEffects.push({ category: 'other', reason: boundary.reason });
+    } else switch (opcode) {
       case 0x00: // nop
         mnemonic = 'nop';
         break;
@@ -431,6 +441,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     }, options));
 
     pc += insnLen;
+    if (boundary.stop) break;
   }
 
   return createVMEffectFunction({
