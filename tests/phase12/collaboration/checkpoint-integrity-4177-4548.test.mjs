@@ -99,31 +99,39 @@ function statefulCheckpoint() {
   const [fact] = Object.values(altered.facts);
   fact.values[0].value = 'accessor-tampered';
   let reads = 0;
+  let operationReads = 0;
   const candidate = {
     schemaVersion: checkpoint.schemaVersion,
     projectIdentity: checkpoint.projectIdentity,
     binaryIdentity: checkpoint.binaryIdentity,
-    operationIds: checkpoint.operationIds,
     digest: checkpoint.digest,
+    get operationIds() {
+      operationReads += 1;
+      return operationReads === 1
+        ? checkpoint.operationIds
+        : [...checkpoint.operationIds, 'op:forged'];
+    },
     get state() {
       reads += 1;
       return reads === 1 ? original : altered;
     },
   };
-  return { candidate, reads: () => reads, original };
+  return { candidate, reads: () => reads, operationReads: () => operationReads, original };
 }
 
 {
-  const { candidate, reads, original } = statefulCheckpoint();
+  const { candidate, reads, operationReads, original } = statefulCheckpoint();
   const restored = restoreCheckpoint(candidate, { projectIdentity });
   assert.equal(reads(), 1, 'restore must own checkpoint state before validation');
+  assert.equal(operationReads(), 1, 'restore must own checkpoint operation ids before validation');
   assert.equal(restored.state.facts['entity-1\u0000name'].values[0].value, original.facts['entity-1\u0000name'].values[0].value);
 }
 
 {
-  const { candidate, reads, original } = statefulCheckpoint();
+  const { candidate, reads, operationReads, original } = statefulCheckpoint();
   const replayedStateful = replayOperations({ projectIdentity, checkpoint: candidate });
   assert.equal(reads(), 1, 'replay must own checkpoint state before validation');
+  assert.equal(operationReads(), 1, 'replay must own checkpoint operation ids before validation');
   assert.equal(replayedStateful.state.facts['entity-1\u0000name'].values[0].value, original.facts['entity-1\u0000name'].values[0].value);
 }
 
