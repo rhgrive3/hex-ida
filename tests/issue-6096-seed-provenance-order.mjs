@@ -51,11 +51,12 @@ test('issue #6096 - exact extent is kept when heuristic trails', () => {
 });
 
 test('issue #6096 - same-strength tie-break is order-independent', () => {
-  const s1 = { address: 0x2000n, source: 'heuristic', confidence: 0.5 };
-  const s2 = { address: 0x2000n, source: 'heuristic', confidence: 0.5 };
+  const s1 = { address: 0x2000n, source: 'zeta', confidence: 0.5 };
+  const s2 = { address: 0x2000n, source: 'alpha', confidence: 0.5 };
   const a = analysisFromBinaryImage({ format: 'macho', functions: [s1, s2], metadata: {} });
   const b = analysisFromBinaryImage({ format: 'macho', functions: [s2, s1], metadata: {} });
   assert.deepEqual(a.functionProvenance, b.functionProvenance);
+  assert.equal(a.functionProvenance[0].source, 'alpha');
 });
 
 test('issue #6096 - distinct addresses still sorted', () => {
