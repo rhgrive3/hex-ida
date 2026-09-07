@@ -217,4 +217,24 @@ const baseRegistry = createHexToolRegistry({
   console.log("  ok 14 registry lookup requires string tool identities");
 }
 
+// 15. Audit rejects explicitly present falsy agentTool identities (#6160)
+{
+  const cases = [
+    [0, "invalid-agent-tool-id:number:0"],
+    [false, "invalid-agent-tool-id:boolean:false"],
+    ["", "invalid-agent-tool-id:string:"],
+  ];
+  for (const [agentTool, expectedError] of cases) {
+    const audit = auditCapabilityToolContracts({
+      capabilities: [{ id: "cap.falsy", agentTool }],
+      toolRegistry: baseRegistry,
+    });
+    assert.equal(audit.ok, false, `Explicit ${typeof agentTool} agentTool must fail closed`);
+    assert.deepEqual(audit.errors, [expectedError]);
+    assert.equal(audit.rows.length, 1);
+    assert.equal(audit.rows[0].toolPresent, false);
+  }
+  console.log("  ok 15 audit rejects explicit falsy agentTool identities");
+}
+
 console.log("  ok all capability tool contract tests passed!");

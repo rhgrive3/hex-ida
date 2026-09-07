@@ -24,11 +24,11 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
   const errors = [];
 
   for (const cap of capabilities) {
-    if (!cap.agentTool) continue;
-    if (typeof cap.agentTool !== "string") {
-      // Structured tool identities (arrays/objects/numbers) must fail the
-      // contract audit instead of being laundered into a canonical tool name
-      // through String() coercion (#6160).
+    if (cap.agentTool == null) continue;
+    if (typeof cap.agentTool !== "string" || !cap.agentTool) {
+      // Explicitly present malformed tool identities must fail the contract
+      // audit instead of disappearing through truthiness or String() coercion
+      // at this machine-enforcement boundary (#6160).
       const error = `invalid-agent-tool-id:${toolIdentityLabel(cap.agentTool)}`;
       errors.push(error);
       rows.push({
