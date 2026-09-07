@@ -31,6 +31,40 @@ assert.equal(result.value.fields.u.provenance.length, '4', 'union provenance mus
 assert.equal(result.value.fields.next.value, 0xaa, 'next field must read past the union storage');
 assert.equal(result.value.fields.next.provenance.offset, '4');
 
+// Reverse option order must preserve the same max-layout span.
+const reverse = evaluatePattern({
+  kind: 'struct',
+  fields: [
+    { name: 'u', type: { kind: 'union', options: [
+      { kind: 'primitive', name: 'u32le' },
+      { kind: 'primitive', name: 'u8' },
+    ] } },
+    { name: 'next', type: { kind: 'primitive', name: 'u8' } },
+  ],
+}, bytes);
+assert.equal(reverse.status, 'complete');
+assert.equal(reverse.value.fields.u.provenance.length, '4');
+assert.equal(reverse.value.fields.next.value, 0xaa, 'reverse option order must not change the union cursor span');
+assert.equal(reverse.value.fields.next.provenance.offset, '4');
+
+// An explicit offset after a four-byte union is relative to the advanced
+// cursor, so at: 1 must land at offset 5 rather than offset 1.
+const extendedBytes = new Uint8Array([...bytes, 0xbb]);
+const explicitOffset = evaluatePattern({
+  kind: 'struct',
+  fields: [
+    { name: 'u', type: { kind: 'union', options: [
+      { kind: 'primitive', name: 'u8' },
+      { kind: 'primitive', name: 'u32le' },
+    ] } },
+    { name: 'atOne', at: 1, type: { kind: 'primitive', name: 'u8' } },
+  ],
+}, extendedBytes);
+assert.equal(explicitOffset.status, 'complete');
+assert.equal(explicitOffset.value.fields.atOne.value, 0xbb);
+assert.equal(explicitOffset.value.fields.atOne.provenance.offset, '5',
+  'explicit field.at must use the cursor after the union span');
+
 // All-static nested alternatives: struct-in-union and enum/pointer members.
 const nested = evaluatePattern({
   kind: 'struct',
