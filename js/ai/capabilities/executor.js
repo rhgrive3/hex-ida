@@ -19,6 +19,16 @@ export class CapabilityExecutor {
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
     const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
     assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    // The catalog's declared scopeSupport is the authority for scoped
+    // execution on every path. The previous agentTool-only check let a
+    // restricted built-in or action capability run under an unsupported
+    // scope (#6150). The check runs before approval consumption so a
+    // scope-violating request cannot burn a single-use authorization, and
+    // capabilities without declared scope support keep their behavior.
+    const scope = options?.scope || 'auto';
+    if (scope !== 'auto' && Array.isArray(entry.scopeSupport) && entry.scopeSupport.length > 0 && !entry.scopeSupport.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
     if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
