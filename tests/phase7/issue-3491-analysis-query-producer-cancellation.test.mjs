@@ -83,6 +83,42 @@ function pendingRequest(onCancel) {
   assert.equal(cancelCalls, 1, 'ordinary consumer abort must cancel the backend search request');
 }
 
+{
+  let cancelCalls = 0;
+  const frozenReason = Object.freeze(new Error('frozen cancellation'));
+  const signal = { aborted:true, reason:frozenReason };
+  await assert.rejects(
+    requestWithSignal(pendingRequest(() => { cancelCalls++; }), signal),
+    (error) => {
+      assert.notEqual(error, frozenReason, 'abort normalization must not reuse a caller-owned Error');
+      assert.equal(error?.name, 'AbortError');
+      assert.equal(error?.code, 'ABORT_ERR');
+      return true;
+    },
+  );
+  assert.equal(frozenReason.name, 'Error');
+  assert.equal(frozenReason.code, undefined);
+  assert.equal(cancelCalls, 0, 'pre-aborted requests must not start or cancel backend work');
+}
+
+{
+  let cancelCalls = 0;
+  const reason = new Error('custom cancellation');
+  reason.name = 'CustomCancellation';
+  const controller = new AbortController();
+  const wait = requestWithSignal(pendingRequest(() => { cancelCalls++; }), controller.signal);
+  controller.abort(reason);
+  await assert.rejects(wait, (error) => {
+    assert.notEqual(error, reason, 'raced cancellation must not mutate/reuse a custom reason');
+    assert.equal(error?.name, 'AbortError');
+    assert.equal(error?.code, 'ABORT_ERR');
+    return true;
+  });
+  assert.equal(reason.name, 'CustomCancellation');
+  assert.equal(reason.code, undefined);
+  assert.equal(cancelCalls, 1);
+}
+
 
 function programApp(scanProgram) {
   return {
