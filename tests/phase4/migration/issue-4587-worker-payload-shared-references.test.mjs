@@ -28,6 +28,12 @@ function descriptor() {
 function fixture() {
   const shared = { id:1 };
   const sharedDate = new Date('2026-09-02T00:00:00.000Z');
+  const buffer = new ArrayBuffer(16);
+  const bufferBytes = new Uint8Array(buffer);
+  for (let index = 0; index < bufferBytes.length; index++) bufferBytes[index] = index + 1;
+  const sharedBuffer = typeof SharedArrayBuffer === 'function' ? new SharedArrayBuffer(4) : null;
+  const sharedBufferView = sharedBuffer ? new Uint8Array(sharedBuffer) : null;
+  if (sharedBufferView) sharedBufferView.set([9, 8, 7, 6]);
   return {
     a:shared,
     b:shared,
@@ -37,6 +43,13 @@ function fixture() {
     nested:[{ value:shared }],
     dateA:sharedDate,
     dateB:sharedDate,
+    buffer,
+    dataViewA:new DataView(buffer, 2, 6),
+    dataViewB:new DataView(buffer, 2, 6),
+    typedArrayA:new Uint16Array(buffer, 4, 3),
+    typedArrayB:new Uint8Array(buffer, 1, 5),
+    sharedBuffer,
+    sharedBufferView,
   };
 }
 
@@ -46,6 +59,24 @@ function assertTopology(value) {
   assert.equal(value.set.has(value.a), true, 'Set membership must share identity with sibling fields');
   assert.equal(value.nested[0].value, value.a, 'nested aliases must remain identical');
   assert.equal(value.dateA, value.dateB, 'shared built-in objects must remain identical');
+  assert.equal(value.dataViewA.buffer, value.buffer, 'DataView must retain its backing-buffer identity');
+  assert.equal(value.dataViewB.buffer, value.buffer, 'separate DataViews must retain their backing-buffer identity');
+  assert.equal(value.typedArrayA.buffer, value.buffer, 'typed arrays must retain their backing-buffer identity');
+  assert.equal(value.typedArrayB.buffer, value.buffer, 'separate typed arrays must retain their backing-buffer identity');
+  assert.equal(value.dataViewA.byteOffset, 2);
+  assert.equal(value.dataViewA.byteLength, 6);
+  assert.equal(value.typedArrayA.byteOffset, 4);
+  assert.equal(value.typedArrayA.length, 3);
+  assert.deepEqual(Array.from(new Uint8Array(value.buffer)), [
+    1, 2, 3, 4, 5, 6, 7, 8,
+    9, 10, 11, 12, 13, 14, 15, 16,
+  ], 'backing-buffer bytes must survive canonical JSON persistence');
+  if (value.sharedBuffer) {
+    assert.equal(value.sharedBufferView.buffer, value.sharedBuffer, 'SharedArrayBuffer-backed views must retain identity');
+    assert.deepEqual(Array.from(value.sharedBufferView), [9, 8, 7, 6]);
+  } else {
+    assert.equal(value.sharedBufferView, null);
+  }
 }
 
 // Canonical-JSON persistence must not erase graph topology from the transport.
@@ -55,6 +86,20 @@ function assertTopology(value) {
   assert.equal(encoded.codec, 'hex-worker-analysis-payload-v2');
   const persisted = JSON.parse(JSON.stringify(encoded));
   assertTopology(decodeWorkerAnalysisPayload(persisted));
+}
+
+// Standalone root views retain the pre-existing value-wire behavior when no
+// separately reachable backing buffer identity can be lost.
+{
+  const buffer = new ArrayBuffer(8);
+  new Uint8Array(buffer).set([0, 1, 2, 3, 4, 5, 6, 7]);
+  const decoded = decodeWorkerAnalysisPayload(JSON.parse(JSON.stringify(
+    encodeWorkerAnalysisPayload(new DataView(buffer, 1, 3)),
+  )));
+  assert.equal(decoded.buffer.byteLength, 3);
+  assert.equal(decoded.byteOffset, 0);
+  assert.equal(decoded.byteLength, 3);
+  assert.deepEqual(Array.from(new Uint8Array(decoded.buffer)), [1, 2, 3]);
 }
 
 // Sparse arrays remain compatible for direct in-memory callers, but they are
@@ -100,6 +145,21 @@ function assertTopology(value) {
     root:{ t:'object', n:false, v:[['value', { t:'number', v:7 }]] },
   };
   assert.deepEqual(decodeWorkerAnalysisPayload(legacy), { value:7 });
+
+  // Existing v2 value-based view nodes remain readable after the identity
+  // preserving form is introduced.
+  const legacyV2Views = decodeWorkerAnalysisPayload({
+    codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+    root:{
+      t:'object', i:0, n:false,
+      v:[
+        ['dataView', { t:'data-view', i:1, v:[1, 2, 3] }],
+        ['typedArray', { t:'typed-array', i:2, c:'Uint16Array', v:[513] }],
+      ],
+    },
+  });
+  assert.deepEqual(Array.from(new Uint8Array(legacyV2Views.dataView.buffer)), [1, 2, 3]);
+  assert.deepEqual(Array.from(legacyV2Views.typedArray), [513]);
 }
 
 // Reference nodes fail closed on forward/unknown IDs and cycles remain rejected.
@@ -163,6 +223,22 @@ function assertTopology(value) {
       },
     }),
     /analysis-artifact-payload-cyclic/,
+  );
+
+  const backing = { t:'array-buffer', i:1, v:[0, 0, 0, 0] };
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{ t:'data-view', i:0, b:backing, o:-0, l:0 },
+    }),
+    /analysis-artifact-payload-node-invalid/,
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{ t:'typed-array', i:0, c:'Uint16Array', b:backing, o:1, l:1 },
+    }),
+    /analysis-artifact-payload-node-invalid/,
   );
 
   const cyclic = {};
