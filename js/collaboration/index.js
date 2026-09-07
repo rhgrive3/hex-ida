@@ -59,7 +59,10 @@ export function createProjectOperation(input = {}) {
   const action = actionInput;
   if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
   const payload = clone(input.payload ?? input.value ?? null);
-  const operationId = required(input.operationId ?? `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint: input.beforeFingerprint || null, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const beforeFingerprintInput = input.beforeFingerprint;
+  const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
+  if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
+  const operationId = required(input.operationId ?? `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
@@ -72,7 +75,7 @@ export function createProjectOperation(input = {}) {
     targetEntityId,
     factKind,
     action,
-    beforeFingerprint: input.beforeFingerprint == null ? null : String(input.beforeFingerprint),
+    beforeFingerprint,
     payload,
     provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };

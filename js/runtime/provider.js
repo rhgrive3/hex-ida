@@ -19,7 +19,17 @@ function required(value, code, message) {
 
 function normalizeFacetNames(value) {
   if (value == null) return Object.freeze([]);
-  const source = Array.isArray(value) ? value : Object.keys(value).filter((key) => value[key] === true);
+  const isArray = Array.isArray(value);
+  if (!isArray) {
+    if (typeof value !== 'object') {
+      throw new DebugAdapterError('runtime-invalid-facet', 'runtime facets must be an array or plain object');
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new DebugAdapterError('runtime-invalid-facet', 'runtime facets must be an array or plain object');
+    }
+  }
+  const source = isArray ? value : Object.keys(value).filter((key) => value[key] === true);
   for (const facet of source) {
     if (typeof facet !== 'string') throw new DebugAdapterError('runtime-invalid-facet', 'runtime facet names must be strings');
   }

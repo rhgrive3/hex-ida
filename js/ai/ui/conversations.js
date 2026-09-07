@@ -126,7 +126,6 @@ export function reviveConversation(raw, namespace) {
   const turns = Array.isArray(raw && raw.turns) ? raw.turns.map(reviveTurn) : [];
   return createConversation({ ...raw, turns, namespace });
 }
-
 /**
  * Bounded localStorage for chat history.
  *
@@ -139,6 +138,7 @@ const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
+  const storageKey = String(key);
   const backing = () => {
     if (storage) return storage;
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -148,13 +148,14 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const bucketKey = (space) => `${key}.${space}`;
+  const bucketKey = (space) => `${storageKey}.${space}`;
+  const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
 
   const readIndex = () => {
     const store = backing();
     if (!store) return nullIndex();
     try {
-      const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
+      const raw = store.getItem(indexKey());
       const parsed = raw ? JSON.parse(raw) : null;
       return parsed && typeof parsed === 'object' ? toNullIndex(parsed) : nullIndex();
     } catch { return nullIndex(); }
@@ -164,7 +165,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     const store = backing();
     if (!store) return false;
     try {
-      store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
+      store.setItem(indexKey(), JSON.stringify(index));
       return true;
     } catch { return false; }
   };
@@ -280,7 +281,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
         for (const space of Object.keys(index)) {
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
-        store.removeItem(INDEX_KEY);
+        store.removeItem(indexKey());
         store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },

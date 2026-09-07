@@ -131,7 +131,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
 
 function matchIsStrong(match, targetBinaryId) {
   if (!match || typeof match !== 'object' || match.accepted !== true || match.ambiguous === true) return false;
-  if (targetBinaryId && match.targetBinaryId != null) {
+  if (targetBinaryId) {
     if (typeof match.targetBinaryId !== 'string' || !match.targetBinaryId.trim() || match.targetBinaryId !== targetBinaryId) return false;
   }
   const confidence = match.identityConfidence ?? match.confidence ?? match.score;
