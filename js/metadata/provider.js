@@ -11,7 +11,7 @@
  */
 
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus, ANALYSIS_STATUS_SCHEMA_VERSION } from '../analysis/status.js';
+import { createAnalysisStatus, isCompleteStatus, isFailClosedStatus, ANALYSIS_STATUS_SCHEMA_VERSION } from '../analysis/status.js';
 
 export const METADATA_PROVIDER_CONTRACT_VERSION = '1.0.0';
 export const METADATA_PROVIDER_SCHEMA_VERSION = 1;
@@ -233,8 +233,18 @@ export function isLanguageRecordAuthoritative(result, record) {
   if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
   if (!isCanonicalLanguageRecord(record)) return false;
   if (!languageRecordMatchesIdentitySource(identity, record)) return false;
-  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
-  if (identity.verdict === 'matched-authoritative') return true;
+  if (!isCanonicalAnalysisStatus(result?.status)) return false;
+  // Whole-universe authority and per-record coverage authority are separate
+  // gates. `matched-authoritative` still requires the complete run (#3426);
+  // `matched-partial` must NOT require it — built-in providers emit
+  // matched-partial exactly when the run is incomplete, so the old shared
+  // complete gate made every covered record dead soft evidence and the
+  // coverage semantics below unreachable (#5954). A fail-closed run publishes
+  // nothing at all, for either verdict.
+  if (isFailClosedStatus(result?.status)) return false;
+  if (identity.verdict === 'matched-authoritative') {
+    return result?.completeness?.complete === true && isCompleteStatus(result?.status);
+  }
   if (identity.verdict !== 'matched-partial') return false;
 
   const coverage = identity.coverage;
