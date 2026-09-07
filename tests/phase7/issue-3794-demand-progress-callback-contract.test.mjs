@@ -71,6 +71,25 @@ test('#3794 valid progress callbacks preserve payloads', async () => {
   assert.deepEqual(functionEvents, [{ phase:'functions', region:'text', done:1, all:1 }]);
 });
 
+for (const [label, wrap] of [
+  ['bound function', (callback) => callback.bind(null)],
+  ['proxy function', (callback) => new Proxy(callback, {})],
+]) {
+  test(`#3794 shapes preserve ${label} progress callbacks`, async () => {
+    const events = [];
+    const app = makeShapesApp();
+    await app.ensureShapes({ onProgress:wrap((event) => events.push(event)) });
+    assert.deepEqual(events, [{ phase:'shapes', region:'text', done:1, all:1 }]);
+  });
+
+  test(`#3794 function discovery preserves ${label} progress callbacks`, async () => {
+    const events = [];
+    const app = makeFunctionsApp();
+    await app.ensureFunctions(region, { onProgress:wrap((event) => events.push(event)) });
+    assert.deepEqual(events, [{ phase:'functions', region:'text', done:1, all:1 }]);
+  });
+}
+
 test('#3794 legacy direct callback forms remain supported', async () => {
   const shapeEvents = [];
   const shapes = makeShapesApp();
@@ -114,6 +133,16 @@ test('#3794 callback exceptions still propagate for inspectable functions', asyn
     functions.ensureFunctions(region, { onProgress:() => { throw new Error('function-progress-failed'); } }),
     /function-progress-failed/,
   );
+});
+
+test('#3794 callback exceptions still propagate through source-hidden wrappers', async () => {
+  const shapes = makeShapesApp();
+  const boundThrow = (() => { throw new TypeError('bound-progress-failed'); }).bind(null);
+  await assert.rejects(shapes.ensureShapes({ onProgress:boundThrow }), /bound-progress-failed/);
+
+  const functions = makeFunctionsApp();
+  const proxyThrow = new Proxy(() => { throw new TypeError('proxy-progress-failed'); }, {});
+  await assert.rejects(functions.ensureFunctions(region, { onProgress:proxyThrow }), /proxy-progress-failed/);
 });
 
 test('#3794 nullish progress handlers remain no-ops', async () => {

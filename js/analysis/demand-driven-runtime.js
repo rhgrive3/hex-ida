@@ -25,17 +25,26 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function classConstructorCallError(error) {
+  return error instanceof TypeError
+    && /^Class constructor .* cannot be invoked without 'new'$/.test(String(error.message ?? ''));
+}
 function optionalCallback(value) {
   if (typeof value !== 'function') return null;
-  // JavaScript exposes no side-effect-free reflection for the [[Call]]
-  // capability of function-shaped values.  Accept source-visible callback
-  // forms, but fail closed for classes and source-hidden native/bound/proxy
-  // functions, which may be class constructors and would throw on call.
   let source;
   try { source = Function.prototype.toString.call(value).trim(); } catch { return null; }
   if (/^class(?:\s|\{)/.test(source)) return null;
-  if (/^function\s*\([^)]*\)\s*\{\s*\[native code\]\s*\}$/.test(source)) return null;
-  return value;
+  if (!source.includes('[native code]')) return value;
+  // Bound/proxied functions are source-hidden just like bound/proxied classes.
+  // Preserve callable functions and contain only the engine's construct-only
+  // class invocation error at delivery time; callback-thrown errors propagate.
+  return (...args) => {
+    try { return Reflect.apply(value, undefined, args); }
+    catch (error) {
+      if (classConstructorCallError(error)) return undefined;
+      throw error;
+    }
+  };
 }
 function addressOf(value) {
   if (typeof value === 'bigint') return value;
@@ -66,7 +75,7 @@ function paged(values, page, completeness = 'complete', status = {}) {
     status: { ...status, completeness, paged: true },
   };
 }
-function unsupported(reason) { return { value: null, status: { completeness: 'unsupported', reason } }; }
+function unsupported(reason) { return { value: null, status: { completeness:'unsupported', reason } }; }
 function executableRegions(app) {
   try {
     const regions = typeof app?.programRegions === 'function' ? app.programRegions() : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
