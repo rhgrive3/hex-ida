@@ -108,6 +108,23 @@ export class UserscriptAIProvider extends AIProvider {
     return provider.nextTurn(request, options);
   }
 
+  // Capability authority belongs to the provider that actually executes the
+  // turn. The wrapper previously kept the base-class snapshot, so a Gemini
+  // turn was budgeted against the wrapper's static defaults and the Worker
+  // capabilities preflight never ran (#5701). Selection needs the request,
+  // which the runtime's preflight does not pass, so both children are kept
+  // prepared: ChatGPT reflects the bridge directly, Gemini runs its
+  // capabilities preflight once (memoized in WorkerAIProvider).
+  async prepareCapabilities(options = {}) {
+    this.providerCapabilities = { ...this.providerCapabilities, ...(await this.chatgpt.prepareCapabilities(options) || {}), ...(await this.gemini.prepareCapabilities(options) || {}) };
+    return this.getCapabilities();
+  }
+
+  getCapabilities(request = {}) {
+    try { return this.selected(request).getCapabilities(); }
+    catch { return super.getCapabilities(); }
+  }
+
   cancel() {
     this.chatgpt.cancel();
     this.gemini.cancel();
