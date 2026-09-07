@@ -114,12 +114,35 @@ export async function executeTurn(input = {}, options = {}) {
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
+          // The planner calls legacy tools directly, bypassing
+          // ToolRegistry.execute() — without accounting its tool work is
+          // invisible to maxToolCalls/maxCost and under-reported in usage
+          // (#5784). Every planner invocation routes through the same
+          // accounting as the model loop, so a zero tool/cost budget stops
+          // planner tool execution too.
+          const plannerCallBudget = { calls: budget.maxToolCalls, cost: budget.maxCost };
+          const accountPlanTool = async (name, args) => {
+            if (plannerCallBudget.calls <= 0 || plannerCallBudget.cost < registry.costWeight(name)) {
+              throw new AIError('tool-call-budget', 'The tool-call budget was exhausted.');
+            }
+            plannerCallBudget.calls -= 1;
+            plannerCallBudget.cost -= registry.costWeight(name);
+            registry.accounting.calls += 1;
+            registry.accounting.cost += registry.costWeight(name);
+            return registry.legacyTools[name](args);
+          };
+          const budgetedLegacyTools = new Proxy(registry.legacyTools, {
+            get(target, property) {
+              if (typeof property !== 'string' || typeof target[property] !== 'function') return target[property];
+              return (args) => accountPlanTool(property, args);
+            },
+          });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
             maxSearchResults: request.maxSearchResults || 40,
             timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
             isCancelled: () => !!signal?.aborted || monotonicNow() - started >= turnTimeoutMs,
-            tools: registry.legacyTools,
+            tools: budgetedLegacyTools,
           });
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = evidenceStore.ingestPlan(plan);
