@@ -253,18 +253,32 @@ export class RuntimeEventNormalizer {
 
   flush() {
     const events = this.#queue;
+    let queuedBytes = this.queuedBytes;
+    let dropped = this.#dropped;
     this.#queue = [];
     this.queuedBytes = 0;
-    const dropped = this.#dropped;
     this.#dropped = 0;
     if (dropped > 0) {
-      events.unshift(createRuntimeEvent({
-        ...this.context,
-        kind: 'dropped-events',
-        payload: { dropped },
-        observationMode: 'observed',
-        completeness: 'truncated',
-      }));
+      while (true) {
+        const marker = createRuntimeEvent({
+          ...this.context,
+          kind: 'dropped-events',
+          payload: { dropped },
+          observationMode: 'observed',
+          completeness: 'truncated',
+        });
+        const markerBytes = encodedByteLength(stableStringify(marker));
+        if (events.length + 1 <= this.maxEvents && queuedBytes + markerBytes <= this.maxBytes) {
+          events.unshift(marker);
+          break;
+        }
+        if (events.length === 0) break;
+        const evicted = events.pop();
+        queuedBytes -= encodedByteLength(stableStringify(evicted));
+        const dedupe = dedupeIdentity(evicted);
+        if (dedupe) this.#seen.delete(`${evicted.sessionEpoch}:${dedupe}`);
+        dropped++;
+      }
     }
     return createRuntimeEventBatch({
       runtimeSessionId: this.context.runtimeSessionId,

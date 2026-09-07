@@ -8,8 +8,7 @@ export const DEFAULT_DYNAMIC_SYMBOL_LIMITS = Object.freeze({
 });
 
 function positiveLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) {

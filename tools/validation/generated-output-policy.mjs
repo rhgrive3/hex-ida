@@ -15,7 +15,7 @@ export const CANONICAL_GENERATED_OUTPUT_PATHS = Object.freeze([
   'userscript/release-version.json',
 ]);
 
-const RELEASE_CONTEXTS = Object.freeze(['main', 'release']);
+const RELEASE_CONTEXTS = Object.freeze(['release']);
 const WRITE_CONTEXTS = Object.freeze(['release']);
 const CANONICAL_OUTPUT_PATH_SET = new Set(CANONICAL_GENERATED_OUTPUT_PATHS);
 
