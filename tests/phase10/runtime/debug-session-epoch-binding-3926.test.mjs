@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { resetAppRuntime, runtimePlatformForApp, traceAppFunction } from '../../../js/runtime/app-runtime.js';
 import { RuntimeAnalysisPlatform } from '../../../js/runtime/index.js';
+import { createRuntimeAgentTools } from '../../../js/runtime-evidence/index.js';
 import { DebugSession } from '../../../js/runtime/session.js';
 
 function adapterFixture() {
@@ -126,4 +128,87 @@ test('P10 traceFunction rejects explicitly stale events before fact/evidence pub
 
   assert.equal(session.traces.snapshot().events.length,0);
   assert.equal(platform.evidence.length,0);
+});
+
+function appFixture() {
+  const fileInfo = {
+    hash:'trace-app-hash',
+    slices:[{ info:{ uuid:'trace-app-slice', architecture:'arm64' } }],
+  };
+  return {
+    store:{
+      get(key) {
+        if (key === 'fileInfo') return fileInfo;
+        if (key === 'sliceIndex') return 0;
+        if (key === 'regions') return [];
+        return null;
+      },
+    },
+    backend:{
+      async readAt() { return { found:false, bytes:null }; },
+      async fetchChunk() { return { mn:[], ops:[] }; },
+    },
+    symbols:null,
+  };
+}
+
+function throwingEpochEvent(address) {
+  let reads = 0;
+  const event = { type:'branch', address, next:address + 4n };
+  Object.defineProperty(event,'epoch',{
+    enumerable:false,
+    get() {
+      reads += 1;
+      throw new Error('epoch getter must not be re-read after rejection');
+    },
+  });
+  return { event, reads:() => reads };
+}
+
+function assertEpochMismatch(error) {
+  assert.equal(error?.code,'session-epoch-event-mismatch');
+  assert.equal(error?.details?.traceEpoch,1);
+  assert.equal(error?.details?.eventEpoch,null);
+  return true;
+}
+
+test('P10 trace_function preserves the mismatch diagnostic for a throwing epoch getter (#3926)', async () => {
+  const { event, reads } = throwingEpochEvent(0x7000n);
+  const adapter = traceAdapterFixture(async () => ({ events:[event] }));
+  const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+  const session = await platform.startSession({ adapter, connect:false });
+
+  await assert.rejects(
+    createRuntimeAgentTools(platform).trace_function(0x7000n),
+    assertEpochMismatch,
+  );
+
+  assert.equal(reads(),1);
+  assert.equal(session.traces.snapshot().events.length,0);
+  assert.equal(platform.evidence.length,0);
+});
+
+test('P10 traceAppFunction preserves the mismatch diagnostic for a throwing epoch getter (#3926)', async () => {
+  const app = appFixture();
+  const platform = await runtimePlatformForApp(app);
+  const adapter = platform.currentSession().adapter;
+  const { event, reads } = throwingEpochEvent(0x7100n);
+
+  // Keep the app-level wrapper on the trace path while replacing only the
+  // sandbox execution result with the malformed event fixture.
+  adapter.launch = async () => ({});
+  adapter.resume = async () => ({});
+  adapter.trace = async () => ({ events:[event] });
+
+  try {
+    await assert.rejects(
+      traceAppFunction(app,0x7100n),
+      assertEpochMismatch,
+    );
+    assert.equal(reads(),1);
+    assert.equal(platform.currentSession().traces.snapshot().events.length,0);
+    assert.equal(platform.evidence.length,0);
+  } finally {
+    await resetAppRuntime(app);
+  }
 });
