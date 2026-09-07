@@ -1,6 +1,7 @@
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { attachDecompilerProvenance } from '../../decompiler/provenance.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
@@ -74,6 +75,13 @@ function completenessOf(value, fallback = 'complete') {
 function wrap(value, completeness = null, status = {}) {
   if (value == null) return null;
   return { value, status:{ ...status, completeness:completeness ?? completenessOf(value) } };
+}
+
+function withDecompilerProvenance(value, options = {}) {
+  if (!value || typeof value !== 'object' || value.provenance) return value;
+  // Cached artifacts may predate C4-03 publication. Attach a sidecar to a
+  // shallow product copy so query reads do not mutate the cache authority.
+  return attachDecompilerProvenance({ ...value }, options);
 }
 
 function paged(values, page, completeness = 'complete', status = {}) {
@@ -639,15 +647,28 @@ export function createAppAnalysisQueryAdapter(app) {
     },
 
     async decompile(_snapshot, id, options = {}) {
+      const provenanceOptions = {
+        ...options,
+        functionId:options.functionId ?? functionId(id),
+        snapshotId:options.snapshotId ?? _snapshot?.id ?? _snapshot?.snapshotId ?? null,
+      };
       if (typeof app?.getDecompile === 'function') {
         const value = await app.getDecompile(id, options);
-        if (value != null) return wrap(value);
+        if (value != null) return wrap(withDecompilerProvenance(value, provenanceOptions));
       }
       const result = await loadFunction(id, options);
-      if (result?.value?.decompiler) return wrap(result.value.decompiler, result.status?.completeness);
+      if (result?.value?.decompiler) {
+        return wrap(withDecompilerProvenance(result.value.decompiler, {
+          ...provenanceOptions,
+          model:result.value.model,
+        }), result.status?.completeness);
+      }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
-      return wrap(decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address }), result.status?.completeness);
+      return wrap(decompile(result.value.model, {
+        ...provenanceOptions,
+        name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address,
+      }), result.status?.completeness);
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

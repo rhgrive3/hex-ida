@@ -1,7 +1,7 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011, T012, T014, T016 and T053–T056: the ledger is now 25/61.
+implementation completed T011, T012, T014, T016, T028 and T053–T056: the ledger is now 26/61.
 Product implementation and final release acceptance are separate. No full
 release gate has been run for this development batch.
 
@@ -35,4 +35,6 @@ T014 focused solver recovery and 24-case deployment matrix pass through the prod
 
 T016 dedicated 2/2, Phase 7 discovery 66/66, foundation/single-flight and Phase 12 ambiguity/handoff tests pass. T035 artifact/reparse helper passes but public rebuild transaction wiring is still in progress.
 
-T011 combined focused run passes (including real C/extended/C++/Objective-C compiler denominators). The apply_damage regression now requires a pre-call field snapshot and a return of the saved local, preserving unknown-call semantics. Phase 8 batch regression is running against T011/T012 together.
+T011 combined focused run passes (including real C/extended/C++/Objective-C compiler denominators). The apply_damage regression now requires a pre-call field snapshot and a return of the saved local, preserving unknown-call semantics. Phase 8 broad batch regression was interrupted during its corpus comparison; it is not PASS and will run once on the combined implementation.
+
+T028 provenance graph is wired through public decompile, canonical snapshot publication and query cache consumers. Dedicated 5/5, Phase 8 provenance 5/5, projection 8/8, query cutover and decoded-order 9/9 checks pass. Full Phase 6 replay needs its exact clang/LLD toolchain; no claim that this replay passed.

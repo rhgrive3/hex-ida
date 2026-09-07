@@ -9,6 +9,7 @@ import {
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
+import { attachDecompilerProvenance } from '../decompiler/provenance.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -1090,8 +1091,8 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
-  return {
+function decompilerSnapshot(result, identity = {}) {
+  const attached = attachDecompilerProvenance({
     semantic:result.semantic === true,
     signature:result.signature,
     summary:result.summary,
@@ -1102,7 +1103,12 @@ function decompilerSnapshot(result) {
     labels:[...(result.labels || [])],
     coverage:result.coverage,
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
-  };
+    // Keep raw identity available while building the sidecar, without
+    // exposing the internal IR through the public decompiler snapshot.
+    ir:result.ir,
+  }, { identity });
+  const { ir:_ir, ...snapshot } = attached;
+  return snapshot;
 }
 
 function addressWidthBitsFor(architecturePlugin) {
@@ -1233,6 +1239,8 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
       architectureProfile:input.architectureProfile ?? null,
     }),
     pipeline:pipelineSnapshot(pipeline),
-    decompiler:decompilerSnapshot(decompiler),
+    decompiler:decompilerSnapshot(decompiler, {
+      binaryId, sliceId, functionId:pipeline.functionId,
+    }),
   });
 }

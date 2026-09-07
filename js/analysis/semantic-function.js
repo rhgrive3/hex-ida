@@ -12,6 +12,7 @@ import {
   semanticAbiAdapter,
   semanticControlUnknowns,
 } from './semantic-function-base.js';
+import { attachDecompilerProvenance } from '../decompiler/provenance.js';
 
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
@@ -230,8 +231,8 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
-  return {
+function decompilerSnapshot(result, identity = {}) {
+  const attached = attachDecompilerProvenance({
     semantic:result.semantic === true,
     signature:result.signature,
     summary:result.summary,
@@ -242,7 +243,12 @@ function decompilerSnapshot(result) {
     labels:[...(result.labels || [])],
     coverage:result.coverage,
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
-  };
+    // Build the sidecar while the canonical raw IR is still available, then
+    // omit that internal payload from the public snapshot below.
+    ir:result.ir,
+  }, { identity });
+  const { ir:_ir, ...snapshot } = attached;
+  return snapshot;
 }
 
 function addressWidthBitsFor(architecturePlugin) {
@@ -374,6 +380,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
       architectureProfile:input.architectureProfile ?? null,
     }),
     pipeline:pipelineSnapshot(pipeline),
-    decompiler:decompilerSnapshot(decompiler),
+    decompiler:decompilerSnapshot(decompiler, {
+      binaryId, sliceId, functionId:pipeline.functionId,
+    }),
   });
 }

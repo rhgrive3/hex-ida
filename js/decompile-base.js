@@ -4,6 +4,7 @@ import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
 import { structureKnownSwitches } from './decompiler/switch.js';
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
+import { attachDecompilerProvenance } from './decompiler/provenance.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -59,7 +60,8 @@ function augmentLegacy(fallback, reason, semantic = null) {
 function finalize(result, model, opts) {
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
   if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
-  return normalizeCompatibility(result);
+  result = normalizeCompatibility(result);
+  return result ? attachDecompilerProvenance(result, { ...opts, model }) : result;
 }
 
 /*
@@ -461,7 +463,9 @@ function preferLegacyForUnsupported(model, opts, semantic) {
 }
 
 export function decompile(model, opts = {}) {
-  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
+  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) {
+    return finalize(legacyDecompile(model, opts), model, opts);
+  }
   const semanticModel = semanticModelForDecompiler(model);
   const semanticOpts = semanticOptionsForModel(semanticModel, opts);
   try {
