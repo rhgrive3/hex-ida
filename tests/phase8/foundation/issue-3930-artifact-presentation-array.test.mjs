@@ -319,3 +319,56 @@ test('arrays and DataViews cannot carry invisible semantic payload into artifact
     'plain DataViews stay accepted',
   );
 });
+
+test('classification never executes caller-owned Symbol.toStringTag getters', () => {
+  let reads = 0;
+  const options = new Map([['mode', 'signed']]);
+  Object.defineProperty(options, Symbol.toStringTag, {
+    get() {
+      reads += 1;
+      return 'Map';
+    },
+    enumerable: true,
+  });
+
+  const plainProbe = {};
+  Object.defineProperty(plainProbe, Symbol.toStringTag, {
+    get() {
+      reads += 1;
+      return 'Map';
+    },
+    enumerable: true,
+  });
+
+  let descriptorId = null;
+  assert.throws(
+    () => {
+      const d = createPhase8ArtifactDescriptor({ ...BASE, options: { map: options } });
+      descriptorId = d.artifactId;
+    },
+    /phase8-artifact-options-embedded-own-property:map:Symbol\(Symbol.toStringTag\)/,
+    'a real Map carrying a Symbol.toStringTag own property fails closed',
+  );
+  assert.equal(reads, 0, 'caller-owned toStringTag getter must never run');
+  assert.equal(descriptorId, null);
+
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { decoy: plainProbe } }),
+    'plain objects spoofing the Map tag cannot enter the Map branch and stay plain options',
+  );
+
+  const tagged = [1, 2, 3];
+  Object.defineProperty(tagged, Symbol.toStringTag, {
+    get() {
+      reads += 1;
+      return 'Array';
+    },
+    enumerable: true,
+  });
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { rows: tagged } }),
+    /phase8-artifact-options-embedded-own-property/,
+    'arrays carrying Symbol.toStringTag fail closed without reading it',
+  );
+  assert.equal(reads, 0);
+});
