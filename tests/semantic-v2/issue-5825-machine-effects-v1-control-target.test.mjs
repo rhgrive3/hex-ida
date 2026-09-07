@@ -34,7 +34,7 @@ function lower(controlEffect) {
   return lowerMachineEffectsToLegacyV1(bundle);
 }
 
-const invalidTargets = ['', '   ', 'not-an-integer', '0x', '1.5'];
+const invalidTargets = ['', '   ', 'not-an-integer', '0x', '1.5', true, false, [], ['15'], {}, Number.MAX_SAFE_INTEGER + 1];
 for (const target of invalidTargets) {
   for (const kind of ['call', 'branch']) {
     const [lowered] = lower({ kind, target });
@@ -54,6 +54,10 @@ for (const target of invalidTargets) {
   assert.equal(conditional.target, null, 'conditional invalid target must not be exact');
   assert.deepEqual(conditional.srcs, [{ t: 'reg', reg: 'x5', bits: 64 }]);
 }
+
+const [invalidStructured] = lower({ kind: 'call', target: { kind: 'bitvector', widthBits: 64, value: false } });
+assert.equal(invalidStructured[0].target, null, 'boolean bitvector target must fail closed');
+assert.equal(invalidStructured[0].indirect, true);
 
 const validTargets = [
   [0n, 0n],

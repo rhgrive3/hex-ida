@@ -36,15 +36,14 @@ function unique(values) {
 
 function safeBigInt(value) {
   if (value == null) return null;
-  if (typeof value === 'string') {
-    // Only explicit integer syntax may become an address (#5825): BigInt('')
-    // is 0n, which fabricated exact direct targets out of blank strings.
-    const text = value.trim();
-    if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    try { return BigInt(text); } catch { return null; }
-  }
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { return null; }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  // Only explicit integer syntax may become an address (#5825): BigInt('') 
+  // is 0n, which fabricated exact direct targets out of blank strings.
+  const text = value.trim();
+  if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\\d+)$/.test(text)) return null;
+  try { return BigInt(text); } catch { return null; }
 }
 
 function valueWidth(value) {
