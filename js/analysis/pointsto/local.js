@@ -790,9 +790,12 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (!alternatives.length) return topPointsTo('unresolved-call');
 
       // Canonical Semantic IR carries the argument list independently from a
-      // runtime target value. Old fixtures predate that field, so node.inputs is
-      // retained only as a compatibility fallback.
-      const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
+      // runtime target value; an explicit empty array means a zero-argument
+      // call, not a missing field. node.inputs is retained only as a legacy
+      // fallback for fixtures that predate the canonical field entirely.
+      const argumentIds = Array.isArray(node.call?.arguments)
+        ? node.call.arguments
+        : node.inputs;
       let merged = BOTTOM_POINTS_TO;
       for (const prov of alternatives) {
         let candidate;
