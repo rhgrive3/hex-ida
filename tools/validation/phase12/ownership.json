@@ -44,6 +44,8 @@
       "js/runtime/stage2.js",
       "js/managed/runtime-binding.js",
       "js/managed/index.js",
+      "js/managed/cil/parser.js",
+      "tests/phase11/cil/cil-strings-utf8-3764.test.mjs",
       "docs/SUPPORT_MATRIX.md",
       "tools/validation/phase10/ownership.json",
       "tools/validation/phase10/ownership-check.mjs",
@@ -183,7 +185,7 @@
     "p12-k",
     "p12-c",
     "p12-p",
-    "p12-r",
+     "p12-r",
     "p12-reviewer"
   ]
 }
