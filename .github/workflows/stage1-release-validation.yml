@@ -1,0 +1,61 @@
+name: Stage 1 analysis truth validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'js/targets/architecture/**'
+      - 'js/analysis/alias/**'
+      - 'js/semantics/**'
+      - 'tests/stage1/**'
+      - 'tools/validation/stage1/**'
+      - 'tools/validation/competitive/**'
+      - 'tests/competitive/**'
+      - 'package.json'
+      - 'tests/phase7/**'
+      - 'tools/validation/phase7/**'
+      - 'tests/phase8/**'
+      - 'tools/validation/phase8/**'
+      - 'tests/phase9/**'
+      - 'tools/validation/phase9/**'
+      - 'tests/phase11/**'
+      - 'tools/validation/phase11/**'
+      - 'tests/machine-effects/**'
+      - '.github/workflows/stage1-release-validation.yml'
+      - 'tools/validation/stage2/completion-scope.lock.json'
+      - 'tools/validation/stage2/closure-ledger.json'
+      - 'tools/validation/phase10/ownership.json'
+      - 'tools/validation/phase11/ownership.json'
+      - 'tools/validation/phase12/ownership.json'
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage1-analysis-truth-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expect_sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify exact Stage 1 candidate
+        env:
+          VERIFY_SHA: ${{ inputs.expect_sha || github.sha }}
+        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"

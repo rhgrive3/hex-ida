@@ -1,0 +1,245 @@
+/**
+ * P7-6 — FunctionCandidate contract.
+ *
+ * The rule this file enforces is P7-INV-006: a function's *start* and its
+ * *extent* are separate facts. A precise start with an unknown extent is a
+ * perfectly good answer, and inventing one contiguous body to make downstream
+ * analysis simpler is how false merges get published (FM-8).
+ *
+ * So a candidate carries two independent evidence lists and two independent
+ * states. Nothing here lets a strong start upgrade a weak extent.
+ */
+
+import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+
+export const FUNCTION_CANDIDATE_SCHEMA_VERSION = 1;
+
+/**
+ * Evidence classes, ordered by the authority they carry.
+ *
+ * `authoritative` producers can establish an exact start on their own;
+ * `corroborating` ones support a start but cannot establish it alone;
+ * `heuristic` ones only ever raise a candidate for consideration.
+ */
+export const EVIDENCE_AUTHORITY = Object.freeze({
+  'loader-function-start': 'authoritative',
+  'unwind-entry': 'authoritative',
+  'debug-symbol': 'authoritative',
+  'export': 'authoritative',
+  'entrypoint': 'authoritative',
+  'symbol-table': 'corroborating',
+  'direct-call-target': 'corroborating',
+  'relocation-target': 'corroborating',
+  'vtable-entry': 'corroborating',
+  'runtime-metadata': 'corroborating',
+  'exception-metadata': 'corroborating',
+  'runtime-observation': 'corroborating',
+  'prologue-candidate': 'heuristic',
+  'alignment-heuristic': 'heuristic',
+});
+
+export const EVIDENCE_KINDS = Object.freeze(Object.keys(EVIDENCE_AUTHORITY));
+
+/** Candidate states. `contradicted` is a first-class outcome, not an error. */
+export const CANDIDATE_STATES = Object.freeze(['exact', 'probable', 'heuristic', 'contradicted']);
+
+/** How a byte range is owned. Shared ownership is representable on purpose. */
+export const REGION_OWNERSHIP = Object.freeze(['exclusive', 'shared', 'ambiguous']);
+
+const KIND_SET = new Set(EVIDENCE_KINDS);
+const OWNERSHIP_SET = new Set(REGION_OWNERSHIP);
+
+function fail(code) { throw new TypeError(code); }
+
+function address(value, code) {
+  if (value == null) fail(code);
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) fail(code);
+  if (type === 'string' && value.trim().length === 0) fail(code);
+  try {
+    const result = BigInt(value);
+    if (result < 0n) fail(code);
+    return result;
+  } catch { fail(code); return 0n; }
+}
+
+function producerId(value) {
+  if (value == null) return 'unknown';
+  if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
+  return value;
+}
+
+function optionalArchitectureId(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) fail('discovery-invalid-architecture-id');
+  return value;
+}
+
+function candidateConflicts(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail('discovery-candidate-invalid-conflicts');
+  const out = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail('discovery-candidate-invalid-conflict');
+    const conflict = value[index];
+    if (conflict == null || typeof conflict !== 'object' || Array.isArray(conflict)) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    const prototype = Object.getPrototypeOf(conflict);
+    if (prototype !== Object.prototype && prototype !== null) {
+      fail('discovery-candidate-invalid-conflict');
+    }
+    const kindDescriptor = Object.getOwnPropertyDescriptor(conflict, 'kind');
+    if (kindDescriptor == null || !Object.hasOwn(kindDescriptor, 'value')) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    const kind = kindDescriptor.value;
+    if (typeof kind !== 'string' || kind.length === 0 || kind.trim() !== kind) {
+      fail('discovery-candidate-invalid-conflict-kind');
+    }
+    out.push(conflict);
+  }
+  return out;
+}
+
+function compareCanonicalRegions(left, right) {
+  const leftStart = BigInt(left.start);
+  const rightStart = BigInt(right.start);
+  if (leftStart < rightStart) return -1;
+  if (leftStart > rightStart) return 1;
+  const leftEnd = BigInt(left.end);
+  const rightEnd = BigInt(right.end);
+  if (leftEnd < rightEnd) return -1;
+  if (leftEnd > rightEnd) return 1;
+  if (left.ownership < right.ownership) return -1;
+  if (left.ownership > right.ownership) return 1;
+  return 0;
+}
+
+function canonicalRegions(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  const regions = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail(code);
+    regions.push(createRegion(value[index]));
+  }
+  regions.sort(compareCanonicalRegions);
+  return regions;
+}
+
+/**
+ * How much of a function's extent one piece of evidence describes.
+ *
+ * `complete` claims the whole body; `partial` claims one range of a body that
+ * may have others. The distinction is what lets a non-contiguous function be
+ * assembled from several unwind entries without those entries looking like
+ * competing answers to the same question.
+ */
+export const EXTENT_ROLES = Object.freeze(['complete', 'partial']);
+
+/** One piece of evidence about a start or an extent. */
+export function createDiscoveryEvidence(input = {}) {
+  const kind = typeof input.kind === 'string' ? input.kind : '';
+  if (!KIND_SET.has(kind)) fail(`discovery-evidence-unknown-kind:${kind}`);
+  const extentRole = input.extentRole == null ? 'complete' : (typeof input.extentRole === 'string' ? input.extentRole : '');
+  if (!EXTENT_ROLES.includes(extentRole)) fail('discovery-evidence-invalid-extent-role');
+  const evidenceIds = input.evidenceIds ?? [];
+  if (!Array.isArray(evidenceIds)
+      || evidenceIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    fail('discovery-evidence-invalid-evidence-id');
+  }
+  return deepFreeze({
+    kind,
+    authority: EVIDENCE_AUTHORITY[kind],
+    extentRole,
+    start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
+    regions: deepFreeze(canonicalRegions(input.regions, 'discovery-evidence-invalid-regions')),
+    // Producer identity participates in corroboration. Pre-registry evidence
+    // may omit it, but any explicit identity must already be canonical.
+    producerId: producerId(input.producerId),
+    architectureId: optionalArchitectureId(input.architectureId),
+    name: input.name == null ? null : String(input.name),
+    confidence: input.confidence == null ? null : String(input.confidence),
+    evidenceIds: [...new Set(evidenceIds)].sort(),
+  });
+}
+
+export function createRegion(input = {}) {
+  const start = address(input.start, 'discovery-region-invalid-start');
+  const end = address(input.end, 'discovery-region-invalid-end');
+  if (end <= start) fail('discovery-region-empty');
+  const ownership = input.ownership == null ? 'exclusive' : (typeof input.ownership === 'string' ? input.ownership : '');
+  if (!OWNERSHIP_SET.has(ownership)) fail('discovery-region-invalid-ownership');
+  return deepFreeze({ start: start.toString(), end: end.toString(), ownership });
+}
+
+export function regionsOverlap(a, b) {
+  return BigInt(a.start) < BigInt(b.end) && BigInt(b.start) < BigInt(a.end);
+}
+
+/**
+ * A discovered function candidate.
+ *
+ * `extentState` defaults to `unknown` and stays there unless extent evidence
+ * actually supports something better. That default is the whole point: an
+ * unknown extent must be cheap to report and impossible to forget.
+ */
+export function createFunctionCandidate(input = {}) {
+  const start = address(input.start, 'discovery-candidate-invalid-start');
+  const startState = input.startState == null ? 'heuristic' : (typeof input.startState === 'string' ? input.startState : '');
+  if (!CANDIDATE_STATES.includes(startState)) fail('discovery-candidate-invalid-start-state');
+  const extentState = input.extentState == null ? 'unknown' : (typeof input.extentState === 'string' ? input.extentState : '');
+  if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
+
+  const regions = canonicalRegions(input.regions, 'discovery-candidate-invalid-regions');
+  if (extentState === 'unknown' && regions.length > 0 && input.allowRegionsWithUnknownExtent !== true) {
+    fail('discovery-candidate-unknown-extent-cannot-claim-regions');
+  }
+
+  const startEvidence = deepFreeze((input.startEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence)));
+  // `exact` is derived authority, not a caller assertion: it requires at
+  // least one authoritative evidence item explicitly bound to this start.
+  // Start-less evidence can be authoritative for other facts, but cannot
+  // establish an exact function-start identity.
+  if (startState === 'exact' && !startEvidence.some((evidence) =>
+      evidence.authority === 'authoritative' && evidence.start === start.toString())) {
+    fail('discovery-candidate-exact-start-requires-authoritative-evidence');
+  }
+
+  const candidate = {
+    schemaVersion: FUNCTION_CANDIDATE_SCHEMA_VERSION,
+    start: start.toString(),
+    name: input.name == null ? null : String(input.name),
+    regions: deepFreeze(regions),
+    startEvidence,
+    extentEvidence: deepFreeze((input.extentEvidence ?? []).map((evidence) => createDiscoveryEvidence(evidence))),
+    startState,
+    extentState,
+    conflicts: deepFreeze(candidateConflicts(input.conflicts)),
+    architectureId: optionalArchitectureId(input.architectureId),
+  };
+  candidate.digest = stableDigest({
+    start: candidate.start,
+    regions: candidate.regions,
+    startState: candidate.startState,
+    extentState: candidate.extentState,
+    conflicts: candidate.conflicts,
+  });
+  return deepFreeze(candidate);
+}
+
+/**
+ * The single accessor for "is this definitely a function start?".
+ *
+ * A contradicted candidate is never exact, whatever its evidence count says.
+ */
+export function hasExactStart(candidate) {
+  return candidate.startState === 'exact' && !candidate.conflicts.some((conflict) => conflict?.kind === 'start');
+}
+
+export function hasKnownExtent(candidate) {
+  return candidate.extentState !== 'unknown'
+    && candidate.extentState !== 'contradicted'
+    && candidate.regions.length > 0;
+}

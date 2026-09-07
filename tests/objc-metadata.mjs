@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict';
+import { parseObjcExtendedMetadata } from '../js/objc.js';
+
+const mem = new Uint8Array(0x5000);
+const dv = new DataView(mem.buffer);
+const p64 = (at, v) => dv.setBigUint64(at, BigInt(v), true);
+const p32 = (at, v) => dv.setUint32(at, Number(v) >>> 0, true);
+const str = (at, s) => { for (let i = 0; i < s.length; i++) mem[at + i] = s.charCodeAt(i); mem[at + s.length] = 0; };
+const read = async (addr, len) => {
+  const at = Number(addr);
+  if (at < 0 || at >= mem.length) return null;
+  return mem.subarray(at, Math.min(mem.length, at + len));
+};
+
+// __objc_protolist -> protocol_t CoinProviding.
+p64(0x100, 0x1000);
+p64(0x1008, 0);
+p64(0x1000 + 8, 0x1800);       // name
+p64(0x1000 + 16, 0);           // inherited protocol list
+p64(0x1000 + 24, 0x1100);      // instance methods
+p64(0x1000 + 32, 0);
+p64(0x1000 + 40, 0);
+p64(0x1000 + 48, 0);
+p64(0x1000 + 56, 0);
+str(0x1800, 'CoinProviding');
+
+p32(0x1100, 24); p32(0x1104, 1);
+p64(0x1108, 0x1820);           // selector
+p64(0x1110, 0x1840);           // types
+p64(0x1118, 0);                // protocol requirement has no concrete IMP
+str(0x1820, 'coinCount');
+str(0x1840, 'q16@0:8');
+
+// __objc_catlist -> PlayerData(Debug), with one concrete instance method.
+p64(0x200, 0x1200);
+p64(0x1200 + 0, 0x1860);       // category name
+p64(0x1200 + 8, 0x2000);       // target class
+p64(0x1200 + 16, 0x1300);      // instance methods
+p64(0x1200 + 24, 0);
+p64(0x1200 + 32, 0);
+p64(0x1200 + 40, 0);
+p64(0x1200 + 48, 0);
+str(0x1860, 'Debug');
+
+p32(0x1300, 24); p32(0x1304, 1);
+p64(0x1308, 0x1880);
+p64(0x1310, 0x18a0);
+p64(0x1318, 0x3000);
+str(0x1880, 'debugName');
+str(0x18a0, '@16@0:8');
+
+const sections = {
+  protocolList: { vmAddr: 0x100n, size: 8n },
+  categoryList: { vmAddr: 0x200n, size: 8n },
+};
+const opts = { classes: [{ name: 'PlayerData', addr: 0x2000n }] };
+const parsed = await parseObjcExtendedMetadata(read, sections, opts);
+
+assert.equal(parsed.protocols.length, 1);
+assert.equal(parsed.protocols[0].name, 'CoinProviding');
+assert.equal(parsed.protocols[0].methods[0].sel, 'coinCount');
+assert.equal(parsed.protocols[0].methods[0].imp, null);
+assert.equal(parsed.categories.length, 1);
+assert.equal(parsed.categories[0].name, 'Debug');
+assert.equal(parsed.categories[0].className, 'PlayerData');
+assert.equal(parsed.categories[0].methods[0].sel, 'debugName');
+assert.equal(parsed.categories[0].methods[0].imp, 0x3000n);
+assert.equal(parsed.protocols[0].completeness.complete, true);
+assert.equal(parsed.categories[0].completeness.complete, true);
+assert.equal(parsed.completeness.complete, true);
+
+// #1793: a pointer-table section with trailing non-pointer bytes is not complete.
+{
+  const misaligned = await parseObjcExtendedMetadata(read, {
+    protocolList: { vmAddr: 0x100n, size: 9n },
+    categoryList: { vmAddr: 0x200n, size: 8n },
+  }, opts);
+  assert.equal(misaligned.completeness.protocols.complete, false);
+  assert.equal(misaligned.completeness.protocols.misalignedBytes, 1);
+  assert.equal(misaligned.completeness.complete, false);
+}
+
+// #1802: a nested method-list read failure must propagate to table completeness.
+{
+  p32(0x1304, 2);
+  p64(0x1320, 0x18c0);
+  p64(0x1328, 0x18e0);
+  p64(0x1330, 0x3010);
+  str(0x18c0, 'secondMethod');
+  str(0x18e0, 'v16@0:8');
+  const readWithHole = async (addr, len) => {
+    if (Number(addr) === 0x1320 && len === 24) return null;
+    return read(addr, len);
+  };
+  const partial = await parseObjcExtendedMetadata(readWithHole, sections, { ...opts, pageBytes: 8 });
+  assert.equal(partial.categories.length, 1);
+  assert.equal(partial.categories[0].methods.length, 1);
+  assert.equal(partial.categories[0].completeness.methods.instanceMethods.declared, 2);
+  assert.equal(partial.categories[0].completeness.methods.instanceMethods.unreadableEntries, 1);
+  assert.equal(partial.categories[0].completeness.complete, false);
+  assert.equal(partial.completeness.categories.incompleteItems, 1);
+  assert.equal(partial.completeness.categories.complete, false);
+  assert.equal(partial.completeness.complete, false);
+}
+
+// #3178: structured class addresses must not become category identity keys.
+{
+  p32(0x1304, 1);
+  const structured = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'Fake', addr: ['8192'] }],
+  });
+  assert.equal(structured.categories[0].className, null);
+  assert.equal(structured.categories[0].methods[0].className, null);
+
+  const decimal = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'DecimalClass', addr: '8192' }],
+  });
+  assert.equal(decimal.categories[0].className, 'DecimalClass');
+
+  const hex = await parseObjcExtendedMetadata(read, sections, {
+    classes: [{ name: 'HexClass', addr: '0x2000' }],
+  });
+  assert.equal(hex.categories[0].className, 'HexClass');
+
+  const nonArray = await parseObjcExtendedMetadata(read, sections, { classes: { name: 'Fake', addr: 0x2000n } });
+  assert.equal(nonArray.categories[0].className, null);
+}
+
+console.log('objc-metadata: ok');
+// Keep completeness regressions on a user-authored head after generated sync updates.

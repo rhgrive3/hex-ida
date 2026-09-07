@@ -1,0 +1,256 @@
+# Tasks: HEX-C3-02 ABI Aggregate/Prototype Unification
+
+**Input**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, and
+`contracts/abi-prototype.md` in this feature directory.
+
+**Implementation gate (historical checkpoint)**: Production source edits were
+forbidden until the `ANALYZE=CLEAN` refreshed checkpoint was approved by Sol
+and the merged PR #2499 head was reconciled/re-audited against live main. That
+historical gate was satisfied before the implementation-owner restack. This
+resume is bound to requested base `42d472c310c12685e59dbf13a59e7572e8429ae2`,
+requested main checkpoint `66a5640359c5b39526fb89f6937e023294e54bdd`, and its
+fetched descendant `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`, plus the five
+Review 1 counterexamples below. Delivery/review tasks remain open.
+
+## Phase 1: Setup and ownership
+
+- [x] T001 Record authoritative repository, base SHA, PR #2499 merge, merged #2500,
+  active ABI branches, and generated state in `research.md`.
+- [x] T002 [P] Record the local producer/consumer trace and the outside-Codespaces
+  Graft guardrail in `research.md`; do not invoke Graft outside Codespaces.
+- [x] T003 [P] Create the feature specification and requirements checklist in
+  `spec.md` and `checklists/requirements.md`.
+- [x] T004 Reconcile the merged #2499 changes against newest live main; record
+  `OLD_BASE`, `CURRENT_MAIN`, overlapping files, semantic overlap, and Sol's
+  action before any production edit.
+
+## Phase 2: Foundational design and proof
+
+- [x] T005 Create the deterministic pre-fix regression in
+  `tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs` and record its failing
+  output at base `8a614ccd0184d6c25257c25d930b68af7e9ac81f`.
+- [x] T006 [P] Audit all registered ABI profiles and identity/version boundaries
+  in `research.md` without changing implementation files.
+- [x] T007 [P] Define classification identity, provenance, completeness, and
+  invalidation states in `data-model.md`.
+- [x] T008 [P] Define the consumer contract in `contracts/abi-prototype.md` and
+  runnable validation in `quickstart.md`.
+- [x] T009 Run Spec Kit analyze using the installed workflow and require no
+  unresolved quality, ownership, or soundness findings.
+
+## Phase 2A: Current-main correction (before production)
+
+- [x] T036 Reconcile the historical branch to `origin/main` at
+  `48a0b42913e63f33a03783f9676994268d8a06e8`, refresh the #2499 collision
+  status, and confirm current open PRs #2498/#2493 do not own ABI semantics.
+- [x] T037 Run the read-only 66-row ABI/profile matrix covering every registered
+  profile, scalar/aggregate/HFA/HVA/sret/vararg/unknown case, and stale,
+  malformed, mismatched, and conflicting evidence; record 54 PASS and 12
+  deterministic prototype-consumer failures in `research.md`.
+- [x] T038 Add the minimum current-main regressions for stale ABI identity and
+  AAPCS64 aggregate-piece grouping; prove both fail at the current base without
+  changing production code.
+- [x] T039 Re-run Spec Kit analyze after the correction and obtain Sol's
+  implementation spot-check approval before touching a production file.
+
+Implementation-owner reconciliation after T039 (historical): fetched
+`origin/main` at `204c82dec563a7f87b67dcfbae848f65de9be9f4`, preserved the
+previous head under `backup/c3-02-before-restack`, and replayed only C3-02
+commits onto that exact head. T027–T035 remain intentionally open for
+independent review and delivery.
+
+## Phase 3: User Story 1 — one ABI fact reaches every consumer (P1)
+
+**Goal**: selected canonical ABI classifications reach Semantic IR, summaries,
+prototype recovery, and decompiler projections with one identity and exact
+piece ordering.
+
+### Tests first
+
+- [x] T010 [P] [US1] Extend
+  `tests/phase8/abi/hex-c3-02-profile-matrix.test.mjs` with integer, FP,
+  pointer, integer/FP return, small/multi-register aggregate, split
+  register/stack, stack alignment/padding, and caller/callee agreement rows.
+- [x] T011 [P] [US1] Add profile-specific positive rows for Apple arm64 and
+  arm64e, AAPCS64, SysV AMD64, Microsoft x64/vectorcall, and RISC-V
+  LP64/LP64F/LP64D in the phase8 ABI matrix.
+- [x] T012 [P] [US1] Add downstream integration assertions proving the same
+  identity and locations in Semantic IR, summaries, and decompiler prototype
+  output without editing the existing #2499-owned test file.
+
+### Implementation
+
+- [x] T013 [US1] Extend the canonical adapter boundary in
+  `js/analysis/semantic-function-base.js` only as needed to preserve ABI
+  identity, provenance, completeness, aggregate pieces, and hidden-result
+  state; do not introduce a classifier.
+- [x] T014 [US1] Update the selected canonical consumer(s), including
+  `js/decompiler/types/prototype.js` after #2499 reconciliation, to consume
+  adapter classifications for arguments and returns rather than register
+  literals or architecture heuristics.
+- [x] T015 [US1] Preserve piece order and profile-specific aggregate, HFA/HVA,
+  split, stack, alignment, padding, and sret semantics through
+  `js/decompiler/pipeline-core.js`, `js/decompiler/type-recovery.js`,
+  `js/decompiler/semantic-core.js`, and summary consumers where their actual
+  changed-file inventory proves a need.
+- [x] T016 [US1] Verify direct downstream behavior with the focused ABI matrix,
+  existing phase5/phase6 ABI contracts, and the immediate decompiler/summary
+  subsystem tests.
+
+## Phase 4: User Story 2 — conservative aggregate and variadic boundaries (P1)
+
+**Goal**: no unsupported, incomplete, stale, malformed, conflicting, or
+ambiguous evidence is promoted to an exact ABI/prototype fact.
+
+### Tests first
+
+- [x] T017 [P] [US2] Add paired negatives for unsupported ABI, stale profile or
+  architecture identity, malformed classifier evidence, incomplete aggregate
+  layout, and profile mismatch.
+- [x] T018 [P] [US2] Add negatives for anonymous/unknown variadic frontier,
+  indirect calls, contradictory caller/callee observations, thunk/tail-call
+  ambiguity, and hidden-sret ambiguity.
+- [x] T019 [P] [US2] Add cancellation, deadline, truncation, budget exhaustion,
+  failed-classifier, and deterministic replay rows; prove no staged exact
+  result is published.
+
+### Implementation
+
+- [x] T020 [US2] Preserve explicit partial/unknown/unsupported/conflict states
+  across adapter, summaries, prototype, and decompiler publication; reject
+  stale or malformed identity/evidence atomically.
+- [x] T021 [US2] Implement or wire profile-specific known-vararg fixed prefixes,
+  anonymous frontiers, HFA/HVA evidence limits, indirect-call uncertainty,
+  and caller/callee conflict handling without majority or confidence
+  laundering.
+- [x] T022 [US2] Run paired-negative and downstream tests; any false exactness
+  is a hard blocker and must be fixed before convergence.
+
+## Phase 5: User Story 3 — locked profile matrix (P2)
+
+**Goal**: all supported shared-layer profiles have explicit terminal positive or
+conservative outcomes without shrinking the denominator.
+
+- [x] T023 [P] [US3] Complete the locked matrix for integer/FP/pointer arguments,
+  returns, aggregate boundaries, register classes, stack placement, alignment,
+  padding, sret, HFA/HVA, and variadic cases.
+- [x] T024 [P] [US3] Complete arm64e profile identity rows and unsupported/stale
+  ABI identity rows; prove architecture compatibility does not silently select
+  an Apple platform ABI.
+- [x] T025 [US3] Compare direct classifier, adapter, Semantic IR, summary, and
+  prototype outcomes and record every row's identity/completeness/diagnostic.
+
+## Phase 6: Convergence, independent reviews, and delivery
+
+- [x] T026 Historical Spec Kit converge completed the original implementation;
+  the resume correction has its own convergence tasks appended below.
+- [ ] T027 Have a non-owner Luna perform adversarial Review Pass 1 on the exact
+  implementation head with at least five fresh malformed, stale, incomplete,
+  ambiguous, and boundary attacks plus finding-specific ABI attacks.
+- [ ] T028 Fix every Review 1 finding, rerun implementation tests and converge,
+  and repeat Review 1 on the new semantic head when applicable.
+- [ ] T029 Sol performs targeted semantic review of the critical diff, strongest
+  counterexample, strongest negative, canonical owner, and exactness boundary.
+- [ ] T030 Reconcile once with newest live main; a different non-owner Luna
+  performs independent Review Pass 2 over ownership, generated state,
+  dependency direction, exact-head CI, and candidate merge structure.
+- [ ] T031 Fix every Review 2 finding and invalidate prior approvals after any
+  semantic change; rerun converge and both reviews as required.
+- [ ] T032 Run canonical generated build twice when applicable, then exact-head
+  CI on the intended PR head. Classify red checks rather than weakening gates.
+- [ ] T033 Fetch newest live main and validate the exact candidate merge tree;
+  record main/head/candidate SHAs, tree, focused/subsystem/release truth,
+  generated state, ownership, and semantic collision.
+- [ ] T034 Submit Sol's final packet and merge only after `APPROVE_MERGE` with
+  all required evidence and no hard-zero soundness violation.
+- [ ] T035 On live main, verify merge presence, production path, regressions,
+  generated currentness, no immediate collision, Spec Kit ledger, and post-
+  merge tests; record `RESULT: PASS` and `FINDING_STATUS = MERGED`.
+
+## Dependencies and execution order
+
+- T001–T009 are prerequisites for production work; T004 and Sol's collision
+  decision are an external gate.
+- T010–T012 must be written and fail before T013–T015 implementation.
+- T016 precedes T017–T022; the negative matrix must never be weakened to match
+  an implementation.
+- T023–T025 can run in parallel once the adapter/consumer contract exists, but
+  all rows depend on the canonical profile identity.
+- T026–T035 are sequential delivery gates. Any semantic fix after a review
+  invalidates prior review approvals.
+
+## Parallel opportunities
+
+- Profile audit (T006), evidence model (T007), and consumer contract (T008) are
+  independent documentation work.
+- Positive matrix rows (T010–T012), paired negatives (T017–T019), and profile
+  rows (T023–T024) can be developed in separate test files where ownership
+  preflight confirms no overlap.
+- Review Pass 1 and other finding lanes may proceed in parallel, but reviewers
+  must be non-owners and may not approve a stale semantic head.
+
+## Requirement and success-criterion coverage
+
+| Requirement | Task coverage |
+|---|---|
+| FR-001, FR-002, FR-003 | T013–T015, T025 |
+| FR-004, FR-005, FR-006 | T010–T011, T015, T021, T023 |
+| FR-007 | T012, T015, T018, T021, T025 |
+| FR-008 | T011, T023–T024 |
+| FR-009, FR-010, FR-011 | T017–T022, T026, T032 |
+| FR-012 | T010–T012, T017–T019, T023–T025 |
+| FR-013 | T004, T014–T015, T030–T033 |
+| FR-014 | T040–T041, T045 |
+| FR-015 | T040, T042–T043, T045 |
+| FR-016 | T040, T043–T044, T045 |
+| SC-001, SC-004 | T010–T016, T023, T025 |
+| SC-002, SC-006 | T017–T022 |
+| SC-003 | T011, T023–T025 |
+| SC-005 | T019, T025 |
+| SC-007 | T012, T016, T022 |
+| SC-008 | T016–T019, T032 |
+| SC-009 | T026–T035 |
+| SC-010 | T040–T049 |
+
+## Phase 7: Review 1 correction convergence (resume)
+
+These tasks were appended after Review 1 produced five concrete counterexamples.
+They are implementation/convergence work, not reviewer approval: T027–T035
+remain open and must not be marked complete by the implementation owner.
+
+- [x] T040 [P] Add counterexample-first regressions for forced-stack AAPCS64
+  HFA/HVA physical slots, fully located aggregate padding, unsafe/string/
+  non-finite/overflowing coordinates, duplicate scalar stack evidence, and
+  same-identity registry replacement/cache staleness.
+- [x] T041 Fix canonical AAPCS64 HFA/HVA layout derivation and forced-stack
+  placement so physical element slots use `max(8, elementBytes)`, preserve
+  wider elements, and keep downstream aggregate aliases grouped.
+- [x] T042 Make `canonicalAggregateLayout` require complete deterministic
+  member-plus-padding coverage, reject duplicate/unlocated/overlapping
+  padding, and reject unsafe or overflowing layout spans.
+- [x] T043 Make ABI piece normalization and global argument/return interval
+  validation accept only finite safe integer coordinates, reject overflow and
+  ambiguous overlap, and preserve only proven canonical split semantics.
+- [x] T044 Bind ABI registry/cache evidence to the exact registered profile
+  object plus monotonic generation/classifier digest so replacement or
+  registry spoofing cannot reuse stale stack layout or candidate caches.
+- [x] T045 Run focused boundaries/profile/downstream tests, the locked 66-row
+  profile matrix, Phase 5, Phase 6, and Phase 8; preserve all existing
+  assertions and record the 45-test pre-fix five-failure run.
+- [x] T046 Create and validate the dedicated C3-02 ownership inventory for all
+  38 feature paths, generated paths, governance paths, and explicit cross-lane
+  decisions without changing the Phase 8 manifest.
+- [x] T047 Restore canonical dependencies and run the userscript generator
+  twice after final candidate context; commit only the first expected
+  generated diff and require zero additional diff on the second run. Record
+  an exact blocker after `npm ci` if the build environment cannot complete;
+  generated applicability remains YES.
+- [x] T048 Reconcile against requested main checkpoint
+  `66a5640359c5b39526fb89f6937e023294e54bdd` and fetched descendant
+  `7fb8e58daf542ac8a12807fb5adf2796a9aa01af`; candidate merge tree
+  `1534a6894be15859e15b5f2d4f30d8a8a17a46ae` has no conflicts, and origin-main
+  has no semantic ABI owner overlap. Collision/ownership and impacted gates
+  were rerun; actual installed Spec Kit analyze/converge are recorded below.
+- [ ] T049 Record the final exact base/main/head, changed-file inventory,
+  generated two-run result, analyze/converge evidence, and clean worktree;
+  leave T027–T035 and any later independent review/delivery tasks open.

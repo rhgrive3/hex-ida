@@ -1,0 +1,788 @@
+import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
+import { buildOverlay } from '../../narrate.js';
+import { decompile } from '../../decompile.js';
+import { inferTypes } from '../../types.js';
+import { resolveABIPlugin } from '../../targets/abi/index.js';
+import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
+import { X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES } from '../../targets/architecture/x86_64/semantic-function-contract.js';
+
+const QUERY_ROUTED_FETCH = Symbol('analysis-query-routed-fetch');
+const QUERY_ROUTED_ANALYZE = Symbol('analysis-query-routed-analyze');
+const MAX_PAGE = 5_000;
+const MAX_FUNCTION_SCAN = 400_000;
+
+function storeValue(app, key) {
+  try { return typeof app?.store?.get === 'function' ? app.store.get(key) : (app?.store?.[key] ?? null); }
+  catch { return null; }
+}
+
+function addressOf(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim().replace(/^(?:fn|function):/i, '');
+    if (!text) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
+  if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
+  return null;
+}
+
+const functionId = (value) => value == null ? null : `0x${BigInt(value).toString(16)}`;
+
+function nonNegativeSafeInteger(value, fallback = 0) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+// Snapshot identity generations are authority-bearing: an explicitly present
+// invalid value must never collapse into another valid generation (e.g. 0).
+// Only a missing value falls back to the default.
+function identityGeneration(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+
+function positiveSafeIntegerScalar(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value === 'bigint') return value > 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
+  return null;
+}
+
+function abortError(signal, fallback = 'Analysis query aborted') {
+  const reason = signal?.reason;
+  let message = fallback;
+  if (reason instanceof Error) {
+    try { message = reason.message || String(reason) || fallback; } catch { /* use fallback */ }
+  } else if (reason != null) {
+    try { message = String(reason) || fallback; } catch { /* use fallback */ }
+  }
+  // Never mutate signal.reason: it can be frozen, shared, or otherwise
+  // caller-owned. A fresh normalized error also prevents one consumer's
+  // cancellation metadata from leaking into another consumer.
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function requestWithSignal(request, signal) {
+  if (!request || typeof request.then !== 'function') {
+    throwIfAborted(signal);
+    return Promise.resolve(request);
+  }
+  const task = Promise.resolve(request);
+  // A producer can abort synchronously while creating its request. Once a
+  // cancelable request exists, observe it and cancel it before normalizing the
+  // consumer abort; the pre-abort search check still prevents new work.
+  if (signal?.aborted) {
+    try { request.cancel?.(); } catch { /* best effort */ }
+    void task.catch(() => {});
+    throw abortError(signal);
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request.cancel?.(); } catch { /* best effort */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
+function pageOf(page = {}) {
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
+  return {
+    offset:nonNegativeSafeInteger(rawOffset, 0),
+    limit:typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+  };
+}
+
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
+
+function nextPageOffset(offset, advance) {
+  const next = offset + Math.max(1, advance);
+  return Number.isSafeInteger(next) && next > offset ? next : null;
+}
+
+function unsupportedPage(id, page, reason) {
+  const { offset, limit } = pageOf(page);
+  return {
+    value:[],
+    functionId:id,
+    page:{ offset, limit, returned:0, total:0, next:null },
+    status:{ completeness:'unsupported', reason, paged:true },
+  };
+}
+function unsupported(id, reason) {
+  return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
+}
+
+const COMPLETENESS_ORDER = Object.freeze({
+  complete: 0,
+  partial: 1,
+  truncated: 2,
+  unsupported: 3,
+});
+
+function completenessOf(value, fallback = 'complete') {
+  const evidence = [];
+  const statusCompleteness = value?.status?.completeness;
+  const topLevelCompleteness = value?.completeness;
+  if (typeof statusCompleteness === 'string') evidence.push(statusCompleteness);
+  if (typeof topLevelCompleteness === 'string') evidence.push(topLevelCompleteness);
+  if (value?.unsupported === true) evidence.push('unsupported');
+  if (value?.truncated === true) evidence.push('truncated');
+  if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
+
+  const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  if (hasInvalidString) recognized.push('partial');
+  if (recognized.length === 0) return fallback;
+  return recognized.reduce((strongest, item) => (
+    COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
+  ));
+}
+
+function wrap(value, completeness = null, status = {}) {
+  if (value == null) return null;
+  return { value, status:{ ...status, completeness:completeness ?? completenessOf(value) } };
+}
+
+function paged(values, page, completeness = 'complete', status = {}) {
+  const source = Array.from(values || []);
+  const { offset, limit } = pageOf(page);
+  const items = source.slice(offset, offset + limit);
+  return {
+    value:items,
+    page:{ offset, limit, returned:items.length, total:source.length, next:offset + items.length < source.length ? offset + items.length : null },
+    status:{ ...status, completeness, paged:true },
+  };
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function artifactVersions(app) {
+  const value = app?.analysisArtifactVersions ?? app?.artifactVersions;
+  return isPlainObject(value) ? { ...value } : {};
+}
+
+function currentInfo(app) { return storeValue(app, 'fileInfo'); }
+function validSliceIndex(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return -1;
+}
+function currentSlice(app) {
+  const index = validSliceIndex(storeValue(app, 'sliceIndex'));
+  return index !== null && index >= 0 ? currentInfo(app)?.slices?.[index] ?? null : null;
+}
+function architectureOf(app) {
+  const value = storeValue(app, 'architecture') ?? storeValue(app, 'capability')?.architecture ?? currentSlice(app)?.capability?.architecture ?? '';
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+function formatOf(app) {
+  const value = app?.backend?.formatId ?? currentInfo(app)?.formatId ?? '';
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+function executableRegion(app, address) {
+  if (typeof app?.executableRegionFor === 'function') {
+    try { return app.executableRegionFor(BigInt(address)); } catch { return null; }
+  }
+  const a = BigInt(address);
+  return (storeValue(app, 'regions') || []).find((region) => {
+    try { return region?.exec === true && a >= BigInt(region.vmAddr) && a < BigInt(region.vmAddr) + BigInt(region.size); }
+    catch { return false; }
+  }) ?? null;
+}
+
+function rangeFor(app, id) {
+  const address = addressOf(id);
+  if (address == null) return { ok:false, reason:'function-address-invalid' };
+  if (typeof app?.validatedFunctionRange === 'function') {
+    try {
+      const live = app.validatedFunctionRange(address);
+      if (live?.ok) {
+        const fn = live.function ?? app?.symbols?.functionAt?.(address) ?? null;
+        return fn?.end == null && live.complete !== false
+          ? { ...live, complete:false, reason:live.reason || 'function-end-unproven' }
+          : live;
+      }
+      if (live) return live;
+    } catch { /* derive below */ }
+  }
+  const fn = app?.symbols?.functionAt?.(address);
+  if (!fn) return { ok:false, reason:'function-symbol-missing' };
+  const region = executableRegion(app, fn.start);
+  if (!region) return { ok:false, reason:'function-start-not-executable', function:fn };
+  if (fn.end == null) return { ok:false, reason:'function-end-unproven', function:fn, region };
+  const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
+  let end = BigInt(fn.end);
+  if (end <= fn.start) return { ok:false, reason:'invalid-function-range', function:fn, region };
+  const crossed = end > regionEnd;
+  if (crossed) end = regionEnd;
+  return {
+    ok:true, start:BigInt(fn.start), end, region, function:fn,
+    complete:!crossed,
+    reason:crossed ? 'symbol-range-crosses-executable-region' : null,
+    provenance:'executable-region+proven-function-extent',
+  };
+}
+
+function semanticIR(value) { return value?.pipeline?.semanticIr ?? value?.semanticAnalysis?.pipeline?.semanticIr ?? value?.semanticIR ?? null; }
+function semanticCFG(value) { return value?.pipeline?.cfg ?? value?.semanticAnalysis?.pipeline?.cfg ?? value?.cfg ?? null; }
+
+function normalizePlatform(value) {
+  if (typeof value !== 'string') return null;
+  const p = value.trim().toLowerCase();
+  if (!p) return null;
+  if (p.includes('windows') || p === 'win32') return 'windows';
+  if (p.includes('linux')) return 'linux';
+  if (p.includes('freebsd')) return 'freebsd';
+  if (p.includes('netbsd')) return 'netbsd';
+  if (p.includes('openbsd')) return 'openbsd';
+  if (p.includes('solaris')) return 'solaris';
+  if (p.includes('system v') || p === 'sysv' || p.includes('unix')) return 'unix';
+  return p;
+}
+
+function descriptorMetadata(app) {
+  const slice = currentSlice(app);
+  const descriptor = slice?.info?.descriptor ?? slice?.descriptor ?? currentInfo(app)?.productDescriptor ?? app?.backend?.platformInfo?.productDescriptor;
+  return descriptor?.formatMetadata ?? {};
+}
+
+function applyLegacyPresentation(app, value) {
+  if (!value?.model) return;
+  const start = value.startAddr ?? value.startAddress ?? value.model?.startAddress;
+  if (start == null) return;
+  const region = executableRegion(app, start);
+  if (!region) return;
+  app.semantic = { regionId:region.id, model:value.model, result:value };
+  if (storeValue(app, 'currentRegion') === region) {
+    try { app.viewer?.setBlockOverlay?.(region.id, buildOverlay(value.model)); } catch { /* presentation only */ }
+  }
+}
+
+function installRoutes(app, directFetch) {
+  if (!app) return;
+  if (typeof directFetch === 'function' && !app._fetchFunctionModel?.[QUERY_ROUTED_FETCH]) {
+    const routedFunctionModel = async function routedFunctionModel(id, options = {}) {
+      if (!app.analysisQueries) return directFetch(addressOf(id) ?? id, options);
+      const snapshot = await app.analysisQueries.snapshot(options);
+      const result = await app.analysisQueries.function(snapshot, id, options);
+      if (result.completeness === 'unsupported' || result.value == null) {
+        const error = new Error('analysis-query-function-unavailable');
+        error.code = 'ANALYSIS_QUERY_FUNCTION_UNAVAILABLE';
+        throw error;
+      }
+      return result.value;
+    };
+    Object.defineProperty(routedFunctionModel, QUERY_ROUTED_FETCH, { value:directFetch });
+    app._fetchFunctionModel = routedFunctionModel;
+  }
+  const original = app.analyzeFunctionAt;
+  if (typeof original === 'function' && !original?.[QUERY_ROUTED_ANALYZE]) {
+    const routedAnalyzeFunctionAt = async function routedAnalyzeFunctionAt(id, options = {}) {
+      if (!app.analysisQueries) return original.call(app, id, options);
+      const snapshot = await app.analysisQueries.snapshot(options);
+      const result = await app.analysisQueries.function(snapshot, id, options);
+      if (result.completeness === 'unsupported' || result.value == null) return null;
+      applyLegacyPresentation(app, result.value);
+      return result.value;
+    };
+    Object.defineProperty(routedAnalyzeFunctionAt, QUERY_ROUTED_ANALYZE, { value:original.bind(app) });
+    app.analyzeFunctionAt = routedAnalyzeFunctionAt;
+  }
+}
+
+export function createAppAnalysisQueryAdapter(app) {
+  const existingFetch = typeof app?._fetchFunctionModel === 'function' ? app._fetchFunctionModel : null;
+  const directFetch = existingFetch?.[QUERY_ROUTED_FETCH] ?? (existingFetch ? existingFetch.bind(app) : null);
+  let metadataEpoch = null;
+  let metadataTask = null;
+
+  const metadataSummary = () => {
+    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    if (metadataEpoch === epoch && metadataTask) return metadataTask;
+    metadataEpoch = epoch;
+    metadataTask = typeof app?.backend?.binaryMetadata === 'function'
+      ? Promise.resolve(app.backend.binaryMetadata('summary')).catch(() => null)
+      : Promise.resolve(null);
+    return metadataTask;
+  };
+
+  const abiFor = async (architecture) => {
+    const descriptor = descriptorMetadata(app);
+    const metadata = await metadataSummary();
+    const rawExplicit = descriptor.abi ?? metadata?.summary?.abi ?? metadata?.metadata?.abi ?? null;
+    const explicit = typeof rawExplicit === 'string' && rawExplicit.trim() ? rawExplicit.trim() : null;
+    const rawBits = descriptor.bits ?? metadata?.summary?.bits;
+    const bits = rawBits == null ? 64 : (typeof rawBits === 'number' && Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : null);
+    let platform = normalizePlatform(descriptor.platform ?? metadata?.summary?.platform);
+    if (architecture === 'riscv64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'riscv-explicit-abi-invalid' };
+      if (explicit) {
+        const plugin = resolveABIPlugin({ architecture, platform:platform ?? 'unix', abiId:explicit });
+        return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unix', evidence:'explicit' } : { supported:false, reason:'riscv-explicit-abi-unsupported' };
+      }
+      if (bits == null) return { supported:false, reason:'riscv-bits-invalid' };
+      const flags = metadata?.metadata?.flags;
+      if (flags == null) return { supported:false, reason:'riscv-elf-flags-unavailable' };
+      const selected = riscvAbiFromElfFlags(flags, { bits });
+      return selected?.supported && selected.abiId
+        ? { supported:true, abiId:selected.abiId, platform:platform ?? 'unix', evidence:'elf-e-flags' }
+        : { supported:false, reason:selected?.reason || 'riscv-abi-unproven' };
+    }
+    if (architecture === 'x86_64') {
+      if (rawExplicit != null && !explicit) return { supported:false, reason:'x86-64-explicit-abi-invalid' };
+      platform ??= formatOf(app) === 'pe' ? 'windows' : formatOf(app) === 'elf' ? 'unix' : null;
+      const plugin = resolveABIPlugin({ architecture, platform, ...(explicit ? { abiId:explicit } : {}) });
+      return plugin?.supported ? { supported:true, abiId:plugin.id, platform:platform ?? 'unknown', evidence:explicit ? 'explicit' : 'format-platform' } : { supported:false, reason:'x86-64-abi-unproven' };
+    }
+    return { supported:false, reason:`semantic-function-unsupported-architecture:${architecture || 'unknown'}` };
+  };
+
+  const produceFunction = async (id, options = {}) => {
+    const range = rangeFor(app, id);
+    if (!range.ok) return unsupported(id, range.reason || 'function-range-unavailable');
+    const architecture = architectureOf(app);
+    const symbols = app?.symbols;
+    const name = symbols?.nameAt?.(range.start) ?? symbols?.label?.(range.start) ?? null;
+
+    if (supportsArm64SemanticAnalysis(architecture)) {
+      if (!app?.backend || !range.region || !storeValue(app, 'canDisassemble') || !symbols?.functionCount) return unsupported(id, 'arm64-function-producer-unavailable');
+      const alignment = Number(storeValue(app, 'instructionAlignment') ?? storeValue(app, 'capability')?.instructionAlignment ?? 4);
+      if (alignment !== 4) return unsupported(id, 'arm64-legacy-producer-requires-4-byte-instructions');
+      const startRow = Number((range.start - BigInt(range.region.vmAddr)) / 4n);
+      const maxRow = Math.max(0, Number(BigInt(range.region.size) / 4n) - 1);
+      const endRow = Math.min(Number((range.end - BigInt(range.region.vmAddr) + 3n) / 4n) - 1, maxRow);
+      if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
+      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
+      const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
+      const enriched = {
+        ...value, functionId:functionId(range.start), architectureId:architecture,
+        startAddress:range.start, endAddress:range.end, name,
+        completeness:{ complete:completeness === 'complete', reason:value?.truncated ? 'analysis-budget' : range.reason || null, provenance:range.provenance, regionId:range.region.id },
+      };
+      return wrap(enriched, completeness, { reason:enriched.completeness.reason, architecture, producer:'legacy-arm64-compatibility' });
+    }
+
+    if (!['x86_64', 'riscv64'].includes(architecture) || typeof app?.backend?.analyzeSemanticFunction !== 'function') {
+      return unsupported(id, `function-analysis-unsupported-architecture:${architecture || 'unknown'}`);
+    }
+    const span = range.end - range.start;
+    if (span <= 0n) return unsupported(id, 'function-range-empty');
+    const budgeted = span > BigInt(X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES);
+    const length = Number(budgeted ? BigInt(X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) : span);
+    const abi = await abiFor(architecture);
+    if (!abi.supported) return unsupported(id, abi.reason);
+    const rawSliceIndex = storeValue(app, 'sliceIndex');
+    const validatedSlice = validSliceIndex(rawSliceIndex);
+    if (rawSliceIndex != null && (validatedSlice === null || validatedSlice < 0)) {
+      return unsupported(id, 'invalid-slice-index');
+    }
+    const sliceIndex = validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : 0;
+    const requestedCompleteness = budgeted || range.complete === false ? 'partial' : 'complete';
+    const canonical = await app.backend.analyzeSemanticFunction({
+      address:range.start, length, architecture, abiId:abi.abiId, platform:abi.platform, sliceIndex,
+      name:name ?? undefined, completeness:requestedCompleteness, signal:options.signal ?? null,
+      onIdentityProgress:options.onIdentityProgress ?? options.onProgress,
+    });
+    const completeness = budgeted ? 'truncated' : range.complete === false ? 'partial' : completenessOf(canonical);
+    return wrap({
+      ...canonical, functionId:functionId(range.start), startAddress:range.start,
+      endAddress:range.start + BigInt(length), requestedEndAddress:range.end, name,
+      truncated:budgeted, complete:completeness === 'complete',
+    }, completeness, {
+      reason:budgeted ? 'semantic-function-decode-budget' : range.reason || null,
+      architecture, abiId:abi.abiId, abiEvidence:abi.evidence, producer:'canonical-semantic-function',
+    });
+  };
+
+  const loadFunction = async (id, options = {}) => {
+    if (typeof app?.analyzeFunction === 'function') {
+      const value = await app.analyzeFunction(id, options);
+      if (value != null) return wrap(value);
+    }
+    if (directFetch) {
+      const value = await directFetch(addressOf(id) ?? id, options);
+      if (value != null) return wrap(value);
+    }
+    return produceFunction(id, options);
+  };
+
+  const adapter = {
+    async currentIdentity(options = {}) {
+      if (options.signal?.aborted) {
+        const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('AbortError');
+        error.name = 'AbortError';
+        throw error;
+      }
+      const fileInfo = currentInfo(app);
+      const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
+      let binaryId = app?.backend?.binaryId ?? fileInfo?.binaryId ?? fileInfo?.sha256 ?? fileInfo?.hash ?? project?.binaryHash ?? project?.binary?.hash ?? null;
+      if (!binaryId && typeof app?.backend?.ensureBinaryId === 'function') {
+        try { binaryId = await app.backend.ensureBinaryId({ signal:options.signal ?? null, onProgress:options.onIdentityProgress ?? options.onProgress }); }
+        catch (error) { if (options.signal?.aborted || error?.name === 'AbortError' || error?.stale) throw error; }
+      }
+      if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
+        try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* fail below */ }
+      }
+      if (typeof binaryId !== 'string' || binaryId.trim() === '') {
+        const error = new Error('analysis-query-binary-unbound');
+        error.code = 'ANALYSIS_QUERY_BINARY_UNBOUND';
+        throw error;
+      }
+      const projectRevision = project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0;
+      const analysisEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? 0;
+      return { binaryId:binaryId.trim(), projectRevision:identityGeneration(projectRevision, 'analysis-query-project-revision-invalid'), artifactVersions:artifactVersions(app), analysisEpoch:identityGeneration(analysisEpoch, 'analysis-query-epoch-invalid') };
+    },
+
+    async binaryInfo(snapshot) {
+      const info = currentInfo(app);
+      const slice = currentSlice(app);
+      const value = {
+        binaryId:snapshot.binaryId, name:info?.name ?? storeValue(app, 'file')?.name ?? null,
+        size:info?.size ?? storeValue(app, 'file')?.size ?? null,
+        formatId:formatOf(app) || (info?.format ?? null), architecture:architectureOf(app) || null,
+        sliceIndex:(() => {
+          const validatedSlice = validSliceIndex(storeValue(app, 'sliceIndex'));
+          return validatedSlice !== null && validatedSlice >= 0 ? validatedSlice : -1;
+        })(),
+        capability:storeValue(app, 'capability') ?? slice?.capability ?? info?.capability ?? null,
+        regions:(storeValue(app, 'regions') || []).map((r) => ({ id:r.id, name:r.name ?? null, section:r.section ?? null, vmAddr:r.vmAddr, size:r.size, exec:r.exec === true, read:r.read === true, write:r.write === true })),
+      };
+      return wrap(value, info ? 'complete' : 'partial', { reason:info ? null : 'file-info-unavailable' });
+    },
+
+    async functions(_snapshot, query = {}, page = {}, options = {}) {
+      const symbols = app?.symbols;
+      if (!symbols?.funcs) return unsupported(null, 'function-index-unavailable');
+      const rawNeedle = query.text ?? query.name ?? '';
+      if (typeof rawNeedle !== 'string') return unsupported(null, 'function-query-text-invalid');
+      const needle = rawNeedle.trim().toLowerCase();
+      const hasAddress = Object.prototype.hasOwnProperty.call(query, 'address') && query.address != null;
+      const exactAddress = addressOf(query.address);
+      if (hasAddress && (exactAddress == null || exactAddress < 0n)) {
+        return unsupported(null, 'function-query-address-invalid');
+      }
+      const { offset, limit } = pageOf(page);
+      const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
+      const indexComplete = symbols.functionStartsComplete === true && count === symbols.funcs.length;
+      const abortIfNeeded = () => {
+        if (options.signal?.aborted) throw options.signal.reason ?? Object.assign(new Error('AbortError'), { name:'AbortError' });
+      };
+      const rowAt = (address, name = symbols.nameAt?.(address) ?? null) => {
+        const fn = symbols.functionAt?.(address);
+        return { id:functionId(address), address, name, end:fn?.end ?? null, size:fn?.end != null ? fn.end - address : null, evidence:symbols.functionEvidence?.(address) ?? null };
+      };
+
+      if (exactAddress == null && !needle) {
+        const start = Math.min(offset, count);
+        const end = Math.min(count, start + limit);
+        const rows = [];
+        for (let i = start; i < end; i++) {
+          abortIfNeeded();
+          const address = BigInt(symbols.funcs[i]);
+          rows.push(rowAt(address));
+        }
+        return {
+          value:rows,
+          page:{ offset, limit, returned:rows.length, total:indexComplete ? count : null, next:end < count ? end : null },
+          status:{ completeness:indexComplete ? 'complete' : 'partial', paged:true, reason:indexComplete ? null : count < symbols.funcs.length ? 'function-scan-budget' : 'function-discovery-incomplete' },
+        };
+      }
+
+      const rows = [];
+      let matched = 0;
+      let hasMore = false;
+      let exhausted = true;
+      for (let i = 0; i < count; i++) {
+        abortIfNeeded();
+        const address = BigInt(symbols.funcs[i]);
+        const name = symbols.nameAt?.(address) ?? null;
+        if (exactAddress != null && address !== exactAddress) continue;
+        if (needle && !String(name ?? '').toLowerCase().includes(needle) && !address.toString(16).includes(needle.replace(/^0x/, ''))) continue;
+        if (matched++ < offset) continue;
+        if (rows.length >= limit) {
+          hasMore = true;
+          exhausted = false;
+          break;
+        }
+        rows.push(rowAt(address, name));
+        if (exactAddress != null) break;
+      }
+      const scanComplete = exhausted && count === symbols.funcs.length;
+      const complete = indexComplete && scanComplete;
+      return {
+        value:rows,
+        page:{ offset, limit, returned:rows.length, total:complete ? matched : null, next:hasMore ? offset + rows.length : null },
+        status:{ completeness:complete ? 'complete' : 'partial', paged:true, reason:complete ? null : count < symbols.funcs.length ? 'function-scan-budget' : !scanComplete ? 'function-filter-page-bounded' : 'function-discovery-incomplete' },
+      };
+    },
+
+    async functionById(_snapshot, id, options = {}) { return loadFunction(id, options); },
+
+    async instructions(_snapshot, range, page = {}, options = {}) {
+      const request = range && typeof range === 'object' ? range : { functionId:range };
+      let start = addressOf(request.start ?? request.address);
+      let end = addressOf(request.end);
+      if (start == null && request.functionId != null) {
+        const fnRange = rangeFor(app, request.functionId);
+        if (!fnRange.ok) return unsupported(request.functionId, fnRange.reason);
+        start = fnRange.start;
+        end = fnRange.end;
+      }
+      if (start == null) return unsupported(null, 'instruction-range-start-required');
+      const rawLength = request.length ?? (end == null ? 4096 : end - start);
+      let length = positiveSafeIntegerScalar(rawLength);
+      if (length == null) return unsupported(null, 'instruction-range-invalid');
+      const truncated = length > 1024 * 1024;
+      length = Math.min(length, 1024 * 1024);
+      if (typeof app?.backend?.disassembleAt === 'function') {
+        const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
+        if (decoded?.supported && decoded?.found) {
+          const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
+          return paged(rows, page, truncated ? 'truncated' : 'complete', { reason:truncated ? 'instruction-read-budget' : null });
+        }
+      }
+      const result = await loadFunction(request.functionId ?? start, options);
+      const rows = result?.value?.model?.instructions;
+      return rows ? paged(rows, page, result.status?.completeness ?? completenessOf(result.value)) : unsupported(request.functionId ?? start, 'instruction-producer-unavailable');
+    },
+
+    async semanticIR(_snapshot, id, options = {}) {
+      if (typeof app?.getSemanticIR === 'function') {
+        const value = await app.getSemanticIR(id, options);
+        if (value != null) return wrap(value);
+      }
+      const result = await loadFunction(id, options);
+      const value = semanticIR(result?.value);
+      return value == null ? unsupported(id, result?.value ? 'semantic-ir-v2-unavailable' : 'function-producer-unavailable') : wrap(value, result.status?.completeness);
+    },
+
+    async cfg(_snapshot, id, options = {}) {
+      if (typeof app?.getCFG === 'function') {
+        const value = await app.getCFG(id, options);
+        if (value != null) return wrap(value);
+      }
+      const result = await loadFunction(id, options);
+      const value = semanticCFG(result?.value);
+      return value == null ? unsupported(id, result?.value ? 'cfg-unavailable' : 'function-producer-unavailable') : wrap(value, result.status?.completeness);
+    },
+
+    async callers(_snapshot, id, page = {}, options = {}) {
+      const address = addressOf(id);
+      if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
+      if (!program?.callersOf) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      const { offset, limit } = pageOf(page);
+      // MAX_PAGE bounds a single page (via pageOf), never the cumulative
+      // offset: the producer only serves a leading prefix, so reaching an
+      // offset beyond MAX_PAGE requires fetching the full prefix.
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.callersOf(address, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
+      const queryLimited = source?.queryLimited === true;
+      const result = paged(
+        sourceRows,
+        page,
+        source?.complete === false || queryLimited ? 'partial' : 'complete',
+        { reason:source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) },
+      );
+      if (source?.queryLimited === true && result.page.next == null) {
+        // A capped producer may expose one empty boundary page at exactly its
+        // current prefix length. Advance once so offset=5000 does not repeat
+        // itself, but stop when the producer's entire prefix is already below
+        // the requested offset: there is no evidence for another page and an
+        // unconditional cursor would create an infinite empty continuation.
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
+      return result;
+    },
+
+    async callees(_snapshot, id, page = {}, options = {}) {
+      const range = rangeFor(app, id);
+      if (!range.ok || typeof app?.ensureProgram !== 'function') return unsupported(id, range.reason || 'program-index-unavailable');
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
+      if (!program?.calleesOf) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      const { offset, limit } = pageOf(page);
+      const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      return result;
+    },
+
+    async xrefs(_snapshot, id, page = {}, options = {}) {
+      const address = addressOf(id);
+      if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
+      if (!program) return unsupported(id, 'program-index-unavailable');
+      if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
+        return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      if (program.unsupported) {
+        return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
+      }
+      const { offset, limit } = pageOf(page);
+      const cap = Math.min(MAX_PAGE, offset + limit);
+      const refs = program.refSitesTo?.(address, 1n, cap) || [];
+      const calls = program.callSitesTo?.(address, cap) || [];
+      const rows = [
+        ...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })),
+        ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
+      ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
+      const complete = refs.complete !== false && calls.complete !== false;
+      const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, complete ? 'complete' : 'partial', {
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        ...(queryLimited ? { truncationReason:'query-limit' } : {}),
+      });
+    },
+
+    async types(_snapshot, scope, _page = {}, options = {}) {
+      if (typeof app?.getTypes === 'function') {
+        const value = await app.getTypes(scope, options);
+        if (value != null) return wrap(value);
+      }
+      const id = scope?.functionId ?? scope?.address ?? scope;
+      const result = await loadFunction(id, options);
+      const model = result?.value?.model;
+      return model ? wrap(inferTypes(model), result.status?.completeness, { inference:true }) : unsupported(id, 'typed-function-projection-unavailable');
+    },
+
+    async evidence(_snapshot, query = {}, page = {}, options = {}) {
+      const rawTarget = query?.functionId ?? query?.address ?? null;
+      const targetAddress = addressOf(rawTarget);
+      // Only a canonical address or an explicitly allowed string identity may
+      // select evidence. A structured value must never coerce through String()
+      // into another function's id, and an explicitly invalid target fails
+      // closed instead of scanning unfiltered or loading garbage.
+      const targetId = targetAddress != null ? functionId(targetAddress)
+        : (typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : null);
+      if (rawTarget != null && targetAddress == null && targetId == null) {
+        return unsupported(rawTarget, 'evidence-target-invalid');
+      }
+      if (typeof app?.getEvidence === 'function') {
+        const providerQuery = { ...query };
+        delete providerQuery.functionId;
+        delete providerQuery.address;
+        if (targetId != null) providerQuery.functionId = targetId;
+        const value = await app.getEvidence(providerQuery, options);
+        return value == null ? unsupported(targetId, 'evidence-store-unavailable') : paged(Array.isArray(value) ? value : [value], page);
+      }
+
+      const rows = [];
+      const deep = app?.autoReport?.report?.deep || [];
+      if (targetAddress == null && targetId == null) {
+        rows.push(...deep);
+      } else {
+        for (const item of deep) {
+          const itemAddr = addressOf(item?.functionId ?? item?.address ?? item?.addr ?? item?.startAddress);
+          const itemFnId = typeof item?.functionId === 'string' && item.functionId.trim() ? item.functionId.trim()
+            : (itemAddr != null ? functionId(itemAddr) : null);
+          if ((targetAddress != null && itemAddr != null && itemAddr === targetAddress) ||
+              (targetId != null && itemFnId === targetId)) {
+            rows.push(item);
+          }
+        }
+      }
+
+      let decompilerCompleteness = 'complete';
+      if (targetAddress != null || targetId != null) {
+        const result = await loadFunction(rawTarget, options);
+        if (result?.status?.completeness === 'partial' || result?.status?.completeness === 'truncated') {
+          decompilerCompleteness = result.status.completeness;
+        }
+        for (const evidence of result?.value?.decompiler?.evidence || []) {
+          rows.push({ kind:'decompiler', functionId:targetId ?? rawTarget, evidence });
+        }
+        if (!rows.length && result?.status?.completeness === 'unsupported') {
+          return unsupported(rawTarget, result.status.reason || 'function-range-unavailable');
+        }
+      }
+
+      if (!rows.length && targetAddress != null) {
+        const range = rangeFor(app, targetAddress);
+        if (!range.ok) return unsupported(rawTarget, range.reason || 'function-range-unavailable');
+      }
+
+      const autoTruncated = app?.autoReport?.report?.truncated === true;
+      const completeness = decompilerCompleteness !== 'complete' ? decompilerCompleteness : (autoTruncated ? 'partial' : 'complete');
+      return rows.length ? paged(rows, page, completeness) : unsupported(rawTarget, 'evidence-store-unavailable');
+    },
+
+    async decompile(_snapshot, id, options = {}) {
+      if (typeof app?.getDecompile === 'function') {
+        const value = await app.getDecompile(id, options);
+        if (value != null) return wrap(value);
+      }
+      const result = await loadFunction(id, options);
+      if (result?.value?.decompiler) return wrap(result.value.decompiler, result.status?.completeness);
+      if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
+      const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
+      return wrap(decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address }), result.status?.completeness);
+    },
+
+    async search(_snapshot, query, page = {}, options = {}) {
+      if (typeof app?.querySearch === 'function') {
+        const value = await app.querySearch(query, options);
+        return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
+      }
+      if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
+      throwIfAborted(options.signal);
+      const request = app.backend.search(query, options.onProgress);
+      const value = await requestWithSignal(request, options.signal);
+      return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
+    },
+
+    async causalPath(_snapshot, source, sink, options = {}) {
+      return typeof app?.queryCausalPath === 'function' ? wrap(await app.queryCausalPath(source, sink, options)) : unsupported(source?.functionId ?? source ?? null, 'causal-path-producer-unavailable');
+    },
+  };
+
+  installRoutes(app, directFetch);
+  return adapter;
+}

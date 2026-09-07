@@ -1,0 +1,33 @@
+name: Phase 9 preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only the newest commit on a PR needs this validation. Explicit manual runs
+# remain isolated so one exact audit cannot cancel another.
+concurrency:
+  group: phase9-preflight-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase 9 foundation contracts
+        run: node tests/phase9/run.mjs
+      - name: Phase 8 handoff regression
+        run: npm run phase8:test
+      - name: Migration guardrails
+        run: npm run migration:test
+      - name: Semantic v2 contract
+        run: npm run semantic-v2:test

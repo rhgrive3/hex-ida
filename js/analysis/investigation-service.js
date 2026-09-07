@@ -1,0 +1,730 @@
+import { StringCollectionBudget, STRING_SCAN_BUDGET } from '../string-budget.js';
+import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
+import { rankCandidates } from '../rank.js';
+import { vendorsOf } from '../vendors.js';
+import { pinpointField, pinpointFunction, pinpointLocation } from '../pinpoint.js';
+import { VERDICT, verdictRank } from '../evidence.js';
+import { stringLookup } from '../role.js';
+import { makePinpointAnalyzer } from '../ui/pinpoint-runtime.js';
+import { autoAnalyze } from '../auto.js';
+
+const SERVICES = new WeakMap();
+const SCHEDULER_PRIORITIES = new Set(['user-blocking', 'user-visible', 'background']);
+
+function abortError(signal, message = 'Investigation cancelled') {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function strictInteger(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+  return null;
+}
+function epochOf(app) {
+  const raw = app?.backend?.gen ?? app?.analysisEpoch;
+  return strictInteger(raw, -1);
+}
+function storeValue(app, key) {
+  try { return app?.store?.get?.(key) ?? null; } catch { return null; }
+}
+function execRegions(app) {
+  const source = typeof app?.programRegions === 'function'
+    ? app.programRegions()
+    : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
+  return Array.from(source || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
+}
+function regionForAddress(app, address) {
+  if (address == null) return null;
+  try {
+    const direct = app?.executableRegionFor?.(BigInt(address));
+    if (direct) return direct;
+  } catch { /* derive below */ }
+  const value = BigInt(address);
+  return execRegions(app).find((r) => value >= BigInt(r.vmAddr) && value < BigInt(r.vmAddr) + BigInt(r.size)) ?? null;
+}
+function progress(options, value) { try { options?.onProgress?.(value); } catch { /* observer only */ } }
+function priorityOf(options) {
+  const value = typeof options?.priority === 'string' ? options.priority : 'user-visible';
+  return SCHEDULER_PRIORITIES.has(value) ? value : 'user-visible';
+}
+function scheduleProducer(options, signal) {
+  abortIfNeeded(signal);
+  const priority = priorityOf(options);
+  if (globalThis.scheduler?.postTask) {
+    return globalThis.scheduler.postTask(() => undefined, { priority, signal:signal ?? undefined });
+  }
+  if (priority === 'background' && typeof requestIdleCallback === 'function') {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        fn(value);
+      };
+      const onAbort = () => finish(reject, abortError(signal));
+      signal?.addEventListener('abort', onAbort, { once:true });
+      if (signal?.aborted) onAbort();
+      requestIdleCallback(() => finish(resolve), { timeout:250 });
+    });
+  }
+  return Promise.resolve();
+}
+function boundedBudget(value, fallback) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(fallback, Math.floor(value));
+}
+function budgetConfig(options, key, defaults) {
+  const override = options?.budget?.[key];
+  if (!override || typeof override !== 'object') return defaults;
+  const out = { ...defaults };
+  for (const name of Object.keys(defaults)) out[name] = boundedBudget(override[name], defaults[name]);
+  return out;
+}
+
+function budgetProfileKey(config) {
+  return Object.keys(config).sort().map((key) => `${key}:${config[key]}`).join('|');
+}
+function budgetProfileCovers(available, requested) {
+  if (!available || typeof available !== 'object') return false;
+  return Object.keys(requested).every((key) => {
+    const value = available[key];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= requested[key];
+  });
+}
+
+function waitShared(entry, signal, onLastWaiterAbort = null) {
+  abortIfNeeded(signal);
+  entry.waiters++;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      if (!entry.settled && entry.waiters === 0) {
+        onLastWaiterAbort?.();
+        entry.controller.abort('investigation-no-consumers');
+      }
+      reject(abortError(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) onAbort();
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
+function requestWithSignal(request, signal) {
+  if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  if (signal?.aborted) { request.cancel?.(); return Promise.reject(abortError(signal)); }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { try { request.cancel?.(); } catch { /* best effort */ } reject(abortError(signal)); };
+    signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) onAbort();
+    Promise.resolve(request).then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
+  });
+}
+
+function stringTargets(app) {
+  const regions = storeValue(app, 'regions') || [];
+  const priority = (r) => {
+    const section = r.section || '';
+    if (r.cstrings || /^__(cstring|objc_methname|objc_classname|swift5_reflstr|oslogstring)$/.test(section)) return 0;
+    if (/string|objc_method|objc_class|ustring/i.test(section)) return 1;
+    return 2;
+  };
+  return regions.filter((r) => BigInt(r?.size ?? 0) > 0n &&
+    (r.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section || '')))
+    .sort((a, b) => priority(a) - priority(b));
+}
+
+function splitLimit(remaining, size, remainingBytes) {
+  if (!(remaining > 0) || remainingBytes <= 0n) return 0;
+  return Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)));
+}
+
+function programComplete(program) {
+  if (!program) return false;
+  const graph = program.graphCompleteness;
+  if (graph && graph.complete === false) return false;
+  if (program.callsCapped || program.refsCapped || program.statsComplete === false) return false;
+  return true;
+}
+function programIndexComplete(program) {
+  return program?.completeness?.complete === true;
+}
+function completenessFor({ strings, program, shapes, metadata, goal }) {
+  const reasons = [];
+  if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
+  if (!programComplete(program)) reasons.push(program?.queryIncompleteReason || 'program-partial');
+  if (shapes && shapes.complete !== true) reasons.push(shapes.incompleteReason || 'shapes-partial');
+  if (metadata && metadata.complete === false && needsShapeEvidence(goal)) {
+    reasons.push(...(metadata.reasons?.length ? metadata.reasons : ['metadata-partial']));
+  }
+  return { complete:reasons.length === 0, reasons:[...new Set(reasons.filter(Boolean))] };
+}
+function needsShapeEvidence(goal) {
+  const expects = goal?.expects || {};
+  return !!(expects.numeric || expects.store || ['hp','attack','defense','damage','money','score','level','stamina','item'].includes(goal?.id));
+}
+function beats(next, current) {
+  if (!next?.top) return false;
+  if (!current?.top) return true;
+  const rank = verdictRank(next.verdict) - verdictRank(current.verdict);
+  if (rank !== 0) return rank > 0;
+  return Number(next.top?.fusion?.probability || 0) > Number(current.top?.fusion?.probability || 0);
+}
+
+function captureAnalysisBinding(app, resolved = {}) {
+  const symbols = app?.symbols ?? null;
+  const region = app?.codeRegion?.() || execRegions(app)[0] || null;
+  const epoch = epochOf(app);
+  const sliceIndex = strictInteger(storeValue(app, 'sliceIndex'), -1);
+  const symbolsGen = strictInteger(symbols?.gen, 0);
+  const program = resolved.program ?? app?.program ?? null;
+  return Object.freeze({
+    epoch,
+    sliceIndex,
+    symbols,
+    symbolsGen,
+    fields:resolved.fields ?? app?.fields ?? null,
+    program,
+    programPublished:program != null && app?.program === program,
+    programRegionKey:program == null ? null : execRegions(app).map((item) => item.id).join('|'),
+    shapes:resolved.shapes ?? app?.shapes ?? null,
+    region,
+    regionId:region?.id ?? null,
+  });
+}
+function analysisBindingCurrent(app, binding) {
+  if (!binding) return false;
+  const currentEpoch = epochOf(app);
+  if (currentEpoch == null || currentEpoch !== binding.epoch) return false;
+  const currentSlice = strictInteger(storeValue(app, 'sliceIndex'), -1);
+  if (currentSlice == null || currentSlice !== binding.sliceIndex) return false;
+  if (app?.symbols !== binding.symbols) return false;
+  const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
+  if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
+  if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
+  if (binding.program != null) {
+    if (binding.programPublished) {
+      if (app?.program !== binding.program) return false;
+    } else {
+      if (binding.program.symbols !== binding.symbols) return false;
+      const programGen = strictInteger(binding.program.gen, null);
+      if (programGen == null || programGen !== binding.symbolsGen) return false;
+      if (execRegions(app).map((item) => item.id).join('|') !== binding.programRegionKey) return false;
+    }
+  }
+  if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
+  const region = app?.codeRegion?.() || execRegions(app)[0] || null;
+  return (region?.id ?? null) === binding.regionId;
+}
+function assertAnalysisBinding(app, binding) {
+  if (analysisBindingCurrent(app, binding)) return;
+  const error = new Error('investigation-analysis-binding-changed');
+  error.code = 'ANALYSIS_SNAPSHOT_STALE';
+  error.stale = true;
+  throw error;
+}
+function rankedCandidateAddress(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function typedRankedCandidates(ranked, context) {
+  const candidates = Array.from(ranked?.candidates || [], (candidate, index) => {
+    const rawAddress = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
+    const address = rankedCandidateAddress(rawAddress);
+    const invalidAddress = rawAddress != null && address === undefined;
+    const evidenceIds = [...new Set((candidate?.reasons || [])
+      .flatMap((reason) => [reason?.evidenceId, reason?.id])
+      .filter((value) => typeof value === 'string' && value.length > 0))];
+    return Object.freeze({
+      ...candidate,
+      candidateId:invalidAddress
+        ? `${context.snapshotId}:candidate:invalid:${index}`
+        : `${context.snapshotId}:candidate:${address == null ? index : address.toString(16)}`,
+      entityId:invalidAddress || address == null ? null : `function:${address.toString(16)}`,
+      verdict:candidate?.verdict ?? VERDICT.NONE,
+      evidenceIds,
+      completeness:context.completeness.complete ? 'complete' : 'partial',
+      missing:context.completeness.complete ? [] : context.completeness.reasons.slice(),
+      snapshotId:context.snapshotId,
+    });
+  });
+  return Object.freeze({ ...(ranked || {}), candidates });
+}
+
+export class InvestigationService {
+  constructor(app) {
+    this.app = app;
+    this.shared = new Map();
+    this.pinCache = new Map();
+    this.cacheEpoch = epochOf(app);
+    this.cacheGeneration = 0;
+    this.pinSnapshotId = undefined;
+  }
+
+  #invalidateCaches(reason) {
+    const error = abortError(null, reason);
+    error.stale = true;
+    for (const entry of this.shared.values()) {
+      if (!entry?.settled && !entry?.controller?.signal?.aborted) entry.controller.abort(error);
+    }
+    this.shared.clear();
+    this.pinCache.clear();
+    this.pinSnapshotId = undefined;
+    this.cacheGeneration++;
+  }
+
+  #syncEpoch() {
+    const epoch = epochOf(this.app);
+    if (Object.is(epoch, this.cacheEpoch)) return epoch;
+    this.#invalidateCaches('Investigation epoch changed');
+    this.cacheEpoch = epoch;
+    return epoch;
+  }
+
+  #syncPinSnapshot(snapshotId) {
+    if (Object.is(snapshotId, this.pinSnapshotId)) return;
+    this.pinCache.clear();
+    this.pinSnapshotId = snapshotId;
+  }
+
+  #assertPinMutationCurrent(context, epoch, generation) {
+    this.#syncEpoch();
+    if (generation === this.cacheGeneration
+      && Object.is(epoch, this.cacheEpoch)
+      && Object.is(context?.snapshotId, this.pinSnapshotId)
+      && analysisBindingCurrent(this.app, context?.binding)) return;
+    const error = new Error('investigation-analysis-binding-changed');
+    error.code = 'ANALYSIS_SNAPSHOT_STALE';
+    error.stale = true;
+    throw error;
+  }
+
+  #shared(key, producer, options = {}) {
+    abortIfNeeded(options.signal);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
+    let entry = this.shared.get(key);
+    if (!entry || entry.controller.signal.aborted) {
+      const controller = new AbortController();
+      entry = { controller, waiters:0, settled:false, promise:null };
+      entry.promise = scheduleProducer(options, controller.signal)
+        .then(() => producer(controller.signal))
+        .then((value) => {
+          if (controller.signal.aborted || generation !== this.cacheGeneration
+            || !Object.is(epochOf(this.app), epoch)) {
+            if (!controller.signal.aborted) {
+              const error = abortError(null, 'Investigation epoch changed');
+              error.stale = true;
+              controller.abort(error);
+            }
+            throw abortError(controller.signal);
+          }
+          entry.value = value;
+          entry.settled = true;
+          return value;
+        })
+        .catch((error) => {
+          if (this.shared.get(key) === entry) this.shared.delete(key);
+          throw error;
+        });
+      this.shared.set(key, entry);
+    }
+    return waitShared(entry, options.signal ?? null, () => {
+      if (this.shared.get(key) === entry) this.shared.delete(key);
+    });
+  }
+
+  collectStrings(options = {}) {
+    const epoch = this.#syncEpoch();
+    if (this.app.stringIndex?.complete === true) return Promise.resolve(this.app.stringIndex);
+    const config = budgetConfig(options, 'strings', STRING_SCAN_BUDGET);
+    const profile = budgetProfileKey(config);
+    return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
+      const budget = new StringCollectionBudget(config);
+      const targets = stringTargets(this.app);
+      const current = storeValue(this.app, 'currentRegion');
+      const use = [], skipped = [];
+      for (const region of targets) {
+        const bytes = budget.requestBytes(Number(region.size));
+        if (bytes <= 0) { skipped.push(region); continue; }
+        use.push({ region, bytes });
+        if (bytes < Number(region.size)) skipped.push(region);
+      }
+      if (!use.length && current) {
+        const bytes = budget.requestBytes(Number(current.size));
+        if (bytes > 0) use.push({ region:current, bytes });
+      }
+      const rows = [];
+      let scannedBytes = 0, backendPartial = false;
+      for (let index = 0; index < use.length; index++) {
+        abortIfNeeded(signal);
+        if (epoch !== epochOf(this.app)) throw Object.assign(new Error('stale investigation strings'), { stale:true });
+        if (budget.exhausted) { skipped.push(...use.slice(index).map((x) => x.region)); break; }
+        const { region, bytes } = use[index];
+        const limit = budget.requestLimit();
+        if (limit <= 0) break;
+        const request = this.app.backend.strings({ regionId:region.id, min:4, maxBytes:bytes, limit }, (p) => progress(options, { phase:'strings', region:region.id, done:index + (p?.all ? Math.min(1, p.done / p.all) : 0), all:use.length }));
+        const result = await requestWithSignal(request, signal);
+        scannedBytes += Number(result?.scannedBytes || 0);
+        if (result?.complete !== true) { backendPartial = true; if (!skipped.includes(region)) skipped.push(region); }
+        for (const item of result?.results || []) {
+          if (!budget.accept(item.text)) break;
+          rows.push({ addr:item.addr, text:item.text, region });
+        }
+        if (result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
+      }
+      const truncated = !!budget.truncationReason || skipped.length > 0 || backendPartial;
+      Object.assign(rows, {
+        complete:!truncated,
+        truncated,
+        truncationReason:budget.truncationReason || (skipped.length ? 'input-budget' : backendPartial ? 'backend-partial' : null),
+        scannedBytes,
+        unscannedRegions:[...new Set(skipped.map((r) => r.id))],
+      });
+      Object.defineProperty(rows, 'budgetProfile', { value:Object.freeze({ ...config }), enumerable:false, configurable:true });
+      if (epoch === epochOf(this.app) && rows.complete === true) this.app.stringIndex = rows;
+      return rows;
+    }, options);
+  }
+
+  async discoverFunctions(options = {}) {
+    this.#syncEpoch();
+    const symbols = this.app.symbols;
+    if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
+    if (typeof this.app.ensureFunctions !== 'function') return symbols;
+    const region = this.app.codeRegion?.() || execRegions(this.app)[0] || null;
+    const optionsObj = {
+      signal:options.signal ?? null,
+      onProgress:options.onProgress,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    };
+    const callableOptions = Object.assign((p) => progress(options, p), optionsObj);
+    return this.app.ensureFunctions(region, callableOptions);
+  }
+
+  buildProgram(options = {}) {
+    const app = this.app;
+    const epoch = this.#syncEpoch();
+    const regions = execRegions(app);
+    if (!regions.length) return Promise.resolve(null);
+    const key = regions.map((r) => r.id).join('|');
+    const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
+    const profile = budgetProfileKey(limits);
+    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+      && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) {
+      return Promise.resolve(app.program);
+    }
+    const sharedKey = `program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`;
+    const settled = this.shared.get(sharedKey);
+    if (settled?.settled && (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
+      || !programIndexComplete(app.program) || !programIndexComplete(settled.value))) {
+      this.shared.delete(sharedKey);
+    }
+    return this.#shared(sharedKey, async (signal) => {
+      await this.discoverFunctions({ ...options, signal });
+      abortIfNeeded(signal);
+      const scans = [], failures = [];
+      let calls = limits.calls, refs = limits.refs, kinds = limits.kindWords;
+      let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
+      for (let index = 0; index < regions.length; index++) {
+        abortIfNeeded(signal);
+        const region = regions[index], size = BigInt(region.size);
+        const request = app.backend.scanProgram(region.id, (p) => progress(options, { phase:'program', region:region.id, done:index + (p?.all ? Math.min(1, p.done / p.all) : 0), all:regions.length }), {
+          callLimit:splitLimit(calls, size, remainingBytes),
+          refLimit:splitLimit(refs, size, remainingBytes),
+          kindLimit:splitLimit(kinds, size, remainingBytes),
+        });
+        try {
+          const scan = await requestWithSignal(request, signal);
+          if (scan && !scan.cancelled) {
+            scans.push(scan);
+            calls = Math.max(0, calls - Number(scan.callCount ?? scan.callFrom?.length ?? 0));
+            refs = Math.max(0, refs - Number(scan.refCount ?? scan.refFrom?.length ?? 0));
+            kinds = Math.max(0, kinds - Number(scan.kindsCovered ?? scan.kinds?.length ?? 0));
+          } else failures.push(`${region.id}:program-scan-cancelled`);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          failures.push(`${region.id}:program-scan-failed`);
+        }
+        remainingBytes -= size;
+      }
+      if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
+      abortIfNeeded(signal);
+      if (epoch !== epochOf(app)) throw Object.assign(new Error('stale investigation program'), { stale:true });
+      const merged = mergeProgramScans(scans, { regions, reasons:failures, limits });
+      const primary = regions.find((r) => r.section === '__text') || regions[0];
+      const program = new ProgramIndex(merged, app.symbols, primary);
+      if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) return app.program;
+      const cachedComplete = app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && programIndexComplete(app.program);
+      if (!cachedComplete || (programIndexComplete(program)
+        && budgetProfileCovers(limits, app.programBudgetProfile))) {
+        app.programScan = merged;
+        app.programKey = key;
+        app.programBudgetProfile = Object.freeze({ ...limits });
+        app.program = program;
+      }
+      return program;
+    }, options);
+  }
+
+  collectShapes(options = {}) {
+    const epoch = this.#syncEpoch();
+    if (this.app.shapes) return Promise.resolve(this.app.shapes);
+    return this.#shared(`shapes:${epoch}`, (signal) => {
+      const optionsObj = {
+        signal,
+        onProgress:(p) => progress(options, p),
+        priority:priorityOf(options),
+        budget:options.budget ?? null,
+      };
+      const callableOptions = Object.assign((p) => progress(options, p), optionsObj);
+      return this.app.ensureShapes(callableOptions);
+    }, options);
+  }
+
+  ensureMetadata(options = {}) {
+    const epoch = this.#syncEpoch();
+    return this.#shared(`metadata:${epoch}`, async (signal) => {
+      abortIfNeeded(signal);
+      const sliceIndex = strictInteger(storeValue(this.app, 'sliceIndex'), -1);
+      const work = [];
+      const producerOptions = { signal, priority:priorityOf(options), budget:options.budget ?? null };
+      if (typeof this.app.ensureObjc === 'function' && sliceIndex != null && sliceIndex >= 0) {
+        work.push(Promise.resolve().then(() => this.app.ensureObjc(sliceIndex, producerOptions)));
+      }
+      if (typeof this.app.ensureSwift === 'function') {
+        work.push(Promise.resolve().then(() => this.app.ensureSwift(producerOptions)));
+      }
+      const settled = await Promise.allSettled(work);
+      abortIfNeeded(signal);
+      if (epoch !== epochOf(this.app)) throw Object.assign(new Error('stale investigation metadata'), { stale:true });
+      const failures = settled.filter((s) => s.status === 'rejected');
+      const complete = failures.length === 0;
+      return {
+        fields:this.app.fields,
+        objc:this.app.objcModel,
+        swift:this.app.swiftModel,
+        complete,
+        reasons:failures.map((f) => f.reason?.message || 'metadata-producer-failure'),
+      };
+    }, options);
+  }
+
+  #addressAwareAnalyzer(signal) {
+    const cache = new Map();
+    return async (address, end, options = {}) => {
+      const region = regionForAddress(this.app, address) || this.app.codeRegion?.();
+      if (!region) return null;
+      let analyzer = cache.get(region.id);
+      if (!analyzer) { analyzer = makePinpointAnalyzer(this.app, region, signal); cache.set(region.id, analyzer); }
+      return analyzer ? analyzer(address, end, options) : null;
+    };
+  }
+
+  #globalAccessScanner(signal) {
+    return async (list, options = {}) => {
+      const offsets = (list || []).map((item) => ({ offset:item.offset, size:item.size || 0 }));
+      const merged = new Map();
+      if (!offsets.length) return merged;
+      for (const region of execRegions(this.app)) {
+        abortIfNeeded(signal);
+        const request = this.app.backend.fieldAccessMany(region.id, offsets);
+        const result = await requestWithSignal(request, signal);
+        for (const [key, rows] of result || []) {
+          const current = merged.get(key) || [];
+          current.push(...(rows || []).map((row) => ({ ...row, regionId:region.id })));
+          merged.set(key, current);
+        }
+      }
+      return merged;
+    };
+  }
+
+  async prepareGoal(goal, options = {}) {
+    abortIfNeeded(options.signal);
+    this.#syncEpoch();
+    const shapeNeeded = needsShapeEvidence(goal);
+    const stringsP = this.collectStrings(options);
+    const shapesP = shapeNeeded ? this.collectShapes(options) : Promise.resolve(null);
+    const metadataP = shapeNeeded ? this.ensureMetadata(options) : Promise.resolve({ fields:this.app.fields });
+    const programP = metadataP.then(() => this.buildProgram(options));
+    const [strings, program, shapes] = await Promise.all([stringsP, programP, shapesP]);
+    const metadata = await metadataP;
+    abortIfNeeded(options.signal);
+    const binding = captureAnalysisBinding(this.app, { program, shapes, fields:metadata?.fields ?? this.app.fields });
+    const queryOptions = { signal:options.signal, priority:priorityOf(options), budget:options.budget ?? null };
+    const snapshot = await this.app.analysisQueries.snapshot(queryOptions);
+    abortIfNeeded(options.signal);
+    this.#syncEpoch();
+    assertAnalysisBinding(this.app, binding);
+    const context = {
+      snapshot,
+      snapshotId:snapshot.snapshotId,
+      strings,
+      program:binding.program,
+      shapes:binding.shapes,
+      symbols:binding.symbols,
+      fields:binding.fields,
+      region:binding.region,
+      metadata,
+      goal,
+      binding,
+    };
+    context.completeness = completenessFor(context);
+    return Object.freeze(context);
+  }
+
+  async investigate(goal, options = {}) {
+    const context = await this.prepareGoal(goal, options);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
+    assertAnalysisBinding(this.app, context.binding);
+    const ranked = rankCandidates({
+      goal,
+      strings:context.strings,
+      program:context.program,
+      symbols:context.symbols,
+      region:context.region,
+      limit:options.limit ?? 40,
+      vendors:vendorsOf(context.fields),
+    });
+    abortIfNeeded(options.signal);
+    this.#syncPinSnapshot(context.snapshotId);
+    const cacheKey = `${context.snapshotId}:${goal?.id || ''}:${goal?.text || ''}`;
+    let pin = this.pinCache.get(cacheKey) || null;
+    if (!pin) {
+      const common = {
+        goal,
+        fields:context.fields,
+        shapes:context.shapes,
+        program:context.program,
+        symbols:context.symbols,
+        strings:context.strings,
+        region:context.region,
+        map:null,
+        textAt:stringLookup(context.strings || []),
+        signal:options.signal || null,
+        analyze:this.#addressAwareAnalyzer(options.signal || null),
+        scanAccess:this.#globalAccessScanner(options.signal || null),
+        budget:{ left:boundedBudget(options?.budget?.pinpoint, 48) },
+        limit:12,
+        onProgress:(value) => progress(options, { phase:'pinpoint', ...value }),
+      };
+      let candidate = null;
+      const attempt = async (fn) => {
+        try { return await fn(); }
+        catch (error) { if (options.signal?.aborted) throw error; return null; }
+      };
+      if (context.fields?.classCount) candidate = await attempt(() => pinpointField(common));
+      const undecided = (value) => !value?.top || verdictRank(value.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+      if (undecided(candidate) && (ranked.candidates.length || context.shapes?.size)) {
+        const location = await attempt(() => pinpointLocation({ ...common, ranked:ranked.candidates }));
+        if (beats(location, candidate)) candidate = location;
+      }
+      if (undecided(candidate) && ranked.candidates.length) {
+        const fn = await attempt(() => pinpointFunction({ ...common, ranked:ranked.candidates }));
+        if (beats(fn, candidate)) candidate = fn;
+      }
+      pin = candidate;
+      if (!options.signal?.aborted) {
+        this.#assertPinMutationCurrent(context, epoch, generation);
+        this.pinCache.set(cacheKey, pin);
+      }
+    }
+    await this.app.analysisQueries.binaryInfo(context.snapshot, {
+      signal:options.signal,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    });
+    abortIfNeeded(options.signal);
+    this.#syncEpoch();
+    assertAnalysisBinding(this.app, context.binding);
+    const typedRanked = typedRankedCandidates(ranked, context);
+    return Object.freeze({
+      snapshotId:context.snapshotId,
+      snapshot:context.snapshot,
+      completeness:context.completeness,
+      ranked:typedRanked,
+      candidates:typedRanked.candidates,
+      pin,
+      context,
+    });
+  }
+
+  async overview(options = {}) {
+    const goal = { id:'overview', expects:{ numeric:true, store:true, call:true, compare:true } };
+    const context = await this.prepareGoal(goal, options);
+    let recognition = null;
+    try {
+      recognition = await this.app.ensureRecognition({
+        signal:options.signal,
+        priority:priorityOf(options),
+        budget:options.budget ?? null,
+        maxFunctions:350000,
+        knowledgeLimit:512,
+      });
+    } catch (error) { if (options.signal?.aborted) throw error; }
+    const report = await autoAnalyze({
+      strings:context.strings,
+      program:context.program,
+      symbols:context.symbols,
+      region:context.region,
+      fields:context.fields,
+      shapes:context.shapes,
+      recognition,
+      analyze:this.#addressAwareAnalyzer(options.signal || null),
+      scanAccess:this.#globalAccessScanner(options.signal || null),
+      isCancelled:() => !!options.signal?.aborted,
+      onProgress:(value) => progress(options, value),
+    });
+    await this.app.analysisQueries.binaryInfo(context.snapshot, {
+      signal:options.signal,
+      priority:priorityOf(options),
+      budget:options.budget ?? null,
+    });
+    abortIfNeeded(options.signal);
+    this.#syncEpoch();
+    assertAnalysisBinding(this.app, context.binding);
+    report.snapshotId = context.snapshotId;
+    report.completeness = context.completeness;
+    return Object.freeze({ snapshotId:context.snapshotId, snapshot:context.snapshot, completeness:context.completeness, report, context });
+  }
+}
+
+export function investigationServiceFor(app) {
+  if (!app) throw new TypeError('investigation-app-required');
+  let service = SERVICES.get(app);
+  if (!service) { service = new InvestigationService(app); SERVICES.set(app, service); }
+  return service;
+}
+
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });
