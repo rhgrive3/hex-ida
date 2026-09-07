@@ -14,6 +14,17 @@ function lift(mnemonic, text) {
   });
 }
 
+function liftImmediate(mnemonic, value) {
+  caseId += 1;
+  return liftArm64MachineEffects({
+    instructionId: `audit-dsb-nxs-imm-${caseId}`,
+    architectureId: 'arm64',
+    mode: 'a64',
+    mnemonic,
+    ops: [{ k:'imm', value:BigInt(value) }],
+  });
+}
+
 function assertBarrier(bundle, option) {
   assert.ok(bundle, 'expected a bundle');
   assert.notEqual(bundle.completeness, 'partial', `dsb ${option} must not be an unsupported-option partial`);
@@ -27,6 +38,25 @@ test('6073: DSB nXS selectors reach exact barrier semantics', () => {
   for (const option of ['oshnxs', 'nshnxs', 'ishnxs', 'synxs']) {
     assertBarrier(lift('dsb', option), option);
   }
+});
+
+test('6073: encoded DSB nXS immediates use their architectural selectors', () => {
+  for (const [immediate, option, domain] of [
+    [16, 'oshnxs', 'outer-shareable'],
+    [20, 'nshnxs', 'non-shareable'],
+    [24, 'ishnxs', 'inner-shareable'],
+    [28, 'synxs', 'full-system'],
+  ]) {
+    const bundle = liftImmediate('dsb', immediate);
+    assertBarrier(bundle, option);
+    const op = bundle.operations.find((item) => item?.kind === 'barrier');
+    assert.equal(op?.scope?.option, option);
+    assert.equal(op?.scope?.domain, domain);
+    assert.equal(op?.scope?.nxs, true);
+    assert.equal(op?.metadata?.crm, immediate);
+  }
+  assert.equal(liftImmediate('dsb', 17)?.completeness, 'partial',
+    'unassigned immediate encodings must remain fail-closed');
 });
 
 test('6073: nXS barriers keep their base domain', () => {
