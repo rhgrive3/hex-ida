@@ -23,6 +23,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
   let operations = 0;
   let stopped = false;
   let reason = null;
+  let nextTimeCheck = 4096;
 
   const stop = (message) => {
     if (!stopped) {
@@ -54,7 +55,8 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
       if (!Number.isSafeInteger(cost) || cost < 0) return stop('decode work operation cost is invalid');
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`decode work exceeds ${resolved.maxOperations} operations`);
-      if (operations === 1 || (operations & 0xfff) === 0) {
+      if (operations === 1 || operations >= nextTimeCheck) {
+        if (operations >= nextTimeCheck) nextTimeCheck = operations + 4096;
         if (now() - started > resolved.maxWallMs) return stop(`decode time exceeds ${resolved.maxWallMs} ms`);
       }
       return true;

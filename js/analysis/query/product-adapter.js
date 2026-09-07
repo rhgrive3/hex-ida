@@ -40,31 +40,6 @@ function waitForProducer(promise, signal) {
   });
 }
 
-function waitForOwnedRequest(request, signal) {
-  abortIfNeeded(signal);
-  if (!signal) return Promise.resolve(request);
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      fn(value);
-    };
-    const onAbort = () => {
-      try { request?.cancel?.(); } catch { /* best effort; caller cancellation is authoritative */ }
-      try { abortIfNeeded(signal); }
-      catch (error) { finish(reject, error); }
-    };
-    Promise.resolve(request).then(
-      (value) => finish(resolve, value),
-      (error) => finish(reject, error),
-    );
-    signal.addEventListener('abort', onAbort, { once: true });
-    if (signal.aborted) onAbort();
-  });
-}
-
 function cancellationScopedBase(app, options = {}) {
   const signal = options.signal ?? null;
   const scoped = Object.create(app ?? null);
@@ -82,7 +57,11 @@ function cancellationScopedBase(app, options = {}) {
     if (typeof app.backend.search === 'function') {
       backend.search = (query, onProgress) => {
         abortIfNeeded(signal);
-        return waitForOwnedRequest(app.backend.search(query, onProgress), signal);
+        // The base adapter owns request cancellation and the registration
+        // race. Keeping one signal owner prevents an inner rejected waiter
+        // from becoming unhandled when the outer adapter observes the same
+        // abort during listener registration.
+        return app.backend.search(query, onProgress);
       };
     }
     scoped.backend = backend;

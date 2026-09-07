@@ -22,10 +22,14 @@ export function parseSemver(value) {
   if (typeof value !== "string") throw new TypeError("semver-invalid");
   const match = SEMVER_RE.exec(value.trim());
   if (!match) throw new TypeError("semver-invalid");
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger)) throw new TypeError("semver-invalid");
   return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
+    major,
+    minor,
+    patch,
     raw: value.trim(),
   };
 }
@@ -33,7 +37,9 @@ export function parseSemver(value) {
 export function isSemverCompatible(requestedStr, supportedStr) {
   const req = parseSemver(requestedStr);
   const sup = parseSemver(supportedStr);
-  return req.major === sup.major && req.minor <= sup.minor;
+  if (req.major !== sup.major) return false;
+  if (req.minor !== sup.minor) return req.minor < sup.minor;
+  return req.patch <= sup.patch;
 }
 
 function deepFreeze(value, seen = new WeakSet()) {
@@ -65,14 +71,21 @@ export function validatePluginManifest(manifest) {
   parseSemver(manifest.apiVersion);
 
   let permissions = {};
-  if (manifest.permissions != null) {
-    if (!isPlainObject(manifest.permissions)) {
+  const rawPermissions = manifest.permissions;
+  if (rawPermissions != null) {
+    if (!isPlainObject(rawPermissions)) {
       throw new TypeError("plugin-manifest-permissions-invalid");
     }
-    for (const key of Object.keys(manifest.permissions)) {
+    for (const key of Object.keys(rawPermissions)) {
       if (!ALLOWED_PERMISSIONS.has(key)) throw new TypeError(`plugin-manifest-unknown-permission:${key}`);
     }
-    permissions = { binaryRead: Boolean(manifest.permissions.binaryRead) };
+    const binaryRead = Object.hasOwn(rawPermissions, "binaryRead")
+      ? rawPermissions.binaryRead
+      : undefined;
+    if (binaryRead !== undefined && typeof binaryRead !== "boolean") {
+      throw new TypeError("plugin-manifest-permissions-invalid");
+    }
+    permissions = { binaryRead: binaryRead === true };
   }
 
   if (!Array.isArray(manifest.supportedTargets) || manifest.supportedTargets.length === 0) {

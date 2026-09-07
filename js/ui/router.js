@@ -3,8 +3,12 @@
 function normalize(path) {
   let value = String(path || '/investigate').trim();
   if (value.startsWith('#')) value = value.slice(1);
-  if (!value.startsWith('/')) value = '/' + value;
-  return value.replace(/\/{2,}/g, '/');
+  const queryIndex = value.indexOf('?');
+  const search = queryIndex >= 0 ? value.slice(queryIndex) : '';
+  let pathname = queryIndex >= 0 ? value.slice(0, queryIndex) : value;
+  if (!pathname.startsWith('/')) pathname = '/' + pathname;
+  pathname = pathname.replace(/\/{2,}/g, '/');
+  return pathname + search;
 }
 
 function escapeSegment(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

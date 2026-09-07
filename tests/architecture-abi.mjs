@@ -15,6 +15,7 @@ import {
 } from '../js/targets/abi/index.js';
 import { platformProfile } from '../js/targets/platform/index.js';
 import { classifyCallArguments } from '../js/ir-core.js';
+import './issue-4039-abi-prototype-metadata-authority.mjs';
 
 const BASE = 0x100000000n;
 const region = { vmAddr:BASE, size:0x100n };

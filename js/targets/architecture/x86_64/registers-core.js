@@ -166,7 +166,8 @@
   }
 
   function normalizeName(value) {
-    return String(value ?? '').trim().toLowerCase().replace(/^%/, '');
+    if (typeof value !== 'string') return '';
+    return value.trim().toLowerCase().replace(/^%/, '');
   }
 
   function registerDescriptor(value) {
