@@ -137,4 +137,3 @@ test('#6282 initial undersized directory sizes 1..7 fail closed', () => {
     assert.equal(image.relocations.length, 0, `size ${size} must not publish relocations`);
   }
 });
-
