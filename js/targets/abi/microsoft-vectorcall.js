@@ -115,6 +115,19 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
   const prototype = callPrototypeOf(instruction, options);
   const convention = conventionOf(prototype, options);
   if (convention && !VECTORCALL_NAMES.has(convention)) return unsupported(convention);
+  /* MSVC rejects variadic `__vectorcall` prototypes outright ("can't use a
+   * vararg variable length argument list"), so the combination is a
+   * contradictory prototype, not a partially known ABI: fail closed instead of
+   * publishing exact fixed-parameter placements for a call that cannot exist. */
+  if (prototype?.variadic === true || prototype?.varargs === true) {
+    return {
+      srcs:[], arguments:[], stackArguments:[], stackArgsUnknown:true,
+      stackArgsMayContainPointers:true, partial:true, unsupported:true,
+      reason:'microsoft-vectorcall-variadic-unsupported',
+      callingConvention:convention || 'vectorcall',
+      evidence:'unsupported-microsoft-vectorcall-variadic',
+    };
+  }
   const parameters = parameterList(prototype);
   if (!parameters) {
     const srcs = [
