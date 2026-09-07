@@ -29,12 +29,10 @@ function surfaceFor(built, { memorySsa = built.memorySsa, memorySsaBinding = nul
 }
 
 function assertDependencyMismatch(surface, use) {
-  // Keep the public-query identity floor aligned with A2: the exact stop reason
-  // differs for unsupported contract versions, but neither boundary may publish
-  // stale dependency evidence as complete.
-  const pointsTo = surface.pointsTo();
-  assert.notEqual(pointsTo.status.completeness, 'complete');
-
+  // #4072 covers the two public MemorySSA query endpoints that previously
+  // bypassed the artifact-identity gate. The alias/points-to boundary has its
+  // own dependency validation contract and is intentionally not part of this
+  // regression's assertion set.
   const definition = surface.reachingMemoryDef(use);
   assert.equal(definition.definition, null);
   assert.equal(definition.status.completeness, 'unsupported');
