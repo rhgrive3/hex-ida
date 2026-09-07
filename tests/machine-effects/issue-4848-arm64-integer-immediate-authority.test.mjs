@@ -180,6 +180,24 @@ assertAuthorityFailure(
   'throwing instruction getPrototypeOf trap',
 );
 
+let inheritedKindReads = 0;
+const inheritedKindPrototype = {
+  get k() {
+    inheritedKindReads += 1;
+    return 'imm';
+  },
+};
+const inheritedImmediate = Object.create(inheritedKindPrototype);
+Object.defineProperties(inheritedImmediate, {
+  value: { enumerable: true, value: 1n },
+  text: { enumerable: true, value: '#inherited-kind' },
+});
+assertAuthorityFailure(
+  lift('add', [gp(0), gp(1), inheritedImmediate]),
+  'inherited immediate kind accessor',
+);
+assert.equal(inheritedKindReads, 0, 'inherited kind accessor must not be invoked');
+
 for (const field of ['shift','extend']) {
   let reads = 0;
   const op = imm(1n);
