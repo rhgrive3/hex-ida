@@ -9,6 +9,27 @@ import { STACK_TOP } from '../emu.js';
 const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
+// Execution budgets measure elapsed time, so they need a monotonic clock:
+// Date.now() jumps with NTP/host/VM corrections and would defer or fire the
+// sandbox resume timeout at the wrong moment (#6075).
+function defaultMonotonicNow() {
+  try {
+    const perf = globalThis.performance;
+    if (typeof perf?.now === 'function') {
+      const now = perf.now();
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* try the next monotonic source */ }
+  try {
+    const hrtime = globalThis.process?.hrtime;
+    if (typeof hrtime?.bigint === 'function') {
+      const now = Number(hrtime.bigint()) / 1e6;
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* fall through to the wall clock */ }
+  return Date.now();
+}
+
 function cloneRegisters(emu) {
   const out = {};
   for (let i = 0; i <= 30; i++) out[`x${i}`] = emu.get(`x${i}`);
@@ -269,7 +290,12 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
-    const started = Date.now();
+    // Injectable per call or at construction time (tests, embedders) so the
+    // budget is observable without relying on the wall clock (#6075).
+    const monotonicNow = typeof options.monotonicNow === 'function'
+      ? options.monotonicNow
+      : (typeof this.options?.monotonicNow === 'function' ? this.options.monotonicNow : defaultMonotonicNow);
+    const started = monotonicNow();
     const onAbort = () => {
       run.cancelled = true;
       run.sandbox.emulator.stopped = 'cancelled';
@@ -285,7 +311,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
-        else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
+        else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
@@ -401,8 +427,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
     }
     if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
-    if (!data.length) return { written:0 };
-    const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
+    // The address is validated before the empty-data shortcut: an empty write
+    // must not succeed for a malformed/negative address (#6077).
+    const start = asAddress(address);
+    if (!data.length) { memoryMap.assert(start,0,'write'); return { written:0 }; }
+    memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
       for (let i=0;i<data.length;i+=8) {
