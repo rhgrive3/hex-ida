@@ -35,6 +35,14 @@ function exactIntegerConstant(valuesById, nodesById, valueId) {
   if (value.definitionNodeId != null && definitionNodeId == null) return null;
   const node = definitionNodeId == null ? null : nodesById.get(definitionNodeId);
   if (!node || node.kind !== 'const') return null;
+  // The carry-in is a machine integer: a constant payload of a different
+  // semantic kind (e.g. a float) is not an integer 0 even when its raw value
+  // text parses as one (#5947).
+  for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const kind = candidate.kind;
+    if (kind !== 'bitvector' && kind !== 'integer') return null;
+  }
   let exact = null;
   for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
     const integer = parseInteger(candidate);
