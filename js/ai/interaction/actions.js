@@ -10,6 +10,7 @@
 import { toast } from '../../ui.js';
 import { pick } from '../../i18n.js';
 import { showXrefs, showValueFlow } from '../../panels.js';
+import { addressText } from '../validation.js';
 
 function narrow() {
   return typeof window !== 'undefined' && window.innerWidth < 900;
@@ -88,7 +89,13 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         const semantic = app.semantic;
         const region = app.store.get('currentRegion');
         const model = semantic && semantic.model;
-        const insn = model?.instructions?.find((i) => i.address === addr);
+        // sanitizeActions() hands the action a canonical string address while
+        // semantic instructions carry BigInt addresses, so a raw `===` missed
+        // the target row and dropped the user into a generic navigation
+        // (#6098). Compare both sides through the same canonical address text.
+        const wanted = addressText(addr);
+        const insn = wanted == null ? null
+          : model?.instructions?.find((i) => addressText(i.address) === wanted);
         const row = insn?.row ?? (app.viewer?.rowOfAddress ? app.viewer.rowOfAddress(addr) : null);
         if (model && row != null && Number.isFinite(row)) showValueFlow(app, model, row, region);
         else if (ui && ui.router) ui.router.navigate('/function/' + addr.toString() + '/overview');
