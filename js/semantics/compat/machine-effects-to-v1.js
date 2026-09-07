@@ -36,6 +36,13 @@ function unique(values) {
 
 function safeBigInt(value) {
   if (value == null) return null;
+  if (typeof value === 'string') {
+    // Only explicit integer syntax may become an address (#5825): BigInt('')
+    // is 0n, which fabricated exact direct targets out of blank strings.
+    const text = value.trim();
+    if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
   try { return typeof value === 'bigint' ? value : BigInt(value); }
   catch { return null; }
 }
@@ -93,12 +100,14 @@ function directTargetOf(value) {
   if (value == null) return null;
   if (typeof value === 'bigint' || typeof value === 'number' || typeof value === 'string') {
     const n = safeBigInt(value);
-    return n == null ? value : n;
+    // A malformed target is not an indirect expression and must never remain
+    // as a raw string in a v1 direct-target field (#5825).
+    return n == null ? null : n;
   }
   if (typeof value !== 'object') return null;
   if (value.kind === 'bitvector' || value.kind === 'absolute-address') return safeBigInt(value.value);
-  if (value.address != null) return safeBigInt(value.address) ?? value.address;
-  if (value.value != null && value.kind == null) return safeBigInt(value.value) ?? value.value;
+  if (value.address != null) return safeBigInt(value.address);
+  if (value.value != null && value.kind == null) return safeBigInt(value.value);
   return null;
 }
 
@@ -334,7 +343,12 @@ function addressIndexTerm(value) {
   if (value.kind === 'shift-left') {
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
-    return { ...nested, scale:Number(value.amount || 0) || 0 };
+    // (x << a) << b == x << (a + b): nested shifts compose their exponents.
+    // Overwriting the recursive scale dropped the inner shift and projected a
+    // different effective address (#5827, sibling of #5398).
+    const amount = Number(value.amount ?? 0);
+    if (!Number.isSafeInteger(amount) || amount < 0) return null;
+    return { ...nested, scale:nested.scale + amount };
   }
   return null;
 }
