@@ -90,6 +90,7 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
       // otherwise arrival order alone decided survivors (#5910).
       if (staged.size >= cap) {
         const weakestStaged = worstEntry(staged);
+        if (weakestStaged.worstKey != null && amount <= weakestStaged.worstScore) return;
         if (weakestStaged.worstKey != null) staged.delete(weakestStaged.worstKey);
       }
       pending = newCandidate(addr);

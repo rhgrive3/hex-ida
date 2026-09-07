@@ -45,6 +45,26 @@ const nested = evaluatePattern({
 assert.equal(nested.value.fields.tail.provenance.offset, '4');
 assert.equal(nested.value.fields.u.provenance.length, '4');
 
+// Named fixed-size alternatives must use the same type map as readType().
+const named = evaluatePattern({
+  kind: 'module', root: 'Root', structs: [
+    { kind: 'struct', name: 'Pair', fields: [
+      { name: 'a', type: { kind: 'primitive', name: 'u8' } },
+      { name: 'b', type: { kind: 'primitive', name: 'u8' } },
+    ] },
+    { kind: 'struct', name: 'Root', fields: [
+      { name: 'u', type: { kind: 'union', options: [
+        { kind: 'named', name: 'Pair' },
+        { kind: 'primitive', name: 'u32le' },
+      ] } },
+      { name: 'tail', type: { kind: 'primitive', name: 'u8' } },
+    ] },
+  ],
+}, bytes);
+assert.equal(named.status, 'complete', 'fixed-size named union alternative must be statically sized');
+assert.equal(named.value.fields.u.provenance.length, '4');
+assert.equal(named.value.fields.tail.provenance.offset, '4');
+
 // A dynamically sized alternative keeps the union unsizeable: the evaluator
 // must fail closed (partial) instead of returning a complete result that
 // consumes 0 bytes. An expression-form count is readable at runtime but has

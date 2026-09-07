@@ -62,4 +62,31 @@ test('issue-5910: cumulative evidence admits a staged candidate over the weakest
   assert.equal(result.candidates[0]?.address, TARGET);
   assert.ok(result.candidates.some((candidate) => candidate.address === TARGET));
   assert.equal(result.candidates[0]?.score, 12);
+
+  const stagedTarget = 0x9100n;
+  const stagedResult = await planAnalysisGoal(query, {
+    candidateFunctions: [
+      ...weakCandidates,
+      { addr: stagedTarget, source: 'recognition', score: 15 },
+      ...Array.from({ length: 47 }, (_, index) => ({
+        addr: 0x200000000n + BigInt(index * 0x10),
+        source: 'recognition',
+        score: 20,
+      })),
+      // This lower-scoring arrival must not evict the stronger staged entry.
+      { addr: 0x9200n, source: 'recognition', score: 5 },
+      { addr: stagedTarget, source: 'recognition', score: 10 },
+    ],
+  }, {
+    tools,
+    maxFunctions: 2,
+    maxDisassembly: 16,
+    maxSearchResults: 8,
+    maxExpansions: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(stagedResult.candidateSources.stored.recognition, 48);
+  assert.ok(stagedResult.candidates.some((candidate) => candidate.address === stagedTarget));
+  assert.equal(stagedResult.candidates.find((candidate) => candidate.address === stagedTarget)?.score, 25);
 });

@@ -192,13 +192,21 @@ function knownExpression(expression, values) {
   return { known: true, value: left.value >= right.value };
 }
 
-function staticSize(type, ctx, values = {}) {
+function staticSize(type, ctx, values = {}, resolving = new Set()) {
   if (type.kind === 'primitive') return PRIMITIVES.get(type.name).bytes;
   if (type.kind === 'pointer' || type.kind === 'offset') return 8;
-  if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values);
+  if (type.kind === 'named') {
+    if (resolving.has(type.name)) return null;
+    const target = ctx.types?.get(type.name);
+    if (!target) return null;
+    const next = new Set(resolving);
+    next.add(type.name);
+    return staticSize(target, ctx, values, next);
+  }
+  if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values, resolving);
   if (type.kind === 'array' && Number.isSafeInteger(type.count)) {
     if (type.count === 0) return 0;
-    const item = staticSize(type.element, ctx, values); return item == null ? null : item * type.count;
+    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * type.count;
   }
   if (type.kind === 'struct') {
     let total = 0;
@@ -208,7 +216,7 @@ function staticSize(type, ctx, values = {}) {
         if (!state.known) return null;
         if (!state.value) continue;
       }
-      const size = staticSize(field.type, ctx, values);
+      const size = staticSize(field.type, ctx, values, resolving);
       if (size == null) return null;
       if (field.at == null) total += size;
     }
@@ -217,8 +225,8 @@ function staticSize(type, ctx, values = {}) {
   if (type.kind === 'conditional') {
     const state = knownExpression(type.when, values);
     if (!state.known) return null;
-    if (state.value) return staticSize(type.then, ctx, values);
-    return type.else ? staticSize(type.else, ctx, values) : 0;
+    if (state.value) return staticSize(type.then, ctx, values, resolving);
+    return type.else ? staticSize(type.else, ctx, values, resolving) : 0;
   }
   if (type.kind === 'union') {
     // A fixed-alternative union occupies at least its largest alternative
@@ -226,7 +234,7 @@ function staticSize(type, ctx, values = {}) {
     // unsizeable so callers fail closed instead of advancing 0 bytes.
     let max = null;
     for (const option of type.options) {
-      const size = staticSize(option, ctx, values);
+      const size = staticSize(option, ctx, values, resolving);
       if (size == null) return null;
       if (max == null || size > max) max = size;
     }
