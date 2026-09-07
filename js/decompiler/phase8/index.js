@@ -29,7 +29,7 @@ import { DCE_PASS, runDcePass } from './dce.js';
 import { INDUCTION_PASS, runInductionPass } from './induction.js';
 import { STRUCTURING_PASS, runStructuringPass } from './structuring.js';
 import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
-import { PROVIDER_INTERFACE_VERSION, PROVIDER_PASS, REGISTERED_PROVIDERS, runProviderPass } from './providers.js';
+import { PROVIDER_INTERFACE_VERSION, PROVIDER_PASS, REGISTERED_PROVIDERS, createProvider, runProviderPass } from './providers.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
@@ -132,6 +132,26 @@ export function phase8Passes({ stages = null } = {}) {
   }
   return Object.freeze([...byStage.keys()].sort((left, right) => left - right)
     .flatMap((stageIndex) => orderWithinStage(byStage.get(stageIndex))));
+}
+
+function canonicalProviderSnapshot(provider) {
+  if (provider == null || typeof provider !== 'object' || Array.isArray(provider)) {
+    throw new TypeError('phase8-provider-invalid');
+  }
+  // Read every caller-owned authority field exactly once. The returned object is
+  // the only provider identity/execution authority used by the rest of a
+  // vertical, so stateful accessors cannot describe one registry to the digest
+  // and another registry to execution/publication.
+  const id = provider.id;
+  const version = provider.version;
+  const interfaceVersion = provider.interfaceVersion;
+  const kinds = provider.kinds;
+  const refine = provider.refine;
+  if (!Number.isSafeInteger(interfaceVersion) || interfaceVersion <= 0) {
+    throw new TypeError('phase8-provider-interface-version-required');
+  }
+  const canonical = createProvider({ id, version, kinds, refine });
+  return Object.freeze({ ...canonical, interfaceVersion });
 }
 
 function providerRegistryMaterial(providers) {
@@ -255,7 +275,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const configuredProviders = !hasProviderPass || context.opts?.phase8Providers === false
     ? []
     : (context.providers ?? REGISTERED_PROVIDERS);
-  const providers = Object.freeze([...configuredProviders]);
+  const providers = hasProviderPass
+    ? Object.freeze([...configuredProviders].map(canonicalProviderSnapshot))
+    : Object.freeze([]);
   const registryDigest = passRegistryDigest(passes, providers);
   const contextDescriptors = Object.getOwnPropertyDescriptors(context);
   delete contextDescriptors.providers;

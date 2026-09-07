@@ -169,3 +169,99 @@ test('vertical snapshots provider authority once for digest and execution', () =
     'published provider material must use the same provider snapshot as the digest',
   );
 });
+
+test('vertical snapshots each provider object before digest, execution and publication', () => {
+  const reads = { id: 0, version: 0, interfaceVersion: 0, kinds: 0, refine: 0 };
+  const executions = [];
+  const firstRefine = () => {
+    executions.push('first');
+    return [{
+      kind: 'idiom',
+      name: 'canonical-provider-snapshot',
+      certainty: 'candidate',
+      targets: ['value:snapshot'],
+      evidence: ['the canonical provider snapshot executed'],
+    }];
+  };
+  const secondRefine = () => { executions.push('second'); return []; };
+  const rawProvider = Object.freeze(Object.defineProperties({}, {
+    id: {
+      enumerable: true,
+      get() {
+        reads.id += 1;
+        return reads.id === 1 ? 'phase8.provider.object-a' : 'phase8.provider.object-b';
+      },
+    },
+    version: {
+      enumerable: true,
+      get() {
+        reads.version += 1;
+        return reads.version === 1 ? '1.0.0' : '2.0.0';
+      },
+    },
+    interfaceVersion: {
+      enumerable: true,
+      get() {
+        reads.interfaceVersion += 1;
+        return reads.interfaceVersion === 1 ? 1 : 2;
+      },
+    },
+    kinds: {
+      enumerable: true,
+      get() {
+        reads.kinds += 1;
+        return reads.kinds === 1 ? ['idiom'] : ['render'];
+      },
+    },
+    refine: {
+      enumerable: true,
+      get() {
+        reads.refine += 1;
+        return reads.refine === 1 ? firstRefine : secondRefine;
+      },
+    },
+  }));
+  const expectedProvider = createProvider({
+    id: 'phase8.provider.object-a',
+    version: '1.0.0',
+    kinds: ['idiom'],
+    refine: firstRefine,
+  });
+  const analysis = createAnalysisState({
+    cfg: {},
+    ssa: {},
+    induction: { loops: [] },
+    aggregates: { regions: [] },
+    structuredRegions: {
+      edgesByConstruct: {},
+      edgeCount: 0,
+      residualGotoCount: 0,
+      constraintEdgeCount: 0,
+      regions: [],
+    },
+  });
+
+  const outcome = runPhase8Vertical({
+    enabledStages: ['providers'],
+    analysis,
+    providers: [rawProvider],
+  });
+  const providerFacts = outcome.analysis.get('providerHints');
+
+  assert.deepEqual(reads, { id: 1, version: 1, interfaceVersion: 1, kinds: 1, refine: 1 },
+    'each caller-owned provider authority field must be read exactly once');
+  assert.equal(outcome.ledger.published, true);
+  assert.equal(outcome.ledger.registryDigest, passRegistryDigest([providerPass], [expectedProvider]),
+    'the digest must describe the canonical provider object that executed');
+  assert.deepEqual(executions, ['first'], 'the snapshotted refine function must be the only execution authority');
+  assert.deepEqual(providerFacts.providers, [{
+    id: 'phase8.provider.object-a',
+    version: '1.0.0',
+    kinds: ['idiom'],
+  }], 'published provider metadata must come from the canonical snapshot');
+  assert.equal(providerFacts.hints.length, 1);
+  assert.equal(providerFacts.hints[0].providerId, 'phase8.provider.object-a');
+  assert.equal(providerFacts.hints[0].providerVersion, '1.0.0');
+  assert.equal(providerFacts.hints[0].interfaceVersion, 1);
+  assert.equal(providerFacts.hints[0].kind, 'idiom');
+});
