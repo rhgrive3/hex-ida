@@ -5,8 +5,10 @@
  * fallback at the public facade.
  */
 import { expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
-import { RewriteEngine } from './rewrite/engine.js';
+import { RewriteEngine, adoptProofGatedCandidates, adoptProofGatedCandidatesSync } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
+import { generateEGraphCandidates } from './phase8/egraph.js';
+import { createRewriteProofGate } from './verify/equivalence.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
@@ -315,19 +317,61 @@ function rewriteAll(state, budget) {
   const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
   state.expressions = new Map();
   state.rewriteProof = [];
-  state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
+  state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {}, proofChecked: 0, proofAccepted: 0, proofWithheld: 0, egraph: { considered: 0, adopted: 0, withheld: 0 } };
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
     root = walkIdiom(root);
     // `deterministicTransforms` is an opt-in measurement mode: it removes the
     // rewrite engine's wall-clock cutoff so the fixed point depends only on the
     // input and the rules. Work bounds still apply. Production leaves it unset.
-    const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
+    const proofGated = state.opts?.proofGatedTransforms === true;
+    const proofContext = {
+      state,
+      deterministicTransforms: state.opts?.deterministicTransforms === true,
+      requireProof: proofGated,
+      proofGate: typeof state.opts?.proofGate === 'function' ? state.opts.proofGate : undefined,
+      proofOptions: state.opts?.proofOptions ?? state.opts,
+    };
+    const r = engine.rewrite(root, proofContext);
     state.expressions.set(v.id, r.root);
     state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
     state.rewriteStats.applications += r.stats.applications;
     state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
+    state.rewriteStats.proofChecked += r.stats.proofChecked || 0;
+    state.rewriteStats.proofAccepted += r.stats.proofAccepted || 0;
+    state.rewriteStats.proofWithheld += r.stats.proofWithheld || 0;
     for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
+
+    // Equality-saturation output is a proposal.  It enters the real
+    // decompiler only through the same proof gate as ordinary rewrite rules;
+    // a missing/async/unknown proof leaves the original expression in place.
+    if (state.opts?.proofGatedEGraph === true) {
+      const generated = generateEGraphCandidates(root, {
+        limits: state.opts?.egraphLimits,
+        shouldAbort: state.opts?.shouldAbort,
+      });
+      const adopted = adoptProofGatedCandidatesSync(r.root, generated.candidates, {
+        proofGate: state.opts?.proofGate,
+        shouldAbort: state.opts?.shouldAbort,
+        expectedInputDigest: state.opts?.egraphInputDigest,
+        proofOptions: state.opts?.proofOptions ?? state.opts,
+      });
+      state.rewriteStats.egraph.considered += generated.candidates.length;
+      state.rewriteStats.egraph.adopted += adopted.adopted.length;
+      state.rewriteStats.egraph.withheld += adopted.withheld.length + (generated.status === 'complete' ? 0 : 1);
+      if (adopted.adopted.length > 0) {
+        root = adopted.root;
+        state.expressions.set(v.id, root);
+        state.rewriteProof.push(...adopted.adopted.map((entry) => ({
+          rule: 'egraph-candidate-adoption', phase: 'proof-gated', valueId: v.id,
+          before: null, after: null, evidence: null, verifierProof: entry.proof,
+          candidate: entry.candidate,
+        })));
+        state.rewriteStats.applications += adopted.adopted.length;
+        state.rewriteStats.proofChecked += adopted.adopted.length;
+        state.rewriteStats.proofAccepted += adopted.adopted.length;
+      }
+    }
   }
   // A truncated rewrite is a truncated result. Before this, `rewriteStats.budgetExceeded`
   // could be true while the pipeline still reported `degraded: false`, so a consumer
@@ -336,6 +380,66 @@ function rewriteAll(state, budget) {
   // propagate to the one place consumers look.
   if (state.rewriteStats.budgetExceeded) state.degraded = true;
   return state;
+}
+
+/**
+ * Optional asynchronous production bridge for callers that want exact proof
+ * adoption. The regular interactive path stays synchronous; this entry point
+ * is the one place an async TieredBvBackend proof can authorize a rewrite or an
+ * e-graph candidate. With no proof gate every candidate is conservatively
+ * withheld.
+ */
+export async function rewriteExpressionWithProof(root, options = {}) {
+  const budget = options.budget || {};
+  const engine = new RewriteEngine(DEFAULT_RULES, {
+    timeBudgetMs: budget.timeBudgetMs ?? options.timeBudgetMs ?? 18,
+    nodeBudget: budget.nodeBudget ?? options.nodeBudget ?? 4096,
+    maxIterations: budget.maxIterations ?? options.maxIterations ?? 12,
+    maxApplications: budget.maxApplications ?? options.maxApplications ?? 2048,
+    deterministic: options.deterministicTransforms === true,
+  });
+  const proofGate = typeof options.proofGate === 'function' ? options.proofGate : createRewriteProofGate(options);
+  const rewritten = await engine.rewriteAsync(root, {
+    ...options,
+    proofGate,
+    requireProof: true,
+    deterministicTransforms: options.deterministicTransforms === true,
+  });
+  let result = rewritten;
+  if (options.proofGatedEGraph === true) {
+    const generated = generateEGraphCandidates(root, {
+      limits: options.egraphLimits,
+      shouldAbort: options.shouldAbort,
+    });
+    const adopted = await adoptProofGatedCandidates(rewritten.root, generated.candidates, {
+      proofGate,
+      shouldAbort: options.shouldAbort,
+      expectedInputDigest: options.egraphInputDigest,
+      proofOptions: options.proofOptions ?? options,
+    });
+    result = {
+      ...rewritten,
+      root: adopted.root,
+      proof: [...rewritten.proof, ...adopted.adopted.map((entry) => ({
+        rule: 'egraph-candidate-adoption',
+        phase: 'proof-gated',
+        before: null,
+        after: null,
+        evidence: null,
+        verifierProof: entry.proof,
+        candidate: entry.candidate,
+      }))],
+      stats: {
+        ...rewritten.stats,
+        applications: rewritten.stats.applications + adopted.adopted.length,
+        proofChecked: rewritten.stats.proofChecked + adopted.adopted.length,
+        proofAccepted: rewritten.stats.proofAccepted + adopted.adopted.length,
+        proofWithheld: rewritten.stats.proofWithheld + adopted.withheld.length,
+        egraph: { generated: generated.metrics, adoption: adopted.metrics },
+      },
+    };
+  }
+  return result;
 }
 
 function walkIdiom(n) {
@@ -717,7 +821,11 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     .filter(([key]) => String(key).endsWith(':v'))
     .map(([key, value]) => [Number(String(key).split(':')[0]), value]));
   advanced.rewriteProof ||= [];
-  advanced.rewriteStats ||= { iterations: 0, applications: 0, budgetExceeded: true, elapsedMs: 0, byRule: {} };
+  advanced.rewriteStats ||= {
+    iterations: 0, applications: 0, budgetExceeded: true, elapsedMs: 0, byRule: {},
+    proofChecked: 0, proofAccepted: 0, proofWithheld: 0,
+    egraph: { considered: 0, adopted: 0, withheld: 0 },
+  };
   advanced.highVariables ||= recoverHighVariables(advanced.ir, advanced.types, opts);
   advanced.prototype ||= recoverFunctionPrototype(advanced.ir, advanced.types, opts);
   advanced.aggregateLayouts ||= recoverAggregateLayouts(advanced.ir, advanced.types, opts);

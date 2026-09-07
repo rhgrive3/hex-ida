@@ -1,7 +1,7 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011–T018, T027–T028, T032, T035–T036 and T053–T056: the ledger is now 34/61.
+implementation completed T011–T018, T027–T029, T031–T032, T035–T036 and T053–T056: the ledger is now 36/61.
 Product implementation and final release acceptance are separate. No full
 release gate has been run for this development batch.
 
@@ -58,3 +58,7 @@ T018 reconciles all ten recovery rows against the implemented development branch
 T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING external corpus/twin artifacts: five binary rows are still explicitly UNMEASURED, which is not a terminal no-edit success.
 
 Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun also passes after the T030 syntax correction.
+
+T029/T031: pipeline now exposes independently proved rewriting and consumes branded e-graph proposals only with a proof bound to the current AST pair, SSA/provenance and context. Root review found and fixed wrong-pair token replay and mutation during solver await; the latter now binds the pre-translation pair and rechecks before minting. Focused T029 tests 5/5 pass, prior combined owner batch 46/46 and bounded e-graph tests 4/4 pass. T030 remains incomplete: initial edge-accounting/budget improvements are preserved, but further exception-region work is paused for scope coordination.
+
+Scope steering: user reports the analysis roadmap is already under implementation in another local checkout. Branch/item/file scope has been requested; further Stage B feature expansion is paused while existing correctness fixes are completed. This is not a Stage B completion or release claim.

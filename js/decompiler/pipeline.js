@@ -11,7 +11,7 @@ import {
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
 
-export { buildExpressionForTesting } from './pipeline-core.js';
+export { buildExpressionForTesting, rewriteExpressionWithProof } from './pipeline-core.js';
 export { exactLegacySameBlockStackStore };
 
 function ownData(object, key) {
