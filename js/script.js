@@ -220,7 +220,7 @@ export function createApi(app, out, options = {}) {
     /** 名前を付ける（IDA の Rename）。 */
     rename(addr, name) {
       const a = BigInt(addr);
-      app.notes.setName(a, name);
+      if (app.notes.setName(a, name) === false) return false;
       app.symbols.rename(a, name);
       app.viewer.setSymbols(app.symbols);
       return true;
@@ -228,8 +228,7 @@ export function createApi(app, out, options = {}) {
 
     /** その行にメモを書く。 */
     comment(addr, text) {
-      app.notes.setComment(BigInt(addr), text);
-      return true;
+      return app.notes.setComment(BigInt(addr), text) !== false;
     },
 
     /** そのアドレスを含む関数の {start, end}。 */
