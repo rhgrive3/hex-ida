@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 5 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 6 つの確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -9,6 +9,7 @@
  *   #1289  無関係な adrp + add から実在しない参照先を作る
  *   #1293  アドレスの前後関係だけでループと断定する
  *   #1294  ld2/3/4・st2/3/4 の転送量を常に 16 バイトと説明する
+ *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -166,5 +167,68 @@ assert.ok(!vectorSavedPair.terms.includes('calleesaved'), 'SIMD q19/q20 must not
 const gpSavedPair = explain('stp', 'x19, x20, [sp, #-16]!');
 assert.ok(gpSavedPair.terms.includes('calleesaved'), 'GP x19/x20 must retain callee-saved explanation');
 console.log('  ok 7 pair register identity is class-sensitive (#6271)');
+
+/* ── #3627 width and signedness semantics must not collapse into aliases ─── */
+
+// A64 REV reverses the complete register, while REV16 and REV32 reverse bytes
+// inside each 16-bit halfword or 32-bit word.  For the ordinary X-register
+// example x1 = 0x1122334455667788, these are respectively
+// 0x8877665544332211, 0x2211443366558877, and 0x4433221188776655.
+const reverseX = [
+  ['rev', 'byteswap'],
+  ['rev16', 'byteswap16'],
+  ['rev32', 'byteswap32'],
+];
+for (const [mn, operation] of reverseX) {
+  const result = explain(mn, 'x0, x1');
+  assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3627)`);
+  assert.equal(result.pseudo, `x0 = ${operation}(x1)`, `${mn} must describe its byte scope (#3627)`);
+  assert.ok(result.terms.includes('endian'), `${mn} must retain the endian term (#3627)`);
+}
+assert.notEqual(explain('rev16', 'x0, x1').pseudo, explain('rev32', 'x0, x1').pseudo);
+for (const [mn, widths] of [['rev16', ['w', 'x']], ['rev32', ['x']]]) {
+  for (const width of widths) {
+    const result = explain(mn, `${width}0, ${width}1`);
+    assert.equal(result.handlerError, undefined, `${mn} ${width}-form must remain valid (#3627)`);
+    assert.equal(result.pseudo, `${width}0 = byteswap${mn.slice(3)}(${width}1)`);
+  }
+}
+
+const smull = explain('smull', 'x0, w1, w2');
+const umull = explain('umull', 'x0, w1, w2');
+// With w1 = 0xffffffff and w2 = 2, UMULL produces 0x00000001fffffffe;
+// SMULL interprets w1 as -1 and produces 0xfffffffffffffffe.
+assert.equal(smull.handlerError, undefined, 'SMULL handler must not throw (#3627)');
+assert.equal(umull.handlerError, undefined, 'UMULL handler must not throw (#3627)');
+assert.equal(smull.pseudo, 'x0 = (signed)w1 × (signed)w2', 'SMULL must preserve signed operands (#3627)');
+assert.equal(umull.pseudo, 'x0 = (unsigned)w1 × (unsigned)w2', 'UMULL must zero-extend operands (#3627)');
+assert.notEqual(smull.pseudo, umull.pseudo, 'SMULL and UMULL must not share a signedness-blind explanation (#3627)');
+assert.match(smull.summary, /符号付き|Sign-extend/i, 'SMULL summary must state signed widening (#3627)');
+assert.match(umull.summary, /符号なし|Zero-extend/i, 'UMULL summary must state unsigned widening (#3627)');
+console.log('  ok 8 REV16/REV32 scope and SMULL/UMULL signedness stay distinct (#3627)');
+
+/* SIMD encodings must not inherit scalar explanations (#3627) */
+const smullVector = explain('smull', 'v0.4s, v1.4h, v2.4h');
+const umullVector = explain('umull', 'v0.4s, v1.4h, v2.4h');
+assert.equal(smullVector.handlerError, undefined, 'SIMD SMULL handler must not throw (#3627)');
+assert.equal(umullVector.handlerError, undefined, 'SIMD UMULL handler must not throw (#3627)');
+assert.equal(smullVector.pseudo, 'v0.4s = signed_lane_widen_mul(v1.4h, v2.4h)');
+assert.equal(umullVector.pseudo, 'v0.4s = unsigned_lane_widen_mul(v1.4h, v2.4h)');
+assert.ok(smullVector.terms.includes('simd'));
+assert.ok(umullVector.terms.includes('simd'));
+assert.match(smullVector.summary, /レーン|lane/i);
+assert.match(umullVector.summary, /レーン|lane/i);
+
+const rev16Vector = explain('rev16', 'v0.8h, v1.8h');
+const rev32Vector = explain('rev32', 'v0.4s, v1.4s');
+assert.equal(rev16Vector.handlerError, undefined, 'SIMD REV16 handler must not throw (#3627)');
+assert.equal(rev32Vector.handlerError, undefined, 'SIMD REV32 handler must not throw (#3627)');
+assert.equal(rev16Vector.pseudo, 'v0.8h = vector_byteswap16(v1.8h)');
+assert.equal(rev32Vector.pseudo, 'v0.4s = vector_byteswap32(v1.4s)');
+assert.ok(rev16Vector.terms.includes('simd'));
+assert.ok(rev32Vector.terms.includes('simd'));
+assert.match(rev16Vector.summary, /レーン|lane/i);
+assert.match(rev32Vector.summary, /レーン|lane/i);
+console.log('  ok 9 SIMD encodings retain lane-specific semantics (#3627)');
 
 console.log('ARM64 explainer semantics: PASS');
