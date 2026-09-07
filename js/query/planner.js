@@ -47,29 +47,57 @@ function sourceComponent(pool) {
   if (pool === 'semantic') return 'semanticScore';
   return 'lexicalScore';
 }
+const STAGED_PENDING = Symbol('planner-staged-pending');
+
+function stagedPool(map) {
+  if (!map[STAGED_PENDING]) map[STAGED_PENDING] = new Map();
+  return map[STAGED_PENDING];
+}
+
+function worstEntry(map) {
+  let worstKey = null;
+  let worstScore = Infinity;
+  for (const [candidateKey, candidate] of map) {
+    if (candidate.score < worstScore) { worstScore = candidate.score; worstKey = candidateKey; }
+  }
+  return { worstKey, worstScore };
+}
+
 function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity) {
   const addr = asAddr(address);
   if (addr == null) return;
   const map = poolMap(pools, pool);
   const key = addr.toString();
-  let c = map.get(key);
   const quality = Number.isFinite(Number(coverage)) ? Math.max(0.2, Math.min(1, Number(coverage))) : 0.7;
   const amount = (weight || 0) * quality;
+  let c = map.get(key);
   if (!c) {
-    if (map.size >= cap) {
+    const staged = stagedPool(map);
+    let pending = staged.get(key);
+    if (pending) {
+      // Keep aggregating this address's evidence while it waits to beat the
+      // weakest stored candidate (#5910).
+      c = pending;
+    } else if (map.size < cap) {
+      c = newCandidate(addr);
+      map.set(key, c);
+    } else {
       // Keep the strongest bounded subset instead of whichever candidates happened
       // to arrive first. Recognition inputs are often large and not guaranteed to
-      // be pre-sorted.
-      let worstKey = null;
-      let worstScore = Infinity;
-      for (const [candidateKey, candidate] of map) {
-        if (candidate.score < worstScore) { worstScore = candidate.score; worstKey = candidateKey; }
+      // be pre-sorted. Evidence for one address can arrive in several increments,
+      // so unadmitted addresses are staged with their cumulative score and only
+      // rejected once their aggregate fails to beat the weakest stored candidate;
+      // otherwise arrival order alone decided survivors (#5910).
+      if (staged.size >= cap) {
+        const weakestStaged = worstEntry(staged);
+        if (weakestStaged.worstKey != null && amount <= weakestStaged.worstScore) return;
+        if (weakestStaged.worstKey != null) staged.delete(weakestStaged.worstKey);
       }
-      if (worstKey == null || amount <= worstScore) return;
-      map.delete(worstKey);
+      pending = newCandidate(addr);
+      pending[STAGED_PENDING] = true;
+      staged.set(key, pending);
+      c = pending;
     }
-    c = newCandidate(addr);
-    map.set(key, c);
   }
   c.score += amount;
   c.scoreComponents[sourceComponent(pool)] += amount;
@@ -78,6 +106,16 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
   if (term) c.terms.add(term);
   c.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
   c.coverageWeight += Math.max(1, Math.abs(weight || 1));
+  if (c[STAGED_PENDING]) {
+    const staged = stagedPool(map);
+    const worst = worstEntry(map);
+    if (worst.worstKey != null && c.score > worst.worstScore) {
+      map.delete(worst.worstKey);
+      staged.delete(key);
+      delete c[STAGED_PENDING];
+      map.set(key, c);
+    }
+  }
 }
 function mergeCandidateInto(target, source) {
   target.score += source.score;
