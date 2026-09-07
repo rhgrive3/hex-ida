@@ -46,16 +46,56 @@ function assertVersion(input) {
   if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_IR_CONTRACT_VERSION) fail('semantic-ir-contract-version-mismatch');
 }
 
+// References held by one call/intrinsic summary record. These collections are
+// normalized, sorted, and frozen as part of publication, so every element is
+// bounded work that `maxReferences` must account for (#5858).
+function summaryReferenceCount(summary) {
+  let count = (summary.targetEntityIds?.length ?? 0) + (summary.stateReads?.length ?? 0)
+    + (summary.stateWrites?.length ?? 0) + (summary.controlEffects?.length ?? 0);
+  for (const scope of [summary.memoryRead, summary.memoryWrite]) {
+    if (scope && Array.isArray(scope.accesses)) count += scope.accesses.length;
+  }
+  return count;
+}
+
 function countReferences(nodes, values, blocks) {
   let count = 0;
   for (const node of nodes) {
     count += node.inputs.length + node.outputs.length + node.targets.length + node.sourceEffectIds.length;
     if (node.memory) count++;
-    if (node.call) count += node.call.targetValueIds.length + node.call.arguments.length + node.call.returns.length;
-    if (node.intrinsic) count += node.intrinsic.inputs.length + node.intrinsic.outputs.length;
+    if (node.call) {
+      count += node.call.targetValueIds.length + node.call.arguments.length + node.call.returns.length;
+      count += summaryReferenceCount(node.call);
+    }
+    if (node.intrinsic) {
+      count += node.intrinsic.inputs.length + node.intrinsic.outputs.length;
+      count += summaryReferenceCount(node.intrinsic);
+    }
   }
   for (const block of blocks) count += block.nodeIds.length;
   for (const value of values) if (value.definitionNodeId) count++;
+  return count;
+}
+
+// Fail-closed raw-input preflight (#5858): the normalized `countReferences`
+// pass runs after every nested collection was already normalized/sorted, so a
+// huge raw array could spend its cost before the budget check. Raw array
+// lengths upper-bound the normalized ones (ids are uniqued, memory accesses
+// map 1:1, serialization never splits entries), so this is a safe gate.
+function countRawSummaryReferences(input) {
+  let count = 0;
+  for (const node of input.nodes ?? []) {
+    for (const summary of [node?.call, node?.intrinsic]) {
+      if (!summary || typeof summary !== 'object') continue;
+      for (const key of ['targetEntityIds', 'stateReads', 'stateWrites', 'controlEffects']) {
+        if (Array.isArray(summary[key])) count += summary[key].length;
+      }
+      for (const scope of [summary.memoryRead, summary.memoryWrite]) {
+        const accesses = scope && typeof scope === 'object' ? scope.accesses : null;
+        if (Array.isArray(accesses)) count += accesses.length;
+      }
+    }
+  }
   return count;
 }
 
@@ -151,6 +191,8 @@ export function createSemanticIrFunction(input, options = {}) {
   assertWithinBudget(rawBlocks.length, options, 'maxBlocks');
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
+  // Preflight before any nested normalization work is spent (#5858).
+  assertWithinBudget(countRawSummaryReferences(input), options, 'maxReferences');
 
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
