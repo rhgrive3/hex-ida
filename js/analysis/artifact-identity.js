@@ -206,8 +206,9 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
 
-  const options = projectOptionsForDependencyClasses(classes, input.options ?? {});
-  assertNoPresentationState(options);
+  const rawOptions = input.options ?? {};
+  assertNoPresentationState(rawOptions);
+  const options = projectOptionsForDependencyClasses(classes, rawOptions);
 
   return createArtifactDescriptor({
     binaryId: nonEmpty(input.binaryId, 'phase7-artifact-binary-id-required'),
