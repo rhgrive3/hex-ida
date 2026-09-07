@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createAppAnalysisQueryAdapter } from '../../js/analysis/query/app-adapter.js';
+import { installSharedAppArtifacts } from '../../js/analysis/shared-app-artifacts.js';
 
 const source = fs.readFileSync(new URL('../../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
 
@@ -79,6 +81,85 @@ function pendingRequest(onCancel) {
   controller.abort();
   await assert.rejects(wait, (error) => error?.name === 'AbortError');
   assert.equal(cancelCalls, 1, 'ordinary consumer abort must cancel the backend search request');
+}
+
+
+function programApp(scanProgram) {
+  return {
+    backend: { gen: 0, scanProgram },
+    store: { get: () => null },
+    programRegions: () => [
+      { id: 't1', exec: true, size: 16n, section: '__text', vmAddr: 0x2000n },
+      { id: 't2', exec: true, size: 16n, section: '__text', vmAddr: 0x3000n },
+    ],
+    symbols: { gen: 1, functionStartsComplete: true },
+  };
+}
+
+function pendingTimeout(label, ms = 250) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(label)), ms);
+  });
+}
+
+function cancellableProgramHarness() {
+  let releaseFirst;
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let cancelCalls = 0;
+  const app = programApp((regionId) => {
+    if (regionId === 't1') {
+      firstStarted();
+      const request = firstGate.then(() => ({ regionId }));
+      request.cancel = () => { cancelCalls += 1; };
+      return request;
+    }
+    return Promise.resolve({ regionId });
+  });
+  installSharedAppArtifacts(app);
+  return {
+    app,
+    adapter:createAppAnalysisQueryAdapter(app),
+    started,
+    releaseFirst,
+    get cancelCalls() { return cancelCalls; },
+  };
+}
+
+{
+  const harness = cancellableProgramHarness();
+  const firstController = new AbortController();
+  const first = harness.adapter.callers(null, 0x2000n, {}, { signal:firstController.signal });
+  await harness.started;
+  const secondController = new AbortController();
+  const second = harness.adapter.callers(null, 0x2000n, {}, { signal:secondController.signal });
+
+  firstController.abort(new Error('first consumer cancelled'));
+  await assert.rejects(
+    Promise.race([first, pendingTimeout('first consumer did not detach')]),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(harness.cancelCalls, 0,
+    'aborting one shared-program consumer must not cancel the producer for the other');
+  harness.releaseFirst();
+  const secondResult = await second;
+  assert.equal(secondResult.status.completeness, 'complete',
+    'the remaining shared-program consumer must receive the completed artifact');
+}
+
+{
+  const harness = cancellableProgramHarness();
+  const controller = new AbortController();
+  const pending = harness.adapter.callers(null, 0x2000n, {}, { signal:controller.signal });
+  await harness.started;
+  controller.abort(new Error('last consumer cancelled'));
+  await assert.rejects(
+    Promise.race([pending, pendingTimeout('last consumer did not detach')]),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(harness.cancelCalls, 1,
+    'the last shared-program consumer abort must cancel the producer request');
 }
 
 console.log('analysis query producer cancellation regression passed');
