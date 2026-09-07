@@ -5,6 +5,22 @@ import { AIProvider, WorkerAIProvider } from './index.js';
 const DEFAULT_WORKER_TIMEOUT_MS = 120000;
 const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
+// The provider selector is a control-plane authority: only a primitive string
+// may become one. ToPrimitive would launder `['gemini']` into the canonical
+// Gemini routing and even into the persisted selection (#6140), so structured
+// values get a hard error instead of an implicit conversion.
+function providerSelectionError(value) {
+  return new AIError('provider_error', `AI provider must be a primitive string, received ${typeof value}.`);
+}
+
+function canonicalProviderSelector(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'string') throw providerSelectionError(value);
+  const requested = value.trim().toLowerCase();
+  if (!requested) return fallback;
+  return requested;
+}
+
 export class ChatGPTWebProvider extends AIProvider {
   constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__ } = {}) {
     super({ capabilities: { provider: 'chatgpt-web' } });
@@ -90,7 +106,10 @@ export class UserscriptAIProvider extends AIProvider {
   }
 
   selected(request = {}) {
-    const requested = String(request.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    const requested = canonicalProviderSelector(
+      request.provider ?? globalThis.__HEX_AI_PROVIDER__,
+      'chatgpt-web',
+    );
     if (requested === 'gemini' || requested === 'worker') return this.gemini;
     if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
     throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
@@ -158,7 +177,12 @@ export class UserscriptAIProvider extends AIProvider {
   }
 
   async setSelection(selection = {}, options = {}) {
-    const requested = String(selection.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    // Reject before any global/localStorage write: a malformed structured
+    // selector must never normalize itself into the persisted provider (#6140).
+    const requested = canonicalProviderSelector(
+      selection.provider ?? globalThis.__HEX_AI_PROVIDER__,
+      'chatgpt-web',
+    );
     if (!['chatgpt', 'chatgpt-web', 'gemini', 'worker'].includes(requested)) throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
     const provider = requested === 'gemini' || requested === 'worker' ? 'gemini' : 'chatgpt';
     globalThis.__HEX_AI_PROVIDER__ = provider;
