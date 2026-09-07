@@ -574,6 +574,15 @@ function dmbOption(decoded) {
   return BARRIER_OPTIONS[option] ? { option, crm:null } : null;
 }
 
+// DSB-only non-XS option variants (ARMv8.7+): ordered-before semantics
+// scoped like the base option, excluding the XS constraint (#6073).
+const DSB_NXS_OPTIONS = Object.freeze({
+  oshnxs:{ domain:'outer-shareable', access:'all', nonXs:true },
+  nshnxs:{ domain:'non-shareable', access:'all', nonXs:true },
+  ishnxs:{ domain:'inner-shareable', access:'all', nonXs:true },
+  synxs:{ domain:'full-system', access:'all', nonXs:true },
+});
+
 function dsbOption(decoded) {
   const ops = operands(decoded);
   if (ops.length === 0) return { option:'sy', crm:null, reservedEncoding:false };
@@ -584,6 +593,10 @@ function dsbOption(decoded) {
     return { option:DSB_OPTION_BY_CRM[crm], crm, reservedEncoding:crm === 8 || crm === 12 };
   }
   const option = barrierOption(decoded);
+  // DSB (and only DSB) accepts the nXS option variants; their exact handling
+  // lives here because the memory/atomic family owns barriers in the
+  // production dispatch order (#6073).
+  if (DSB_NXS_OPTIONS[option]) return { option, crm:null, reservedEncoding:false };
   return BARRIER_OPTIONS[option] ? { option, crm:null, reservedEncoding:false } : null;
 }
 
