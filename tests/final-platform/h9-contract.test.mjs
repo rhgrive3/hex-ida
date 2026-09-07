@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   collectFinalPlatformEvidence,
+  createFinalPlatformEvidence,
   FINAL_PLATFORM_FIXTURE_SET_DIGEST,
   FINAL_PLATFORM_PHYSICAL_RUNTIME,
   validateFinalPlatformEvidence,
@@ -101,7 +102,7 @@ assert.equal(validateStage2PhysicalEvidenceRecord(packet, {
   headSha: commitSha,
   treeSha,
   buildIdentity: packet.buildIdentity,
-}).ok, true);
+}).reason, 'physical-ipad-evidence-required');
 assert.equal(packet.runs.length, 2);
 assert.equal(packet.runs.every((run) => run.workloads.length === 35), true);
 assert.equal(new Set(packet.runs.flatMap((run) => run.workloads.map((workload) => workload.workloadId))).size, 14);
@@ -256,6 +257,108 @@ assert.equal(validatePhysicalIPadEvidence(physical, {
   requireNumericEvidence: true,
   numericEvidence: { sourceEvidenceId: packet.evidenceId },
 }).ok, true);
+assert.equal(validateStage2PhysicalEvidenceRecord(physical, {
+  finalMode: true,
+  headSha: commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  resolveEvidenceIdentity: resolver,
+}).ok, true);
+
+const wrongSourceNumeric = createPhysicalIPadNumericEvidence({
+  finalPlatformEvidence: packet,
+  sourceEvidenceId: `final-platform:${'8'.repeat(64)}`,
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+});
+const wrongSourcePhysical = createPhysicalIPadEvidence({
+  commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  runtimeIdentity: packet.runtimeIdentity,
+  deviceModel: 'iPad mini 6',
+  iPadOSVersion: '27.0-test',
+  webKitVersion: 'WebKit iPad test',
+  testedAt: '2026-08-22T00:00:00Z',
+  attestedBy: 'numeric-test-attestor',
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+  checks,
+  numericEvidence: wrongSourceNumeric,
+});
+assert.equal(validateStage2PhysicalEvidenceRecord(wrongSourcePhysical, {
+  finalMode: true,
+  headSha: commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  resolveEvidenceIdentity: resolver,
+}).reason, 'physical-ipad-final-source-evidence-mismatch');
+
+const wrongRuntimePacket = createFinalPlatformEvidence({
+  ...packet,
+  runtimeIdentity: 'runtime:wrong-pair',
+  runs: packet.runs,
+});
+const wrongRuntimeNumeric = createPhysicalIPadNumericEvidence({
+  finalPlatformEvidence: wrongRuntimePacket,
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+});
+const wrongRuntimePhysical = createPhysicalIPadEvidence({
+  commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  runtimeIdentity: packet.runtimeIdentity,
+  deviceModel: 'iPad mini 6',
+  iPadOSVersion: '27.0-test',
+  webKitVersion: 'WebKit iPad test',
+  testedAt: '2026-08-22T00:00:00Z',
+  attestedBy: 'numeric-test-attestor',
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+  checks,
+  numericEvidence: wrongRuntimeNumeric,
+});
+assert.equal(validateStage2PhysicalEvidenceRecord(wrongRuntimePhysical, {
+  finalMode: true,
+  headSha: commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  resolveEvidenceIdentity: resolver,
+}).reason, 'ipad-numeric-runtime-mismatch');
+
+const denominatorMutation = structuredClone(packet);
+denominatorMutation.runs[0].workloads.pop();
+const denominatorNumeric = createPhysicalIPadNumericEvidence({
+  finalPlatformEvidence: denominatorMutation,
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+});
+const denominatorPhysical = createPhysicalIPadEvidence({
+  commitSha,
+  treeSha,
+  buildIdentity: packet.buildIdentity,
+  runtimeIdentity: packet.runtimeIdentity,
+  deviceModel: 'iPad mini 6',
+  iPadOSVersion: '27.0-test',
+  webKitVersion: 'WebKit iPad test',
+  testedAt: '2026-08-22T00:00:00Z',
+  attestedBy: 'numeric-test-attestor',
+  fixtureIdentity,
+  scenarioEvidenceIdentity,
+  checks,
+  numericEvidence: denominatorNumeric,
+});
+assert.match(
+  validateStage2PhysicalEvidenceRecord(denominatorPhysical, {
+    finalMode: true,
+    headSha: commitSha,
+    treeSha,
+    buildIdentity: packet.buildIdentity,
+    resolveEvidenceIdentity: resolver,
+  }).reason,
+  /final-platform-workload-denominator-invalid|final-platform-denominator-shrink/,
+);
 
 const booleanOnly = createPhysicalIPadEvidence({
   commitSha,

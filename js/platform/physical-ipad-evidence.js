@@ -186,7 +186,9 @@ function numericSampleDigest(samples) {
  * samples. No sample, summary, digest, target, or device field is invented.
  */
 export function createPhysicalIPadNumericEvidence(input = {}) {
-  const source = input.finalPlatformEvidence ?? input;
+  const source = input.schemaVersion === PHYSICAL_IPAD_NUMERIC_EVIDENCE_SCHEMA
+    ? input
+    : (input.finalPlatformEvidence ?? input);
   const samples = flattenPhysicalSamples(source).map(canonicalNumericSample);
   if (samples.length === 0) throw new TypeError('ipad-numeric-samples-empty');
   const workloadIds = [...new Set(samples.map((sample) => sample.workloadId))].sort();
@@ -225,6 +227,14 @@ export function createPhysicalIPadNumericEvidence(input = {}) {
     'ipad-numeric-browser-version-required',
   );
   const device = numericDevice(input.device ?? physicalRun?.device ?? source.device ?? input);
+  const fixtureIdentity = input.fixtureIdentity ?? source.fixtureIdentity ?? null;
+  if (fixtureIdentity != null && !ARTIFACT_IDENTITY.test(fixtureIdentity)) {
+    throw new TypeError('ipad-numeric-fixture-identity-invalid');
+  }
+  const scenarioEvidenceIdentity = input.scenarioEvidenceIdentity ?? source.scenarioEvidenceIdentity ?? null;
+  if (scenarioEvidenceIdentity != null && !ARTIFACT_IDENTITY.test(scenarioEvidenceIdentity)) {
+    throw new TypeError('ipad-numeric-scenario-identity-invalid');
+  }
   const traceIdentities = [];
   for (const sample of measuredSamples) {
     if (Object.prototype.hasOwnProperty.call(sample.metrics, 'processPeakFootprint')) {
@@ -251,12 +261,19 @@ export function createPhysicalIPadNumericEvidence(input = {}) {
     sourceEvidenceId,
     rawSampleDigest,
     numericSampleDigest: numericSampleDigest(samples),
+    ...(fixtureIdentity ? { fixtureIdentity } : {}),
+    ...(scenarioEvidenceIdentity ? { scenarioEvidenceIdentity } : {}),
     workloadIds,
     sampleCount: samples.length,
     measuredSampleCount: measuredSamples.length,
     measured: true,
     samples,
     traceIdentities,
+    ...(source.schemaVersion === FINAL_PLATFORM_EVIDENCE_SCHEMA
+      ? { finalPlatformEvidence: source }
+      : (input.finalPlatformEvidence?.schemaVersion === FINAL_PLATFORM_EVIDENCE_SCHEMA
+        ? { finalPlatformEvidence: input.finalPlatformEvidence }
+        : {})),
   };
   return deepFreeze({ ...record, numericEvidenceId: numericEvidenceIdentity(record) });
 }
@@ -287,6 +304,8 @@ export function validatePhysicalIPadNumericEvidence(record, expected = {}) {
     ['fixtureSetDigest', 'ipad-numeric-fixture-set-digest-mismatch'],
     ['sourceEvidenceId', 'ipad-numeric-source-evidence-mismatch'],
     ['browserOrWebKitVersion', 'ipad-numeric-browser-version-mismatch'],
+    ['fixtureIdentity', 'ipad-numeric-fixture-identity-mismatch'],
+    ['scenarioEvidenceIdentity', 'ipad-numeric-scenario-identity-mismatch'],
   ]) if (expected[field] != null && record[field] !== expected[field]) return { ok: false, reason };
   for (const [field, reason] of [
     ['model', 'ipad-numeric-device-model-mismatch'],
@@ -439,7 +458,13 @@ export function createPhysicalIPadEvidence(input = {}) {
     rebuildProfilesExercised: profileCollection(input.rebuildProfilesExercised, 'ipad-evidence-rebuild-profiles-invalid'),
     notesDigest: input.notesDigest == null ? null : String(input.notesDigest),
   };
-  if (input.numericEvidence != null) record.numericEvidence = createPhysicalIPadNumericEvidence(input.numericEvidence);
+  if (input.numericEvidence != null) {
+    record.numericEvidence = createPhysicalIPadNumericEvidence({
+      ...input.numericEvidence,
+      fixtureIdentity: input.fixtureIdentity,
+      scenarioEvidenceIdentity: input.scenarioEvidenceIdentity,
+    });
+  }
   return deepFreeze({ ...record, evidenceId: evidenceIdentity(record) });
 }
 
@@ -484,6 +509,8 @@ export function validatePhysicalIPadEvidence(record, expected = {}) {
       model: record.deviceModel,
       iPadOSVersion: record.iPadOSVersion,
       webKitVersion: record.webKitVersion,
+      fixtureIdentity: record.fixtureIdentity,
+      scenarioEvidenceIdentity: record.scenarioEvidenceIdentity,
     });
     if (!numeric.ok) return { ok: false, reason: numeric.reason };
   }

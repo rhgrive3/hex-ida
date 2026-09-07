@@ -3,7 +3,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validatePhysicalIPadEvidence, validatePhysicalIPadScenarioOutput } from '../../../js/platform/physical-ipad-evidence.js';
+import {
+  PHYSICAL_IPAD_NUMERIC_EVIDENCE_SCHEMA,
+  validatePhysicalIPadEvidence,
+  validatePhysicalIPadScenarioOutput,
+} from '../../../js/platform/physical-ipad-evidence.js';
 import { FINAL_PLATFORM_EVIDENCE_SCHEMA, validateFinalPlatformEvidence } from '../final-platform/index.mjs';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
@@ -198,28 +202,82 @@ export function stage2CanonicalBuildIdentity(releaseInput = null) {
   return `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`;
 }
 
-export function validateStage2PhysicalEvidenceRecord(record, { finalMode = false, headSha, treeSha, buildIdentity } = {}) {
+export function validateStage2PhysicalEvidenceRecord(record, {
+  finalMode = false,
+  headSha,
+  treeSha,
+  buildIdentity,
+  resolveEvidenceIdentity,
+} = {}) {
   if (record?.schemaVersion === FINAL_PLATFORM_EVIDENCE_SCHEMA) {
-    const checked = validateFinalPlatformEvidence(record, {
-      candidateCommitSha: headSha,
-      candidateTreeSha: treeSha,
-      buildIdentity,
-    });
-    return {
-      ok: checked.ok,
-      reason: checked.reason || null,
-      evidenceId: checked.evidenceId || record.evidenceId || null,
-      rawSampleDigest: checked.rawSampleDigest || record.rawSampleDigest || null,
-    };
+    return { ok: false, reason: 'physical-ipad-evidence-required' };
   }
   const checked = validatePhysicalIPadEvidence(record, {
     commitSha: headSha,
     treeSha,
     buildIdentity,
     requireNumericEvidence: finalMode,
-    resolveEvidenceIdentity: (identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha),
+    resolveEvidenceIdentity: resolveEvidenceIdentity
+      || ((identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha)),
   });
-  return { ok: checked.ok, reason: checked.reason || null, evidenceId: checked.evidenceId || record.evidenceId || null };
+  if (!checked.ok) return { ok: false, reason: checked.reason || null, evidenceId: checked.evidenceId || record.evidenceId || null };
+  if (!finalMode) return { ok: true, reason: null, evidenceId: checked.evidenceId || record.evidenceId || null };
+
+  const numeric = record?.numericEvidence;
+  if (!numeric || numeric.schemaVersion !== PHYSICAL_IPAD_NUMERIC_EVIDENCE_SCHEMA) {
+    return { ok: false, reason: 'physical-ipad-final-platform-evidence-required', evidenceId: checked.evidenceId || record.evidenceId || null };
+  }
+  const finalPacket = numeric.finalPlatformEvidence;
+  if (!finalPacket || finalPacket.schemaVersion !== FINAL_PLATFORM_EVIDENCE_SCHEMA) {
+    return { ok: false, reason: 'physical-ipad-final-platform-evidence-required', evidenceId: checked.evidenceId || record.evidenceId || null };
+  }
+  const finalChecked = validateFinalPlatformEvidence(finalPacket, {
+    candidateCommitSha: headSha,
+    candidateTreeSha: treeSha,
+    buildIdentity: record.buildIdentity,
+    runtimeIdentity: record.runtimeIdentity,
+    deviceModel: record.deviceModel,
+    deviceChip: numeric.device?.chip,
+    deviceMemoryBytes: numeric.device?.memoryBytes,
+    iPadOSVersion: record.iPadOSVersion,
+    webKitVersion: record.webKitVersion,
+  });
+  if (!finalChecked.ok) {
+    return {
+      ok: false,
+      reason: finalChecked.reason || 'physical-ipad-final-platform-evidence-invalid',
+      evidenceId: checked.evidenceId || record.evidenceId || null,
+    };
+  }
+  const identityBindings = [
+    [numeric.candidateCommitSha, record.commitSha, 'physical-ipad-final-commit-mismatch'],
+    [numeric.candidateTreeSha, record.treeSha, 'physical-ipad-final-tree-mismatch'],
+    [numeric.buildIdentity, record.buildIdentity, 'physical-ipad-final-build-mismatch'],
+    [numeric.runtimeIdentity, record.runtimeIdentity, 'physical-ipad-final-runtime-mismatch'],
+    [numeric.fixtureIdentity, record.fixtureIdentity, 'physical-ipad-final-fixture-mismatch'],
+    [numeric.scenarioEvidenceIdentity, record.scenarioEvidenceIdentity, 'physical-ipad-final-scenario-mismatch'],
+    [numeric.sourceEvidenceId, finalPacket.evidenceId, 'physical-ipad-final-source-evidence-mismatch'],
+    [numeric.rawSampleDigest, finalPacket.rawSampleDigest, 'physical-ipad-final-raw-sample-mismatch'],
+  ];
+  for (const [observed, expected, reason] of identityBindings) {
+    if (observed !== expected) return { ok: false, reason, evidenceId: checked.evidenceId || record.evidenceId || null };
+  }
+  const physicalRun = finalPacket.runs?.find((run) => run.runtimeClass === 'physical-ipad-supported-floor-v1');
+  if (!physicalRun) return { ok: false, reason: 'physical-ipad-final-physical-run-required', evidenceId: checked.evidenceId || record.evidenceId || null };
+  const deviceBindings = [
+    [physicalRun.device?.model, record.deviceModel, 'physical-ipad-final-device-mismatch'],
+    [physicalRun.device?.iPadOSVersion, record.iPadOSVersion, 'physical-ipad-final-ipados-mismatch'],
+    [physicalRun.device?.webKitVersion, record.webKitVersion, 'physical-ipad-final-webkit-mismatch'],
+  ];
+  for (const [observed, expected, reason] of deviceBindings) {
+    if (observed !== expected) return { ok: false, reason, evidenceId: checked.evidenceId || record.evidenceId || null };
+  }
+  return {
+    ok: true,
+    reason: null,
+    evidenceId: checked.evidenceId || record.evidenceId || null,
+    rawSampleDigest: finalChecked.rawSampleDigest || finalPacket.rawSampleDigest || null,
+  };
 }
 
 function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, requestedBuildIdentity }) {
