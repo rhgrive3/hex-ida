@@ -73,10 +73,12 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const strtab = one(DT_STRTAB);
   const strsz = one(DT_STRSZ);
   const symtab = one(DT_SYMTAB);
+  const needsStringTable = (tags.get(DT_NEEDED)?.length || 0) > 0 || one(DT_SONAME) != null || symtab != null;
   const defaultSyment = BigInt(bits === 64 ? 24 : 16);
   const syment = one(DT_SYMENT) ?? defaultSyment;
   const symentValid = syment >= defaultSyment;
   if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
+  if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
   const strSize = strsz == null ? 0 : toSafeNumber(strsz);
   const strSpan = strtab == null || strSize == null ? null : mappedELFFileSpanForVa(image, strtab, strSize);
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
@@ -171,6 +173,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   applyVersionMetadata(image, versions, symbolBudget);
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
+  checkRiscvVariantCcTag(image, tags, relocs, symbols);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -225,7 +228,9 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
+    const riscvVariantCc = riscvVariantCcFlag && type === 2;
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -338,8 +343,24 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   return out;
 }
 
-function attachDynamicRelocations(image, relocs, symbols) {
+const EM_RISCV = 243;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
+
+function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  const hasVariantCcTag = (tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0;
+  if (hasVariantCcTag) {
+    image.metadata.riscvVariantCcTagPresent = true;
+    return;
+  }
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
+  const missing = (relocs || []).some((rel) =>
+    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);
+  if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
+}
+
+function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
@@ -435,7 +456,7 @@ export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
 }
 
 function isIRelativeRelocation(machine, type) {
-  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032);
+  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032) || (machine === 243 && type === 58);
 }
 
 export function dynamicRelocationResolutionMetadata(image, rel, sym) {

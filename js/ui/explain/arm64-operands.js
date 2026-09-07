@@ -106,6 +106,16 @@ function parseMem(text) {
   return mem;
 }
 
+function isPostIndexRegister(op) {
+  return op?.k === "reg" && op.cls === "gp" && op.bits === 64 &&
+    Number.isInteger(op.num) && op.num >= 0 && op.num <= 30;
+}
+
+function isStructureRegisterList(op) {
+  return op?.k === "list" && op.regs.length >= 1 && op.regs.length <= 4 &&
+    op.regs.every((reg) => reg.k === "reg" && reg.cls === "vec");
+}
+
 /**
  * Capstone の operand 文字列を配列にする。
  * 直前のオペランドに掛かる shift/extend は、そのオペランドの .shift に畳み込む。
@@ -147,13 +157,27 @@ export function parseOperands(str) {
   }
   // 後置インデックス: "[x1], #8" は 2 つに割れているので戻す。
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].k === "mem" && out[i].mode === "offset" && out[i].disp == null &&
-        out[i].index == null && out[i + 1].k === "imm" && !out[i].text.endsWith("!")) {
+    const mem = out[i];
+    const next = out[i + 1];
+    if (mem.k !== "mem" || mem.mode !== "offset" || mem.disp != null ||
+        mem.index != null || mem.text.endsWith("!")) continue;
+    if (next.k === "imm") {
       // 直後が即値で、かつ元の文字列で "]" のあとにコンマが来ていた場合のみ。
-      out[i].writebackDisp = out[i + 1];
-      out[i].addressDisp = null;
-      out[i].disp = null;
-      out[i].mode = "post";
+      mem.writebackDisp = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
+      out.splice(i + 1, 1);
+      continue;
+    }
+    // parseOperands() has no mnemonic. Restrict register post-index folding to
+    // the valid AdvSIMD structure-register-list shape so unrelated "mem, reg"
+    // forms and malformed brace lists remain fail-closed (#4105).
+    if (i > 0 && isStructureRegisterList(out[i - 1]) && isPostIndexRegister(next)) {
+      mem.writebackReg = next;
+      mem.addressDisp = null;
+      mem.disp = null;
+      mem.mode = "post";
       out.splice(i + 1, 1);
     }
   }
@@ -202,10 +226,22 @@ function shiftExpr(sh) {
   }
 }
 
+const EXTEND_OPS = new Set(["uxtb", "uxth", "uxtw", "uxtx", "sxtb", "sxth", "sxtw", "sxtx"]);
+
+function modifiedValueExpr(text, sh) {
+  if (!sh) return text;
+  if (!EXTEND_OPS.has(sh.op)) return text + shiftExpr(sh);
+  const extended = sh.op + "(" + text + ")";
+  return sh.amount != null ? extended + " << " + sh.amount : extended;
+}
+
 export function memExpr(m) {
   let s = m.base.text;
-  if (m.index) s += " + " + m.index.text + (m.shift ? shiftExpr(m.shift) : "");
-  else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
+  if (m.index) {
+    const index = modifiedValueExpr(m.index.text, m.shift);
+    const needsGrouping = m.shift && EXTEND_OPS.has(m.shift.op) && m.shift.amount != null;
+    s += " + " + (needsGrouping ? "(" + index + ")" : index);
+  } else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
     s += (m.disp.value < 0n ? " - " : " + ") + immShort({ ...m.disp, value: m.disp.value < 0n ? -m.disp.value : m.disp.value });
   }
   return s;
@@ -215,7 +251,7 @@ export function memExpr(m) {
 export function opShort(op) {
   if (!op) return "";
   switch (op.k) {
-    case "reg": return op.text + (op.shift ? shiftExpr(op.shift) : "");
+    case "reg": return modifiedValueExpr(op.text, op.shift);
     case "imm": return immShort(op) + (op.shift ? shiftExpr(op.shift) : "");
     case "mem": return "[" + memExpr(op) + "]";
     case "cond": return op.text;

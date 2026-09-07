@@ -105,7 +105,8 @@ function desiredFactKinds(query) {
   const a = query && query.action;
   if (a === 'increase') return new Set([FACT.RMW, FACT.INCREMENT, FACT.WRITE, FACT.CLAMP]);
   if (a === 'decrease') return new Set([FACT.RMW, FACT.DECREMENT, FACT.WRITE, FACT.CLAMP]);
-  if (a === 'set' || a === 'save') return new Set([FACT.WRITE, FACT.TRANSFER, FACT.RMW]);
+  if (a === 'set') return new Set([FACT.WRITE]);
+  if (a === 'save') return new Set([FACT.WRITE, FACT.TRANSFER, FACT.RMW]);
   if (a === 'read') return new Set([FACT.READ, FACT.RETURN]);
   if (a === 'decide' || a === 'check' || a === 'detect') return new Set([FACT.BRANCH, FACT.THRESHOLD, FACT.ZERO_NULL]);
   if (a === 'send') return new Set([FACT.TRANSFER, FACT.CALL_RESULT]);

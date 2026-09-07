@@ -58,9 +58,8 @@ export function nonEmpty(value, code) {
   return text;
 }
 export function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 export function optionalPositiveInteger(value, code) {
   return value == null ? null : positiveInteger(value, code);
