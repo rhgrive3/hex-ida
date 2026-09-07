@@ -263,6 +263,18 @@ function programQuery(ctx, method, args) {
   try { return { supported: true, results: fn.apply(ctx.program, args) || [] }; }
   catch (error) { throw new AgentToolError('tool-failed', `${method} failed`, { method, cause: String(error && error.message || error) }); }
 }
+// Program backends may answer with a plain row array or with a structured
+// result `{ results, complete, truncated, reason, ... }`. The rows and the
+// incompleteness evidence must both survive: dropping the structured envelope
+// turned partial answers into empty complete ones (#5958).
+function programResultRows(q) {
+  const value = q?.results;
+  if (Array.isArray(value)) return { rows: value, meta: value };
+  if (value && typeof value === 'object' && Array.isArray(value.results)) return { rows: value.results, meta: value };
+  if (value && typeof value === 'object') return { rows: [], meta: value };
+  return { rows: [], meta: value ?? [] };
+}
+
 function programResultCompleteness(results, localComplete, cappedReason, sourceSupported) {
   if (sourceSupported !== true) return { complete: false, upstreamComplete: false, reason: 'unsupported-program-query' };
   const meta = results && typeof results === 'object' ? results : {};
@@ -345,11 +357,11 @@ export function createAgentTools(context, opts) {
       const offset = bounded(options && options.offset, 0, 0, 1000000);
       const request = Math.min(1000000, offset + limit + 1);
       const q = programQuery(ctx, 'callersOf', [addr, request]);
-      const raw = Array.isArray(q.results) ? q.results : [];
+      const { rows: raw, meta } = programResultRows(q);
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
       const localComplete = raw.length < request || offset + results.length >= raw.length;
-      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped', q.supported);
+      const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported);
       const total = status.upstreamComplete && raw.length < request ? raw.length : null;
       return { tool: 'get_callers', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
@@ -360,11 +372,11 @@ export function createAgentTools(context, opts) {
       if (ctx.program && typeof ctx.program.functionRange === 'function') { const rq = programQuery(ctx, 'functionRange', [addr]); range = rq.results; }
       const request = Math.min(1000000, offset + limit + 1);
       const q = programQuery(ctx, 'calleesOf', [addr, range && range.end, request]);
-      const raw = Array.isArray(q.results) ? q.results : [];
+      const { rows: raw, meta } = programResultRows(q);
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
       const localComplete = raw.length < request || offset + results.length >= raw.length;
-      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped', q.supported);
+      const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported);
       const total = status.upstreamComplete && raw.length < request ? raw.length : null;
       return { tool: 'get_callees', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
@@ -376,14 +388,14 @@ export function createAgentTools(context, opts) {
       const request = Math.min(1000000, offset + limit + 1);
       const sites = programQuery(ctx, 'refSitesTo', [addr, span, request]);
       const functions = programQuery(ctx, 'functionsReferencing', [addr, span, request]);
-      const rawSites = Array.isArray(sites.results) ? sites.results : [];
-      const rawFunctions = Array.isArray(functions.results) ? functions.results : [];
+      const { rows: rawSites, meta: sitesMeta } = programResultRows(sites);
+      const { rows: rawFunctions, meta: functionsMeta } = programResultRows(functions);
       const siteRows = rawSites.slice(offset, offset + limit);
       const functionRows = rawFunctions.slice(offset, offset + limit);
       const sitesLocalComplete = rawSites.length < request || offset + siteRows.length >= rawSites.length;
       const functionsLocalComplete = rawFunctions.length < request || offset + functionRows.length >= rawFunctions.length;
-      const sitesStatus = programResultCompleteness(rawSites, sitesLocalComplete, 'refs-source-capped', sites.supported);
-      const functionsStatus = programResultCompleteness(rawFunctions, functionsLocalComplete, 'refs-source-capped', functions.supported);
+      const sitesStatus = programResultCompleteness(sitesMeta, sitesLocalComplete, 'refs-source-capped', sites.supported);
+      const functionsStatus = programResultCompleteness(functionsMeta, functionsLocalComplete, 'refs-source-capped', functions.supported);
       const complete = sitesStatus.complete && functionsStatus.complete;
       const siteTotal = sitesStatus.upstreamComplete && rawSites.length < request ? rawSites.length : null;
       const functionTotal = functionsStatus.upstreamComplete && rawFunctions.length < request ? rawFunctions.length : null;
