@@ -438,5 +438,6 @@ function isCanonicalPassResultOwned(result) {
 
 /** Returns whether an untrusted pass result is a canonical, owned data value. */
 export function isCanonicalPassResult(result) {
-  return snapshotPassResultData(result) != null && isCanonicalPassResultOwned(snapshotPassResultData(result));
+  const snapshot = snapshotPassResultData(result);
+  return snapshot != null && isCanonicalPassResultOwned(snapshot);
 }
