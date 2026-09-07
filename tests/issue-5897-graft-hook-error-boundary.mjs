@@ -60,7 +60,7 @@ console.log('graft-hooks error-boundary regression: PASS');
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export function main( {\n');
   const result = spawnSync(process.execPath, [helper, 'post-edit'], {
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, NODE_PATH: '' },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, GRAFT_TEST_NO_FALLBACK: '1', NODE_PATH: '' },
   });
   assert.equal(result.status, 1, 'an installed syntax error must not become a no-op');
   assert.match(result.stderr, /graft hook unavailable:/);
