@@ -37,7 +37,15 @@ export async function executeTurn(input = {}, options = {}) {
         : (request.mode === 'agent' ? 120000 : 30000);
     }
     const budget = aiBudget(request.mode, budgetOverrides);
-    const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
+    // `AI_BUDGETS[mode].timeoutMs` is a hard browser-side ceiling, not just a
+    // default: a provider without its own timeout (turnTimeoutMs() === null)
+    // must still run under the runtime ceiling (#5984). `null` means "no
+    // provider-level extra timeout", never "no runtime timeout". A finite
+    // provider default may only shorten the ceiling, never extend it.
+    const providerDefault = Number(providerTimeout);
+    const turnTimeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
+      ? Math.min(budget.timeoutMs, Math.floor(providerDefault))
+      : budget.timeoutMs;
     const started = Date.now(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
