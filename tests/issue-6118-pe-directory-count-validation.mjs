@@ -87,11 +87,12 @@ function buildPE({ bits = 64, sizeOptional, numberOfRvaAndSizes, directoryEntrie
     ...optionalHeader({ bits, sizeOptional, numberOfRvaAndSizes, directoryEntries }),
     ...sectionTable(sections),
   ];
-  // COFF header: sizeOfOptionalHeader lives at file offset 84 (coff+16).
+  // COFF header: sizeOfOptionalHeader lives at file offset 84 (coff+16);
+  // NumberOfSections lives at file offset 70 (coff+2).
   bytes[84] = sizeOptional & 0xff;
   bytes[85] = (sizeOptional >>> 8) & 0xff;
-  bytes[86] = sections.length & 0xff;
-  bytes[87] = (sections.length >>> 8) & 0xff;
+  bytes[70] = sections.length & 0xff;
+  bytes[71] = (sections.length >>> 8) & 0xff;
   for (const section of sections) bytes.push(...sectionEntry(section));
   // Pad with a little file body so sections have something to map.
   bytes.push(...Buffer.alloc(0x400, 0xcc));
