@@ -62,7 +62,9 @@ function cancellablePending() {
 
 {
   const request = cancellablePending();
-  const reason = new DOMException('registration-race', 'AbortError');
+  const reason = new Error('registration-race');
+  reason.name = 'AbortError';
+  reason.code = 'ABORT_ERR';
   const signal = {
     aborted: false,
     reason,
@@ -79,11 +81,13 @@ function cancellablePending() {
     (error) => {
       assert.notEqual(error, reason, 'abort normalization must not reuse caller-owned reason');
       assert.equal(error?.name, 'AbortError');
+      assert.equal(error?.code, 'ABORT_ERR');
       assert.equal(error?.message, reason.message);
       return true;
     },
   );
   assert.equal(reason.name, 'AbortError', 'registration-race must not mutate the caller reason');
+  assert.equal(reason.code, 'ABORT_ERR', 'registration-race must not mutate the caller error code');
   assert.equal(request.cancelCount, 1, 'post-registration abort must not orphan the request');
 }
 
