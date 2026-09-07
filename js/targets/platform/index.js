@@ -42,7 +42,10 @@ export const DARWIN_PLATFORM = registerPlatformProfile({
 });
 export const LINUX_PLATFORM = registerPlatformProfile({
   id:'linux', semanticVersion:'1', runtimeLibraries:['glibc'], syscallFamily:'linux', debugInfoFamilies:['dwarf'],
-  defaultABI:({ architecture }) => architecture === 'arm64' || architecture === 'arm64e' ? 'aapcs64' : null,
+  // arm64e has no canonical SysV-style ABI outside Apple platforms; the ABI
+  // registry fail-closes that target, so the platform default must not offer
+  // a generic AAPCS64 profile for it (issue #6033).
+  defaultABI:({ architecture }) => architecture === 'arm64' ? 'aapcs64' : null,
 });
 export const WINDOWS_PLATFORM = registerPlatformProfile({
   id:'windows', semanticVersion:'1', runtimeLibraries:['ntdll','kernel32'], syscallFamily:'windows-nt', debugInfoFamilies:['codeview','pdb'],
