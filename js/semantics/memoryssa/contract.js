@@ -292,12 +292,14 @@ export function createMemorySsaContract(input, options = {}) {
       if (!prior) fail('memory-ssa-dangling-phi-definition');
       if (prior.regionId !== definition.regionId) fail('memory-ssa-cross-region-definition-link');
     }
-    if (definition.kind !== 'memory-phi' || !blocks) continue;
+    if (definition.kind !== 'memory-phi') continue;
+    // Predecessor uniqueness is structural, independent of optional CFG proof.
+    const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
+    if (new Set(incomingPreds).size !== incomingPreds.length) fail('memory-ssa-duplicate-phi-predecessor');
+    if (!blocks) continue;
     if (definition.blockId == null) fail('memory-ssa-phi-block-required');
     const block = blocks.get(definition.blockId);
     if (!block) fail('memory-ssa-invalid-definition-block');
-    const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
-    if (new Set(incomingPreds).size !== incomingPreds.length) fail('memory-ssa-duplicate-phi-predecessor');
     for (const pred of incomingPreds) {
       work();
       if (!block.predecessors.includes(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
