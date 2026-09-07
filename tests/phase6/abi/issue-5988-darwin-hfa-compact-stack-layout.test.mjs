@@ -56,6 +56,29 @@ test('darwin following stack argument starts right after the compact HFA', () =>
     'the tail must start at sp+16 after the 16-byte HFA, not sp+32');
 });
 
+test('darwin explicitly over-aligned float HFA keeps compact members at the aligned stack offset', () => {
+  const result = DARWIN_ARM64_ABI.classifyArguments({
+    functionPrototype:{
+      args:[
+        ...EXHAUSTED_BANKS,
+        { type:'float', bits:32, bytes:4, alignmentBytes:4 },
+        { ...FLOAT_HFA4, alignmentBytes:16, type:'over-aligned-H4' },
+        { type:'unsigned char' },
+      ],
+    },
+  });
+  const entry = result.stackArguments.find((argument) => argument?.index === 17);
+  const tail = result.stackArguments.find((argument) => argument?.index === 18);
+  assert.ok(entry && tail, 'the over-aligned HFA and tail must fall to the stack');
+  assert.equal(entry.offset, 16, 'explicit 16-byte aggregate alignment must be preserved');
+  assert.equal(entry.alignmentBytes, 16);
+  assert.equal(entry.bytes, 16, 'over-alignment must not widen compact HFA storage');
+  assert.deepEqual(entry.pieces.map((piece) => piece.byteOffset), [0, 4, 8, 12],
+    'over-alignment must not alter canonical member packing');
+  assert.deepEqual(entry.pieces.map((piece) => piece.stackOffset), [16, 20, 24, 28]);
+  assert.equal(tail.offset, 32, 'the following argument begins after the compact HFA extent');
+});
+
 test('darwin float[2] HFA stack fallback keeps its canonical size', () => {
   const hfa2 = {
     hfa:true, bits:64, bytes:8, alignmentBytes:4,

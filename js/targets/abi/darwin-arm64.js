@@ -102,8 +102,10 @@ function parameterClass(param) {
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
-  let alignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0 ? explicitAlignment : 1;
-  if (!(Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0)) {
+  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
+    ? explicitAlignment : null;
+  let alignmentBytes = explicitAlignmentBytes ?? 1;
+  if (explicitAlignmentBytes == null) {
     if (bytes >= 16) alignmentBytes = 16;
     else if (bytes >= 8) alignmentBytes = 8;
     else if (bytes >= 4) alignmentBytes = 4;
@@ -117,7 +119,7 @@ function parameterClass(param) {
     vector, fp, members, elementBits,
     elementBytes:homogeneousElementBytes
       ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
-    bits, bytes, alignmentBytes, signed,
+    bits, bytes, alignmentBytes, explicitAlignmentBytes, signed,
   };
 }
 
@@ -275,7 +277,9 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     }
 
-    const stackAlignmentBytes = c.homogeneous ? c.elementBytes : c.alignmentBytes;
+    const stackAlignmentBytes = c.homogeneous
+      ? Math.max(c.elementBytes ?? 1, c.explicitAlignmentBytes ?? 0)
+      : c.alignmentBytes;
     stackOffset = alignUp(stackOffset, stackAlignmentBytes);
     /* Apple ARM64 stack arguments consume compact slots of their natural
      * layout, not 8-byte-padded registers ("Function arguments may consume
