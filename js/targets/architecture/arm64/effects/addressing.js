@@ -24,7 +24,14 @@ function integer(value, code) {
   }
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+      const negative = text.startsWith('-');
+      const magnitude = BigInt(negative ? text.slice(1) : text);
+      return negative ? -magnitude : magnitude;
+    }
+  }
   fail(code);
 }
 
