@@ -144,42 +144,30 @@ export async function buildRecognitionState({
 export async function ensureRecognitionState(app, options = {}) {
   const sym = app?.symbols;
   if (!sym || sym === EMPTY_INDEX) return null;
-  // The recognition state bakes in knowledge propagation results, so a
-  // knowledge mutation must invalidate cached and in-flight recognition (#5723).
-  const knowledgeRev = Number(app.knowledge?.revision ?? 0);
-  const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
-  if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
-  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
+  if (app.recognition && app.recognition.gen === sym.gen) return app.recognition;
+  if (app.recognitionBusy) return app.recognitionBusy;
   const epoch = app.backend.gen;
   const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
   const knowledgeLimit = Math.min(2048, Math.max(0, Number(options.knowledgeLimit ?? 512)));
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
-    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
+    if (epoch !== app.backend.gen || sym !== app.symbols) return null;
     // Symbol metadata can change while the async state build yields. Pin the
     // generation after optional metadata producers finish and reject any
-    // snapshot that crosses a symbol-index or knowledge mutation.
+    // snapshot that crosses a symbol-index mutation.
     const symbolGen = sym.gen;
-    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
-      isCurrent,
+      isCurrent:() => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen,
     });
-    if (state == null || !isCurrent()) return null;
-    app.recognition = state;
-    app.recognitionKnowledgeRev = knowledgeRev;
+    if (state == null || sym.gen !== symbolGen) return null;
+    if (epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen) app.recognition = state;
     return state;
   })();
   app.recognitionBusy = pending;
-  app.recognitionBusyKnowledgeRev = knowledgeRev;
   try { return await pending; }
-  finally {
-    if (app.recognitionBusy === pending) {
-      app.recognitionBusy = null;
-      app.recognitionBusyKnowledgeRev = null;
-    }
-  }
+  finally { if (app.recognitionBusy === pending) app.recognitionBusy = null; }
 }
 
 
@@ -898,6 +886,13 @@ class App {
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
   async ensureStrings(onProgress) {
+    // Positional `(onProgress)` is the canonical signature; an options object
+    // with an `onProgress` field is tolerated exactly like ensureProgram so a
+    // legacy caller can never register a non-function as the backend progress
+    // callback (#5719).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     if (this.stringIndex) return this.stringIndex;
     const epoch = this.backend.gen;
     if (this.stringsBusy && this.stringsBusyEpoch === epoch) return this.stringsBusy;
@@ -947,7 +942,7 @@ class App {
         const remaining = collectionBudget.requestLimit();
         if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
-          onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+          progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
