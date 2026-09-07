@@ -177,6 +177,20 @@ export function rangeRelation(a, sizeA, b, sizeB) {
   return 'may';
 }
 
+/** Storage classes whose separation may be proven by a canonical root descriptor. */
+export const PROVEN_SEPARATION_CLASSES = Object.freeze(['global-like', 'heap-like', 'tls-like']);
+
+/**
+ * Module-private brand for canonical root-descriptor separation proofs.
+ *
+ * Separation authority is proof, not metadata: a plain input string can no
+ * longer mint the `root-descriptor` authority (#6066). The brand travels with
+ * object spread (symbols are own-enumerable properties), so internal
+ * reconstructions of an already-proven target keep it, while a lookalike
+ * input object cannot fabricate it.
+ */
+const ROOT_DESCRIPTOR_PROOF = Symbol('phase7.pointsto.root-descriptor-proof');
+
 function rootKeyOf(target) {
   return stableStringify({
     addressSpace: target.addressSpace,
@@ -191,13 +205,17 @@ function rootKeyOf(target) {
 
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
+  // The authority is accepted only from a branded proven target or from the
+  // canonical mint boundary below — never from plain caller metadata.
+  const proven = input[ROOT_DESCRIPTOR_PROOF] === true
+    && input.separationAuthority === 'root-descriptor';
   const target = {
     addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
     rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
-    separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,
+    separationAuthority: proven ? 'root-descriptor' : null,
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
       ? String(input.address)
       : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
@@ -205,8 +223,43 @@ export function createPointsToTarget(input = {}) {
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
   };
+  if (proven) target[ROOT_DESCRIPTOR_PROOF] = true;
   target.rootKey = rootKeyOf(target);
   return deepFreeze(target);
+}
+
+/**
+ * Canonical root-descriptor proof boundary (#6066).
+ *
+ * This is the only way to mint `root-descriptor` separation authority on a new
+ * target. `proof` is the separation metadata the canonical-address service
+ * derived from a real root descriptor artifact — a caller-supplied string is
+ * not a proof.
+ */
+export function createRootDescriptorSeparatedTarget(input = {}, proof = null) {
+  if (!proof || proof.separationAuthority !== 'root-descriptor'
+    || !PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+    fail('phase7-pointsto-root-descriptor-proof-required');
+  }
+  return createPointsToTarget({
+    ...input,
+    separationClass: proof.separationClass,
+    separationAuthority: proof.separationAuthority,
+    [ROOT_DESCRIPTOR_PROOF]: true,
+  });
+}
+
+/**
+ * Consumer-side authority check (#6066).
+ *
+ * Answers with the target's proven separation authority, or null. alias and
+ * escape consumers must ask here instead of reading the stored string, which
+ * plain targets can no longer carry.
+ */
+export function provenSeparationAuthority(target) {
+  return target?.[ROOT_DESCRIPTOR_PROOF] === true && target.separationAuthority === 'root-descriptor'
+    ? 'root-descriptor'
+    : null;
 }
 
 /**

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { classifyRootOrigin, analyzeEscape } from '../../../js/analysis/summary/escape.js';
-import { createPointsToTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
+import { createPointsToTarget, createRootDescriptorSeparatedTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
 import { fixture } from '../helpers/fixtures.mjs';
 import { buildFixture } from '../corpus/fixtures.mjs';
 
@@ -13,16 +13,16 @@ import { buildFixture } from '../corpus/fixtures.mjs';
  * (`separationAuthority:'root-descriptor'`) counts. */
 
 test('classifyRootOrigin: descriptor-backed global-like rooted target is global', () => {
-  const target = createPointsToTarget({
+  // The authority must cross the proof boundary (#6066); a plain string input
+  // no longer mints descriptor-backed separation.
+  const target = createRootDescriptorSeparatedTarget({
     addressSpace:'memory',
     rootKind:'rooted',
     rootEntityId:'global:G',
-    separationClass:'global-like',
-    separationAuthority:'root-descriptor',
     offsetRange:exactRange(0n),
     widthBits:64,
     evidenceIds:['addr'],
-  });
+  }, { separationClass:'global-like', separationAuthority:'root-descriptor' });
   assert.equal(classifyRootOrigin(target), 'global');
 });
 
