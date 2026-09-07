@@ -62,6 +62,12 @@ assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, '32'), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, null), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, ''), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, undefined), null);
+
+// Truthy non-AST operands must fail closed before any expression constructor runs.
+assert.equal(buildNZCVConditionExpression('sub', 'eq', 1, b32, 32), null);
+assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, 1, 32), null);
+assert.equal(buildNZCVConditionExpression('add', 'ge', a32, {}, 32), null);
+assert.equal(buildNZCVConditionExpression('and', 'eq', true, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 

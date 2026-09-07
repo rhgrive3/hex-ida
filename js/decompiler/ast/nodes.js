@@ -7,6 +7,16 @@
  *   dropped at the boundary: coercing it with String() would let an Array,
  *   boolean or object alias a canonical identity and merge unrelated evidence.
  */
+const EXPRESSION_KINDS = new Set([
+  'const', 'float-const', 'var', 'unary', 'binary', 'compare',
+  'select', 'call', 'load', 'field', 'index', 'intrinsic',
+]);
+
+export function isExpressionNode(value) {
+  return value !== null
+    && typeof value === 'object'
+    && EXPRESSION_KINDS.has(value.kind);
+}
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
 function canonicalIdentity(v, { allowBigInt = false, allowString = false } = {}) {
   if (allowBigInt && typeof v === 'bigint') return v >= 0n ? v : null;

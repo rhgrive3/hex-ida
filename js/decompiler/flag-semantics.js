@@ -1,4 +1,4 @@
-import { expr } from './ast/nodes.js';
+import { expr, isExpressionNode } from './ast/nodes.js';
 import { printExpression } from './pretty/c.js';
 
 const CONDITIONS = new Set([
@@ -174,7 +174,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   if (condition === null) return null;
   const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
-  if (!left || !right) return null;
+  if (!isExpressionNode(left) || !isExpressionNode(right)) return null;
   sub = producer;
   cond = condition;
   bits = width;
