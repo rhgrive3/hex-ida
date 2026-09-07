@@ -79,8 +79,8 @@ export class ProposalStore {
     const proposal = requireProposalRecord(this, id);
     const authority = proposalAuthority(proposal);
     if (proposal.status !== 'pending') throw new AIError('approval_required', 'Only pending proposals can be approved.');
-    proposal.status = 'approved';
     const token = randomToken();
+    proposal.status = 'approved';
     this.approvals.set(authority.id, token);
     this.audit.push({ type: 'proposal-approved', proposalId: authority.id, timestamp: new Date().toISOString() });
     return { proposal: proposalSnapshot(proposal), approvalToken: token };
