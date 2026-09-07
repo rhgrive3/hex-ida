@@ -59,4 +59,44 @@ const origin = { instructionIds: ['i1'] };
   assert.deepEqual(contract.reachingDefinitionLinks.map((l) => l.useId), ['u_A', 'u_z']);
 }
 
+// memory-phi incoming uses the same code-unit comparator, including its
+// predecessor/definition tie-break, and remains independent of insertion order.
+function phiContract(incoming) {
+  const phiOrigin = { instructionIds: ['issue-5756-phi'] };
+  return createMemorySsaContract({
+    functionId: 'f',
+    regions: [region('r', 0n)],
+    definitions: [
+      { id: 'd_A', kind: 'memory-def', regionId: 'r', blockId: 'A', sourceEntityId: 'sA', origin: phiOrigin },
+      { id: 'd_ae', kind: 'memory-def', regionId: 'r', blockId: 'ä', sourceEntityId: 'sae', origin: phiOrigin },
+      { id: 'phi', kind: 'memory-phi', regionId: 'r', blockId: 'merge', incoming, origin: phiOrigin },
+    ],
+    uses: [],
+  }, {
+    cfg: {
+      functionId: 'f',
+      blocks: [
+        { id: 'A', predecessors: [] },
+        { id: 'ä', predecessors: [] },
+        { id: 'merge', predecessors: ['ä', 'A'] },
+      ],
+    },
+  });
+}
+
+{
+  const first = phiContract([
+    { predecessorBlockId: 'ä', definitionId: 'd_ae' },
+    { predecessorBlockId: 'A', definitionId: 'd_A' },
+  ]);
+  const second = phiContract([
+    { predecessorBlockId: 'A', definitionId: 'd_A' },
+    { predecessorBlockId: 'ä', definitionId: 'd_ae' },
+  ]);
+  const firstIncoming = first.definitions.find((definition) => definition.id === 'phi').incoming;
+  assert.deepEqual(firstIncoming.map((item) => item.predecessorBlockId), ['A', 'ä']);
+  assert.equal(JSON.stringify(first), JSON.stringify(second),
+    'memory-phi canonical form must not depend on incoming insertion order');
+}
+
 console.log('issue-5756 memory-ssa canonical ordering is locale-invariant: ok');
