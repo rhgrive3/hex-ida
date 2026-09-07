@@ -14,7 +14,7 @@ process.on('exit', () => {
     }
   }
 });
-import { installSharedWorkerBinaryIdentity } from '../js/analysis/shared-binary-identity.js';
+import { installSharedWorkerBinaryIdentity } from '../../js/analysis/shared-binary-identity.js';
 
 // Issue #5788: when the last waiter aborts, the entry's producer is aborted
 // ('binary-identity-no-consumers') but stays installed as `current` until the
