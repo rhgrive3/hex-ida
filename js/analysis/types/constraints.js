@@ -410,8 +410,16 @@ export function claimsConflict(left, right) {
     // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
     // hard aggregate size N + hard field [offset, offset+size) with
     // offset+size > N are hard facts that cannot both hold.
+    // Only an explicitly typed aggregate can supply a whole-object bound.
+    // Offset-less structural-field metadata is member evidence, not a bound.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
     const extentBeyondAggregate = (aggregate, field) => {
-      if (aggregate.offset != null || aggregate.sizeBytes == null) return false;
+      if (!isExplicitAggregateDescriptor(aggregate)) return false;
       if (field.offset == null || field.sizeBytes == null) return false;
       const start = toBigInt(field.offset, null);
       const size = toBigInt(field.sizeBytes, null);

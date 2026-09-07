@@ -87,4 +87,48 @@ function graphWith(aggregateSize, fieldOffset, fieldSize) {
   assert.equal(Number(result.layers.structural.selected.descriptor.totalSizeBytes), 10);
 }
 
+
+// An offset-less structural-field descriptor carries member metadata, not an
+// aggregate bound. It must not turn a compatible real field into a false
+// contradiction or suppress the derived aggregate size (#3906).
+{
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-3906-offsetless-field' });
+  graph.addHardConstraint({
+    kind: 'structural-field',
+    origin: 'binary-evidence',
+    claim: {
+      layer: 'structural',
+      entityId: 'S',
+      descriptor: {
+        sizeBytes: 4,
+        fieldName: 'ghost',
+        memberType: { kind: 'integer', widthBits: 32 },
+      },
+    },
+  });
+  graph.addHardConstraint({
+    kind: 'structural-field',
+    origin: 'binary-evidence',
+    claim: {
+      layer: 'structural',
+      entityId: 'S',
+      descriptor: {
+        offset: 4,
+        sizeBytes: 4,
+        fieldName: 'b',
+        memberType: { kind: 'integer', widthBits: 32 },
+      },
+    },
+  });
+  const structural = graph.solveEntity('S').layers.structural;
+  assert.equal(structural.contradictions.length, 0,
+    'offset-less field metadata must not act as an aggregate size bound');
+  assert.equal(structural.confidence, 'certain');
+  assert.equal(Number(structural.selected.descriptor.sizeBytes), 8);
+  assert.deepEqual(
+    structural.selected.descriptor.members.map((member) => member.fieldName),
+    ['b'],
+  );
+}
+
 console.log('issue-5819 hard aggregate size bounds field extents: ok');

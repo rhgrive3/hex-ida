@@ -188,6 +188,14 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
     const rawMembers = [];
     let explicitSize = null;
     let explicitAlign = null;
+    // Only an explicitly typed aggregate may establish whole-object size or
+    // alignment. Offset-less structural-field metadata is member evidence.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
 
     for (const desc of descriptors) {
       if (Array.isArray(desc.members)) {
@@ -195,11 +203,11 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (desc.sizeBytes != null && desc.offset == null) {
+      if (isExplicitAggregateDescriptor(desc) && desc.sizeBytes != null) {
         explicitSize = exactStructuralInteger(desc.sizeBytes);
         if (explicitSize == null) return null;
       }
-      if (desc.alignBytes != null && desc.offset == null) {
+      if (isExplicitAggregateDescriptor(desc) && desc.alignBytes != null) {
         explicitAlign = exactStructuralInteger(desc.alignBytes);
         if (explicitAlign == null) return null;
       }
