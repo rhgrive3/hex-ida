@@ -222,3 +222,7 @@ console.log('plugin-platform: PASS');
 
 // Canonical #6228/#6231 hardening remains part of the same platform denominator.
 await import('./plugin-platform-hardening-6228-6231.mjs');
+
+await import('./plugin-platform-disposer-4499.mjs');
+await import('./plugin-platform-invocation-lifetime-4511.mjs');
+await import('./plugin-platform-permission-4417.mjs');
