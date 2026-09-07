@@ -86,7 +86,14 @@
         const reg = value;
         if (Number.isInteger(reg) && reg >= 0 && reg < 32) regs.add(reg);
       }
-      if (regs.size) entryKills.set(target, regs);
+      if (regs.size) {
+        const prior = entryKills.get(target);
+        if (prior) {
+          for (const reg of regs) prior.add(reg);
+        } else {
+          entryKills.set(target, regs);
+        }
+      }
     }
     let generation = 0;
 

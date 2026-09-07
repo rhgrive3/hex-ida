@@ -16,12 +16,12 @@ function loadModule(loadedSequence = null) {
 
 for (const bad of ['10', '010', '+10', ' 10 ', ['10'], true, 10n, {}]) {
   test(`P10.9 module load rejects coerced sequence ${String(bad)}`, () => {
-    assert.throws(() => loadModule(bad), /invalid-sequence/);
+    assert.throws(() => loadModule(bad), (error) => error?.code === 'invalid-sequence');
   });
 
   test(`P10.9 module unload rejects coerced sequence ${String(bad)}`, () => {
     const { table, binding } = loadModule(10);
-    assert.throws(() => table.unload(binding.bindingKey, bad), /invalid-sequence/);
+    assert.throws(() => table.unload(binding.bindingKey, bad), (error) => error?.code === 'invalid-sequence');
     assert.equal(table.get(binding.bindingKey), binding);
   });
 }
@@ -38,10 +38,10 @@ test('P10.9 module sequence accepts canonical primitive safe integers and nullis
 
 test('P10.9 module sequence preserves numeric range and ordering validation', () => {
   for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
-    assert.throws(() => loadModule(bad), /invalid-sequence/);
+    assert.throws(() => loadModule(bad), (error) => error?.code === 'invalid-sequence');
   }
 
   const { table, binding } = loadModule(10);
-  assert.throws(() => table.unload(binding.bindingKey, 9), /invalid-module-sequence/);
+  assert.throws(() => table.unload(binding.bindingKey, 9), (error) => error?.code === 'invalid-module-sequence');
   assert.equal(table.get(binding.bindingKey), binding);
 });

@@ -5,6 +5,7 @@ import {
   mappedFileSpanForRva,
   parseExceptionFunctions as parseExceptionFunctionsCore,
   parseLoadConfig as parseLoadConfigCore,
+  parseTlsDirectory as parseTlsDirectoryCore,
 } from './pe-loader-core.js';
 
 export {
@@ -16,7 +17,6 @@ export {
   directory,
   peMachineName,
   resolveCoffSectionName,
-  parseTlsDirectory,
 } from './pe-loader-core.js';
 
 export {
@@ -60,7 +60,12 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const recordSize = machine === 0x8664
     ? 12
     : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
-  if (recordSize && dir.size % recordSize !== 0 && mappedFileSpanForRva(image, dir.rva, dir.size)) {
+  if (
+    recordSize
+    && Number.isSafeInteger(dir.size)
+    && dir.size % recordSize !== 0
+    && mappedFileSpanForRva(image, dir.rva, dir.size)
+  ) {
     const budget = ensureBudget(image, sharedBudget);
     budget.partial(
       'exception:directory-record-remainder',
@@ -69,6 +74,50 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
     return parseExceptionFunctionsCore(r, dir, image, machine, budget);
   }
   return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+}
+
+export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
+  const need = image.bits === 64 ? 40 : 24;
+  if (!dir || !dir.rva || dir.size < need) {
+    return parseTlsDirectoryCore(r, dir, image, sharedBudget);
+  }
+
+  const budget = ensureBudget(image, sharedBudget);
+  const sectionAt = image.sectionAt;
+  if (typeof sectionAt !== 'function') {
+    return parseTlsDirectoryCore(r, dir, image, budget);
+  }
+
+  // The core already decides whether a callback is publishable by asking
+  // sectionAt() and then requiring file backing. Mirror those exact authority
+  // checks here so a rejected nonzero callback also lowers completeness,
+  // without rereading the callback table or changing its budget accounting.
+  const tlsImage = Object.create(image);
+  tlsImage.sectionAt = (address) => {
+    const target = BigInt(address);
+    const sec = sectionAt.call(image, target);
+    if (!sec?.perms?.execute) {
+      budget.partial(
+        'tls:callback-target-non-executable',
+        `Ignored PE TLS callback target 0x${target.toString(16)} outside an executable section`,
+      );
+      return sec;
+    }
+
+    const delta = target - image.imageBase;
+    const fileBacked = delta > 0n && delta <= 0xffffffffn
+      ? mappedFileRangeForRva(image, Number(delta))
+      : null;
+    if (!fileBacked) {
+      budget.partial(
+        'tls:callback-target-not-file-backed',
+        `Ignored PE TLS callback target 0x${target.toString(16)} outside a file-backed mapping`,
+      );
+    }
+    return sec;
+  };
+
+  return parseTlsDirectoryCore(r, dir, tlsImage, budget);
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {

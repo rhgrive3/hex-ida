@@ -22,7 +22,13 @@ export class ProposalStore {
 
   create(input = {}) {
     if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
-    const evidenceIds = Array.from(new Set((Array.isArray(input.evidenceIds) ? input.evidenceIds : []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
+    // A truthy non-array must never reach property access with a native
+    // TypeError: malformed tool input stays inside the invalid_tool_call
+    // domain-error boundary on the deterministic-evidence validation path.
+    if (input.evidenceIds != null && !Array.isArray(input.evidenceIds)) {
+      throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
+    }
+    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (Object.prototype.hasOwnProperty.call(input, 'id')) {
