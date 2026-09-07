@@ -10,6 +10,19 @@ const MALFORMED_UNDEFINED_RESULT = Object.freeze({
   class:'malformed', mask:'unknown-mask', reason:'malformed-descriptor',
 });
 
+// MachineEffects can attach an undefined-result descriptor only to a value
+// producer, an intrinsic result, or a memory read.  Unknown memory reads are
+// retained as a conservative compatibility barrier when address lowering
+// could not produce a normal `load` node.  State writes, stores, calls, and
+// control nodes have no undefined result in the canonical operation contract;
+// accepting the annotation there would let the early unknown projection drop
+// their side effects.
+const UNDEFINED_RESULT_NODE_KINDS = new Set([
+  'const', 'copy', 'unary', 'binary', 'compare', 'select', 'zext', 'sext',
+  'trunc', 'bitcast', 'extract', 'insert', 'concat', 'address', 'intrinsic',
+  'load', 'unknown-value', 'unknown-memory-effect',
+]);
+
 function undefinedResultAttribute(attributes) {
   if (attributes == null || typeof attributes !== 'object') return null;
   let machineEffectsProperty;
@@ -39,9 +52,14 @@ export function assertUndefinedResultAttributes(input) {
   const nodes=data(input,'nodes');
   if(!Array.isArray(nodes)) return;
   for(let i=0;i<nodes.length;i++) {
-    const attrs=data(data(nodes,String(i)),'attributes');
-    if(undefinedResultAttribute(attrs)===MALFORMED_UNDEFINED_RESULT) {
+    const node=data(nodes,String(i));
+    const attrs=data(node,'attributes');
+    const undefinedResult=undefinedResultAttribute(attrs);
+    if(undefinedResult===MALFORMED_UNDEFINED_RESULT) {
       throw new TypeError('semantic-undefined-result-malformed');
+    }
+    if(undefinedResult!=null && !UNDEFINED_RESULT_NODE_KINDS.has(data(node,'kind'))) {
+      throw new TypeError('semantic-undefined-result-node-kind');
     }
   }
 
@@ -320,9 +338,10 @@ export function projectNode(node, context) {
   if (undefinedResult != null
     && (node.kind !== 'intrinsic' || undefinedResult === MALFORMED_UNDEFINED_RESULT)) {
     const isMemoryRead = node.kind === 'load';
+    const isUnknownMemoryEffect = node.kind === 'unknown-memory-effect';
     const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
       reason: `architecturally-undefined-result:${undefinedResult.reason ?? 'unspecified'}`,
-      unknownCategories: isMemoryRead ? ['memory', 'value'] : ['value'],
+      unknownCategories: isMemoryRead || isUnknownMemoryEffect ? ['memory', 'value'] : ['value'],
       undefinedResult,
     });
     Object.assign(inst, unknown, {
@@ -339,6 +358,7 @@ export function projectNode(node, context) {
       inst.memoryAccess = node.memory;
       inst.memoryBarrier = true;
     }
+    if (isUnknownMemoryEffect) inst.memoryBarrier = true;
     if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
     return [inst];
   }
