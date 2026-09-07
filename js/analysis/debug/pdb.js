@@ -830,6 +830,19 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 function findSectionHeaderStream(msf, dbi, dbiBytes) {
   if (!dbi || !dbiBytes) return null;
   const view = new DataView(dbiBytes.buffer, dbiBytes.byteOffset, dbiBytes.byteLength);
+  const precedingSubstreamSizes = [
+    dbi.moduleSubstreamSize,
+    dbi.sectionContributionSize,
+    dbi.sectionMapSize,
+    dbi.sourceInfoSize,
+    dbi.typeServerMapSize,
+    dbi.ecSubstreamSize,
+  ];
+  // These fields are signed in the DBI header. Reject malformed sizes before
+  // summing them: a negative component could move the optional header into
+  // earlier bytes and make unrelated data look like stream-index authority.
+  if (precedingSubstreamSizes.some((size) =>
+    !Number.isSafeInteger(size) || size < 0)) return null;
   const optionalHeaderOffset = DBI_HEADER_SIZE
     + dbi.moduleSubstreamSize
     + dbi.sectionContributionSize
@@ -837,8 +850,19 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
     + dbi.sourceInfoSize
     + dbi.typeServerMapSize
     + dbi.ecSubstreamSize;
+  if (!Number.isSafeInteger(optionalHeaderOffset)
+    || optionalHeaderOffset < DBI_HEADER_SIZE
+    || optionalHeaderOffset > dbiBytes.length) return null;
+  const optionalDbgHeaderSize = Number(dbi.optionalDbgHeaderSize);
+  if (!Number.isSafeInteger(optionalDbgHeaderSize) || optionalDbgHeaderSize < 0) return null;
+  const optionalHeaderEnd = optionalHeaderOffset + optionalDbgHeaderSize;
+  if (!Number.isSafeInteger(optionalHeaderEnd)
+    || optionalHeaderEnd > dbiBytes.length) return null;
   // The optional debug header is an array of stream indices; index 5 is the
-  // original section header stream.
+  // original section header stream. Reading it requires the DBI header to
+  // actually declare that entry: beyond the declared extent the bytes belong
+  // to other substreams and must never mint section mapping authority (#5822).
+  if (optionalDbgHeaderSize < (5 + 1) * 2) return null;
   const entryOffset = optionalHeaderOffset + 5 * 2;
   if (entryOffset + 2 > dbiBytes.length) return null;
   const streamIndex = view.getUint16(entryOffset, true);
