@@ -434,6 +434,11 @@ export const ADAPTER_EVIDENCE = Object.freeze({
   'runtime-branch-verified': { family: FAMILY.VERIFIED, kind: 'verified', id: false },
 });
 
+/* 動的アダプタ証拠と evidence() の出力だけが fuse() に渡されることを示す印。
+ * 列挙不可なので JSON 化や spread で視けることはない。生の object が証拠の
+ * authority（family/kind/id）を名乗って fuse() に入ることを防ぐ（#5972）。 */
+const FACTORY_BRAND = Symbol('hex-evidence-factory');
+
 /**
  * 動的アダプタ証拠の型付き契約。
  * 登録されていない code は例外になる。family/kind/id は契約表が authority で、
@@ -442,7 +447,7 @@ export const ADAPTER_EVIDENCE = Object.freeze({
 export function adapterEvidence(code, strength, detail, lr) {
   const info = Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null;
   if (!info) throw new TypeError(`unregistered-adapter-evidence-code:${code}`);
-  return {
+  const item = {
     code,
     strength: strength == null ? 1 : finiteStrength(strength, 0),
     lr: finitePositiveLr(lr, 1),
@@ -451,6 +456,8 @@ export function adapterEvidence(code, strength, detail, lr) {
     id: info.id,
     detail: detail || null,
   };
+  Object.defineProperty(item, FACTORY_BRAND, { value: true });
+  return item;
 }
 
 function finiteStrength(value, fallback = 0) {
@@ -472,7 +479,7 @@ export function evidence(code, strength, detail, lr) {
   const info = EVIDENCE[code];
   const s = strength == null ? 1 : finiteStrength(strength, 0);
   const fallbackLr = finitePositiveLr(info?.lr, 1);
-  return {
+  const item = {
     code,
     strength: s,
     // 実測から作った尤度比があれば、表の既定値より優先する
@@ -482,6 +489,8 @@ export function evidence(code, strength, detail, lr) {
     id: !!(info && info.id),
     detail: detail || null,
   };
+  Object.defineProperty(item, FACTORY_BRAND, { value: true });
+  return item;
 }
 
 /**
@@ -633,22 +642,30 @@ export function fuse(items, opts) {
      * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
      * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
      * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
-     * authority は code から再導出し、呼び出し側の主張は採用しない。
+     * factory 出力は authority を code から再導出し、呼び出し側の主張は
+     * family/kind/id に限って採用しない。lr だけは実測チャネルとして
+     * factory が明示的に渡した値を優先する（family cap が歯止めになる）。
      */
+    if (!x || x[FACTORY_BRAND] !== true) {
+      throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+    }
     const adapter = Object.hasOwn(ADAPTER_EVIDENCE, x.code)
       ? ADAPTER_EVIDENCE[x.code]
       : null;
     const info = adapter || EVIDENCE[x.code] || null;
-    if (!info) {
-      throw new TypeError(`unregistered-evidence-code:${x.code}`);
-    }
+    /*
+     * family/kind/id の authority は表が持つ。表に無い code は factory と同じ
+     * 弱さの既定（CONTEXT / inference / 非識別）に落ちる。verified や id を
+     * 名乗れるのは表に登録されている code だけなので、生の object でも
+     * factory 出力でも、表の外側から confirmed を捏造する道は残らない。
+     */
     return {
       code: x.code,
       strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-      lr: finitePositiveLr(x.lr, finitePositiveLr(info.lr, 1)),
-      family: info.family,
-      kind: info.kind,
-      id: !!info.id,
+      lr: finitePositiveLr(x.lr, info ? finitePositiveLr(info.lr, 1) : 1),
+      family: info ? info.family : FAMILY.CONTEXT,
+      kind: info ? info.kind : 'inference',
+      id: !!(info && info.id),
       detail: x.detail || null,
     };
   });

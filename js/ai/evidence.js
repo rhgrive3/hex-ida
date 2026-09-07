@@ -26,6 +26,17 @@ function firstAddress(value) {
   return addressText(value.functionAddress ?? value.function ?? value.address ?? value.addr ?? value.target);
 }
 
+/*
+ * add() 境界で timestamp を canonical graph が受理できる string に限定する。
+ * 欠けていれば現時点の ISO string を入れる。string 以外は保存せず拒否する
+ * （fail-closed）。canonical 側の createdAt は string しか受理しない。
+ */
+function evidenceTimestamp(value) {
+  if (value == null || value === '') return new Date().toISOString();
+  if (typeof value !== 'string') throw new TypeError('evidence-invalid-timestamp');
+  return value;
+}
+
 function factRows(result) {
   const rows = [];
   for (const key of ['results', 'updates', 'sites', 'functions', 'paths', 'causalPaths']) {
@@ -184,7 +195,12 @@ export class EvidenceStore {
     if (input.summary) record.summary = String(input.summary).slice(0, 2000);
     if (input.sourceData != null) record.sourceData = compactSource(input.sourceData);
     if (Number.isFinite(input.confidence)) record.confidence = Math.max(0, Math.min(1, input.confidence));
-    record.timestamp = input.timestamp || new Date().toISOString();
+    /*
+     * timestamp は canonical snapshot が要求する ISO string にここで正規化する。
+     * number など string 以外をそのまま保存すると、add() は成功したのに
+     * canonicalSnapshot() だけが必ず失敗する record になってしまう（#5946）。
+     */
+    record.timestamp = evidenceTimestamp(input.timestamp);
     if (input.navigation) record.navigation = jsonSafe(input.navigation);
 
     const previous = this.records.get(id);

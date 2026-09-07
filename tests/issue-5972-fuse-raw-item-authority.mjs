@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { FAMILY, GROUP, fuse, decide, adapterEvidence, ADAPTER_EVIDENCE } from '../js/evidence.js';
+import { FAMILY, fuse, decide, evidence, adapterEvidence, ADAPTER_EVIDENCE } from '../js/evidence.js';
 import { semanticEvidenceItems, runtimeEvidenceItems } from '../js/semantic-evidence.js';
 
 test('#5972 raw items with unregistered codes cannot forge confirmed evidence', () => {
@@ -11,47 +11,58 @@ test('#5972 raw items with unregistered codes cannot forge confirmed evidence', 
       { code: 'runtime-made-up', family: FAMILY.VERIFIED, kind: 'verified', id: true, strength: 1, lr: 4000 },
       { code: 'cfg-made-up', family: FAMILY.NAMING, kind: 'fact', id: true, strength: 1, lr: 1e5 },
     ]),
-    (err) => err instanceof TypeError && /unregistered-evidence-code:made-up-metadata/.test(err.message),
+    (err) => err instanceof TypeError && /raw-evidence-item-rejected:made-up-metadata/.test(err.message),
   );
 });
 
-test('#5972 raw items cannot override authority of a registered code', () => {
-  // 'fn-numeric' is a weak corroborating fact in the table; a raw item claiming
-  // kind 'verified' + id:true must not adopt those claims. (lr stays the
-  // caller-supplied measured channel for registered codes, bounded by the
-  // family cap; family/kind/id authority is always re-derived from the table.)
-  const fusion = fuse([
-    { code: 'fn-numeric', family: FAMILY.VERIFIED, kind: 'verified', id: true, strength: 1, lr: 1e9 },
-  ]);
-  const item = fusion.items.find((it) => it.code === 'fn-numeric');
-  assert.equal(item.family, FAMILY.USAGE);
-  assert.equal(item.kind, 'fact');
-  assert.equal(item.id, false);
-  // Family-cap authority still bounds the inflated measured LR (USAGE cap 30).
-  assert.ok(item.applied <= Math.log(30) + 1e-9);
+test('#5972 raw items cannot reach the fusion at all, even with a registered code', () => {
+  assert.throws(
+    () => fuse([{ code: 'fn-numeric', family: FAMILY.VERIFIED, kind: 'verified', id: true, strength: 1, lr: 1e9 }]),
+    (err) => err instanceof TypeError && /raw-evidence-item-rejected:fn-numeric/.test(err.message),
+  );
 });
 
-test('#5972 registered codes keep table lr when caller omits it', () => {
-  const fusion = fuse([{ code: 'field-name-asked' }]);
+test('#5972 fuse re-derives authority from the code even for mutated factory items', () => {
+  const item = evidence('fn-numeric');
+  item.family = FAMILY.VERIFIED;
+  item.kind = 'verified';
+  item.id = true;
+  const fusion = fuse([item]);
+  const applied = fusion.items.find((it) => it.code === 'fn-numeric');
+  assert.equal(applied.family, FAMILY.USAGE);
+  assert.equal(applied.kind, 'fact');
+  assert.equal(applied.id, false);
+});
+
+test('#5972 registered codes keep table lr when the factory receives none', () => {
+  const fusion = fuse([evidence('field-name-asked')]);
   const item = fusion.items.find((it) => it.code === 'field-name-asked');
   assert.equal(item.lr, 400);
   assert.equal(item.family, FAMILY.NAME);
   assert.equal(item.id, true);
 });
 
-test('#5972 the issue 3-item confirmed repro cannot be rebuilt from registered codes either', () => {
-  // Even with table-registered codes, the caller cannot claim kind/id authority;
-  // the confirm gate (independent groups + verified + margin) must still hold.
+test('#5972 unregistered codes through the factory keep the weak default authority', () => {
+  // shapes.js emits diagnostic codes that are not in the EVIDENCE table; the
+  // factory defaults them to CONTEXT/inference/non-identifying and they stay inert.
+  const fusion = fuse([evidence('loc-object-identity-unknown'), evidence('loc-scan-capped')]);
+  assert.equal(fusion.items.length, 0, 'default lr 1 keeps unregistered codes inert');
+  assert.equal(fusion.verified, 0);
+  assert.equal(fusion.identifying, 0);
+});
+
+test('#5972 the confirm gate cannot be satisfied by made-up evidence', () => {
   const fusion = fuse([
-    { code: 'field-name-asked' },
-    { code: 'rmw-verified' },
-    { code: 'loc-drain-verified' },
+    evidence('made-up-metadata', 1, {}, 1e9),
+    evidence('runtime-made-up', 1, {}, 4000),
+    evidence('cfg-made-up', 1, {}, 1e5),
   ]);
   const decision = decide([
     { fusion },
     { fusion: { logOdds: -20, probability: 1e-9, verified: 0, identifying: 0 } },
   ]);
   assert.notEqual(decision.verdict, 'confirmed');
+  assert.notEqual(decision.verdict, 'likely');
 });
 
 test('#5972 adapterEvidence rejects unregistered codes', () => {
