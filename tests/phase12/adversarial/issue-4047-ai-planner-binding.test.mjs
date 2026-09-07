@@ -164,6 +164,54 @@ function makeDriftRuntime(local, mutate) {
 }
 
 {
+  // A rejected final write still runs the post-write binding guard. When the
+  // binding drifted before rejection, scope_violation must win over the write
+  // error rather than allowing stale completion to escape.
+  const local = { binaryHash: 'A', projectId: 'P1' };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const writeError = new Error('append failed');
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') {
+      local.binaryHash = 'B';
+      throw writeError;
+    }
+    return originalAppend(id, message);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo' }),
+    (error) => error?.type === 'scope_violation',
+    'binding drift on a rejected final write must fail closed',
+  );
+}
+
+{
+  // If the binding is stable, the original persistence rejection must remain
+  // observable to the caller.
+  const local = { binaryHash: 'A', projectId: 'P1' };
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const writeError = new Error('append failed');
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') throw writeError;
+    return originalAppend(id, message);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo' }),
+    (error) => error === writeError,
+    'stable rejected final write must preserve the original rejection',
+  );
+}
+
+{
   // A runtime identity observed after the snapshot must not be re-read into
   // the old turn's memory anchor.
   const local = { binaryHash: 'A', projectId: 'P1', runtimeSessionKnown: false };

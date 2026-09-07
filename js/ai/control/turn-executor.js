@@ -224,9 +224,13 @@ export async function executeTurn(input = {}, options = {}) {
       // completion or inject current runtime identity into old session memory.
       const persistWithBindingCheck = async (operation) => {
         assertLiveBindingsUnchanged(this.localContext, snapshot);
-        const value = await operation();
-        assertLiveBindingsUnchanged(this.localContext, snapshot);
-        return value;
+        try {
+          return await operation();
+        } finally {
+          // A rejected write must still prove that the live binding did not
+          // drift before the rejection escapes this turn.
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
+        }
       };
       await persistWithBindingCheck(() => this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer }));
       await persistWithBindingCheck(() => this.sessionStore.updateMemory(session.id, {
