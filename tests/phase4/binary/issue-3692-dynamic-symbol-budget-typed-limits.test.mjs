@@ -60,3 +60,13 @@ test('#3692 claimOutput accounting is unchanged for valid typed limits', () => {
   assert.equal(budget.claimOutput(1, 8), false);
   assert.equal(budget.stopped, true);
 });
+
+test('#3692 claimOutput stops specifically on the estimated-byte limit', () => {
+  const budget = createDynamicSymbolBudget({
+    limits: { maxOutputObjects: 3, maxEstimatedBytes: 16, now: () => 0 },
+  });
+  assert.equal(budget.claimOutput(1, 8), true);
+  assert.equal(budget.claimOutput(1, 12), false, '12 bytes would exceed the remaining 8');
+  assert.equal(budget.stopped, true);
+  assert.match(budget.snapshot().reason, /estimated memory exceeds/);
+});
