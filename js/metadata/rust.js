@@ -553,6 +553,22 @@ export function demangleRustSymbol(symbol) {
 }
 
 /**
+ * Vtable authority is structural, not lexical (issue #5881).
+ *
+ * Rust v0/legacy mangling cannot distinguish a user function named `vtable`
+ * (`_RNvC3foo6vtable` -> `foo::vtable`) from a compiler-generated vtable
+ * static, and any demangled path merely *containing* "vtable"
+ * (`foo::vtable_helper`) is an ordinary symbol. A name substring therefore
+ * never promotes a symbol to vtable evidence: `isVtable` is accepted only as
+ * explicit upstream structural evidence carried on the symbol record (for
+ * example a symbol-table kind or a data-section classification). Symbols
+ * without that evidence stay plain symbol evidence, which fails closed.
+ */
+export function isRustVtableSymbol(sym) {
+  return sym?.isVtable === true || sym?.vtable === true;
+}
+
+/**
  * Searches a comment or note buffer for rustc compiler version.
  */
 export function findRustcVersion(buffer) {
@@ -650,7 +666,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
           sizeBytes: sym.size ?? sym.sizeBytes ?? null,
           crate: dem.crate,
           generation: dem.generation,
-          isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
+          isVtable: isRustVtableSymbol(sym),
         };
         rustSymbols.push(normalized);
         if (normalized.isVtable) vtables.push(normalized);
