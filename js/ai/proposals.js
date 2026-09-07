@@ -479,7 +479,18 @@ function canonicalIdentity(value, stack = new Set()) {
         : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      // The raw bytes alone do not define the value: a Uint8Array, a
+      // Uint32Array, a DataView and an ArrayBuffer over the same bytes are
+      // different states with different element semantics. The view type and
+      // its byte window are part of the identity, so a state approved as one
+      // representation cannot be applied against another (#6215). Hex-only
+      // payloads never contain ';', so the discriminated form cannot alias
+      // the legacy encoding either.
+      const kind = value instanceof ArrayBuffer ? 'ArrayBuffer' : (value.constructor?.name || 'unknown-view');
+      const dims = value instanceof ArrayBuffer
+        ? [bytes.byteLength]
+        : (ArrayBuffer.isView(value) && 'length' in value ? [value.length, value.byteOffset, value.byteLength] : [value.byteOffset, value.byteLength]);
+      return `y${JSON.stringify(`${kind};${dims.join(';')};${hexText}`)}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.
