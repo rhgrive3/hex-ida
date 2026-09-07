@@ -290,10 +290,10 @@ test('oversized permitted diagnostic graphs are refused by property and edge bud
 });
 
 test('large unknown top-level properties are rejected before recursive copying', () => {
-  const large = {};
-  for (let index = 0; index < 12_000; index += 1) large[`unknown${index}`] = index;
+  const candidate = { ...unchangedResult(descriptor()) };
+  for (let index = 0; index < 12_000; index += 1) candidate[`unknown${index}`] = index;
   let reads = 0;
-  Object.defineProperty(large, 'tripwire', {
+  Object.defineProperty(candidate, 'tripwire', {
     enumerable: true,
     get() {
       reads += 1;
@@ -301,7 +301,7 @@ test('large unknown top-level properties are rejected before recursive copying',
     },
   });
 
-  assertMalformedRefused({ ...unchangedResult(descriptor()), extra: large });
+  assertMalformedRefused(candidate);
   assert.equal(reads, 0, 'top-level allowlisting must precede recursive cloning');
 });
 
