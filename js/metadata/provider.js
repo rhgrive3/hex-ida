@@ -159,6 +159,9 @@ export function createLanguageMetadataIdentity(input = {}) {
     binaryIdentity: identity.binaryIdentity,
     observed: identity.observed,
     expected: identity.expected,
+    // coverage constrains `matched-partial` authority, so two identities with
+    // different authoritative record sets must not share a digest (#5949).
+    coverage: identity.coverage,
   });
 
   const frozen = deepFreeze(identity);
