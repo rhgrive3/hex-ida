@@ -41,7 +41,45 @@ function probeHandle(result) {
 }
 
 function eventProbeHandle(raw) {
-  return normalizeProbeHandle(raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null);
+  const source = raw && raw.type === 'event' && typeof raw.event === 'string'
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
+}
+
+function materializeRuntimeValue(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') {
+    if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+
+  const output = Array.isArray(value) ? [] : {};
+  seen.set(value, output);
+  if (Array.isArray(value)) output.length = value.length;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || key === 'length') continue;
+    Object.defineProperty(output, key, {
+      value: materializeRuntimeValue(value[key], seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+}
+
+function materializeRuntimeEvent(raw) {
+  try {
+    return materializeRuntimeValue(raw);
+  } catch (error) {
+    if (error instanceof DebugAdapterError) throw error;
+    throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
+  }
 }
 
 export class InstrumentationProvider {
@@ -104,12 +142,13 @@ export class InstrumentationProvider {
     const probes = new Map();
 
     const ingest = (raw) => {
-      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
-      const handle = eventProbeHandle(raw);
+      const ownedRaw = materializeRuntimeEvent(raw);
+      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
+      const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
       const event = interventionId
-        ? normalizer.push({ ...raw, interventionIds: [...new Set([...(Array.isArray(raw?.interventionIds) ? raw.interventionIds : []), interventionId])] })
-        : normalizer.push(raw);
+        ? normalizer.push({ ...ownedRaw, interventionIds: [...new Set([...(Array.isArray(ownedRaw?.interventionIds) ? ownedRaw.interventionIds : []), interventionId])] })
+        : normalizer.push(ownedRaw);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
@@ -154,7 +193,7 @@ export class InstrumentationProvider {
       capabilities: this._descriptor.capabilities,
       installProbe: async (spec, callOptions = {}) => {
         const install = requiredMethod(this.backend, 'installProbe', 'probe installation');
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-install',
@@ -173,7 +212,7 @@ export class InstrumentationProvider {
         const normalizedHandle = normalizeProbeHandle(handle);
         if (normalizedHandle == null) throw new DebugAdapterError('runtime-invalid-probe-handle', 'probe handle is required');
         const parent = probes.get(normalizedHandle);
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-remove',
@@ -190,7 +229,7 @@ export class InstrumentationProvider {
         const install = typeof this.backend.intercept === 'function'
           ? this.backend.intercept.bind(this.backend)
           : requiredMethod(this.backend, 'installProbe', 'interception');
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'interceptor-install',
@@ -208,7 +247,7 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
         const replace = requiredMethod(this.backend, 'replace', 'function replacement');
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'function-replacement',
@@ -225,7 +264,7 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
         const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
-        const draft = validateInterventionDraft(interventions, {
+        const draft = interventionDraft({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
