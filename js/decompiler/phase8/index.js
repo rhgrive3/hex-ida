@@ -48,9 +48,9 @@ export {
 export { GVN_PASS, loadIsReusable, runGvnPass } from './valuenumber.js';
 export { DCE_PASS, observableEffectReason, runDcePass } from './dce.js';
 export { INDUCTION_PASS, INDUCTION_SUMMARY_VERSION, classifyLoop, describeLoopFacts, readGuardPredicate, resolveStep, runInductionPass, tripCountOf } from './induction.js';
-export { PROVIDER_PASS, PROVIDER_INTERFACE_VERSION, PROVIDER_HINT_KINDS, HINT_STATUSES, REGISTERED_PROVIDERS, ARRAY_TRAVERSAL_PROVIDER, COUNTED_LOOP_PROVIDER, createProvider, describeProviderHints, judgeHint, providerAuthorityFailures, providerView, runProviderPass } from './providers.js';
+export { PROVIDER_PASS, PROVIDER_INTERFACE_VERSION, PROVIDER_HINT_KINDS, HINT_STATUSES, REGISTERED_PROVIDERS, ARRAY_TRAVERSAL_PROVIDER, COUNTED_LOOP_PROVIDER, createProvider, describeProviderHints, judgeHint, providerAuthorityFailures, providerView, runProviderPass, structuredRegionPreservationFailures } from './providers.js';
 export { AGGREGATE_PASS, AGGREGATE_SUMMARY_VERSION, AGGREGATE_KINDS, CERTAINTIES, candidatesFor, certaintyOf, describeRegion, forcedContradictions, regionIdentityOf, runAggregatePass } from './aggregates.js';
-export { STRUCTURING_PASS, STRUCTURING_SUMMARY_VERSION, EDGE_CONSTRUCTS, accountEdges, classifyEdge, describeStructuring, edgeAccountingFailures, observableEffectsIn, runStructuringPass, successorEdgesOf } from './structuring.js';
+export { STRUCTURING_PASS, STRUCTURING_SUMMARY_VERSION, EDGE_CONSTRUCTS, accountEdges, buildRegionTransforms, classifyEdge, describeStructuring, edgeAccountingFailures, observableEffectsIn, runStructuringPass, successorEdgesOf, validateRegionTransform } from './structuring.js';
 
 /**
  * The Phase 8 pass registry.

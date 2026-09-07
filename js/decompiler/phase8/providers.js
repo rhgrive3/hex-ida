@@ -64,6 +64,88 @@ function nonEmptyString(value, code) {
   return value;
 }
 
+function listOf(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) return [...value];
+  if (typeof value === 'string') return [];
+  if (typeof value[Symbol.iterator] === 'function') return [...value];
+  return [];
+}
+
+function structuredTransformView(plan) {
+  return Object.freeze({
+    id: String(plan?.id ?? ''),
+    kind: String(plan?.kind ?? ''),
+    action: String(plan?.action ?? ''),
+    status: String(plan?.status ?? ''),
+    safe: plan?.safe === true,
+    preservesSemantics: plan?.preservesSemantics === true,
+    entry: plan?.entry ?? null,
+    exits: Object.freeze(listOf(plan?.exits)),
+    members: Object.freeze(listOf(plan?.members)),
+    edgeKeys: Object.freeze(listOf(plan?.edgeKeys).map(String)),
+    constraintEdgeKeys: Object.freeze(listOf(plan?.constraintEdgeKeys).map(String)),
+    exceptionEdgeKeys: Object.freeze(listOf(plan?.exceptionEdgeKeys).map(String)),
+    residualEdgeKeys: Object.freeze(listOf(plan?.residualEdgeKeys).map(String)),
+    unknownEdgeKeys: Object.freeze(listOf(plan?.unknownEdgeKeys).map(String)),
+    validation: Object.freeze({
+      status: String(plan?.validation?.status ?? 'unknown'),
+      failures: Object.freeze(listOf(plan?.validation?.failures).map((failure) => Object.freeze({
+        problem: String(failure?.problem ?? ''),
+        detail: String(failure?.detail ?? ''),
+      }))),
+    }),
+  });
+}
+
+/**
+ * Independently checks the data-only region plans consumed by providers. A
+ * provider may name a proved structured shape, but it must never turn a
+ * withheld, exception-constrained or otherwise failed plan into an adopted
+ * transform.
+ */
+export function structuredRegionPreservationFailures(control = {}) {
+  const failures = [];
+  for (const plan of listOf(control?.regionTransforms)) {
+    const id = String(plan?.id ?? '<unnamed>');
+    const status = String(plan?.status ?? '');
+    const action = String(plan?.action ?? '');
+    const validationStatus = String(plan?.validation?.status ?? '');
+    if (!['validated', 'fallback'].includes(status)) {
+      failures.push({ planId: id, problem: 'unknown-plan-status', detail: status });
+      continue;
+    }
+    if (listOf(plan?.validation?.failures).length > 0 || validationStatus !== 'passed') {
+      failures.push({ planId: id, problem: 'plan-validation-failed', detail: validationStatus || 'missing validation status' });
+    }
+    if (status === 'validated') {
+      if (!plan?.safe || plan?.preservesSemantics !== true) {
+        failures.push({ planId: id, problem: 'validated-plan-not-safe', detail: action });
+      }
+      const expected = plan?.kind === 'conditional' ? 'structure-if'
+        : plan?.kind === 'switch' ? 'structure-switch'
+          : plan?.kind === 'loop' ? 'structure-loop' : null;
+      if (expected == null || action !== expected) {
+        failures.push({ planId: id, problem: 'validated-action-mismatch', detail: `${plan?.kind}:${action}` });
+      }
+      if (listOf(plan?.exceptionEdgeKeys).length > 0 || listOf(plan?.constraintEdgeKeys).length > 0) {
+        failures.push({ planId: id, problem: 'validated-constraint-edge', detail: id });
+      }
+    } else if (action === 'withhold') {
+      if (plan?.preservesSemantics === true) {
+        failures.push({ planId: id, problem: 'withheld-plan-claims-adoption', detail: id });
+      }
+    } else if (plan?.preservesSemantics !== true || !action.startsWith('preserve-')) {
+      failures.push({ planId: id, problem: 'fallback-does-not-preserve', detail: action });
+    }
+  }
+  const artifactStatus = String(control?.regionValidation?.status ?? '');
+  if (artifactStatus === 'failed') {
+    failures.push({ planId: '<artifact>', problem: 'region-artifact-validation-failed', detail: 'the independent edge recount or plan validation failed' });
+  }
+  return failures;
+}
+
 /**
  * Declares one provider.
  *
@@ -153,17 +235,34 @@ export function providerView(analysis) {
   }));
 
   const constructs = structured?.edgesByConstruct ?? {};
+  const regionTransforms = Object.freeze((structured?.regionTransforms ?? []).map(structuredTransformView));
+  const regionValidation = structured?.regionValidation == null ? null : Object.freeze({
+    status: String(structured.regionValidation.status ?? 'unknown'),
+    checkedRegionCount: structured.regionValidation.checkedRegionCount ?? 0,
+    validatedRegionCount: structured.regionValidation.validatedRegionCount ?? 0,
+    preservedRegionCount: structured.regionValidation.preservedRegionCount ?? 0,
+    withheldRegionCount: structured.regionValidation.withheldRegionCount ?? 0,
+    accountingFailures: Object.freeze(listOf(structured.regionValidation.accountingFailures)
+      .map((failure) => Object.freeze({ problem: String(failure?.problem ?? ''), detail: String(failure?.detail ?? '') }))),
+    planFailures: Object.freeze(listOf(structured.regionValidation.planFailures)
+      .map((failure) => Object.freeze({ planId: String(failure?.planId ?? ''), problem: String(failure?.problem ?? ''), detail: String(failure?.detail ?? '') }))),
+  });
+  const control = {
+    edgeCount: structured?.edgeCount ?? 0,
+    residualGotoCount: structured?.residualGotoCount ?? 0,
+    constraintEdgeCount: structured?.constraintEdgeCount ?? 0,
+    constructs: Object.freeze({ ...constructs }),
+    regionKinds: Object.freeze((structured?.regions ?? []).map((region) => region.kind)),
+    regionTransforms,
+    regionValidation,
+  };
+  const preservationFailures = structuredRegionPreservationFailures(control);
+  control.preservationFailures = Object.freeze(preservationFailures.map((failure) => Object.freeze({ ...failure })));
   return Object.freeze({
     interfaceVersion: PROVIDER_INTERFACE_VERSION,
     loops: Object.freeze(loops),
     regions: Object.freeze(regions),
-    control: Object.freeze({
-      edgeCount: structured?.edgeCount ?? 0,
-      residualGotoCount: structured?.residualGotoCount ?? 0,
-      constraintEdgeCount: structured?.constraintEdgeCount ?? 0,
-      constructs: Object.freeze({ ...constructs }),
-      regionKinds: Object.freeze((structured?.regions ?? []).map((region) => region.kind)),
-    }),
+    control: Object.freeze(control),
     // Names only. No layout, no addresses, no instruction anything.
     typeNames: Object.freeze([...new Set([...(types?.values?.values?.() ?? [])]
       .map((entry) => entry?.className ?? entry?.semanticType?.className ?? null)
@@ -312,6 +411,9 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
     ? []
     : (context.providers ?? REGISTERED_PROVIDERS);
   const view = providerView(analysis);
+  const preservationFailures = view.control.preservationFailures;
+  const structured = analysis?.get('structuredRegions') ?? null;
+  const structuredIncomplete = structured != null && structured.completeness !== 'complete';
 
   const abortedNow = () => {
     try { return typeof budget.shouldAbort === 'function' && budget.shouldAbort() === true; }
@@ -374,7 +476,12 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
     rejectedCount: hints.filter((hint) => hint.status === 'rejected').length,
     cappedCount: hints.filter((hint) => hint.status === 'accepted' && hint.certainty !== hint.requestedCertainty).length,
     failures: Object.freeze(failures),
-    completeness: budgetExhausted || failures.length > 0 ? 'partial' : 'complete',
+    // Keep the consumed structuring decision in the production artifact. This
+    // is the downstream adoption boundary: a provider can observe a validated
+    // plan or its explicit preservation fallback, but it cannot manufacture a
+    // new one from the IR.
+    structuredControl: view.control,
+    completeness: budgetExhausted || structuredIncomplete || failures.length > 0 || preservationFailures.length > 0 ? 'partial' : 'complete',
   });
   area.stage('providerHints', facts);
 
@@ -393,6 +500,14 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
       code: 'phase8.providers.failed',
       message: `Provider ${failure.providerId} produced no usable hints.`,
       reason: failure.reason,
+    });
+  }
+  if (preservationFailures.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'phase8.providers.structuring-validation',
+      message: 'Provider consumption withheld one or more unverified structuring plans.',
+      reason: preservationFailures.slice(0, 3).map((failure) => `${failure.planId}:${failure.detail}`).join('; '),
     });
   }
   if (facts.cappedCount > 0) {

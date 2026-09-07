@@ -11,3 +11,7 @@ export * as translate from './translate/index.js';
 export * as solver from './solver/index.js';
 export * as evidence from './evidence/index.js';
 export * as verify from './verify/index.js';
+export * as taint from './taint/index.js';
+export * from './taint/index.js';
+export * from './query/taint.js';
+export * from './projection/taint.js';

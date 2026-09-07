@@ -44,6 +44,14 @@ import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
+import {
+  ByteMemory,
+  createByteMemory,
+  readCanonicalMemory,
+  MEMORY_RESULT_STATUS,
+} from '../memory/byte-memory.js';
+import { TaintStore, taintExpression } from '../taint/flow.js';
+import { taintDigest } from '../taint/lattice.js';
 
 export function translateSemanticIR(target, options = {}) {
   const ir = options.ir || null;
@@ -57,6 +65,41 @@ export function translateSemanticIR(target, options = {}) {
   const originMap = new Map(); // expr hash / sym id -> Set of origins
   const memo = new Map();
   const active = new Set();
+  const byteMemoryEnabled = options.symbolicMemory === true
+    || options.strictMemory === true
+    || options.memoryMode === 'byte'
+    || options.memoryModel === 'byte'
+    || options.symbolicMemory instanceof ByteMemory
+    || (options.symbolicMemory && typeof options.symbolicMemory === 'object' && !Array.isArray(options.symbolicMemory))
+    || options.byteMemory != null
+    || options.memory instanceof ByteMemory
+    || options.memoryInitial != null
+    || options.memorySsa != null;
+  let byteMemory = null;
+  if (byteMemoryEnabled) {
+    if (options.byteMemory instanceof ByteMemory) byteMemory = options.byteMemory.clone();
+    else if (options.symbolicMemory instanceof ByteMemory) byteMemory = options.symbolicMemory.clone();
+    else if (options.memory instanceof ByteMemory) byteMemory = options.memory.clone();
+    else {
+      const config = options.byteMemory && typeof options.byteMemory === 'object' && !Array.isArray(options.byteMemory)
+        ? { ...options.byteMemory }
+        : options.symbolicMemory && typeof options.symbolicMemory === 'object' && !(options.symbolicMemory instanceof ByteMemory) && !Array.isArray(options.symbolicMemory)
+          ? { ...options.symbolicMemory }
+        : options.memory && typeof options.memory === 'object' && !(options.memory instanceof Map) && !Array.isArray(options.memory)
+          ? { ...options.memory }
+          : {};
+      const initial = config.initial ?? config.bytes ?? options.memoryInitial
+        ?? (options.byteMemory instanceof Map ? options.byteMemory : null)
+        ?? (options.symbolicMemory instanceof Map ? options.symbolicMemory : null)
+        ?? (options.memory instanceof Map || (options.memory && typeof options.memory === 'object' && !(options.memory instanceof ByteMemory) && !Array.isArray(options.memory)) ? options.memory : null);
+      byteMemory = createByteMemory({
+        ...config,
+        ...(initial != null ? { initial } : {}),
+        signal: options.signal ?? config.signal ?? null,
+        isCancelled: options.isCancelled ?? (() => false),
+      });
+    }
+  }
 
   function recordOrigin(node, ...origins) {
     if (!node) return;
@@ -66,6 +109,110 @@ export function translateSemanticIR(target, options = {}) {
     for (const o of origins) {
       if (o != null) set.add(String(o));
     }
+  }
+
+  function memoryWidthBits(inst) {
+    const candidates = [
+      inst?.extra?.widthBits,
+      inst?.extra?.memoryAccess?.widthBits,
+      inst?.widthBits,
+      inst?.extra?.size != null ? Number(inst.extra.size) * 8 : null,
+      inst?.loc?.size != null ? Number(inst.loc.size) * 8 : null,
+      inst?.addr?.size != null ? Number(inst.addr.size) * 8 : null,
+      inst?.dst?.bits,
+      defaultWidth,
+    ];
+    return candidates.find((value) => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value % 8 === 0) || 8;
+  }
+
+  function memoryEndian(inst) {
+    const candidates = [
+      inst?.extra?.memoryAccess?.endian,
+      inst?.extra?.endian,
+      inst?.memoryAccess?.endian,
+      inst?.endian,
+      options.memoryEndian,
+      options.endian,
+      'little',
+    ];
+    return candidates.find((value) => value === 'little' || value === 'big') || 'little';
+  }
+
+  function memoryQualifiers(inst) {
+    const access = inst?.extra?.memoryAccess ?? inst?.memoryAccess ?? {};
+    return {
+      volatile: inst?.volatile === true || inst?.extra?.volatile === true || access.volatile === true || access.isVolatile === true,
+      atomic: inst?.atomic === true || inst?.extra?.atomic === true || access.atomic === true || access.isAtomic === true,
+      barrier: inst?.barrier === true || inst?.extra?.barrier === true || access.barrier === true,
+      ordering: inst?.ordering ?? inst?.extra?.ordering ?? access.ordering ?? null,
+    };
+  }
+
+  function memoryAddress(inst, width = defaultWidth) {
+    const addr = inst?.addr;
+    if (addr?.base) {
+      let expression = translateValue(addr.base, width);
+      if (addr.index) {
+        const index = translateValue(addr.index, width);
+        const scale = typeof addr.scale === 'number' && Number.isSafeInteger(addr.scale) && addr.scale > 0 ? addr.scale : 0;
+        const offset = scale > 0 ? createBinary(BV_BINARY_OP.SHL, index, createBv(width, BigInt(scale))) : index;
+        expression = createBinary(BV_BINARY_OP.ADD, expression, offset);
+      }
+      let displacement = 0n;
+      try { displacement = addr.disp == null ? 0n : BigInt(addr.disp); } catch {
+        return createUnknownSemantic(bvSort(width), 'malformed-memory-displacement', { instructionId: inst?.id ?? null });
+      }
+      if (displacement !== 0n) expression = createBinary(BV_BINARY_OP.ADD, expression, createBv(expression.sort.width, displacement));
+      return expression;
+    }
+    if (inst?.loc?.address != null) {
+      try { return createBv(width, BigInt(inst.loc.address)); } catch { /* explicit unknown below */ }
+    }
+    const key = inst?.loc?.key;
+    if (key && inst.loc.kind !== MK.UNKNOWN) return createFreshSymbol(bvSort(width), `memory_${key}`, { source: 'symbolic-memory-address', locationKey: key });
+    return createUnknownSemantic(bvSort(width), 'unknown-memory-address', { instructionId: inst?.id ?? null });
+  }
+
+  function canonicalLoad(inst) {
+    const qualifiers = memoryQualifiers(inst);
+    if (qualifiers.volatile || qualifiers.atomic || qualifiers.barrier || qualifiers.ordering != null) {
+      return {
+        status: MEMORY_RESULT_STATUS.UNKNOWN,
+        expression: createUnknownSemantic(bvSort(memoryWidthBits(inst)), qualifiers.atomic || qualifiers.ordering != null ? 'atomic-memory-barrier' : 'volatile-memory-barrier'),
+      };
+    }
+    const attached = inst?.memoryForwarding ?? null;
+    const context = canonicalMemoryForwardingContextForLoad(attached, inst,
+      inst?.memoryForwardingContext ?? inst?.extra?.memoryForwardingContext ?? options.memoryForwardingContext ?? {});
+    if (attached != null) {
+      if (isCanonicalExactMemoryForwarding(attached, context) && attached.value != null) {
+        return { status: MEMORY_RESULT_STATUS.EXACT, expression: createBv(Number(attached.widthBits), attached.value), fact: attached };
+      }
+      return { status: MEMORY_RESULT_STATUS.UNKNOWN, expression: createUnknownSemantic(bvSort(memoryWidthBits(inst)), attached.reason || 'missing-canonical-memory-proof'), fact: attached };
+    }
+    if (!options.memorySsa) return null;
+    let useId = inst?.memorySsaUseId ?? inst?.extra?.memorySsaUseId ?? inst?.memorySsaUse?.id ?? inst?.extra?.memorySsaUse?.id ?? null;
+    const byInstruction = options.memorySsaUseByInstruction ?? options.memorySsaUses ?? null;
+    if (useId == null && byInstruction instanceof Map) useId = byInstruction.get(inst?.id) ?? null;
+    if (useId == null && byInstruction && typeof byInstruction === 'object') useId = byInstruction[inst?.id] ?? null;
+    if (useId == null) {
+      const candidates = (options.memorySsa.uses || []).filter((use) => String(use?.sourceEntityId ?? '') === String(inst?.id ?? ''));
+      if (candidates.length === 1) useId = candidates[0].id;
+    }
+    if (useId == null) return { status: MEMORY_RESULT_STATUS.UNKNOWN, expression: createUnknownSemantic(bvSort(memoryWidthBits(inst)), 'memoryssa-use-identity-missing') };
+    const queried = readCanonicalMemory(options.memorySsa, useId, {
+      context,
+      signal: options.signal,
+      budget: options.memoryBudget,
+      maxIterations: options.memoryMaxIterations,
+      ir: options.memoryIr,
+      cfg: options.memoryCfg,
+      sourceByEntityId: options.sourceByEntityId,
+      widthBits: memoryWidthBits(inst),
+    });
+    return queried.exact
+      ? { status: MEMORY_RESULT_STATUS.EXACT, expression: queried.expression, fact: queried.fact }
+      : { status: queried.status || MEMORY_RESULT_STATUS.UNKNOWN, expression: queried.expression || createUnknownSemantic(bvSort(memoryWidthBits(inst)), 'canonical-memory-forwarding-not-exact'), fact: queried.fact };
   }
 
   function translateValue(val, width = defaultWidth) {
@@ -162,7 +309,8 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     const opSupport = classifyOpSupport(inst.op, inst);
-    if (opSupport === TRANSLATION_STATUS.UNSUPPORTED) {
+    const byteMemoryLoad = byteMemoryEnabled && inst.op === OP.LOAD;
+    if (opSupport === TRANSLATION_STATUS.UNSUPPORTED && !byteMemoryLoad) {
       semanticUnknowns++;
       unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'unsupported-instruction-op' });
       return createUnknownSemantic(bvSort(width), `unsupported-instruction-op-${inst.op}`, {
@@ -294,13 +442,43 @@ export function translateSemanticIR(target, options = {}) {
         // A structural reachingStore pointer is not a value proof. Only the
         // canonical query capability may turn a load into a concrete solver
         // value; forged/serialized/partial facts stay explicitly unknown.
-        if (isCanonicalExactMemoryForwarding(inst.memoryForwarding,
-          canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
-            inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))
-            && inst.memoryForwarding.value != null) {
+        const qualifiers = memoryQualifiers(inst);
+        if (!qualifiers.volatile && !qualifiers.atomic && !qualifiers.barrier && qualifiers.ordering == null
+          && isCanonicalExactMemoryForwarding(
+            inst.memoryForwarding,
+            canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
+              inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext),
+          )
+          && inst.memoryForwarding?.value != null) {
           const value = createBv(width, inst.memoryForwarding.value);
           recordOrigin(value, inst.origin, ...(inst.memoryForwarding.provenance?.sourceEntityIds || []));
           return value;
+        }
+        if (byteMemoryEnabled) {
+          const canonical = canonicalLoad(inst);
+          if (canonical?.status === MEMORY_RESULT_STATUS.EXACT && canonical.expression) {
+            recordOrigin(canonical.expression, inst.origin, ...(canonical.fact?.provenance?.sourceEntityIds || []));
+            return canonical.expression;
+          }
+          if (canonical) {
+            semanticUnknowns++;
+            const reason = canonical.expression?.reason || 'canonical-memory-forwarding-not-exact';
+            unsupportedEntities.push({ id: inst.id, op: 'load', reason });
+            return canonical.expression || createUnknownSemantic(bvSort(memoryWidthBits(inst)), reason, { instructionId: inst.id });
+          }
+          const loaded = byteMemory?.read(memoryAddress(inst, 64), memoryWidthBits(inst), {
+            endian: memoryEndian(inst),
+            aliasRelation: inst.memoryAliasRelation ?? inst.extra?.aliasRelation ?? options.memoryAliasRelation ?? null,
+            ...qualifiers,
+          });
+          if (loaded?.status === MEMORY_RESULT_STATUS.EXACT && loaded.expression) {
+            recordOrigin(loaded.expression, inst.origin);
+            return loaded.expression;
+          }
+          semanticUnknowns++;
+          const reason = loaded?.reason || 'symbolic-memory-read-not-exact';
+          unsupportedEntities.push({ id: inst.id, op: 'load', reason });
+          return createUnknownSemantic(bvSort(memoryWidthBits(inst)), reason, { instructionId: inst.id });
         }
         semanticUnknowns++;
         const reason = inst.loc && inst.loc.kind !== MK.UNKNOWN
@@ -349,6 +527,22 @@ export function translateSemanticIR(target, options = {}) {
     serializedOrigins[k] = [...set].sort();
   }
 
+  const taintEnabled = options.taint === true || options.taint != null || options.taintSources != null || options.sources != null;
+  const translationTaint = taintEnabled
+    ? taintExpression(rootExpr, {
+      store: options.taint instanceof TaintStore ? options.taint : new TaintStore({
+        ...(options.taint && typeof options.taint === 'object' ? options.taint : {}),
+        signal: options.signal ?? null,
+        isCancelled: options.isCancelled ?? (() => false),
+      }),
+      sourceByValueId: options.taintSourcesByValueId ?? options.sourceByValueId,
+      sourceLabels: options.taintSourceLabels ?? options.sourceLabels,
+      sources: options.taintSources ?? options.sources,
+      treatArgumentsAsSources: options.treatArgumentsAsSources === true,
+      autoSourceMetadata: options.autoSourceMetadata === true,
+    })
+    : null;
+
   return Object.freeze({
     status,
     expression: rootExpr,
@@ -357,5 +551,8 @@ export function translateSemanticIR(target, options = {}) {
     semanticUnknowns,
     originMap: Object.freeze(serializedOrigins),
     completeness,
+    memoryModel: byteMemoryEnabled ? 'symbolic-byte-memory-v1' : 'canonical-memoryssa-forwarding',
+    taint: translationTaint,
+    taintDigest: translationTaint ? taintDigest(translationTaint) : null,
   });
 }
