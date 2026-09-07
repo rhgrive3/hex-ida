@@ -164,6 +164,17 @@ jobs:
               // AUTO markers are review evidence, not authentication. Only the
               // repository owner is trusted to mint them in this repository.
               trustedAutoReviewers: [owner],
+              // These contexts are emitted for every PR in the current CircleCI
+              // admission surface. Requiring the full set prevents transient
+              // success before a slower status context has even been created.
+              requiredStatusContexts: [
+                'ci/circleci: migration-guardrails',
+                'ci/circleci: agent-loop-resilience',
+                'ci/circleci: issue-2528-canonical-claims',
+                'ci/circleci: ai-eval-contract',
+                'ci/circleci: phase7-ownership',
+                'ci/circleci: phase8-ownership',
+              ],
             });
 
             const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
@@ -183,6 +194,8 @@ jobs:
               .addRaw(`Head: ${headSha}\n`)
               .addRaw(`Trusted AUTO reviewers: ${result.evidence.trustedAutoReviewerCount}\n`)
               .addRaw(`AUTO approvals on head: ${result.evidence.exactAutoApprovalCount}\n`)
+              .addRaw(`Required CI contexts: ${result.evidence.requiredStatusContextCount}\n`)
+              .addRaw(`Missing required CI contexts: ${result.evidence.missingRequiredStatusCount}\n`)
               .addRaw(`Unresolved review threads: ${result.evidence.unresolvedReviewThreads}\n`)
               .addRaw(`CodeRabbit evidence: ${result.evidence.codeRabbitEvidenceCount}\n`)
               .addRaw(`CI statuses/checks: ${result.evidence.ciStatusCount}/${result.evidence.ciCheckCount}\n`)
