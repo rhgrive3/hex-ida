@@ -83,3 +83,58 @@ test('PDB provider propagates incomplete per-module symbol streams', () => {
   assert.equal(result.status.completeness, 'partial');
   assert.equal(result.status.stopReason, 'evidence-missing');
 });
+
+
+function lastObjectNameTerminator(dbiBytes, dbi) {
+  const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, dbiBytes.length);
+  let offset = DBI_HEADER_SIZE;
+  let last = -1;
+  while (offset + 64 <= end) {
+    let cursor = offset + 64;
+    let complete = true;
+    for (let name = 0; name < 2; name++) {
+      while (cursor < end && dbiBytes[cursor] !== 0) cursor += 1;
+      if (cursor >= end) {
+        complete = false;
+        break;
+      }
+      if (name === 1) last = cursor;
+      cursor += 1;
+    }
+    if (!complete) break;
+    cursor = (cursor + 3) & ~3;
+    if (cursor <= offset) break;
+    offset = cursor;
+  }
+  return last;
+}
+
+test('PDB provider downgrades a malformed module list while global evidence remains valid', () => {
+  const variant = loadPdbFixtures().variants[0];
+  const original = new Uint8Array(Buffer.from(variant.pdb, 'base64'));
+  const msf = parseMsf(original);
+  assert.equal(msf.complete, true);
+
+  const dbiBytes = msf.streams[3].read();
+  const dbi = parseDbiHeader(dbiBytes);
+  assert.ok(dbi, 'fixture DBI header must be valid');
+  const objectTerminator = lastObjectNameTerminator(dbiBytes, dbi);
+  assert.ok(objectTerminator >= DBI_HEADER_SIZE, 'fixture must contain a module object name');
+
+  // Remove the final object-name terminator inside the declared module
+  // substream. Other streams (global symbols, TPI, and section headers) stay
+  // byte-for-byte valid, but the module walk must become incomplete.
+  const corrupted = original.slice();
+  const { blockSize, blocks } = msfStreamBlocks(original);
+  const blockIndex = blocks[3]?.[Math.floor(objectTerminator / blockSize)];
+  assert.notEqual(blockIndex, undefined, 'DBI object name must have a physical block');
+  corrupted[blockIndex * blockSize + (objectTerminator % blockSize)] = 0x41;
+
+  const result = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: corrupted });
+  assert.equal(result.identity.verdict, 'matched-authoritative');
+  assert.equal(result.parsed.tpi.complete, true, 'unrelated TPI evidence remains complete');
+  assert.equal(result.parsed.symbols.complete, false, 'malformed module evidence must make symbols partial');
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.stopReason, 'evidence-missing');
+  assert.match(result.diagnostics.join('\\n'), /module list is incomplete/);
+});
