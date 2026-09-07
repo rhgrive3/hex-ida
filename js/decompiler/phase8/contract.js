@@ -276,6 +276,7 @@ function snapshotPassResultData(value) {
   let nodes = 0;
 
   const clone = (current) => {
+    if (typeof current === 'function') throw new TypeError('phase8-pass-result-function-property');
     if (current == null || typeof current !== 'object') return current;
     if (active.has(current)) throw new TypeError('phase8-pass-result-cycle');
     if (cloned.has(current)) return cloned.get(current);

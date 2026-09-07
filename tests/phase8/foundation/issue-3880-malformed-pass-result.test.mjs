@@ -241,6 +241,51 @@ test('shared result graphs are bounded and rejected as malformed', () => {
   assertMalformedRefused({ ...unchangedResult(descriptor()), extra: node });
 });
 
+test('nested function values cannot escape the owned result snapshot', () => {
+  const ownDescriptor = descriptor(['ranges']);
+  const candidates = [
+    {
+      ...unchangedResult(ownDescriptor),
+      diagnostics: [{ severity: 'info', code: 'function', message: 'nested', details: { hook() {} } }],
+    },
+    createPassResult({
+      descriptor: ownDescriptor,
+      status: 'changed',
+      completeness: 'complete',
+      produced: ['ranges'],
+      transforms: [{ kind: 'transform', proof: 'nested-function', targets: ['node'], details: { hook() {} } }],
+    }),
+  ];
+
+  for (const candidate of candidates) assertMalformedRefused(candidate);
+});
+
+test('shared diagnostic DAGs are memoized while permitted result graphs stay bounded', () => {
+  let node = {};
+  for (let depth = 0; depth < 40; depth += 1) node = { a: node, b: node };
+  const candidate = {
+    ...unchangedResult(descriptor()),
+    diagnostics: [{ severity: 'info', code: 'shared-dag', message: 'bounded', details: node }],
+  };
+
+  assert.equal(isCanonicalPassResult(candidate), true);
+});
+
+test('oversized permitted diagnostic graphs are refused at the snapshot node bound', () => {
+  const ownDescriptor = descriptor(['ranges']);
+  const diagnostics = [];
+  for (let index = 0; index < 10_001; index += 1) {
+    diagnostics.push({ severity: 'info', code: `node-${index}`, message: 'bounded' });
+  }
+  assertMalformedRefused(createPassResult({
+    descriptor: ownDescriptor,
+    status: 'changed',
+    completeness: 'complete',
+    produced: ['ranges'],
+    diagnostics,
+  }));
+});
+
 test('the public validator rejects accessor-backed fields without invoking them', () => {
   const candidate = { ...unchangedResult(descriptor()) };
   let reads = 0;

@@ -165,7 +165,7 @@ function aborted(budget) {
   catch { return true; }
 }
 
-function isPassResultShapeUsable(result, descriptor) {
+function ownedPassResult(result, descriptor) {
   return snapshotCanonicalPassResult(result, descriptor);
 }
 
@@ -226,7 +226,7 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
 
   // Validate untrusted pass output before any later contract check can
   // dereference it. This must remain before descriptor-identity validation.
-  const ownedResult = isPassResultShapeUsable(result, descriptor);
+  const ownedResult = ownedPassResult(result, descriptor);
   if (ownedResult == null) {
     return Object.freeze({
       committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
@@ -244,12 +244,9 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   });
   // A result may only exercise the descriptor authority of the pass that was
   // actually invoked. Otherwise mutation/invalidation uses one descriptor while
-  // provenance and replay identity name another pass.  A malformed pass may
-  // return null/undefined (or another primitive); keep that contract failure
-  // inside the existing refusal boundary instead of dereferencing it here.
-  if (result == null || (typeof result !== 'object' && typeof result !== 'function')
-      || result.contractVersion !== descriptor.contractVersion
-      || result.passId !== descriptor.id
+  // provenance and replay identity name another pass. Shape, ownership and the
+  // global contract version were already settled by the snapshot guard above.
+  if (result.passId !== descriptor.id
       || result.passVersion !== descriptor.version
       || result.stage !== descriptor.stage) {
     return refuse(`result-descriptor-mismatch:${descriptor.id}`);
