@@ -94,6 +94,13 @@ export function createVerificationQuery({
   const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
   const normalizedBitWidth = normalizeBitWidth(bitWidth);
 
+  // Hash material and returned record must carry the same target shape (#5779).
+  // Arrays are outside the target schema: `{...array}` silently reshaped the
+  // returned record into a plain object while the queryHash bound the array.
+  if (Array.isArray(targetEntity)) {
+    throw new TypeError('createVerificationQuery: targetEntity array is not a canonical target');
+  }
+
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
     normalizedConstraints = [...constraints].filter(Boolean);
