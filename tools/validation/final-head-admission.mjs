@@ -126,27 +126,35 @@ function codeRabbitCheckState(check) {
   return 'pending';
 }
 
-function exactHeadMarker(body, headSha) {
-  return string(body).includes(`[HEAD:${headSha}]`);
+function parseAutoReviewMarker(review) {
+  const body = string(review?.body);
+  const autoTokens = body.match(/\[AUTO-REVIEW:/g) ?? [];
+  if (autoTokens.length !== 1) return null;
+  const match = body.match(
+    /^\[AUTO-REVIEW:([^\]\s]+)\]\[HEAD:([0-9a-f]{40})\]\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/,
+  );
+  if (!match) return null;
+  return Object.freeze({
+    reviewerId: string(match[1]).trim().toUpperCase(),
+    headSha: match[2].toLowerCase(),
+    verdict: match[3],
+  });
 }
 
 function autoReviewerId(review) {
-  const matches = [...string(review?.body).matchAll(/\[AUTO-REVIEW:([^\]\s]+)\]/g)];
-  if (matches.length !== 1) return '';
-  return string(matches[0]?.[1]).trim().toUpperCase();
+  return parseAutoReviewMarker(review)?.reviewerId ?? '';
 }
 
 function isExactHeadAutoReview(review, headSha, trustedReviewers) {
-  if (!autoReviewerId(review)) return false;
-  if (!exactHeadMarker(review?.body, headSha)) return false;
+  const marker = parseAutoReviewMarker(review);
+  if (!marker || marker.headSha !== string(headSha).toLowerCase()) return false;
   const commitId = string(review?.commit_id);
-  if (!commitId || commitId !== headSha) return false;
+  if (!commitId || commitId.toLowerCase() !== string(headSha).toLowerCase()) return false;
   return trustedReviewers.has(reviewAuthor(review));
 }
 
 function autoVerdict(review) {
-  const match = string(review?.body).match(/\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/);
-  return match?.[1] ?? null;
+  return parseAutoReviewMarker(review)?.verdict ?? null;
 }
 
 function latestExactAutoReviews(reviews, headSha, trustedReviewers) {
