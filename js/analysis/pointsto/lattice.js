@@ -74,6 +74,23 @@ export function createOffsetRange(min, max) {
 
 export const UNBOUNDED_RANGE = createOffsetRange(null, null);
 
+/**
+ * Canonical offset-range view for a points-to target (#6068).
+ *
+ * A caller-supplied `{min, max, exact:true}` would otherwise smuggle an
+ * internal invariant violation past `rangeRelation()`, which trusts `exact`
+ * and ignores `max` — manufacturing strong NoAlias for overlapping ranges or
+ * MustAlias for non-single locations. The range is rebuilt through
+ * `createOffsetRange`, so `exact` is re-derived from `min === max` instead of
+ * being taken on faith. End values pass through unchanged: a `null` end stays
+ * unbounded toward that side, so widening results are preserved.
+ */
+function canonicalOffsetRange(range) {
+  if (range == null) return UNBOUNDED_RANGE;
+  if (range === UNBOUNDED_RANGE) return range;
+  return createOffsetRange(range.min ?? null, range.max ?? null);
+}
+
 export function exactRange(value) {
   const v = big(value);
   if (v == null) return UNBOUNDED_RANGE;
@@ -269,7 +286,7 @@ export function createPointsToTarget(input = {}) {
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
       ? String(input.address)
       : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
-    offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
+    offsetRange: canonicalOffsetRange(input.offsetRange),
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
   };
