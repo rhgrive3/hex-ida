@@ -94,6 +94,12 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
     /non-plain/,
     'array subclasses must be rejected instead of being fingerprinted as ordinary arrays',
   );
+  for (const before of [{ nested: new Custom() }, new Map([['nested', new Custom()]]), new Set([new Custom()])]) {
+    assert.throws(() => proposalFor(before), /non-plain/, 'cloning must not erase nested unsupported prototypes');
+  }
+  let reads = 0;
+  assert.throws(() => proposalFor({ get nested() { reads++; return new Custom(); } }), /accessor/);
+  assert.equal(reads, 0, 'state-shape validation must reject nested accessors without evaluating them');
 }
 
 /* 5. bindingRevision shares the same fail-closed policy */

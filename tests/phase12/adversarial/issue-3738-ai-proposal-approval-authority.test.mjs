@@ -166,7 +166,7 @@ async function expectApprovalFailure(promise) {
     },
   });
   assert.deepEqual(executionBefore, [0x90], 'stale-state revision and execution payload must come from one snapshot');
-  assert.equal(beforeReads, 2, 'create() must not fingerprint caller-owned before separately from payload snapshotting');
+  assert.equal(beforeReads, 1, 'snapshotting and RegExp restoration must share the one captured before value');
 }
 
 {

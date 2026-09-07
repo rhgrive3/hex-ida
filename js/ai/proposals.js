@@ -282,16 +282,20 @@ function snapshotProposalPayload(value) {
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
   }
+  // Capture each outer field once: getters must not supply one value for the
+  // stale-state guard and another for the execution snapshot.
+  const source = { target: value.target, before: value.before, after: value.after };
+  assertSnapshotStateShape(source.before);
   let payload;
   try {
     payload = {
-      target: clone(value.target),
-      before: clone(value.before),
-      after: clone(value.after),
+      target: clone(source.target),
+      before: clone(source.before),
+      after: clone(source.after),
     };
-    restoreRegExpLastIndex(value.target, payload.target);
-    restoreRegExpLastIndex(value.before, payload.before);
-    restoreRegExpLastIndex(value.after, payload.after);
+    restoreRegExpLastIndex(source.target, payload.target);
+    restoreRegExpLastIndex(source.before, payload.before);
+    restoreRegExpLastIndex(source.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
   }
@@ -299,6 +303,33 @@ function snapshotProposalPayload(value) {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
   }
   return payload;
+}
+
+function assertSnapshotStateShape(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of Map.prototype.entries.call(value)) {
+      assertSnapshotStateShape(key, seen);
+      assertSnapshotStateShape(item, seen);
+    }
+    return;
+  }
+  if (value instanceof Set) {
+    for (const item of Set.prototype.values.call(value)) assertSnapshotStateShape(item, seen);
+    return;
+  }
+  if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)
+      || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) return;
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
+    throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if (!descriptor.enumerable) continue;
+    if (!('value' in descriptor)) throw new AIError('tool_failed', 'Proposal state contains an accessor and cannot be snapshotted safely.');
+    assertSnapshotStateShape(descriptor.value, seen);
+  }
 }
 
 function containsSharedMemory(value, seen = new WeakSet()) {
