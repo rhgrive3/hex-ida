@@ -21,6 +21,12 @@ const auto = (sha, verdict = 'APPROVED', author = TRUSTED, at = '2026-09-07T00:0
   author: { login: author },
   body: `[AUTO-REVIEW:R0][HEAD:${sha}][VERDICT:${verdict}]`,
 });
+const formal = (state, author = 'reviewer-a', at = '2026-09-07T00:00:00Z') => ({
+  state,
+  submitted_at: at,
+  author: { login: author },
+  body: `formal ${state}`,
+});
 const status = (context, state, at = '2026-09-07T00:00:00Z') => ({ context, state, updated_at: at });
 const check = (name, conclusion = 'success') => ({ name, status: 'completed', conclusion, app: { slug: 'github-actions' } });
 const greenEvidence = () => ({
@@ -136,6 +142,76 @@ const evaluate = (input) => evaluateFinalHeadAdmission({
   assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
 }
 
+// Formal GitHub review state is separate from COMMENTED AUTO evidence:
+// a later comment cannot clear a still-active CHANGES_REQUESTED decision.
+{
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [
+      formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
+      formal('COMMENTED', 'reviewer-a', '2026-09-07T00:01:00Z'),
+      auto(HEAD),
+    ],
+    ...greenEvidence(),
+  });
+  assert.equal(result.state, 'failure');
+  assert.ok(result.blockers.includes('active GitHub changes-requested review'));
+}
+
+// A later formal APPROVED decision clears the same reviewer's earlier
+// CHANGES_REQUESTED state, while the inverse ordering remains blocking.
+{
+  const cleared = evaluate({
+    headSha: HEAD,
+    reviews: [
+      formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
+      formal('APPROVED', 'reviewer-a', '2026-09-07T00:01:00Z'),
+      auto(HEAD),
+    ],
+    ...greenEvidence(),
+  });
+  assert.equal(cleared.state, 'success');
+
+  const blocked = evaluate({
+    headSha: HEAD,
+    reviews: [
+      formal('APPROVED', 'reviewer-a', '2026-09-07T00:00:00Z'),
+      formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:01:00Z'),
+      auto(HEAD),
+    ],
+    ...greenEvidence(),
+  });
+  assert.equal(blocked.state, 'failure');
+  assert.ok(blocked.blockers.includes('active GitHub changes-requested review'));
+}
+
+// A dismissal is an explicit formal clearing event. An unknown review state
+// fails closed instead of being ignored as if it were a harmless comment.
+{
+  const dismissed = formal('DISMISSED', 'reviewer-a', '2026-09-07T00:00:00Z');
+  dismissed.dismissed_at = '2026-09-07T00:02:00Z';
+  const cleared = evaluate({
+    headSha: HEAD,
+    reviews: [
+      formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
+      dismissed,
+      auto(HEAD),
+    ],
+    ...greenEvidence(),
+  });
+  assert.equal(cleared.state, 'success');
+
+  const unknown = evaluate({
+    headSha: HEAD,
+    reviews: [
+      formal('REVIEWED', 'reviewer-a', '2026-09-07T00:01:00Z'),
+      auto(HEAD),
+    ],
+    ...greenEvidence(),
+  });
+  assert.equal(unknown.state, 'failure');
+}
+ 
 // The inverse ordering is blocking: a newer changes-requested review overrides
 // an older approval from the same reviewer.
 {

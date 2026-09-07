@@ -105,9 +105,42 @@ function latestExactAutoReviews(reviews, headSha, trustedReviewers) {
   );
 }
 
+const FORMAL_REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
+const NON_FORMAL_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
+
+function formalReviewTime(review, state) {
+  const raw = state === 'DISMISSED'
+    ? review?.dismissed_at || review?.updated_at || review?.submitted_at || review?.created_at
+    : review?.submitted_at || review?.created_at;
+  const timestamp = Date.parse(string(raw));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 function activeFormalChangesRequested(reviews = []) {
-  return latestReviewsByAuthor(reviews)
-    .some((review) => string(review?.state).toUpperCase() === 'CHANGES_REQUESTED');
+  const decisionsByAuthor = new Map();
+  let anonymous = 0;
+
+  for (const review of reviews) {
+    const state = string(review?.state).trim().toUpperCase();
+    if (NON_FORMAL_REVIEW_STATES.has(state)) continue;
+    if (!FORMAL_REVIEW_STATES.has(state)) return true;
+
+    const author = reviewAuthor(review);
+    const key = author || `__anonymous_formal_${anonymous++}`;
+    const decisions = decisionsByAuthor.get(key) ?? [];
+    decisions.push({ state, timestamp: formalReviewTime(review, state) });
+    decisionsByAuthor.set(key, decisions);
+  }
+
+  for (const decisions of decisionsByAuthor.values()) {
+    if (!decisions.some((decision) => decision.state === 'CHANGES_REQUESTED')) continue;
+    if (decisions.some((decision) => decision.timestamp == null)) return true;
+    const newest = Math.max(...decisions.map((decision) => decision.timestamp));
+    if (decisions.some((decision) => (
+      decision.timestamp === newest && decision.state === 'CHANGES_REQUESTED'
+    ))) return true;
+  }
+  return false;
 }
 
 function reasonList(values) {
