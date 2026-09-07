@@ -43,6 +43,45 @@ function makeIndex() {
   assert.equal(index.label(0x1104n), null, 'local rename must not leak into the next function');
 }
 
+// #5970: malformed structured addresses must not alias canonical rename keys.
+{
+  const index = new SymbolIndex({
+    addrs: new BigUint64Array([0x1000n]),
+    kinds: new Uint8Array([0]),
+    names: 'real_name',
+    funcs: new BigUint64Array([0x1000n]),
+  });
+  index.rename(['4096'], 'forged');
+  assert.equal(index.renamedAt(0x1000n), null, 'structured rename address must not create a canonical alias');
+  assert.equal(index.nameEvidence(0x1000n)?.source, 'binary-symbol', 'malformed rename must not replace symbol provenance');
+  index.rename(0x1000n, 'real_name_override');
+  assert.equal(index.renamedAt(['4096']), null, 'structured lookup address must not read a canonical rename');
+  assert.equal(index.nameAt(0x1000n), 'real_name_override');
+  index.rename(['4096'], '');
+  assert.equal(index.renamedAt(0x1000n), 'real_name_override', 'malformed delete must not remove a canonical rename');
+}
+
+// #5711: functionWindowBound must honor the same containment as functionAt.
+{
+  const explicit = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1010n]),
+  });
+  assert.equal(explicit.functionWindowBound(0x1000n), 0x1010n, 'function start keeps its explicit window bound');
+  assert.equal(explicit.functionWindowBound(0x100fn), 0x1010n, 'address inside explicit function keeps its bound');
+  assert.equal(explicit.functionWindowBound(0x1010n), null, 'exact explicit end is outside the function window');
+  assert.equal(explicit.functionWindowBound(0x2000n), null, 'address after explicit end has no stale window bound');
+
+  const regions = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x2000n]),
+    regions: [
+      { id: 'text-a', vmAddr: 0x1000n, size: 0x100n, exec: true },
+      { id: 'text-b', vmAddr: 0x2000n, size: 0x100n, exec: true },
+    ],
+  });
+  assert.equal(regions.functionWindowBound(0x1080n), null, 'a cross-region gap must not inherit the prior function window');
+}
+
 
 {
   const index = new SymbolIndex({
