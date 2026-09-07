@@ -95,6 +95,36 @@ assert.equal(bindingStore.get(bindingProposal.id).status, 'failed',
 assert.ok(bindingStore.audit.some((event) => event.type === 'proposal-failed' && event.proposalId === bindingProposal.id),
   'binding fingerprint failure must emit proposal-failed audit evidence');
 
+// The approved revision and executable payload must share one snapshot. A
+// getter that changes between reads must not let the second value authorize
+// execution of the first value.
+let beforeReads = 0;
+const changingInput = {
+  kind: 'comment', target: '0x1004', after: { name: 'after' }, evidenceIds: [verified.id],
+};
+Object.defineProperty(changingInput, 'before', {
+  enumerable: true,
+  get() {
+    beforeReads += 1;
+    return beforeReads === 1 ? 'A' : 'B';
+  },
+});
+const changingProposal = proposals.create(changingInput);
+assert.equal(beforeReads, 1, 'proposal creation must snapshot accessor-backed before exactly once');
+const changingToken = proposals.approve(changingProposal.id).approvalToken;
+let changingApplied = false;
+await assert.rejects(
+  () => proposals.apply(changingProposal.id, {
+    approvalToken: changingToken,
+    currentState: { name: 'B' },
+    apply: async () => { changingApplied = true; },
+  }),
+  (error) => error.type === 'tool_failed' && /target changed/.test(error.message),
+  'a later accessor value must not authorize the earlier approved payload',
+);
+assert.equal(changingApplied, false, 'TOCTOU mismatch must not execute the proposal');
+assert.equal(proposals.get(changingProposal.id).status, 'failed', 'TOCTOU mismatch must fail the proposal closed');
+
 // Plain string-keyed states keep working end to end.
 const stable = proposals.create({ kind: 'comment', target: '0x2000', before: plainBefore, after: { name: 'after' }, evidenceIds: [verified.id] });
 const stableToken = proposals.approve(stable.id).approvalToken;

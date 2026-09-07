@@ -43,13 +43,19 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const executionPayload = snapshotProposalPayload(input);
-    // The stale-state authority must fingerprint the exact approved value —
-    // the raw `before`, not its structuredClone, which silently drops
-    // symbol-keyed own properties and would alias a later symbol-keyed state
-    // change (#5945). `apply()` compares against the caller's raw state, so
-    // both sides of the comparison must share the same view.
-    const revision = fingerprint(input.before);
+    // Capture the caller-controlled property once. Besides closing the
+    // revision/payload TOCTOU, this preserves the explicit symbol-key fail
+    // closed check below because structuredClone intentionally omits symbols.
+    const before = input.before;
+    rejectUnstableProposalState(before);
+    const executionPayload = snapshotProposalPayload(input, before);
+    // The stale-state authority must fingerprint the same stable value that
+    // execution will receive. Reading caller-controlled `input.before` again
+    // after snapshotting would make an accessor-backed value a TOCTOU boundary:
+    // the payload could contain A while the revision records B (#5945).
+    // Structured cloning also rejects symbol-keyed state before this point, so
+    // the owned payload is the complete fail-closed identity view.
+    const revision = fingerprint(executionPayload.before);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
@@ -298,7 +304,7 @@ function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
   }
 }
 
-function snapshotProposalPayload(value) {
+function snapshotProposalPayload(value, stableBefore = value.before) {
   const clone = globalThis.structuredClone;
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
@@ -307,11 +313,11 @@ function snapshotProposalPayload(value) {
   try {
     payload = {
       target: clone(value.target),
-      before: clone(value.before),
+      before: clone(stableBefore),
       after: clone(value.after),
     };
     restoreRegExpLastIndex(value.target, payload.target);
-    restoreRegExpLastIndex(value.before, payload.before);
+    restoreRegExpLastIndex(stableBefore, payload.before);
     restoreRegExpLastIndex(value.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
@@ -320,6 +326,33 @@ function snapshotProposalPayload(value) {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
   }
   return payload;
+}
+
+// `structuredClone` omits symbol-keyed properties and invokes accessors. The
+// proposal boundary must not silently lose identity-bearing state or read a
+// mutable accessor twice while preparing an approval. Capture the top-level
+// before value once in create(), then reject unsupported nested accessors and
+// symbol keys without invoking them.
+function rejectUnstableProposalState(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key === 'symbol')) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+      }
+      rejectUnstableProposalState(descriptor.value, seen);
+    }
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('tool_failed', 'Proposal state cannot be snapshotted safely.');
+  }
 }
 
 function containsSharedMemory(value, seen = new WeakSet()) {
