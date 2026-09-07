@@ -39,6 +39,8 @@ test('#3414 exhaustive indirect external candidate uses a library model', () => 
     roots: ['fn_dispatch_exact'],
     localSummaries: new Map([['fn_dispatch_exact', caller]]),
     libraryModels: new Map([['external_modeled', {
+      modelSchema: 'phase7-library-model',
+      modelVersion: '1',
       memoryReadRegions: [{ regionId:'model-read', regionKind:'global-absolute', source:'library-model' }],
       memoryWriteRegions: [{ regionId:'model-write', regionKind:'global-absolute', source:'library-model' }],
       noreturn:false,
