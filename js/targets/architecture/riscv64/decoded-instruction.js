@@ -10,6 +10,14 @@ function text(value, code) {
   if (!out) throw new TypeError(code);
   return out;
 }
+// Semantic metadata must be a primitive token already: structured values
+// must never coerce into canonical mode/version authority.
+function strictToken(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const out = value.trim();
+  if (!out) throw new TypeError(code);
+  return out;
+}
 function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
@@ -33,11 +41,15 @@ function isUint8ArrayView(value) {
   return tag === 'Uint8Array';
 }
 
-function rawBytesOf(input) {
-  if (isUint8ArrayView(input)) return Uint8Array.from(input);
+function rawBytesOf(input, expectedLength) {
+  if (isUint8ArrayView(input)) {
+    if (input.byteLength !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+    return Uint8Array.from(input);
+  }
   if (!Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
-  const bytes = new Uint8Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
+  if (input.length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+  const bytes = new Uint8Array(expectedLength);
+  for (let index = 0; index < expectedLength; index += 1) {
     if (!Object.hasOwn(input, index)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
     const byte = input[index];
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
@@ -61,13 +73,13 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
   const size = Number(input.size ?? input.length);
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
-  const rawBytes = rawBytesOf(input.rawBytes ?? []);
+  const rawBytes = rawBytesOf(input.rawBytes ?? [], size);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
   const encodedLength = riscvInstructionLength(rawBytes[0] | (rawBytes[1] << 8));
   if (encodedLength !== size) throw new TypeError('riscv64-decoded-instruction-length-disagrees-with-encoding');
 
   const fields = decodeRiscv64InstructionWord(rawBytes);
-  const mode = text(input.mode ?? 'rv64imc', 'riscv64-decoded-instruction-mode-required');
+  const mode = strictToken(input.mode === undefined ? 'rv64imc' : input.mode, 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
   const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
@@ -97,7 +109,11 @@ export function createRiscv64DecodedInstruction(input = {}) {
     opStr: String(input.opStr ?? ''),
     contractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
     decoderContractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
-    decoderSemanticVersion: String(input.decoderSemanticVersion ?? RISCV64_DECODER_SEMANTIC_VERSION),
+    decoderSemanticVersion: strictToken(
+      input.decoderSemanticVersion === undefined
+        ? RISCV64_DECODER_SEMANTIC_VERSION : input.decoderSemanticVersion,
+      'riscv64-decoded-instruction-invalid-decoder-semantic-version',
+    ),
     // Structured architectural truth.
     fields,
     // `instructionFamily` is the canonical architectural operation recovered
