@@ -19,11 +19,12 @@ import {
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
+  functionSummaryDigest,
   summaryIdentityMatches,
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.1';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -113,6 +114,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const writtenVariables = new Set();
   const returnValues = new Set();
   const statuses = [];
+  const consumedCalleeSummaryIds = new Set();
 
   let sawReturn = false;
   let sawNoreturnCall = false;
@@ -129,6 +131,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         completeness: 'partial',
         stopReason: 'cancelled',
       }),
+      calleeSummaryIds: [],
     };
   }
 
@@ -201,6 +204,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const current = supplied != null && summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))
       ? supplied
       : null;
+    if (current != null) consumedCalleeSummaryIds.add(functionSummaryDigest(current));
     return {
       targetProof,
       targets,
@@ -433,10 +437,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const source = complete ? 'abi-rule' : 'unknown-call-fallback';
     const readOk = applyScope({ node, scope: node.call?.memoryRead, resolveRegion, into: memoryReadRegions, source });
     const writeOk = applyScope({ node, scope: node.call?.memoryWrite, resolveRegion, into: memoryWriteRegions, source });
-    const nonExhaustiveTargets = targetProof.kind !== 'unknown' && !targetProof.exhaustive;
+    const nonExhaustiveTargets = !targetProof.exhaustive;
     const nonExhaustiveIndirect = targetProof.kind === 'indirect' && nonExhaustiveTargets;
 
-    if (!complete || !readOk || !writeOk || nonExhaustiveTargets) {
+    if (identityMismatch || !complete || !readOk || !writeOk || nonExhaustiveTargets) {
       unknownCallEffects.push(createUnknownCallEffect({
         callSiteId: node.id,
         reason: identityMismatch
@@ -506,5 +510,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     status,
   });
 
-  return { summary, status };
+  return {
+    summary,
+    status,
+    // This is the exact semantic dependency set consumed while constructing
+    // the local summary. Artifact producers feed it into the canonical Phase 7
+    // descriptor so a changed callee can never reuse the caller's cache key.
+    calleeSummaryIds: [...consumedCalleeSummaryIds].sort(),
+  };
 }
