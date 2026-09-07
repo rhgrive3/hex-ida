@@ -11,12 +11,20 @@ export function demangleCxx(name){
     const special=readSpecial(p),body=readName(p);
     if(!body)return null;
     let out=special?special.replace('{}',body):body;
-    if(special)return p.i===s.length?out:null;
-    if(p.i<s.length){const args=readArgs(p);if(args==null||p.i!==s.length)return null;const m=/^(.*?)( (?:const|volatile|restrict)(?: (?:const|volatile|restrict))*)$/.exec(out);out=m?`${m[1]}(${args})${m[2]}`:`${out}(${args})`;}
+    if(special){
+      if(special==='thunk to {}'){
+        out=finishFunctionArgs(p,out);
+        if(out==null)return null;
+      }
+      return p.i===s.length?out:null;
+    }
+    if(p.i<s.length){out=finishFunctionArgs(p,out);if(out==null||p.i!==s.length)return null;}
     return p.i===s.length?out:null;
   }catch{return null;}
 }
-function readSpecial(p){const two=p.s.slice(p.i,p.i+2),map={TV:'vtable for {}',TT:'VTT for {}',TI:'typeinfo for {}',TS:'typeinfo name for {}',GV:'guard variable for {}',Th:'thunk to {}'};if(!map[two])return null;p.i+=2;return map[two];}
+function readSpecial(p){const start=p.i,two=p.s.slice(p.i,p.i+2),map={TV:'vtable for {}',TT:'VTT for {}',TI:'typeinfo for {}',TS:'typeinfo name for {}',GV:'guard variable for {}',Th:'thunk to {}'};if(!map[two])return null;if(two==='Th'){p.i++;if(!readNonVirtualCallOffset(p)){p.i=start;return null;}}else p.i+=2;return map[two];}
+function readNonVirtualCallOffset(p){if(p.s[p.i]!=='h')return false;p.i++;if(p.s[p.i]==='n')p.i++;const start=p.i;while(p.i<p.s.length&&/\d/.test(p.s[p.i]))p.i++;if(p.i===start||p.s[start]==='0'&&p.i-start>1||p.s[p.i]!=='_')return false;p.i++;return true;}
+function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return null;const m=/^(.*?)( (?:const|volatile|restrict)(?: (?:const|volatile|restrict))*)$/.exec(out);return m?`${m[1]}(${args})${m[2]}`:`${out}(${args})`;}
 function readName(p){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p);}if(c==='S')return readSubstitution(p);if(/\d/.test(c||''))return readSourceName(p);if(c==='L'){p.i++;return readName(p);}return null;}
 function readNested(p){const parts=[];let cvr='';while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){const q={r:' restrict',V:' volatile',K:' const'}[p.s[p.i++]];cvr=q+cvr;}while(p.i<p.s.length&&p.s[p.i]!=='E'){const c=p.s[p.i];let part=null;if(/\d/.test(c))part=readSourceName(p);else if(c==='S')part=readSubstitution(p);else if(c==='C'){if(p.i+2>p.s.length)return null;p.i+=2;part=parts.at(-1)||'ctor';}else if(c==='D'){if(p.i+2>p.s.length)return null;p.i+=2;part='~'+(parts.at(-1)||'dtor');}else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}else if(c==='I')part=readTemplateArgs(p);else return null;if(!part)return null;parts.push(part);}if(p.s[p.i]!=='E'||!parts.length)return null;p.i++;return parts.reduce((a,b)=>b.startsWith('<')?a+b:(a?`${a}::${b}`:b),'')+cvr;}
 function readSourceName(p){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;p.subs.push(out);return out;}

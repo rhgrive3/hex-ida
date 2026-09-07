@@ -165,6 +165,29 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #4040 Itanium nested-name CV qualifiers passed');
 }
 
+// --- Regression: #5238 Itanium non-virtual thunk call-offset and function type ---
+{
+  // g++ -std=c++20 -O0 -fno-inline emits _ZThn8_N1C1fEi for a
+  // non-virtual multiple-inheritance thunk; c++filt calls it a
+  // "non-virtual thunk to C::f(int)".
+  const target = 'thunk to C::f(int)';
+  assert.equal(demangleCxx('_ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('__ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZThn8_N1CD1Ev'), 'thunk to C::~C()');
+  assert.equal(demangleCxx('_ZThn8_NK1C1fEv'), 'thunk to C::f() const');
+
+  // The ABI's h <nv-offset> _ grammar also admits positive and zero offsets.
+  assert.equal(demangleCxx('_ZTh8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZTh0_N1C1fEi'), target);
+
+  // A signed offset still needs digits and the target needs its bare function type.
+  assert.equal(demangleCxx('_ZThn_N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1fE'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1f'), null);
+  console.log('✔ #5238 Itanium non-virtual thunk parsing passed');
+}
+
 // --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
 {
   // These are compiler-emitted names (g++ -std=c++20), including pointer arguments.
