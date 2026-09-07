@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { TypeConstraintGraph } from '../js/analysis/types/graph.js';
+import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
 
 // Issue #5819: a hard aggregate size N and a hard field extent
 // [offset, offset+size) with offset+size > N are a hard contradiction. The

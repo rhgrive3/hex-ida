@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { partitionDecodedFunction } from '../js/analysis/semantic-function-base.js';
+import { partitionDecodedFunction } from '../../../js/analysis/semantic-function-base.js';
 
 // Issue #5821: partitionDecodedFunction() rejected duplicate start addresses
 // but accepted overlapping byte ranges. Two sorted instructions with disjoint
