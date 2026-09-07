@@ -75,11 +75,23 @@ function makeIndex() {
   const regions = new SymbolIndex({
     funcs: new BigUint64Array([0x1000n, 0x2000n]),
     regions: [
-      { id: 'text-a', vmAddr: 0x1000n, size: 0x100n, exec: true },
+      { id: 'text-a', vmAddr: 0x1000n, size: 0x10n, exec: true },
       { id: 'text-b', vmAddr: 0x2000n, size: 0x100n, exec: true },
     ],
   });
-  assert.equal(regions.functionWindowBound(0x1080n), null, 'a cross-region gap must not inherit the prior function window');
+  assert.equal(regions.functionWindowBound(0x1080n), null, 'a clear cross-region gap must not inherit the prior function window');
+
+  const outsideRegions = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1010n]),
+    regions: [{ id: 'text-only', vmAddr: 0x2000n, size: 0x100n, exec: true }],
+  });
+  assert.equal(outsideRegions.functionAt(0x1008n), null, 'a function outside executable regions is not contained');
+  assert.equal(
+    outsideRegions.functionWindowBound(0x1008n),
+    null,
+    'a start and query outside executable regions must not expose an explicit window bound',
+  );
 }
 
 

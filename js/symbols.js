@@ -300,8 +300,11 @@ export class SymbolIndex {
     const start = this.funcs[i];
     const bound = this._containmentBound(i);
     if (bound == null || addr >= bound) return null;
-    if (this.functionRegions.length
-      && this._functionRegion(addr) !== this._functionRegion(start)) return null;
+    if (this.functionRegions.length) {
+      const startRegion = this._functionRegion(start);
+      const addrRegion = this._functionRegion(addr);
+      if (!startRegion || !addrRegion || startRegion !== addrRegion) return null;
+    }
     return bound;
   }
 
