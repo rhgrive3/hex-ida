@@ -277,7 +277,25 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     const frame = decodeEhValue(r, p, ehFrameEnc, ctx, end); p = frame.next;
     const countX = decodeEhValue(r, p, countEnc, ctx, end); p = countX.next;
     const count = Number(countX.raw);
-    if (!Number.isSafeInteger(count) || count < 0 || count > MAX_EH_RECORDS) return;
+    if (!Number.isSafeInteger(count) || count < 0 || count > MAX_EH_RECORDS) {
+      // A declared fde_count this parser will not process is an explicit
+      // resource-policy rejection, not an absent header (#6110): leaving no
+      // metadata indistinguishable from a missing .eh_frame_hdr.
+      const reason = !Number.isSafeInteger(count) || count < 0
+        ? 'fde-count-invalid'
+        : 'fde-count-exceeds-parser-cap';
+      image.metadata.ehFrameHeader = {
+        version, ehFrameEnc, countEnc, tableEnc,
+        declaredFunctions: Number.isSafeInteger(count) && count >= 0 ? count : null,
+        recoveredFunctions: 0, validatedEntries: 0, invalidEntries: 0,
+        tableSorted: true, tableComplete: false, validation: 'invalid',
+        ehFrameAddress: frame.value, reason,
+      };
+      warn(image, reason === 'fde-count-exceeds-parser-cap'
+        ? `fde_count ${count} exceeds the supported record limit (${MAX_EH_RECORDS}); header-derived function index discarded`
+        : `fde_count is not a representable non-negative count; header-derived function index discarded`);
+      return;
+    }
 
     const rows = [];
     let previousInitial = null;
@@ -372,6 +390,10 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     };
   } catch (e) {
     if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+    budget?.partial(
+      'eh-frame-header:decode',
+      `.eh_frame_hdr decode failed: ${e.message}`,
+    );
     warn(image, e.message);
   }
 }
@@ -383,7 +405,12 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
   const indirect = !!(enc & 0x80);
   const ptrBytes = ctx.bits === 64 ? 8 : 4;
   let p = p0;
-  if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+  if (application === 0x50) {
+    const alignment = BigInt(ptrBytes);
+    const fieldAddress = ctx.secAddress + BigInt(p - ctx.secOffset);
+    const padding = (alignment - (fieldAddress % alignment)) % alignment;
+    p += Number(padding);
+  }
   const requireSpan = (n) => {
     if (!Number.isSafeInteger(p) || !Number.isSafeInteger(end) || p < 0 || n < 0 || p > end || n > end - p)
       throw new Error('DW_EH_PE value crosses bounded record');

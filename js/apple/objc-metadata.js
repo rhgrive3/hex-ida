@@ -18,7 +18,7 @@ async function decodedPointer(get, raw, storageAddress = null) {
     try {
       const resolved = await get.resolvePointer(raw, { address: storageAddress, imageBase: get.base });
       if (resolved == null) return null;
-      return BigInt(resolved);
+      return pointerTableAddress(resolved);
     } catch { return null; }
   }
   return sanitizePointer(raw, get.base);
@@ -249,7 +249,7 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
-  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts.signal });
+  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts?.signal });
   get.base = opts.imageBase == null ? null : pointerTableAddress(opts.imageBase);
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;

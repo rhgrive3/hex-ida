@@ -96,14 +96,24 @@ export function parseHexPattern(text) {
 
 /** Control-flow mnemonics get a distinct color, like Hopper/IDA. */
 const FLOW = new Set([
-  'b', 'bl', 'blr', 'br', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz', 'braa', 'brab',
-  'blraa', 'blrab', 'retaa', 'retab', 'svc', 'brk', 'hlt', 'eret', 'bti',
+  // ARM64 control-flow
+  'b', 'bl', 'blr', 'br', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz',
+  'braa', 'brab', 'braaz', 'brabz', 'blraa', 'blrab', 'blraaz', 'blrabz',
+  'retaa', 'retab', 'svc', 'brk', 'hlt', 'eret', 'eretaa', 'eretab', 'bti',
+  // x86_64 control-flow
+  'jmp', 'call', 'retn', 'retf',
+  'je', 'jne', 'jz', 'jnz', 'ja', 'jae', 'jb', 'jbe', 'jna', 'jnae', 'jnb', 'jnbe',
+  'jg', 'jge', 'jl', 'jle', 'jng', 'jnge', 'jnl', 'jnle',
+  'jo', 'jno', 'js', 'jns', 'jp', 'jnp', 'jpe', 'jpo',
+  'jcxz', 'jecxz', 'jrcxz',
 ]);
 
 export function mnemonicClass(mn) {
-  if (!mn) return '';
-  if (mn.charCodeAt(0) === 46) return 'data';           // ".byte" from SKIPDATA
-  if (FLOW.has(mn)) return 'flow';
-  if (mn.charCodeAt(0) === 98 /* b */ && mn.length <= 4 && /^b\.?[a-z]{0,2}$/.test(mn)) return 'flow';
+  if (!mn || typeof mn !== 'string') return '';
+  const m = mn.toLowerCase();
+  if (m.charCodeAt(0) === 46) return 'data';           // ".byte" from SKIPDATA
+  if (FLOW.has(m)) return 'flow';
+  if (m.charCodeAt(0) === 98 /* b */ && m.length <= 4 && /^b\.?[a-z]{0,2}$/.test(m)) return 'flow';
+  if (m.charCodeAt(0) === 106 /* j */ && /^j(?:mp|[a-z]{1,4})$/.test(m)) return 'flow';
   return '';
 }

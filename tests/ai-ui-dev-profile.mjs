@@ -29,7 +29,9 @@ await run(async ({ browser }) => {
   check('Standard keeps the existing Auto analysis scope', /自動|Auto/.test(standard.scope || ''), standard.scope);
 
   await page.evaluate(() => document.querySelector('.ai-agent-profile .ai-seg[data-value="dev"]').click());
-  await page.waitForTimeout(100);
+  // Capability refresh is asynchronous and may repaint the base scope chip
+  // after the Dev controls have rendered. Assert after that late repaint window.
+  await page.waitForTimeout(350);
   const dev = await page.evaluate(() => ({
     profile: document.querySelector('.ai-agent-profile .ai-seg.active')?.dataset.value,
     policyHidden: document.querySelector('.ai-dev-policy').hidden,

@@ -25,12 +25,29 @@ function normalizeScalar(value) {
   return String(value);
 }
 
+function cacheableStringsOptions(value) {
+  if (value === true) return true;
+  if (!value || typeof value !== 'object') return false;
+  const semantic = { ...value };
+  delete semantic.signal;
+  return semantic;
+}
+
+function producerStringsOptions(value, signal) {
+  if (!value || typeof value !== 'object') return value;
+  return { ...value, signal };
+}
+
 function cacheKey(options = {}) {
   const ranges = options.ranges || {};
-  const strings = options.strings && typeof options.strings === 'object' ? options.strings : options.strings === true ? true : false;
+  const source = options.source || {};
+  const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
     strings,
+    source: {
+      maxReadLength: normalizeScalar(source.maxReadLength),
+    },
     ranges: {
       pageSize: normalizeScalar(ranges.pageSize),
       maxPageSize: normalizeScalar(ranges.maxPageSize),
@@ -67,7 +84,10 @@ function waitForEntry(entry, signal) {
       done = true;
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) entry.controller.abort('macho-slice-no-consumers');
+      if (!entry.settled && entry.waiters === 0) {
+        entry.retire();
+        entry.controller.abort('macho-slice-no-consumers');
+      }
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
@@ -86,17 +106,31 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   const cache = sourceCache(source);
   const key = cacheKey({ ...options, ranges:rangeOptions || options.ranges || {} });
   let entry = cache.get(key);
+  if (entry && (entry.retired || entry.controller.signal.aborted)) {
+    if (cache.get(key) === entry) cache.delete(key);
+    entry = null;
+  }
   if (!entry) {
     const controller = new AbortController();
-    const producerOptions = { ...options, signal:controller.signal };
-    entry = { controller, waiters:0, settled:false, promise:null };
+    const producerOptions = {
+      ...options,
+      signal:controller.signal,
+      strings:producerStringsOptions(options.strings, controller.signal),
+    };
+    entry = { controller, waiters:0, settled:false, retired:false, promise:null, retire:null };
+    entry.retire = () => {
+      if (entry.retired) return;
+      entry.retired = true;
+      if (cache.get(key) === entry) cache.delete(key);
+    };
     entry.promise = parseMachOSourceRaw(input, producerOptions, null, rangeOptions)
       .then((image) => {
         entry.settled = true;
+        if (controller.signal.aborted || image?.metadata?.sourceStrings?.cancelled === true) entry.retire();
         return image;
       })
       .catch((error) => {
-        cache.delete(key);
+        entry.retire();
         throw error;
       });
     cache.set(key, entry);

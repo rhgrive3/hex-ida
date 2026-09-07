@@ -131,8 +131,8 @@ export function sanitizeActions(actions, { evidenceStore, proposalStore, address
     if (typeof value.label === 'string') action.label = value.label.slice(0, 240);
     if (value.kind === 'run-agent') { action.target = typeof value.target === 'string' ? value.target.slice(0, 1000) : null; out.push(action); continue; }
     if (value.kind === 'review-proposal') {
-      const id = String(value.target ?? value.proposalId ?? '');
-      if (id && proposalStore && proposalStore.has(id)) { action.target = id; out.push(action); }
+      const rawId = value.target ?? value.proposalId;
+      if (typeof rawId === 'string' && rawId && proposalStore && proposalStore.has(rawId)) { action.target = rawId; out.push(action); }
       continue;
     }
     const target = addressText(value.target ?? value.address ?? value.functionAddress);
@@ -141,7 +141,7 @@ export function sanitizeActions(actions, { evidenceStore, proposalStore, address
     const exists = typeof addressExists === 'function' && addressExists(target);
     if (!evidenced || exists === false) continue;
     action.target = target;
-    if (value.evidenceId && evidenceStore.has(String(value.evidenceId))) action.evidenceId = String(value.evidenceId);
+    if (typeof value.evidenceId === 'string' && value.evidenceId && evidenceStore.has(value.evidenceId)) action.evidenceId = value.evidenceId;
     out.push(action);
   }
   return out;

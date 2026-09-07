@@ -1,11 +1,11 @@
 import { createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
+import { addressText } from '../validation.js';
 
 export { ToolRegistry };
 
-function addressText(value) {
-  if (value == null) return null;
-  try { return `0x${BigInt(value).toString(16)}`; } catch { return String(value); }
+function nonNegativeSafeInteger(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function queryContext(context) {
@@ -19,10 +19,11 @@ function pageRows(value) {
 function continuation(value, offset, cursorFactory) {
   const out = { ...(value || {}) };
   const rows = pageRows(out);
-  out.offset = Number.isSafeInteger(Number(out.offset)) ? Number(out.offset) : offset;
-  out.returned = Number.isSafeInteger(Number(out.returned)) ? Number(out.returned) : rows.length;
+  out.offset = nonNegativeSafeInteger(out.offset) ?? offset;
+  const returned = nonNegativeSafeInteger(out.returned);
+  out.returned = returned === rows.length ? returned : rows.length;
   if (out.complete !== true && rows.length && !out.continuation && typeof cursorFactory === 'function') {
-    out.continuation = { cursor:cursorFactory(offset + out.returned) };
+    out.continuation = { cursor:cursorFactory(offset + rows.length) };
   }
   return out;
 }
@@ -43,16 +44,23 @@ function queryPaging(registry, tool, params, cursor) {
       kind:'tool-page',
     });
     if (payload.tool !== tool || payload.paramsHash !== hash) throw new Error('cursor-parameter-mismatch');
-    offset = Math.max(0, Number(payload.offset) || 0);
+    offset = nonNegativeSafeInteger(payload.offset);
+    if (offset == null) throw new Error('cursor-offset-invalid');
   }
   const makeCursor = (next) => codec.encode({
     kind:'tool-page',
     bindingKey:registry.observationStore.binding().key,
     tool,
     paramsHash:hash,
-    offset:next,
+    offset: normalizeCursorOffset(next),
   });
   return { offset, makeCursor };
+}
+
+function normalizeCursorOffset(value) {
+  const normalized = nonNegativeSafeInteger(value);
+  if (normalized == null) throw new Error('cursor-offset-invalid');
+  return normalized;
 }
 
 function markQueryAuthority(value) {

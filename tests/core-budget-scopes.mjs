@@ -188,4 +188,39 @@ console.log("Testing ResourceBudget composable scopes...");
   console.log("  ok #1176 ResourceBudget limits validation");
 }
 
+// Parent cancellation authority tests (#4603)
+{
+  const rootController = new AbortController();
+  const overrideController = new AbortController();
+  const root = new ResourceBudget({ workUnits: 10 }, { signal: rootController.signal });
+  const child = root.scope("child", { workUnits: 10 }, { signal: overrideController.signal });
+  const grand = child.scope("grand", { workUnits: 10 });
+  assert.equal(child.signal, root.signal);
+  assert.equal(grand.signal, root.signal);
+
+  rootController.abort(new DOMException("root cancelled", "AbortError"));
+  assert.throws(() => child.consume("workUnits", 1), /AbortError|root cancelled/);
+  assert.throws(() => grand.consume("workUnits", 1), /AbortError|root cancelled/);
+  assert.equal(child.used.workUnits || 0, 0);
+  assert.equal(grand.used.workUnits || 0, 0);
+  assert.equal(root.used.workUnits || 0, 0);
+  console.log("  ok #4603 scope cannot override parent cancellation authority");
+}
+
+{
+  const rootController = new AbortController();
+  const childController = new AbortController();
+  const root = new ResourceBudget({ workUnits: 10 }, { signal: rootController.signal });
+  const child = new ResourceBudget({ workUnits: 10 }, {
+    parent: root,
+    name: "direct",
+    signal: childController.signal,
+  });
+  rootController.abort(new DOMException("ancestor cancelled", "AbortError"));
+  assert.throws(() => child.consume("workUnits", 1), /AbortError|ancestor cancelled/);
+  assert.equal(child.used.workUnits || 0, 0);
+  assert.equal(root.used.workUnits || 0, 0);
+  console.log("  ok #4603 consume preflight checks ancestor cancellation");
+}
+
 console.log("All core budget scope tests PASS!");

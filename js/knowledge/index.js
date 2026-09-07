@@ -35,6 +35,16 @@ function addrText(value) {
   return BigInt(value).toString(16);
 }
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
+function transactionPromise(transaction) {
+  const done = new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Knowledge transaction failed'));
+    transaction.onabort = () => reject(transaction.error || new Error('Knowledge transaction aborted'));
+  });
+  // A synchronous objectStore/put/clear failure can precede the await below.
+  done.catch(() => {});
+  return done;
+}
 function candidateBatch(values, truncated = false) {
   const out = Array.isArray(values) ? values : [];
   Object.defineProperty(out, 'truncated', { value:!!truncated, enumerable:false, configurable:true });
@@ -193,7 +203,7 @@ export class KnowledgeDB {
   }
 
   async page(options = {}) {
-    const limit = Math.min(500, Math.max(1, Number(options.limit) || 100));
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
     const after = options.after || null;
     if (this.memory) {
       const ids = [...this.memory.keys()].sort(); const found = after == null ? 0 : ids.findIndex((id) => id > after); const start = found < 0 ? ids.length : found;
@@ -212,7 +222,9 @@ export class KnowledgeDB {
   async clear() {
     if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); return; }
     const db = await this.#dbOpen(); const tx = db.transaction(['functions','negative'],'readwrite');
-    await Promise.all([requestPromise(tx.objectStore('functions').clear()), requestPromise(tx.objectStore('negative').clear())]);
+    const done = transactionPromise(tx);
+    await Promise.all([done, ...['functions', 'negative'].map(async (name) =>
+      requestPromise(tx.objectStore(name).clear()))]);
   }
 
   #memoryCandidates(fp) {
@@ -240,7 +252,12 @@ export class KnowledgeDB {
     });
     return this._db;
   }
-  async #put(storeName,record) { const db=await this.#dbOpen(); await requestPromise(db.transaction(storeName,'readwrite').objectStore(storeName).put(record)); }
+  async #put(storeName,record) {
+    const db = await this.#dbOpen();
+    const tx = db.transaction(storeName, 'readwrite');
+    const done = transactionPromise(tx);
+    await Promise.all([done, requestPromise(tx.objectStore(storeName).put(record))]);
+  }
   async #candidateRecords(fp,limit) {
     const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions'); const out=new Map();
     let truncated=false;

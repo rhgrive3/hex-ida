@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget } from './elf-budget.js';
-import { executableELFRange } from './elf-mapping.js';
+import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -28,6 +28,9 @@ const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
+const SHT_RISCV_ATTRIBUTES = 0x70000003;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -55,7 +58,11 @@ export function parseELF(input, options = {}) {
   nameSections(r, rawSections, h);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
-    const attributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
+    const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
+    const attributes = namedAttributeSections.find((section) => section.type === SHT_RISCV_ATTRIBUTES) || null;
+    if (namedAttributeSections.some((section) => section.type !== SHT_RISCV_ATTRIBUTES)) {
+      image.warnings.push('RISC-V .riscv.attributes section name without SHT_RISCV_ATTRIBUTES is not authoritative');
+    }
     if (attributes) {
       const start = safeOffset(attributes.offset), size = safeOffset(attributes.size);
       if (start == null || size == null || size > 1024 * 1024 || start > r.length || size > r.length - start) {
@@ -79,10 +86,16 @@ export function parseELF(input, options = {}) {
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
   if (h.type !== ET_REL && image.entrypoint != null) {
-    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && !!image.segmentAt(0n)?.perms?.execute;
+    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64';
     if (image.entrypoint !== 0n || zeroResetVector) {
-      image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
-      if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+      const rejection = elfEntrypointRejection(image, image.entrypoint);
+      if (rejection == null) {
+        image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+        if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+      } else {
+        image.warnings.push(`Ignored ELF entrypoint 0x${image.entrypoint.toString(16)}: ${rejection}`);
+        if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
+      }
     } else {
       image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
     }
@@ -126,6 +139,7 @@ export function parseELF(input, options = {}) {
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
   });
+  validateSectionRiscvVariantCcTag(image, rawSections);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
@@ -135,6 +149,15 @@ export function parseELF(input, options = {}) {
   image.metadata.elfMetadata = metadataBudget.snapshot();
 
   return image.finalize();
+}
+
+function elfEntrypointRejection(image, address) {
+  const instructionBytes = image.arch === 'arm64' ? 4n : 1n;
+  if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
+  if (image.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
+  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  return null;
 }
 
 function alignUp(value, alignment) {
@@ -345,8 +368,9 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
     const ifunc=type===STT_GNU_IFUNC&&defined===true;
-    const riscvVariantCc=image.metadata.machine===EM_RISCV&&type===2&&(other&STO_RISCV_VARIANT_CC)!==0;
-    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
+    const riscvVariantCc=riscvVariantCcFlag&&type===2;
+    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     if(defined===false&&(bind===1||bind===2)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
@@ -357,6 +381,34 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }
+}
+
+
+function validateSectionRiscvVariantCcTag(image, sections) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  if (image?.metadata?.riscvVariantCcTagPresent === true) return;
+  const dynamicSymbolTables = new Set(
+    (sections || []).filter((section) => section.type === SHT_DYNSYM).map((section) => section.index),
+  );
+  if (!dynamicSymbolTables.size) return;
+  const symbolsByKey = new Map(
+    (image.symbols || [])
+      .filter((symbol) => dynamicSymbolTables.has(symbol.tableIndex))
+      .map((symbol) => [`${symbol.tableIndex}:${symbol.index}`, symbol]),
+  );
+  const missing = (image.relocations || []).some((relocation) =>
+    (relocation.source === 'REL' || relocation.source === 'RELA') &&
+    Number(relocation.type) === R_RISCV_JUMP_SLOT &&
+    dynamicSymbolTables.has(relocation.symbolTableIndex) &&
+    symbolsByKey.get(`${relocation.symbolTableIndex}:${relocation.symbolIndex}`)?.riscvVariantCcFlag === true,
+  );
+  if (!missing) return;
+  const message = 'section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC';
+  image.metadata.programDynamicPartial = true;
+  const diagnostics = image.metadata.programDynamicDiagnostics ||= [];
+  if (!diagnostics.includes(message)) diagnostics.push(message);
+  const warning = `ELF: ${message}`;
+  if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
 function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
@@ -382,26 +434,89 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
     const sym=byIndex.get(symIndex)||null;
-    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
+    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
     if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
 function parseDynamic(r, sec, sections, image, bits, budget) {
-  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;
-  const minEnt=BigInt(bits===64?16:8),rawEnt=sec.entsize||minEnt;
-  if(rawEnt<minEnt){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);return;}
-  const ent=safeOffset(rawEnt);if(ent==null||!ent){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);return;}
-  const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
-  const declaredBig=sec.size/rawEnt,fileCapacity=Math.floor((r.length-start)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
-  if(declaredBig>BigInt(fileCapacity))budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
-  for(let i=0;i<count;i++){
-    if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
-    const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
-    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=terminatedStringInTable(r,strStart,strSize,off,max);if(name==null&&off<strSize){budget.partial(`dynamic-section:${sec.index}:unterminated-string`,`ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`);continue;}if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
+  const minEnt = BigInt(bits === 64 ? 16 : 8);
+  const rawEnt = sec.entsize || minEnt;
+  if (rawEnt < minEnt) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);
+    return;
+  }
+  const ent = safeOffset(rawEnt);
+  if (ent == null || !ent) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);
+    return;
+  }
+
+  // Processor-specific tags are still authoritative evidence when a section
+  // has no usable string-table link. Decode the dynamic table before applying
+  // optional string lookups so section-backed DT_RISCV_VARIANT_CC cannot be
+  // lost behind an unrelated string-table validation failure.
+  const start = safeOffset(sec.offset);
+  if (start == null || start > r.length) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC ${sec.index} has an invalid file span`);
+    return;
+  }
+  const declaredBig = sec.size / rawEnt;
+  const fileCapacity = Math.floor((r.length - start) / ent);
+  const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
+  const count = Math.min(declared, fileCapacity);
+  if (declaredBig > BigInt(fileCapacity)) {
+    budget.partial(`dynamic-section:${sec.index}:truncated`, `ELF SHT_DYNAMIC exceeds its file-backed capacity`);
+  }
+
+  const str = sections[sec.link];
+  const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
+  const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
+  const stringTableValid = str?.type === SHT_STRTAB
+    && strStart != null
+    && strSize != null
+    && strStart <= r.length
+    && strSize <= r.length - strStart;
+  if (str?.type === SHT_STRTAB && !stringTableValid) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC/string table exceeds the file`);
+  }
+
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
+    const p = start + i * ent;
+    const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
+    const val = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
+
+    if (tag === DT_RISCV_VARIANT_CC && Number(image?.metadata?.machine) === EM_RISCV) {
+      image.metadata.riscvVariantCcTagPresent = true;
+    }
+    if (tag === 0n) break;
+
+    if (stringTableValid && (tag === 1n || tag === 14n) && val < BigInt(strSize)) {
+      const off = Number(val);
+      const max = Math.min(
+        strSize - off,
+        1 << 20,
+        Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
+      );
+      const name = terminatedStringInTable(r, strStart, strSize, off, max);
+      if (name == null && off < strSize) {
+        budget.partial(
+          `dynamic-section:${sec.index}:unterminated-string`,
+          `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+        );
+        continue;
+      }
+      if (name && !budget.take({
+        inputBytes: Math.min(max, name.length + 1),
+        stringBytes: name.length * 2,
+        estimatedHeapBytes: name.length * 2 + 32,
+      }, 'SHT_DYNAMIC-string')) break;
+      if (tag === 1n && name) image.libraries.push(name);
+      else if (tag === 14n && name) image.metadata.soname = name;
+    }
   }
 }
-
 function findImageBase(image) {
   const loads = image.segments.filter((s) => s.address != null);
   if (!loads.length) return 0n;

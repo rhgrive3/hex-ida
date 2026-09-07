@@ -113,6 +113,9 @@ function accessAlignment(mnemonic, widthBits) {
   if (ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic)) return Math.max(1, widthBits / 8);
   return undefined;
 }
+function faultAlignment(widthBits) {
+  return Math.max(1, widthBits / 8);
+}
 function accessFor({ ctx, addressExpr, widthBits, atomic = null, ordering = null, alignment = null, volatility = null }) {
   const input = { space:'memory', addressExpr, widthBits, endian:ctx.dataEndianness };
   if (alignment) input.alignment = alignment;
@@ -126,14 +129,16 @@ function isTagChecked(addressing) {
   return addressing?.base?.kind !== 'sp' || addressing?.mode !== 'offset';
 }
 function possibleFaults(direction, { alignment = null, addressExpr = null, accessIndex = 0, tagChecked = false } = {}) {
+  const alignmentPossible = alignment && alignment > 1;
   const causes = ['address-size','translation','access-flag','permission','external'];
+  if (alignmentPossible) causes.push('alignment');
   if (tagChecked) causes.push('tag-check');
   const faults = [{
     kind:'data-abort',
     condition:{ kind:'memory-access-fault', access:direction, accessIndex },
     detail:{ causes, tagChecked, ...(addressExpr ? { addressExpr } : {}) },
   }];
-  if (alignment && alignment > 1) {
+  if (alignmentPossible) {
     faults.push({
       kind:'alignment-fault',
       condition:{ kind:'misaligned', alignment, accessIndex },
@@ -412,7 +417,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
   const operations = [...addressing.readOperations];
   const faults = [
     ...stackPointerAlignmentFault(addressing, 0),
-    ...possibleFaults(isLoad?'read':'write', { alignment, addressExpr:addressing.addressExpr, tagChecked:isTagChecked(addressing) }),
+    ...possibleFaults(isLoad?'read':'write', { alignment:faultAlignment(widthBits), addressExpr:addressing.addressExpr, tagChecked:isTagChecked(addressing) }),
   ];
   const accessMetadata = {
     architecture:'arm64', mnemonic, signed, addressing:addressingMetadata, accessIndex:0,
@@ -479,7 +484,7 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
   for (let i = 0; i < 2; i++) {
     const addressExpr = arm64AddressOffset(addressing.addressExpr, BigInt(i * strideBytes));
     const access = accessFor({ ctx, addressExpr, widthBits });
-    faults.push(...possibleFaults(isLoad?'read':'write', { addressExpr, accessIndex:i, tagChecked:isTagChecked(addressing) }));
+    faults.push(...possibleFaults(isLoad?'read':'write', { alignment:faultAlignment(widthBits), addressExpr, accessIndex:i, tagChecked:isTagChecked(addressing) }));
     const metadata = {
       architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes,
       accessOrder:i, signed, addressing:addressing.metadata, ...(nonTemporal ? { nonTemporal:true } : {}),
@@ -535,9 +540,11 @@ function literalLoad(decoded, context, mnemonic) {
     const write = loadedValueToRegister(reg, raw, widthBits, { signed, idPrefix:'load.literal' });
     operations.push(...write.operations);
   } catch (error) { return partial(decoded, context, error.message || 'unsupported literal load destination'); }
+  const naturalAlignment = faultAlignment(widthBits);
+  const runtimeAlignment = target % BigInt(naturalAlignment) === 0n ? null : naturalAlignment;
   return bundle(decoded, context, {
     operations,
-    possibleFaults:possibleFaults('read', { addressExpr, tagChecked:false }),
+    possibleFaults:possibleFaults('read', { alignment:runtimeAlignment, addressExpr, tagChecked:false }),
     metadata:{ family:'arm64-memory', mnemonic, transfer:'literal', widthBits, signed, target:target.toString() },
   });
 }
