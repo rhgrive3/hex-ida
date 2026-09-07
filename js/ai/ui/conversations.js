@@ -18,6 +18,7 @@ import { normalizeResponse } from '../render/normalize.js';
 export const MAX_CONVERSATIONS = 20;
 export const MAX_PERSISTED_TURNS = 40;
 export const MAX_PERSISTED_TEXT = 4000;
+export const MAX_PERSISTED_ERROR = 400;
 export const MAX_TITLE = 28;
 export const LEGACY_STORAGE_KEY = 'hex.ai.conversations.v1';
 export const STORAGE_KEY = 'hex.ai.conversations.v2';
@@ -73,11 +74,25 @@ export function conversationTitle(conversation, ja = true) {
 
 /* ── persistence ────────────────────────────────────────────── */
 
+/** Keep the UTF-16 storage cap without cutting a supplementary code point. */
+function persistedErrorDetail(value) {
+  const text = String(value);
+  let end = Math.min(text.length, MAX_PERSISTED_ERROR);
+  if (end > 0 && end < text.length) {
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  return text.slice(0, end);
+}
+
 function serializeTurn(turn) {
   const base = { role: turn.role, mode: turn.mode, style: turn.style, scope: turn.scope, at: turn.at || Date.now() };
   if (turn.role === 'user') return { ...base, text: String(turn.text || '').slice(0, MAX_PERSISTED_TEXT) };
   const answer = turn.response && turn.response.answerText ? turn.response.answerText : turn.text;
-  return { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
+  const record = { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
+  if (record.status === 'error' && turn.error) record.error = persistedErrorDetail(turn.error);
+  return record;
 }
 
 function reviveTurn(raw, index) {
@@ -87,9 +102,11 @@ function reviveTurn(raw, index) {
   const text = String(raw.text || '');
   const base = { id: 'r' + index + '-' + Math.random().toString(36).slice(2, 7), mode, style, scope, at: raw.at || Date.now() };
   if (raw.role === 'user') return { ...base, role: 'user', text };
+  const status = raw.status === 'running' ? 'cancelled' : (raw.status || 'done');
+  const error = status === 'error' && raw.error ? persistedErrorDetail(raw.error) : null;
   return {
-    ...base, role: 'assistant', status: raw.status === 'running' ? 'cancelled' : (raw.status || 'done'),
-    effectiveScope: scope, activity: [], error: null, text: '',
+    ...base, role: 'assistant', status,
+    effectiveScope: scope, activity: [], error, text: '',
     response: text ? normalizeResponse({ answer: text }, { mode, style }) : null,
   };
 }
@@ -109,7 +126,6 @@ export function reviveConversation(raw, namespace) {
   const turns = Array.isArray(raw && raw.turns) ? raw.turns.map(reviveTurn) : [];
   return createConversation({ ...raw, turns, namespace });
 }
-
 /**
  * Bounded localStorage for chat history.
  *
@@ -122,6 +138,7 @@ const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
+  const storageKey = String(key);
   const backing = () => {
     if (storage) return storage;
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -131,13 +148,14 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const bucketKey = (space) => `${key}.${space}`;
+  const bucketKey = (space) => `${storageKey}.${space}`;
+  const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
 
   const readIndex = () => {
     const store = backing();
     if (!store) return nullIndex();
     try {
-      const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
+      const raw = store.getItem(indexKey());
       const parsed = raw ? JSON.parse(raw) : null;
       return parsed && typeof parsed === 'object' ? toNullIndex(parsed) : nullIndex();
     } catch { return nullIndex(); }
@@ -147,7 +165,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     const store = backing();
     if (!store) return false;
     try {
-      store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
+      store.setItem(indexKey(), JSON.stringify(index));
       return true;
     } catch { return false; }
   };
@@ -263,7 +281,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
         for (const space of Object.keys(index)) {
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
-        store.removeItem(INDEX_KEY);
+        store.removeItem(indexKey());
         store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },

@@ -3,7 +3,9 @@ import { liftX86MachineEffects } from '../../../../js/targets/architecture/x86_6
 let code = 1000;
 let sequence = 0;
 
-export function reg(name, access = 'unknown') { return { type:'register', register:name, access }; }
+// Synthetic operands model decoder records, so include a stable supplementary
+// register code when a name is outside the core physical-state manifest.
+export function reg(name, access = 'unknown') { return { type:'register', register:name, registerCode:1, access }; }
 export function imm(value, widthBits = 8) { return { type:'immediate', value:BigInt(value), widthBits, encodedWidthBits:widthBits, access:'read' }; }
 export function mem(widthBits, { base='rax', index=null, scale=1, displacement=0n, segment=null, addressSizeBits=64, access='read' } = {}) {
   return { type:'memory', widthBits, access, memory:{ base, index, scale, displacement:BigInt(displacement), segment, addressSizeBits } };
