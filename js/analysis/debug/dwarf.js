@@ -88,6 +88,15 @@ const DW_FORM = Object.freeze({
   addrx1: 0x29, addrx2: 0x2a, addrx3: 0x2b, addrx4: 0x2c,
 });
 
+const DW_UT = Object.freeze({
+  compile: 0x01,
+  type: 0x02,
+  partial: 0x03,
+  skeleton: 0x04,
+  split_compile: 0x05,
+  split_type: 0x06,
+});
+
 /** DW_ATE base-type encodings, mapped to the machine layer's classes. */
 const ENCODING_CLASS = Object.freeze({
   0x02: 'boolean', 0x04: 'float', 0x05: 'integer', 0x06: 'integer',
@@ -189,6 +198,16 @@ function parseAbbrev(bytes, tableOffset) {
   return table;
 }
 
+/** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
+function readUnsignedWidth(cursor, width) {
+  if (!Number.isInteger(width) || width < 1 || width > 8) throw new RangeError('dwarf-address-size-unsupported');
+  let value = 0n;
+  for (let index = 0; index < width; index += 1) {
+    value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  }
+  return value;
+}
+
 /**
  * Reads one attribute value.
  *
@@ -198,7 +217,16 @@ function parseAbbrev(bytes, tableOffset) {
  */
 function readForm(cursor, form, unit, sections, implicitConst) {
   switch (form) {
-    case DW_FORM.addr: return { value: unit.addressSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
+    case DW_FORM.addr: {
+      // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
+      // spec does not restrict to 4/8: reading any other width desyncs every
+      // following attribute (#5305).
+      const width = unit.addressSize;
+      if (!Number.isSafeInteger(width) || width < 1 || width > 8) return { value: null, unsupported: true, fatal: true };
+      let value = 0n;
+      for (let index = 0; index < width; index++) value |= BigInt(cursor.u8()) << BigInt(8 * index);
+      return { value };
+    }
     case DW_FORM.data1: case DW_FORM.ref1: case DW_FORM.strx1: case DW_FORM.addrx1: case DW_FORM.flag:
       return { value: BigInt(cursor.u8()) };
     case DW_FORM.data2: case DW_FORM.ref2: case DW_FORM.strx2: case DW_FORM.addrx2:
@@ -235,7 +263,11 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
-    case DW_FORM.sec_offset: case DW_FORM.ref_addr: case DW_FORM.strp_sup:
+    case DW_FORM.ref_addr:
+      return { value: unit.version === 2
+        ? readUnsignedWidth(cursor, unit.addressSize)
+        : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
+    case DW_FORM.sec_offset: case DW_FORM.strp_sup:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
     case DW_FORM.exprloc: case DW_FORM.block: {
       const length = Number(cursor.uleb());
@@ -282,6 +314,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
   const diagnostics = [];
   const dies = new Map();
   if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false };
+  // A missing or malformed record budget must fall back to the default, never
+  // disable the cap: comparisons against undefined/NaN are always false (#5352).
+  const maxRecords = Number.isSafeInteger(budget?.maxRecords) && budget.maxRecords > 0
+    ? budget.maxRecords
+    : DEBUG_DEFAULT_BUDGET.maxRecords;
 
   const units = [];
   const cursor = new Cursor(info, 0);
@@ -328,6 +365,26 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       continue;
     }
 
+    // DWARF5 extends the common unit header according to unit_type. These bytes
+    // are metadata, not DIE abbreviation codes (#3810). Reads stay unit-local so
+    // truncated type signatures/type offsets/dwo_ids fail closed.
+    if (version === 5) {
+      try {
+        if (unitType === DW_UT.type || unitType === DW_UT.split_type) {
+          cursor.u64();
+          if (offsetSize === 8) cursor.u64(); else cursor.u32();
+        } else if (unitType === DW_UT.skeleton || unitType === DW_UT.split_compile) {
+          cursor.u64();
+        }
+      } catch (error) {
+        diagnostics.push(`truncated DWARF5 unit header at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
+    }
+
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
     const abbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset);
     if (abbrev.size === 0) {
@@ -341,7 +398,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     const stack = [];
     let unitComplete = true;
     while (cursor.offset < unitEnd) {
-      if (recordCount >= budget.maxRecords) {
+      if (recordCount >= maxRecords) {
         diagnostics.push('record budget exhausted');
         complete = false;
         unitComplete = false;
@@ -547,10 +604,19 @@ export function readBuildId(noteSection) {
     const descSize = view.getUint32(offset + 4, true);
     const type = view.getUint32(offset + 8, true);
     const nameStart = offset + 12;
-    const descStart = nameStart + ((nameSize + 3) & ~3);
+    if (nameSize > noteSection.length - nameStart) return null;
+    const paddedNameSize = Math.ceil(nameSize / 4) * 4;
+    if (paddedNameSize > noteSection.length - nameStart) return null;
+    const descStart = nameStart + paddedNameSize;
+    if (descSize > noteSection.length - descStart) return null;
     const descEnd = descStart + descSize;
-    if (descEnd > noteSection.length) return null;
-    const name = cstring(noteSection, nameStart);
+    // The owner name lives inside the declared nameSize: alignment padding
+    // past it must not serve as the terminator (#5301).
+    let nameEnd = nameStart;
+    while (nameEnd < nameStart + nameSize && nameEnd < noteSection.length && noteSection[nameEnd] !== 0) nameEnd += 1;
+    const name = nameEnd < nameStart + nameSize && nameEnd < noteSection.length
+      ? new TextDecoder('utf8').decode(noteSection.subarray(nameStart, nameEnd))
+      : null;
     // NT_GNU_BUILD_ID
     if (type === 3 && name === 'GNU') {
       return [...noteSection.subarray(descStart, descEnd)].map((byte) => byte.toString(16).padStart(2, '0')).join('');

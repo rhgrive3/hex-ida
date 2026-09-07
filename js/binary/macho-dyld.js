@@ -110,16 +110,16 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
     let ordinal, weak, nameOffset, addend = 0n;
     if (importsFormat === 1 || importsFormat === 2) {
       const raw = r.u32(p);
-      ordinal = signExtend(raw & 0xff, 8);
+      ordinal = decodeChainedImportOrdinal(raw & 0xff, 8);
       weak = !!((raw >>> 8) & 1);
       nameOffset = raw >>> 9;
       if (importsFormat === 2) addend = BigInt(r.i32(p + 4));
     } else {
       const raw = r.u32(p);
-      ordinal = signExtend(raw & 0xffff, 16);
+      ordinal = decodeChainedImportOrdinal(raw & 0xffff, 16);
       weak = !!((raw >>> 16) & 1);
       nameOffset = r.u32(p + 4);
-      addend = r.i64(p + 8);
+      addend = r.u64(p + 8);
     }
     const strp = stringsBase + nameOffset;
     if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
@@ -340,8 +340,7 @@ function decodeChainedPointer(raw, format, imageBase = null) {
     const next = Number((raw >> 26n) & 0x1fn);
     if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null };
     const ordinal = Number(raw & 0xfffffn);
-    let addend = Number((raw >> 20n) & 0x3fn);
-    if (addend & 0x20) addend -= 0x40;
+    const addend = Number((raw >> 20n) & 0x3fn);
     return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
   }
   if (format === 2 || format === 6) {
@@ -355,8 +354,7 @@ function decodeChainedPointer(raw, format, imageBase = null) {
       return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: resolved };
     }
     const ordinal = Number(raw & 0xffffffn);
-    let addend = Number((raw >> 24n) & 0xffn);
-    if (addend & 0x80) addend -= 0x100;
+    const addend = Number((raw >> 24n) & 0xffn);
     return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
   }
   if ([1, 7, 9, 10, 12].includes(format)) {
@@ -411,6 +409,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
     image.warnings.push(`${source}: ${message}`);
   };
+  const validDylibOrdinal = () => {
+    if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (libOrdinal > 0 && libOrdinal > libraryCount) { fail(`dylib ordinal ${libOrdinal} exceeds dependency count ${libraryCount}`); return false; }
+    return true;
+  };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
     const seg = segments[segIndex];
@@ -418,6 +422,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (!validDylibOrdinal()) return;
     if (threadedTable) {
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
@@ -428,7 +433,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const address = seg.address + segOffset;
     const imp = snapshotImport();
     imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
-    if(!budget.take({objects:2,operations:1,estimatedHeapBytes:320},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    // The retained import name is resident metadata: account its string bytes
+    // alongside the fixed object cost (issue #6303).
+    if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
     image.imports.push(imp); status.decodedBinds++;
   };
   const applyThreaded = () => {
@@ -467,10 +474,27 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
       break;
-    } else if (op === 0x10) libOrdinal = imm;
-    else if (op === 0x20) { const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); }
-    else if (op === 0x30) libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
-    else if (op === 0x40) { const x = rawCString(r, p, end); symbol = x.text; symbolFlags = imm; p = x.next; }
+    } else if (op === 0x10) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm;
+    }
+    else if (op === 0x20) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value);
+    }
+    else if (op === 0x30) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+    }
+    else if (op === 0x40) {
+      const x = rawCString(r, p, end);
+      // The symbol C-string is a variable-length cost: charge its raw bytes to
+      // inputBytes and the decoded string to the shared string budget before
+      // retaining it, otherwise a crafted stream routes unbounded metadata
+      // past the declared stringBytes ceiling (issue #6303).
+      if (!budget.take({ inputBytes:x.bytes, stringBytes:x.text.length*2, estimatedHeapBytes:x.text.length*2+32 }, 'classic-bind-symbol')) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
+      symbol = x.text; symbolFlags = imm; p = x.next;
+    }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
     else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
@@ -532,15 +556,23 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
         if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported: importedX.text || null, source: 'exports-trie' });
+          const imported = importedX.text || null;
+          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
         } else {
-          const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next; const exportKind = flags & 0x03;
-          const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
-          const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
-          const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-          if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-          if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-          if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          const exportKind = flags & 0x03;
+          if (exportKind === 3) {
+            markPartial(`unsupported export kind ${exportKind}`);
+          } else {
+            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
+            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
+            if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          }
         }
       }
       p = terminalEnd; if (p >= end) return;
@@ -570,11 +602,20 @@ function rawCString(r, p, end) {
   return { text, next: p + 1, bytes: p + 1 - start };
 }
 
+function decodeChainedImportOrdinal(raw, bits) {
+  if (bits === 8) {
+    const v = raw & 0xff;
+    return v >= 0xf1 ? v - 0x100 : v;
+  }
+  const v = raw & 0xffff;
+  return v >= 0xfff1 ? v - 0x10000 : v;
+}
+
 function dylibForOrdinal(image, ordinal) {
   if (ordinal === 0) return null;
   if (ordinal === -1 || ordinal === 0xff) return '<main-executable>';
   if (ordinal === -2 || ordinal === 0xfe) return '<flat-lookup>';
-  if (ordinal === -3 || ordinal === 0xfd) return '<weak-lookup>';
+  if (ordinal === -3) return '<weak-lookup>';
   return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
 }
 function signExtend(v, bits) { const sign = 1 << (bits - 1); const mask = (1 << bits) - 1; v &= mask; return (v & sign) ? v - (1 << bits) : v; }

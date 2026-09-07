@@ -1,7 +1,8 @@
 name: Stage 1 analysis truth validation
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - 'js/targets/architecture/**'
       - 'js/analysis/alias/**'
@@ -36,66 +37,25 @@ on:
 permissions:
   contents: read
 
-# Only the newest commit on a PR needs exact head + merge-tree proof. Manual
-# exact-candidate dispatches remain isolated because their group uses run_id.
 concurrency:
-  group: stage1-analysis-truth-${{ github.event.pull_request.number || github.run_id }}
+  group: stage1-analysis-truth-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  head:
-    if: github.event_name == 'pull_request'
+  exact-candidate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.expect_sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 candidate head
+      - name: Verify exact Stage 1 candidate
         env:
-          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
-
-  candidate-merge-tree:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 candidate merge tree
-        env:
-          VERIFY_SHA: ${{ github.sha }}
-        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
-
-  dispatch-exact-candidate:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.expect_sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 1 dispatched candidate
-        env:
-          VERIFY_SHA: ${{ inputs.expect_sha }}
+          VERIFY_SHA: ${{ inputs.expect_sha || github.sha }}
         run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"

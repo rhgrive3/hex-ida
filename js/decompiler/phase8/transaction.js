@@ -129,6 +129,7 @@ function createStagingArea(descriptor) {
         // A pass may only stage what it declared it produces. An undeclared
         // write is an undeclared dependency for everything downstream.
         if (!descriptor.produces.includes(key)) fail(`phase8-pass-undeclared-production:${descriptor.id}:${key}`);
+        if (value == null) fail(`phase8-pass-produced-analysis-value-required:${key}`);
         staged.set(key, value);
       },
       staged: () => Object.freeze([...staged.keys()].sort()),

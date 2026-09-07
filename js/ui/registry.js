@@ -1,6 +1,6 @@
 /* Canonical product information architecture. Keep this file pure/testable. */
 
-export const ROUTES = Object.freeze([
+const ROUTE_LIST = [
   { id: 'investigate', pattern: '/investigate', title: '調べる', kind: 'screen', primary: true },
   { id: 'code', pattern: '/code/:address?', title: 'コード', kind: 'screen', primary: true },
   { id: 'explorer', pattern: '/explorer/:scope?', title: '索引', kind: 'screen', primary: true },
@@ -12,7 +12,13 @@ export const ROUTES = Object.freeze([
   { id: 'help', pattern: '/help', title: 'ヘルプ', kind: 'screen' },
   { id: 'learn', pattern: '/learn', title: '学ぶ', kind: 'screen' },
   { id: 'advanced', pattern: '/advanced', title: '高度な機能', kind: 'screen' },
-]);
+];
+
+// Only the outer array was frozen, so any caller could rewrite a published
+// entry process-wide. Freeze every entry too: matchers must live in router
+// state, never on these canonical definitions.
+for (const route of ROUTE_LIST) Object.freeze(route);
+export const ROUTES = Object.freeze(ROUTE_LIST);
 
 export const PRIMARY_NAV = Object.freeze([
   { route: '/investigate', routeId: 'investigate', label: '調べる', icon: '⌕' },

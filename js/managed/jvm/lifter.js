@@ -1,8 +1,45 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
+
+function collectJvmInstructionStarts(bytecode) {
+  const starts = new Set();
+  let offset = 0;
+  while (offset < bytecode.length) {
+    const boundary = decodeJvmInstructionBoundary(bytecode, offset);
+    if (!boundary.complete || boundary.end <= offset) break;
+    starts.add(offset);
+    offset = boundary.end;
+  }
+  return starts;
+}
+
+function appendJvmBranchEffect(
+  controlEffects,
+  unknownEffects,
+  instructionStarts,
+  bytecodeLength,
+  kind,
+  targetOffset,
+) {
+  if (
+    !Number.isSafeInteger(targetOffset) ||
+    targetOffset < 0 ||
+    targetOffset >= bytecodeLength ||
+    !instructionStarts.has(targetOffset)
+  ) {
+    unknownEffects.push({
+      category: 'other',
+      reason: 'invalid-jvm-branch-target',
+    });
+    return false;
+  }
+  controlEffects.push({ kind, targetOffset });
+  return true;
+}
 
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
@@ -39,6 +76,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const codeAttr = method.code;
   const bytecode = codeAttr.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  const instructionStarts = collectJvmInstructionStarts(bytecode);
 
   let pc = 0;
   let opSeq = 0;
@@ -246,7 +284,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           mnemonic = names[opcode];
           consumedValues.push({ id: 'val', bits: 32 });
           currentStackHeight--;
-          controlEffects.push({ kind: 'conditional-branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'conditional-branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -262,7 +307,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           mnemonic = names[opcode];
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
           currentStackHeight -= 2;
-          controlEffects.push({ kind: 'conditional-branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'conditional-branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -271,7 +323,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const offset = view.getInt16(pc, false);
           pc += 2;
           mnemonic = 'goto';
-          controlEffects.push({ kind: 'branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -361,9 +420,18 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
         break;
 
       default:
-        mnemonic = `jvm_op_0x${opcode.toString(16)}`;
-        completeness = 'partial';
-        unknownEffects.push({ category: 'other', reason: `unsupported-jvm-opcode-0x${opcode.toString(16)}` });
+        {
+          const boundary = decodeJvmInstructionBoundary(bytecode, opOffset);
+          pc = Math.max(pc, boundary.end);
+          mnemonic = `jvm_op_0x${opcode.toString(16)}`;
+          completeness = 'partial';
+          unknownEffects.push({
+            category: 'other',
+            reason: boundary.complete
+              ? `unsupported-jvm-opcode-0x${opcode.toString(16)}`
+              : `unsupported-jvm-opcode-0x${opcode.toString(16)}-malformed-boundary`,
+          });
+        }
         break;
     }
 

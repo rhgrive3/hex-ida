@@ -58,7 +58,8 @@ export class DebugSession {
     if (this.adapter.capabilities.modules) {
       try {
         const next=await this.adapter.getModules();
-        if (Array.isArray(next)) this.modules=next;
+        if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getModules must return an array');
+        this.modules=next;
         this.refreshErrors.modules=null;
       } catch (error) {
         this.refreshErrors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
@@ -67,7 +68,8 @@ export class DebugSession {
     if (this.adapter.capabilities.threads) {
       try {
         const next=await this.adapter.getThreads();
-        if (Array.isArray(next)) this.threads=next;
+        if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getThreads must return an array');
+        this.threads=next;
         this.refreshErrors.threads=null;
       } catch (error) {
         this.refreshErrors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
@@ -120,7 +122,8 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>this._sessionClosed(closed)});
+    const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }

@@ -155,6 +155,12 @@ function undefinedFlag(ctx, flag, operation, widthBits, metadata = {}) {
   const [value] = ctx.intrinsic(`x86.flag.undefined.${flag.toLowerCase()}`, [], [1], {
     determinism:'nondeterministic',
     symbolicDetail:'summary-only',
+    undefinedResult:{
+      widthBits:1,
+      mask:'0x1',
+      class:'fully',
+      reason:`x86-${operation}-${String(flag).toLowerCase()}-architecturally-undefined`,
+    },
     metadata:{
       flag,
       operation,

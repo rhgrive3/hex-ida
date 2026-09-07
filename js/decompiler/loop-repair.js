@@ -74,8 +74,12 @@ function discoverPostTestInduction(result, loop, ordinal) {
     let init = null, phi = null;
     if (prior.def?.op === OP.PHI) {
       phi = prior.def;
-      const outside = (phi.incoming || []).find((x) => !loop.nodes.has(x.from));
-      init = outside?.value || null;
+      const incoming = Array.isArray(phi.incoming) ? phi.incoming : [];
+      const outside = incoming.filter((x) => !loop.nodes.has(x.from));
+      const inside = incoming.filter((x) => loop.nodes.has(x.from));
+      if (outside.length !== 1 || inside.length !== 1) continue;
+      if (!same(inside[0]?.value, updated)) continue;
+      init = outside[0]?.value || null;
     }
     if (!init && prior.const != null) init = prior;
     if (!init) continue;

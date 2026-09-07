@@ -25,12 +25,10 @@ function optionalIdentity(value, name) {
 
 function safeSequence(value, name = 'sequence') {
   if (value == null) return null;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
-  return n;
+  return value;
 }
 
 function positiveSize(value, name = 'runtimeSize') {
@@ -57,7 +55,7 @@ function ownedClone(value) {
 function freezeEvidenceIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-evidence-ids', 'evidence ids must contain only non-empty strings');
   }
   return Object.freeze([...new Set(value)].sort());
@@ -66,7 +64,7 @@ function freezeEvidenceIds(value) {
 function freezeEntityIds(value) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must be an array');
-  if (value.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (value.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new DebugAdapterError('invalid-target-entity-ids', 'target entity ids must contain only non-empty strings');
   }
   return Object.freeze([...value]);
@@ -92,8 +90,8 @@ export function createRuntimeTargetBinding(input = {}) {
     processKey: optionalText(input.processKey),
     platform: optionalText(input.platform),
     architecture: optionalText(input.architecture),
-    primaryBinaryId: optionalText(input.primaryBinaryId ?? input.binaryId),
-    primarySliceId: optionalText(input.primarySliceId ?? input.sliceId),
+    primaryBinaryId: optionalIdentity(input.primaryBinaryId ?? input.binaryId, 'primaryBinaryId'),
+    primarySliceId: optionalIdentity(input.primarySliceId ?? input.sliceId, 'primarySliceId'),
     startedAt: input.startedAt == null ? null : String(input.startedAt),
     bindingEvidenceIds: freezeEvidenceIds(input.bindingEvidenceIds),
   });
@@ -122,7 +120,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
     pathHint: optionalText(input.pathHint ?? input.path ?? input.name),
     binaryId,
     sliceId,
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     buildIdentity: input.buildIdentity == null ? null : ownedClone(input.buildIdentity),
     loadedSequence: safeSequence(input.loadedSequence, 'loadedSequence'),
     unloadedSequence: safeSequence(input.unloadedSequence, 'unloadedSequence'),
@@ -158,8 +156,12 @@ export class RuntimeModuleBindingTable {
     if (active && active.unloadedSequence == null) {
       throw new DebugAdapterError('module-binding-already-loaded', `runtime module binding is already loaded: ${bindingKey}`, { bindingKey, generation: active.generation });
     }
+    const bindingInput = { ...input, bindingKey };
+    if (bindingInput.unloadedSequence != null) {
+      throw new DebugAdapterError('invalid-module-sequence', 'runtime module load cannot include unloadedSequence', { bindingKey });
+    }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    const binding = normalizeBinding({ ...input, bindingKey }, this.runtimeSessionId, generation);
+    const binding = normalizeBinding(bindingInput, this.runtimeSessionId, generation);
     this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);
@@ -232,13 +234,19 @@ export class RuntimeModuleBindingTable {
         targetEntityIds: match.targetEntityIds,
         state: matchedStaticAddress == null ? 'unresolved' : 'resolved',
         method: 'cross-version-match',
-        evidenceIds: [...binding.identityEvidenceIds, ...(match.evidenceIds || [])],
+        evidenceIds: [...binding.identityEvidenceIds, ...freezeEvidenceIds(match.evidenceIds)],
         functionMatchId: match.id ?? match.functionMatchId ?? null,
       });
     }
 
-    if (targetSliceId && binding.sliceId && targetSliceId !== binding.sliceId) {
-      return createRuntimeAddressResolution({ ...binding, runtimeAddress: address, state: 'mismatch', method: 'slice-id-mismatch', evidenceIds: binding.identityEvidenceIds });
+    if (targetSliceId && binding.sliceId !== targetSliceId) {
+      return createRuntimeAddressResolution({
+        ...binding,
+        runtimeAddress: address,
+        state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+        method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
+        evidenceIds: binding.identityEvidenceIds,
+      });
     }
 
     if (!binding.binaryId || binding.staticBase == null || binding.identityState === 'unresolved') {
@@ -271,7 +279,7 @@ export function createRuntimeAddressResolution(input = {}) {
     runtimeAddress,
     binaryId: optionalIdentity(input.binaryId, 'binaryId'),
     sliceId: optionalIdentity(input.sliceId, 'sliceId'),
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     staticAddress,
     targetEntityIds: freezeEntityIds(input.targetEntityIds),
     state,

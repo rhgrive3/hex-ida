@@ -1,15 +1,33 @@
 name: Stage 2 non-physical closure proof
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
-      - 'js/**'
-      - 'tests/**'
-      - 'tools/**'
-      - 'userscript/**'
+      - 'js/targets/architecture/**'
+      - 'js/runtime/**'
+      - 'js/managed/**'
+      - 'js/rebuild/**'
+      - 'js/phase12/**'
+      - 'js/platform/stage2-*'
+      - 'js/platform/physical-ipad-evidence.js'
+      - 'js/knowledge/**'
+      - 'js/signature/**'
+      - 'js/pattern/**'
+      - 'js/collaboration/**'
+      - 'tests/machine-effects/**'
+      - 'tests/stage2/**'
+      - 'tests/phase12/**'
+      - 'tools/validation/machine-effects/**'
+      - 'tools/validation/stage2/**'
+      - 'tools/validation/phase6/**'
+      - 'tools/validation/phase10/**'
+      - 'tools/validation/phase11/**'
+      - 'tools/validation/phase12/**'
+      - 'tools/validation/rebuild-independent-oracle.mjs'
+      - '.github/workflows/stage2-nonphysical-closure.yml'
       - 'package.json'
       - 'package-lock.json'
-      - '.github/workflows/stage2-nonphysical-closure.yml'
   workflow_dispatch:
     inputs:
       expect_sha:
@@ -21,7 +39,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stage2-nonphysical-${{ github.event.pull_request.number || github.run_id }}
+  group: stage2-nonphysical-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,7 +50,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          ref: ${{ inputs.expect_sha || github.sha }}
           fetch-depth: 0
 
       - name: Detect Stage 2 proof impact
@@ -41,7 +59,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          HEAD_SHA: ${{ inputs.expect_sha || github.sha }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
@@ -73,6 +91,7 @@ jobs:
               tools/validation/phase11/*|\
               tools/validation/phase12/*|\
               tools/validation/rebuild-independent-oracle.mjs|\
+              .github/workflows/stage2-nonphysical-closure.yml|\
               package.json|package-lock.json)
                 required=true
                 break
@@ -107,7 +126,7 @@ jobs:
         id: identity
         shell: bash
         env:
-          EXPECT_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+          EXPECT_SHA: ${{ inputs.expect_sha || github.sha }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
@@ -173,13 +192,11 @@ jobs:
               ;;
           esac
 
-      - name: Run canonical A2 machine-effects proof with visible diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p reports/stage2
-          node tests/machine-effects/run.mjs 2>&1 | tee reports/stage2/machine-effects.log
-
+      # The profile evidence collector is the canonical A2 executor. It runs
+      # `tests/machine-effects/run.mjs` as `a2-machine-effects` and records the
+      # command, status, stdout, stderr, and duration in exact profile evidence.
+      # Running the same command immediately before the collector duplicated the
+      # entire A2 denominator and, on non-impact PRs, bypassed the impact guard.
       - name: Collect exact non-physical Stage 2 profile evidence
         if: steps.impact.outputs.required == 'true'
         id: profile

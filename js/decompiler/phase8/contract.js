@@ -222,7 +222,11 @@ export function createPassResult(input = {}) {
   for (const key of produced) {
     if (!descriptor.produces.includes(key)) fail(`phase8-pass-result-undeclared-production:${key}`);
   }
-  const changed = status === 'changed' || status === 'degraded' ? input.changed !== false : input.changed === true;
+  if ((status === 'unchanged' || status === 'unsupported') && input.changed === true) {
+    fail(`phase8-pass-result-${status}-changed`);
+  }
+  if (status === 'changed' && input.changed === false) fail('phase8-pass-result-changed-not-changed');
+  const changed = status === 'changed' ? true : status === 'degraded' ? input.changed !== false : false;
   // A change has to be accounted for by something: a program transformation or a
   // produced analysis. These are different things. An analysis pass that proved
   // nothing still changed the state — "SCCP ran and found nothing" is not the
@@ -231,7 +235,9 @@ export function createPassResult(input = {}) {
   if (changed && transforms.length === 0 && produced.length === 0) fail('phase8-pass-result-changed-without-transform-or-production');
   if (!changed && transforms.length > 0) fail('phase8-pass-result-transform-without-change');
   if (!changed && produced.length > 0) fail('phase8-pass-result-production-without-change');
-  if (status === 'unchanged' && invalidated.length > 0) fail('phase8-pass-result-unchanged-invalidates');
+  if (!changed && invalidated.length > 0) {
+    fail(`phase8-pass-result-${status}-invalidates`);
+  }
   if (status === 'unsupported' && completeness === 'complete') fail('phase8-pass-result-unsupported-claims-complete');
   return Object.freeze({
     contractVersion: PHASE8_CONTRACT_VERSION,

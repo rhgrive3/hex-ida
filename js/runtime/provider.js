@@ -54,8 +54,9 @@ export function createRuntimeProviderDescriptor(input = {}) {
 export class RuntimeProviderSession {
   constructor({ provider, request = {}, target, facets = {}, close }) {
     this.provider = provider;
-    this.providerId = provider.descriptor().id;
-    this.providerVersion = provider.descriptor().version;
+    const descriptor = provider.descriptor();
+    this.providerId = descriptor.id;
+    this.providerVersion = descriptor.version;
     this.runtimeSessionId = createRuntimeProviderSessionId({
       binaryId: request.binaryId ?? request.binaryHash,
       providerId: this.providerId,
@@ -128,7 +129,10 @@ export class RuntimeProviderSession {
 }
 
 export class RuntimeProviderRegistry {
-  constructor() { this.providers = new Map(); }
+  constructor() {
+    this.providers = new Map();
+    this._descriptors = new Map();
+  }
 
   register(provider) {
     if (!provider || typeof provider.descriptor !== 'function' || typeof provider.openSession !== 'function') {
@@ -137,18 +141,34 @@ export class RuntimeProviderRegistry {
     const descriptor = createRuntimeProviderDescriptor(provider.descriptor());
     if (this.providers.has(descriptor.id)) throw new DebugAdapterError('runtime-duplicate-provider', `runtime provider already registered: ${descriptor.id}`);
     this.providers.set(descriptor.id, provider);
+    this._descriptors.set(descriptor.id, descriptor);
     return provider;
   }
 
-  unregister(id) { return this.providers.delete(id); }
+  unregister(id) {
+    const removed = this.providers.delete(id);
+    if (removed) this._descriptors.delete(id);
+    return removed;
+  }
+
   get(id) { return this.providers.get(id) || null; }
-  list() { return Object.freeze([...this.providers.values()].map((provider) => createRuntimeProviderDescriptor(provider.descriptor()))); }
+  list() { return Object.freeze([...this._descriptors.values()]); }
 
   async openSession(providerId, request = {}, options = {}) {
     const provider = this.get(providerId);
-    if (!provider) throw new DebugAdapterError('runtime-provider-not-found', `runtime provider not found: ${providerId}`);
+    const descriptor = this._descriptors.get(providerId);
+    if (!provider || !descriptor) throw new DebugAdapterError('runtime-provider-not-found', `runtime provider not found: ${providerId}`);
     const session = await provider.openSession(request, options);
     if (!(session instanceof RuntimeProviderSession)) throw new DebugAdapterError('runtime-invalid-session', 'runtime provider returned an invalid session');
+    if (
+      session.providerId !== descriptor.id
+      || session.providerVersion !== descriptor.version
+      || session.target?.providerId !== descriptor.id
+      || session.target?.providerVersion !== descriptor.version
+    ) {
+      try { await session.close(); } catch {}
+      throw new DebugAdapterError('runtime-provider-descriptor-drift', `runtime provider descriptor changed after registration: ${providerId}`);
+    }
     return session;
   }
 }
@@ -264,7 +284,8 @@ export class DebugAdapterRuntimeProvider {
       if (options.connect !== false && !this.adapter.connected) await this.adapter.connect(options.connectOptions || {});
       if (this.adapter.capabilities?.modules && typeof this.adapter.getModules === 'function') {
         const modules = await this.adapter.getModules();
-        for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debug adapter getModules must return an array');
+        for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if (module.base == null || module.size == null) continue;
           const bindingKey = module.id ?? module.uuid ?? module.name ?? `module:${i}`;

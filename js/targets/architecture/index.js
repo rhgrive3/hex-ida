@@ -16,8 +16,9 @@ function arm64ControlFlow(instruction) {
   if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
+  if (op === 'b.al' || op === 'b.nv') return 'branch';
   if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
-  if (/^(?:eret|eretaa|eretab|brk|svc|hvc|smc)$/.test(op)) return 'unknown';
+  if (/^(?:eret|eretaa|eretab|drps|brk|hlt|svc|hvc|smc)$/.test(op)) return 'unknown';
   return 'fallthrough';
 }
 
@@ -27,7 +28,9 @@ function x86ControlFlow(instruction) {
   if (op === 'call') return 'call';
   if (op === 'jmp') return 'branch';
   if (/^(?:loop|loope|loopz|loopne|loopnz)$/.test(op)) return 'conditional-branch';
-  if (op === 'ud2' || op === 'int3') return 'unknown';
+  if (/^(?:ud2|ud0|ud1|int3|int1|int)$/.test(op)) return 'unknown';
+  if (/^(?:syscall|sysret|sysretq)$/.test(op)) return 'branch';
+  if (/^(?:iret|iretd|iretq|ljmp|sysenter|sysexit|sysexitq)$/.test(op)) return 'unknown';
   if (/^j[^m]/.test(op)) return 'conditional-branch';
   return 'fallthrough';
 }
@@ -137,7 +140,7 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  directControlTarget:x86DirectControlTarget,
+  directControlTarget:x86DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']),
   // P5-5's bounded variable-length viewer implementation is integrated and
   // verified under tests/phase5/viewer/**. Public capability promotion is kept
   // conservative because the frozen global capability regression is outside

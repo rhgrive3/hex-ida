@@ -1,5 +1,11 @@
 import { inRange } from './reader.js';
 
+export function sectionHasMappedAddress(sec) {
+  if (sec?.source === 'section-header') return (BigInt(sec.flags || 0) & 0x2n) !== 0n; // ELF SHF_ALLOC
+  if (sec?.source === 'unmapped-section') return false;
+  return true;
+}
+
 function bigintOrNull(v) {
   if (v == null) return null;
   return typeof v === 'bigint' ? v : BigInt(v);
@@ -13,8 +19,9 @@ function strictBigIntOrNull(value) {
 }
 
 function finiteConfidence(value, fallback = 0.5) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : fallback;
 }
 
 function normalizePerms(p) {
@@ -130,7 +137,7 @@ export class BinaryImage {
     if (o === null || o < 0n) return null;
     const candidates = [];
     for (const s of this.sections) {
-      if (s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
+      if (!sectionHasMappedAddress(s) || s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
       candidates.push(s);
     }
     for (const s of this.segments) {
@@ -169,7 +176,7 @@ export class BinaryImage {
     if (a === null || a < 0n) return null;
     let best = null;
     for (const s of this.sections) {
-      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+      if (sectionHasMappedAddress(s) && s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
     }
     for (const s of this.segments) {
       if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
@@ -188,7 +195,9 @@ export class BinaryImage {
       if (m.size >= owner.size) return;
       if (next === null || m.address < next) next = m.address;
     };
-    for (const m of this.sections) consider(m);
+    for (const m of this.sections) {
+      if (sectionHasMappedAddress(m)) consider(m);
+    }
     for (const m of this.segments) consider(m);
     return next;
   }
@@ -365,7 +374,7 @@ export function functionSeed(address, opts = {}) {
 }
 
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
@@ -443,7 +452,7 @@ function dedupeImports(input) {
       m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
       continue;
     }
-    if (!prev.address && i.address) prev.address = i.address;
+    if (prev.address == null && i.address != null) prev.address = i.address;
     if (!prev.source && i.source) prev.source = i.source;
     if (i.sites) prev.sites.push(...i.sites);
   }

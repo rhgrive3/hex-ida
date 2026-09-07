@@ -16,11 +16,11 @@ function isObject(value) {
 }
 
 function requiredString(value, code) {
-  if (typeof value !== 'string' || value.length === 0) throw new ArtifactCorruptionError(code);
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) throw new ArtifactCorruptionError(code);
 }
 
 function stringArray(value, code) {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !entry)) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.length === 0 || entry !== entry.trim())) {
     throw new ArtifactCorruptionError(code);
   }
   for (let i = 1; i < value.length; i++) {

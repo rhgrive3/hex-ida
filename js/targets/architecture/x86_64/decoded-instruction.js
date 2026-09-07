@@ -6,6 +6,8 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -23,6 +25,14 @@ function text(value, code, { empty = false } = {}) {
   return out;
 }
 
+function detailStatusOf(value, detailAvailable) {
+  const status = value == null ? (detailAvailable === true ? 'complete' : 'unavailable') : value;
+  if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
+    throw new TypeError('x86-decoded-instruction-invalid-detail-status');
+  }
+  return status;
+}
+
 function bytesOf(input, length) {
   const bytes = input instanceof Uint8Array ? input.slice() : Uint8Array.from(input || []);
   if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
@@ -33,6 +43,14 @@ function accessOf(value) {
   const access = String(value ?? 'unknown');
   if (!ACCESS.has(access)) throw new TypeError('x86-decoded-instruction-invalid-access');
   return access;
+}
+
+function segmentOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  const segment = value.toLowerCase();
+  if (!SEGMENT_REGISTERS.has(segment)) throw new TypeError('x86-decoded-instruction-invalid-memory-segment');
+  return segment;
 }
 
 function supplementaryRegisterShape(value, hintedWidthBits) {
@@ -97,7 +115,7 @@ function normalizeOperand(input, index) {
     const raw = input.memory && typeof input.memory === 'object' ? input.memory : input;
     const base = raw.base == null ? null : registerOf(raw.base, 'x86-decoded-instruction-unknown-memory-base', { decoderRegisterCode:raw.baseCode ?? raw.base?.decoderRegisterCode, widthBits:raw.base?.viewBits });
     const indexRegister = raw.index == null ? null : registerOf(raw.index, 'x86-decoded-instruction-unknown-memory-index', { decoderRegisterCode:raw.indexCode ?? raw.index?.decoderRegisterCode, widthBits:raw.index?.viewBits });
-    const segment = raw.segment == null ? null : String(raw.segment).toLowerCase();
+    const segment = segmentOf(raw.segment);
     const scale = raw.scale == null ? 1 : integer(raw.scale, 'x86-decoded-instruction-invalid-memory-scale', { min:1, max:8 });
     if (![1,2,4,8].includes(scale)) throw new TypeError('x86-decoded-instruction-invalid-memory-scale');
     return Object.freeze({
@@ -115,13 +133,39 @@ function normalizeOperand(input, index) {
   return Object.freeze(common);
 }
 
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
+function prefixBytesOf(input, code) {
+  if (input == null) return new Uint8Array();
+  if (ArrayBuffer.isView(input)) {
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    if (tag !== 'Uint8Array') throw new TypeError(code);
+    try { return Uint8Array.from(input); } catch { throw new TypeError(code); }
+  }
+  if (!Array.isArray(input)) throw new TypeError(code);
+  const bytes = new Uint8Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError(code);
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError(code);
+    }
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
 function normalizePrefixState(input = {}) {
-  const legacy = Uint8Array.from(input.legacy || []);
+  const legacy = prefixBytesOf(input.legacy, 'x86-decoded-instruction-invalid-legacy-prefix-byte');
   if (legacy.length > 4) throw new TypeError('x86-decoded-instruction-too-many-legacy-prefixes');
   const rex = input.rex == null ? null : integer(input.rex, 'x86-decoded-instruction-invalid-rex', { max:255 });
   const vector = input.vector == null ? null : Object.freeze({
     kind:text(input.vector.kind, 'x86-decoded-instruction-vector-prefix-kind'),
-    bytes:Uint8Array.from(input.vector.bytes || []),
+    bytes:prefixBytesOf(input.vector.bytes, 'x86-decoded-instruction-invalid-vector-prefix-byte'),
   });
   return Object.freeze({ legacy, rex, vector });
 }
@@ -138,6 +182,12 @@ export function createX86DecodedInstruction(input = {}) {
   const operands = rawOperands.map(normalizeOperand);
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
+  // `detailStatus` is the single authority for decoder-detail availability.
+  // Only canonical primitive status tokens are accepted: structured values
+  // must never acquire exact-detail authority through String() coercion.
+  // Legacy detailAvailable-only callers still map to complete/unavailable.
+  const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
+  const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
   const result = {
     ...input,
     contractVersion,
@@ -145,13 +195,16 @@ export function createX86DecodedInstruction(input = {}) {
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
     length,
     size:length,
-    rawBytes:bytesOf(input.rawBytes ?? input.bytes, length),
+    // The authoritative encoding must never share mutable storage with a
+    // caller: `Object.freeze` cannot seal typed-array elements, so every read
+    // publishes a fresh defensive copy.
+    get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:input.instructionId,
     instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
-    detailStatus:String(input.detailStatus ?? (input.detailAvailable === true ? 'complete' : 'unavailable')),
+    detailStatus,
     detail:Object.freeze({
       ...rawDetail,
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
@@ -161,7 +214,7 @@ export function createX86DecodedInstruction(input = {}) {
       implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
       conditionCode:(rawDetail.conditionCode ?? input.conditionCode) == null ? null : String(rawDetail.conditionCode ?? input.conditionCode).toLowerCase(),
     }),
-    detailAvailable:input.detailAvailable === true || input.detailStatus === 'complete',
+    detailAvailable:detailStatus === 'complete',
     mnemonic:String(input.mnemonic ?? ''),
     opStr:String(input.opStr ?? input.operandString ?? ''),
   };

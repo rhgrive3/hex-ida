@@ -110,13 +110,7 @@ function registerEncodingOverlaps(left, right) {
 }
 function immediateValue(operand) {
   if (operand?.shift != null || operand?.extend != null) return null;
-  const raw = operand?.value;
-  if (typeof raw === 'bigint') return raw;
-  if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
-  const text = typeof raw === 'string' ? raw : operand?.text;
-  const normalized = String(text || '').trim().replace(/^#/, '');
-  if (/^(?:0x[0-9a-f]+|\d+)$/i.test(normalized)) return BigInt(normalized);
-  return null;
+  return typeof operand?.value === 'bigint' ? operand.value : null;
 }
 function registerMatchesSizeSuffix(reg, sizeSuffix) {
   if (!isGpOrZero(reg)) return false;
@@ -525,8 +519,20 @@ function compareSwap(decoded, context, match) {
 function barrierOption(decoded) {
   const op = operands(decoded)[0];
   if (op && (op.shift != null || op.extend != null)) return null;
-  const raw = String(op?.text || op?.value || decoded?.barrierOption || decoded?.operandsText || '').trim().toLowerCase();
-  return raw.replace(/^#/, '') || 'sy';
+  let raw = null;
+  if (op) {
+    if (typeof op.text === 'string') raw = op.text;
+    else if (typeof op.value === 'string') raw = op.value;
+    else return null;
+  } else if (decoded?.barrierOption != null) {
+    if (typeof decoded.barrierOption !== 'string') return null;
+    raw = decoded.barrierOption;
+  } else if (decoded?.operandsText != null) {
+    if (typeof decoded.operandsText !== 'string') return null;
+    raw = decoded.operandsText;
+  }
+  const normalized = (raw ?? '').trim().toLowerCase().replace(/^#/, '');
+  return normalized || 'sy';
 }
 const BARRIER_OPTIONS = Object.freeze({
   sy:{ domain:'full-system', access:'all' },

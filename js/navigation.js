@@ -9,8 +9,8 @@ export class NavigationHistory {
   constructor({ limit = 40, onChange, onNavigate } = {}) {
     const numericLimit = Number(limit);
     this.limit = Number.isFinite(numericLimit) ? Math.max(0, Math.floor(numericLimit)) : 40;
-    this.onChange = onChange || (() => {});
-    this.onNavigate = onNavigate || (() => {});
+    this.onChange = typeof onChange === 'function' ? onChange : (() => {});
+    this.onNavigate = typeof onNavigate === 'function' ? onNavigate : (() => {});
     this.entries = [];
     this.index = -1;
   }

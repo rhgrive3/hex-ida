@@ -6,6 +6,7 @@ export const REMOTE_CANONICAL_RESPONSE_SCHEMA = 'hex-remote-canonical-transport-
 export const REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY = 'oracle:S2-P12-COLLAB-REMOTE:webcrypto-ed25519-aes-gcm-v1';
 
 const textEncoder = new TextEncoder();
+const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -39,6 +40,46 @@ function subtle() {
 }
 async function sha256(value) { return hex(await subtle().digest('SHA-256', bytes(value, 'remote-transport-digest-input-required'))); }
 
+function declaredResponseLength(response) {
+  const raw = response?.headers?.get?.('content-length');
+  if (raw == null) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function readBoundedResponseText(response, maxBytes) {
+  const declared = declaredResponseLength(response);
+  if (declared != null && declared > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
+  if (typeof response.body?.getReader !== 'function') {
+    const text = await response.text();
+    if (textEncoder.encode(text).byteLength > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
+    return text;
+  }
+  const reader = response.body.getReader();
+  const received = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : textEncoder.encode(String(value));
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      try { await reader.cancel(); } catch { }
+      throw new Error('remote-transport-response-budget-exceeded');
+    }
+    received.push(chunk);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of received) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+}
+
+async function readBoundedResponseJson(response, maxBytes) {
+  const text = await readBoundedResponseText(response, maxBytes);
+  try { return JSON.parse(text); } catch { throw new Error('remote-transport-response-json-invalid'); }
+}
+
 export function remoteCanonicalTransportBinding(envelope) {
   if (!envelope || typeof envelope !== 'object') throw new TypeError('remote-transport-envelope-required');
   return Object.freeze({
@@ -68,11 +109,12 @@ function signedResponsePayload(response) {
 
 export class RemoteCanonicalHttpTransport {
   #verifiedBindings = new Map();
-  constructor({ endpoint, serverVerificationKey, sessionEncryptionKey, serverKeyId, fetchImpl = globalThis.fetch } = {}) {
+  constructor({ endpoint, serverVerificationKey, sessionEncryptionKey, serverKeyId, fetchImpl = globalThis.fetch, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES } = {}) {
     this.endpoint = required(endpoint, 'remote-transport-endpoint-required');
     if (!/^https:\/\//i.test(this.endpoint) && !/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost)(?::\d+)?(?:\/|$)/i.test(this.endpoint)) {
       throw new TypeError('remote-transport-confidential-endpoint-required');
     }
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new TypeError('remote-transport-response-budget-invalid');
     if (!serverVerificationKey || serverVerificationKey.type !== 'public' || serverVerificationKey.algorithm?.name !== 'Ed25519') throw new TypeError('remote-transport-ed25519-key-required');
     if (!sessionEncryptionKey || sessionEncryptionKey.type !== 'secret' || sessionEncryptionKey.algorithm?.name !== 'AES-GCM') throw new TypeError('remote-transport-aes-gcm-key-required');
     if (typeof fetchImpl !== 'function') throw new TypeError('remote-transport-fetch-required');
@@ -80,6 +122,7 @@ export class RemoteCanonicalHttpTransport {
     this.sessionEncryptionKey = sessionEncryptionKey;
     this.serverKeyId = required(serverKeyId, 'remote-transport-server-key-id-required');
     this.fetchImpl = fetchImpl;
+    this.maxResponseBytes = maxResponseBytes;
     this.verifierIdentity = REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY;
     this.verifyTransportProof = (proof, envelope) => {
       const proofIdentity = String(proof?.proofIdentity || '');
@@ -108,7 +151,7 @@ export class RemoteCanonicalHttpTransport {
       body:JSON.stringify({ schemaVersion:REMOTE_CANONICAL_TRANSPORT_SCHEMA, requestId, bindingDigest, keyId:this.serverKeyId, iv:base64(iv), ciphertext:base64(ciphertext) }),
     });
     if (!response || response.ok !== true) throw new Error(`remote-transport-http-rejected:${response?.status ?? 'unavailable'}`);
-    const result = await response.json();
+    const result = await readBoundedResponseJson(response, this.maxResponseBytes);
     if (result?.schemaVersion !== REMOTE_CANONICAL_RESPONSE_SCHEMA) throw new Error('remote-transport-response-schema-invalid');
     const signed = signedResponsePayload(result);
     if (signed.requestId !== requestId || signed.bindingDigest !== bindingDigest || signed.keyId !== this.serverKeyId) throw new Error('remote-transport-response-identity-mismatch');

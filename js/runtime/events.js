@@ -19,6 +19,9 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 ]);
 
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
+const UTF8_ENCODER = new TextEncoder();
+
+function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
 
 function required(value, code, message) {
   if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
@@ -29,19 +32,17 @@ function required(value, code, message) {
 
 function safeInteger(value, fallback, name, { min = 0 } = {}) {
   if (value == null) return fallback;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
     throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min) throw new DebugAdapterError('runtime-invalid-event-integer', `${name} must be a safe integer >= ${min}`);
-  return n;
+  return value;
 }
 
 function optionalText(value) { return value == null ? null : String(value); }
 
 function optionalIdentity(value, name) {
   if (value == null) return null;
-  if (typeof value !== 'string' || value.length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
+  if (typeof value !== 'string' || value.trim().length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
   return value;
 }
 
@@ -49,14 +50,16 @@ function arrayOfStrings(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must be an array`);
   for (const item of value) {
-    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string' || item.trim().length === 0) throw new DebugAdapterError('runtime-invalid-event-array', `${name} must contain only non-empty strings`);
   }
   return Object.freeze([...new Set(value)]);
 }
 
 function normalizeCompleteness(value, fallback = 'partial') {
-  const completeness = String(value ?? fallback);
-  if (!EVIDENCE_COMPLETENESS.includes(completeness)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness: ${completeness}`);
+  const completeness = value == null ? fallback : value;
+  if (typeof completeness !== 'string' || !EVIDENCE_COMPLETENESS.includes(completeness)) {
+    throw new DebugAdapterError('runtime-invalid-completeness', `invalid runtime completeness type: ${typeof completeness}`);
+  }
   return completeness;
 }
 
@@ -67,8 +70,10 @@ function normalizeKind(value) {
 }
 
 function normalizeMode(value) {
-  const mode = String(value ?? 'observed');
-  if (!RUNTIME_OBSERVATION_MODES.includes(mode)) throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode: ${mode}`);
+  const mode = value == null ? 'observed' : value;
+  if (typeof mode !== 'string' || !RUNTIME_OBSERVATION_MODES.includes(mode)) {
+    throw new DebugAdapterError('runtime-invalid-observation-mode', `invalid runtime observation mode type: ${typeof mode}`);
+  }
   return mode;
 }
 
@@ -81,7 +86,8 @@ function dedupeIdentity(input) {
 export function createRuntimeEvent(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'runtime event requires providerId');
-  const providerVersion = String(input.providerVersion ?? '1');
+  const providerVersion = input.providerVersion ?? '1';
+  if (typeof providerVersion !== 'string') throw new DebugAdapterError('runtime-invalid-provider-version', 'providerVersion must be a string');
   const sessionEpoch = safeInteger(input.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
   const sequence = input.sequence == null ? null : safeInteger(input.sequence, null, 'sequence');
   const moduleGeneration = input.moduleGeneration == null ? null : safeInteger(input.moduleGeneration, null, 'moduleGeneration', { min: 1 });
@@ -136,7 +142,8 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
     ? (input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {})
     : (input && input.type === 'event' && input.event ? input.event : input);
   if (!source || typeof source !== 'object') throw new DebugAdapterError('runtime-invalid-event', 'legacy runtime event must be an object');
-  const legacyType = protocolEnvelope ? input.event : String(source.kind ?? source.type ?? 'trace-marker');
+  const rawLegacyType = protocolEnvelope ? input.event : (source.kind ?? source.type ?? 'trace-marker');
+  const legacyType = typeof rawLegacyType === 'string' ? rawLegacyType : 'trace-marker';
   const kindMap = {
     branch: 'basic-block',
     trace: 'trace-marker',
@@ -169,46 +176,9 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
   });
 }
 
-function estimatePayloadSize(value, maxBytes) {
-  let size = 0;
-  const active = new WeakSet();
-  const stack = [{ value, exit: false }];
-  while (stack.length && size <= maxBytes) {
-    const frame = stack.pop();
-    const v = frame.value;
-    if (frame.exit) {
-      active.delete(v);
-      continue;
-    }
-    if (v == null) { size += 4; continue; }
-    if (typeof v === 'boolean') { size += 5; continue; }
-    if (typeof v === 'number') { size += 8; continue; }
-    if (typeof v === 'string') { size += v.length * 2 + 2; continue; }
-    if (typeof v === 'bigint') { size += 16; continue; }
-    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; continue; }
-    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; continue; }
-    if (typeof v === 'object') {
-      if (active.has(v)) return maxBytes + 1;
-      active.add(v);
-      stack.push({ value: v, exit: true });
-      size += 2;
-      if (Array.isArray(v)) {
-        for (let i = v.length - 1; i >= 0; i--) stack.push({ value: v[i], exit: false });
-      } else {
-        const keys = Object.keys(v);
-        for (let i = keys.length - 1; i >= 0; i--) {
-          const key = keys[i];
-          size += key.length * 2 + 4;
-          stack.push({ value: v[key], exit: false });
-        }
-      }
-    }
-  }
-  return size;
-}
-
 export function createRuntimeEventBatch(input = {}) {
-  const rawEvents = Array.isArray(input.events) ? input.events : [];
+  const rawEvents = input.events == null ? [] : input.events;
+  if (!Array.isArray(rawEvents)) throw new DebugAdapterError('runtime-invalid-event-array', 'events must be an array');
   const events = rawEvents.map((event) => createRuntimeEvent(event));
   const dropped = safeInteger(input.dropped, 0, 'dropped');
   const runtimeSessionId = required(input.runtimeSessionId ?? events[0]?.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
@@ -254,18 +224,17 @@ export class RuntimeEventNormalizer {
   }
 
   push(input) {
-    const rawPayload = input?.payload ?? (input && typeof input === 'object' && !input.runtimeSessionId ? input : null);
-    if (rawPayload && estimatePayloadSize(rawPayload, this.maxBytes - this.queuedBytes) > this.maxBytes - this.queuedBytes) {
-      this.#dropped++;
-      return null;
-    }
-    const event = input?.runtimeSessionId ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
+    const hasDirectIdentity = input && typeof input === 'object'
+      && ['runtimeSessionId', 'providerId', 'sessionEpoch'].some((key) => Object.hasOwn(input, key));
+    const event = hasDirectIdentity ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
+    const contextRuntimeSessionId = required(this.context.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
+    const contextProviderId = required(this.context.providerId, 'runtime-provider-required', 'runtime event batch requires providerId');
     const contextEpoch = safeInteger(this.context.sessionEpoch, event.sessionEpoch, 'sessionEpoch', { min: 1 });
-    if (event.sessionEpoch !== contextEpoch) return null;
+    if (event.runtimeSessionId !== contextRuntimeSessionId || event.providerId !== contextProviderId || event.sessionEpoch !== contextEpoch) return null;
     const dedupe = dedupeIdentity(event);
     const scoped = dedupe ? `${event.sessionEpoch}:${dedupe}` : null;
     if (scoped && this.#seen.has(scoped)) return null;
-    const bytes = stableStringify(event).length * 2;
+    const bytes = encodedByteLength(stableStringify(event));
     if (this.#queue.length >= this.maxEvents || this.queuedBytes + bytes > this.maxBytes) {
       this.#dropped++;
       return null;

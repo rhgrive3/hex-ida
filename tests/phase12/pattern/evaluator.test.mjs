@@ -38,4 +38,18 @@ const bomb = evaluatePattern(dynamic, Uint8Array.from([255, 1, 2, 3]), { maxEntr
 assert.equal(bomb.status, 'complete', 'lazy array declaration itself is bounded');
 assert.equal(bomb.value.fields.values.expand(0).value, 1);
 assert.throws(() => compilePattern('{"kind":"script","source":"while(true){}"}'), /pattern-root-must-be-struct/);
+
+const duplicateModule = { kind: 'module', root: 'Root', structs: [
+  { kind: 'struct', name: 'Item', fields: [{ name: 'a', type: { kind: 'primitive', name: 'u8' } }] },
+  { kind: 'struct', name: 'Item', fields: [{ name: 'b', type: { kind: 'primitive', name: 'u16le' } }] },
+  { kind: 'struct', name: 'Root', fields: [{ name: 'item', type: { kind: 'named', name: 'Item' } }] },
+] };
+assert.throws(() => compilePattern(duplicateModule), /pattern-duplicate-struct:Item/,
+  'duplicate struct names must not compile with order-dependent resolution');
+const distinctModule = { kind: 'module', root: 'Root', structs: [
+  { kind: 'struct', name: 'Item', fields: [{ name: 'a', type: { kind: 'primitive', name: 'u8' } }] },
+  { kind: 'struct', name: 'Root', fields: [{ name: 'item', type: { kind: 'named', name: 'Item' } }] },
+] };
+const distinctResult = evaluatePattern(compilePattern(distinctModule), Uint8Array.from([0x11]));
+assert.equal(distinctResult.value.fields.item.fields.a.value, 0x11, 'distinct struct names keep working');
 console.log('[phase12] bounded declarative pattern tests passed');

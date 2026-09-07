@@ -1,5 +1,5 @@
 import { createEvidenceEdge, createEvidenceNode, EvidenceGraph, EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
-import { createEvidenceId, deepFreeze, stableDigest } from '../core/identity/index.js';
+import { createEvidenceId, deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOriginSet } from '../core/identity/origin.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { createRuntimeEvent } from './events.js';
@@ -18,22 +18,17 @@ function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
   for (const item of value) {
-    if (typeof item !== 'string' || !item) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
   }
   return Object.freeze([...new Set(value)].sort());
 }
 
 function optionalSequence(value) {
   if (value == null) return null;
-  const type = typeof value;
-  if ((type !== 'number' && type !== 'bigint' && type !== 'string') || (type === 'string' && !value.trim())) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
   }
-  const sequence = Number(value);
-  if (!Number.isSafeInteger(sequence) || sequence < 0) {
-    throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
-  }
-  return sequence;
+  return value;
 }
 
 function ownedClone(value) {
@@ -77,6 +72,24 @@ export function conservativeCompleteness(...values) {
   return normalized.reduce((worst, value) => COMPLETENESS_RANK[value] < COMPLETENESS_RANK[worst] ? value : worst, normalized[0]);
 }
 
+function interventionIdentityKey(record) {
+  return stableStringify({
+    runtimeSessionId: record.runtimeSessionId,
+    providerId: record.providerId,
+    kind: record.kind,
+    target: record.target,
+    requestedChange: record.requestedChange,
+    sequence: record.sequence,
+    parentInterventionIds: record.parentInterventionIds,
+  });
+}
+
+function assertInterventionParents(records, record) {
+  for (const parent of record.parentInterventionIds) {
+    if (!records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
+  }
+}
+
 export function createInterventionRecord(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'intervention requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
@@ -117,16 +130,24 @@ export class InterventionLedger {
 
   validate(input) {
     const record = createInterventionRecord(input);
-    for (const parent of record.parentInterventionIds) {
-      if (!this.#records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
-    }
+    assertInterventionParents(this.#records, record);
     return record;
   }
 
   add(input) {
-    const record = this.validate(input);
+    const record = createInterventionRecord(input);
     const existing = this.#records.get(record.interventionId);
-    if (existing) return existing;
+    if (existing) {
+      if (interventionIdentityKey(existing) !== interventionIdentityKey(record)) {
+        throw new DebugAdapterError(
+          'runtime-intervention-id-collision',
+          `intervention id is already bound to different identity: ${record.interventionId}`,
+          { interventionId: record.interventionId },
+        );
+      }
+      return existing;
+    }
+    assertInterventionParents(this.#records, record);
     this.#records.set(record.interventionId, record);
     return record;
   }
@@ -151,6 +172,31 @@ function linkableResolution(resolution) {
   return !!resolution && (resolution.state === 'exact' || resolution.state === 'resolved') && Array.isArray(resolution.targetEntityIds) && resolution.targetEntityIds.length > 0;
 }
 
+function canonicalIdentity(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function resolutionBindingKey(resolution) {
+  return resolution == null ? null : stableStringify(resolution);
+}
+
+function linkResolutionMatchesEvidence(evidence, resolution) {
+  if (!linkableResolution(resolution)) return false;
+  if (!canonicalIdentity(resolution.runtimeSessionId) || !canonicalIdentity(resolution.binaryId)) return false;
+  if (!resolution.targetEntityIds.every(canonicalIdentity)) return false;
+
+  const stored = evidence?.payload?.resolution;
+  const storedBinding = evidence?.payload?.resolutionBinding;
+  if (!stored || typeof storedBinding !== 'string' || !storedBinding) return false;
+  if (resolutionBindingKey(resolution) !== storedBinding) return false;
+  if (resolution.runtimeSessionId !== evidence.payload.runtimeSessionId) return false;
+  if (resolution.binaryId !== evidence.binaryId) return false;
+  if (stored.runtimeSessionId !== resolution.runtimeSessionId || stored.state !== resolution.state) return false;
+
+  const resolutionTargets = [...new Set(resolution.targetEntityIds)].sort();
+  return stableStringify(resolutionTargets) === stableStringify(evidence.targetEntityIds);
+}
+
 function resolutionCompleteness(resolution) {
   if (!resolution) return 'partial';
   if (resolution.state === 'exact') return 'complete';
@@ -168,6 +214,14 @@ export class RuntimeEvidenceBridge {
 
   eventToEvidence(eventInput, resolution = null, options = {}) {
     const event = createRuntimeEvent(eventInput);
+    resolution = resolution == null ? null : ownedClone(resolution);
+    if (resolution && resolution.runtimeSessionId !== event.runtimeSessionId) {
+      throw new DebugAdapterError(
+        'runtime-resolution-session-mismatch',
+        'runtime event and address resolution must belong to the same runtime session',
+      );
+    }
+    const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
     const interventionRecords = this.interventions.ancestry(event.interventionIds);
@@ -208,7 +262,9 @@ export class RuntimeEvidenceBridge {
         eventKind: event.kind,
         eventPayload: event.payload,
         interventionIds: interventionRecords.map((record) => record.interventionId),
+        resolutionBinding,
         resolution: resolution ? {
+          runtimeSessionId: resolution.runtimeSessionId,
           state: resolution.state,
           method: resolution.method,
           staticAddress: resolution.staticAddress,
@@ -228,6 +284,7 @@ export class RuntimeEvidenceBridge {
     if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
     const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
+    resolution = resolution == null ? null : ownedClone(resolution);
     if (!linkableResolution(resolution)) {
       return deepFreeze({ linked: false, reason: resolution?.state === 'mismatch' ? 'identity-mismatch' : 'static-resolution-required', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
     }
@@ -235,6 +292,9 @@ export class RuntimeEvidenceBridge {
     const evidence = this.graph.getNode(evidenceId);
     if (!claim || claim.family !== 'Claim') throw new DebugAdapterError('runtime-claim-not-found', `claim not found: ${claimId}`);
     if (!evidence || evidence.family !== 'RuntimeEvidence') throw new DebugAdapterError('runtime-evidence-not-found', `runtime evidence not found: ${evidenceId}`);
+    if (!linkResolutionMatchesEvidence(evidence, resolution)) {
+      return deepFreeze({ linked: false, reason: 'resolution-evidence-mismatch', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
+    }
     const edge = createEvidenceEdge({ type, from: claim.id, to: evidence.id, metadata: { resolutionState: resolution.state, method: resolution.method ?? null } });
     this.graph.addEdge(edge);
     return deepFreeze({ linked: true, edge });

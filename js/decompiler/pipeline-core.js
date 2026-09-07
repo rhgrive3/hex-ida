@@ -344,18 +344,119 @@ function walkIdiom(n) {
   return recoverArm64ClangIdiom(mapped);
 }
 
+// Dominance walk shared by the reaching-definition queries. Prefer the
+// precomputed dominator sets, then fall back to walking immediate dominators.
+function defBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+function blockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const current = stack.pop();
+    const successors = ir.blocks?.[current]?.succ ?? ir.blocks?.[current]?.successors ?? [];
+    for (const edge of successors) {
+      const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+      if (next == null || seen.has(next)) continue;
+      if (next === to) return true;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  return false;
+}
+
+function defBlockDepth(ir, block) {
+  let depth = 0, cur = block, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
+    depth++;
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+  }
+  return depth;
+}
+
+function definitionCanReachUse(ir, definition, atInst) {
+  if (definition.block === atInst.block) {
+    return definition.row != null && atInst.row != null && definition.row < atInst.row;
+  }
+  return blockCanReach(ir, definition.block, atInst.block);
+}
+
+function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
+  if (!candidateDefinition) return true;
+  if (definition.block === candidateDefinition.block) {
+    if (definition.row == null || candidateDefinition.row == null) return false;
+    return definition.row > candidateDefinition.row;
+  }
+  return blockCanReach(ir, candidateDefinition.block, definition.block);
+}
+
+// CFG-aware reaching definition for a physical register. Same-block defs must
+// precede the use; foreign-block defs qualify only when their block dominates
+// the use. A branch-local write after the selected candidate makes the merge
+// ambiguous unless a later same-block definition overwrites it on every path.
 function reachingRegisterValue(ir, atInst, reg) {
+  if (!ir || !atInst || !reg) return null;
   let best = ir.args?.get?.(reg) || null;
-  let bestRow = -Infinity;
+  let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
   for (const v of ir.values || []) {
     if (v.reg !== reg || !v.def || v.clobbered) continue;
     const d = v.def;
-    if (d.block === atInst.block && d.row < atInst.row && d.row > bestRow) { best = v; bestRow = d.row; }
+    if (d === atInst) continue;
+    if (d.block === atInst.block) {
+      if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
+      if (!bestSameBlock || d.row > bestRow) {
+        best = v;
+        bestRow = d.row;
+        bestSameBlock = true;
+      }
+      continue;
+    }
+    if (bestSameBlock || !defBlockDominates(ir, d.block, atInst.block)) continue;
+    const depth = defBlockDepth(ir, d.block);
+    if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow)) {
+      best = v;
+      bestDepth = depth;
+      bestRow = d.row ?? -Infinity;
+    }
+  }
+  if (bestSameBlock) return best;
+
+  const candidateDefinition = best?.def ?? null;
+  for (const v of ir.values || []) {
+    if (v === best || v.reg !== reg || !v.def || v.clobbered) continue;
+    const d = v.def;
+    if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
+    if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
   }
   return best;
 }
 
 function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkIdiom(buildValue(v, state)); }
+// A read-modify-write claim is only sound when the selected operator operand is
+// directly the load of the canonical location being overwritten. A nested load
+// proves only a dependency, not that the outer operator is a compound update.
+function readsSameLocation(node, location, key = location?.key) {
+  return !!node && key != null && node.kind === 'load' && node.location?.key === key;
+}
+function sameLocationRmwOperand(expression, location, ops, side = 'any') {
+  if (side === 'left') return readsSameLocation(expression.left, location) ? expression.right : null;
+  if (readsSameLocation(expression.left, location)) return expression.right;
+  if (readsSameLocation(expression.right, location)) return expression.left;
+  return null;
+}
 function returnRegisterForState(state) {
   const type=String(state.opts?.returnType || state.opts?.functionPrototype?.returnType || state.opts?.prototype?.returnType || state.prototype?.returnType || '').toLowerCase();
   if (!type || type === 'void') return null;
@@ -383,9 +484,14 @@ function semanticFacts(state, result) {
     if (inst.op === 'store') {
       const location = memoryLocation(inst, state), value = valueOf(inst.args?.[0]), expression = expressionFor(value, state);
       const store = { location, lhsText: location.text, expression, source: origin(inst, inst.dst, 'Memory SSA store') };
-      if (expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub') {
-        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(expression.args[0].right) };
-      } else if (expression?.kind === 'binary' && expression.op === 'add') store.readModifyWrite = { kind: 'add', operand: printExpression(expression.right) };
+      const clampSub = expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub' ? expression.args[0] : null;
+      const clampOperand = clampSub && readsSameLocation(clampSub.left, location) ? clampSub.right : null;
+      if (clampOperand != null) {
+        store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(clampOperand) };
+      } else if (expression?.kind === 'binary' && expression.op === 'add') {
+        const operand = sameLocationRmwOperand(expression, location, ['add']);
+        if (operand != null) store.readModifyWrite = { kind: 'add', operand: printExpression(operand) };
+      }
       facts.stores.push(store); facts.outputs.push({ name: location.text, type: state.types?.locations?.get?.(inst.loc?.key) || null });
       facts.evidence.push({ row: inst.row, address: inst.address, ir: inst.id, reason: 'Memory SSA store' });
     } else if (inst.op === 'call') {
@@ -665,4 +771,12 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
 export function buildExpressionForTesting(value, state) {
   const s = { expressionMemo: new Map(), expressionActive: new Set(), opts: {}, types: { values: new Map() }, highVariables: null, ...state };
   return buildValue(value, s);
+}
+
+export function reachingRegisterValueForTesting(ir, atInst, reg) {
+  return reachingRegisterValue(ir, atInst, reg);
+}
+
+export function directSameLocationLoadForTesting(node, location) {
+  return readsSameLocation(node, location);
 }
