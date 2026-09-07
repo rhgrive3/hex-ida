@@ -1166,6 +1166,27 @@
         "missing return-shape authority promoted from partial to valid",
         "generated outputs"
       ]
+    },
+    "T061": {
+      "maintenanceClass": "STAGE_A_MAINTENANCE",
+      "allowedPaths": [
+        "package.json",
+        "tools/validation/phase12/denominator-inventory.json",
+        "tools/validation/final-closure/preflight.mjs",
+        "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/fixture-maintenance.test.mjs",
+        "specs/005-analysis-final-closure/tasks.md",
+        "specs/005-analysis-final-closure/data-model.md",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+        "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md"
+      ],
+      "forbiddenOverlap": [
+        "production source, generated outputs, workflow or shadow oracle changes",
+        "rewriting original handoffs, accepted checkpoint receipts or frozen gate commands",
+        "transferring any existing path except the reviewed T052 fixture",
+        "publication before independent review and exact current-product replay"
+      ]
     }
   }
 }
