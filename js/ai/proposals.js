@@ -44,7 +44,12 @@ export class ProposalStore {
     }
     const binding = this.binding?.() || null;
     const executionPayload = snapshotProposalPayload(input);
-    const revision = fingerprint(executionPayload.before);
+    // The stale-state authority must fingerprint the exact approved value —
+    // the raw `before`, not its structuredClone, which silently drops
+    // symbol-keyed own properties and would alias a later symbol-keyed state
+    // change (#5945). `apply()` compares against the caller's raw state, so
+    // both sides of the comparison must share the same view.
+    const revision = fingerprint(input.before);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
@@ -437,6 +442,13 @@ function canonicalIdentity(value, stack = new Set()) {
     // Own keys only, and `__proto__` among them is data here, not a mutation:
     // it is read with Object.keys/direct access and never assigned onto a
     // result object, so it cannot reach a prototype.
+    // Symbol-keyed own properties are own state too, but a canonical text
+    // cannot distinguish two distinct symbols sharing a description. The
+    // stale-state contract therefore refuses symbol-keyed state explicitly
+    // instead of silently omitting part of the value (#5945).
+    if (Object.getOwnPropertySymbols(value).length) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
     const keys = Object.keys(value).sort();
     return `o{${keys.map((key) => `${JSON.stringify(key)}:${canonicalIdentity(value[key], stack)}`).join(',')}}`;
   } finally {
