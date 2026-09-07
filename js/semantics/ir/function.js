@@ -46,16 +46,88 @@ function assertVersion(input) {
   if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_IR_CONTRACT_VERSION) fail('semantic-ir-contract-version-mismatch');
 }
 
+const REFERENCE_COUNT_OVERFLOW = Number.MAX_SAFE_INTEGER + 1;
+
+function addReferenceCount(total, amount) {
+  if (total === REFERENCE_COUNT_OVERFLOW
+    || !Number.isSafeInteger(total)
+    || total < 0
+    || !Number.isSafeInteger(amount)
+    || amount < 0
+    || total > Number.MAX_SAFE_INTEGER - amount) {
+    return REFERENCE_COUNT_OVERFLOW;
+  }
+  return total + amount;
+}
+
+function arrayLength(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+// Every collection that can carry a reference or bounded work item is part of
+// the maxReferences denominator. Raw lengths are a conservative upper bound
+// because normalization only deduplicates/sorts or maps one item to one item.
+function summaryReferenceCount(summary) {
+  if (!summary || typeof summary !== 'object') return 0;
+  let count = 0;
+  for (const key of [
+    'targetValueIds', 'targetEntityIds', 'arguments', 'returns',
+    'inputs', 'outputs', 'stateReads', 'stateWrites', 'controlEffects',
+  ]) {
+    count = addReferenceCount(count, arrayLength(summary[key]));
+  }
+  for (const scope of [summary.memoryRead, summary.memoryWrite]) {
+    if (!scope || typeof scope !== 'object') continue;
+    count = addReferenceCount(count, arrayLength(scope.accesses));
+    count = addReferenceCount(count, arrayLength(scope.addressSpaces));
+  }
+  if (summary.unknownEffects && typeof summary.unknownEffects === 'object') {
+    count = addReferenceCount(count, arrayLength(summary.unknownEffects.categories));
+  }
+  return count;
+}
+
 function countReferences(nodes, values, blocks) {
   let count = 0;
   for (const node of nodes) {
-    count += node.inputs.length + node.outputs.length + node.targets.length + node.sourceEffectIds.length;
-    if (node.memory) count++;
-    if (node.call) count += node.call.targetValueIds.length + node.call.arguments.length + node.call.returns.length;
-    if (node.intrinsic) count += node.intrinsic.inputs.length + node.intrinsic.outputs.length;
+    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
+      count = addReferenceCount(count, arrayLength(node[key]));
+    }
+    if (node.memory) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(node.call));
+    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
   }
-  for (const block of blocks) count += block.nodeIds.length;
-  for (const value of values) if (value.definitionNodeId) count++;
+  for (const block of blocks) count = addReferenceCount(count, arrayLength(block.nodeIds));
+  for (const value of values) {
+    if (value.definitionNodeId != null) count = addReferenceCount(count, 1);
+  }
+  return count;
+}
+
+// Fail-closed raw-input preflight (#5858): reject the full raw denominator
+// before nested collections are normalized, sorted, deduplicated, frozen, or
+// serialized. Invalid objects still fail through the normal validators; an
+// overflow sentinel rejects even when arithmetic cannot remain safe.
+function countRawReferences(input) {
+  let count = 0;
+  for (const block of input.blocks ?? []) {
+    if (!block || typeof block !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    count = addReferenceCount(count, arrayLength(block.nodeIds));
+  }
+  for (const value of input.values ?? []) {
+    if (value && typeof value === 'object' && value.definitionNodeId != null) {
+      count = addReferenceCount(count, 1);
+    }
+  }
+  for (const node of input.nodes ?? []) {
+    if (!node || typeof node !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
+      count = addReferenceCount(count, arrayLength(node[key]));
+    }
+    if (node.memory != null) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(node.call));
+    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
+  }
   return count;
 }
 
@@ -151,6 +223,8 @@ export function createSemanticIrFunction(input, options = {}) {
   assertWithinBudget(rawBlocks.length, options, 'maxBlocks');
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
+  // Preflight the complete reference denominator before nested normalization.
+  assertWithinBudget(countRawReferences(input), options, 'maxReferences');
 
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
