@@ -7,19 +7,19 @@ current results take precedence.
 
 | Area | Current state | Next action |
 | --- | --- | --- |
-| Local integration | Main65bc985e8 merged; legacy/v2 corpus and repaired Phase6 pass. Phase4/5/effects/7 pass; remaining canonical chain is active. | Finish the running batch, repair failing leaves, retain original failure logs. Full npm check is not yet PASS. |
-| T026 comparison | Native P5/P6 captures and exact18.1.8 P8 nine-artifact captures exist. Metric bindings are under independent review. Three real binary source/compiler/debug identities are unavailable. | Finish local measurement bindings; obtain corresponding external data or explicit deferral. No fabricated values or denominator reduction. |
+| Local integration | Main65bc985e8 merged; legacy/v2 corpus and repaired Phase6 pass. All18 top-level components have passing development evidence after focused repairs; Phase8–12, npmtest and baseline completed. | SHA256 note initialization, real UI approval and measurement-contract repairs are complete and tested. Retain original logs; full-command npm check is not relabeled PASS. |
+| T026 comparison | Native P5/P6 captures and exact18.1.8 P8 nine-artifact captures exist. Reviewed metric bindings are implemented; all 32 competitive contract tests pass. Three real binary source/compiler/debug identities are unavailable. | Obtain corresponding external data or explicit deferral. Archived ledgers lack execution identity and frozen P8 compiler lineage differs from the captured twin. No fabricated values or denominator reduction. |
 | Performance/platform | Earlier cold622.195 ms exceeded250; optimizer127.139 ms passed150 and interactive0.362 ms passed5. A subsequent immutable-artifact cache is implemented. | Current full acceptance remains unproven. Physical execution is deferred; retain browser/runtime requirements. |
-| Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership is being repaired. | Publish the reviewed batch and classify its exact-head checks. Draft CodeRabbit skip is not review approval. |
+| Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published a07ff5bb5 head passes all six CircleCI jobs. | Publish the final measurement/evidence follow-up and classify its exact-head checks. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
 | Historical administration | T047/T049/T050/T061 remain retired unchecked history. | No checkpoint receipt reconstruction under the owner's speed amendment. |
 | T045 physical numeric contract | Collector, fourteen-row validation and Stage2 scenario/numeric binding implemented and tested. | Collect actual device evidence only after development, per owner instruction. |
 
 See `evidence/stage-a-candidate.md` for command identities and retained logs,
 and `evidence/post-development-device-checks.md` for deferred physical checks.
-Generated source at d84067303 was built twice with zero second-run tracked diff;
-0ef399790 contains the artifacts. Runtime source has not changed in the later
-fixture/CI commits. The original issue worktree and user tmp work are untouched.
+Generated source at 0809dbfb5 was built twice with zero second-run tracked diff;
+a07ff5bb5 contains the artifacts. Generated runtime tests pass (45.4 s). Later
+changes affect tests, measurement tooling and evidence, not runtime source. The original issue worktree and user tmp work are untouched.
 
 ## Historical implementation observations
 

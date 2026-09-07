@@ -6,8 +6,9 @@ physical PASS is claimed. The records below this update are historical.
 Main `65bc985e8` was merged as `51f28ab05`. Seven conflicts were reconciled with
 the strict main contracts and recovery behavior both retained. The current draft
 is [PR 7097](https://github.com/rhgrive3/hex-ida/pull/7097); its last published head
-is `9e0702fef7444538b6c2314a1c0629a7fc007a0f`. Later local repairs are not yet
-represented by that PR's CI result.
+with observed CI is `a07ff5bb5d4adaa349c6db3c8d699b94706955e6` (six CircleCI
+jobs passed). The subsequent measurement-contract integration is `bc4092884`;
+its final focused suite passes in 11.7 seconds.
 
 Current repairs and verification:
 
@@ -30,13 +31,13 @@ Current repairs and verification:
   scheduling with the development policy. Both focused workflow contracts pass.
 
 Canonical double generation on source
-`d8406730359e54630d80abe1918902c044ac052f` produced no second-run tracked diff;
-commit `0ef399790` contains the result. SHA-256 values:
+`0809dbfb52c6b11e70470aed4a83aa5f7f5bacdc` produced no second-run tracked diff;
+commit `a07ff5bb5` contains the result. SHA-256 values:
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `userscript/hex.user.template.js` | `c5e3dbdbb50a004daf16d974c5e6ac785e49893b1cfdb9a358789759caafbe0f` |
-| `userscript/release-version.json` | `1adc38b33bf80c33cc8115f9eeb6d5ee203531c18ec6c8bff17e452fd20c5599` |
+| `userscript/hex.user.template.js` | `0fdbc388c3af67d2eb8a887ec56f9eac9ea9821b09db11ef4099cccf654b39ed` |
+| `userscript/release-version.json` | `676f14249b51f406b87c1c03ca1e117e4f522a1d4ad8dce21b65ec924faabf70` |
 | `js/userscript/deployment-identity.generated.js` | `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252` |
 
 The reviewed full `npm run check` stopped in the semantic gate. Retained log:
@@ -49,17 +50,51 @@ full-command failure as PASS.
 The remaining twelve canonical commands began at
 `a9e04fd0d8489d3e0c60040c29990cfacd5f0547`. Phase 4 (21.4 s), Phase 5 (144.9 s),
 effects (133.0 s) and Phase 7 (52 s) pass. Phase 6 initially failed only the
-stale runner assertion, then passed after the repair above. Phase 8 and later
-commands are still running. Machine-readable status is retained at
+stale runner assertion, then passed after the repair above. Phase 8 (1467.3 s), Phase 9 (38.4 s), Phase 10 (14.5 s), Phase 11 (1.2 s)
+and Phase 12 (3.5 s) also pass. The tail driver then rejected the `npm test`
+command spelling before executing it; independent canonical `npm test` at
+43381ba38 passes (186.8 s) and `benchmark:baseline` passes (0.8 s).
+All eighteen top-level components now have passing development evidence after
+focused repairs and reuse; this is not a single full-command or final-release PASS.
+Machine-readable status is retained at
 `/mnt/workspace/.dev-state/hex-development-batch/combined-remaining-checks.json`.
-Only unaffected development results are reused across the later test/CI edits;
+Unaffected development results are reused; changed runtime paths received
+focused, platform, UI and generated-runtime checks as recorded below;
 this is not exact-final-head release evidence.
 
 T045 is complete as implementation: Stage 2 requires both identity-resolved
 physical scenario evidence and the fourteen-row numeric attachment in final
 mode. Physical collection itself remains deferred. The exact Phase 8 18.1.8
-native twin capture now passes for all nine artifacts including ARM64; remaining
-same-binary metric bindings and external benchmark identities are not complete.
+native twin capture now passes for all nine artifacts including ARM64;
+measurement bindings are implemented and independently reviewed (32 focused tests).
+T026 remains incomplete: archived P5/P6 ledgers lack execution identity, the
+frozen P8 corpus records compiler18.1.3 rather than captured18.1.8, and three
+external benchmark source/compiler/debug identities are unavailable. Those rows
+remain UNMEASURED; captures alone do not establish measured acceptance.
+
+Actual Chromium/WebKit dedicated-worker checks pass (8.4 s) after installing
+matching WebKit dependencies. The UI chain passed layout/navigation/accessibility
+and early AI paths, then the proposal fixture failed because it used homemade
+approval tokens. It now uses the real runtime stores and exposed a product
+initialization failure: the shared BinaryId producer passed an FNV hash into a
+SHA-256-only factory. Commit0e7f038bf repairs canonical SHA256 production and
+worker/file identity binding. Commit4941a6fee updates the fixture to real
+approval and persistence: it now passes (5.5 s), including reject/stale negatives.
+Four identity-focused files pass (0.7 s), platform:test passes (20.9 s), and
+the repaired canonical product-route regression passes (0.7 s). The four remaining browser files
+pass independently (14.1 s). Retained initial UI log:
+`/tmp/hex-combined-ui-browser-Vne2dV/full.log`.
+
+The published43381ba38 CircleCI pipeline failed configuration compilation before
+jobs. Newly added literal heredocs lacked CircleCI's required tag escape;
+a4a651d93 corrects it and the permanent routing regression now checks this
+boundary. The corrected a07ff5bb5 remote pipeline compiled and all six jobs passed.
+CodeRabbit skipped this draft; its SUCCESS status is not approval.
+
+The foreign proposal-store bridge guard in05658764e and its focused scope
+regressions also pass. Final generated runtime tests pass (45.4 s), with the
+canonical deployment stamp restored afterward. Original failures remain in
+their logs; these composed observations support development only.
 
 ---
 

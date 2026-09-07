@@ -188,3 +188,17 @@ recovery is **implementation-converged for development**, but the batch is
 **not release-converged**: exact current candidate evidence, a fresh T013
 current-head performance measurement, and the row-specific external,
 combined-suite, and target-device gates above remain required.
+
+## Subsequent integrated repair disposition — 2026-09-08
+
+Bounded reviews identified and resolved the foreign proposal-store bridge path,
+canonical SHA256 note initialization, and CircleCI aggregate/configuration
+routing. Real runtime UI approval/persistence and reject/stale checks pass;
+platform:test, focused scope/identity tests and generated runtime checks pass.
+Measurement converters now reject incomplete or misbound rows, stale execution
+identity and twins outside the captured measurement profile; 32 contract tests
+pass on the integrated tooling. See `../../../evidence/ai-scope-review.md`, both
+PR7097 workflow reviews and `stage-a-candidate.md` for the exact scope and
+command evidence. These repairs supersede the earlier bounded review outcome
+for the changed paths; they do not close T019 or final release convergence.
+Physical execution is deferred by the owner until development is finished.
