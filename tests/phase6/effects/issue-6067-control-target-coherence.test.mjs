@@ -36,6 +36,18 @@ test('6067: contradictory callTarget does not exactify', () => {
   assert.match(bundle?.unknownEffects?.reason ?? '', /target-evidence-mismatch/);
 });
 
+test('6067: coercible immediate evidence stays fail-closed', () => {
+  const bundle = lift('b', [{ k: 'imm', value: [0x1004] }], { branchTarget: 0x1004n });
+  assert.equal(bundle?.completeness, 'partial');
+  assert.equal(bundle?.operations?.length, 0);
+});
+
+test('6067: coercible explicit target stays fail-closed', () => {
+  const bundle = lift('b', [{ k: 'other', text: '0x1004' }], { branchTarget: [0x1004] });
+  assert.equal(bundle?.completeness, 'partial');
+  assert.equal(bundle?.operations?.length, 0);
+});
+
 test('6067: operand-only target still resolves', () => {
   const bundle = lift('b', [{ k: 'imm', value: 0x1004n }]);
   assert.equal(bundle?.completeness, 'exact');

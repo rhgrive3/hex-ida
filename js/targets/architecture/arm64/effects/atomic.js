@@ -560,6 +560,12 @@ const DSB_OPTION_BY_CRM = Object.freeze([
   'sy','ishld','ishst','ish',
   'sy','ld','st','sy',
 ]);
+const DSB_NXS_OPTION_BY_IMMEDIATE = Object.freeze({
+  16: { option:'oshnxs', base:'osh' },
+  20: { option:'nshnxs', base:'nsh' },
+  24: { option:'ishnxs', base:'ish' },
+  28: { option:'synxs', base:'sy' },
+});
 
 function dmbOption(decoded) {
   const ops = operands(decoded);
@@ -579,6 +585,8 @@ function dsbOption(decoded) {
   if (ops.length === 0) return { option:'sy', crm:null, reservedEncoding:false };
   const immediate = immediateValue(ops[0]);
   if (immediate != null) {
+    const nxs = DSB_NXS_OPTION_BY_IMMEDIATE[Number(immediate)];
+    if (nxs) return { option:nxs.option, crm:Number(immediate), reservedEncoding:false, nxsBase:nxs.base };
     if (immediate < 0n || immediate > 15n) return null;
     const crm = Number(immediate);
     return { option:DSB_OPTION_BY_CRM[crm], crm, reservedEncoding:crm === 8 || crm === 12 };

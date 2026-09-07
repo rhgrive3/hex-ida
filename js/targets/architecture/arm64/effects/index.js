@@ -114,8 +114,7 @@ function movImmediateEncodable(op, widthBits) {
 }
 
 function asBigIntOrNull(value) {
-  try { return value == null ? null : BigInt(value); }
-  catch { return null; }
+  return strictAddressInput(value);
 }
 
 function isGpOrZrRegister(operand) {
@@ -350,10 +349,19 @@ function literalMemoryEncodingFailure(instruction) {
   const ops = Array.isArray(instruction?.ops) ? instruction.ops : [];
   if (ops.some((op) => op?.k === 'mem' || op?.kind === 'memory')) return null;
   const immediate = ops.find((op) => op?.k === 'imm' || op?.kind === 'immediate');
-  const immediateValue = immediate == null ? null : immediateOf(immediate);
-  const target = asBigIntOrNull(instruction?.pcRelTarget ?? instruction?.literalTarget ?? immediateValue);
+  const rawEvidence = [];
+  const pcRelTarget = instruction?.pcRelTarget;
+  const literalTarget = instruction?.literalTarget;
+  if (pcRelTarget != null) rawEvidence.push(pcRelTarget);
+  if (literalTarget != null) rawEvidence.push(literalTarget);
+  if (immediate != null) rawEvidence.push(immediate.value);
+  const targets = rawEvidence.map(strictAddressInput);
+  if (targets.some((value) => value == null)
+    || (targets.length > 1 && !targets.every((value) => value === targets[0]))) {
+    return `arm64-${mnemonic}-literal-target-evidence-mismatch`;
+  }
+  const target = targets[0] ?? null;
   if (target == null) return null;
-  if (immediateValue != null && immediateValue !== target) return `arm64-${mnemonic}-literal-target-evidence-mismatch`;
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { liftArm64MachineEffects } from '../../../js/targets/architecture/arm64/effects/index.js';
 
 let caseId = 0;
-function lift(mnemonic, text) {
+function lift(mnemonic, operand) {
   caseId += 1;
   return liftArm64MachineEffects({
     instructionId: `audit-dsb-nxs-${caseId}`,
     architectureId: 'arm64',
     mode: 'a64',
     mnemonic,
-    ops: text == null ? [] : [{ k: 'other', text }],
+    ops: operand == null ? [] : [typeof operand === 'object' ? operand : { k: 'other', text: operand }],
   });
 }
 
@@ -37,6 +37,23 @@ test('6073: nXS barriers keep their base domain', () => {
   const osh = lift('dsb', 'oshnxs');
   const oshOp = osh.operations.find((item) => item?.kind === 'barrier');
   assert.equal(oshOp?.scope?.domain, 'outer-shareable');
+});
+
+test('6073: canonical nXS immediate encodings reach exact barrier semantics', () => {
+  const expected = [
+    [16, 'outer-shareable'],
+    [20, 'non-shareable'],
+    [24, 'inner-shareable'],
+    [28, 'full-system'],
+  ];
+  for (const [immediate, domain] of expected) {
+    const bundle = lift('dsb', { k: 'imm', value: BigInt(immediate) });
+    assertBarrier(bundle, `#${immediate}`);
+    const op = bundle.operations.find((item) => item?.kind === 'barrier');
+    assert.equal(op?.scope?.domain, domain);
+    assert.equal(op?.scope?.nxs, true);
+    assert.equal(op?.metadata?.crm, immediate);
+  }
 });
 
 test('6073: classic selectors are unchanged', () => {

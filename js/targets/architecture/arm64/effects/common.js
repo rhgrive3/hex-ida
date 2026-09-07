@@ -63,7 +63,7 @@ export function strictAddressInput(value) {
 }
 
 function decodedAbsoluteTargetOf(op) {
-  const immediate = immediateOf(op);
+  const immediate = op?.k === 'imm' ? strictAddressInput(op.value) : immediateOf(op);
   if (immediate != null) return immediate;
   // Some current decoded-model fixtures retain an absolute direct target as a
   // typed `other` operand without Capstone's leading '#'. Normalize that decode
@@ -88,9 +88,7 @@ export function conditionOf(instruction) {
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) {
-    try { return BigInt(explicit); } catch { return null; }
-  }
+  if (explicit != null) return strictAddressInput(explicit);
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);

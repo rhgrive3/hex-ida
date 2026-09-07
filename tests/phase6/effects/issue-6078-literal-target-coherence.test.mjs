@@ -37,6 +37,28 @@ test('6078: contradictory literalTarget does not exactify a wrong address', () =
   assert.notEqual(bundle?.completeness, 'exact');
 });
 
+test('6078: invalid redundant literalTarget is not dropped', () => {
+  const bundle = lift({
+    literalTarget: [0x1004],
+    pcRelTarget: 0x1004n,
+    ops: coherentOps,
+  });
+  assert.equal(bundle?.completeness, 'partial');
+  assert.equal(bundle?.operations?.length, 0);
+});
+
+test('6078: invalid kind-immediate evidence is not dropped', () => {
+  const bundle = lift({
+    pcRelTarget: 0x1004n,
+    ops: [
+      coherentOps[0],
+      { kind: 'immediate', value: [0x1004] },
+    ],
+  });
+  assert.equal(bundle?.completeness, 'partial');
+  assert.equal(bundle?.operations?.length, 0);
+});
+
 test('6078: single-source target still resolves', () => {
   const onlyImmediate = lift({ ops: coherentOps });
   assert.equal(onlyImmediate?.completeness, 'exact');

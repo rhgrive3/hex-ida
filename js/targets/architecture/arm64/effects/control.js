@@ -4,6 +4,7 @@ import {
   directTargetOf,
   immediateOf,
   instructionBits,
+  strictAddressInput,
 } from './common.js';
 import { decorateArm64BtypeEffects } from './btype.js';
 import { emitArm64Condition } from './flags.js';
@@ -140,7 +141,7 @@ function branchTargetOperand(instruction, mnemonic) {
 
 function operandTargetValue(operand) {
   if (operand?.k === 'imm' && operand.value != null) {
-    try { return BigInt(operand.value); } catch { return null; }
+    return strictAddressInput(operand.value);
   }
   if (operand?.k === 'other' && typeof operand.text === 'string'
     && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(operand.text.trim())) {
@@ -155,9 +156,11 @@ function operandTargetValue(operand) {
 function directTargetEvidenceMismatch(instruction, mnemonic, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
   if (explicit == null) return false;
-  let explicitValue = null;
-  try { explicitValue = BigInt(explicit); } catch { return false; }
-  const operandValue = operandTargetValue(branchTargetOperand(instruction, mnemonic));
+  const explicitValue = strictAddressInput(explicit);
+  if (explicitValue == null) return true;
+  const operand = branchTargetOperand(instruction, mnemonic);
+  const operandValue = operandTargetValue(operand);
+  if (operand?.k === 'imm' && operandValue == null) return true;
   if (operandValue == null) return false;
   return explicitValue !== operandValue;
 }
