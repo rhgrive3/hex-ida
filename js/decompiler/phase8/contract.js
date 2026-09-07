@@ -91,6 +91,11 @@ const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const STATUS_SET = new Set(PASS_STATUSES);
 const COMPLETENESS_SET = new Set(COMPLETENESS);
 const BUDGET_SET = new Set(BUDGET_CLASSES);
+const PASS_RESULT_KEYS = new Set([
+  'contractVersion', 'passId', 'passVersion', 'stage', 'status', 'changed',
+  'completeness', 'transforms', 'diagnostics', 'invalidated', 'produced',
+  'preserved', 'stopReason',
+]);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -261,4 +266,299 @@ export function createPassResult(input = {}) {
 /** The common "this pass looked and had nothing safe to do" answer. */
 export function unchangedResult(descriptor, { completeness = 'complete', diagnostics = [], stopReason = null } = {}) {
   return createPassResult({ descriptor, status: 'unchanged', changed: false, completeness, diagnostics, stopReason });
+}
+
+const PASS_RESULT_SNAPSHOT_NODE_LIMIT = 10_000;
+const PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT = 10_000;
+const PASS_RESULT_SNAPSHOT_EDGE_LIMIT = 20_000;
+const SNAPSHOT_RESULT = 'result';
+const SNAPSHOT_DIAGNOSTIC = 'diagnostic';
+const SNAPSHOT_TRANSFORM = 'transform';
+const SNAPSHOT_DIAGNOSTICS = 'diagnostics';
+const SNAPSHOT_TRANSFORMS = 'transforms';
+const SNAPSHOT_STRING_ARRAY = 'string-array';
+const SNAPSHOT_SCALAR = 'scalar';
+const DIAGNOSTIC_RESULT_KEYS = new Set(['severity', 'code', 'message', 'reason']);
+const TRANSFORM_RESULT_KEYS = new Set(['kind', 'targets', 'proof', 'originRefs']);
+
+function snapshotAllowedKeys(schema) {
+  if (schema === SNAPSHOT_RESULT) return PASS_RESULT_KEYS;
+  if (schema === SNAPSHOT_DIAGNOSTIC) return DIAGNOSTIC_RESULT_KEYS;
+  if (schema === SNAPSHOT_TRANSFORM) return TRANSFORM_RESULT_KEYS;
+  return null;
+}
+
+function snapshotChildSchema(schema, key) {
+  if (schema === SNAPSHOT_RESULT) {
+    if (key === 'diagnostics') return SNAPSHOT_DIAGNOSTICS;
+    if (key === 'transforms') return SNAPSHOT_TRANSFORMS;
+    if (key === 'invalidated' || key === 'produced' || key === 'preserved') return SNAPSHOT_STRING_ARRAY;
+    return SNAPSHOT_SCALAR;
+  }
+  if (schema === SNAPSHOT_DIAGNOSTIC) return SNAPSHOT_SCALAR;
+  if (schema === SNAPSHOT_TRANSFORM) {
+    return key === 'targets' || key === 'originRefs' ? SNAPSHOT_STRING_ARRAY : SNAPSHOT_SCALAR;
+  }
+  return SNAPSHOT_SCALAR;
+}
+
+function snapshotArrayElementSchema(schema) {
+  if (schema === SNAPSHOT_DIAGNOSTICS) return SNAPSHOT_DIAGNOSTIC;
+  if (schema === SNAPSHOT_TRANSFORMS) return SNAPSHOT_TRANSFORM;
+  return SNAPSHOT_SCALAR;
+}
+
+function snapshotPassResultData(value) {
+  const active = new Set();
+  const cloned = new Map();
+  let nodes = 0;
+  let properties = 0;
+  let edges = 0;
+
+  const clone = (current, schema) => {
+    if (schema === SNAPSHOT_SCALAR) {
+      if (typeof current === 'function') throw new TypeError('phase8-pass-result-function-property');
+      if (current == null || typeof current !== 'object') return current;
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+    if (current == null || typeof current !== 'object' || typeof current === 'function') {
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+    if (active.has(current)) throw new TypeError('phase8-pass-result-cycle');
+    const previous = cloned.get(current);
+    if (previous !== undefined) {
+      if (previous.schema !== schema) throw new TypeError('phase8-pass-result-shared-shape');
+      return previous.value;
+    }
+    if (nodes >= PASS_RESULT_SNAPSHOT_NODE_LIMIT) throw new TypeError('phase8-pass-result-too-large');
+
+    const array = Array.isArray(current);
+    const arraySchema = schema === SNAPSHOT_DIAGNOSTICS
+      || schema === SNAPSHOT_TRANSFORMS || schema === SNAPSHOT_STRING_ARRAY;
+    if (array !== arraySchema) throw new TypeError('phase8-pass-result-shape');
+    const prototype = Object.getPrototypeOf(current);
+    if (array ? prototype !== Array.prototype : (prototype !== Object.prototype && prototype !== null)) {
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+
+    let length = null;
+    if (array) {
+      // Array length is a data descriptor and can be checked before Reflect.
+      // ownKeys materializes one index key per element, so a hostile sparse
+      // array must not allocate that list before the snapshot budget applies.
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(current, 'length');
+      if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+        throw new TypeError('phase8-pass-result-array-length-invalid');
+      }
+      length = lengthDescriptor.value;
+      if (length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT) {
+        throw new TypeError('phase8-pass-result-too-large');
+      }
+    }
+
+    // Enumerate once, reject schema-incompatible keys before reading any
+    // descriptors, and account for the whole container before cloning a value.
+    const keys = Reflect.ownKeys(current);
+    if (keys.length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT) {
+      throw new TypeError('phase8-pass-result-too-large');
+    }
+    const allowedKeys = snapshotAllowedKeys(schema);
+    if (allowedKeys && keys.some((key) => typeof key !== 'string' || !allowedKeys.has(key))) {
+      throw new TypeError('phase8-pass-result-unknown-property');
+    }
+    if (keys.some((key) => typeof key !== 'string')) {
+      throw new TypeError('phase8-pass-result-symbol-property');
+    }
+
+    let edgeCount = keys.length;
+    if (array) {
+      if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
+      edgeCount = length;
+    }
+    if (properties + keys.length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT
+      || edges + edgeCount > PASS_RESULT_SNAPSHOT_EDGE_LIMIT) {
+      throw new TypeError('phase8-pass-result-too-large');
+    }
+    properties += keys.length;
+    edges += edgeCount;
+    nodes += 1;
+
+    active.add(current);
+    try {
+      if (array) {
+        const copy = new Array(length);
+        const elementSchema = snapshotArrayElementSchema(schema);
+        for (let index = 0; index < length; index += 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+          if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+            throw new TypeError('phase8-pass-result-accessor');
+          }
+          copy[index] = clone(descriptor.value, elementSchema);
+        }
+        const frozen = Object.freeze(copy);
+        cloned.set(current, { schema, value: frozen });
+        return frozen;
+      }
+
+      const copy = Object.create(null);
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+          throw new TypeError('phase8-pass-result-accessor');
+        }
+        Object.defineProperty(copy, key, {
+          value: clone(descriptor.value, snapshotChildSchema(schema, key)),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      const frozen = Object.freeze(copy);
+      cloned.set(current, { schema, value: frozen });
+      return frozen;
+    } finally {
+      active.delete(current);
+    }
+  };
+
+  try {
+    return clone(value, SNAPSHOT_RESULT);
+  } catch {
+    return null;
+  }
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Validates untrusted PassResult candidates fail-closed and non-coercively.
+ *
+ * Guaranteed never to call `.toString()`, `.valueOf()`, getters, or convert
+ * objects into strings or numbers.
+ */
+function isCanonicalList(values) {
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i - 1] >= values[i]) return false;
+  }
+  return true;
+}
+
+function isDescriptorAuthorizedList(values, allowed) {
+  return isCanonicalList(values) && values.every((key) => allowed.includes(key));
+}
+
+function isCanonicalPassResultOwned(result, descriptor = null) {
+  try {
+    if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
+    const keys = Reflect.ownKeys(result);
+    if (keys.some((key) => typeof key !== 'string' || !PASS_RESULT_KEYS.has(key))) return false;
+    if (result.contractVersion !== PHASE8_CONTRACT_VERSION) return false;
+    if (!isNonEmptyString(result.passId)) return false;
+    if (!isNonEmptyString(result.passVersion)) return false;
+    if (typeof result.stage !== 'string' || !STAGE_SET.has(result.stage)) return false;
+    if (typeof result.status !== 'string' || !STATUS_SET.has(result.status)) return false;
+    if (typeof result.changed !== 'boolean') return false;
+    if (typeof result.completeness !== 'string' || !COMPLETENESS_SET.has(result.completeness)) return false;
+    if (result.stopReason != null && !isNonEmptyString(result.stopReason)) return false;
+
+    if (!Array.isArray(result.invalidated)) return false;
+    for (let i = 0; i < result.invalidated.length; i++) {
+      const item = result.invalidated[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.produced)) return false;
+    for (let i = 0; i < result.produced.length; i++) {
+      const item = result.produced[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.preserved)) return false;
+    for (let i = 0; i < result.preserved.length; i++) {
+      const item = result.preserved[i];
+      if (typeof item !== 'string' || !ANALYSIS_SET.has(item)) return false;
+    }
+
+    if (!Array.isArray(result.diagnostics)) return false;
+    for (let i = 0; i < result.diagnostics.length; i++) {
+      const diag = result.diagnostics[i];
+      if (diag == null || typeof diag !== 'object' || Array.isArray(diag)) return false;
+      if (!isNonEmptyString(diag.severity)) return false;
+      if (!isNonEmptyString(diag.code)) return false;
+      if (!isNonEmptyString(diag.message)) return false;
+      if (diag.reason != null && typeof diag.reason !== 'string') return false;
+    }
+
+    if (!Array.isArray(result.transforms)) return false;
+    for (let i = 0; i < result.transforms.length; i++) {
+      const tx = result.transforms[i];
+      if (tx == null || typeof tx !== 'object' || Array.isArray(tx)) return false;
+      if (!isNonEmptyString(tx.kind)) return false;
+      if (!isNonEmptyString(tx.proof)) return false;
+      if (!Array.isArray(tx.targets) || tx.targets.length === 0) return false;
+      for (let j = 0; j < tx.targets.length; j++) {
+        if (!isNonEmptyString(tx.targets[j])) return false;
+      }
+      if (tx.originRefs != null) {
+        if (!Array.isArray(tx.originRefs)) return false;
+        for (let k = 0; k < tx.originRefs.length; k++) {
+          if (!isNonEmptyString(tx.originRefs[k])) return false;
+        }
+      }
+    }
+
+    if ((result.status === 'unchanged' || result.status === 'unsupported') && result.changed === true) {
+      return false;
+    }
+    if (result.status === 'changed' && result.changed === false) {
+      return false;
+    }
+    if (result.changed && result.transforms.length === 0 && result.produced.length === 0) {
+      return false;
+    }
+    if (!result.changed && (result.transforms.length > 0 || result.produced.length > 0 || result.invalidated.length > 0)) {
+      return false;
+    }
+    if (result.status === 'unsupported' && result.completeness === 'complete') {
+      return false;
+    }
+
+    // `preserved` is derived from the invoked descriptor by createPassResult;
+    // accepting a caller-supplied policy list would let the transaction commit
+    // with one authority while its published ledger names another. The other
+    // policy lists are observations, so they may be subsets, but every entry
+    // must be declared by the invoked descriptor and retain analysisList's
+    // sorted/unique canonical form.
+    if (descriptor != null) {
+      if (!Array.isArray(descriptor.preserves) || result.preserved.length !== descriptor.preserves.length
+        || result.preserved.some((key, index) => key !== descriptor.preserves[index])) return false;
+      if (!Array.isArray(descriptor.invalidates) || !isDescriptorAuthorizedList(result.invalidated, descriptor.invalidates)) return false;
+      if (!Array.isArray(descriptor.produces) || !isDescriptorAuthorizedList(result.produced, descriptor.produces)) return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
+/**
+ * Returns the canonical owned snapshot for an untrusted pass result.
+ *
+ * The transaction boundary uses this returned value for every later contract
+ * check and publication decision, so a caller-owned accessor cannot validate
+ * one value and substitute another before commit.
+ */
+export function snapshotCanonicalPassResult(result, descriptor = null) {
+  const snapshot = snapshotPassResultData(result);
+  return snapshot != null && isCanonicalPassResultOwned(snapshot, descriptor) ? snapshot : null;
+}
+
+/** Returns whether an untrusted pass result is a canonical, owned data value. */
+export function isCanonicalPassResult(result) {
+  return snapshotCanonicalPassResult(result) != null;
 }
