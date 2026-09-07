@@ -120,3 +120,57 @@ test('darwin __fp16 HFA keeps half-width member packing on the stack', () => {
   const tail = result.stackArguments.find((argument) => argument?.index === 17);
   assert.equal(tail.offset, entry.offset + 8);
 });
+
+function withoutAggregateAlignment(aggregate) {
+  const copy = { ...aggregate };
+  delete copy.alignmentBytes;
+  return copy;
+}
+
+const COMPACT_PRODUCTION_FORMS = [
+  { label:'float[4] HFA', aggregate:FLOAT_HFA4, elementBytes:4 },
+  { label:'float[2] HFA', aggregate:{
+    hfa:true, bits:64, bytes:8, alignmentBytes:4,
+    members:[{ bits:32, bytes:4, byteOffset:0 }, { bits:32, bytes:4, byteOffset:4 }],
+  }, elementBytes:4 },
+  { label:'double[2] HFA', aggregate:{
+    hfa:true, bits:128, bytes:16, alignmentBytes:8,
+    members:[{ bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 }],
+  }, elementBytes:8 },
+  { label:'128-bit HVA x2', aggregate:{
+    hva:true, bits:256, bytes:32, alignmentBytes:16,
+    members:[{ bits:128, bytes:16, byteOffset:0 }, { bits:128, bytes:16, byteOffset:16 }],
+  }, elementBytes:16 },
+  { label:'__fp16[4] HFA', aggregate:{
+    hfa:true, bits:64, bytes:8, alignmentBytes:2,
+    members:[
+      { bits:16, bytes:2, byteOffset:0 },
+      { bits:16, bytes:2, byteOffset:2 },
+      { bits:16, bytes:2, byteOffset:4 },
+      { bits:16, bytes:2, byteOffset:6 },
+    ],
+  }, elementBytes:2 },
+];
+
+for (const { label, aggregate, elementBytes } of COMPACT_PRODUCTION_FORMS) {
+  test(`darwin production functionPrototype ${label} aligns a spilled scalar before the compact aggregate`, () => {
+    const result = DARWIN_ARM64_ABI.classifyArguments({
+      functionPrototype:{
+        args:[
+          ...EXHAUSTED_BANKS,
+          { type:'float', bits:32, bytes:4, alignmentBytes:4 },
+          { ...withoutAggregateAlignment(aggregate), type:`production-${label}` },
+          { type:'unsigned char' },
+        ],
+      },
+    });
+    const entry = result.stackArguments.find((argument) => argument?.index === 17);
+    const tail = result.stackArguments.find((argument) => argument?.index === 18);
+    assert.ok(entry && tail, `${label} must use the production functionPrototype shape`);
+    const expectedOffset = Math.ceil(4 / elementBytes) * elementBytes;
+    assert.equal(entry.offset, expectedOffset,
+      `${label} uses homogeneous element alignment after the spilled scalar`);
+    assert.equal(entry.alignmentBytes, elementBytes);
+    assert.equal(tail.offset, entry.offset + entry.bytes);
+  });
+}

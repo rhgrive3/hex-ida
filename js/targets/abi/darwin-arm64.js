@@ -9,7 +9,9 @@ import {
 const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ipados','macos','tvos','watchos','visionos']);
 
 function callPrototypeOf(insn, opts) {
-  let proto = insn?.callPrototype || null;
+  // Calls may arrive through the production functionPrototype field while
+  // older callers still provide callPrototype. Normalize both to one source.
+  let proto = insn?.callPrototype || insn?.functionPrototype || null;
   if (!proto) {
     try { proto = opts?.callPrototypeFor?.(insn?.callTarget ?? null, insn) || null; } catch { proto = null; }
   }
@@ -275,7 +277,8 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     }
 
-    stackOffset = alignUp(stackOffset, c.alignmentBytes);
+    const stackAlignmentBytes = c.homogeneous ? c.elementBytes : c.alignmentBytes;
+    stackOffset = alignUp(stackOffset, stackAlignmentBytes);
     /* Apple ARM64 stack arguments consume compact slots of their natural
      * layout, not 8-byte-padded registers ("Function arguments may consume
      * slots on the stack that are not multiples of 8 bytes"). An HFA/HVA that
@@ -291,7 +294,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       location:'stack',
       offset:stackOffset,
       bytes:stackBytes,
-      alignmentBytes:c.alignmentBytes,
+      alignmentBytes:stackAlignmentBytes,
       abiClass:c.aggregate ? 'aggregate' : c.hfa ? 'hfa' : c.hva ? 'hva' : c.vector ? 'vector' : c.fp ? 'fp' : c.pointer ? 'pointer' : 'integer',
       pointer:c.pointer,
       bits:c.bits,
