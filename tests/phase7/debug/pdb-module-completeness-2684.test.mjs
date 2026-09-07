@@ -85,6 +85,8 @@ test('PDB provider propagates incomplete per-module symbol streams', () => {
 });
 
 
+const DBI_HEADER_SIZE = 64;
+
 function lastObjectNameTerminator(dbiBytes, dbi) {
   const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, dbiBytes.length);
   let offset = DBI_HEADER_SIZE;
