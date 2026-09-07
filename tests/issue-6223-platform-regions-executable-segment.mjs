@@ -95,6 +95,7 @@ test('issue #6223: mapped executable section completely covering segment does no
     size: 0x1000n,
     fileOffset: 0n,
     fileSize: 0x1000n,
+    flags: 2n,
     perms: { read: true, write: false, execute: true },
     source: 'section-header',
   });
@@ -153,6 +154,7 @@ test('issue #6223: partial section coverage retains uncovered executable segment
     size: 0x1000n,
     fileOffset: 0n,
     fileSize: 0x1000n,
+    flags: 2n,
     perms: { read: true, write: false, execute: true },
     source: 'section-header',
   });
