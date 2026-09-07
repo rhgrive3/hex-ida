@@ -320,7 +320,13 @@ export function provenSeparationAuthority(target) {
  */
 export function createPointsToSet(input = {}) {
   const top = input.top === true;
-  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => a.rootKey.localeCompare(b.rootKey));
+  // Canonical target order must be locale-independent: rootKey is a digest
+  // identity, and localeCompare() ranks non-ASCII identifiers differently per
+  // host locale (ICU collation), which would change both the canonical order
+  // and pointsToDigest() for the identical semantic set (#5715). UTF-16
+  // code-unit order is the same total order stableDigest's string encoding
+  // already uses elsewhere in the identity stack.
+  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
   const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
   // A loss reason outside the declared vocabulary would be an unexplainable
   // imprecision: the alias layer maps these onto proof reasons, and a free-form

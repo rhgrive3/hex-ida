@@ -207,9 +207,14 @@ export function summaryMayWriteRegion(summary, regionId) {
   return summary.memoryWriteRegions.some((effect) => effect.regionId === regionId);
 }
 export function summaryIsPure(summary) {
+  // Allocations and frees are canonical effect dimensions of their own: a
+  // `free` ends an object's lifetime even when no memory region read/write is
+  // recorded, so a summary carrying either is not pure (#5734).
   return summaryIdentityMatches(summary) && isCompleteStatus(summary.status)
     && summary.unknownCallEffects.length === 0
     && summary.memoryWriteRegions.length === 0
     && summary.memoryReadRegions.length === 0
-    && summary.escapes.length === 0;
+    && summary.escapes.length === 0
+    && summary.allocations.length === 0
+    && summary.frees.length === 0;
 }

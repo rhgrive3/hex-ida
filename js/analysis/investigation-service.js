@@ -367,18 +367,19 @@ export class InvestigationService {
     const profile = budgetProfileKey(config);
     return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
       const budget = new StringCollectionBudget(config);
+      // Section names are prioritization hints, not proof that other
+      // regions contain no strings. Scan every positive-size region so a
+      // complete result and its global cache cover the whole binary (#5801).
       const targets = stringTargets(this.app);
-      const current = storeValue(this.app, 'currentRegion');
+      const regions = (storeValue(this.app, 'regions') || []).filter((r) => BigInt(r?.size ?? 0) > 0n);
+      const hinted = new Set(targets);
+      const ordered = [...targets, ...regions.filter((region) => !hinted.has(region))];
       const use = [], skipped = [];
-      for (const region of targets) {
+      for (const region of ordered) {
         const bytes = budget.requestBytes(Number(region.size));
         if (bytes <= 0) { skipped.push(region); continue; }
         use.push({ region, bytes });
         if (bytes < Number(region.size)) skipped.push(region);
-      }
-      if (!use.length && current) {
-        const bytes = budget.requestBytes(Number(current.size));
-        if (bytes > 0) use.push({ region:current, bytes });
       }
       const rows = [];
       let scannedBytes = 0, backendPartial = false;
