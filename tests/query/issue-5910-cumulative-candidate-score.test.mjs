@@ -298,13 +298,14 @@ test('issue-5910: incremental evidence is permutation-invariant with an equal-th
     addr: 0x80000000n + BigInt(index * 0x10),
   }));
   const target = 0x9800n;
-  const orderedBatches = paddedBatches([
-    ...stored,
-    ...staged,
-    { addr: target },
-    { addr: target },
-    { addr: target },
-  ]);
+  const orderedBatches = [
+    ...chunks(stored),
+    ...chunks(staged),
+    [{ addr: target }],
+    [{ addr: target }],
+    [{ addr: target }],
+    [],
+  ];
   const ordered = await planAnalysisGoal(incrementalQuery, {}, incrementalOptions(
     makeIncrementalTools('function', target, stored, staged, orderedBatches),
   ));
