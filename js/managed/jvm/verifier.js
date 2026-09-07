@@ -393,6 +393,13 @@ export function verifyJvmMethod(decoded, options = {}) {
         errors.push({ code: 'jvm-invalid-branch-target', offset: bundle.bytecodeOffset, target });
       }
     }
+    // The lifter withholds the control effect entirely for an invalid branch
+    // target and reports it as an unknown effect instead; the verifier owns
+    // branch-target authority, so that finding fails the method closed.
+    for (const unknown of bundle.unknownEffects ?? []) {
+      if (unknown?.reason !== 'invalid-jvm-branch-target') continue;
+      errors.push({ code: 'jvm-invalid-branch-target', offset: bundle.bytecodeOffset, target: null });
+    }
     for (const access of [...(bundle.locationReads ?? []), ...(bundle.locationWrites ?? [])]) {
       if (access?.kind !== 'local') continue;
       const index = access.index;
