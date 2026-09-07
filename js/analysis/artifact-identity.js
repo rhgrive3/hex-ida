@@ -84,6 +84,32 @@ export function dependencyClassFor(kind) {
 }
 
 /**
+ * Option-group names recognized across the dependency table.
+ *
+ * These are the only keys allowed in `input.options`: the descriptor projects
+ * the bag down to the option groups the kind's dependency class declares, so
+ * an unrelated analysis' tuning options cannot change this kind's identity
+ * (FM-14 over-invalidation). Keys that are not a known option group at all
+ * fail closed — silently dropping a real dependency's options would narrow
+ * the key below the actual semantics (FM-15), which is worse than a cache
+ * miss.
+ */
+const OPTION_CLASS_KEYS = deepFreeze(
+  [...new Set(Object.values(PHASE7_DEPENDENCY_CLASSES).flat())]
+    .filter((name) => name.endsWith('Options')),
+);
+
+function projectOptionsForKind(options, classes) {
+  const projected = {};
+  const declared = new Set(classes.filter((name) => OPTION_CLASS_KEYS.includes(name)));
+  for (const key of Object.keys(options)) {
+    if (!OPTION_CLASS_KEYS.includes(key)) fail(`phase7-artifact-unknown-option-class:${key}`);
+    if (declared.has(key)) projected[key] = options[key];
+  }
+  return projected;
+}
+
+/**
  * Presentation state that must never enter a semantic cache key.
  *
  * Keying alias analysis by "which tab is open" or "what the user renamed this
@@ -175,7 +201,9 @@ export function createPhase7ArtifactDescriptor(input = {}) {
   };
 
   const options = input.options ?? {};
+  if (!options || typeof options !== 'object' || Array.isArray(options)) fail('phase7-artifact-invalid-options');
   assertNoPresentationState(options);
+  const kindOptions = projectOptionsForKind(options, classes);
 
   return createArtifactDescriptor({
     binaryId: nonEmpty(input.binaryId, 'phase7-artifact-binary-id-required'),
@@ -198,7 +226,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
       provider: keyExtras.debugProviderVersion != null,
     },
     providerVersion: keyExtras.debugProviderVersion ?? undefined,
-    config: options,
+    config: kindOptions,
     keyExtras,
     upstreamArtifactIds: sortedIds(input.upstreamArtifactIds, 'phase7-artifact-invalid-upstream-id'),
     originRefs: sortedIds(input.originRefs, 'phase7-artifact-invalid-origin-ref'),
