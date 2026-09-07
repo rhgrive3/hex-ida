@@ -260,8 +260,15 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
 
 function linkedController(parentSignal) {
   const controller = new AbortController();
-  if (parentSignal?.aborted) controller.abort(parentSignal.reason);
-  else if (parentSignal) parentSignal.addEventListener('abort', () => controller.abort(parentSignal.reason), { once:true });
+  if (parentSignal?.aborted) {
+    controller.abort(parentSignal.reason);
+  } else if (parentSignal) {
+    const onParentAbort = () => controller.abort(parentSignal.reason);
+    parentSignal.addEventListener('abort', onParentAbort, { once:true });
+    controller.signal.addEventListener('abort', () => {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    }, { once:true });
+  }
   return controller;
 }
 

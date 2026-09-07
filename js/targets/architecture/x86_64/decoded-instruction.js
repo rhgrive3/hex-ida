@@ -25,6 +25,14 @@ function text(value, code, { empty = false } = {}) {
   return out;
 }
 
+function instructionIdOf(value) {
+  if (value == null) return value;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  const instructionId = value.trim();
+  if (!instructionId) throw new TypeError('x86-decoded-instruction-invalid-instruction-id');
+  return instructionId;
+}
+
 function detailStatusOf(value, detailAvailable) {
   const status = value == null ? (detailAvailable === true ? 'complete' : 'unavailable') : value;
   if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
@@ -133,9 +141,19 @@ function normalizeOperand(input, index) {
   return Object.freeze(common);
 }
 
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
 function prefixBytesOf(input, code) {
   if (input == null) return new Uint8Array();
-  if (input instanceof Uint8Array) return input.slice();
+  if (ArrayBuffer.isView(input)) {
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    if (tag !== 'Uint8Array') throw new TypeError(code);
+    try { return Uint8Array.from(input); } catch { throw new TypeError(code); }
+  }
   if (!Array.isArray(input)) throw new TypeError(code);
   const bytes = new Uint8Array(input.length);
   for (let index = 0; index < input.length; index += 1) {
@@ -190,7 +208,7 @@ export function createX86DecodedInstruction(input = {}) {
     // publishes a fresh defensive copy.
     get rawBytes() { return rawBytes.slice(); },
     mode,
-    instructionId:input.instructionId,
+    instructionId:instructionIdOf(input.instructionId),
     instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
     decoderContractVersion:contractVersion,
