@@ -152,8 +152,13 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   let sawUnresolvedFlow = false;
 
   const setsFor = (valueId) => {
-    const set = pointsToRun.pointsTo.get(String(valueId));
-    return set ?? null;
+    // Points-to map keys are canonical value ID strings. A non-string
+    // reference is not an alias for some canonical value: String-coercion
+    // would let a structured id like ['v1'] read 'v1''s points-to set and
+    // turn another value's flow into escape evidence (#5783). Fail closed to
+    // an unresolved flow instead.
+    if (typeof valueId !== 'string') return null;
+    return pointsToRun.pointsTo.get(valueId) ?? null;
   };
 
   const record = (set, { reason, boundary, siteId, evidenceIds }) => {
