@@ -49,15 +49,17 @@ function parseSingle(machine, type) {
   return image;
 }
 
-test('#3673 ARM64/ARM64EC reject reserved type 6 and foreign type 8', () => {
+test('#3673 ARM64/ARM64EC reject machine-incompatible and reserved base relocation types', () => {
   for (const machine of [0xaa64, 0xa641]) {
-    for (const type of [6, 8]) {
+    for (const type of [5, 6, 7, 8]) {
       const image = parseSingle(machine, type);
       assert.equal(image.relocations.length, 0, `machine=0x${machine.toString(16)} type=${type}`);
       assert.ok(
         image.warnings.some((warning) => warning.includes(`base relocation type ${type}`)),
         `machine=0x${machine.toString(16)} type=${type} should leave an unsupported-type diagnostic`,
       );
+      assert.equal(image.metadata.peMetadata.complete, false);
+      assert.ok(image.metadata.peMetadata.reasons.includes('relocations:unsupported-type'));
     }
   }
 });
