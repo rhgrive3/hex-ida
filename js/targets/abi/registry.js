@@ -236,7 +236,16 @@ function guardedProviderOptions(options = {}, state) {
     return guarded;
   }
   guarded.callPrototypeFor = function guardedCallPrototypeFor(...args) {
-    const prototype = provider.apply(options, args);
+    let prototype;
+    try {
+      prototype = provider.apply(options, args);
+    } catch {
+      // A provider is caller-controlled authority.  A throw is malformed
+      // metadata, not permission to let the target classifier fall back to
+      // its own coercive/default path.
+      state.invalid = true;
+      return null;
+    }
     if (!strictPrototype(prototype)) {
       state.invalid = true;
       return null;
