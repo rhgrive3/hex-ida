@@ -17,6 +17,14 @@ const categoryMap = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/phase5/ver
 
 function platformFor(target) { return target === 'microsoft-x64-pe' ? 'windows' : 'linux'; }
 function defaultAbiFor(target) { return target === 'microsoft-x64-pe' ? 'microsoft-x64' : 'sysv-amd64'; }
+// The corpus embeds explicitly attributed foreign-ABI functions in both file
+// formats. Select their declared calling-convention context while retaining
+// the real fixture target and binary identity in the observation ledger.
+function analysisPlatformFor(target, mapping) {
+  if (mapping?.analysisAbiId === 'microsoft-x64') return 'windows';
+  if (mapping?.analysisAbiId === 'sysv-amd64') return 'linux';
+  return platformFor(target);
+}
 function targetId(target) { return typeof target === 'string' ? target : target.id; }
 
 function normalizedInstructions(capstoneRows, fixture) {
@@ -157,7 +165,7 @@ test('P5-6 mandatory 144-tuple compiler corpus traverses the full x86 semantic p
           const binaryId = createBinaryIdFromDigest(fixture.sha256);
           const sliceId = createSliceId({ binaryId, index:0, architecture:'x86_64' });
           const analysisAbiId = mapping.analysisAbiId || defaultAbiFor(fixture.target);
-          const analysis = analyzeDecodedSemanticFunction({ architecture:'x86_64', platform:platformFor(fixture.target), abiId:analysisAbiId, binaryId, sliceId, decoderSemanticVersion:normalized[0].decoderSemanticVersion, instructions:normalized, name:mapping.symbol, completeness:'complete' });
+          const analysis = analyzeDecodedSemanticFunction({ architecture:'x86_64', platform:analysisPlatformFor(fixture.target, mapping), abiId:analysisAbiId, binaryId, sliceId, decoderSemanticVersion:normalized[0].decoderSemanticVersion, instructions:normalized, name:mapping.symbol, completeness:'complete' });
           const counts = completenessCounts(analysis.pipeline.machineEffects);
           row.completeness = counts;
           row.pipelineStatus = 'executed';
