@@ -341,4 +341,30 @@ test('issue-5910: incremental evidence is permutation-invariant with an equal-th
     false,
     'a single equal-to-weakest incremental fragment must remain rejected',
   );
+
+
+test('issue-5910: hostile-sized prior input does not grow retained pool state', async () => {
+  const hugePrior = Array.from({ length: 10000 }, (_, index) => ({
+    addr: 0x1000000000n + BigInt(index),
+    source: 'recognition',
+    score: 10,
+  }));
+
+  const result = await planAnalysisGoal(query, {
+    candidateFunctions: hugePrior,
+  }, {
+    tools,
+    maxFunctions: 2,
+    maxDisassembly: 16,
+    maxSearchResults: 8,
+    maxExpansions: 0,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.candidateSources.supplied.recognition, hugePrior.length);
+  assert.equal(result.candidateSources.stored.recognition, 48);
+  assert.equal(result.candidateSources.retainedBound.recognition, 144);
+  assert.ok(result.candidateSources.stored.recognition <= result.candidateSources.retainedBound.recognition);
+  assert.equal(result.completeness.candidateSourceCoverage, 48 / hugePrior.length);
+});
 });

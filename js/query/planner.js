@@ -48,10 +48,16 @@ function sourceComponent(pool) {
   return 'lexicalScore';
 }
 const STAGED_PENDING = Symbol('planner-staged-pending');
+const PROBATION_PENDING = Symbol('planner-probation-pending');
 
 function stagedPool(map) {
   if (!map[STAGED_PENDING]) map[STAGED_PENDING] = new Map();
   return map[STAGED_PENDING];
+}
+
+function probationPool(map) {
+  if (!map[PROBATION_PENDING]) map[map[PROBATION_PENDING] ? PROBATION_PENDING : PROBATION_PENDING] = new Map();
+  return map[PROBATION_PENDING];
 }
 
 function worstEntry(map) {
@@ -63,118 +69,97 @@ function worstEntry(map) {
   return { worstKey, worstScore };
 }
 
-function aggregateCandidateEvidence(rows, read) {
-  const grouped = new Map();
-  for (const row of rows || []) {
-    const item = read(row);
-    const address = asAddr(item?.address);
-    if (address == null) continue;
-    const rawCoverage = Number(item?.coverage);
-    const quality = Number.isFinite(rawCoverage)
-      ? Math.max(0.2, Math.min(1, rawCoverage))
-      : 0.7;
-    const rawWeight = Number(item?.weight);
-    const weight = Number.isFinite(rawWeight) ? rawWeight : 0;
-    const key = address.toString();
-    let aggregate = grouped.get(key);
-    if (!aggregate) {
-      aggregate = {
-        address,
-        amount: 0,
-        sources: [],
-        terms: new Set(),
-        coverageSum: 0,
-        coverageWeight: 0,
-      };
-      grouped.set(key, aggregate);
-    }
-    aggregate.amount += weight * quality;
-    aggregate.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
-    aggregate.coverageWeight += Math.max(1, Math.abs(weight || 1));
-    if (item?.source != null) aggregate.sources.push(item.source);
-    if (item?.term) aggregate.terms.add(item.term);
-  }
-  return Array.from(grouped.values());
-}
-
-function queueCandidateEvidence(rowsByPool, pool, address, source, term, weight, coverage = 1) {
-  rowsByPool[pool].push({ address, source, term, weight, coverage });
-}
-
-function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity, aggregate = null) {
+function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity) {
   const addr = asAddr(address);
   if (addr == null) return;
   const map = poolMap(pools, pool);
+  const staged = stagedPool(map);
+  const probation = probationPool(map);
   const key = addr.toString();
   const quality = Number.isFinite(Number(coverage)) ? Math.max(0.2, Math.min(1, Number(coverage))) : 0.7;
-  // A batch aggregate is admitted atomically; cap comparisons never see
-  // an early fragment of the same address's evidence.
-  const amount = aggregate?.amount ?? (weight || 0) * quality;
+  const amount = (weight || 0) * quality;
   let c = map.get(key);
+  let pending = null;
+  let pendingBucket = null;
+  let pendingMarker = null;
+
   if (!c) {
-    const staged = stagedPool(map);
-    let pending = staged.get(key);
-    if (pending) {
-      // Keep aggregating this address's evidence while it waits to beat the
-      // weakest stored candidate (#5910).
-      c = pending;
-    } else if (map.size < cap) {
-      c = newCandidate(addr);
-      map.set(key, c);
-    } else {
-      // Keep the strongest bounded subset instead of whichever candidates happened
-      // to arrive first. Recognition inputs are often large and not guaranteed to
-      // be pre-sorted. Evidence for one address can arrive in several increments,
-      // so unadmitted addresses are staged with their cumulative score and only
-      // rejected once their aggregate fails to beat the weakest stored candidate;
-      // otherwise arrival order alone decided survivors (#5910).
-      if (staged.size >= cap) {
-        const weakestStaged = worstEntry(staged);
-        if (weakestStaged.worstKey != null && amount <= weakestStaged.worstScore) return;
-        if (weakestStaged.worstKey != null) staged.delete(weakestStaged.worstKey);
-      }
-      pending = newCandidate(addr);
-      pending[STAGED_PENDING] = true;
-      staged.set(key, pending);
-      c = pending;
+    c = staged.get(key);
+    if (c) {
+      pending = c;
+      pendingBucket = staged;
+      pendingMarker = STAGED_PENDING;
     }
   }
+  if (!c) {
+    c = probation.get(key);
+    if (c) {
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    }
+  }
+  if (!c) {
+    if (map.size < cap) {
+      c = newCandidate(addr);
+      map.set(key, c);
+    } else if (staged.size < cap) {
+      // Retain a bounded overflow candidate so later evidence for the same
+      // address can be aggregated even when each increment is below the
+      // weakest stored score (#5910).
+      c = newCandidate(addr);
+      c[STAGED_PENDING] = true;
+      staged.set(key, c);
+      pending = c;
+      pendingBucket = staged;
+      pendingMarker = STAGED_PENDING;
+    } else if (probation.size < cap) {
+      // A second bounded overflow tier prevents a newly observed candidate
+      // from displacing a stronger staged candidate merely because the
+      // staged tier is full. Both tiers are bounded by the same pool cap.
+      c = newCandidate(addr);
+      c[PROBATION_PENDING] = true;
+      probation.set(key, c);
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    } else {
+      // This is a bounded heavy-hitter fallback: once both overflow tiers are
+      // full, do not evict a stronger pending aggregate for a weaker single
+      // arrival. A candidate can still accumulate while retained.
+      const weakestProbation = worstEntry(probation);
+      if (weakestProbation.worstKey == null || amount <= weakestProbation.worstScore) return;
+      probation.delete(weakestProbation.worstKey);
+      c = newCandidate(addr);
+      c[PROBATION_PENDING] = true;
+      probation.set(key, c);
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    }
+  }
+
   c.score += amount;
   c.scoreComponents[sourceComponent(pool)] += amount;
   c.sourcePoolScores[pool] = (c.sourcePoolScores[pool] || 0) + amount;
-  if (aggregate?.sources?.length) c.sources.push(...aggregate.sources);
-  else c.sources.push(source);
-  if (aggregate?.terms?.size) {
-    for (const aggregateTerm of aggregate.terms) c.terms.add(aggregateTerm);
-  } else if (term) c.terms.add(term);
-  c.coverageSum += aggregate?.coverageSum ?? quality * Math.max(1, Math.abs(weight || 1));
-  c.coverageWeight += aggregate?.coverageWeight ?? Math.max(1, Math.abs(weight || 1));
-  if (c[STAGED_PENDING]) {
-    const staged = stagedPool(map);
-    const worst = worstEntry(map);
-    if (worst.worstKey != null && c.score > worst.worstScore) {
-      map.delete(worst.worstKey);
-      staged.delete(key);
-      delete c[STAGED_PENDING];
+  if (source != null) c.sources.push(source);
+  if (term) c.terms.add(term);
+  c.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
+  c.coverageWeight += Math.max(1, Math.abs(weight || 1));
+
+  if (pending && pendingBucket) {
+    const weakestStored = worstEntry(map);
+    if (weakestStored.worstKey != null && c.score > weakestStored.worstScore) {
+      map.delete(weakestStored.worstKey);
+      pendingBucket.delete(key);
+      delete c[pendingMarker];
       map.set(key, c);
     }
   }
 }
-function addCandidateAggregate(pools, pool, aggregate, cap) {
-  addCandidate(
-    pools,
-    pool,
-    aggregate.address,
-    aggregate.sources[0] || `${pool}-aggregate`,
-    null,
-    aggregate.amount,
-    1,
-    cap,
-    aggregate,
-  );
-}
 
 function mergeCandidateInto(target, source) {
+
   target.score += source.score;
   for (const key of Object.keys(target.scoreComponents)) target.scoreComponents[key] += source.scoreComponents[key] || 0;
   for (const [pool, value] of Object.entries(source.sourcePoolScores || {})) target.sourcePoolScores[pool] = (target.sourcePoolScores[pool] || 0) + value;
@@ -365,10 +350,9 @@ function classifyPrior(c) {
 }
 async function candidatePools(query, tools, ctx, b) {
   const pools = Object.fromEntries(POOL_ORDER.map((name) => [name, new Map()]));
-  // Search results arrive in several calls (one per term and, for strings,
-  // one per xref target). Keep the whole bounded operation's rows together so
-  // one address is scored atomically before the pool cap is applied.
-  const discoveryRows = { lexical: [], string: [] };
+  // Consume discovery results directly. The retained state is limited to the
+  // stored pool plus two bounded overflow tiers; no rows-sized staging array
+  // or address-sized aggregate Map is created.
   const terms = uniqueTerms(query);
   for (const term of terms) {
     if (expired(b)) break;
@@ -376,7 +360,16 @@ async function candidatePools(query, tools, ctx, b) {
     if (expired(b)) break;
     const fCoverage = noteSearch(b, 'search_functions', term, fs);
     for (const row of fs.results || []) {
-      queueCandidateEvidence(discoveryRows, 'lexical', resultAddress(row), 'function-name', term, 12, fCoverage);
+      addCandidate(
+        pools,
+        'lexical',
+        resultAddress(row),
+        'function-name',
+        term,
+        12,
+        fCoverage,
+        sourcePoolCap(b, 'lexical'),
+      );
     }
 
     const ss = await invokeTool(tools, 'search_strings', b, term, { limit: b.maxSearchResults });
@@ -385,7 +378,16 @@ async function candidatePools(query, tools, ctx, b) {
     for (const row of ss.results || []) {
       const direct = explicitFunctionAddress(row);
       if (direct != null) {
-        queueCandidateEvidence(discoveryRows, 'string', direct, 'string-reference', term, 8, sCoverage);
+        addCandidate(
+          pools,
+          'string',
+          direct,
+          'string-reference',
+          term,
+          8,
+          sCoverage,
+          sourcePoolCap(b, 'string'),
+        );
       }
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
@@ -393,47 +395,35 @@ async function candidatePools(query, tools, ctx, b) {
         if (expired(b)) break;
         const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
         for (const fn of xr.functions || []) {
-          queueCandidateEvidence(
-            discoveryRows,
+          addCandidate(
+            pools,
             'string',
             fn.addr != null ? fn.addr : fn.function,
             'string-xref',
             term,
             10,
             xCoverage,
+            sourcePoolCap(b, 'string'),
           );
         }
       }
     }
   }
-  // Aggregate every incremental source path before bounded top-k admission.
-  // This retains repeated same-address evidence across terms/xrefs while the
-  // existing per-pool cap remains unchanged.
-  for (const pool of ['lexical', 'string']) {
-    for (const aggregate of aggregateCandidateEvidence(discoveryRows[pool], (row) => row)) {
-      addCandidateAggregate(pools, pool, aggregate, sourcePoolCap(b, pool));
-    }
-  }
 
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
-  const priorRows = Object.fromEntries(POOL_ORDER.map((pool) => [pool, []]));
   for (const c of priors) {
     const pool = classifyPrior(c);
     b.sourceTotals[pool]++;
-    priorRows[pool].push({
-      address: c?.addr != null ? c.addr : c?.address != null ? c.address : c,
-      source: c?.source || `${pool}-prior`,
-      weight: Number(c?.score || 1),
-      coverage: Number(c?.coverage ?? 1),
-    });
-  }
-  // Aggregate each discovery snapshot by address before bounded top-k
-  // admission. This keeps repeated evidence for one candidate together even
-  // when the pool is already full, without increasing the pool cap.
-  for (const pool of POOL_ORDER) {
-    for (const aggregate of aggregateCandidateEvidence(priorRows[pool], (row) => row)) {
-      addCandidateAggregate(pools, pool, aggregate, sourcePoolCap(b, pool));
-    }
+    addCandidate(
+      pools,
+      pool,
+      c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      c?.source || `${pool}-prior`,
+      null,
+      Number(c?.score || 1),
+      Number(c?.coverage ?? 1),
+      sourcePoolCap(b, pool),
+    );
   }
   for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], pools[pool].size);
   return pools;
@@ -446,35 +436,37 @@ async function expandCallNeighborhood(pools, tools, b) {
   if (b.maxFunctions === 0 || b.maxExpansions === 0) return;
   const initial = seedCandidates(pools, b.maxExpansions);
   const graphCap = Math.max(24, b.maxFunctions * 4, b.maxExpansions * 8);
-  const graphRows = [];
-  // The number of seeds and each tool's existing result limit bound this
-  // collection. Aggregate before graphCap admission so repeated callers or
-  // callees are not rejected one row at a time.
+  // Consume caller/callee rows directly through the same bounded accumulator.
   for (const c of initial) {
     if (expired(b)) break;
     const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
     if (expired(b)) break;
     for (const row of callers.results || []) {
-      graphRows.push({
-        address: row.addr ?? row.function ?? row.functionAddress,
-        source: 'caller',
-        weight: 2,
-        coverage: 1,
-      });
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'caller',
+        null,
+        2,
+        1,
+        graphCap,
+      );
     }
     const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
     if (expired(b)) break;
     for (const row of callees.results || []) {
-      graphRows.push({
-        address: row.addr ?? row.function ?? row.functionAddress,
-        source: 'callee',
-        weight: 1,
-        coverage: 1,
-      });
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'callee',
+        null,
+        1,
+        1,
+        graphCap,
+      );
     }
-  }
-  for (const aggregate of aggregateCandidateEvidence(graphRows, (row) => row)) {
-    addCandidateAggregate(pools, 'graph', aggregate, graphCap);
   }
   b.sourceTotals.graph = Math.max(b.sourceTotals.graph, pools.graph.size);
 }
@@ -712,6 +704,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       refinementAvailable: !budgetLimited && (b.reservedFunctions > 0 || b.reservedDisassembly > 0),
       candidateSources: {
         quotas: b.quotas || quotaCounts(pools, b.maxFunctions), stored: Object.fromEntries(POOL_ORDER.map((pool) => [pool, pools[pool].size])), supplied: { ...b.sourceTotals },
+        // stored + staged + probation; source rows are consumed incrementally.
+        retainedBound: Object.fromEntries(POOL_ORDER.map((pool) => [pool, sourcePoolCap(b, pool) * 3])),
         completeness: sourceCompletenessInfo,
       },
       budget: {
