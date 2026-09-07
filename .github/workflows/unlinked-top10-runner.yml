@@ -17,11 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: fix/unlinked-top10-r2-20260830
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -40,10 +46,25 @@ jobs:
       - name: Full test suite
         run: npm test
       - name: Commit generated patch
+        id: generated-commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet && exit 0
+          if git diff --cached --quiet; then
+            echo 'push=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git commit -m "fix: resolve unlinked analysis wiring issues"
-          git push origin HEAD:fix/unlinked-top10-r2-20260830
+          echo 'push=true' >> "$GITHUB_OUTPUT"
+      - name: Push generated patch
+        if: steps.generated-commit.outputs.push == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: fix/unlinked-top10-r2-20260830
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          gh auth setup-git
+          git -c core.hooksPath=/dev/null push origin "HEAD:${TARGET_BRANCH}"

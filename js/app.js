@@ -643,7 +643,6 @@ class App {
     if(region && region.exec && !targets.some((r)=>r.id===region.id))targets.push(region);
     if(!targets.length)return sym;
     const regionSetKey=targets.map((r)=>r.id).join('|');
-    if(sym.functionDiscovery?.attempted===true && sym.functionDiscovery?.regionSetKey===regionSetKey)return sym;
 
     let remaining= Math.max(0, FUNCTION_DISCOVERY_GLOBAL_CAP - Math.min(FUNCTION_DISCOVERY_GLOBAL_CAP, sym.functionCount||0));
     let remainingBytes=targets.reduce((n,r)=>n+BigInt(r.size),0n);
