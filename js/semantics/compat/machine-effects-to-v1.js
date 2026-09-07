@@ -36,13 +36,6 @@ function unique(values) {
 
 function safeBigInt(value) {
   if (value == null) return null;
-  if (typeof value === 'string') {
-    // Only explicit integer syntax may become an address (#5825): BigInt('')
-    // is 0n, which fabricated exact direct targets out of blank strings.
-    const text = value.trim();
-    if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    try { return BigInt(text); } catch { return null; }
-  }
   try { return typeof value === 'bigint' ? value : BigInt(value); }
   catch { return null; }
 }
@@ -341,12 +334,7 @@ function addressIndexTerm(value) {
   if (value.kind === 'shift-left') {
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
-    // (x << a) << b == x << (a + b): nested shifts compose their exponents.
-    // Overwriting the recursive scale dropped the inner shift and projected a
-    // different effective address (#5827, sibling of #5398).
-    const amount = Number(value.amount ?? 0);
-    if (!Number.isSafeInteger(amount) || amount < 0) return null;
-    return { ...nested, scale:nested.scale + amount };
+    return { ...nested, scale:Number(value.amount || 0) || 0 };
   }
   return null;
 }

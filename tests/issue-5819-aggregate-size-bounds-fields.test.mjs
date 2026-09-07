@@ -77,4 +77,14 @@ function graphWith(aggregateSize, fieldOffset, fieldSize) {
   assert.equal(Number(result.layers.structural.selected.descriptor.sizeBytes), 8);
 }
 
+// An explicit non-aligned size remains the authority when all member extents fit.
+// It must not be rounded up merely because alignBytes is larger (#5819).
+{
+  const result = graphWith(10n, 8, 2);
+  assert.equal(result.contradictions.length, 0, 'an in-bounds field is not a contradiction');
+  assert.equal(result.layers.structural.confidence, 'certain');
+  assert.equal(Number(result.layers.structural.selected.descriptor.sizeBytes), 10);
+  assert.equal(Number(result.layers.structural.selected.descriptor.totalSizeBytes), 10);
+}
+
 console.log('issue-5819 hard aggregate size bounds field extents: ok');

@@ -266,10 +266,11 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       // member extents beyond it are incompatible hard facts, never a reason
       // to silently grow the struct and publish it as certain.
       if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
-      calculatedSize = maxAlign > 1n
-        ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
-        : maxOffsetSpan;
-      if (explicitSize != null && explicitSize > calculatedSize) calculatedSize = explicitSize;
+      calculatedSize = explicitSize != null
+        ? explicitSize
+        : maxAlign > 1n
+          ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
+          : maxOffsetSpan;
     }
 
     const calculatedSizeWire = structuralIntegerWire(calculatedSize);
