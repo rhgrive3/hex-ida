@@ -45,6 +45,7 @@ assert.equal(effectiveIndexOffset(0xffffffffn, 'uxtw', 2), (0xffffffffn << 2n) &
 assert.equal(effectiveIndexOffset(-1n, 'sxtw', 2), -4n);
 assert.equal(effectiveIndexOffset(0x10n, 'lsl', 0), 0x10n);
 assert.equal(effectiveIndexOffset(0x10n), 0x10n);
+assert.equal(effectiveIndexOffset(-1n), -1n);
 assert.equal(effectiveIndexOffset(1n, 'uxtw', 4), 16n);
 
 // 5. Presentation helpers share the typed-boundary and bounded-scale policy.
