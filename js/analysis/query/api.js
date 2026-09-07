@@ -52,6 +52,40 @@ function unavailable(method) {
   };
 }
 
+// A query result is an immutable consistent view: consumers must never be able
+// to reach back into adapter-owned analysis/cache state through the exposed
+// value (#5915). The value is detached with a structured clone (typed arrays,
+// Maps and Sets included) and the plain-data tree is then deep-frozen. When the
+// value cannot be cloned (functions/symbols inside), the original tree is
+// deep-frozen in place instead — consumer mutation stays blocked even though
+// the adapter then shares the frozen state.
+function frozenQueryValue(value) {
+  if (value == null || typeof value !== "object") return value;
+  let clone;
+  try {
+    clone = structuredClone(value);
+  } catch {
+    deepFreezeTree(value);
+    return value;
+  }
+  deepFreezeTree(clone);
+  return clone;
+}
+
+function deepFreezeTree(node) {
+  if (node == null || typeof node !== "object" || Object.isFrozen(node)) return;
+  // Buffer views cannot be frozen, and keyed collections freeze only their
+  // facade — both are safe because the structured clone already detached them
+  // from adapter state (#5915).
+  if (ArrayBuffer.isView(node) || node instanceof ArrayBuffer || node instanceof Map || node instanceof Set) return;
+  Object.freeze(node);
+  if (Array.isArray(node)) {
+    for (const item of node) deepFreezeTree(item);
+    return;
+  }
+  for (const key of Object.keys(node)) deepFreezeTree(node[key]);
+}
+
 function completenessOf(result) {
   if (result?.unsupported === true) return "unsupported";
   if (result?.truncated === true) return "truncated";
@@ -126,9 +160,9 @@ export class AnalysisQueryAPI {
     }
 
     const completeness = completenessOf(result);
-    const value = result?.value !== undefined ? result.value : result;
+    const value = frozenQueryValue(result?.value !== undefined ? result.value : result);
     const status = Object.freeze({
-      ...(result?.status && typeof result.status === "object" ? result.status : {}),
+      ...(typeof result?.status === "object" && result.status !== null ? frozenQueryValue(result.status) : {}),
       completeness,
     });
     return Object.freeze({
