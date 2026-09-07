@@ -69,7 +69,13 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const target = ctx.valueOp('and', [sum, ctx.constant(RISCV64_XLEN, -2n)], RISCV64_XLEN, { targetLowBitCleared: true });
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
     const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
-    const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);
+    // The register numbers are only RAS prediction hints. The canonical
+    // procedure return is `jalr x0, x1, 0` — target exactly the base register.
+    // A nonzero offset changes the control target to (rs1+imm)&~1, so treating
+    // it as a `return` would mislabel e.g. `jalr x0, x1, 4` (#6025); it keeps
+    // the hint's branch-target semantics but is an indirect jump.
+    const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1)
+      && BigInt(fields.imm) === 0n;
     const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';
     return ctx.finish({
       controlEffect: { kind, target, ...(kind === 'call' ? { fallthrough: addressRef(next) } : {}) },
