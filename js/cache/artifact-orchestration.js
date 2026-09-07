@@ -29,6 +29,21 @@ const TYPED_ARRAYS = new Map([
   ['BigInt64Array', globalThis.BigInt64Array],
   ['BigUint64Array', globalThis.BigUint64Array],
 ].filter(([, ctor]) => typeof ctor === 'function'));
+const TYPED_ARRAY_PROTO = typeof globalThis.Uint8Array === 'function'
+  ? Object.getPrototypeOf(globalThis.Uint8Array.prototype)
+  : null;
+const TYPED_ARRAY_BUFFER_GETTER = TYPED_ARRAY_PROTO
+  ? Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTO, 'buffer')?.get
+  : null;
+const TYPED_ARRAY_BYTE_OFFSET_GETTER = TYPED_ARRAY_PROTO
+  ? Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTO, 'byteOffset')?.get
+  : null;
+const TYPED_ARRAY_BYTE_LENGTH_GETTER = TYPED_ARRAY_PROTO
+  ? Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTO, 'byteLength')?.get
+  : null;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -165,6 +180,24 @@ function canonicalReferenceId(value) {
   return value;
 }
 
+function canonicalNonNegativeSafeInteger(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) invalidPayloadNode();
+  return value;
+}
+
+function isWorkerPayloadBuffer(value) {
+  return value instanceof ArrayBuffer
+    || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer);
+}
+
+function workerPayloadBufferLength(value) {
+  let length;
+  try { length = value.byteLength; }
+  catch { invalidPayloadNode(); }
+  if (!Number.isSafeInteger(length) || length < 0) invalidPayloadNode();
+  return length;
+}
+
 /**
  * Lossless transport codec for existing worker results. ArtifactStore v1 uses
  * canonical JSON, while current workers legitimately return BigInt and typed
@@ -175,7 +208,8 @@ export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false 
   const active = new WeakSet();
   const references = new WeakMap();
   let nextReferenceId = 0;
-  const encode = (input) => {
+  const encode = (input, options = null) => {
+    const root = options?.root === true;
     if (input === null) return { t:'null' };
     if (input === undefined) return { t:'undefined' };
     const type = typeof input;
@@ -192,19 +226,71 @@ export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false 
     if (type !== 'object') throw new TypeError(`analysis-artifact-payload-type-unsupported:${type}`);
     if (active.has(input)) throw new TypeError('analysis-artifact-payload-cyclic');
     if (references.has(input)) return { t:'ref', i:references.get(input) };
+
+    let dataViewBuffer = null;
+    try { dataViewBuffer = DATA_VIEW_BUFFER_GETTER?.call(input) ?? null; }
+    catch { /* not a DataView; typed-array detection follows */ }
+    const typedArray = !dataViewBuffer && ArrayBuffer.isView(input);
+    if (dataViewBuffer || typedArray) {
+      let buffer;
+      let byteOffset;
+      let byteLength;
+      try {
+        buffer = dataViewBuffer || TYPED_ARRAY_BUFFER_GETTER.call(input);
+        byteOffset = (dataViewBuffer ? DATA_VIEW_BYTE_OFFSET_GETTER : TYPED_ARRAY_BYTE_OFFSET_GETTER).call(input);
+        byteLength = (dataViewBuffer ? DATA_VIEW_BYTE_LENGTH_GETTER : TYPED_ARRAY_BYTE_LENGTH_GETTER).call(input);
+      } catch {
+        throw new TypeError('analysis-artifact-payload-view-invalid');
+      }
+      if (root) {
+        const i = nextReferenceId++;
+        references.set(input, i);
+        active.add(input);
+        try {
+          if (dataViewBuffer) return { t:'data-view', i, v:Array.from(new Uint8Array(buffer, byteOffset, byteLength)) };
+          const name = input.constructor?.name;
+          const ctor = TYPED_ARRAYS.get(name);
+          if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
+          const bigint = name === 'BigInt64Array' || name === 'BigUint64Array';
+          const float = name === 'Float32Array' || name === 'Float64Array';
+          return { t:'typed-array', i, c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
+        } finally {
+          active.delete(input);
+        }
+      }
+      const backing = encode(buffer);
+      const i = nextReferenceId++;
+      references.set(input, i);
+      active.add(input);
+      try {
+        if (dataViewBuffer) return { t:'data-view', i, b:backing, o:byteOffset, l:byteLength };
+        const name = input.constructor?.name;
+        const ctor = TYPED_ARRAYS.get(name);
+        const bytesPerElement = ctor?.BYTES_PER_ELEMENT;
+        if (!ctor || !Number.isSafeInteger(bytesPerElement) || bytesPerElement <= 0 || byteLength % bytesPerElement !== 0) {
+          throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
+        }
+        return {
+          t:'typed-array',
+          i,
+          c:name,
+          b:backing,
+          o:byteOffset,
+          l:byteLength / bytesPerElement,
+        };
+      } finally {
+        active.delete(input);
+      }
+    }
+
     const i = nextReferenceId++;
     references.set(input, i);
     active.add(input);
     try {
       if (input instanceof Date) return { t:'date', i, v:input.toISOString() };
       if (input instanceof ArrayBuffer) return { t:'array-buffer', i, v:Array.from(new Uint8Array(input)) };
-      if (input instanceof DataView) return { t:'data-view', i, v:Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)) };
-      if (ArrayBuffer.isView(input)) {
-        const name = input.constructor?.name;
-        if (!TYPED_ARRAYS.has(name)) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
-        const bigint = name === 'BigInt64Array' || name === 'BigUint64Array';
-        const float = name === 'Float32Array' || name === 'Float64Array';
-        return { t:'typed-array', i, c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
+      if (typeof SharedArrayBuffer === 'function' && input instanceof SharedArrayBuffer) {
+        return { t:'shared-array-buffer', i, v:Array.from(new Uint8Array(input)) };
       }
       if (input instanceof Map) {
         return { t:'map', i, v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
@@ -234,7 +320,7 @@ export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false 
       active.delete(input);
     }
   };
-  return { codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:encode(value) };
+  return { codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:encode(value, { root:true }) };
 }
 
 export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = false } = {}) {
@@ -320,7 +406,33 @@ export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = fals
         const out = canonicalBytes(node.v).buffer;
         return complete(node, register(node, out, ['t', 'v']));
       }
+      case 'shared-array-buffer': {
+        if (!referenceAware || typeof SharedArrayBuffer !== 'function') invalidPayloadNode();
+        const bytes = canonicalBytes(node.v);
+        let out;
+        try {
+          out = new SharedArrayBuffer(bytes.byteLength);
+          new Uint8Array(out).set(bytes);
+        } catch {
+          invalidPayloadNode();
+        }
+        return complete(node, register(node, out, ['t', 'v']));
+      }
       case 'data-view': {
+        if (Object.hasOwn(node, 'b')) {
+          if (!referenceAware) invalidPayloadNode();
+          exactPayloadKeys(node, ['t', 'i', 'b', 'o', 'l']);
+          const backing = decode(node.b);
+          if (!isWorkerPayloadBuffer(backing)) invalidPayloadNode();
+          const byteOffset = canonicalNonNegativeSafeInteger(node.o);
+          const byteLength = canonicalNonNegativeSafeInteger(node.l);
+          const bufferLength = workerPayloadBufferLength(backing);
+          if (byteOffset > bufferLength || byteLength > bufferLength - byteOffset) invalidPayloadNode();
+          let out;
+          try { out = new DataView(backing, byteOffset, byteLength); }
+          catch { invalidPayloadNode(); }
+          return complete(node, register(node, out, ['t', 'b', 'o', 'l']));
+        }
         const bytes = canonicalBytes(node.v);
         return complete(node, register(node, new DataView(bytes.buffer), ['t', 'v']));
       }
@@ -328,6 +440,23 @@ export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = fals
         if (typeof node.c !== 'string') invalidPayloadNode();
         const ctor = TYPED_ARRAYS.get(node.c);
         if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${node.c}`);
+        if (Object.hasOwn(node, 'b')) {
+          if (!referenceAware) invalidPayloadNode();
+          exactPayloadKeys(node, ['t', 'i', 'c', 'b', 'o', 'l']);
+          const bytesPerElement = ctor.BYTES_PER_ELEMENT;
+          const backing = decode(node.b);
+          if (!isWorkerPayloadBuffer(backing) || !Number.isSafeInteger(bytesPerElement) || bytesPerElement <= 0) invalidPayloadNode();
+          const byteOffset = canonicalNonNegativeSafeInteger(node.o);
+          const length = canonicalNonNegativeSafeInteger(node.l);
+          const bufferLength = workerPayloadBufferLength(backing);
+          if (byteOffset % bytesPerElement !== 0
+            || byteOffset > bufferLength
+            || length > Math.floor((bufferLength - byteOffset) / bytesPerElement)) invalidPayloadNode();
+          let out;
+          try { out = new ctor(backing, byteOffset, length); }
+          catch { invalidPayloadNode(); }
+          return complete(node, register(node, out, ['t', 'c', 'b', 'o', 'l']));
+        }
         const out = new ctor(canonicalTypedArrayValues(node.c, node.v));
         return complete(node, register(node, out, ['t', 'c', 'v']));
       }
