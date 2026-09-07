@@ -10,6 +10,7 @@ import {
   ARM64_SYSTEM_EFFECT_MNEMONICS,
   liftArm64SystemEffects,
 } from '../../js/targets/architecture/arm64/effects/system.js';
+import { arm64BarrierScope } from '../../js/targets/architecture/arm64/effects/barrier-options.js';
 
 // DSB (and only DSB) accepts the nXS option variants (ARMv8.7+). The
 // memory/atomic family owns barriers in the production dispatch order, so its
@@ -24,6 +25,17 @@ function lift(mnemonic, option) {
     mode: 'a64',
     mnemonic,
     ops: operand ? [operand] : [],
+  });
+}
+
+function liftAtomic(mnemonic, option) {
+  const operand = option ? { k:'other', text:option } : null;
+  return liftArm64AtomicEffects({
+    instructionId:`arm64-dsb-nxs-atomic-${mnemonic}-${option || 'none'}`,
+    architectureId:'arm64',
+    mode:'a64',
+    mnemonic,
+    ops:operand ? [operand] : [],
   });
 }
 
@@ -112,6 +124,24 @@ test('#6073: non-canonical DSB immediate encodings stay partial', () => {
   }
 });
 
+test('#6073: inherited selector names stay invalid across barrier owners', () => {
+  assert.equal(arm64BarrierScope('__proto__'), null);
+  assert.equal(arm64BarrierScope('constructor'), null);
+  assert.ok(Object.isFrozen(arm64BarrierScope('oshnxs')));
+  for (const mnemonic of ['dmb', 'dsb']) {
+    for (const option of ['__proto__', 'constructor']) {
+      for (const [owner, bundle] of [
+        ['atomic', liftAtomic(mnemonic, option)],
+        ['system', liftSystem(mnemonic, option)],
+        ['dispatcher', lift(mnemonic, option)],
+      ]) {
+        assert.equal(bundle.completeness, 'partial', `${owner} ${mnemonic} ${option}`);
+        assert.ok(!bundle.operations.some((x) => x.kind === 'barrier'), `${owner} ${mnemonic} ${option}`);
+      }
+    }
+  }
+});
+
 test('#6073: duplicate barrier owners share selector domains', () => {
   const sharedMnemonics = [...new Set(ARM64_ATOMIC_EFFECT_MNEMONICS)]
     .filter((mnemonic) => ARM64_SYSTEM_EFFECT_MNEMONICS.has(mnemonic))
@@ -120,13 +150,7 @@ test('#6073: duplicate barrier owners share selector domains', () => {
   const options = { clrex:null, dmb:'ish', dsb:'oshnxs', isb:'sy' };
   for (const mnemonic of sharedMnemonics) {
     const option = options[mnemonic];
-    const atomic = liftArm64AtomicEffects({
-      instructionId:`arm64-dsb-nxs-atomic-owner-${mnemonic}-${option}`,
-      architectureId:'arm64',
-      mode:'a64',
-      mnemonic,
-      ops:option ? [{ k:'other', text:option }] : [],
-    });
+    const atomic = liftAtomic(mnemonic, option);
     const system = liftSystem(mnemonic, option);
     assert.equal(system.completeness, atomic.completeness, `${mnemonic} owner completeness`);
     if (mnemonic === 'clrex') continue;

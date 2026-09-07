@@ -1,4 +1,10 @@
-const DATA_BARRIER_SCOPES = Object.freeze({
+function frozenScopes(scopes) {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(scopes).map(([option, scope]) => [option, Object.freeze(scope)]),
+  ));
+}
+
+const DATA_BARRIER_SCOPES = frozenScopes({
   sy:{ domain:'full-system', access:'all' },
   st:{ domain:'full-system', access:'stores' },
   ld:{ domain:'full-system', access:'loads' },
@@ -26,7 +32,7 @@ const DSB_OPTION_BY_CRM = Object.freeze([
   'sy','ld','st','sy',
 ]);
 
-export const ARM64_DSB_NXS_OPTIONS = Object.freeze({
+export const ARM64_DSB_NXS_OPTIONS = frozenScopes({
   oshnxs:{ domain:'outer-shareable', access:'all', nonXs:true },
   nshnxs:{ domain:'non-shareable', access:'all', nonXs:true },
   ishnxs:{ domain:'inner-shareable', access:'all', nonXs:true },
@@ -41,7 +47,10 @@ const DSB_NXS_OPTION_BY_CRM = Object.freeze({
 });
 
 export function arm64BarrierScope(option) {
-  return DATA_BARRIER_SCOPES[option] || ARM64_DSB_NXS_OPTIONS[option] || null;
+  if (typeof option !== 'string') return null;
+  if (Object.prototype.hasOwnProperty.call(DATA_BARRIER_SCOPES, option)) return DATA_BARRIER_SCOPES[option];
+  if (Object.prototype.hasOwnProperty.call(ARM64_DSB_NXS_OPTIONS, option)) return ARM64_DSB_NXS_OPTIONS[option];
+  return null;
 }
 
 export function arm64BarrierOptionFromText(mnemonic, raw) {
@@ -49,7 +58,9 @@ export function arm64BarrierOptionFromText(mnemonic, raw) {
   const option = raw.trim().toLowerCase().replace(/^#/, '');
   if (!option) return null;
   if (mnemonic === 'isb') return option === 'sy' ? { option, crm:null, reservedEncoding:false } : null;
-  if (mnemonic === 'dmb') return DATA_BARRIER_SCOPES[option] ? { option, crm:null, reservedEncoding:false } : null;
+  if (mnemonic === 'dmb') return arm64BarrierScope(option) && Object.prototype.hasOwnProperty.call(DATA_BARRIER_SCOPES, option)
+    ? { option, crm:null, reservedEncoding:false }
+    : null;
   if (mnemonic === 'dsb') return arm64BarrierScope(option) ? { option, crm:null, reservedEncoding:false } : null;
   return null;
 }
