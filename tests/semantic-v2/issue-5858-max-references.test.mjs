@@ -287,3 +287,24 @@ test('#5858 raw preflight remains conservative for duplicate inputs', () => {
     /semantic-ir-budget-exceeded-maxReferences/
   );
 });
+
+
+test('#5858 frozen parent reuses the nested summary snapshot', () => {
+  let summaryReads = 0;
+  const input = makeFunction('call');
+  const summary = input.nodes[0].call;
+  Object.defineProperty(summary, 'arguments', {
+    configurable: false,
+    enumerable: true,
+    get() {
+      summaryReads += 1;
+      return summaryReads === 1 ? [] : ['address', 'address', 'address'];
+    },
+  });
+  Object.freeze(input.nodes[0]);
+  Object.freeze(input.nodes);
+
+  const result = createSemanticIrFunction(input, { budget: { maxReferences: 2 } });
+  assert.equal(summaryReads, 1, 'frozen parent must reuse the nested summary snapshot');
+  assert.deepEqual(result.nodes[0].call.arguments, []);
+});

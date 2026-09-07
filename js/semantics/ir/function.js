@@ -68,18 +68,58 @@ function arrayLength(value) {
 // keeps accessor-backed nested summaries and scopes identical when the same
 // inputs are normalized after the preflight. The cache is lazy, so the
 // preflight still reads collection lengths without enumerating their elements.
+function needsReferenceClone(value) {
+  if (Array.isArray(value)) return false;
+  return Reflect.ownKeys(value).some((property) => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    return descriptor && 'value' in descriptor
+      && descriptor.configurable === false
+      && descriptor.writable === false
+      && descriptor.value !== null
+      && typeof descriptor.value === 'object';
+  });
+}
+
+function cloneReferenceTarget(value) {
+  const target = Object.create(Object.getPrototypeOf(value));
+  for (const property of Reflect.ownKeys(value)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    if (!descriptor) continue;
+    if ('value' in descriptor) {
+      Object.defineProperty(target, property, {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        writable: true,
+        value: descriptor.value,
+      });
+    } else {
+      Object.defineProperty(target, property, {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: descriptor.get,
+        set: descriptor.set,
+      });
+    }
+  }
+  return target;
+}
+
 function cacheReferenceReads(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object'
     || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
   const cached = seen.get(value);
   if (cached) return cached;
+  const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
   const reads = new Map();
-  const proxy = new Proxy(value, {
-    get(target, property, receiver) {
+  const proxy = new Proxy(target, {
+    get(proxyTarget, property, receiver) {
       if (reads.has(property)) return reads.get(property);
-      const result = Reflect.get(target, property, receiver);
-      const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+      const result = Reflect.get(proxyTarget, property, receiver);
+      const descriptor = Reflect.getOwnPropertyDescriptor(proxyTarget, property);
       if (descriptor && 'value' in descriptor && descriptor.configurable === false && descriptor.writable === false) {
+        // Frozen arrays cannot return a nested proxy through the invariant-protected slot.
+        // Cache the nested view by raw identity and return the required raw value.
+        cacheReferenceReads(result, seen);
         reads.set(property, result);
         return result;
       }
@@ -89,14 +129,16 @@ function cacheReferenceReads(value, seen = new WeakMap()) {
     },
   });
   seen.set(value, proxy);
+  seen.set(proxy, proxy);
   return proxy;
 }
 
 // Every collection that can carry a reference or bounded work item is part of
 // the maxReferences denominator. Raw lengths are a conservative upper bound
 // because normalization only deduplicates/sorts or maps one item to one item.
-function summaryReferenceCount(summary) {
+function summaryReferenceCount(summary, seen) {
   if (!summary || typeof summary !== 'object') return 0;
+  summary = seen ? cacheReferenceReads(summary, seen) : summary;
   let count = 0;
   for (const key of [
     'targetValueIds', 'targetEntityIds', 'arguments', 'returns',
@@ -136,25 +178,28 @@ function countReferences(nodes, values, blocks) {
 // before nested collections are normalized, sorted, deduplicated, frozen, or
 // serialized. Invalid objects still fail through the normal validators; an
 // overflow sentinel rejects even when arithmetic cannot remain safe.
-function countRawReferences(blocks, values, nodes) {
+function countRawReferences(blocks, values, nodes, seen) {
   let count = 0;
   for (const block of blocks) {
     if (!block || typeof block !== 'object') continue;
-    count = addReferenceCount(count, arrayLength(block.nodeIds));
+    const blockView = cacheReferenceReads(block, seen);
+    count = addReferenceCount(count, arrayLength(blockView.nodeIds));
   }
   for (const value of values) {
-    if (value && typeof value === 'object' && value.definitionNodeId != null) {
-      count = addReferenceCount(count, 1);
+    if (value && typeof value === 'object') {
+      const valueView = cacheReferenceReads(value, seen);
+      if (valueView.definitionNodeId != null) count = addReferenceCount(count, 1);
     }
   }
   for (const node of nodes) {
     if (!node || typeof node !== 'object') continue;
+    const nodeView = cacheReferenceReads(node, seen);
     for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
-      count = addReferenceCount(count, arrayLength(node[key]));
+      count = addReferenceCount(count, arrayLength(nodeView[key]));
     }
-    if (node.memory != null) count = addReferenceCount(count, 1);
-    count = addReferenceCount(count, summaryReferenceCount(node.call));
-    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
+    if (nodeView.memory != null) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(nodeView.call, seen));
+    count = addReferenceCount(count, summaryReferenceCount(nodeView.intrinsic, seen));
   }
   return count;
 }
@@ -253,16 +298,16 @@ export function createSemanticIrFunction(input, options = {}) {
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
   // Preflight the complete reference denominator before nested normalization.
-  assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes), options, 'maxReferences');
+  assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes, referenceReads), options, 'maxReferences');
 
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
     contractVersion: SEMANTIC_IR_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-ir-function-id-required'),
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
-    blocks: rawBlocks.map(normalizeBlock).sort((a, b) => a.id.localeCompare(b.id)),
-    values: rawValues.map(createSemanticValue).sort((a, b) => a.id.localeCompare(b.id)),
-    nodes: rawNodes.map(createSemanticNode).sort((a, b) => a.id.localeCompare(b.id)),
+    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
+    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
+    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)
