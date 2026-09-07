@@ -45,7 +45,17 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   let sessions = raw?.sessions && typeof raw.sessions === 'object'
     ? Object.fromEntries(Object.entries(raw.sessions))
     : {};
-  if (t < windowStarted || t - windowStarted >= windowMs) {
+  // A wall-clock rollback must be handled with one consistent policy for the
+  // whole quota state (#6088): consumed rate budget stays consumed (no reset,
+  // no re-grant), and lease lifetimes are rebased by the same correction so a
+  // rollback cannot extend a concurrency lock. Only genuine forward expiry
+  // resets the window.
+  let rollbackMs = 0;
+  if (t < windowStarted) {
+    rollbackMs = windowStarted - t;
+    windowStarted = t;
+    sessions = Object.fromEntries(Object.entries(sessions).map(([id, session]) => [id, { windowStarted: t, count: finiteInt(session?.count) }]));
+  } else if (t - windowStarted >= windowMs) {
     windowStarted = t;
     count = 0;
     sessions = {};
@@ -54,7 +64,7 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   const leases = {};
   if (raw?.leases && typeof raw.leases === 'object') {
     for (const [token, lease] of Object.entries(raw.leases)) {
-      const expiresAt = finiteInt(lease?.expiresAt);
+      const expiresAt = finiteInt(lease?.expiresAt) - rollbackMs;
       if (!token || expiresAt <= t) continue;
       setOwn(leases, token, {
         sessionId: normalizeQuotaSessionId(lease?.sessionId),
