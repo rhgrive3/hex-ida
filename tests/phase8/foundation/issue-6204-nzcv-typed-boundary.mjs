@@ -30,6 +30,7 @@ assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, 128), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, null), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, ''), null);
 assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n), true);
+assert.equal(evaluateNZCVCondition('sub', 'eq', 1n, 1n, undefined), null);
 
 // 3. Unknown producer/condition stay fail-closed.
 assert.equal(evaluateNZCVCondition('rubbish', 'eq', 1n, 1n, 64), null);
@@ -60,6 +61,7 @@ assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, ['32']), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, '32'), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, null), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, ''), null);
+assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, undefined), null);
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 
@@ -74,6 +76,7 @@ assert.equal(renderNZCVCondition('sub', 'eq', ['a'], 'b', 32), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ['32']), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', null), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ''), null);
+assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', undefined), null);
 assert.equal(renderNZCVCondition(['sub'], 'eq', 'a', 'b', 32), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', 32), '(uint32_t)a == (uint32_t)b');
 assert.equal(renderNZCVCondition('sub', 'hs', 'a', 'b', 32), '(uint32_t)a >= (uint32_t)b');
