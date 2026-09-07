@@ -1,10 +1,17 @@
 export const COMPACT_DIFF_FUNCTION_SET_SCHEMA = 'hex.diff.compact-function-set/v1';
 export const SYMMETRIC_DIFF_PROFILE = 'symmetric-symbol-fast/v1';
 
+// Preserve legacy numeric input compatibility, but never publish fractional or
+// negative array lengths. Clamp to the actual column length before allocation.
+function boundedFunctionCount(value, maximum) {
+  const count = Number(value);
+  return Number.isNaN(count) ? 0 : Math.min(maximum, Math.max(0, Math.floor(count)));
+}
+
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
   const functionAddresses = symbols?.funcs || [];
   const total = Number(functionAddresses.length || 0);
-  const count = Math.min(total, Math.max(0, Number(limit) || 0));
+  const count = boundedFunctionCount(limit, total);
   return Object.freeze({
     schema: COMPACT_DIFF_FUNCTION_SET_SCHEMA,
     evidenceProfile: SYMMETRIC_DIFF_PROFILE,
@@ -22,7 +29,7 @@ export function createCompactFunctionSet(symbols, architecture, limit = 350000) 
 export function materializeCompactFunctionSet(input) {
   if (input?.schema !== COMPACT_DIFF_FUNCTION_SET_SCHEMA) return input || [];
   const functions = input.functionAddresses || [];
-  const count = Math.min(Number(input.count || 0), functions.length);
+  const count = boundedFunctionCount(input.count, functions.length);
   const symbolAddresses = input.symbolAddresses || [];
   const symbolNames = input.symbolNames || [];
   const names = new Map();
