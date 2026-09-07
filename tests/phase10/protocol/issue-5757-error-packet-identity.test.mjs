@@ -27,10 +27,13 @@ class FakeTransport {
   const pending = client.request('debugger.readMemory', {}, { facet: 'debugger' });
   const request = transport.sent[0];
 
-  transport.receive(packet('error', { id: request.id, epoch: 1, code: ['timeout'], message: { text: 'failed' } }));
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1, code: ['timeout'], message: { text: 'failed' } })), false,
+    'structured error identity fields must be rejected at the protocol boundary');
+  assert.equal(client.pending.size, 1, 'a malformed error packet must not consume the pending request');
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1, code: 'provider-failure', message: 'provider request failed' })), true);
   const error = await pending.catch((value) => value);
-  assert.equal(error?.code, 'provider-failure', 'a structured code must not become the error identity');
-  assert.equal(error?.message, 'provider request failed', 'a structured message must not become the error message');
+  assert.equal(error?.code, 'provider-failure');
+  assert.equal(error?.message, 'provider request failed');
   client.close();
 }
 
