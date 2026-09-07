@@ -54,10 +54,21 @@ test('#5870/#5847: malformed payloads do not become integer or float facts', () 
 });
 
 test('#5870: strict integer payloads keep their exact constant', () => {
-  assert.equal(constValueFor(42n), 42n);
-  assert.equal(constValueFor(42), 42n);
-  assert.equal(constValueFor('42'), 42n);
-  assert.equal(constValueFor('0x2A'), 42n);
+  const cases = [
+    [42n, 42n],
+    [42, 42n],
+    ['42', 42n],
+    ['-42', -42n],
+    ['0x2A', 42n],
+    ['0b1010', 10n],
+    ['0o12', 10n],
+  ];
+  for (const [payload, expected] of cases) {
+    const { inst, primaryOutput } = projectionFor(payload);
+    assert.equal(inst?.extra?.value, expected);
+    assert.equal(primaryOutput?.const, BigInt.asUintN(64, expected));
+    assert.equal(inst?.extra?.float, undefined);
+  }
 });
 
 test('#5847: canonical numeric strings and numbers retain integer authority', () => {

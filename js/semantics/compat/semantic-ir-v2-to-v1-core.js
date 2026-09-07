@@ -68,16 +68,17 @@ export function safeBigInt(value) {
     if ((value.kind === 'absolute-address' || value.kind === 'address') && value.value != null) return safeBigInt(value.value);
     return null;
   }
-  // Integer constant authority requires an explicit integer primitive or a
-  // strict integer literal. ECMAScript BigInt() coercion would launder
-  // '' -> 0 and booleans -> 0/1, minting exact legacy constants from
-  // non-integer payloads (#5870).
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
-  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) {
-    try { return BigInt(value); } catch { return null; }
+  if (typeof value !== 'string') return null;
+  const match = /^([+-]?)(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)$/.exec(value);
+  if (!match) return null;
+  try {
+    const magnitude = BigInt(match[2]);
+    return match[1] === '-' ? -magnitude : magnitude;
+  } catch {
+    return null;
   }
-  return null;
 }
 function machineWidth(type) {
   if (!type || typeof type !== 'object') return 64;
