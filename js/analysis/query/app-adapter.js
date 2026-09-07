@@ -62,13 +62,29 @@ function unsupported(id, reason) {
   return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
 }
 
+const COMPLETENESS_ORDER = Object.freeze({
+  complete: 0,
+  partial: 1,
+  truncated: 2,
+  unsupported: 3,
+});
+
 function completenessOf(value, fallback = 'complete') {
-  if (value?.unsupported === true) return 'unsupported';
-  if (value?.truncated === true) return 'truncated';
-  if (value?.completeness?.complete === false || value?.complete === false || value?.partial === true) return 'partial';
-  if (value?.status?.completeness) return value.status.completeness;
-  if (typeof value?.completeness === 'string') return value.completeness;
-  return fallback;
+  const evidence = [];
+  const statusCompleteness = value?.status?.completeness;
+  const topLevelCompleteness = value?.completeness;
+  if (typeof statusCompleteness === 'string') evidence.push(statusCompleteness);
+  if (typeof topLevelCompleteness === 'string') evidence.push(topLevelCompleteness);
+  if (value?.unsupported === true) evidence.push('unsupported');
+  if (value?.truncated === true) evidence.push('truncated');
+  if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
+
+  const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  if (recognized.length === 0) return hasInvalidString ? 'partial' : fallback;
+  return recognized.reduce((strongest, item) => (
+    COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
+  ));
 }
 
 function wrap(value, completeness = null, status = {}) {
