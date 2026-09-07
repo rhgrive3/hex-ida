@@ -42,6 +42,14 @@ test('6038: structured decoderSemanticVersion does not coerce', () => {
     () => createRiscv64DecodedInstruction(base({ decoderSemanticVersion:null })),
     TypeError,
   );
+  assert.throws(
+    () => createRiscv64DecodedInstruction(base({
+      decoderSemanticVersion: {
+        toString: () => 'capstone-5-riscv64-word-exact-v1',
+      },
+    })),
+    TypeError,
+  );
 });
 
 test('6038: canonical primitives still accepted', () => {
