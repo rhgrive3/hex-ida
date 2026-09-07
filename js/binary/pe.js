@@ -128,7 +128,13 @@ export function parsePE(input, options = {}) {
   const numberOfRvaAndSizes = r.u32(opt + (bits === 64 ? 108 : 92));
   const dirBase = opt + (bits === 64 ? 112 : 96);
   const directories = [];
-  const dirCount = Math.min(numberOfRvaAndSizes, 16, Math.max(0, Math.floor((opt + sizeOptional - dirBase) / 8)));
+  // Bounds safety (how many entries physically fit) and format validity (how
+  // many were declared) are separate questions (#6118): a declared count that
+  // the optional header cannot hold is truncation, not absence.
+  const availableEntries = Math.max(0, Math.floor((opt + sizeOptional - dirBase) / 8));
+  const requiredKnownEntries = Math.min(numberOfRvaAndSizes, 16);
+  const dirCount = Math.min(requiredKnownEntries, availableEntries);
+  const directoryShortfall = requiredKnownEntries - dirCount;
   for (let i = 0; i < dirCount; i++) directories.push({ rva: r.u32(dirBase + i * 8), size: r.u32(dirBase + i * 8 + 4) });
 
   const image = new BinaryImage(bytes, {
@@ -136,6 +142,11 @@ export function parsePE(input, options = {}) {
     imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [], peSectionRawSizes: [] },
   });
+  if (directoryShortfall > 0) {
+    image.metadata.peDataDirectoriesTruncated = true;
+    image.metadata.peDataDirectoryShortfall = directoryShortfall;
+    image.warnings.push(`PE optional header declares ${numberOfRvaAndSizes} data directories but SizeOfOptionalHeader ${sizeOptional} only holds ${dirCount}; ${directoryShortfall} declared entries are missing and the missing range is truncation, not a format fact`);
+  }
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
   const secBase = opt + sizeOptional;
@@ -150,6 +161,16 @@ export function parsePE(input, options = {}) {
     const flags = r.u32(p + 36);
     const address = imageBase + BigInt(virtualAddress);
     const virtualExtent = BigInt(virtualSize || sizeRaw);
+    // Section virtual ranges live inside the 32-bit RVA domain and inside the
+    // declared SizeOfImage; BigInt arithmetic would otherwise happily map a
+    // section past 2^32 that no PE image can express (#6097). Keep the raw
+    // header facts, but do not promote such a section to canonical mapping.
+    const startRva = BigInt(virtualAddress);
+    const endRva = startRva + virtualExtent;
+    const rvaLimit = 1n << 32n;
+    const beyondRvaDomain = endRva > rvaLimit;
+    const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
+    const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw);
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
@@ -191,12 +212,26 @@ export function parsePE(input, options = {}) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    if (virtualRangeInvalid) {
+      const reason = beyondRvaDomain ? 'pe:section-virtual-range-rva-overflow' : 'pe:section-virtual-range-exceeds-size-of-image';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithInvalidVirtualRange ||= [];
+      image.metadata.peSectionsWithInvalidVirtualRange.push({
+        sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
+        endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
+      continue;
+    }
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
     image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
 
   if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);
   const metadataBudget = createPEMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  if (directoryShortfall > 0) metadataBudget.partial('optional-header:data-directories-truncated');
   parseCoffSymbols(r, ptrSymbols, numberOfSymbols, image, metadataBudget);
   parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image, metadataBudget);
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image, metadataBudget);
