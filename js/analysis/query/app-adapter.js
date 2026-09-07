@@ -75,7 +75,7 @@ function throwIfAborted(signal) {
   if (signal?.aborted) throw abortError(signal);
 }
 
-function requestWithSignal(request, signal) {
+async function requestWithSignal(request, signal) {
   throwIfAborted(signal);
   if (!request || typeof request.then !== 'function') return Promise.resolve(request);
   if (!signal?.addEventListener) return Promise.resolve(request);
