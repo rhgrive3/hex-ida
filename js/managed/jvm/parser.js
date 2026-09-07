@@ -72,6 +72,7 @@ function skipMembers(view, pos) {
 function validateBootstrapMethods(image) {
   const bytes = image.rawBytes;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const majorVersion = view.getUint16(6, false);
   let pos = skipConstantPool(view, bytes);
   pos += 6;
   const interfaces = view.getUint16(pos, false); pos += 2 + interfaces * 2;
@@ -83,7 +84,7 @@ function validateBootstrapMethods(image) {
     const length = view.getUint32(pos + 2, false);
     const start = pos + 6;
     const end = start + length;
-    if (utf8(image.constantPool, nameIndex) === 'BootstrapMethods') {
+    if (majorVersion >= 51 && utf8(image.constantPool, nameIndex) === 'BootstrapMethods') {
       let cursor = start;
       const count = view.getUint16(cursor, false); cursor += 2;
       for (let i = 0; i < count; i++) {

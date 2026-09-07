@@ -29,6 +29,21 @@ assert.throws(()=>parseJvm(buildClass(constructorFixture('()I'))),/jvm-invalid-c
 assert.doesNotThrow(()=>parseJvm(buildClass(constructorFixture('()V'))));
 
 // BootstrapMethods references are typed: MethodHandle target + loadable constants only.
+
+// BootstrapMethods is a standard attribute only from class-file 51.0.
+// A legacy class may use the same name for an unrelated custom attribute.
+{
+  const legacyEntries = [...base, utf8('BootstrapMethods')];
+  assert.doesNotThrow(() => parseJvm(buildClass(legacyEntries, {
+    major: 50,
+    classAttributes: [{ nameIndex: 5, payload: [0xff] }],
+  })));
+  assert.throws(() => parseJvm(buildClass(legacyEntries, {
+    major: 51,
+    classAttributes: [{ nameIndex: 5, payload: [0xff] }],
+  })), /jvm-truncated-bootstrap-methods-attribute/);
+}
+
 const bootstrapEntries=[...base,utf8('bootstrap'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(6,8),utf8('BootstrapMethods')];
 assert.throws(()=>parseJvm(buildClass(bootstrapEntries,{classAttributes:[{nameIndex:10,payload:bootstrapPayload(8)}]})),/jvm-invalid-bootstrap-method-ref/);
 assert.throws(()=>parseJvm(buildClass(bootstrapEntries,{classAttributes:[{nameIndex:10,payload:bootstrapPayload(9,[7])}]})),/jvm-invalid-bootstrap-argument/);
