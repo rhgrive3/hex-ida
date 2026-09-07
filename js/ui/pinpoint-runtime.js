@@ -132,8 +132,10 @@ export function makePinpointAnalyzer(app, region, parentSignal = null, analyze =
       if (!owner) return null;
       const totalRows = Number(owner.size / 4n);
       const target = BigInt(addr);
-      const startRow = Number((target - owner.vmAddr) / 4n);
-      if (!(startRow >= 0) || startRow >= totalRows) return null;
+      const delta = target - owner.vmAddr;
+      if (delta < 0n || delta % 4n !== 0n) return null;
+      const startRow = Number(delta / 4n);
+      if (startRow >= totalRows) return null;
       /* end が未証明でも隣接関数へは伸びない: 局所的な境界（証明済み end か
          次の関数開始、#464 ガード付き）で窓を締める。 */
       const stop = end != null ? BigInt(end) : app.symbols?.functionWindowBound?.(target) ?? null;

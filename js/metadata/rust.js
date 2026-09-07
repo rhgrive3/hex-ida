@@ -160,11 +160,22 @@ function parseV0Identifier(str, pos) {
     p++;
   }
 
-  // Length integer
-  const lenMatch = str.slice(p).match(/^(\d+)/);
-  if (!lenMatch) return null;
-  const len = Number(lenMatch[1]);
-  p += lenMatch[1].length;
+  /*
+   * v0 decimal-number: the value zero is encoded as the single byte `0` and
+   * must never be concatenated with a following digit (rustc v0 spec warns
+   * about exactly this). `_RC03foo` is `C` + length 0 + trailing `3foo`, not
+   * `C` + length 3 (#5875).
+   */
+  let len;
+  if (p < str.length && str[p] === '0') {
+    len = 0;
+    p += 1;
+  } else {
+    const lenMatch = str.slice(p).match(/^[1-9][0-9]*/);
+    if (!lenMatch) return null;
+    len = Number(lenMatch[0]);
+    p += lenMatch[0].length;
+  }
   if (p < str.length && str[p] === '_') {
     p++;
   }
@@ -283,6 +294,17 @@ function parseV0Type(str, state, depth = 0) {
   return parseV0Path(str, state, depth + 1);
 }
 
+/** Parse the Rust v0 `impl-path = disambiguator? path` production. */
+function parseV0ImplPath(str, state, depth = 0) {
+  if (state.pos < str.length && str[state.pos] === 's') {
+    state.pos++;
+    const dis = parseV0Base62(str, state.pos);
+    if (!dis) return null;
+    state.pos = dis.nextPos;
+  }
+  return parseV0Path(str, state, depth);
+}
+
 function parseV0Path(str, state, depth = 0) {
   if (state.pos >= str.length) return null;
   if (depth > state.maxDepth) {
@@ -303,6 +325,12 @@ function parseV0Path(str, state, depth = 0) {
     const ns = str[state.pos++]; // namespace character
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
+    // NOTE (#5864): a missing identifier here still resolves to the parent
+    // path. Tightening this would break the established repo contract tested
+    // by tests/metadata-rust.test.mjs, tests/phase12/integration/
+    // metadata-rust.test.mjs and tests/issues-unlinked-batch-20260901.mjs
+    // (identifier-less N followed by a `.llvm.N` vendor suffix), so the
+    // lenient behavior stays until the demangler contract is revisited.
     const ident = parseV0Identifier(str, state.pos);
     if (!ident) return parent;
     state.pos = ident.nextPos;
@@ -316,17 +344,22 @@ function parseV0Path(str, state, depth = 0) {
   }
 
   if (tag === 'M') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    const implPath = parseV0ImplPath(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
     if (implPath && typeName) return `<${implPath}::${typeName}>`;
     return null;
   }
 
   if (tag === 'X') {
-    const implPath = parseV0Path(str, state, depth + 1);
+    // All three components of `X` impl-path type trait-path are mandatory;
+    // `<type as trait>` placeholders would admit truncated symbols (#5866).
+    const implPath = parseV0ImplPath(str, state, depth + 1);
+    if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
+    if (!typeName) return null;
     const traitPath = parseV0Path(str, state, depth + 1);
-    return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
+    if (!traitPath) return null;
+    return `<${typeName} as ${traitPath}>`;
   }
 
   if (tag === 'I') {
@@ -440,13 +473,28 @@ function v0SuffixParses(s, pos, maxDepth) {
   }
 }
 
+/** Normalize the canonical legacy prefix and its single Mach-O decoration. */
+export function stripLegacyRustPrefix(text) {
+  if (typeof text !== 'string') return null;
+  if (text.startsWith('__ZN')) return text.slice(2);
+  if (text.startsWith('_ZN')) return text.slice(1);
+  if (text.startsWith('ZN')) return text;
+  return null;
+}
+
+/** Recognize supported Rust symbol prefixes without coercing metadata. */
+export function isRustCandidateSymbol(text) {
+  if (typeof text !== 'string') return false;
+  return text.startsWith('_R') || text.startsWith('__R') || stripLegacyRustPrefix(text) != null;
+}
+
 /**
- * Demangles a Rust legacy mangled symbol (starts with `_ZN...17h<16 hex digits>E`).
+ * Demangles a Rust legacy symbol, including the single Mach-O decoration.
  */
 export function demangleRustLegacy(symbol) {
   const original = String(symbol || '');
-  const s = original.replace(/^_/, '');
-  if (!s.startsWith('ZN')) {
+  const s = stripLegacyRustPrefix(original);
+  if (s == null) {
     return { original, demangled: original, parsed: false, reason: 'not-legacy-rust-symbol' };
   }
 
@@ -494,6 +542,9 @@ export function demangleRustLegacy(symbol) {
   if (!terminated || components.length === 0) {
     return { original, demangled: original, parsed: false, reason: 'unrecognized-legacy-structure' };
   }
+  if (i !== s.length) {
+    return { original, demangled: original, parsed: false, reason: 'unconsumed-legacy-trailing-bytes' };
+  }
 
   const demangled = components.join('::');
   return {
@@ -515,11 +566,27 @@ export function demangleRustSymbol(symbol) {
   if (text.startsWith('_R') || text.startsWith('__R')) {
     return demangleRustV0(text);
   }
-  if (text.startsWith('_ZN') || text.startsWith('ZN')) {
+  if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
     if (leg.parsed) return leg;
   }
   return { original: text, demangled: text, parsed: false, reason: 'not-rust-symbol' };
+}
+
+/**
+ * Vtable authority is structural, not lexical (issue #5881).
+ *
+ * Rust v0/legacy mangling cannot distinguish a user function named `vtable`
+ * (`_RNvC3foo6vtable` -> `foo::vtable`) from a compiler-generated vtable
+ * static, and any demangled path merely *containing* "vtable"
+ * (`foo::vtable_helper`) is an ordinary symbol. A name substring therefore
+ * never promotes a symbol to vtable evidence: `isVtable` is accepted only as
+ * explicit upstream structural evidence carried on the symbol record (for
+ * example a symbol-table kind or a data-section classification). Symbols
+ * without that evidence stay plain symbol evidence, which fails closed.
+ */
+export function isRustVtableSymbol(sym) {
+  return sym?.isVtable === true || sym?.vtable === true;
 }
 
 /**
@@ -600,9 +667,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     let unreadable = 0;
     let invalidEntries = 0;
 
-    const isRustCandidateName = (name) =>
-      typeof name === 'string' &&
-      (name.startsWith('_R') || name.startsWith('__R') || name.startsWith('_ZN') || name.startsWith('ZN'));
+    const isRustCandidateName = isRustCandidateSymbol;
 
     for (const sym of rawSymbols) {
       const name = sym.name || sym.symbol || String(sym);
@@ -622,7 +687,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
           sizeBytes: sym.size ?? sym.sizeBytes ?? null,
           crate: dem.crate,
           generation: dem.generation,
-          isVtable: dem.demangled.includes('::vtable') || dem.demangled.includes('vtable'),
+          isVtable: isRustVtableSymbol(sym),
         };
         rustSymbols.push(normalized);
         if (normalized.isVtable) vtables.push(normalized);

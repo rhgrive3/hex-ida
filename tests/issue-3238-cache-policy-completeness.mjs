@@ -69,7 +69,14 @@ test('#3238 translation-only complete (legacy createCompleteness default) still 
 test('#3238 fully complete five-axis certificate stays cacheable for proved and refuted', () => {
   assert.equal(isCacheableProof(clean({ completeness: allComplete })), true);
   assert.equal(
-    isCacheableProof(clean({ completeness: allComplete, verdict: 'refuted', solverStatus: SOLVER_STATUS.SAT })),
+    isCacheableProof(
+      clean({
+        completeness: allComplete,
+        verdict: 'refuted',
+        solverStatus: SOLVER_STATUS.SAT,
+        validationStatus: 'validated',
+      }),
+    ),
     true,
   );
 });

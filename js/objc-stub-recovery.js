@@ -80,18 +80,19 @@
         const vm = BigInt(r.vmAddr), end = vm + BigInt(r.size);
         if (addr < vm || addr >= end) continue;
         let cur = BigInt(addr), out = '';
-        while (cur < end && out.length < maxSelector) {
+        while (cur < end && out.length <= maxSelector) {
           if (!budget.takeOperation()) return null;
           const p = await pageFor(r, cur);
           if (!p) return null;
-          while (p.offset < p.bytes.length && cur < end && out.length < maxSelector) {
+          while (p.offset < p.bytes.length && cur < end && out.length <= maxSelector) {
             const ch = p.bytes[p.offset++];
             if (ch === 0) return out || null;
+            if (out.length >= maxSelector) return null;
             if (!budget.takeString(1)) return null;
             out += String.fromCharCode(ch); cur++;
           }
         }
-        return out || null;
+        return null;
       }
       return null;
     };

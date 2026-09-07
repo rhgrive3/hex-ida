@@ -32,6 +32,42 @@ for (const invalidSlice of [['1'], { value:1 }, -1, -1n, true]) {
   assert.equal(identity.confidence, 'none', 'malformed explicit slice state must not mint a strong content binding');
 }
 
+// Restored helpers must preserve the explicit identity authority boundary (#6552).
+{
+  // Restoring the binding helpers must not default malformed explicit authority
+  // to strong/ready or erase an invalid optional field while retaining its ID.
+  let conversions = 0;
+  const coercible = { [Symbol.toPrimitive]() { conversions++; return 'strong'; } };
+  for (const field of ['id', 'kind', 'confidence', 'state', 'algorithm', 'hash', 'legacyId']) {
+    for (const value of [[], {}, true, false, 0, 1n, new String('strong'), '', '   ', coercible]) {
+      const resolved = resolveBinaryIdentity({ binaryIdentity: { id: 'content:explicit', [field]: value } });
+      assert.equal(resolved.id, 'fallback:unbound', `invalid explicit ${field} retained authority`);
+      assert.equal(resolved.confidence, 'none', `invalid explicit ${field} defaulted to strong`);
+      assert.equal(resolved.state, 'hash-unavailable');
+    }
+  }
+  assert.equal(conversions, 0, 'identity validation must not invoke conversion hooks');
+
+  const normalized = resolveBinaryIdentity({ binaryIdentity: {
+    id: ' content:explicit ', kind: ' content-derived ', confidence: ' strong ',
+    state: ' ready ', algorithm: ' sha256 ', hash: ' aaa ', legacyId: ' legacy-A ',
+  } });
+  assert.deepEqual(normalized, {
+    id: 'content:explicit', kind: 'content-derived', confidence: 'strong',
+    state: 'ready', algorithm: 'sha256', hash: 'aaa', legacyId: 'legacy-A',
+  });
+  for (const value of [null, undefined]) {
+    const defaulted = resolveBinaryIdentity({ binaryIdentity: {
+      id: 'external:valid', kind: value, confidence: value, state: value,
+      algorithm: value, hash: value, legacyId: value,
+    } });
+    assert.equal(defaulted.kind, 'external');
+    assert.equal(defaulted.confidence, 'strong');
+    assert.equal(defaulted.state, 'ready');
+    assert.equal(defaulted.hash, null);
+  }
+}
+
 await import('./ai-analysis-boundary-base.mjs');
 await import('./ai-query-authority-cutover.mjs');
 await import('./issue-3189-causal-budget-strict.mjs');

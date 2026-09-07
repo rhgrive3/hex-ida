@@ -4,21 +4,71 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function invalidExternalSignal() {
+  return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+}
+
+function validateExternalSignal(externalSignal) {
+  if (externalSignal == null) return null;
+  if (typeof externalSignal !== 'object' && typeof externalSignal !== 'function') throw invalidExternalSignal();
+  let addEventListener;
+  let removeEventListener;
+  let aborted;
+  let reason;
+  try {
+    addEventListener = externalSignal.addEventListener;
+    removeEventListener = externalSignal.removeEventListener;
+    aborted = externalSignal.aborted;
+    if (aborted) reason = externalSignal.reason;
+  } catch {
+    throw invalidExternalSignal();
+  }
+  if (typeof addEventListener !== 'function' || typeof removeEventListener !== 'function') throw invalidExternalSignal();
+  return {
+    signal:externalSignal,
+    addEventListener,
+    removeEventListener,
+    aborted:!!aborted,
+    reason:reason ?? 'cancelled',
+  };
+}
+
 function operationController(session, externalSignal) {
+  const authority = validateExternalSignal(externalSignal);
   const controller = session.controller();
   let listener = null;
-  if (externalSignal) {
-    if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
-    else {
-      listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
-      externalSignal.addEventListener('abort', listener, { once:true });
-      if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
+  try {
+    if (authority) {
+      if (authority.aborted) controller.abort(authority.reason);
+      else {
+        listener = () => {
+          let reason = 'cancelled';
+          try { reason = authority.signal.reason ?? 'cancelled'; } catch {}
+          controller.abort(reason);
+        };
+        Reflect.apply(authority.addEventListener, authority.signal, ['abort', listener, { once:true }]);
+        let aborted;
+        try { aborted = authority.signal.aborted; } catch { throw invalidExternalSignal(); }
+        if (aborted) listener();
+      }
     }
+  } catch (error) {
+    if (authority && listener) {
+      try { Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]); } catch {}
+    }
+    session.releaseController(controller);
+    if (error instanceof DebugAdapterError && error.code === 'invalid-signal') throw error;
+    throw invalidExternalSignal();
   }
   return {
     signal:controller.signal,
     release() {
-      if (externalSignal && listener) externalSignal.removeEventListener('abort',listener);
+      // Detachment is best-effort cleanup of a caller-owned signal; a throwing
+      // removeEventListener must not mask the operation outcome, because
+      // release() runs from consumer finally blocks.
+      try {
+        if (authority && listener) Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
+      } catch {}
       session.releaseController(controller);
     }
   };
@@ -135,6 +185,7 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
+    const traceEpoch = session.epoch;
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
     let observation = { stop:null, returnValue:null, branches:[] }, trace;
     const started = Date.now();
@@ -143,7 +194,8 @@ export class RuntimeAnalysisPlatform {
         await adapter.launch(launchSpec,{signal:operation.signal});
       } else if (adapter.capabilities.attach && options.attach) {
         await adapter.attach(options.attach,{signal:operation.signal});
-      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+      } else if (!adapter.capabilities.traceFunction) {
+        if (adapter.capabilities.attach) throw new DebugAdapterError('attach-target-required','adapter requires an attach target before tracing');
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {
@@ -156,7 +208,21 @@ export class RuntimeAnalysisPlatform {
         trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
       }
     } finally { operation.release(); }
-    for (const event of trace.events || []) session.acceptEvent(event);
+    if (session.epoch !== traceEpoch) {
+      throw new DebugAdapterError('session-epoch-changed','runtime trace completed after the active session epoch changed',{traceEpoch,sessionEpoch:session.epoch});
+    }
+    const acceptance = session.acceptEvents(trace?.events == null ? [] : trace.events,traceEpoch);
+    if (!acceptance.ok) {
+      const rejection = {
+        'closed-session': { code:'session-closed', message:'runtime trace session is closed' },
+        'events-not-array': { code:'session-trace-invalid', message:'runtime trace events must be an array' },
+        'wire-unsafe': { code:'session-trace-not-wire-safe', message:'runtime trace contains a non-wire-safe event' },
+        'event-epoch-invalid': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event with an invalid epoch' },
+        'event-epoch-missing': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event without a valid epoch' },
+        'event-epoch-mismatch': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event outside the captured session epoch' },
+      }[acceptance.reason] || { code:'session-trace-invalid', message:'runtime trace event batch was rejected' };
+      throw new DebugAdapterError(rejection.code,rejection.message,{traceEpoch,eventEpoch:null,reason:acceptance.reason});
+    }
     const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const facts = factExtraction.facts;
     const replayable=isReplayable(adapter,observation,trace);
