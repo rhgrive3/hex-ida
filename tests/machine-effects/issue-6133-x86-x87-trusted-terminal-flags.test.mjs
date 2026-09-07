@@ -44,9 +44,17 @@ try {
     const effects = liftX86MachineEffects(decoded, { instructionId: `issue-6133:${family}` });
     assert.equal(effects.completeness, 'exact-with-intrinsic');
     const summary = effects.operations[0].effectSummary;
-    const flags = [...summary.registersRead, ...summary.registersWritten];
-    assert.ok(hasRflags(flags), `${family} must retain RFLAGS evidence`);
-    assert.ok(!hasFpswFlags(flags), `${family} must not reinterpret EFLAGS as FPSW.C*`);
+    if (family === 'fcmovbe') {
+      // FCMOV consumes the condition-code source; a write-only RFLAGS
+      // summary would not prove that the terminal decoder retained the
+      // condition dependency.
+      assert.ok(hasRflags(summary.registersRead), 'fcmovbe must read RFLAGS');
+      assert.ok(!hasFpswFlags(summary.registersRead), 'fcmovbe must not read FPSW');
+    } else {
+      const flags = [...summary.registersRead, ...summary.registersWritten];
+      assert.ok(hasRflags(flags), `${family} must retain RFLAGS evidence`);
+      assert.ok(!hasFpswFlags(flags), `${family} must not reinterpret EFLAGS as FPSW.C*`);
+    }
     assert.ok(summary.registersWritten.includes('x86.x87.environment'));
   }
 
