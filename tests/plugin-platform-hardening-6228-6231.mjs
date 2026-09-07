@@ -138,3 +138,53 @@ import { PlatformPluginRegistry } from '../js/platform/plugin-api.js';
   const valid = await registry.invoke('format', 'format.timeout', 'detect', {}, { timeoutMs: 30 });
   assert.equal(valid.ok, true);
 }
+{
+  let timeoutReads = 0;
+  const registry = new PlatformPluginRegistry({
+    get timeoutMs() {
+      timeoutReads += 1;
+      return timeoutReads === 1 ? 25 : 'malformed';
+    },
+  });
+  assert.equal(registry.timeoutMs, 25);
+  assert.equal(timeoutReads, 1, 'constructor timeout authority is snapshotted once');
+}
+
+{
+  const registry = new PlatformPluginRegistry({ timeoutMs: 50 });
+  let policyReads = 0;
+  let maxReadReads = 0;
+  let optionReads = 0;
+  registry.registerFormat('format.stateful-authority', {
+    async detect(context) {
+      return context.read(0n, 1);
+    },
+  });
+  const policy = {
+    binaryRead: true,
+    maxTotalReadBytes: 1,
+    get maxReadBytes() {
+      maxReadReads += 1;
+      return maxReadReads === 1 ? 1 : 'malformed';
+    },
+  };
+  const context = {
+    get pluginPolicy() {
+      policyReads += 1;
+      return policy;
+    },
+    read: async () => new Uint8Array([1]),
+  };
+  const options = {
+    get timeoutMs() {
+      optionReads += 1;
+      return optionReads === 1 ? 50 : 'malformed';
+    },
+  };
+  const result = await registry.invoke('format', 'format.stateful-authority', 'detect', context, options);
+  assert.equal(result.ok, true);
+  assert.equal(policyReads, 1);
+  assert.equal(maxReadReads, 1);
+  assert.equal(optionReads, 1);
+}
+
