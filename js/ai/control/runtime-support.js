@@ -1,0 +1,150 @@
+import { AIError } from '../schema.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
+
+export function requiredScopeForTool(tool) {
+  if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
+  if (['project_search','get_binary_diff'].includes(tool)) return 'project';
+  if (['get_runtime_observations','verify_runtime_hypothesis'].includes(tool)) return 'runtime';
+  if (tool === 'get_related_functions') return 'neighborhood';
+  return null;
+}
+export function wireMeta(request, controller, intent, sessionId = null) { return { sessionId, mode: request.mode, style: request.style, scope: controller.effectiveScope, requestedScope: request.scope, effectiveScope: controller.effectiveScope, intent, task: request.task || null, responseSchema: null }; }
+export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
+export function memoryAnchor(snapshot, effectiveScope, liveContext = null) {
+  let runtimeSessionId = snapshot.runtimeSessionIdentity || null;
+  let runtimeSessionState = snapshot.runtimeSessionState || (runtimeSessionId != null ? 'bound' : 'unknown');
+  if (runtimeSessionState === 'unknown' && liveContext?.runtimeSessionKnown === true) {
+    const observed = firstBinding(liveContext.runtimeSession?.id, liveContext.runtime?.sessionId, liveContext.runtimeSessionId);
+    runtimeSessionId = canonicalBindingId(observed);
+    runtimeSessionState = observed == null ? 'none' : runtimeSessionId == null ? 'unknown' : 'bound';
+  }
+  return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId, runtimeSessionState, effectiveScope };
+}
+export function sessionMatchesSnapshot(session, snapshot) {
+  const sessionIdentity = session.binaryIdentity || null;
+  const snapshotIdentity = snapshot.binaryIdentity || null;
+  const sessionRawId = session.binaryId ?? sessionIdentity?.id ?? null;
+  const snapshotRawId = snapshot.binaryId ?? snapshotIdentity?.id ?? null;
+  const sessionBindingId = canonicalBindingId(sessionRawId);
+  const snapshotBindingId = canonicalBindingId(snapshotRawId);
+  if (sessionRawId != null && sessionBindingId == null) return false;
+  if (snapshotRawId != null && snapshotBindingId == null) return false;
+  // An unbound session carries no positive evidence that it belongs to the
+  // current binary. Treating that as a wildcard match would silently adopt
+  // another binary's investigation state, so both sides must be unbound (or
+  // the session must prove its binding via a verifiable legacy id) to match.
+  let binaryMatches = sessionBindingId == null
+    ? snapshotBindingId == null
+    : sessionBindingId === snapshotBindingId;
+  if (!binaryMatches) {
+    const sessionStrong = strongIdentity(sessionIdentity, sessionBindingId);
+    const snapshotStrong = strongIdentity(snapshotIdentity, snapshotBindingId);
+    const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
+    const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
+
+    if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    else binaryMatches = false;
+  }
+  const projectMatches = session.projectId == null
+    || (canonicalBindingId(session.projectId) != null
+      && canonicalBindingId(snapshot.projectIdentity) != null
+      && canonicalBindingId(session.projectId) === canonicalBindingId(snapshot.projectIdentity));
+  const priorAnchor = session.investigationMemory?.anchor || null;
+  const priorRuntimeRaw = priorAnchor?.runtimeSessionId ?? null;
+  const priorRuntime = canonicalBindingId(priorRuntimeRaw);
+  const priorRuntimeState = priorAnchor?.runtimeSessionState || (priorRuntimeRaw != null ? 'bound' : 'unknown');
+  const snapshotRuntime = canonicalBindingId(snapshot.runtimeSessionIdentity);
+  const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
+  let runtimeMatches = true;
+  if (priorRuntimeState === 'bound') runtimeMatches = priorRuntime != null && snapshotRuntimeState === 'bound' && snapshotRuntime != null && priorRuntime === snapshotRuntime;
+  else if (priorRuntimeState === 'none') runtimeMatches = snapshotRuntimeState === 'none';
+  return binaryMatches && projectMatches && runtimeMatches;
+}
+export function assertLiveBindingsUnchanged(local, snapshot) {
+  const live = resolveBinaryIdentity(local, {});
+  const snapshotIdentity = snapshot.binaryIdentity || null;
+  const sameId = live.id === snapshotIdentity?.id;
+  const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
+  const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
+  if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
+  const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
+  if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
+    throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
+  }
+  const liveRuntime = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
+  const liveRuntimeKnown = local.runtimeSessionKnown === true || liveRuntime != null;
+  const liveRuntimeBinding = canonicalBindingId(liveRuntime);
+  const liveRuntimeState = liveRuntimeKnown ? (liveRuntime == null ? 'none' : liveRuntimeBinding == null ? 'invalid' : 'bound') : 'unknown';
+  const snapshotRuntime = canonicalBindingId(snapshot.runtimeSessionIdentity);
+  const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
+  if (snapshotRuntimeState === 'bound') {
+    if (liveRuntimeState !== 'bound' || snapshotRuntime == null || liveRuntimeBinding !== snapshotRuntime) {
+      throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
+    }
+  } else if (snapshotRuntimeState === 'none' && liveRuntimeState !== 'none') {
+    throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
+  }
+}
+export function compactCandidate(candidate) { return { address: addressString(candidate.address), name: candidate.name, lexicalScore: candidate.lexicalScore, semanticScore: candidate.semanticScore, graphScore: candidate.graphScore, evidenceScore: candidate.evidenceScore, runtimeScore: candidate.runtimeScore, totalScore: candidate.totalScore, reasons: candidate.reasons }; }
+export function deterministicDecision(plan, request, error = null) {
+  const best = plan?.best;
+  if (best) { const address = addressString(best.address); return { type: 'final', answer: `最も強い候補は ${best.name || address} です。Hex の決定論的 planner が候補を順位付けし、${best.verification?.verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] }; }
+  return { type: 'final', answer: error ? humanError(error) : (request.mode === 'chat' ? '利用できるローカル根拠だけでは回答を確定できませんでした。' : '有力な候補を特定できませんでした。'), confidence: 0, evidenceIds: [], suggestedActions: [], followups: plan?.missingEvidence || [] };
+}
+export function fallbackEvidence(store, plan) { const planIds = new Set(plan?.evidence || []), exact = store.all().filter((item) => planIds.has(item.id)); if (exact.length) return exact.slice(0, 50); const planned = store.all().filter((item) => item.sourceTool === 'deterministic-goal-planner'); if (planned.length) return planned.slice(-50); return store.all().filter((item) => item.status === 'verified').slice(-50); }
+export function deterministicConfidence(plan) { if (plan?.best?.verification?.verified) return 0.98; if (plan?.best?.semanticFacts?.length) return 0.78; return plan?.best ? 0.45 : 0; }
+export function presentAnswer(answer, style, evidence, plan) { if (style === 'analyst') return answer; const suffix = evidence.length ? `\n\nHex が確認できた根拠は ${evidence.length} 件です。` : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。'; return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`; }
+export function ensureRunning(signal, started, timeoutMs) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (Date.now() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
+export function remainingTime(started, timeoutMs) { return Math.max(1, timeoutMs - (Date.now() - started)); }
+export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }
+export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
+function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }
+const BRIDGE_DIAGNOSTIC_MESSAGES = Object.freeze({
+  'manual-interference': 'The submitted ChatGPT turn does not match the Hex request.',
+  'conversation-switched': 'The active ChatGPT conversation changed while Hex was waiting.',
+  'already-active': 'Another Hex ChatGPT request is already active.',
+  'response-error': 'ChatGPT reported an error for the active response.',
+  'page-error': 'ChatGPT reported a page-level error for the active request.',
+  timeout: 'ChatGPT response capture timed out.',
+  RPC_UNSAFE_RESULT: 'The ChatGPT bridge rejected an unsafe RPC result.',
+});
+function safeBridgeDiagnosticMessage(code) { return code ? BRIDGE_DIAGNOSTIC_MESSAGES[code] || null : null; }
+export function visibleProviderDiagnostics(error) {
+  if (error?.type !== 'provider_error' && error?.type !== 'model_timeout') return '';
+  const diagnostics = providerDiagnostics(error);
+  if (!diagnostics) return '';
+  const lines = ['Hex AI diagnostics:'];
+  if (diagnostics.provider) lines.push(`provider: ${diagnostics.provider}`);
+  if (diagnostics.bridgeCode) lines.push(`code: ${diagnostics.bridgeCode}`);
+  if (diagnostics.bridgeStage) lines.push(`stage: ${diagnostics.bridgeStage}`);
+  if (diagnostics.runtimeBuildId) lines.push(`runtimeBuildId: ${diagnostics.runtimeBuildId}`);
+  const message = safeBridgeDiagnosticMessage(diagnostics.bridgeCode);
+  if (message) lines.push(`message: ${message}`);
+  return lines.join('\n');
+}
+export function humanError(error) {
+  const labels = { cancelled: '解析を停止しました。保存済みの証拠とセッションは保持されています。', budget_exhausted: '解析予算または時間上限に達しました。得られた根拠までを返します。', context_too_large: 'provider へ送る入力全体が安全な上限を超えたため、送信前に停止しました。', model_timeout: 'モデル応答が時間内に完了しませんでした。ローカル解析結果は保持されています。', provider_error: 'AI provider を利用できませんでした。ローカル解析結果は保持されています。', invalid_model_output: 'モデル出力を安全に検証できませんでした。', invalid_tool_call: 'モデルが要求したツール呼び出しを検証できませんでした。', scope_violation: '指定された解析範囲を越える要求を拒否しました。', tool_failed: 'Hex ツールの実行に失敗しました。' };
+  const label = labels[error?.type] || error?.message || 'AI 解析を完了できませんでした。';
+  const diagnostics = visibleProviderDiagnostics(error);
+  return diagnostics ? `${label}\n\n${diagnostics}` : label;
+}
+export function addressExistsSync(context, address) { if (typeof context.addressExists === 'function') { const result = context.addressExists(address); if (typeof result === 'boolean') return result; } try { if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address)); if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address)); } catch { return false; } return true; }
+export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
+export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
+
+function strongIdentity(identity, id) {
+  const value = id == null ? canonicalBindingId(identity?.id) : canonicalBindingId(id);
+  if (canonicalBindingId(identity?.hash) != null) return true;
+  if (typeof value === 'string' && value.startsWith('content:')) return true;
+  return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof value === 'string' && !value.startsWith('fallback:');
+}
+function sameLegacy(a, b) {
+  const left = canonicalBindingId(a), right = canonicalBindingId(b);
+  return left != null && right != null && left === right;
+}
+function sameNullableBinding(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  const left = canonicalBindingId(a), right = canonicalBindingId(b);
+  return left != null && right != null && left === right;
+}

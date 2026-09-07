@@ -1,0 +1,504 @@
+/**
+ * P7-6 — generic function-discovery fusion.
+ *
+ * The key rule (§12.1): **evidence producers may be target-specific; evidence
+ * fusion is generic.** Nothing in this file knows what a prologue looks like,
+ * what a link register is, or how any architecture encodes a call. It sees
+ * typed evidence records with addresses and authority classes, and combines
+ * them.
+ *
+ * That is not stylistic. The moment the fusion learns one architecture's
+ * conventions, every other architecture's results start depending on how well
+ * that one is modelled, and the cross-architecture metamorphic laws stop being
+ * meaningful.
+ *
+ * Start and extent are fused separately and can disagree: a start can be exact
+ * while its extent stays unknown, which is the correct answer far more often
+ * than a single contiguous body would be.
+ */
+
+import { createAnalysisStatus } from '../status.js';
+import {
+  createDiscoveryEvidence,
+  createFunctionCandidate,
+  createRegion,
+  hasExactStart,
+  regionsOverlap,
+} from './candidates.js';
+
+export const DISCOVERY_ANALYZER_ID = 'phase7.discovery.fusion';
+export const DISCOVERY_ANALYZER_VERSION = '1.0.0';
+
+export const DISCOVERY_DEFAULT_BUDGET = Object.freeze({
+  maxCandidates: 200000,
+  maxEvidencePerCandidate: 64,
+});
+
+function canonicalEvidence(item, code = 'discovery-fusion-evidence-item-invalid') {
+  if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(code);
+  return createDiscoveryEvidence(item);
+}
+
+/**
+ * A registry of evidence producers.
+ *
+ * Producers are registered per architecture (or as `generic`). The fusion calls
+ * them and never inspects their internals, which is what keeps the boundary
+ * one-directional.
+ */
+export class DiscoveryProducerRegistry {
+  constructor() {
+    this.producers = new Map();
+  }
+
+  register(producer) {
+    if (typeof producer?.produce !== 'function') throw new TypeError('discovery-producer-must-implement-produce');
+    // Registry identity and evidence provenance must be the same canonical
+    // string authority. A structured id must not coerce into a real registry
+    // key (String(['p1']) === 'p1') while the raw value keeps flowing into
+    // evidence provenance.
+    if (typeof producer.id !== 'string' || !producer.id) throw new TypeError('discovery-producer-id-required');
+    const id = producer.id;
+    this.producers.set(id, producer);
+    return this;
+  }
+
+  /** Producers applicable to one architecture, in deterministic order. */
+  for(architectureId) {
+    return [...this.producers.values()]
+      .filter((producer) => producer.architectureId == null || producer.architectureId === architectureId)
+      .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  }
+
+  collect(input, architectureId, options = {}) {
+    const evidence = [];
+    const producerIds = [];
+    for (const producer of this.for(architectureId)) {
+      if (options.signal?.aborted) break;
+      const produced = producer.produce(input, options);
+      if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
+      for (const item of produced ?? []) {
+        evidence.push(canonicalEvidence({
+          ...item,
+          producerId: producer.id,
+          architectureId: producer.architectureId ?? null,
+        }, 'discovery-producer-evidence-item-invalid'));
+      }
+      producerIds.push(producer.id);
+    }
+    return { evidence, producerIds };
+  }
+}
+
+function authorityRank(authority) {
+  return authority === 'authoritative' ? 2 : authority === 'corroborating' ? 1 : 0;
+}
+
+function primitiveInteger(value, code) {
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) {
+    throw new TypeError(code);
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    throw new TypeError(code);
+  }
+}
+
+function regionSignature(item) {
+  return item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
+}
+
+function compareEvidence(left, right) {
+  return authorityRank(right.authority) - authorityRank(left.authority)
+    || String(left.start).localeCompare(String(right.start))
+    || String(left.producerId).localeCompare(String(right.producerId))
+    || String(left.kind).localeCompare(String(right.kind))
+    || String(left.name ?? '').localeCompare(String(right.name ?? ''))
+    || String(left.extentRole ?? '').localeCompare(String(right.extentRole ?? ''))
+    || String(left.architectureId ?? '').localeCompare(String(right.architectureId ?? ''))
+    || regionSignature(left).localeCompare(regionSignature(right));
+}
+
+/**
+ * Fuses start evidence into a state.
+ *
+ * One authoritative producer is enough for `exact`. Two corroborating producers
+ * agreeing make `probable`. A single heuristic stays `heuristic`, which is what
+ * stops a prologue scanner from manufacturing functions on its own.
+ */
+function fuseStartState(evidence) {
+  const authoritative = evidence.filter((item) => item.authority === 'authoritative');
+  const corroborating = new Set(evidence.filter((item) => item.authority === 'corroborating').map((item) => item.producerId));
+  if (authoritative.length > 0) return 'exact';
+  // Two independent corroborating producers agreeing is worth something; one is
+  // not. A single reference into the middle of a function — a shared epilogue
+  // reached by exception metadata, say — is exactly the case that would
+  // otherwise be promoted to a function start it is not.
+  if (corroborating.size >= 2) return 'probable';
+  return 'heuristic';
+}
+
+/**
+ * Fuses extent evidence.
+ *
+ * Disagreeing extents are a conflict and leave the extent unknown. Choosing the
+ * longest, the shortest or the most popular would all be inventions, and the
+ * separate extent metrics exist precisely so that leaving it unknown is not
+ * punished as harshly as getting it wrong.
+ */
+function regionBounds(region) {
+  try {
+    const start = BigInt(region?.start);
+    const end = BigInt(region?.end);
+    if (end < start) return null;
+    return { start, end };
+  } catch {
+    return null;
+  }
+}
+
+// Every partial range in the same authority tier must be contained in the
+// agreed complete region set. An outside range, a partial ownership
+// contradiction, or an unparseable range withdraws the exact claim.
+function checkPartialContainment(completeRegions, partialItems) {
+  const complete = [];
+  for (const region of completeRegions ?? []) {
+    const bounds = regionBounds(region);
+    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
+    complete.push(bounds);
+  }
+  const ownershipByRange = new Map();
+  for (const item of partialItems ?? []) {
+    for (const region of item?.regions ?? []) {
+      const bounds = regionBounds(region);
+      if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const key = `${bounds.start}-${bounds.end}`;
+      const prior = ownershipByRange.get(key);
+      if (prior != null && prior !== region.ownership) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [...new Set([prior, region.ownership])].sort(),
+        };
+      }
+      ownershipByRange.set(key, region.ownership);
+      const contained = complete.some((c) => c.start <= bounds.start && bounds.end <= c.end);
+      if (!contained) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent reaches outside the complete claim',
+          alternatives: [{ start: region.start, end: region.end }],
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function fuseExtent(evidence) {
+  const withRegions = evidence.filter((item) => item.regions.length > 0);
+  if (withRegions.length === 0) return { regions: [], state: 'unknown', conflicts: [] };
+
+  const authoritative = withRegions.filter((item) => item.authority === 'authoritative');
+  const pool = authoritative.length > 0 ? authoritative : withRegions;
+
+  // Partial evidence describes one range of a body that may have others, so
+  // several partials are unioned rather than compared. Only `complete` claims
+  // are answers to the same question and therefore have to agree.
+  const partial = pool.filter((item) => item.extentRole === 'partial');
+  const complete = pool.filter((item) => item.extentRole !== 'partial');
+  if (complete.length === 0 && partial.length > 0) {
+    const merged = new Map();
+    const ownershipByRange = new Map();
+    for (const item of partial) {
+      for (const region of item.regions) {
+        const rangeKey = `${region.start}-${region.end}`;
+        const priorOwnership = ownershipByRange.get(rangeKey);
+        if (priorOwnership != null && priorOwnership !== region.ownership) {
+          return {
+            regions: [],
+            state: 'unknown',
+            conflicts: [{ kind: 'extent', detail: 'partial extent ownership evidence disagrees', alternatives: [...new Set([priorOwnership, region.ownership])].sort() }],
+          };
+        }
+        ownershipByRange.set(rangeKey, region.ownership);
+        merged.set(`${rangeKey}-${region.ownership}`, region);
+      }
+    }
+    const regions = [...merged.values()].sort((left, right) => {
+      const byStart = BigInt(left.start) < BigInt(right.start) ? -1 : BigInt(left.start) > BigInt(right.start) ? 1 : 0;
+      if (byStart !== 0) return byStart;
+      const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
+      return byEnd || left.ownership.localeCompare(right.ownership);
+    });
+    return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
+  }
+  const considered = complete.length > 0 ? complete : pool;
+
+  const signatures = new Map();
+  for (const item of considered) {
+    const signature = regionSignature(item);
+    if (!signatures.has(signature)) signatures.set(signature, { regions: item.regions, sources: [] });
+    signatures.get(signature).sources.push(item.producerId);
+  }
+
+  if (signatures.size === 1) {
+    const only = [...signatures.values()][0];
+    // A complete claim does not excuse unchecked partial ranges: every partial
+    // range in the same authority tier must be contained in the complete
+    // region set, or the extent claims contradict each other.
+    const containment = checkPartialContainment(only.regions, partial);
+    if (containment) return { regions: [], state: 'unknown', conflicts: [containment] };
+    return {
+      regions: only.regions,
+      state: authoritative.length > 0 ? 'exact' : new Set(only.sources).size > 1 ? 'probable' : 'heuristic',
+      conflicts: [],
+    };
+  }
+
+  return {
+    regions: [],
+    state: 'unknown',
+    conflicts: [{
+      kind: 'extent',
+      detail: 'extent evidence disagrees',
+      alternatives: [...signatures.entries()].map(([signature, entry]) => ({ signature, sources: entry.sources })),
+    }],
+  };
+}
+
+/**
+ * Fuses all evidence into candidates.
+ *
+ * `evidence` is a flat list from `DiscoveryProducerRegistry.collect`, or any
+ * caller that produces the same shape.
+ */
+export function fuseFunctionCandidates(evidence, options = {}) {
+  if (!Array.isArray(evidence)) throw new TypeError('discovery-fusion-evidence-invalid');
+  // Budget values are analysis-coverage authorities. Only primitive positive
+  // safe-integer numbers may define one; structured values must not coerce via
+  // the comparison operators' ToNumber (['1'] -> 1, true -> 1).
+  const rawBudget = options.budget ?? {};
+  if (rawBudget == null || typeof rawBudget !== 'object' || Array.isArray(rawBudget)) throw new TypeError('discovery-fusion-budget-invalid');
+  const budgetValue = (value, fallback, name) => {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new TypeError(`discovery-fusion-budget-${name}-invalid`);
+    return value;
+  };
+  const budget = {
+    maxCandidates: budgetValue(rawBudget.maxCandidates, DISCOVERY_DEFAULT_BUDGET.maxCandidates, 'maxCandidates'),
+    maxEvidencePerCandidate: budgetValue(rawBudget.maxEvidencePerCandidate, DISCOVERY_DEFAULT_BUDGET.maxEvidencePerCandidate, 'maxEvidencePerCandidate'),
+  };
+  const status = (completeness, stopReason) => createAnalysisStatus({
+    snapshotId: options.snapshotId ?? 'snapshot-unbound',
+    analyzerId: DISCOVERY_ANALYZER_ID,
+    analyzerVersion: DISCOVERY_ANALYZER_VERSION,
+    completeness,
+    budgetClass: options.budgetClass ?? null,
+    stopReason,
+  });
+
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
+
+  // Validate and canonicalize before sorting. Comparators are not validation
+  // boundaries: malformed plugin records must fail closed deterministically
+  // instead of invoking methods on attacker-controlled field shapes.
+  const canonical = evidence.map((item) => canonicalEvidence(item));
+  const byStart = new Map();
+  const orderedEvidence = canonical.sort(compareEvidence);
+  for (const item of orderedEvidence) {
+    if (item.start == null) continue;
+    const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
+    if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
+    const entry = byStart.get(key);
+    if (entry.items.length < budget.maxEvidencePerCandidate) entry.items.push(item);
+    else entry.overflow = true;
+  }
+
+  if (byStart.size > budget.maxCandidates) {
+    return { candidates: [], status: status('truncated', 'budget-exhausted') };
+  }
+
+  const candidates = [];
+  let evidenceOverflow = false;
+  const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
+  for (const start of starts) {
+    const entry = byStart.get(start);
+    const bucket = entry.items;
+    evidenceOverflow ||= entry.overflow;
+    const startState = fuseStartState(bucket);
+    let extent = fuseExtent(bucket);
+    const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
+    const conflicts = [...extent.conflicts];
+    if (entry.overflow) {
+      // Omitted evidence is not evidence of agreement. The start itself is still
+      // the bucket key and remains supported by the retained highest-authority
+      // evidence, but name/extent claims may have an omitted contradiction.
+      extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
+      conflicts.push({
+        kind: 'evidence-budget',
+        detail: 'candidate evidence exceeded maxEvidencePerCandidate',
+        alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
+      });
+    }
+
+    // Two authoritative sources naming the same address differently is a real
+    // disagreement about what this function is, and it is recorded rather than
+    // resolved by preference order.
+    const authoritativeNames = [...new Set(bucket.filter((item) => item.authority === 'authoritative' && item.name).map((item) => item.name))];
+    if (authoritativeNames.length > 1) {
+      conflicts.push({ kind: 'name', detail: 'authoritative sources disagree about the name', alternatives: authoritativeNames });
+    }
+
+    candidates.push(createFunctionCandidate({
+      start,
+      name: entry.overflow ? null : (names[0] ?? null),
+      regions: extent.regions,
+      startEvidence: bucket,
+      extentEvidence: bucket.filter((item) => item.regions.length > 0),
+      startState,
+      extentState: extent.state,
+      conflicts,
+      architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? options.architectureId ?? null,
+    }));
+  }
+
+  const reconciled = reconcileOverlaps(candidates, { signal: options.signal });
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
+  return {
+    candidates: reconciled,
+    status: evidenceOverflow ? status('truncated', 'budget-exhausted') : status('complete', null),
+  };
+}
+
+/**
+ * Marks candidates whose claimed regions overlap another candidate's start.
+ *
+ * Explicit `shared` ownership is the only ownership contract that can make an
+ * overlap benign. Exclusive or ambiguous participation remains fail-closed.
+ */
+function reconcileOverlaps(candidates, { signal = null } = {}) {
+  const n = candidates.length;
+  if (n <= 1) return candidates;
+
+  const swallowed = Array.from({ length: n }, () => []);
+  const overlapping = Array.from({ length: n }, () => []);
+
+  const regions = [];
+  for (let i = 0; i < n; i++) {
+    for (const r of candidates[i].regions) {
+      regions.push({
+        candidateIndex: i,
+        start: BigInt(r.start),
+        end: BigInt(r.end),
+        ownership: r.ownership,
+      });
+    }
+  }
+
+  const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
+  starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const sharedAtStart = candidates.map((candidate) => {
+    const start = BigInt(candidate.start);
+    let covered = false;
+    for (const region of candidate.regions) {
+      if (BigInt(region.start) <= start && start < BigInt(region.end)) {
+        covered = true;
+        if (region.ownership !== 'shared') return false;
+      }
+    }
+    return covered;
+  });
+
+  for (const reg of regions) {
+    if (signal?.aborted) break;
+    let left = 0;
+    let right = starts.length;
+    while (left < right) {
+      const mid = (left + right) >> 1;
+      if (starts[mid].start <= reg.start) left = mid + 1;
+      else right = mid;
+    }
+    for (let k = left; k < starts.length && starts[k].start < reg.end; k++) {
+      const otherIdx = starts[k].candidateIndex;
+      if (otherIdx !== reg.candidateIndex) {
+        if (reg.ownership === 'shared' && sharedAtStart[otherIdx]) continue;
+        swallowed[reg.candidateIndex].push(candidates[otherIdx].start);
+      }
+    }
+  }
+
+  const events = [];
+  for (const reg of regions) {
+    events.push({ point: reg.start, type: 'start', reg });
+    events.push({ point: reg.end, type: 'end', reg });
+  }
+  events.sort((a, b) => {
+    if (a.point < b.point) return -1;
+    if (a.point > b.point) return 1;
+    if (a.type === 'end' && b.type === 'start') return -1;
+    if (a.type === 'start' && b.type === 'end') return 1;
+    return 0;
+  });
+
+  const active = new Set();
+  for (const ev of events) {
+    if (signal?.aborted) break;
+    if (ev.type === 'start') {
+      for (const act of active) {
+        if (act.candidateIndex !== ev.reg.candidateIndex) {
+          if (act.ownership === 'shared' && ev.reg.ownership === 'shared') continue;
+          overlapping[ev.reg.candidateIndex].push(candidates[act.candidateIndex].start);
+          overlapping[act.candidateIndex].push(candidates[ev.reg.candidateIndex].start);
+        }
+      }
+      active.add(ev.reg);
+    } else {
+      active.delete(ev.reg);
+    }
+  }
+
+  return candidates.map((candidate, index) => {
+    const sw = [...new Set(swallowed[index])].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+    const ov = [...new Set(overlapping[index])].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+    if (sw.length === 0 && ov.length === 0) return candidate;
+
+    const conflicts = [...candidate.conflicts];
+    if (sw.length) {
+      conflicts.push({ kind: 'extent', detail: 'claimed extent contains another function start', alternatives: sw });
+    }
+    if (ov.length) {
+      conflicts.push({ kind: 'extent', detail: 'claimed extent overlaps another candidate', alternatives: ov });
+    }
+    return createFunctionCandidate({
+      start: candidate.start,
+      name: candidate.name,
+      regions: [],
+      startEvidence: candidate.startEvidence,
+      extentEvidence: candidate.extentEvidence,
+      startState: candidate.startState,
+      extentState: 'unknown',
+      conflicts,
+      architectureId: candidate.architectureId,
+    });
+  });
+}
+
+/**
+ * Region evidence built from a start and a size. Producers use this so the
+ * fusion never has to interpret a raw length.
+ */
+export function regionFromSize(start, sizeBytes, ownership = 'exclusive') {
+  const begin = primitiveInteger(start, 'discovery-region-invalid-start');
+  const size = primitiveInteger(sizeBytes, 'discovery-region-invalid-size');
+  if (size <= 0n) return null;
+  return createRegion({ start: begin, end: begin + size, ownership });
+}
+
+export { hasExactStart };
