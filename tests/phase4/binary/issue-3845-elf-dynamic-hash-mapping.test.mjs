@@ -28,13 +28,13 @@ function writeDynamic64(bytes, entries) {
   return entries.length * 16;
 }
 
-function imageFor(bytes) {
+function imageFor(bytes, { declaredFileSize = bytes.length } = {}) {
   const segment = {
     name: 'LOAD',
     address: BASE,
-    size: BigInt(bytes.length),
+    size: BigInt(declaredFileSize),
     fileOffset: 0n,
-    fileSize: BigInt(bytes.length),
+    fileSize: BigInt(declaredFileSize),
     perms: { read: true, write: false, execute: false },
   };
   return {
@@ -82,22 +82,27 @@ function writeSysvHash(bytes, offset = HASH_OFF) {
   view.setUint32(offset + 12, 0, true);
 }
 
-function writeGnuHash(bytes, offset = GNU_HASH_OFF) {
+function writeGnuHashHeader(bytes, offset = GNU_HASH_OFF) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   view.setUint32(offset, 1, true); // nbuckets
   view.setUint32(offset + 4, 1, true); // symoffset
   view.setUint32(offset + 8, 1, true); // bloom_size
   view.setUint32(offset + 12, 0, true); // bloom_shift
+}
+
+function writeGnuHash(bytes, offset = GNU_HASH_OFF) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  writeGnuHashHeader(bytes, offset);
   view.setBigUint64(offset + 16, 0n, true); // bloom word
   view.setUint32(offset + 24, 0, true); // empty bucket
 }
 
-function run(extra = [], setup = null, dynamicEntries = null) {
-  const bytes = new Uint8Array(FILE_SIZE);
+function run(extra = [], setup = null, dynamicEntries = null, { readerLength = FILE_SIZE, declaredFileSize = readerLength } = {}) {
+  const bytes = new Uint8Array(readerLength);
   bytes[STRTAB_OFF] = 0;
   const dynamicSize = writeDynamic64(bytes, dynamicEntries || baseEntries(extra));
   setup?.(bytes);
-  const image = imageFor(bytes);
+  const image = imageFor(bytes, { declaredFileSize });
   parseProgramDynamic(
     new ByteView(bytes),
     [{ type: 2, offset: 0n, filesz: BigInt(dynamicSize) }],
@@ -172,6 +177,36 @@ for (const [tag, diagnostic, field] of [
   const image = run([[DT_GNU_HASH, BASE + 0x1f4n]]);
   assert.equal(image.metadata.programDynamicPartial, true);
   assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_GNU_HASH header is not fully file-backed'));
+  assertBestEffortSymbolDecode(image);
+}
+
+{
+  const image = run(
+    [[DT_HASH, BASE + BigInt(HASH_OFF)]],
+    (bytes) => {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      view.setUint32(HASH_OFF, 1, true);
+      view.setUint32(HASH_OFF + 4, 1, true);
+    },
+    null,
+    { readerLength: HASH_OFF + 8, declaredFileSize: FILE_SIZE },
+  );
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_HASH table crosses a file-backed PT_LOAD boundary'));
+  assert.equal(image.metadata.programDynamic.hasSysvHash, true);
+  assertBestEffortSymbolDecode(image);
+}
+
+{
+  const image = run(
+    [[DT_GNU_HASH, BASE + BigInt(GNU_HASH_OFF)]],
+    (bytes) => writeGnuHashHeader(bytes),
+    null,
+    { readerLength: GNU_HASH_OFF + 16, declaredFileSize: FILE_SIZE },
+  );
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes('DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary'));
+  assert.equal(image.metadata.programDynamic.hasGnuHash, true);
   assertBestEffortSymbolDecode(image);
 }
 
