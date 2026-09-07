@@ -44,14 +44,15 @@ test('#5822 zero optionalDbgHeaderSize fails closed instead of reading past the 
   assert.ok(dbi, 'fixture must parse a DBI header');
 
   // Baseline: the untouched fixture proves section headers through index 5.
-  const baseline = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: original });
+  const provider = new PdbDebugInfoProvider();
+  const baseline = provider.probe({ ...pdbImage(variant), pdbBytes: original });
   assert.equal(baseline.parsed.sectionHeaders.length > 0, true,
     'fixture baseline must carry a section-header stream');
 
   const zeroed = new Uint8Array(original);
   assert.ok(rewriteOptionalDbgHeaderSize(zeroed, dbi, 0) >= 1, 'DBI header must be present in the image');
 
-  const after = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: zeroed });
+  const after = provider.probe({ ...pdbImage(variant), pdbBytes: zeroed });
   // With the optional header declared empty, no section-header stream may be
   // adopted; the probe fails closed and symbols stay segment-relative.
   assert.equal(after.parsed.sectionHeaders.length, 0,
@@ -59,12 +60,10 @@ test('#5822 zero optionalDbgHeaderSize fails closed instead of reading past the 
   assert.ok(after.diagnostics.some((d) => d.includes('no section header stream')),
     'the probe must report the missing section mapping instead of inventing one');
   assert.equal(after.status.completeness, 'partial');
-  const symbolAddresses = after.symbols ? after.symbols(after, {}) : null;
-  if (symbolAddresses?.records?.length) {
-    for (const record of symbolAddresses.records) {
-      assert.equal(record.address, null,
-        'without section headers, symbol addresses must stay segment-relative');
-    }
+  const records = provider.symbols(after, {});
+  for (const record of records.records ?? []) {
+    assert.equal(record.address, null,
+      'without section headers, symbol addresses must stay segment-relative');
   }
 });
 
@@ -112,16 +111,15 @@ test('#5822 negative preceding DBI substream size fails closed before offset cal
   assert.ok(rewriteDbiField(malformed, dbi, 24, -1) >= 1,
     'DBI header must be present in the image');
 
-  const after = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: malformed });
+  const provider = new PdbDebugInfoProvider();
+  const after = provider.probe({ ...pdbImage(variant), pdbBytes: malformed });
   assert.equal(after.parsed.sectionHeaders.length, 0,
     'negative preceding DBI size must not shift into a fabricated SectionHdr');
   assert.equal(after.status.completeness, 'partial');
-  const symbolAddresses = after.symbols ? after.symbols(after, {}) : null;
-  if (symbolAddresses?.records?.length) {
-    for (const record of symbolAddresses.records) {
-      assert.equal(record.address, null,
-        'without trusted section headers, symbol addresses stay segment-relative');
-    }
+  const records = provider.symbols(after, {});
+  for (const record of records.records ?? []) {
+    assert.equal(record.address, null,
+      'without trusted section headers, symbol addresses stay segment-relative');
   }
 });
 
