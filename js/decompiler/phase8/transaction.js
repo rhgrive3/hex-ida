@@ -27,6 +27,7 @@ function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
+const ANALYSIS_LINEAGE = new WeakMap();
 
 /**
  * The authoritative analysis state.
@@ -89,13 +90,18 @@ function analysisMutators(state) {
 
 /** Clone an authoritative state without resetting the evidence versions. */
 export function forkAnalysisState(source) {
-  if (source == null || typeof source.snapshot !== 'function' || typeof source.get !== 'function') {
+  if (source == null || typeof source.snapshot !== 'function' || typeof source.get !== 'function' || !ANALYSIS_MUTATORS.has(source)) {
     fail('phase8-analysis-state-required');
   }
   const versions = source.snapshot();
   const initial = {};
   for (const key of ANALYSIS_KEYS) if (versions[key] > 0) initial[key] = source.get(key);
-  return createAnalysisState(initial, versions);
+  const working = createAnalysisState(initial, versions);
+  ANALYSIS_LINEAGE.set(working, Object.freeze({
+    source,
+    before: Object.freeze(Object.fromEntries(ANALYSIS_KEYS.map((key) => [key, versions[key]]))),
+  }));
+  return working;
 }
 
 /**
@@ -109,6 +115,9 @@ export function commitAnalysisState(target, working, before) {
   if (targetMutators == null) return false;
   const workingMutators = ANALYSIS_MUTATORS.get(working);
   if (workingMutators == null) return false;
+  const lineage = ANALYSIS_LINEAGE.get(working);
+  if (lineage == null || lineage.source !== target) return false;
+  if (ANALYSIS_KEYS.some((key) => lineage.before[key] !== before[key])) return false;
   const current = target.snapshot();
   if (ANALYSIS_KEYS.some((key) => current[key] !== before[key])) return false;
   for (const key of ANALYSIS_KEYS) {
