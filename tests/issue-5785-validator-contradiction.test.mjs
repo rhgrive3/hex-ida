@@ -47,11 +47,11 @@ const contradictory = [
 ];
 
 for (const [label, impl] of contradictory) {
-  const { validation } = await transactionWithValidator(impl);
+  const { materialized, validation } = await transactionWithValidator(impl);
   assert.equal(validation.status, 'invalid', `${label} must invalidate the whole validation`);
   assert.ok(validation.failures.length >= 1, `${label} must be counted as a failure`);
   const published = await publishRebuildTransaction(
-    (await transactionWithValidator(impl)).materialized,
+    materialized,
     validation,
     { atomicPromote: async () => ({ atomic: true, committed: true, protocol: 'transactional-store', publicationIdentity: 'p', transactionId: 't', outputHash: 'h', outputIdentity: 'i', binaryId: 'b', format: 'elf', architecture: 'arm64', loaderVersion: 'l', sourceHash: 's' }) },
   );
