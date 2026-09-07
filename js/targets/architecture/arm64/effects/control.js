@@ -290,6 +290,13 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     });
   }
 
+  if (mnemonic === 'bc.al' || mnemonic === 'bc.nv') {
+    return ctx.finish({
+      controlEffect: { kind: 'branch', target: addressRef(target) },
+      metadata: { family: 'control', operation: mnemonic, direct: true },
+    });
+  }
+
   const conditionCode = mnemonic.startsWith('bc.') ? mnemonic.slice(3) : mnemonic.slice(2);
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
