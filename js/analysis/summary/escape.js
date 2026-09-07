@@ -265,6 +265,14 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   }
 
+  // Capture providers are re-entrant external hooks: an abort landing during
+  // or after their run must void the run before any escape fact derived from
+  // it is published (#6212). A cancelled run can never carry a complete
+  // escape/non-escape proof.
+  if (options.signal?.aborted) {
+    return { escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(), status: analyzerStatus('partial', 'cancelled') };
+  }
+
   // Transitive containment propagation: if a local container escaped, any root stored into it also escapes.
   const escapeRecordsByRoot = new Map();
   for (const esc of escapes) {
@@ -273,35 +281,54 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   }
 
   const worklist = [...escapedRoots];
-  const visitedTransitive = new Set();
+  const visitedTransitive = new Map();
+  // Propagation must reach a fixed point over each root's escape-fact SET, not
+  // stop at the first time a root becomes escaped: a stronger reason arriving
+  // later at an already-escaped intermediate root (e.g. stored-to-global after
+  // passed-to-known-call) must still flow to that root's children —
+  // invalidatesNonEscapeProof() is reason-dependent, so dropping it changes
+  // downstream proof invalidation (#6146).
   while (worklist.length) {
     const currentRoot = worklist.pop();
     const children = containment.get(currentRoot);
     if (!children) continue;
-    const parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
+    let parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
     for (const childRoot of children) {
       const edgeKey = `${currentRoot}->${childRoot}`;
-      if (!visitedTransitive.has(edgeKey)) {
-        visitedTransitive.add(edgeKey);
-        const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
-        for (const parentEsc of parentEscapes) {
-          const childRecord = createEscapeRecord({
-            rootKey: childRoot,
-            rootOrigin: childOrigin,
-            reason: parentEsc.reason,
-            boundary: parentEsc.boundary,
-            siteId: parentEsc.siteId,
-            evidenceIds: parentEsc.evidenceIds,
-          });
-          escapes.push(childRecord);
-          if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
-          escapeRecordsByRoot.get(childRoot).push(childRecord);
-        }
-        if (!escapedRoots.has(childRoot)) {
-          escapedRoots.add(childRoot);
-          worklist.push(childRoot);
-        }
+      const seen = visitedTransitive.get(edgeKey);
+      if (seen) {
+        // Re-run the edge only when the parent gained facts since the last
+        // propagation across it.
+        if (seen.size === parentEscapes.length) continue;
+        if (parentEscapes.every((esc) => seen.has(esc))) continue;
       }
+      visitedTransitive.set(edgeKey, new Set(parentEscapes));
+      const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
+      const knownChildRecords = new Set(escapeRecordsByRoot.get(childRoot) ?? []);
+      let addedNewFact = false;
+      for (const parentEsc of parentEscapes) {
+        const childRecord = createEscapeRecord({
+          rootKey: childRoot,
+          rootOrigin: childOrigin,
+          reason: parentEsc.reason,
+          boundary: parentEsc.boundary,
+          siteId: parentEsc.siteId,
+          evidenceIds: parentEsc.evidenceIds,
+        });
+        // The child fact is identified by (reason, boundary, siteId): the
+        // propagation itself contributes no new evidence identity, so this
+        // comparison is what makes the fixed point terminate.
+        const identity = `${childRecord.reason}|${childRecord.boundary}|${childRecord.siteId ?? ''}`;
+        if (knownChildRecords.has(identity)) continue;
+        knownChildRecords.add(identity);
+        escapes.push(childRecord);
+        if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
+        escapeRecordsByRoot.get(childRoot).push(childRecord);
+        addedNewFact = true;
+      }
+      const childWasEscaped = escapedRoots.has(childRoot);
+      escapedRoots.add(childRoot);
+      if (!childWasEscaped || addedNewFact) worklist.push(childRoot);
     }
   }
 
@@ -311,21 +338,24 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
    * unresolved flow at all voids the whole set — a value that may point
    * anywhere could have carried any root out.
    */
+  // A run aborted before publication must not publish proofs either way: the
+  // escape set may be incomplete and the non-escape proof unproven (#6212).
+  const abortedBeforePublication = options.signal?.aborted === true;
   const nonEscapingRoots = new Set();
-  if (!sawUnresolvedFlow) {
+  if (!sawUnresolvedFlow && !abortedBeforePublication) {
     for (const [rootKey, origin] of rootOrigins) {
       if (LOCALLY_CREATED.has(origin) && !escapedRoots.has(rootKey)) nonEscapingRoots.add(rootKey);
     }
   }
 
   const pointsToComplete = pointsToRun.status.completeness === 'complete';
-  const completeness = pointsToComplete && !sawUnresolvedFlow ? 'complete' : 'partial';
+  const completeness = !abortedBeforePublication && pointsToComplete && !sawUnresolvedFlow ? 'complete' : 'partial';
   return {
     escapes: deepFreeze(escapes),
     nonEscapingRoots,
     rootOrigins,
-    sawUnresolvedFlow,
-    status: analyzerStatus(completeness, completeness === 'complete' ? null : 'evidence-missing'),
+    sawUnresolvedFlow: sawUnresolvedFlow || abortedBeforePublication,
+    status: analyzerStatus(completeness, abortedBeforePublication ? 'cancelled' : completeness === 'complete' ? null : 'evidence-missing'),
   };
 }
 
