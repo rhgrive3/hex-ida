@@ -69,8 +69,31 @@ function strictAddress(value) {
   } catch { return null; }
 }
 
+function strictIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function strictRiscvProfile(value) {
+  if (!value || typeof value !== 'object'
+    || typeof value.canonical !== 'string'
+    || value.canonical.trim() === ''
+    || !Number.isSafeInteger(value.xlen)
+    || (value.xlen !== 32 && value.xlen !== 64)
+    || typeof value.compressedInstructions !== 'boolean'
+    || !Number.isSafeInteger(value.instructionAlignment)
+    || (value.instructionAlignment !== 2 && value.instructionAlignment !== 4)
+    || (value.evidence != null && typeof value.evidence !== 'string')) return null;
+  return {
+    canonical:value.canonical,
+    xlen:value.xlen,
+    compressedInstructions:value.compressedInstructions,
+    instructionAlignment:value.instructionAlignment,
+  };
+}
+
 export function normalizeRiscvIsaString(input) {
-  const canonical = String(input ?? '').trim().toLowerCase();
+  if (typeof input !== 'string') return null;
+  const canonical = input.trim().toLowerCase();
   const match = /^rv(32|64)([a-z0-9]+(?:_[a-z0-9]+)*)$/.exec(canonical);
   if (!match) return null;
   const xlen = Number(match[1]);
@@ -156,7 +179,8 @@ export function parseRiscvAttributes(input, options = {}) {
 }
 
 export function parseRiscvMappingSymbol(name) {
-  const text = String(name ?? '');
+  if (typeof name !== 'string') return null;
+  const text = name;
   const base = text.replace(/\.[^.]*$/, '');
   if (base === '$d') return Object.freeze({ kind:'data', isa:null });
   if (base === '$x') return Object.freeze({ kind:'instruction', isa:null });
@@ -174,28 +198,37 @@ export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   let selected = null;
   const target = strictAddress(address);
   if (target === null) return options.allowAssumed === false ? null : fallback;
-  const containingSection = (metadata.sections || []).find((section) => {
-    try { return target >= BigInt(section.start) && target < BigInt(section.end); }
-    catch { return false; }
+  const sections = Array.isArray(metadata.sections) ? metadata.sections : [];
+  const containingSection = sections.find((section) => {
+    const start = section?.start == null ? null : strictAddress(section.start);
+    const end = section?.end == null ? null : strictAddress(section.end);
+    return start !== null && end !== null && target >= start && target < end;
   }) || null;
-  for (const mapping of metadata.mappings || []) {
-    let mappingAddress;
-    try { mappingAddress = BigInt(mapping.address); } catch { continue; }
+  const mappings = Array.isArray(metadata.mappings) ? metadata.mappings : [];
+  for (const mapping of mappings) {
+    if (!mapping || typeof mapping !== 'object') continue;
+    const mappingAddress = mapping.address == null ? null : strictAddress(mapping.address);
+    if (mappingAddress === null) continue;
     if (mappingAddress > target) break;
-    if (containingSection && mapping.sectionIndex != null && Number(mapping.sectionIndex) !== Number(containingSection.sectionIndex)) continue;
+    const mappingSectionIndex = mapping.sectionIndex == null ? null : strictIndex(mapping.sectionIndex);
+    if (mapping.sectionIndex != null && mappingSectionIndex === null) continue;
+    const containingSectionIndex = containingSection?.sectionIndex == null ? null : strictIndex(containingSection.sectionIndex);
+    if (containingSection && mappingSectionIndex != null && mappingSectionIndex !== containingSectionIndex) continue;
     if (containingSection && mapping.sectionIndex == null) continue;
     if (!containingSection && Array.isArray(metadata.sections) && metadata.sections.length && mapping.sectionIndex != null) continue;
     selected = mapping;
   }
   if (selected?.kind === 'data') return Object.freeze({ code:false, exact:true, evidence:'mapping-symbol-data' });
+  if (selected && selected.kind !== 'instruction') return options.allowAssumed === false ? null : fallback;
   const base = selected?.isa || metadata.file || null;
   if (!base) return options.allowAssumed === false ? null : fallback;
+  const normalized = strictRiscvProfile(base);
+  if (!normalized) return options.allowAssumed === false ? null : fallback;
+  const evidence = selected?.isa ? 'mapping-symbol' : (base.evidence ?? metadata.evidence ?? 'elf-attribute');
+  if (typeof evidence !== 'string' || evidence.trim() === '') return options.allowAssumed === false ? null : fallback;
   return Object.freeze({
-    canonical:String(base.canonical),
-    xlen:Number(base.xlen),
-    compressedInstructions:base.compressedInstructions === true,
-    instructionAlignment:Number(base.instructionAlignment),
-    evidence:selected?.isa ? 'mapping-symbol' : String(base.evidence || metadata.evidence || 'elf-attribute'),
+    ...normalized,
+    evidence,
     exact:true,
     code:true,
   });
