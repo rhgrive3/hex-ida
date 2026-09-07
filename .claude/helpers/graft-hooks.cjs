@@ -39,4 +39,35 @@ function entry(name) {
   return path.join(dir, 'dist', 'claude', name); // last-ditch; import will no-op if absent
 }
 
-import(pathToFileURL(entry("hooks.js")).href).then((m) => m.main(process.argv[2])).catch(() => { /* graft unavailable — no-op */ });
+// The module boundary is separated from the execution boundary (#5897): only
+// "graft is genuinely not installed here" may fail open as a no-op. Once the
+// module loads and main() starts, a hook failure must reach the caller as a
+// non-zero exit with evidence on stderr — a broken quality guardrail must not
+// be converted into a success.
+async function runGraftHook() {
+  let module;
+  try {
+    module = await import(pathToFileURL(entry("hooks.js")).href);
+  } catch (error) {
+    // Module not found / cannot resolve = graft unavailable; stay a no-op.
+    if (error && (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND')) return 0;
+    process.stderr.write(`graft hook unavailable: ${error?.message || error}\n`);
+    return 0; // resolution-side breakage is still "graft unavailable"
+  }
+  if (!module || typeof module.main !== 'function') {
+    process.stderr.write('graft hook failed: hooks.js has no main() export\n');
+    return 1;
+  }
+  try {
+    await module.main(process.argv[2]);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`graft hook failed: ${error?.message || error}\n`);
+    return 1;
+  }
+}
+
+runGraftHook().then((code) => { process.exitCode = code; }, (error) => {
+  process.stderr.write(`graft hook failed: ${error?.message || error}\n`);
+  process.exitCode = 1;
+});
