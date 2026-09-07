@@ -1,69 +1,158 @@
 /**
- * #5912 — legacy (pre-#1366) `.hexproj` documents carry literal
- * `$$hexBigInt`-style keys as ordinary user data with no escape provenance.
- * The reader must take its one-$ unescape only on documents written by an
- * escape-aware serializer — every such writer stamps `version >= 2` — and
- * must leave a v1 document's literal keys untouched.
+ * #5912 — `.hexproj` BigInt-tag escaping needs explicit provenance.
+ *
+ * Unmarked v1/v2 documents preserve literal `$$hexBigInt`-style keys. The
+ * current serializer emits a marker, and only that marker authorizes taking
+ * one `$` back. Historical escape-aware files that omitted the marker are
+ * inherently ambiguous with legacy literal files and are intentionally not
+ * guessed at load time.
  */
 import assert from 'node:assert/strict';
-import { parseHexProject, serializeHexProject, createHexProject } from '../../../js/project/index.js';
+import {
+  ProjectFormatError,
+  createHexProject,
+  parseHexProject,
+  serializeHexProject,
+} from '../../../js/project/index.js';
 
-const legacyDoc = (customValue) => JSON.stringify({
-  format:'hexproj',
-  version:1,
-  createdAt:'2026-08-22T00:00:00.000Z',
-  updatedAt:'2026-08-22T00:00:00.000Z',
-  binary:{
-    hash:null,
-    metadata:{ custom:customValue },
-    embedded:false,
-  },
-  user:{},
-  findings:{},
-  analysis:{},
-  navigation:{},
-});
+const OMIT = Symbol('omit');
 
-{
-  const parsed = parseHexProject(legacyDoc({ '$$hexBigInt':'x' }));
-  assert.deepEqual(parsed.binary.metadata.custom, { '$$hexBigInt':'x' },
-    'a v1 literal $$hexBigInt key must not be unescaped (#5912)');
-}
-{
-  const parsed = parseHexProject(legacyDoc({ '$$$hexBigInt':'x', '$$$$hexBigInt':'y' }));
-  assert.deepEqual(parsed.binary.metadata.custom, { '$$$hexBigInt':'x', '$$$$hexBigInt':'y' });
-}
-{
-  const parsed = parseHexProject(legacyDoc({ nested:{ '$$hexBigInt':'keep' }, plain:'v' }));
-  assert.deepEqual(parsed.binary.metadata.custom.nested, { '$$hexBigInt':'keep' });
-}
-{
-  const parsed = parseHexProject(legacyDoc([{ '$$hexBigInt':'keep-in-array' }]));
-  assert.deepEqual(parsed.binary.metadata.custom, [{ '$$hexBigInt':'keep-in-array' }]);
+function documentText({ version, custom, bigIntEncoding = OMIT }) {
+  const document = {
+    format: 'hexproj',
+    version,
+    createdAt: '2026-08-22T00:00:00.000Z',
+    updatedAt: '2026-08-22T00:00:00.000Z',
+    binary: {
+      hash: null,
+      metadata: { custom },
+      embedded: false,
+    },
+    user: {},
+    findings: {},
+    analysis: {},
+    navigation: {},
+  };
+  if (bigIntEncoding !== OMIT) document.bigIntEncoding = bigIntEncoding;
+  return JSON.stringify(document);
 }
 
+function parseCustom(options) {
+  return parseHexProject(documentText(options)).binary.metadata.custom;
+}
+
+// The issue's v1 legacy literals survive at every supported container depth.
 {
-  // A v2 (escape-aware) document still unescapes exactly one level.
-  const v2Doc = JSON.stringify({
-    format:'hexproj',
-    version:2,
-    createdAt:'2026-08-30T00:00:00.000Z',
-    updatedAt:'2026-08-30T00:00:00.000Z',
-    binary:{ hash:null, metadata:{ custom:{ '$$hexBigInt':'escaped-from-$hexBigInt' } }, embedded:false },
-    user:{}, findings:{}, analysis:{}, navigation:{},
+  const custom = {
+    '$$hexBigInt': 'legacy-v1',
+    nested: { '$$$hexBigInt': 'legacy-v1-nested' },
+    list: [{ '$$$$hexBigInt': 'legacy-v1-array' }],
+  };
+  assert.deepEqual(parseCustom({ version: 1, custom }), custom);
+}
+
+// The reported v2 shape is also an unmarked literal document and must remain
+// untouched; the root version alone is not provenance.
+{
+  const custom = {
+    '$$hexBigInt': 'legacy-v2',
+    nested: [{ '$$$hexBigInt': 'legacy-v2-array' }],
+  };
+  assert.deepEqual(parseCustom({ version: 2, custom }), custom);
+}
+
+// A marked document authorizes exactly one level of unescape, including nested
+// objects and arrays.
+{
+  const parsed = parseCustom({
+    version: 2,
+    bigIntEncoding: 1,
+    custom: {
+      '$$hexBigInt': 'encoded-from-$',
+      '$$$hexBigInt': 'encoded-from-$$',
+      nested: [{ '$$$$hexBigInt': 'encoded-from-$$$' }],
+    },
   });
-  const parsed = parseHexProject(v2Doc);
-  assert.deepEqual(parsed.binary.metadata.custom, { '$hexBigInt':'escaped-from-$hexBigInt' },
-    'a v2 document carries escape provenance: one $ is taken back');
+  assert.deepEqual(parsed, {
+    '$hexBigInt': 'encoded-from-$',
+    '$$hexBigInt': 'encoded-from-$$',
+    nested: [{ '$$$hexBigInt': 'encoded-from-$$$' }],
+  });
 }
 
+// Old real BigInt wrappers remain authoritative without any provenance
+// marker, for both legacy and current project versions.
+for (const version of [1, 2]) {
+  const parsed = parseCustom({
+    version,
+    custom: { actual: { '$hexBigInt': '10' } },
+  });
+  assert.equal(parsed.actual, 16n);
+}
+
+// Rebuilding the object avoids key-order-dependent deletion: the old in-place
+// walk lost the first value when $$$ was visited before $$.
 {
-  // Round-trip remains injective for current writers: a v2 document with a
-  // literal $$hexBigInt user key serializes escaped and reads back verbatim.
-  const roundTripped = parseHexProject(serializeHexProject(createHexProject({
-    binaryMetadata:{ custom:{ $$hexBigInt:'literal-user-data' } },
-  })));
-  assert.deepEqual(roundTripped.binary.metadata.custom, { $$hexBigInt:'literal-user-data' });
+  const parsed = parseCustom({
+    version: 2,
+    bigIntEncoding: 1,
+    custom: {
+      '$$$hexBigInt': 'outer',
+      '$$hexBigInt': 'inner',
+    },
+  });
+  assert.deepEqual(parsed, {
+    '$$hexBigInt': 'outer',
+    '$hexBigInt': 'inner',
+  });
+}
+
+// Two source keys mapping to the same decoded key are malformed provenance,
+// rather than a reason to overwrite one user's value with another's.
+assert.throws(
+  () => parseCustom({
+    version: 2,
+    bigIntEncoding: 1,
+    custom: {
+      '$hexBigInt': 'literal-sibling',
+      '$$hexBigInt': 'encoded-sibling',
+    },
+  }),
+  (error) => error instanceof ProjectFormatError && error.code === 'HEX_PROJECT_BIGINT_ENCODING_COLLISION',
+);
+
+// The current serializer emits the marker and keeps both literal user data
+// and actual BigInts round-trippable.
+{
+  const text = serializeHexProject(createHexProject({
+    binaryMetadata: {
+      custom: {
+        '$hexBigInt': 'literal-user-data',
+        nested: [{ '$$hexBigInt': 'literal-nested' }],
+        actual: 0x100n,
+      },
+    },
+  }));
+  assert.equal(JSON.parse(text).bigIntEncoding, 1);
+  const parsed = parseHexProject(text).binary.metadata.custom;
+  assert.equal(parsed['$hexBigInt'], 'literal-user-data');
+  assert.deepEqual(parsed.nested, [{ '$$hexBigInt': 'literal-nested' }]);
+  assert.equal(parsed.actual, 0x100n);
+}
+
+for (const marker of [null, true, '1', 0, 1.5, {}, []]) {
+  assert.throws(
+    () => parseCustom({ version: 2, bigIntEncoding: marker, custom: {} }),
+    (error) => error instanceof ProjectFormatError && error.code === 'HEX_PROJECT_BIGINT_ENCODING_INVALID',
+    `marker ${JSON.stringify(marker)} must be rejected as malformed provenance`,
+  );
+}
+for (const marker of [2, Number.MAX_SAFE_INTEGER]) {
+  assert.throws(
+    () => parseCustom({ version: 2, bigIntEncoding: marker, custom: {} }),
+    (error) => error instanceof ProjectFormatError && error.code === 'HEX_PROJECT_BIGINT_ENCODING_UNSUPPORTED',
+    `marker ${marker} must be rejected as unsupported provenance`,
+  );
 }
 
 console.log('issue-5912 legacy hexproj tag keys regression: PASS');
