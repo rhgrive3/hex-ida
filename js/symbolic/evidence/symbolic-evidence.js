@@ -62,6 +62,22 @@ function deepFreeze(obj) {
   return obj;
 }
 
+/*
+ * Dynamic keys are stored as own data properties. Assigning with `out[k] = ...`
+ * routes the key `'__proto__'` through the prototype setter, so an own
+ * `__proto__` target silently disappears and distinct targets normalize to the
+ * same canonical form — and therefore to the same Evidence ID (#5903).
+ */
+function canonicalOwn(out, key, value) {
+  Object.defineProperty(out, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return out;
+}
+
 /* Host-locale independent total order over string keys (UTF-16 code units).
  * Map entries must project into canonical records by key/value content only;
  * insertion history and ICU collation differences must not leak (#5774). */
@@ -75,18 +91,18 @@ function canonicalize(val) {
   }
   if (val instanceof Map) {
     const entries = [...val.entries()].sort(([k1], [k2]) => compareCanonicalKey(String(k1), String(k2)));
-    const out = {};
+    let out = {};
     for (const [k, v] of entries) {
-      out[String(k)] = canonicalize(v);
+      out = canonicalOwn(out, String(k), canonicalize(v));
     }
     return out;
   }
   if (Array.isArray(val)) {
     return val.map(canonicalize);
   }
-  const sorted = {};
+  let sorted = {};
   for (const k of Object.keys(val).sort()) {
-    sorted[k] = canonicalize(val[k]);
+    sorted = canonicalOwn(sorted, k, canonicalize(val[k]));
   }
   return sorted;
 }
@@ -264,34 +280,39 @@ export function createSymbolicEvidence({
     ? assumptions.map((a) => (typeof a === 'object' && a !== null ? { ...a } : a))
     : [];
 
-  // Normalize witnessModel. Map entries are projected in canonical key order —
-  // the mapping's insertion history must not leak into the serialized record (#5774).
+  // Normalize witnessModel
   let normalizedWitness = null;
   if (witnessModel) {
     if (witnessModel instanceof Map) {
       normalizedWitness = {};
-      for (const [k, v] of [...witnessModel.entries()].sort(([k1], [k2]) => compareCanonicalKey(String(k1), String(k2)))) {
-        // Own data property assignment: 'proto-like' keys must stay data (#5903/#5774).
-        Object.defineProperty(normalizedWitness, String(k), {
-          value: typeof v === 'bigint' ? `0x${v.toString(16)}` : v,
-          enumerable: true, writable: true, configurable: true,
-        });
+      // Deterministic code-unit order for Map projection; canonicalOwn keeps
+      // proto-like keys as own data properties (#5774/#5903).
+      for (const [k, v] of [...witnessModel.entries()]
+        .sort(([k1], [k2]) => compareCanonicalKey(String(k1), String(k2)))) {
+        canonicalOwn(
+          normalizedWitness,
+          String(k),
+          typeof v === 'bigint' ? `0x${v.toString(16)}` : canonicalize(v)
+        );
       }
     } else if (typeof witnessModel === 'object') {
       normalizedWitness = canonicalize(witnessModel);
     }
   }
 
-  // Normalize origins. Same canonical key order as witnessModel (#5774).
+  // Normalize origins
   let normalizedOrigins = origins;
   if (origins instanceof Map) {
     normalizedOrigins = {};
-    for (const [k, v] of [...origins.entries()].sort(([k1], [k2]) => compareCanonicalKey(String(k1), String(k2)))) {
+    // Deterministic code-unit order for Map projection; retain canonical values.
+    for (const [k, v] of [...origins.entries()]
+      .sort(([k1], [k2]) => compareCanonicalKey(String(k1), String(k2)))) {
       const value = Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v);
-      Object.defineProperty(normalizedOrigins, String(k), {
-        value,
-        enumerable: true, writable: true, configurable: true,
-      });
+      canonicalOwn(
+        normalizedOrigins,
+        String(k),
+        value
+      );
     }
   } else if (typeof origins === 'object' && origins !== null) {
     normalizedOrigins = canonicalize(origins);
