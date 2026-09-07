@@ -33,8 +33,8 @@ export class ToolRegistry {
     return this;
   }
 
-  has(name) { return this.tools.has(String(name)); }
-  get(name) { return this.tools.get(String(name)) || null; }
+  has(name) { return typeof name === "string" && this.tools.has(name); }
+  get(name) { return (typeof name === "string" && this.tools.get(name)) || null; }
   costWeight(name) { return COST_WEIGHT[this.get(name)?.cost] || 1; }
   names({ scope = "auto", includeMutations = false } = {}) {
     return Array.from(this.tools.values()).filter((tool) => (scope === "auto" || tool.scopeSupport.includes(scope)) && (includeMutations || tool.mutability === "read-only")).map((tool) => tool.name);
