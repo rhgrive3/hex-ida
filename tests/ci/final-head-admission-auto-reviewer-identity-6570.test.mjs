@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluateFinalHeadAdmission } from '../../tools/validation/final-head-admission.mjs';
 
 const HEAD = '1340a18dd3f13b9a54f3e75b763cfbd8743202e7';
+const OLD = '8ee3431a41c3c836b1979eeac6a033c67e4c1eb1';
 const TRUSTED = 'rhgrive3';
 const REQUIRED = 'ci/circleci: phase7-ownership';
 const auto = (reviewerId, verdict, at) => ({
@@ -58,6 +59,36 @@ const evaluate = (reviews) => evaluateFinalHeadAdmission({
   assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoApprovalCount, 1);
   assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
+}
+
+// The canonical marker is one inseparable authority tuple. An OLD marker on a
+// current commit cannot be laundered into current-head approval by a stray
+// marker-shaped HEAD token later in the review body.
+{
+  const review = auto('R1', 'APPROVED', '2026-09-07T00:02:00Z');
+  review.body = `[AUTO-REVIEW:R1][HEAD:${OLD}][VERDICT:APPROVED]\n[HEAD:${HEAD}]`;
+  const result = evaluate([review]);
+  assert.equal(result.state, 'pending');
+  assert.equal(result.evidence.exactAutoApprovalCount, 0);
+  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+}
+
+// Partial, non-leading, or multiple AUTO markers are never assembled into
+// approval authority from independently matching tokens.
+{
+  const malformedBodies = [
+    `[AUTO-REVIEW:R1]\n[HEAD:${HEAD}][VERDICT:APPROVED]`,
+    `review prose\n[AUTO-REVIEW:R1][HEAD:${HEAD}][VERDICT:APPROVED]`,
+    `[AUTO-REVIEW:R1][HEAD:${HEAD}][VERDICT:APPROVED]\n[AUTO-REVIEW:R0][HEAD:${HEAD}][VERDICT:APPROVED]`,
+  ];
+  for (const body of malformedBodies) {
+    const review = auto('R1', 'APPROVED', '2026-09-07T00:02:00Z');
+    review.body = body;
+    const result = evaluate([review]);
+    assert.equal(result.state, 'pending');
+    assert.equal(result.evidence.exactAutoApprovalCount, 0);
+    assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+  }
 }
 
 console.log('final-head admission AUTO reviewer identity regression: PASS');
