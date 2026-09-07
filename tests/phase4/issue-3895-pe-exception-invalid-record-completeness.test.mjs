@@ -132,4 +132,18 @@ for (const machine of [0xaa64, 0xa641]) {
   assert.equal(image.functions[0].size, 16n);
 }
 
+{
+  const bytes = new Uint8Array(80);
+  const image = new BinaryImage(bytes, { format: 'pe', bits: 64, imageBase: 0n });
+  addPdata(image, 24);
+  addText(image);
+
+  assert.doesNotThrow(
+    () => parseExceptionFunctions(new ByteView(bytes), { rva: 0x1000, size: 13n }, image, 0x8664),
+    'non-number directory sizes must reach the core fail-closed path without mixed arithmetic',
+  );
+  assert.equal(image.metadata.peMetadata?.complete, false);
+  assert.equal(reasons(image).includes('exception:directory-span'), true);
+}
+
 console.log('issue-3895 PE exception invalid-record completeness regression: PASS');
