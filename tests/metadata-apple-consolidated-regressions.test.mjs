@@ -158,10 +158,18 @@ import '../js/objc-stub-recovery.js';
 // --- Regression: #4040 nested-name volatile/restrict qualifiers ---
 {
   // These encodings are accepted by the Itanium ABI demangler (c++filt).
-  assert.equal(demangleCxx('_ZNV1A1fEv'), 'A::f() volatile');
-  assert.equal(demangleCxx('_ZNVK1A1fEv'), 'A::f() const volatile');
-  assert.equal(demangleCxx('_ZNr1A1fEv'), 'A::f() restrict');
-  assert.equal(demangleCxx('_ZNK1A1fEv'), 'A::f() const');
+  for (const [name, expected] of [
+    ['_ZN1A1fEv', 'A::f()'],
+    ['_ZNr1A1fEv', 'A::f() restrict'],
+    ['_ZNV1A1fEv', 'A::f() volatile'],
+    ['_ZNK1A1fEv', 'A::f() const'],
+    ['_ZNrV1A1fEv', 'A::f() volatile restrict'],
+    ['_ZNrK1A1fEv', 'A::f() const restrict'],
+    ['_ZNVK1A1fEv', 'A::f() const volatile'],
+    ['_ZNrVK1A1fEv', 'A::f() const volatile restrict'],
+  ]) assert.equal(demangleCxx(name), expected, name);
+  assert.equal(demangleCxx('_ZNVV1A1fEv'), null, 'duplicate volatile qualifier must fail closed');
+  assert.equal(demangleCxx('_ZNKV1A1fEv'), null, 'out-of-order CV qualifiers must fail closed');
   console.log('✔ #4040 Itanium nested-name CV qualifiers passed');
 }
 
