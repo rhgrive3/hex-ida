@@ -5,7 +5,7 @@ import {
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
 
-const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)$/;
+const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
 function finiteFloatValue(value) {
   if (typeof value === 'number') {
