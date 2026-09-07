@@ -62,6 +62,22 @@ function deepFreeze(obj) {
   return obj;
 }
 
+/*
+ * Dynamic keys are stored as own data properties. Assigning with `out[k] = ...`
+ * routes the key `'__proto__'` through the prototype setter, so an own
+ * `__proto__` target silently disappears and distinct targets normalize to the
+ * same canonical form — and therefore to the same Evidence ID (#5903).
+ */
+function canonicalOwn(out, key, value) {
+  Object.defineProperty(out, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return out;
+}
+
 function canonicalize(val) {
   if (val === null || typeof val !== 'object') {
     if (typeof val === 'bigint') return `0x${val.toString(16)}`;
@@ -69,18 +85,18 @@ function canonicalize(val) {
   }
   if (val instanceof Map) {
     const entries = [...val.entries()].sort(([k1], [k2]) => String(k1).localeCompare(String(k2)));
-    const out = {};
+    let out = {};
     for (const [k, v] of entries) {
-      out[String(k)] = canonicalize(v);
+      out = canonicalOwn(out, String(k), canonicalize(v));
     }
     return out;
   }
   if (Array.isArray(val)) {
     return val.map(canonicalize);
   }
-  const sorted = {};
+  let sorted = {};
   for (const k of Object.keys(val).sort()) {
-    sorted[k] = canonicalize(val[k]);
+    sorted = canonicalOwn(sorted, k, canonicalize(val[k]));
   }
   return sorted;
 }
@@ -264,7 +280,11 @@ export function createSymbolicEvidence({
     if (witnessModel instanceof Map) {
       normalizedWitness = {};
       for (const [k, v] of witnessModel.entries()) {
-        normalizedWitness[String(k)] = typeof v === 'bigint' ? `0x${v.toString(16)}` : v;
+        canonicalOwn(
+          normalizedWitness,
+          String(k),
+          typeof v === 'bigint' ? `0x${v.toString(16)}` : canonicalize(v)
+        );
       }
     } else if (typeof witnessModel === 'object') {
       normalizedWitness = canonicalize(witnessModel);
@@ -276,7 +296,11 @@ export function createSymbolicEvidence({
   if (origins instanceof Map) {
     normalizedOrigins = {};
     for (const [k, v] of origins.entries()) {
-      normalizedOrigins[String(k)] = Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v);
+      canonicalOwn(
+        normalizedOrigins,
+        String(k),
+        Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v)
+      );
     }
   } else if (typeof origins === 'object' && origins !== null) {
     normalizedOrigins = canonicalize(origins);

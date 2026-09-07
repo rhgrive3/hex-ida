@@ -440,7 +440,7 @@ export async function verifyBoundedEquivalence({
       solverResult,
       validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend }),
       solverResultStatus: solverResult.status,
-      cancelled: activeSession.isCancelled(),
+      cancelled: activeSession.isCancelled?.() ?? false,
       timedOut: lifecycle.timedOut === true,
       stale: lifecycle.stale === true,
       disposed: lifecycle.disposed === true,
