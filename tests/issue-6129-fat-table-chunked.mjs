@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MemoryByteSource } from '../js/binary/source.js';
-import { parseMachOSource } from '../js/binary/source-loaders.js';
+import { openBinarySource, parseMachOSource } from '../js/binary/source-loaders.js';
 
 function thin64() {
   const b = new Uint8Array(64);
@@ -125,6 +125,15 @@ test('issue #6129 - truncated table still rejected', async () => {
   v.setUint32(4, 8, false);
   const source = new MemoryByteSource(bytes, { maxReadLength: 16 });
   await assert.rejects(parseMachOSource(source), /truncated|unreasonable/i);
+});
+
+test('issue #6129 - zero-byte probe preserves an already-aborted signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    openBinarySource(new Uint8Array(), { signal: controller.signal }),
+    (error) => error?.name === 'AbortError' && error?.code === 'ABORT_ERR',
+  );
 });
 
 test('issue #6129 - count>128 still rejected', async () => {
