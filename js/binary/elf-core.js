@@ -28,6 +28,7 @@ const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
+const SHT_RISCV_ATTRIBUTES = 0x70000003;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -55,7 +56,11 @@ export function parseELF(input, options = {}) {
   nameSections(r, rawSections, h);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
-    const attributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
+    const namedAttributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
+    const attributes = namedAttributes?.type === SHT_RISCV_ATTRIBUTES ? namedAttributes : null;
+    if (namedAttributes && !attributes) {
+      image.warnings.push('RISC-V .riscv.attributes section name without SHT_RISCV_ATTRIBUTES is not authoritative');
+    }
     if (attributes) {
       const start = safeOffset(attributes.offset), size = safeOffset(attributes.size);
       if (start == null || size == null || size > 1024 * 1024 || start > r.length || size > r.length - start) {
