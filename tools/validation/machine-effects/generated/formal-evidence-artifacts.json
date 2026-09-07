@@ -1,0 +1,387 @@
+{
+  "schemaVersion": "machine-effects-formal-evidence-artifacts/v1",
+  "generatorIdentity": "hex-machine-effects-formal-evidence-generator/v1",
+  "identities": {
+    "herdtools7": {
+      "version": "7.58",
+      "commit": "1ca343e16a2038e406d1ac674e7e3a1b722b36c7",
+      "binaryDigest": "sha256:6341f10e65c01e064d59f5de118e3a18395e3cf54e595f6ceff6f40cca32a2b4"
+    },
+    "isla": {
+      "commit": "f189d5cbf6d732839879024c74ab0a8478bc1e28",
+      "binaryDigest": "sha256:10a477d60076ce2a5b15cc412f2e37cc2da820342fc892d2cedc4344071c6a7b",
+      "snapshotCommit": "d8b31014643035a3b11071e56ef30001de3f52ab",
+      "modelDigest": "sha256:4ece4410a43c32b58737957d55920b485ade5171bb53deddebb9c7d61df77075",
+      "configDigest": "sha256:49682bf103809e60cd986a1dbbcb833acc8608c16e273d92847b3efb2860a454"
+    },
+    "sailRiscv": {
+      "version": "0.13.1",
+      "commit": "27224ccb2290f022e46213c05b3e72e8a9ea635e",
+      "binaryDigest": "sha256:b83c230eb252d31648dd805be2fc5e1ab5951c57992d7df30818b0cd8a6c6f05"
+    },
+    "qemuAarch64": {
+      "version": "qemu-aarch64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+      "binaryDigest": "sha256:0338d0ed6013abe5e0f41c5a22976ac6fe2f1b5869edf05d4a9098c121248f02",
+      "role": "independent-concrete-execution"
+    },
+    "qemuRiscv64": {
+      "version": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+      "binaryDigest": "sha256:2fdbef0779371e2fa23d158fe65cc8c9585e619980c9a9799d13e54cd3a532a8",
+      "role": "independent-concrete-execution"
+    }
+  },
+  "records": [
+    {
+      "id": "arm64-a64-adds-symbolic-footprint",
+      "kind": "instruction-footprint",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "inline:adds x0, x1, x2",
+        "digest": "sha256:aa5a611c3a28d8fa115631f09427111bf4610500bcfe636bae1e18527a2a3b82"
+      },
+      "effect": {
+        "instructionId": "a64:adds:x0-x1-x2",
+        "effectId": "register:x0+nzcv",
+        "caseId": "formal:a64-adds",
+        "requiredFeatures": [
+          "a64"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "flag:C",
+          "flag:N",
+          "flag:V",
+          "flag:Z",
+          "register:x0"
+        ],
+        "known": [
+          "flag:C",
+          "flag:N",
+          "flag:V",
+          "flag:Z",
+          "register:x0"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "flag:C": "unsigned-overflow(add64(R1,R2))",
+        "flag:N": "add64(R1,R2)[63]",
+        "flag:V": "signed-overflow(add64(R1,R2))",
+        "flag:Z": "add64(R1,R2)==0",
+        "register:x0": "add64(R1,R2)"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "isla-footprint/v0.2.0",
+        "inputDigest": "sha256:61ce4ebe560c9097f72945e9be83ea92e22e79842e64d9432b9739c11252938c",
+        "command": "isla-footprint@f189d5c -A armv8p5.ir -C armv8p5.toml -i \"adds x0, x1, x2\" -s && qemu-aarch64 a64-adds.elf",
+        "toolOutput": "(read-reg |R1| nil v2247)\n(read-reg |R2| nil v2249)\n(define-const v2323 (bvadd ((_ zero_extend 64) v2315) ((_ zero_extend 64) v2316))) ; model/aarch64.sail 4047:24 - 4047:41\n(write-reg |PSTATE| ((_ field |N|)) (_ struct (|A| #b1) (|M| v25) (|E| v17) (|Q| v28) (|IL| #b0) (|N| v2341) (|SP| #b1) (|SS| #b0) (|IT| v23) (|D| #b1) (|UAO| v34) (|PAN| v27) (|GE| v20) (|I| #b1) (|TCO| v33) (|V| v35) (|Z| v36) (|T| v32) (|J| v24) (|SSBS| v31) (|nRW| #b0) (|BTYPE| v13) (|C| v14) (|DIT| #b0) (|F| #b1) (|EL| #b00)))\n(write-reg |PSTATE| ((_ field |Z|)) (_ struct (|A| #b1) (|M| v25) (|E| v17) (|Q| v28) (|IL| #b0) (|N| v2341) (|SP| #b1) (|SS| #b0) (|IT| v23) (|D| #b1) (|UAO| v34) (|PAN| v27) (|GE| v20) (|I| #b1) (|TCO| v33) (|V| v35) (|Z| v2342) (|T| v32) (|J| v24) (|SSBS| v31) (|nRW| #b0) (|BTYPE| v13) (|C| v14) (|DIT| #b0) (|F| #b1) (|EL| #b00)))\n(write-reg |PSTATE| ((_ field |C|)) (_ struct (|A| #b1) (|M| v25) (|E| v17) (|Q| v28) (|IL| #b0) (|N| v2341) (|SP| #b1) (|SS| #b0) (|IT| v23) (|D| #b1) (|UAO| v34) (|PAN| v27) (|GE| v20) (|I| #b1) (|TCO| v33) (|V| v35) (|Z| v2342) (|T| v32) (|J| v24) (|SSBS| v31) (|nRW| #b0) (|BTYPE| v13) (|C| v2343) (|DIT| #b0) (|F| #b1) (|EL| #b00)))\n(write-reg |PSTATE| ((_ field |V|)) (_ struct (|A| #b1) (|M| v25) (|E| v17) (|Q| v28) (|IL| #b0) (|N| v2341) (|SP| #b1) (|SS| #b0) (|IT| v23) (|D| #b1) (|UAO| v34) (|PAN| v27) (|GE| v20) (|I| #b1) (|TCO| v33) (|V| v2344) (|Z| v2342) (|T| v32) (|J| v24) (|SSBS| v31) (|nRW| #b0) (|BTYPE| v13) (|C| v2343) (|DIT| #b0) (|F| #b1) (|EL| #b00)))\n(write-reg |R0| nil v2345)\nQEMU-AARCH64 exit-status:8"
+      },
+      "artifactDigest": "sha256:d57a707cd1094ddc9aaa5c265d906756c542975287ebbde511d1bb8c98be85ab"
+    },
+    {
+      "id": "riscv64-rv64imc-add-concrete-trace",
+      "kind": "instruction-footprint",
+      "profileId": "riscv64:rv64imc",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/rv64-add.S",
+        "digest": "sha256:ba8b122f2d82c1e54b078808c596df051d1ee8cfa8e412d2ec4277ca237cd055"
+      },
+      "effect": {
+        "instructionId": "rv64:add:x5-x1-x2",
+        "effectId": "register:x5",
+        "caseId": "formal:rv64-add",
+        "requiredFeatures": [
+          "rv64imc"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "register:x1",
+          "register:x2",
+          "register:x5"
+        ],
+        "known": [
+          "register:x1",
+          "register:x2",
+          "register:x5"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "register:x1": "0x0000000000000005",
+        "register:x2": "0x0000000000000003",
+        "register:x5": "0x0000000000000008"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "sail-riscv/v0.13.1",
+        "inputDigest": "sha256:d77acb5f950a47424438bc26d30fd9704a0c37413c86b9045707dd4e64e7edb4",
+        "command": "sail_riscv_sim@0.13.1 --inst-limit 3 --trace-instr --trace-gpr rv64-add.elf && qemu-riscv64 rv64-add.elf",
+        "toolOutput": "[0] [M]: 0x0000000080000000 (0x4095) c.li x1, 0x5                                   _start+0\nx1 <- 0x0000000000000005\n[1] [M]: 0x0000000080000002 (0x410D) c.li x2, 0x3                                   _start+2\nx2 <- 0x0000000000000003\n[2] [M]: 0x0000000080000004 (0x002082B3) add x5, x1, x2                             _start+4\nx5 <- 0x0000000000000008\nQEMU-RISCV64 exit-status:8"
+      },
+      "artifactDigest": "sha256:07cb9811a64beadd351ce77c5432be78117007dc2bcbdb3b9aaf272a9a96fbda"
+    },
+    {
+      "id": "arm64-a64-relaxed-outcome",
+      "kind": "relaxed-memory-outcomes",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/aarch64-relaxed.litmus",
+        "digest": "sha256:5c8427b25ac6e8aba3d37daae8b5fda742bc7cb687feef3d98d155e354f92077"
+      },
+      "effect": {
+        "instructionId": "a64:litmus:ME01_relaxed_SB",
+        "effectId": "memory-order:relaxed:ME01_relaxed_SB",
+        "caseId": "formal:memory:relaxed",
+        "requiredFeatures": [
+          "a64",
+          "atomics"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "outcome:target:ME01_relaxed_SB"
+        ],
+        "known": [
+          "outcome:target:ME01_relaxed_SB"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "outcome:target:ME01_relaxed_SB": "permitted"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "herd7/v7.58",
+        "inputDigest": "sha256:935dc7dccc9343ab4ab1dff51327f73c0a39330860f19dc60449cd5fa2db5095",
+        "command": "herd7@7.58 -model aarch64.cat aarch64-relaxed.litmus",
+        "toolOutput": "Test ME01_relaxed_SB Allowed\nStates 4\nWitnesses\nObservation ME01_relaxed_SB Sometimes 1 3"
+      },
+      "artifactDigest": "sha256:6afb3acb3eb2c43d26fa1aa0173bdc7065f87424b3309f845d13180b900c5bf4",
+      "memoryModel": {
+        "ordering": "relaxed",
+        "atomic": true,
+        "outcomeUniverse": [
+          "target:ME01_relaxed_SB"
+        ],
+        "permittedOutcomes": [
+          "target:ME01_relaxed_SB"
+        ],
+        "forbiddenOutcomes": []
+      }
+    },
+    {
+      "id": "arm64-a64-acquire-outcome",
+      "kind": "relaxed-memory-outcomes",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/aarch64-acquire.litmus",
+        "digest": "sha256:5443cc674bce985db0d20e91c91a138181e02be6c5b4c7e4b94949f5436d7735"
+      },
+      "effect": {
+        "instructionId": "a64:litmus:ME01_acquire_SB",
+        "effectId": "memory-order:acquire:ME01_acquire_SB",
+        "caseId": "formal:memory:acquire",
+        "requiredFeatures": [
+          "a64",
+          "atomics"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "outcome:target:ME01_acquire_SB"
+        ],
+        "known": [
+          "outcome:target:ME01_acquire_SB"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "outcome:target:ME01_acquire_SB": "permitted"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "herd7/v7.58",
+        "inputDigest": "sha256:61559538ce0676bda0bc460e186c5148c612c941d24ec089aa24138d7f340af2",
+        "command": "herd7@7.58 -model aarch64.cat aarch64-acquire.litmus",
+        "toolOutput": "Test ME01_acquire_SB Allowed\nStates 4\nWitnesses\nObservation ME01_acquire_SB Sometimes 1 3"
+      },
+      "artifactDigest": "sha256:a0bab4656bd3bcc4a4904e2441e453cc07676c88145d7794398a20b8c592bc49",
+      "memoryModel": {
+        "ordering": "acquire",
+        "atomic": true,
+        "outcomeUniverse": [
+          "target:ME01_acquire_SB"
+        ],
+        "permittedOutcomes": [
+          "target:ME01_acquire_SB"
+        ],
+        "forbiddenOutcomes": []
+      }
+    },
+    {
+      "id": "arm64-a64-release-outcome",
+      "kind": "relaxed-memory-outcomes",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/aarch64-release.litmus",
+        "digest": "sha256:f4e11277eed1068b87f80f51bbb356075c62ac0e33dea0dd429c9e8ad8c5e8c7"
+      },
+      "effect": {
+        "instructionId": "a64:litmus:ME01_release_SB",
+        "effectId": "memory-order:release:ME01_release_SB",
+        "caseId": "formal:memory:release",
+        "requiredFeatures": [
+          "a64",
+          "atomics"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "outcome:target:ME01_release_SB"
+        ],
+        "known": [
+          "outcome:target:ME01_release_SB"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "outcome:target:ME01_release_SB": "permitted"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "herd7/v7.58",
+        "inputDigest": "sha256:6281e1c463e9e449c6c9a46bb657ff11b953f00e14411414dca03cf279e2d298",
+        "command": "herd7@7.58 -model aarch64.cat aarch64-release.litmus",
+        "toolOutput": "Test ME01_release_SB Allowed\nStates 4\nWitnesses\nObservation ME01_release_SB Sometimes 1 3"
+      },
+      "artifactDigest": "sha256:84c024dd4c8a42908af31541148c5328d3dcc8e0f2a47f53f7ecb6da07c519d7",
+      "memoryModel": {
+        "ordering": "release",
+        "atomic": true,
+        "outcomeUniverse": [
+          "target:ME01_release_SB"
+        ],
+        "permittedOutcomes": [
+          "target:ME01_release_SB"
+        ],
+        "forbiddenOutcomes": []
+      }
+    },
+    {
+      "id": "arm64-a64-acq-rel-outcome",
+      "kind": "relaxed-memory-outcomes",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/aarch64-acq-rel.litmus",
+        "digest": "sha256:de8a6c947fce76b090410829c341a153b1b9b42347b4ed7d69e60083d6571697"
+      },
+      "effect": {
+        "instructionId": "a64:litmus:ME01_acq_rel_MP",
+        "effectId": "memory-order:acq-rel:ME01_acq_rel_MP",
+        "caseId": "formal:memory:acq-rel",
+        "requiredFeatures": [
+          "a64",
+          "atomics"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "outcome:target:ME01_acq_rel_MP"
+        ],
+        "known": [
+          "outcome:target:ME01_acq_rel_MP"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "outcome:target:ME01_acq_rel_MP": "forbidden"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "herd7/v7.58",
+        "inputDigest": "sha256:f6c93390ea6971c6d4c582ea40ac4637f64677132b52927503c69ca3e5f2f3a5",
+        "command": "herd7@7.58 -model aarch64.cat aarch64-acq-rel.litmus",
+        "toolOutput": "Test ME01_acq_rel_MP Allowed\nStates 3\nWitnesses\nObservation ME01_acq_rel_MP Never 0 3"
+      },
+      "artifactDigest": "sha256:49445dc25d3e6413506442f510ab0e98f80bd8ac34441264bfa1ba34d9e73dcc",
+      "memoryModel": {
+        "ordering": "acq-rel",
+        "atomic": true,
+        "outcomeUniverse": [
+          "target:ME01_acq_rel_MP"
+        ],
+        "permittedOutcomes": [],
+        "forbiddenOutcomes": [
+          "target:ME01_acq_rel_MP"
+        ]
+      }
+    },
+    {
+      "id": "arm64-a64-seq-cst-outcome",
+      "kind": "relaxed-memory-outcomes",
+      "profileId": "arm64:a64",
+      "source": {
+        "path": "tests/machine-effects/fixtures/formal-source/aarch64-seq-cst.litmus",
+        "digest": "sha256:c9658eadfc8f6d7e192a586cdc7bcbce53cb50072f05df45ac650687c7dfda35"
+      },
+      "effect": {
+        "instructionId": "a64:litmus:ME01_seq_cst_SB",
+        "effectId": "memory-order:seq-cst:ME01_seq_cst_SB",
+        "caseId": "formal:memory:seq-cst",
+        "requiredFeatures": [
+          "a64",
+          "atomics"
+        ]
+      },
+      "observables": {
+        "declared": [
+          "outcome:target:ME01_seq_cst_SB"
+        ],
+        "known": [
+          "outcome:target:ME01_seq_cst_SB"
+        ],
+        "undefined": [],
+        "implementationDefined": [],
+        "unobserved": []
+      },
+      "expectedObservables": {
+        "outcome:target:ME01_seq_cst_SB": "forbidden"
+      },
+      "completeness": "complete",
+      "artifact": {
+        "format": "herd7/v7.58",
+        "inputDigest": "sha256:914f14bf3b675ca2cf58697fa9f5842e2959a5d39fd79422ccb0f750d59062d6",
+        "command": "herd7@7.58 -model aarch64.cat aarch64-seq-cst.litmus",
+        "toolOutput": "Test ME01_seq_cst_SB Allowed\nStates 3\nWitnesses\nObservation ME01_seq_cst_SB Never 0 3"
+      },
+      "artifactDigest": "sha256:2a8ff0726bf94ea8d9e3fef9cd2ba3707c9bbb5b0fda428d694179bb8e0badc6",
+      "memoryModel": {
+        "ordering": "seq-cst",
+        "atomic": true,
+        "outcomeUniverse": [
+          "target:ME01_seq_cst_SB"
+        ],
+        "permittedOutcomes": [],
+        "forbiddenOutcomes": [
+          "target:ME01_seq_cst_SB"
+        ]
+      }
+    }
+  ],
+  "manifestId": "sha256:b8ace35b0970d94d811681bb874393f49d0709789aa3430d970f05a7151911e1"
+}

@@ -132,7 +132,7 @@ assert.equal(compatGraph.allNodes().length, 2);
       { id: 'claim-unsup', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-unsupported'], completeness: 'complete', verdict: 'unknown' },
       { id: 'claim-trunc', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-truncated'], completeness: 'complete', verdict: 'unknown' },
       { id: 'claim-part', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-partial'], completeness: 'complete', verdict: 'unknown' },
-      { id: 'claim-comp', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-complete'], completeness: 'complete', verdict: 'unknown' },
+      { id: 'claim-comp', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-complete'], completeness:'complete', verdict:'unknown' },
     ],
   });
 
@@ -155,6 +155,21 @@ console.log('core evidence contracts: ok');
   const legacy = canonicalEvidenceToLegacyAi(canonical);
   assert.equal(legacy.binaryId, 'bin-A');
   assert.equal(legacyAiEvidenceToCanonical(legacy).binaryId, 'bin-A');
+
+  const conflict = createEvidenceNode({
+    id:'ev-5782-conflict', family:'SemanticEvidence', binaryId:'bin-A',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true,
+    payload:{ binaryId:'bin-B', summary:'conflicting legacy payload' },
+  });
+  const conflictLegacy = canonicalEvidenceToLegacyAi(conflict);
+  assert.equal(conflictLegacy.binaryId, 'bin-A', 'canonical binaryId must override conflicting legacy payload binaryId');
+  assert.notEqual(conflictLegacy.binaryId, 'bin-B', 'legacy payload binaryId must not gain authority over canonical binding');
+  assert.equal(
+    legacyAiEvidenceToCanonical(conflictLegacy).binaryId,
+    'bin-A',
+    'canonical binaryId authority must survive canonical-to-legacy-to-canonical round-trip',
+  );
 
   const legacyOrigin = legacyAiEvidenceToCanonical({
     id:'ev-5782-legacy', kind:'observation', status:'supported',
