@@ -185,14 +185,17 @@ function mergeEvidence(legacy, proven) {
   return Array.from(byFact.values()).sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row));
 }
 
-export function findIrValueUpdates(model, opts) {
+export function findIrValueUpdates(model, opts, precomputed = null) {
   if (!model || !model.instructions || !model.instructions.length) return [];
-  const ir = irFor(model, opts && opts.ir);
+  const ir = precomputed?.ir ?? irFor(model, opts && opts.ir);
   if (!ir) return [];
+  const rmwProofs = Array.isArray(precomputed?.readModifyWriteProofs)
+    ? precomputed.readModifyWriteProofs
+    : readModifyWrite(ir);
   const callByRow = new Map((model.calls || []).map((c) => [c.row, c]));
   const originMemo = new Map();
   const out = [];
-  for (const rmw of readModifyWrite(ir)) {
+  for (const rmw of rmwProofs) {
     const location = locationShape(rmw);
     if (!location) continue;
     const load = rmw.load, store = rmw.store;
