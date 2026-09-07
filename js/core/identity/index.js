@@ -48,12 +48,13 @@ export function jsonSafe(value, seen = new WeakSet()) {
   seen.add(value);
   let out;
   if (value instanceof Map) {
-    out = { $map: canonicalMapEntries(value).map(({ key, value: entryValue }) => [
-      jsonSafe(key, seen),
-      jsonSafe(entryValue, seen),
-    ]) };
+    const entries = [...value.entries()].map(([k, v]) => [jsonSafe(k, seen), jsonSafe(v, seen)]);
+    entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
+    out = { $map: entries };
   } else if (value instanceof Set) {
-    out = { $set: canonicalSetEntries(value).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
+    const values = [...value].map((v) => jsonSafe(v, seen));
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
+    out = { $set: values };
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
     out = {};
@@ -101,31 +102,6 @@ function canonicalWitnessParts(value) {
 function compareCanonicalWitnessParts(left, right) {
   return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
     || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
-}
-
-function canonicalMapEntries(value) {
-  const entries = [...value.entries()].map(([key, entryValue]) => ({
-    key,
-    value: entryValue,
-    keyParts: canonicalWitnessParts(key),
-    valueParts: canonicalWitnessParts(entryValue),
-  }));
-  entries.sort((left, right) => (
-    compareCanonicalText(stableStringify(left.keyParts.normalized), stableStringify(right.keyParts.normalized))
-    || compareCanonicalText(stableStringify(left.valueParts.normalized), stableStringify(right.valueParts.normalized))
-    || compareCanonicalText(stableStringify(left.keyParts.witness), stableStringify(right.keyParts.witness))
-    || compareCanonicalText(stableStringify(left.valueParts.witness), stableStringify(right.valueParts.witness))
-  ));
-  return entries;
-}
-
-function canonicalSetEntries(value) {
-  const entries = [...value].map((entryValue) => ({
-    value: entryValue,
-    parts: canonicalWitnessParts(entryValue),
-  }));
-  entries.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
-  return entries;
 }
 
 function typedId(prefix, payload) {
@@ -221,13 +197,26 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     seen.add(value);
     if (value instanceof Map) {
       out.push([path, 'map']);
-      canonicalMapEntries(value).forEach((entry, index) => {
+      const entries = [...value.entries()].map(([key, entryValue]) => ({
+        key,
+        value: entryValue,
+        keyParts: canonicalWitnessParts(key),
+        valueParts: canonicalWitnessParts(entryValue),
+      }));
+      entries.sort((left, right) => compareCanonicalWitnessParts(left.keyParts, right.keyParts)
+        || compareCanonicalWitnessParts(left.valueParts, right.valueParts));
+      entries.forEach((entry, index) => {
         lossyTypeWitness(entry.key, `${path}.$map[${index}].<key>`, seen, out);
         lossyTypeWitness(entry.value, `${path}.$map[${index}].<val>`, seen, out);
       });
     } else if (value instanceof Set) {
       out.push([path, 'set']);
-      canonicalSetEntries(value).forEach((entry, index) => {
+      const values = [...value.values()].map((entryValue) => ({
+        value: entryValue,
+        parts: canonicalWitnessParts(entryValue),
+      }));
+      values.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
+      values.forEach((entry, index) => {
         lossyTypeWitness(entry.value, `${path}.$set[${index}]`, seen, out);
       });
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
