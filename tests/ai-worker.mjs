@@ -160,4 +160,63 @@ try {
   assert.equal(tinyLimitResponse.status, 413);
   assert.equal(upstreamCalled, false);
 } finally { globalThis.fetch = originalFetch; }
+
+// Provider responses are untrusted transport input: both the success and the
+// failure path must materialize the body under a worker-owned byte ceiling
+// instead of reading the full upstream body into memory (#6144).
+{
+  const originalFetch = globalThis.fetch;
+  let readBytes = 0;
+  const trackedResponse = (bodyText, init) => {
+    const source = new TextEncoder().encode(bodyText);
+    const CHUNK = 64 * 1024;
+    let offset = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (offset >= source.byteLength) { controller.close(); return; }
+        const end = Math.min(offset + CHUNK, source.byteLength);
+        readBytes += end - offset;
+        controller.enqueue(source.subarray(offset, end));
+        offset = end;
+      },
+    }), init);
+  };
+  try {
+    const quotaStub = { async acquire() { return { allowed: true, token: 't' }; }, async release() { return {}; } };
+    const env = { GEMINI_API_KEY: 'server-only', AI_QUOTA: { getByName: () => quotaStub } };
+    const request = () => new Request('https://example.test/api/ai/turn', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'chat', style: 'analyst', scope: 'auto', context: { request: { goal: 'What is ASLR?' } }, messages: [], tools: [] }),
+    });
+
+    globalThis.fetch = async () => trackedResponse(
+      JSON.stringify({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'x'.repeat(6 * 1024 * 1024) } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+    readBytes = 0;
+    const oversizedSuccess = await worker.fetch(request(), env);
+    assert.equal(oversizedSuccess.status, 502, 'oversized success response is rejected');
+    assert.equal((await oversizedSuccess.json()).error.code, 'invalid_model_output');
+    assert.ok(readBytes <= 4 * 1024 * 1024 + 262144, `oversized body must be cut off at the ceiling, read ${readBytes} bytes`);
+
+    globalThis.fetch = async () => trackedResponse(
+      JSON.stringify({ error: { code: 'temporary', padding: 'x'.repeat(6 * 1024 * 1024) } }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    );
+    readBytes = 0;
+    const oversizedFailure = await worker.fetch(request(), env);
+    assert.equal(oversizedFailure.status >= 500, true, 'oversized failure response surfaces an upstream error');
+    // The 503 is retryable, so the failure body is bounded-read once per attempt
+    // (MAX_UPSTREAM_ATTEMPTS = 3); no attempt may read the full 6 MiB body.
+    assert.ok(readBytes <= 3 * (4 * 1024 * 1024 + 262144), `oversized failure body must be cut off at the ceiling, read ${readBytes} bytes`);
+
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'ok', evidenceIds: [] } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+    const normal = await worker.fetch(request(), env);
+    assert.equal(normal.status, 200);
+    assert.equal((await normal.json()).decision.answer, 'ok', 'normal-size provider responses still succeed');
+  } finally { globalThis.fetch = originalFetch; }
+}
 console.log('ai-worker: PASS');

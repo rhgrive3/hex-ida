@@ -3,7 +3,7 @@ import { clientSafeCapabilities, resolveInferenceAdapter } from './worker-adapte
 import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, promptWorkbench } from './worker-protocol.js';
 import {
   acquireDistributedQuota, byteLength, HttpError, isJsonRequest, isRetryableUpstreamFailure,
-  jsonError, jsonResponse, MAX_CONTEXT_CHARS, MAX_REQUEST_BYTES, MAX_UPSTREAM_ATTEMPTS,
+  jsonError, jsonResponse, MAX_CONTEXT_CHARS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MAX_UPSTREAM_ATTEMPTS,
   readLimitedText, readUpstreamFailure, releaseDistributedQuota, REQUEST_TIMEOUT_MS,
   upstreamError, waitForRetry,
 } from './worker-transport.js';
@@ -67,13 +67,15 @@ export async function handleAITurn(request, env) {
       continue;
     }
     if (upstream.ok) break;
-    const failure = await readUpstreamFailure(upstream);
+    const failure = await readUpstreamFailure(upstream, responseByteLimit(adapter));
     if (!isRetryableUpstreamFailure(upstream.status, failure.code) || attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return upstreamError(upstream.status, failure.code, upstream.headers.get('retry-after')); }
     if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
   }
   if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error.'); }
   let interaction;
-  try { interaction = adapter.normalize(await upstream.json()); }
+  // The provider response is untrusted transport input: materialize it under
+  // the same class of byte ceiling the request path enforces (#6144).
+  try { interaction = adapter.normalize(JSON.parse(await readLimitedText(upstream, responseByteLimit(adapter)))); }
   catch { await cleanup(); return jsonError(502, 'invalid_model_output', 'The model returned malformed JSON.'); }
   await cleanup();
   try {
@@ -87,4 +89,13 @@ export async function handleAITurn(request, env) {
 function positiveLimit(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Worker-owned transport ceiling for a single upstream response body. It is
+// deliberately independent of provider generation limits: HTTP errors, proxies,
+// and malformed providers never renegotiate this boundary (#6144).
+function responseByteLimit(adapter) {
+  const maxOutputTokens = Number(adapter?.capabilities?.maxOutputTokens);
+  const tokenEnvelope = Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens * 16 : 0;
+  return Math.max(tokenEnvelope, MAX_RESPONSE_BYTES);
 }
