@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../../../js/ai/capabilities/executor.js';
 import { ProposalExecutor } from '../../../js/ai/interaction/proposal-executor.js';
+import { ProposalStore } from '../../../js/ai/proposals.js';
 
 const projectCapability = Object.freeze({
   id: 'annotation.project',
@@ -37,7 +38,7 @@ function proposalStore(proposal) {
       assert.equal(id, proposal.id);
       assert.equal(approvalToken, 'approval-token-3782');
       assert.equal(currentState, proposal.before);
-      await apply(proposal);
+      await apply(proposal, { kind: 'proposal', token: approvalToken, proposalId: proposal.id });
       proposal.status = 'applied';
       return proposal;
     },
@@ -68,16 +69,17 @@ const app = {
 };
 
 const capabilityExecutor = new CapabilityExecutor({ catalog: catalog(), app });
-const proposal = {
-  id: 'proposal-3782',
+const proposalStore3782 = new ProposalStore({ evidenceStore: { has: () => true }, binding: () => null });
+const proposal = proposalStore3782.create({
   kind: 'project-annotation',
   target: { id: 'a1', kind: 'note' },
   before: 'old',
   after: 'new',
-  status: 'pending',
-};
+  evidenceIds: ['evidence'],
+});
+const proposal3782 = proposal;
 const executor = new ProposalExecutor({
-  store: proposalStore(proposal),
+  store: proposalStore3782,
   capabilityExecutor,
   app,
 });
@@ -98,12 +100,22 @@ assert.equal(app.autoReport.report.confirmed.find((item) => item === externalFin
 assert.equal(externalFinding.value, 'external');
 assert.equal(autosaves, 1);
 
-const created = await capabilityExecutor.execute('annotation.project', {
-  id: 'a2', kind: 'note', value: 'fresh',
-}, {
-  authorization: { kind: 'proposal', token: 'approval-token-3782' },
+const createdProposal = proposalStore3782.create({
+  kind: 'project-annotation',
+  target: { id: 'a2', kind: 'note' },
+  before: null,
+  after: 'fresh',
+  evidenceIds: ['evidence'],
 });
-assert.equal(created.id, 'a2');
+const createdExecutor = new ProposalExecutor({
+  store: proposalStore3782,
+  capabilityExecutor,
+  app,
+});
+const created = await createdExecutor.approveAndApply(createdProposal.id);
+assert.equal(created.proposal.status, 'applied');
+assert.equal(created.execution.id, 'a2');
+assert.equal(created.execution.value, 'fresh');
 assert.equal(app.projectAnnotations.length, 2, 'a new id must still append exactly one annotation');
 assert.equal(app.projectAnnotations.find((item) => item.id === 'a2')?.value, 'fresh');
 assert.equal(app.autoReport.report.confirmed.filter((item) => item.id === 'a2' && item.source === 'project-annotation').length, 1);
@@ -131,11 +143,22 @@ assert.equal(autosaves, 2);
     autoReport: { report: { confirmed, deep: [] } },
     workspace: { autosave() { return false; } },
   };
-  const failingExecutor = new CapabilityExecutor({ catalog: catalog(), app: failingApp });
+  const failingProposalStore = new ProposalStore({ evidenceStore: { has: () => true }, binding: () => null });
+  const failingProposal = failingProposalStore.create({
+    kind: 'project-annotation',
+    target: { id: 'b1', kind: 'note' },
+    before: 'prior',
+    after: 'lost',
+    evidenceIds: ['evidence'],
+  });
+  const failingCapabilityExecutor = new CapabilityExecutor({ catalog: catalog(), app: failingApp });
+  const failingExecutor = new ProposalExecutor({
+    store: failingProposalStore,
+    capabilityExecutor: failingCapabilityExecutor,
+    app: failingApp,
+  });
   await assert.rejects(
-    () => failingExecutor.execute('annotation.project', { id: 'b1', kind: 'note', value: 'lost' }, {
-      authorization: { kind: 'proposal', token: 'approval-token-3782' },
-    }),
+    () => failingExecutor.approveAndApply(failingProposal.id),
     /could not be persisted/,
   );
   assert.equal(failingApp.projectAnnotations, annotations, 'rollback must preserve annotation array identity');

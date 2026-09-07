@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../../../js/ai/capabilities/executor.js';
+import { ProposalExecutor } from '../../../js/ai/interaction/proposal-executor.js';
+import { ProposalStore } from '../../../js/ai/proposals.js';
 
-const authorization = { kind: 'proposal', token: 'approved-token' };
+const evidenceStore = { has: () => true };
 
 function executorFor(app) {
-  return new CapabilityExecutor({
+  const capabilityExecutor = new CapabilityExecutor({
     app,
     catalog: {
       get(id) {
@@ -18,6 +20,20 @@ function executorFor(app) {
       },
     },
   });
+  const store = new ProposalStore({ evidenceStore, binding: () => null });
+  const proposalExecutor = new ProposalExecutor({ store, capabilityExecutor, app });
+  return {
+    async annotate(id, value) {
+      const proposal = store.create({
+        kind: 'project-annotation',
+        target: { id },
+        before: app?.projectAnnotations?.find?.((item) => item?.id === String(id))?.value ?? null,
+        after: value,
+        evidenceIds: ['evidence-3762'],
+      });
+      return proposalExecutor.approveAndApply(proposal.id);
+    },
+  };
 }
 
 async function rejectsToolFailed(promise) {
@@ -33,12 +49,8 @@ async function rejectsToolFailed(promise) {
     autoReport: { report: { confirmed: [priorConfirmed], deep: [] } },
     workspace: { autosave: () => { saves += 1; return true; } },
   };
-  const result = await executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-1', value: { claim: 'x' } },
-    { authorization },
-  );
-  assert.equal(result.id, 'finding-1');
+  const result = await executorFor(app).annotate('finding-1', { claim: 'x' });
+  assert.equal(result.execution.id, 'finding-1');
   assert.equal(saves, 1);
   assert.equal(app.projectAnnotations.length, 2);
   assert.equal(app.projectAnnotations[0], priorAnnotation);
@@ -56,11 +68,7 @@ async function rejectsToolFailed(promise) {
     autoReport: { report: { confirmed, deep: [] } },
     workspace: { autosave: () => { saves += 1; return false; } },
   };
-  await rejectsToolFailed(executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-2', value: { claim: 'not-durable' } },
-    { authorization },
-  ));
+  await rejectsToolFailed(executorFor(app).annotate('finding-2', { claim: 'not-durable' }));
   assert.equal(saves, 1);
   assert.equal(app.projectAnnotations, annotations, 'rollback must preserve the existing annotation array identity');
   assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }], 'failed autosave must remove the in-memory annotation');
@@ -72,11 +80,7 @@ async function rejectsToolFailed(promise) {
   const app = {
     workspace: { autosave: () => false },
   };
-  await rejectsToolFailed(executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-3', value: { claim: 'no-state-leak' } },
-    { authorization },
-  ));
+  await rejectsToolFailed(executorFor(app).annotate('finding-3', { claim: 'no-state-leak' }));
   assert.equal(app.projectAnnotations, undefined, 'failed autosave must restore an absent projectAnnotations field');
   assert.equal(app.autoReport, undefined, 'failed autosave must restore an absent autoReport field');
 }
@@ -91,11 +95,7 @@ async function rejectsToolFailed(promise) {
     workspace: { autosave: () => { throw quotaError; } },
   };
   await assert.rejects(
-    executorFor(app).execute(
-      'annotation.project',
-      { id: 'finding-4', value: { claim: 'throws' } },
-      { authorization },
-    ),
+    executorFor(app).annotate('finding-4', { claim: 'throws' }),
     (error) => error === quotaError,
   );
   assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }]);
@@ -104,11 +104,7 @@ async function rejectsToolFailed(promise) {
 
 {
   const app = {};
-  await rejectsToolFailed(executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-5', value: { claim: 'no-workspace' } },
-    { authorization },
-  ));
+  await rejectsToolFailed(executorFor(app).annotate('finding-5', { claim: 'no-workspace' }));
   assert.equal(app.projectAnnotations, undefined, 'missing persistence adapter must fail before mutation');
   assert.equal(app.autoReport, undefined, 'missing persistence adapter must fail before report mutation');
 }
@@ -120,11 +116,7 @@ async function rejectsToolFailed(promise) {
     autoReport: { report: { confirmed: legacyConfirmed, deep: [] } },
     workspace: { autosave: () => true },
   };
-  await executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-6', value: { claim: 'canonicalize-confirmed' } },
-    { authorization },
-  );
+  const result = await executorFor(app).annotate('finding-6', { claim: 'canonicalize-confirmed' });
   assert.ok(Array.isArray(app.autoReport.report.confirmed), 'successful mutation must replace malformed confirmed state with a canonical array');
   assert.equal(app.autoReport.report.confirmed.length, 1);
   assert.equal(app.autoReport.report.confirmed[0].id, 'finding-6');
@@ -138,11 +130,7 @@ async function rejectsToolFailed(promise) {
     autoReport: { report: { confirmed: legacyConfirmed, deep: [] } },
     workspace: { autosave: () => false },
   };
-  await rejectsToolFailed(executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-7', value: { claim: 'restore-malformed-confirmed' } },
-    { authorization },
-  ));
+  await rejectsToolFailed(executorFor(app).annotate('finding-7', { claim: 'restore-malformed-confirmed' }));
   assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }]);
   assert.equal(app.autoReport.report.confirmed, legacyConfirmed, 'rollback must restore a prior non-array confirmed value exactly');
 }
@@ -154,11 +142,7 @@ async function rejectsToolFailed(promise) {
     autoReport: legacyAutoReport,
     workspace: { autosave: () => false },
   };
-  await rejectsToolFailed(executorFor(app).execute(
-    'annotation.project',
-    { id: 'finding-8', value: { claim: 'restore-malformed-report-root' } },
-    { authorization },
-  ));
+  await rejectsToolFailed(executorFor(app).annotate('finding-8', { claim: 'restore-malformed-report-root' }));
   assert.deepEqual(app.projectAnnotations, [{ id: 'prior' }]);
   assert.equal(app.autoReport, legacyAutoReport, 'rollback must restore a malformed prior autoReport root exactly');
 }
