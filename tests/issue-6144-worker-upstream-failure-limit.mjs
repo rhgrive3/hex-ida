@@ -46,12 +46,15 @@ test('issue-6144: Content-Length over ceiling is not materialized on the failure
 test('issue-6144: chunked oversize failure body is cancelled mid-stream', async () => {
   const chunk = new Uint8Array(1024 * 1024).fill(120);
   let reads = 0;
+  let cancelled = false;
   const stream = new ReadableStream({
     pull(controller) { reads++; controller.enqueue(chunk); },
+    cancel() { cancelled = true; },
   });
   const response = new Response(stream, { status: 503 });
   assert.deepEqual(await readUpstreamFailure(response), { code: null });
   assert.ok(reads <= 4, `failure stream must stop early once over budget (reads=${reads})`);
+  assert.equal(cancelled, true, 'oversized failure stream must be cancelled after overflow');
 });
 
 test('issue-6144: huge 503/429 bodies do not fully materialize', async () => {
