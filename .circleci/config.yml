@@ -132,33 +132,40 @@ jobs:
             if [ "$RUN_PHASE7_OWNERSHIP" != 'true' ]; then exit 0; fi
             set -euo pipefail
             node tools/validation/phase7-ownership.mjs --check-manifest
+            # The development batch is an aggregate branch: validate the
+            # canonical Phase 7 subset and report the other phase files. A
+            # component branch continues to use the whole-diff gate below.
             case "${CIRCLE_BRANCH:-}" in
-              fix/unlinked-demand-analysis-2502-2518|fix/unlinked-top10-r3-20260830|fix/close-audit-2520-2545-20260830|fix/reopened-audit-final-20260830|fix/open-issues-final-20260830-r4|fix/unlinked-batch-20260901-r2)
-                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
-                  const fs = require("node:fs");
-                  const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
-                  const ownedSurface = files.filter((file) =>
-                    file.startsWith("js/analysis/") ||
-                    file === "js/semantics/compat/index.js" ||
-                    file.startsWith("tests/phase7/") ||
-                    file.startsWith("tools/validation/phase7/") ||
-                    file === "tools/validation/phase7-ownership.mjs" ||
-                    file === "tools/validation/phase-ownership/phase7.json" ||
-                    file.startsWith("reports/phase7/") ||
-                    file === ".github/workflows/phase7-ownership.yml"
-                  );
-                  process.stdout.write(JSON.stringify(ownedSurface));
-                ')"
-                if [ "$FILES_JSON" = '[]' ]; then
-                  echo 'Phase 7 aggregate validation found no Phase 7-owned changes' >&2
-                  exit 1
-                fi
-                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+              fix/unlinked-demand-analysis-2502-2518|fix/unlinked-top10-r3-20260830|fix/close-audit-2520-2545-20260830|fix/reopened-audit-final-20260830|fix/open-issues-final-20260830-r4|fix/unlinked-batch-20260901-r2|perf/development-gate-policy)
+                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" <<'NODE'
+                  import { inventoryDigest, inventoryFromGit, loadManifest, regexFor, validateFiles } from './tools/validation/phase7-ownership.mjs';
+
+                  const [baseSha, headSha] = process.argv.slice(2);
+                  const manifest = loadManifest();
+                  const inventory = inventoryFromGit(process.cwd(), baseSha, headSha);
+                  const owned = inventory.files.filter((file) => manifest.lanes.p7.some((pattern) => regexFor(pattern).test(file)));
+                  if (owned.length === 0) throw new Error('Phase 7 aggregate validation found no Phase 7-owned changes');
+                  const validation = validateFiles(manifest, owned);
+                  if (!validation.valid) {
+                    for (const violation of validation.violations) console.error(`phase7 ownership: ${violation.category}: ${JSON.stringify(violation.file)}: ${violation.detail}`);
+                    process.exitCode = 1;
+                  } else {
+                    console.log(JSON.stringify({ phase: 7, aggregate: true, baseSha: inventory.baseSha, headSha: inventory.headSha, changedFiles: owned.length, outsideLaneFiles: inventory.files.length - owned.length, inventoryDigest: inventoryDigest(owned), violations: 0 }));
+                  }
+            NODE
                 ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
             esac
+            if node tools/validation/phase7-ownership.mjs --files-json '[]'; then
+              echo 'Phase 7 ownership gate accepted an empty inventory' >&2
+              exit 1
+            fi
+            if node tools/validation/phase7-ownership.mjs --files-json '["../outside.js"]'; then
+              echo 'Phase 7 ownership gate accepted an invalid path' >&2
+              exit 1
+            fi
             if node tools/validation/phase7-ownership.mjs --files-json '["js/semantics/ir/nodes.js"]'; then
               echo 'Phase 7 ownership gate accepted a forbidden path' >&2
               exit 1
@@ -192,7 +199,40 @@ jobs:
             if [ "$RUN_PHASE8_OWNERSHIP" != 'true' ]; then exit 0; fi
             set -euo pipefail
             node tools/validation/phase8-ownership.mjs --check-manifest
-            node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
+            # The development batch is an aggregate branch: validate the
+            # canonical Phase 8 subset and report the other phase files. A
+            # component branch continues to use the whole-diff gate below.
+            case "${CIRCLE_BRANCH:-}" in
+              perf/development-gate-policy)
+                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" <<'NODE'
+                  import { inventoryDigest, inventoryFromGit, loadManifest, regexFor, validateFiles } from './tools/validation/phase8-ownership.mjs';
+
+                  const [baseSha, headSha] = process.argv.slice(2);
+                  const manifest = loadManifest();
+                  const inventory = inventoryFromGit(process.cwd(), baseSha, headSha);
+                  const owned = inventory.files.filter((file) => manifest.lanes.p8.some((pattern) => regexFor(pattern).test(file)));
+                  if (owned.length === 0) throw new Error('Phase 8 aggregate validation found no Phase 8-owned changes');
+                  const validation = validateFiles(manifest, owned);
+                  if (!validation.valid) {
+                    for (const violation of validation.violations) console.error(`phase8 ownership: ${violation.category}: ${JSON.stringify(violation.file)}: ${violation.detail}`);
+                    process.exitCode = 1;
+                  } else {
+                    console.log(JSON.stringify({ phase: 8, aggregate: true, baseSha: inventory.baseSha, headSha: inventory.headSha, changedFiles: owned.length, outsideLaneFiles: inventory.files.length - owned.length, inventoryDigest: inventoryDigest(owned), violations: 0 }));
+                  }
+            NODE
+                ;;
+              *)
+                node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
+                ;;
+            esac
+            if node tools/validation/phase8-ownership.mjs --files-json '[]'; then
+              echo 'Phase 8 ownership gate accepted an empty inventory' >&2
+              exit 1
+            fi
+            if node tools/validation/phase8-ownership.mjs --files-json '["../outside.js"]'; then
+              echo 'Phase 8 ownership gate accepted an invalid path' >&2
+              exit 1
+            fi
             if node tools/validation/phase8-ownership.mjs --files-json '["js/semantics/ssa/build.js"]'; then
               echo 'Phase 8 ownership gate accepted a forbidden path' >&2
               exit 1
