@@ -52,6 +52,6 @@ test('#1809 reallocf exposes allocation semantics with heap return', () => {
 });
 
 test('#1809 distinct effect families keep stable family identities', () => {
-  assert.equal(EXTRA_API_FAMILY_COUNT, 41);
+  assert.equal(EXTRA_API_FAMILY_COUNT, 45);
   assert.ok(extraApiInfo('_qsort') !== extraApiInfo('difftime'));
 });
