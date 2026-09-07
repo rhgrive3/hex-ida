@@ -305,6 +305,39 @@ test('large unknown top-level properties are rejected before recursive copying',
   assert.equal(reads, 0, 'top-level allowlisting must precede recursive cloning');
 });
 
+test('small unknown top-level properties are rejected before recursive copying', () => {
+  const candidate = { ...unchangedResult(descriptor()), unknown: 1 };
+  let reads = 0;
+  Object.defineProperty(candidate, 'tripwire', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      throw new Error('nested unknown property was copied');
+    },
+  });
+
+  assertMalformedRefused(candidate);
+  assert.equal(reads, 0, 'top-level allowlisting must precede recursive cloning');
+});
+
+test('array length is bounded before own-key enumeration', () => {
+  const target = [];
+  Object.defineProperty(target, 'length', { value: 10_001 });
+  let enumerated = 0;
+  const hostile = new Proxy(target, {
+    ownKeys() {
+      enumerated += 1;
+      throw new Error('array keys were enumerated before the length budget');
+    },
+  });
+
+  assertMalformedRefused({
+    ...unchangedResult(descriptor()),
+    diagnostics: [hostile],
+  });
+  assert.equal(enumerated, 0, 'array length must be checked before Reflect.ownKeys');
+});
+
 test('the public validator rejects accessor-backed fields without invoking them', () => {
   const candidate = { ...unchangedResult(descriptor()) };
   let reads = 0;

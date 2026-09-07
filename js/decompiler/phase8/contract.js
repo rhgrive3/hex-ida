@@ -341,6 +341,22 @@ function snapshotPassResultData(value) {
       throw new TypeError('phase8-pass-result-non-data-object');
     }
 
+    let length = null;
+    if (array) {
+      // Array length is a data descriptor and can be checked before Reflect.
+      // ownKeys materializes one index key per element, so a hostile sparse
+      // array must not allocate that list before the snapshot budget applies.
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(current, 'length');
+      if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+        throw new TypeError('phase8-pass-result-array-length-invalid');
+      }
+      length = lengthDescriptor.value;
+      if (length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT) {
+        throw new TypeError('phase8-pass-result-too-large');
+      }
+    }
+
     // Enumerate once, reject schema-incompatible keys before reading any
     // descriptors, and account for the whole container before cloning a value.
     const keys = Reflect.ownKeys(current);
@@ -355,15 +371,8 @@ function snapshotPassResultData(value) {
       throw new TypeError('phase8-pass-result-symbol-property');
     }
 
-    let length = null;
     let edgeCount = keys.length;
     if (array) {
-      const lengthDescriptor = Object.getOwnPropertyDescriptor(current, 'length');
-      if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
-        || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
-        throw new TypeError('phase8-pass-result-array-length-invalid');
-      }
-      length = lengthDescriptor.value;
       if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
       edgeCount = length;
     }
