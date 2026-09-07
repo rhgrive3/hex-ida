@@ -49,7 +49,7 @@ test('issue #6126 - BLR also invalidates pre-call X30', () => {
 });
 
 test('issue #6126 - BLRAA/BLRAB keep call classification and link write', () => {
-  for (const mn of ['blraa', 'blrab']) {
+  for (const mn of ['blraa', 'blrab', 'blraaz', 'blrabz']) {
     const insn = makeInstruction({ row: 0, address: 0x1000n, mn, ops: 'x9, x10' });
     assert.equal(insn.isCall, true, mn);
     assert.ok(insn.writes.includes('x30'), mn);
