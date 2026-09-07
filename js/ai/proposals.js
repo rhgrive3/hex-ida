@@ -2,11 +2,15 @@ import { AIError } from './schema.js';
 import { jsonSafe } from './validation.js';
 import { stableDigest } from '../core/identity/index.js';
 
-const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation', 'capability']);
 const PROPOSAL_CAPABILITIES = Object.freeze({
   rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
   'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
 });
+const CAPABILITY_PROPOSALS = new Set([
+  'patch.apply', 'patch.revert', 'runtime.continue', 'runtime.pause',
+  'runtime.step-in', 'runtime.step-over', 'runtime.step-out', 'runtime.memory-write',
+]);
 const EXECUTION_PAYLOADS = new WeakMap();
 const PROPOSAL_AUTHORITIES = new WeakMap();
 const EXECUTION_AUTHORIZATIONS = new WeakMap();
@@ -44,12 +48,14 @@ export class ProposalStore {
     }
     const binding = this.binding?.() || null;
     const executionPayload = snapshotProposalPayload(input);
+    const capability = proposalCapability({ kind, target: executionPayload.target });
+    if (!capability) throw new AIError('invalid_tool_call', 'Unsupported capability proposal.');
     const revision = fingerprint(executionPayload.before);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
       kind,
-      capability: PROPOSAL_CAPABILITIES[kind],
+      capability,
       revision,
       bindingRevision,
     });
@@ -151,10 +157,15 @@ export class ProposalStore {
 }
 
 export function proposalCapability(proposal) {
+  if (proposal?.kind === 'capability') {
+    const id = proposal.target?.capabilityId;
+    return CAPABILITY_PROPOSALS.has(id) ? id : null;
+  }
   return PROPOSAL_CAPABILITIES[proposal?.kind] || null;
 }
 
 export function proposalArguments(proposal) {
+  if (proposal?.kind === 'capability') return proposal.after;
   const target = proposalTarget(proposal?.target);
   if (proposal?.kind === 'rename' || proposal?.kind === 'comment' || proposal?.kind === 'type') return { ...target, value: proposal.after };
   if (proposal?.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
@@ -162,7 +173,12 @@ export function proposalArguments(proposal) {
   return { ...target, value: proposal?.after };
 }
 
-export function consumeProposalAuthorization(authorization, capability, args) {
+export function isLiveProposalAuthorization(authorization) {
+  const record = authorization && EXECUTION_AUTHORIZATIONS.get(authorization);
+  return !!record && record.store.records.get(record.proposalId) === record.proposal && record.proposal.status === 'applying';
+}
+
+export function consumeProposalAuthorization(authorization, capability, args, currentState) {
   if (!authorization || typeof authorization !== 'object') return false;
   const record = EXECUTION_AUTHORIZATIONS.get(authorization);
   if (!record) return false;
@@ -177,6 +193,7 @@ export function consumeProposalAuthorization(authorization, capability, args) {
     const authority = proposalAuthority(record.proposal);
     if (authority.id !== record.proposalId || authority.capability !== record.capability || authority.bindingRevision !== record.bindingRevision) return false;
     if (record.capability !== capability) return false;
+    if (authority.kind === 'capability' && fingerprint(currentState) !== authority.revision) return false;
     if (fingerprint(record.store.binding?.() || null) !== record.bindingRevision) return false;
     return fingerprint(args) === record.argumentsRevision;
   } catch {

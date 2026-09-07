@@ -1,7 +1,12 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
-import { consumeProposalAuthorization } from '../proposals.js';
+import { consumeProposalAuthorization, isLiveProposalAuthorization, proposalCapability } from '../proposals.js';
 import { validatePatchRange } from '../../patch.js';
+
+// Shared across executor instances so a proposal cannot confuse two different
+// files/adapters that happened to be the first objects seen by each executor.
+const approvalIdentities = new WeakMap();
+let nextApprovalIdentity = 1;
 
 export class CapabilityExecutor {
   constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null } = {}) {
@@ -21,10 +26,65 @@ export class CapabilityExecutor {
     assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
-    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    if (entry.requiresApproval && !isLiveProposalAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    const hasCapabilityProposal = proposalCapability({ kind: 'capability', target: { capabilityId: id } });
+    let approvalState;
+    if (hasCapabilityProposal) {
+      approvalState = await this.approvalState(id, executionArgs, runtimePlatform);
+      approvalState = { ...approvalState, ...this.#approvalStateNow(id, executionArgs, runtimePlatform) };
+    }
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs, approvalState)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
     if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
     if (entry.actionKind) return this.executeAction(entry, executionArgs);
     return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
+  }
+
+  #approvalIdentity(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) return null;
+    if (!approvalIdentities.has(value)) approvalIdentities.set(value, nextApprovalIdentity++);
+    return approvalIdentities.get(value);
+  }
+
+  async approvalState(id, args, platform = null) {
+    if (!proposalCapability({ kind: 'capability', target: { capabilityId: id } })) throw new AIError('invalid_tool_call', 'Unsupported capability proposal.');
+    const entry = this.catalog?.get?.(id);
+    if (!entry?.agentExposed || !entry.requiresApproval) throw new AIError('invalid_tool_call', 'Capability does not accept mutation proposals.');
+    assertSchema(args, entry.inputSchema, 'invalid_tool_call');
+    if (entry.category === 'runtime') platform ||= await this.resolveRuntimePlatform();
+    this.verifyBinding(entry, args, platform);
+    const state = this.#approvalStateNow(id, args, platform);
+    if (id === 'runtime.memory-write') {
+      const session = platform.currentSession(false);
+      const adapter = session.adapter;
+      const expected = byteArray(args.expectedBefore), bytes = byteArray(args.bytes);
+      if (!expected.length || expected.length > 65536 || expected.length !== bytes.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same bounded length.');
+      state.bytes = Array.from(await adapter.readMemory(args.address, expected.length) || []);
+      if (!equalBytes(state.bytes, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+      const current = platform.currentSession(false);
+      if (current?.adapter !== adapter || current?.id !== session.id || current?.binaryHash !== session.binaryHash) throw new AIError('scope_violation', 'Runtime session changed while reading approval state.');
+    }
+    return state;
+  }
+
+  #approvalStateNow(id, args, platform) {
+    this.verifyBinding(this.catalog.get(id), args, platform);
+    const state = { binaryId: this.currentBinaryId() ?? null };
+    if (id === 'patch.apply') {
+      // Bind the immutable current Blob by identity. Arbitrary Blob arguments
+      // cannot be represented by the proposal's canonical argument fingerprint.
+      if (Object.hasOwn(args, 'file')) throw new AIError('invalid_tool_call', 'Propose patch.apply for the current file without a file argument.');
+      if (!(this.app?.file instanceof Blob)) throw new AIError('tool_failed', 'No current patch source Blob is available.');
+      return { ...state, file: this.#approvalIdentity(this.app.file), size: this.app.file.size, patches: (this.app.patches?.list?.() || []).map(serializePatch) };
+    }
+    if (id === 'patch.revert') {
+      const patch = this.app?.patches?.at?.(BigInt(args.fileOffset));
+      return { ...state, patch: patch ? serializePatch(patch) : null };
+    }
+    const session = platform.currentSession(false);
+    const adapter = session.adapter;
+    Object.assign(state, { sessionId: session.id, sessionBinary: session.binaryHash ?? null, adapter: this.#approvalIdentity(adapter) });
+    if (!adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.');
+    return state;
   }
 
   verifyBinding(entry, args, runtimePlatform = null) {

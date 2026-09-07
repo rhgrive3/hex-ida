@@ -9,11 +9,22 @@ export class ProposalExecutor {
     this.store = store; this.capabilityExecutor = capabilityExecutor; this.app = app;
   }
 
+  async proposeCapability(capabilityId, args, { evidenceIds, reason = '' } = {}) {
+    if (!this.store) throw new AIError('tool_failed', 'No proposal store is available.');
+    let after;
+    try { after = structuredClone(args); }
+    catch { throw new AIError('invalid_tool_call', 'Capability arguments must be structured-cloneable.'); }
+    const before = await this.capabilityExecutor.approvalState(capabilityId, after);
+    return this.store.create({ kind: 'capability', target: { capabilityId }, before, after, evidenceIds, reason });
+  }
+
   async approveAndApply(id) {
     if (!this.store) throw new AIError('tool_failed', 'No proposal store is available.');
     const { proposal, approvalToken } = this.store.approve(id);
     const executionProposal = typeof this.store.executionView === 'function' ? this.store.executionView(id) : proposal;
-    const currentState = await this.currentState(executionProposal);
+    let currentState;
+    try { currentState = await this.currentState(executionProposal); }
+    catch (error) { this.store.reject?.(id); throw error; }
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
@@ -29,6 +40,7 @@ export class ProposalExecutor {
 
   async currentState(proposal) {
     if (NOTE_BACKED_KINDS.has(proposal.kind)) await awaitNoteStoreReady(this.app);
+    if (proposal.kind === 'capability') return this.capabilityExecutor.approvalState(proposalCapability(proposal), proposalArguments(proposal));
     const target = targetObject(proposal.target);
     const address = target.address == null ? null : BigInt(target.address);
     switch (proposal.kind) {
@@ -47,6 +59,22 @@ export class ProposalExecutor {
   }
 
   async verifyPostcondition(proposal, execution) {
+    if (proposal.kind === 'capability') {
+      const capability = proposalCapability(proposal);
+      if (capability === 'patch.revert' && (await this.currentState(proposal)).patch !== null) throw new AIError('tool_failed', 'Reverted patch is still present.');
+      if (capability === 'runtime.memory-write' && !same(execution?.after, proposal.after.bytes)) throw new AIError('tool_failed', 'Runtime write postcondition does not match the approved bytes.');
+      if (capability === 'patch.apply') {
+        if (!(execution?.output instanceof Blob) || execution.output.size !== proposal.before.size) throw new AIError('tool_failed', 'Patch output size does not match the approved file.');
+        for (const patch of proposal.before.patches) {
+          const offset = Number(BigInt(patch.fileOffset));
+          const bytes = new Uint8Array(await execution.output.slice(offset, offset + patch.after.length).arrayBuffer());
+          if (!same(Array.from(bytes), patch.after)) throw new AIError('tool_failed', 'Patch output does not contain the approved bytes.');
+        }
+      }
+      // Runtime control completion is the adapter's command acknowledgement;
+      // do not claim a measured target execution state from it.
+      return;
+    }
     if (proposal.kind === 'patch') {
       if (!execution || !same(execution.after, proposal.after)) throw new AIError('tool_failed', 'Patch postcondition does not match the approved bytes.');
       return;
