@@ -64,6 +64,26 @@ const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = typeof SharedArrayBuffer === 'fun
   ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get
   : null;
 
+const MAP_SIZE_GETTER = Object.getOwnPropertyDescriptor(Map.prototype, 'size')?.get;
+const SET_SIZE_GETTER = Object.getOwnPropertyDescriptor(Set.prototype, 'size')?.get;
+const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const DATE_GET_TIME = Date.prototype.getTime;
+
+function hasIntrinsic(getter, value, ...args) {
+  if (typeof getter !== 'function') return false;
+  try {
+    getter.call(value, ...args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isMap(value) { return hasIntrinsic(MAP_SIZE_GETTER, value); }
+function isSet(value) { return hasIntrinsic(SET_SIZE_GETTER, value); }
+function isArrayBuffer(value) { return hasIntrinsic(ARRAY_BUFFER_BYTE_LENGTH_GETTER, value); }
+function isDate(value) { return hasIntrinsic(DATE_GET_TIME, value); }
+
 function isSharedArrayBuffer(value) {
   if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function') return false;
   try {
@@ -129,7 +149,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       return snapshotArtifactOptions(descriptor.value, active, done);
     };
 
-    if (value instanceof Map) {
+    if (isMap(value)) {
       failOnEnumerableOwnProperties(descriptors, 'map');
       const out = new Map();
       for (const [key, entryValue] of Map.prototype.entries.call(value)) {
@@ -138,7 +158,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       done.set(value, out);
       return out;
     }
-    if (value instanceof Set) {
+    if (isSet(value)) {
       failOnEnumerableOwnProperties(descriptors, 'set');
       const out = new Set();
       for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active, done));
@@ -182,13 +202,13 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       done.set(value, out);
       return out;
     }
-    if (value instanceof ArrayBuffer) {
+    if (isArrayBuffer(value)) {
       failOnEnumerableOwnProperties(descriptors, 'arraybuffer');
       const out = ArrayBuffer.prototype.slice.call(value, 0);
       done.set(value, out);
       return out;
     }
-    if (value instanceof Date) {
+    if (isDate(value)) {
       failOnEnumerableOwnProperties(descriptors, 'date');
       const out = new Date(Date.prototype.getTime.call(value));
       done.set(value, out);
