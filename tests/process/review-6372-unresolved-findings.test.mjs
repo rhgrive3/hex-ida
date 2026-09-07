@@ -113,7 +113,7 @@ test('NoteStore refuses compaction after an incomplete delta scan and validates 
   assert.equal(notes._deltaLoadComplete, false);
   assert.equal(notes.save(), false);
   assert.equal(notes.lastSaveError?.code, 'DELTA_LOAD_INCOMPLETE');
-  assert.equal(storage.getItem(unreadable), null, 'mock read remains unavailable');
+  assert.throws(() => storage.getItem(unreadable), /storage fault/, 'mock read remains unavailable');
   assert.equal(storage.map.has(unreadable), true, 'incomplete scan allowed stale delta cleanup');
 
   storage.throwKey = null;
