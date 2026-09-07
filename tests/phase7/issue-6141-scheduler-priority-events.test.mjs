@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { AnalysisScheduler } from '../../js/core/scheduler/analysis-scheduler.js';
+import { createArtifactDescriptor } from '../../js/core/artifacts/contracts.js';
 
 test('issue-6141: unknown accepted numeric priority is preserved in lifecycle events', async () => {
   const entries = new Map();
@@ -24,7 +25,17 @@ test('issue-6141: unknown accepted numeric priority is preserved in lifecycle ev
   });
 
   const result = await scheduler.request({
-    descriptor: { artifactId: 'artifact-6141-numeric-99', upstreamArtifactIds: [] },
+    descriptor: createArtifactDescriptor({
+      binaryId: 'binary-6141',
+      artifactKind: 'analysis',
+      producerId: 'scheduler-6141',
+      producerVersion: '1',
+      loaderVersion: '1',
+      architectureSemanticVersion: '1',
+      abiSemanticVersion: '1',
+      semanticSchemaVersion: '1',
+      upstreamArtifactIds: [],
+    }),
     priority: 99,
     produce: async () => ({ complete: true }),
   });
