@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { EmulatorProvider } from '../../../js/runtime/emulator-provider.js';
+import { InstrumentationProvider } from '../../../js/runtime/instrumentation-provider.js';
 import { DebugSession, DebugSessionManager } from '../../../js/runtime/session.js';
 import { RuntimeProviderSession, wrapDebugAdapterAsRuntimeProvider } from '../../../js/runtime/provider.js';
 
@@ -173,4 +175,100 @@ test('P10 compat provider retries disconnect even when failed attempt already cl
   assert.equal(adapter.disconnectAttempts, 2, 'retry must re-enter backend disconnect despite connected=false');
   assert.equal(session.closed, true);
   assert.equal(provider.activeSession, null);
+});
+
+test('P10 instrumentation provider retains active session and event subscription across failed close (#4626)', async () => {
+  let disconnectAttempts = 0;
+  let releaseRetry;
+  const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+  let unsubscribeAttempts = 0;
+  const listeners = new Set();
+  const backend = {
+    id: 'instrumentation-close-retry-4626',
+    connected: false,
+    async connect() { this.connected = true; },
+    onEvent(listener) {
+      listeners.add(listener);
+      return () => { unsubscribeAttempts++; listeners.delete(listener); };
+    },
+    async disconnect() {
+      disconnectAttempts++;
+      if (disconnectAttempts === 1) throw new Error('transient instrumentation disconnect failure');
+      await retryGate;
+      this.connected = false;
+    },
+  };
+  const provider = new InstrumentationProvider(backend, { id: 'instrumentation-close-retry-4626' });
+  const session = await provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'instrumentation-1' });
+  assert.equal(listeners.size, 1);
+
+  await assert.rejects(session.close(), /transient instrumentation disconnect failure/);
+  assert.equal(session.closed, false, 'failed instrumentation close must remain retryable');
+  assert.equal(provider.activeSession, session, 'failed instrumentation close must retain activeSession');
+  assert.equal(unsubscribeAttempts, 0, 'failed instrumentation close must retain the event subscription');
+  assert.equal(listeners.size, 1);
+  await assert.rejects(
+    provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'instrumentation-replacement' }),
+    (error) => error?.code === 'runtime-session-active',
+    'replacement sessions must remain blocked until the failed session closes successfully',
+  );
+
+  const retry = session.close();
+  const concurrent = session.close();
+  await Promise.resolve();
+  assert.equal(disconnectAttempts, 2, 'instrumentation disconnect must be single-flight during retry');
+  releaseRetry();
+  await Promise.all([retry, concurrent]);
+
+  assert.equal(session.closed, true);
+  assert.equal(provider.activeSession, null);
+  assert.equal(backend.connected, false);
+  assert.equal(unsubscribeAttempts, 1, 'successful instrumentation close releases the event subscription');
+  assert.equal(listeners.size, 0);
+  const replacement = await provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'instrumentation-replacement' });
+  await replacement.close();
+  assert.equal(disconnectAttempts, 3);
+});
+
+test('P10 emulator provider retains active session and single-flights failed close retry (#4626)', async () => {
+  let disconnectAttempts = 0;
+  let releaseRetry;
+  const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+  const engine = {
+    id: 'emulator-close-retry-4626',
+    connected: false,
+    async connect() { this.connected = true; },
+    async disconnect() {
+      disconnectAttempts++;
+      if (disconnectAttempts === 1) throw new Error('transient emulator disconnect failure');
+      await retryGate;
+      this.connected = false;
+    },
+    async execute() { return { events: [] }; },
+  };
+  const provider = new EmulatorProvider(engine, { id: 'emulator-close-retry-4626' });
+  const session = await provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'emulator-1' });
+
+  await assert.rejects(session.close(), /transient emulator disconnect failure/);
+  assert.equal(session.closed, false, 'failed emulator close must remain retryable');
+  assert.equal(provider.activeSession, session, 'failed emulator close must retain activeSession');
+  await assert.rejects(
+    provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'emulator-replacement' }),
+    (error) => error?.code === 'runtime-session-active',
+    'replacement sessions must remain blocked until the failed session closes successfully',
+  );
+
+  const retry = session.close();
+  const concurrent = session.close();
+  await Promise.resolve();
+  assert.equal(disconnectAttempts, 2, 'emulator disconnect must be single-flight during retry');
+  releaseRetry();
+  await Promise.all([retry, concurrent]);
+
+  assert.equal(session.closed, true);
+  assert.equal(provider.activeSession, null);
+  assert.equal(engine.connected, false);
+  const replacement = await provider.openSession({ binaryId: 'binary-4626', sessionNonce: 'emulator-replacement' });
+  await replacement.close();
+  assert.equal(disconnectAttempts, 3);
 });
