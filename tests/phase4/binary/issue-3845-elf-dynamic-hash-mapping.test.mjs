@@ -92,10 +92,10 @@ function writeGnuHash(bytes, offset = GNU_HASH_OFF) {
   view.setUint32(offset + 24, 0, true); // empty bucket
 }
 
-function run(extra = [], setup = null) {
+function run(extra = [], setup = null, dynamicEntries = null) {
   const bytes = new Uint8Array(FILE_SIZE);
   bytes[STRTAB_OFF] = 0;
-  const dynamicSize = writeDynamic64(bytes, baseEntries(extra));
+  const dynamicSize = writeDynamic64(bytes, dynamicEntries || baseEntries(extra));
   setup?.(bytes);
   const image = imageFor(bytes);
   parseProgramDynamic(
@@ -111,6 +111,16 @@ function assertBestEffortSymbolDecode(image) {
   assert.equal(image.metadata.programDynamic.symbolsDeclared, 1);
   assert.equal(image.metadata.programDynamic.symbolsExpected, 1);
   assert.equal(image.metadata.programDynamic.symbols, 1);
+}
+
+for (const [tag, diagnostic, field] of [
+  [DT_HASH, 'DT_HASH header is not fully file-backed', 'hasSysvHash'],
+  [DT_GNU_HASH, 'DT_GNU_HASH header is not fully file-backed', 'hasGnuHash'],
+]) {
+  const image = run([], null, [[tag, BASE + 0x400n], [DT_NULL, 0n]]);
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.ok(image.metadata.programDynamicDiagnostics.includes(diagnostic));
+  assert.equal(image.metadata.programDynamic[field], true);
 }
 
 {

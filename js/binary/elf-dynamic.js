@@ -124,9 +124,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const symbolFileCapacity = symtab != null && symentValid
     ? dynamicSymbolFileCapacity(r, image, tags, symtab, syment)
     : 0;
+  let sysvCount = 0;
+  let gnuCount = 0;
+  if (one(DT_HASH) != null) sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
+  if (one(DT_GNU_HASH) != null) gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
   if (symtab != null && symentValid) {
-    const sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
-    const gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
     const sizeCount = symbolCountFromSymtabSize(one(DT_SYMTABSZ), symtab, syment, image);
     minimumSymbolCount = symbolCountFromRelocations(relocs);
     const exact = [
