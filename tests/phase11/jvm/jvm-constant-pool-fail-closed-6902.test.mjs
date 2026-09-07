@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseJvm } from '../../../js/managed/jvm/parser.js';
+import { parseJvm as parseJvmCore } from '../../../js/managed/jvm/parser-core.js';
 
 const u2=(out,x)=>out.push((x>>>8)&255,x&255);
 const u4=(out,x)=>out.push((x>>>24)&255,(x>>>16)&255,(x>>>8)&255,x&255);
@@ -22,6 +23,12 @@ const base=[utf8('A'),cpClass(1),utf8('java/lang/Object'),cpClass(3)];
 assert.throws(()=>parseJvm(buildClass([...base,utf8('orphan'),utf8('Q'),cpNameAndType(5,6)])),/jvm-invalid-cp-nameandtype-descriptor/);
 assert.doesNotThrow(()=>parseJvm(buildClass([...base,utf8('orphan'),utf8('I'),cpNameAndType(5,6)])));
 assert.doesNotThrow(()=>parseJvm(buildClass([...base,utf8('orphan'),utf8('()V'),cpNameAndType(5,6)])));
+
+// The core parser is a public export too; it must enforce the same standalone
+// NameAndType grammar without relying on parser.js's closure pass.
+assert.throws(()=>parseJvmCore(buildClass([...base,utf8('orphan'),utf8('Q'),cpNameAndType(5,6)])),/jvm-invalid-cp-nameandtype-descriptor/);
+assert.doesNotThrow(()=>parseJvmCore(buildClass([...base,utf8('orphan'),utf8('I'),cpNameAndType(5,6)])));
+assert.doesNotThrow(()=>parseJvmCore(buildClass([...base,utf8('orphan'),utf8('()V'),cpNameAndType(5,6)])));
 
 // REF_newInvokeSpecial may only target a void-returning constructor.
 function constructorFixture(descriptor){return [...base,utf8('<init>'),utf8(descriptor),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(8,8)];}
