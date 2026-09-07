@@ -448,6 +448,11 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
 
   probe() {
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
+      // Absence of the buffer is not absence of the metadata: when the section
+      // table shows a .gopclntab section, the evidence exists but was never
+      // supplied for scanning, so this is present-but-incomplete rather than a
+      // confirmed absence that could lift the aggregate to complete (#5877).
+      const hasPclntabSection = this.sections.some((s) => String(s?.name || s?.section || '').includes('gopclntab'));
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -461,10 +466,14 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'pclntab-probe',
-          detail: 'no pclntab section or buffer present',
+          detail: hasPclntabSection
+            ? 'pclntab section detected but its bytes were not supplied'
+            : 'no pclntab section or buffer present',
         }),
         sections: this.sections.map((s) => s.name || s.section || String(s)),
-        completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+        completeness: hasPclntabSection
+          ? { present: true, declared: 0, scanned: 0, parsed: 0, complete: false, capped: false, reasons: ['pclntab-section-bytes-unavailable'] }
+          : { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
       });
     }
 
