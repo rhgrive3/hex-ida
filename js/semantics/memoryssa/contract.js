@@ -89,6 +89,14 @@ function signedIntegerString(value, code) {
   }
   fail(code);
 }
+// Canonical ordering must not depend on the host locale (#5756): default
+// localeCompare collation flips for non-ASCII ids across ICU locales. IDs are
+// arbitrary trimmed strings, so fixed code-unit comparison is the canonical
+// total order.
+function compareId(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function aliasRelation(value, code) {
   const relation = nonEmpty(value, code);
   if (!ALIAS_SET.has(relation)) fail(code);
@@ -173,7 +181,7 @@ function normalizeIncoming(value) {
         definitionId: nonEmpty(item.definitionId, 'memory-ssa-phi-definition-required'),
       };
     })
-    .sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.definitionId.localeCompare(b.definitionId));
+    .sort((a, b) => compareId(a.predecessorBlockId, b.predecessorBlockId) || compareId(a.definitionId, b.definitionId));
 }
 
 function normalizeDefinition(input) {
@@ -258,13 +266,13 @@ export function createMemorySsaContract(input, options = {}) {
 
   const regions = array(input.regions, 'memory-ssa-regions-required')
     .map((region) => { work(); return createMemoryRegionRef(region); })
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareId(a.id, b.id));
   const definitions = array(input.definitions, 'memory-ssa-definitions-required')
     .map((definition) => { work(); return normalizeDefinition(definition); })
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareId(a.id, b.id));
   const uses = array(input.uses, 'memory-ssa-uses-required')
     .map((use) => { work(); return normalizeUse(use); })
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareId(a.id, b.id));
   if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
   if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
   if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
@@ -337,7 +345,7 @@ export function createMemorySsaContract(input, options = {}) {
     }));
     work();
   }
-  reachingDefinitionLinks.sort((a, b) => a.useId.localeCompare(b.useId));
+  reachingDefinitionLinks.sort((a, b) => compareId(a.useId, b.useId));
 
   return deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,
