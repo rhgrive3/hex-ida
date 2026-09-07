@@ -12,6 +12,7 @@ function rv(op, fields = {}, address = 0x1000n) {
     size:4,
     length:4,
     mode:'rv64imc',
+    instructionAlignment:2,
     origin:{ instructionIds:[`${op}-${address.toString(16)}`] },
     fields:{ supported:true, compressed:false, op, ...fields },
   };

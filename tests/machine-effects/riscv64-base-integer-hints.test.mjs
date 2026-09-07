@@ -137,7 +137,7 @@ for (const [name, word, expectedOp] of [
 }
 
 // Illegal shift encodings still fail closed before HINT classification.
-const reservedSlli = (0x04000013 | (1 << 15)) >>> 0;
+const reservedSlli = encodeShiftImmediate(1, 0, false, 1, 0) | (1 << 26);
 const reservedFields = decodeRiscv64InstructionWord(bytes32(reservedSlli));
 assert.equal(reservedFields.supported, false);
 assert.equal(reservedFields.reason, 'riscv64-reserved-slli-encoding');

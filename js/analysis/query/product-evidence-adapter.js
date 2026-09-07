@@ -27,6 +27,10 @@ function pageOf(page = {}) {
   };
 }
 
+function pageOffset(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function canonicalVerdict(value, fallback = 'unverified') {
   const candidates = [value?.verdict, value?.status?.verdict, value?.evidence?.verdict, value?.proof?.verdict, value?.evidence?.status?.verdict];
   for (const raw of candidates) {
@@ -61,43 +65,102 @@ export function createAppAnalysisQueryAdapter(app) {
     ...base,
     async evidence(snapshot, query = {}, page = {}, options = {}) {
       const requested = pageOf(page);
-      const baseResult = await base.evidence(snapshot, query, { offset: 0, limit: MAX_EVIDENCE_ROWS }, options);
-      const rows = [];
-      for (const item of Array.isArray(baseResult?.value) ? baseResult.value : []) rows.push(projectEvidence('evidence', item));
-
       const rawTarget = query?.functionId ?? query?.address ?? null;
       const address = addressOf(rawTarget);
+
+      // Supplemental evidence has a stable position around the upstream stream:
+      // symbol identity/boundary rows precede it; analysis/runtime rows follow it.
+      // This lets a numeric product offset map to the upstream offset without
+      // materializing or truncating the entire upstream evidence corpus.
+      const prefix = [];
+      if (address != null) {
+        const boundaryEvidence = app?.symbols?.functionEvidence?.(address) ?? null;
+        const name = app?.symbols?.nameAt?.(address) ?? null;
+        const nameEvidence = app?.symbols?.nameEvidence?.(address) ?? null;
+        if (name != null || nameEvidence) prefix.push(projectEvidence('function-name', nameEvidence ?? {}, { title: 'Function name', address, detail: typeof name === 'string' ? name : null }));
+        if (boundaryEvidence) prefix.push(projectEvidence('function-boundary', boundaryEvidence, { title: 'Function boundary', address }));
+      }
+
+      const prefixValue = prefix.slice(requested.offset, requested.offset + requested.limit);
+      const upstreamOffset = Math.max(0, requested.offset - prefix.length);
+      const upstreamLimit = Math.max(1, requested.limit - prefixValue.length);
+      const baseResult = await base.evidence(snapshot, query, { offset: upstreamOffset, limit: upstreamLimit }, options);
+      const baseRows = (Array.isArray(baseResult?.value) ? baseResult.value : []).map((item) => projectEvidence('evidence', item));
+
       let functionResult = null;
+      const suffix = [];
       if (address != null) {
         functionResult = await base.functionById(snapshot, address, options);
         const value = functionResult?.value ?? null;
-        const boundaryEvidence = app?.symbols?.functionEvidence?.(address) ?? null;
-        if (boundaryEvidence) rows.unshift(projectEvidence('function-boundary', boundaryEvidence, { title: 'Function boundary', address }));
-        const name = app?.symbols?.nameAt?.(address) ?? null;
-        const nameEvidence = app?.symbols?.nameEvidence?.(address) ?? null;
-        if (name != null || nameEvidence) rows.unshift(projectEvidence('function-name', nameEvidence ?? {}, { title: 'Function name', address, detail: typeof name === 'string' ? name : null }));
-        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) rows.push(projectEvidence('function-analysis', evidence, { address }));
-        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) rows.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) rows.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'confirmed'));
+        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
+        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'confirmed'));
       }
 
-      const capped = rows.length > MAX_EVIDENCE_ROWS;
-      const source = capped ? rows.slice(0, MAX_EVIDENCE_ROWS) : rows;
-      const value = source.slice(requested.offset, requested.offset + requested.limit);
-      const baseHasNext = baseResult?.page?.next != null;
-      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext);
-      if (capped) completeness = 'truncated';
-      if (source.length && completeness === 'unsupported') completeness = 'partial';
-      const next = requested.offset + value.length < source.length ? requested.offset + value.length : null;
+      // Preserve the existing supplemental row budget without applying it to
+      // upstream pagination. The old global cap made upstream row 5001+ forever
+      // unreachable; now only locally materialized supplemental evidence is capped.
+      const supplementalCapped = prefix.length + suffix.length > MAX_EVIDENCE_ROWS;
+      if (supplementalCapped) suffix.length = Math.max(0, MAX_EVIDENCE_ROWS - prefix.length);
+
+      const rawBaseNext = baseResult?.page?.next ?? null;
+      const parsedBaseNext = rawBaseNext == null ? null : pageOffset(rawBaseNext);
+      const baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
+      const baseNext = baseContinuationInvalid ? null : parsedBaseNext;
+      const baseHasNext = baseNext != null;
+      const baseTotal = pageOffset(baseResult?.page?.total);
+
+      const value = [...prefixValue];
+      let remaining = requested.limit - value.length;
+      let consumedBaseRows = 0;
+      if (remaining > 0) {
+        const upstreamRows = baseRows.slice(0, remaining);
+        consumedBaseRows = upstreamRows.length;
+        value.push(...upstreamRows);
+        remaining = requested.limit - value.length;
+      }
+
+      let upstreamTotal = null;
+      if (!baseHasNext && !baseContinuationInvalid) {
+        upstreamTotal = baseTotal ?? (upstreamOffset + baseRows.length);
+        if (remaining > 0) {
+          const suffixStart = prefix.length + upstreamTotal;
+          const localCursor = requested.offset + value.length;
+          const suffixOffset = Math.max(0, localCursor - suffixStart);
+          value.push(...suffix.slice(suffixOffset, suffixOffset + remaining));
+        }
+      }
+
+      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext || baseContinuationInvalid);
+      if (supplementalCapped) completeness = 'truncated';
+      if ((prefix.length || baseRows.length || suffix.length) && completeness === 'unsupported') completeness = 'partial';
+
+      let next = null;
+      const localCursor = requested.offset + value.length;
+      if (value.length === requested.limit && localCursor <= prefix.length) {
+        next = localCursor;
+      } else if (baseHasNext && consumedBaseRows > 0) {
+        next = prefix.length + baseNext;
+      } else if (!baseContinuationInvalid && upstreamTotal != null) {
+        const availableTotal = prefix.length + upstreamTotal + suffix.length;
+        if (localCursor < availableTotal) next = localCursor;
+      }
+
+      const completeTotal = completeness === 'complete' && upstreamTotal != null
+        ? prefix.length + upstreamTotal + suffix.length
+        : null;
       return {
         value,
         status: {
           ...(baseResult?.status && typeof baseResult.status === 'object' ? baseResult.status : {}),
           completeness,
-          reason: capped ? 'product-evidence-row-cap' : baseHasNext ? 'upstream-evidence-page-cap' : baseResult?.status?.reason ?? functionResult?.status?.reason ?? null,
+          reason: supplementalCapped ? 'product-evidence-row-cap'
+            : baseContinuationInvalid ? 'upstream-evidence-page-invalid'
+              : baseHasNext ? 'upstream-evidence-pagination'
+                : baseResult?.status?.reason ?? functionResult?.status?.reason ?? null,
           producer: 'canonical-product-evidence-adapter/v1',
         },
-        page: { offset: requested.offset, limit: requested.limit, returned: value.length, total: completeness === 'complete' ? source.length : null, next },
+        page: { offset: requested.offset, limit: requested.limit, returned: value.length, total: completeTotal, next },
       };
     },
   };

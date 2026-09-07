@@ -19,28 +19,37 @@ const SUPPORTED_WIDTHS = Object.freeze([1, 8, 16, 32, 64, 128]);
 const WIDTH_SET = new Set(SUPPORTED_WIDTHS);
 
 export function isSupportedWidth(bits) {
-  return WIDTH_SET.has(Number(bits));
+  return typeof bits === 'number' && Number.isInteger(bits) && WIDTH_SET.has(bits);
 }
 
 /** Normalizes a value into the unsigned representation of its width. */
 export function unsignedOf(value, bits) {
   if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
-  return BigInt.asUintN(Number(bits), BigInt(value));
+  return BigInt.asUintN(bits, BigInt(value));
 }
 
 /** The signed interpretation of the same bits. */
 export function signedOf(value, bits) {
   if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
-  return BigInt.asIntN(Number(bits), BigInt(value));
+  return BigInt.asIntN(bits, BigInt(value));
 }
 
-export function maxUnsigned(bits) { return (1n << BigInt(bits)) - 1n; }
-export function minSigned(bits) { return -(1n << BigInt(bits - 1)); }
-export function maxSigned(bits) { return (1n << BigInt(bits - 1)) - 1n; }
+export function maxUnsigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return (1n << BigInt(bits)) - 1n;
+}
+export function minSigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return -(1n << BigInt(bits - 1));
+}
+export function maxSigned(bits) {
+  if (!isSupportedWidth(bits)) fail(`phase8-bitvector-unsupported-width:${bits}`);
+  return (1n << BigInt(bits - 1)) - 1n;
+}
 
 /** A constant: raw unsigned bits plus the width they mean something at. */
 export function bitvector(value, bits) {
-  return Object.freeze({ bits: Number(bits), value: unsignedOf(value, bits) });
+  return Object.freeze({ bits, value: unsignedOf(value, bits) });
 }
 
 export function sameBitvector(left, right) {
@@ -49,20 +58,20 @@ export function sameBitvector(left, right) {
 
 /** Truncation keeps the low bits. It is exact and always defined. */
 export function truncate(constant, toBits) {
-  if (!isSupportedWidth(toBits)) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits)) return null;
   if (toBits > constant.bits) return null;
   return bitvector(constant.value, toBits);
 }
 
 /** Zero extension. Widening to a narrower width is a caller error, not a wrap. */
 export function zeroExtend(constant, toBits) {
-  if (!isSupportedWidth(toBits) || toBits < constant.bits) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits) || toBits < constant.bits) return null;
   return bitvector(constant.value, toBits);
 }
 
 /** Sign extension reads the source as signed and re-encodes at the new width. */
 export function signExtend(constant, toBits) {
-  if (!isSupportedWidth(toBits) || toBits < constant.bits) return null;
+  if (!isSupportedWidth(constant?.bits) || !isSupportedWidth(toBits) || toBits < constant.bits) return null;
   return bitvector(signedOf(constant.value, constant.bits), toBits);
 }
 
@@ -123,7 +132,6 @@ export function evaluateBinary(operator, left, right) {
       if (right.value === 0n) return null;
       const a = signedOf(left.value, width);
       const b = signedOf(right.value, width);
-      // INT_MIN / -1 overflows the width; the result is not representable.
       if (a === minSigned(width) && b === -1n) return null;
       const quotient = a / b;
       return bitvector(quotient, width);
@@ -166,14 +174,15 @@ export function evaluateUnary(operator, operand) {
  */
 export function extractField(constant, lowBit, fieldBits) {
   const low = Number(lowBit);
-  const width = Number(fieldBits);
-  if (!Number.isInteger(low) || low < 0 || !isSupportedWidth(width)) return null;
+  const width = fieldBits;
+  if (!isSupportedWidth(constant?.bits) || !Number.isInteger(low) || low < 0 || !isSupportedWidth(width)) return null;
   if (low + width > constant.bits) return null;
   return bitvector((constant.value >> BigInt(low)) & maxUnsigned(width), width);
 }
 
 /** Inserts a bit field into a value at `lowBit`. */
 export function insertField(target, field, lowBit) {
+  if (!isSupportedWidth(target?.bits) || !isSupportedWidth(field?.bits)) return null;
   const low = Number(lowBit);
   if (!Number.isInteger(low) || low < 0 || low + field.bits > target.bits) return null;
   const mask = maxUnsigned(field.bits) << BigInt(low);

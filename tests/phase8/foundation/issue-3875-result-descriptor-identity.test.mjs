@@ -61,6 +61,29 @@ function assertRefusedIdentity(overrides) {
   assert.equal(state.get('ranges'), null);
 }
 
+function assertRefusedRawResult(rawResult) {
+  const state = createAnalysisState({
+    cfg: Object.freeze({ blocks: [] }),
+    ssa: Object.freeze({ values: ['pre-existing'] }),
+  });
+  const before = state.snapshot();
+  const outcome = runPassTransaction(state, {
+    descriptor,
+    run(_context, _budget, area) {
+      area.stage('ranges', Object.freeze({ source: 'issue-3875-pass-a' }));
+      return rawResult;
+    },
+  });
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.result, null);
+  assert.equal(outcome.stopReason, `result-descriptor-mismatch:${descriptor.id}`);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.deepEqual(outcome.staged, []);
+  assert.deepEqual(state.snapshot(), before);
+  assert.deepEqual(state.get('ssa'), { values: ['pre-existing'] });
+  assert.equal(state.get('ranges'), null);
+}
+
 test('exact descriptor identity retains transaction authority', () => {
   const { state, outcome } = runWithResult(canonicalResult());
 
@@ -88,4 +111,9 @@ test('result stage is bound to the invoked descriptor', () => {
 
 test('result contractVersion is bound to the invoked descriptor', () => {
   assertRefusedIdentity({ contractVersion: descriptor.contractVersion + 1 });
+});
+
+test('null and undefined pass results are refused without mutation', () => {
+  assertRefusedRawResult(null);
+  assertRefusedRawResult(undefined);
 });

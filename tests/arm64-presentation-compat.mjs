@@ -199,4 +199,76 @@ for (const malformed of ["x8, x8, #1, lsl #1", "x8, x8, #1, lsr #12"]) {
 }
 console.log("  ok 8 shifted ADD/SUB immediate analyzer regression (#2051)");
 
+// 9. ARM64 UI short expressions must preserve extended-register semantics (#5046).
+for (const [input, expected] of [
+  ["w1, sxtw", "sxtw(w1)"],
+  ["w1, sxtw #0", "sxtw(w1) << 0"],
+  ["w1, sxtw #2", "sxtw(w1) << 2"],
+  ["w1, uxtw #2", "uxtw(w1) << 2"],
+  ["w1, sxth #1", "sxth(w1) << 1"],
+  ["w1, uxth #1", "uxth(w1) << 1"],
+]) {
+  const direct = directOperands.parseOperands(input)[0];
+  const throughFacade = facade.parseOperands(input)[0];
+  assert.equal(directOperands.opShort(direct), expected, `${input} must preserve its extend modifier`);
+  assert.equal(facade.opShort(throughFacade), expected, `${input} facade must preserve its extend modifier`);
+}
+for (const [input, expected] of [
+  ["[x0, w1, sxtw #2]", "x0 + (sxtw(w1) << 2)"],
+  ["[x0, w1, uxtw #2]", "x0 + (uxtw(w1) << 2)"],
+]) {
+  const mem = directOperands.parseOperands(input)[0];
+  assert.equal(directOperands.memExpr(mem), expected, `${input} must preserve its extend modifier`);
+}
+assert.equal(directOperands.opShort(directOperands.parseOperands("w1, lsl #2")[0]), "w1 << 2", "ordinary LSL display must remain unchanged");
+console.log("  ok 9 ARM64 extended-register presentation (#5046)");
+
+// 10. AdvSIMD structure operands must preserve legal register post-index writeback (#4105).
+{
+  const parsed = directOperands.parseOperands("{v0.16b}, [x0], #16");
+  assert.equal(parsed.length, 2, "immediate post-index must remain folded into the memory operand");
+  assert.equal(parsed[1].mode, "post");
+  assert.equal(parsed[1].writebackDisp?.value, 16n);
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false, "immediate form must keep its existing object shape");
+}
+for (const input of [
+  "{v0.16b}, [x0], x1",
+  "{v0.16b, v1.16b}, [x0], x1",
+  "{v0.16b, v1.16b, v2.16b}, [x0], x1",
+  "{v0.16b, v1.16b, v2.16b, v3.16b}, [x0], x1",
+]) {
+  const direct = directOperands.parseOperands(input);
+  const throughFacade = facade.parseOperands(input);
+  assert.deepEqual(throughFacade, direct, `${input} facade must preserve the same post-index representation`);
+  assert.equal(direct.length, 2, `${input} must fold the Xm post-index into its memory operand`);
+  assert.equal(direct[1].mode, "post");
+  assert.equal(direct[1].writebackReg?.text, "x1");
+  assert.equal(direct[1].writebackDisp, null);
+}
+{
+  const parsed = directOperands.parseOperands("{v0.16b}, [x0]");
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[1].mode, "offset", "no-offset structure memory must not gain writeback");
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
+}
+{
+  const parsed = directOperands.parseOperands("x2, [x0], x1");
+  assert.equal(parsed.length, 3, "unrelated mem,reg sequence must not be reinterpreted as post-index");
+  assert.equal(parsed[1].mode, "offset");
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
+}
+{
+  const parsed = directOperands.parseOperands("{bogus}, [x0], x1");
+  assert.equal(parsed.length, 3, "malformed brace list must not authorize register post-index folding");
+  assert.equal(parsed[1].mode, "offset");
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
+}
+for (const invalidPostIndex of ["w1", "sp", "xzr"]) {
+  const parsed = directOperands.parseOperands(`{v0.16b}, [x0], ${invalidPostIndex}`);
+  assert.equal(parsed.length, 3, `${invalidPostIndex} must not be accepted as the Xm post-index form`);
+  assert.equal(parsed[1].mode, "offset");
+  assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
+}
+console.log("  ok 10 ARM64 AdvSIMD register post-index presentation (#4105)");
+
 console.log("All ARM64 presentation compatibility tests PASS!");
