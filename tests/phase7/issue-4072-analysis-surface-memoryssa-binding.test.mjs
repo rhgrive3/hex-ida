@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createAnalysisSurface } from '../../js/analysis/index.js';
+import { analyzeLocalPointsTo } from '../../js/analysis/pointsto/local.js';
 import { buildFixture } from './corpus/fixtures.mjs';
 
 const SNAPSHOT_ID = 'snapshot_issue_4072';
@@ -30,9 +31,8 @@ function surfaceFor(built, { memorySsa = built.memorySsa, memorySsaBinding = nul
 
 function assertDependencyMismatch(surface, use) {
   // #4072 covers the two public MemorySSA query endpoints that previously
-  // bypassed the artifact-identity gate. The alias/points-to boundary has its
-  // own dependency validation contract and is intentionally not part of this
-  // regression's assertion set.
+  // bypassed the artifact-identity gate. The caller also checks the A2
+  // alias/points-to boundary against the same mismatch matrix below.
   const definition = surface.reachingMemoryDef(use);
   assert.equal(definition.definition, null);
   assert.equal(definition.status.completeness, 'unsupported');
@@ -44,40 +44,53 @@ function assertDependencyMismatch(surface, use) {
   assert.equal(path.status.stopReason, 'dependency-mismatch');
 }
 
+function assertBothBoundariesReject(built, { memorySsa = built.memorySsa, memorySsaBinding = null } = {}) {
+  const surface = surfaceFor(built, { memorySsa, memorySsaBinding });
+  assertDependencyMismatch(surface, loadUse(built));
+
+  const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    snapshotId: SNAPSHOT_ID,
+    memorySsa,
+    ...(memorySsaBinding == null ? {} : { memorySsaBinding }),
+  });
+  assert.notEqual(result.recovery.bindingState, 'current');
+  assert.equal(result.recovery.publicationAllowed, false);
+  assert.deepEqual(result.recovery.recoveredValueIds, []);
+}
+
 test('issue-4072: a MemorySSA artifact from another snapshot is rejected before public queries', () => {
   const built = fixture();
   const stale = { ...built.memorySsa, snapshotId: 'snapshot_old' };
-  assertDependencyMismatch(surfaceFor(built, { memorySsa: stale }), loadUse(built));
+  assertBothBoundariesReject(built, { memorySsa: stale });
 });
 
 test('issue-4072: a MemorySSA artifact from another function is rejected', () => {
   const built = fixture();
   const stale = { ...built.memorySsa, functionId: 'function_other' };
-  assertDependencyMismatch(surfaceFor(built, { memorySsa: stale }), loadUse(built));
+  assertBothBoundariesReject(built, { memorySsa: stale });
 });
 
 test('issue-4072: MemorySSA contract and build version mismatches are rejected', () => {
   const built = fixture();
-  const use = loadUse(built);
-  assertDependencyMismatch(surfaceFor(built, {
+  assertBothBoundariesReject(built, {
     memorySsa: { ...built.memorySsa, contractVersion: 'memoryssa-contract-stale' },
-  }), use);
-  assertDependencyMismatch(surfaceFor(built, {
+  });
+  assertBothBoundariesReject(built, {
     memorySsa: { ...built.memorySsa, buildVersion: 'memoryssa-build-stale' },
-  }), use);
+  });
 });
 
 test('issue-4072: explicit stale binding identity is not laundered by the current surface', () => {
   const built = fixture();
-  const use = loadUse(built);
   for (const memorySsaBinding of [
     { snapshotId: 'snapshot_old' },
     { functionId: 'function_other' },
     { semanticIrVersion: 'semantic-ir-stale' },
     { memorySsaBuildVersion: 'memoryssa-build-stale' },
   ]) {
-    assertDependencyMismatch(surfaceFor(built, { memorySsaBinding }), use);
+    assertBothBoundariesReject(built, { memorySsaBinding });
   }
+  assertBothBoundariesReject(built, { memorySsaBinding: { completeness: 'partial' } });
 });
 
 test('issue-4072: current canonical MemorySSA keeps complete public answers', () => {
