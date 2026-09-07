@@ -291,10 +291,21 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const span=mappedFileSpanForRva(image,dir.rva,dir.size); if(!span){budget.partial('exception:directory-span','PE exception directory crosses a mapped boundary');return;}
   const off=span.start,end=span.spanEnd;
   if(machine===0x8664){
-    const meta=exceptionDirectoryMetadata(image,'x64-pdata'); let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'x64-pdata'); let previousBegin=null,previousEnd=null,pendingZeroRecords=0;
     for(let p=off;p+12<=end;p+=12){
       if(!budget.take({inputBytes:12,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
-      const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8); const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
+      const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8);
+      // The directory size bounds this fixed-record array. Zero-filled slots
+      // are tolerated as padding, but never terminate the scan: a later
+      // nonzero record must remain visible. If one follows, account for the
+      // zero slot as an internal malformed record below.
+      if (!begin && !finish && !unwind) { pendingZeroRecords++; continue; }
+      if (pendingZeroRecords) {
+        meta.invalidRecords += pendingZeroRecords;
+        budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled x64 exception record(s) before a later record`);
+        pendingZeroRecords = 0;
+      }
+      const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
       if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
       const decoded=parseX64UnwindDescriptor(r,image,{begin,finish,unwind},budget);
       previousBegin=begin;previousEnd=finish;
@@ -307,10 +318,19 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       meta.count++;
     }
   }else if(machine===0xaa64||machine===0xa641){
-    const meta=exceptionDirectoryMetadata(image,'arm64-pdata'); let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'arm64-pdata'); let previousBegin=null,previousEnd=null,pendingZeroRecords=0;
     for(let p=off;p+8<=end;p+=8){
       if(!budget.take({inputBytes:8,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
-      const begin=r.u32(p),unwindData=r.u32(p+4);if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      const begin=r.u32(p),unwindData=r.u32(p+4);
+      // Keep scanning the size-bounded array after zero-filled padding slots;
+      // a later nonzero ARM64 record must not be hidden by an early zero.
+      if (!begin && !unwindData) { pendingZeroRecords++; continue; }
+      if (pendingZeroRecords) {
+        meta.invalidRecords += pendingZeroRecords;
+        budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled ARM64 exception record(s) before a later record`);
+        pendingZeroRecords = 0;
+      }
+      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
       const flag=unwindData&3; let descriptor=null;
       if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
