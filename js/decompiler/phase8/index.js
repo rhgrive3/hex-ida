@@ -31,6 +31,7 @@ import { STRUCTURING_PASS, runStructuringPass } from './structuring.js';
 import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
 import { PROVIDER_INTERFACE_VERSION, PROVIDER_PASS, REGISTERED_PROVIDERS, createProvider, runProviderPass } from './providers.js';
 
+export { EGRAPH_LIMITS, generateEGraphCandidates, isEGraphCandidate } from './egraph.js';
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
