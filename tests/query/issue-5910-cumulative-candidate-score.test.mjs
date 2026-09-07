@@ -367,4 +367,3 @@ test('issue-5910: hostile-sized prior input does not grow retained pool state', 
   assert.ok(result.candidateSources.stored.recognition <= result.candidateSources.retainedBound.recognition);
   assert.equal(result.completeness.candidateSourceCoverage, 48 / hugePrior.length);
 });
-});

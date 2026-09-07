@@ -56,7 +56,7 @@ function stagedPool(map) {
 }
 
 function probationPool(map) {
-  if (!map[PROBATION_PENDING]) map[map[PROBATION_PENDING] ? PROBATION_PENDING : PROBATION_PENDING] = new Map();
+  if (!map[PROBATION_PENDING]) map[PROBATION_PENDING] = new Map();
   return map[PROBATION_PENDING];
 }
 
