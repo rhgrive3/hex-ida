@@ -161,6 +161,9 @@ jobs:
               statuses,
               checkRuns,
               unresolvedReviewThreads,
+              // AUTO markers are review evidence, not authentication. Only the
+              // repository owner is trusted to mint them in this repository.
+              trustedAutoReviewers: [owner],
             });
 
             const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
@@ -178,6 +181,7 @@ jobs:
               .addHeading(`Final-head admission: ${result.state}`)
               .addRaw(`PR: #${pr.number}\n`)
               .addRaw(`Head: ${headSha}\n`)
+              .addRaw(`Trusted AUTO reviewers: ${result.evidence.trustedAutoReviewerCount}\n`)
               .addRaw(`AUTO approvals on head: ${result.evidence.exactAutoApprovalCount}\n`)
               .addRaw(`Unresolved review threads: ${result.evidence.unresolvedReviewThreads}\n`)
               .addRaw(`CodeRabbit evidence: ${result.evidence.codeRabbitEvidenceCount}\n`)
