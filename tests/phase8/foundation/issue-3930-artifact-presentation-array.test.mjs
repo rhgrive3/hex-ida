@@ -185,3 +185,56 @@ test('built-in containers with enumerable own properties fail closed instead of 
     'in-range index properties of typed-array views are intrinsic state and stay accepted',
   );
 });
+
+test('arrays and DataViews cannot carry invisible semantic payload into artifact keys', () => {
+  const signed = [1, 2, 3];
+  signed.semanticMode = 'signed';
+  const unsigned = [1, 2, 3];
+  unsigned.semanticMode = 'unsigned';
+
+  let minted = null;
+  assert.throws(
+    () => {
+      const d = createPhase8ArtifactDescriptor({ ...BASE, options: { rows: signed } });
+      minted = d.artifactId;
+    },
+    /phase8-artifact-options-embedded-own-property:array:semanticMode/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { rows: unsigned } }),
+    /phase8-artifact-options-embedded-own-property:array:semanticMode/,
+  );
+  assert.equal(minted, null, 'colliding artifactId must never be minted for arrays');
+
+  const sym = Symbol('tag');
+  const symbolic = [1];
+  symbolic[sym] = 'payload';
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { rows: symbolic } }),
+    /phase8-artifact-options-embedded-own-property:array:Symbol\(tag\)/,
+  );
+
+  const dvSigned = new DataView(new ArrayBuffer(8));
+  dvSigned.setUint8(0, 1);
+  Object.defineProperty(dvSigned, '0', { value: 'signed', enumerable: true });
+  const dvUnsigned = new DataView(new ArrayBuffer(8));
+  dvUnsigned.setUint8(0, 1);
+  Object.defineProperty(dvUnsigned, '0', { value: 'unsigned', enumerable: true });
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { dv: dvSigned } }),
+    /phase8-artifact-options-embedded-own-property:dataview/,
+  );
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { dv: dvUnsigned } }),
+    /phase8-artifact-options-embedded-own-property:dataview/,
+  );
+
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { rows: [1, 2, 3] } }),
+    'plain arrays without attached props stay accepted',
+  );
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { dv: new DataView(new ArrayBuffer(8)) } }),
+    'plain DataViews stay accepted',
+  );
+});

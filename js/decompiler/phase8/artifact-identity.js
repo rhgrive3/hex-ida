@@ -145,7 +145,14 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
     if (ArrayBuffer.isView(value)) {
       const backingBuffer = viewBackingBuffer(value);
       if (isSharedArrayBuffer(backingBuffer)) fail('phase8-artifact-options-shared-buffer');
-      failOnEnumerableOwnProperties(descriptors, 'view', { allowArrayIndex: true });
+      if (value instanceof DataView) {
+        // DataView has no intrinsic index elements; its canonical key material
+        // is only its bytes, so any enumerable own property is invisible
+        // semantic payload and must fail closed.
+        failOnEnumerableOwnProperties(descriptors, 'dataview');
+      } else {
+        failOnEnumerableOwnProperties(descriptors, 'view', { allowArrayIndex: true });
+      }
       if (typeof structuredClone === 'function') return structuredClone(value);
       const bytes = new Uint8Array(backingBuffer, value.byteOffset, value.byteLength).slice().buffer;
       if (value instanceof DataView) return new DataView(bytes);
@@ -165,8 +172,16 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       const length = descriptors.length?.value;
       if (!Number.isSafeInteger(length) || length < 0) fail('phase8-artifact-options-array-length-invalid');
       const out = new Array(length);
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (key === 'length' || (!descriptor.enumerable && !isArrayIndex(key))) continue;
+      for (const key of Reflect.ownKeys(descriptors)) {
+        const descriptor = descriptors[key];
+        if (key === 'length') continue;
+        if (!descriptor.enumerable && !isArrayIndex(key)) continue;
+        // The core canonicalizer reads only intrinsic array elements, so an
+        // enumerable non-index own property (string or symbol) is invisible
+        // key material: fail closed instead of minting a colliding identity.
+        if (typeof key !== 'string' || !isArrayIndex(key)) {
+          fail(`phase8-artifact-options-embedded-own-property:array:${String(key)}`);
+        }
         const item = snapshotDataProperty(key, descriptor);
         Object.defineProperty(out, key, { value:item, enumerable:descriptor.enumerable, configurable:true, writable:true });
       }
