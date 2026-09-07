@@ -181,19 +181,15 @@ function countReferences(nodes, values, blocks) {
 function countRawReferences(blocks, values, nodes, seen) {
   let count = 0;
   for (const block of blocks) {
-    if (!block || typeof block !== 'object') continue;
-    const blockView = cacheReferenceReads(block, seen);
+    const blockView = cacheReferenceReads(object(block, 'semantic-ir-invalid-block'), seen);
     count = addReferenceCount(count, arrayLength(blockView.nodeIds));
   }
   for (const value of values) {
-    if (value && typeof value === 'object') {
-      const valueView = cacheReferenceReads(value, seen);
-      if (valueView.definitionNodeId != null) count = addReferenceCount(count, 1);
-    }
+    const valueView = cacheReferenceReads(object(value, 'semantic-ir-invalid-value'), seen);
+    if (valueView.definitionNodeId != null) count = addReferenceCount(count, 1);
   }
   for (const node of nodes) {
-    if (!node || typeof node !== 'object') continue;
-    const nodeView = cacheReferenceReads(node, seen);
+    const nodeView = cacheReferenceReads(object(node, 'semantic-ir-invalid-node'), seen);
     for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
       count = addReferenceCount(count, arrayLength(nodeView[key]));
     }

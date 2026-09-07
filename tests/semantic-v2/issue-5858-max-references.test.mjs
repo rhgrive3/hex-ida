@@ -268,14 +268,14 @@ test('#5858 raw preflight preserves shape validation for invalid blocks and node
   const invalidBlock = makeFunction('call');
   invalidBlock.blocks = [null];
   assert.throws(
-    () => createSemanticIrFunction(invalidBlock, { budget: { maxReferences: 1 } }),
+    () => createSemanticIrFunction(invalidBlock, { budget: { maxReferences: 0 } }),
     /semantic-ir-invalid-block/
   );
 
   const invalidNode = makeFunction('call');
   invalidNode.nodes = [null];
   assert.throws(
-    () => createSemanticIrFunction(invalidNode, { budget: { maxReferences: 1 } }),
+    () => createSemanticIrFunction(invalidNode, { budget: { maxReferences: 0 } }),
     /semantic-ir-invalid-node/
   );
 });
