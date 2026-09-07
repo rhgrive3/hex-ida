@@ -138,7 +138,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       this.options.pointerFormat,
       this.options
     );
-    if (!model) {
+    if (!model || this.options.signal?.aborted) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -152,7 +152,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'objc-metadata-parse',
-          detail: 'objc metadata could not be parsed',
+          detail: 'objc metadata could not be parsed or was cancelled',
         }),
         sections: objcSections.map((s) => s.section || s.name || String(s)),
         completeness: { present: true, declared: 0, scanned: 0, parsed: 0, complete: false },
