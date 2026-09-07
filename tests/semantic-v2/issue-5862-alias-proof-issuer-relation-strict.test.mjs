@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { canonicalAliasProof } from '../../../js/semantics/memoryssa/proof.js';
+import { canonicalAliasProof } from '../../js/semantics/memoryssa/proof.js';
 
 const base = {
   identity: { snapshotId: 's' },
