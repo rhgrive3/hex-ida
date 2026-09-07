@@ -264,17 +264,27 @@ export function parseDbiHeader(bytes) {
  */
 export function parseModuleInfo(bytes, dbi) {
   const modules = [];
-  if (!bytes || !dbi || dbi.moduleSubstreamSize <= 0) return modules;
+  // A silently truncated scan is indistinguishable from an empty module list
+  // unless the scan reports its own completeness (#5746/#5744): missing module
+  // entries mean missing per-module procedure symbols, so the caller must not
+  // treat the provider evidence as complete.
+  let complete = true;
+  if (!dbi || dbi.moduleSubstreamSize <= 0) return { modules, complete };
+  // A declared module substream with no backing bytes is truncated evidence,
+  // not a complete empty list (#5746/#5744).
+  if (!bytes) return { modules, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, bytes.length);
+  const declaredEnd = DBI_HEADER_SIZE + dbi.moduleSubstreamSize;
+  const end = Math.min(declaredEnd, bytes.length);
+  if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
     const streamIndex = view.getInt16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
-    if (!moduleNameEntry) break;
+    if (!moduleNameEntry) { complete = false; break; }
     const objectNameEntry = cstringWithNext(bytes, moduleNameEntry.next, end);
-    if (!objectNameEntry) break;
+    if (!objectNameEntry) { complete = false; break; }
     let cursor = objectNameEntry.next;
     // Entries are aligned to 4 bytes.
     cursor = (cursor + 3) & ~3;
@@ -284,10 +294,11 @@ export function parseModuleInfo(bytes, dbi) {
       moduleName: moduleNameEntry.value,
       objectName: objectNameEntry.value,
     });
-    if (cursor <= offset) break;
+    if (cursor <= offset || cursor > end) { complete = false; break; }
     offset = cursor;
   }
-  return modules;
+  if (end - offset >= 4) complete = false;
+  return { modules, complete };
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
@@ -720,7 +731,12 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     // Procedure symbols live in the per-module streams. Each module stream
     // begins with a 4-byte signature before its symbol records.
-    const modules = parseModuleInfo(dbiBytes, dbi);
+    const moduleInfo = parseModuleInfo(dbiBytes, dbi);
+    const modules = moduleInfo.modules;
+    if (!moduleInfo.complete) {
+      symbols.complete = false;
+      diagnostics.push('DBI module substream is malformed: the module list is incomplete');
+    }
     for (const module of modules) {
       const declaredSize = module.symbolByteSize;
       if (declaredSize < 4) {
