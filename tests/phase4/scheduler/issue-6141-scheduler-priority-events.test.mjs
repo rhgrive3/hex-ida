@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AnalysisScheduler } from '../../js/core/scheduler/analysis-scheduler.js';
-import { createArtifactDescriptor } from '../../js/core/artifacts/contracts.js';
+import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
+import { createArtifactDescriptor } from '../../../js/core/artifacts/contracts.js';
 
 test('issue-6141: unknown accepted numeric priority is preserved in lifecycle events', async () => {
   const entries = new Map();
