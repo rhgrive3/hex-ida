@@ -102,6 +102,13 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
   if (allocationRootKeys.has(target.rootKey)) return 'local-allocation';
   if (target.rootKind === 'stack-like') return 'local-frame';
   if (target.rootKind === 'absolute') return 'global';
+  /* The canonical root descriptor's storage class is producer-held evidence
+   * (issue #5892): `global-like` normalizes to a `rooted` proof, but it is a
+   * global storage root, not an incoming argument. Only descriptor-backed
+   * authority counts — a `separationClass` without that authority must not
+   * mint a global, so an ordinary `rooted` target stays `incoming`. */
+  if (target.separationAuthority === 'root-descriptor'
+    && target.separationClass === 'global-like') return 'global';
   if (target.rootKind === 'rooted') return 'incoming';
   return 'unknown';
 }
