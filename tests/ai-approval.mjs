@@ -9,7 +9,8 @@ const rename = proposals.create({ kind: 'rename', target: '0x1000', before: 'sub
 await assert.rejects(() => proposals.apply(rename.id, { currentState: 'sub_1000', apply: async () => {} }), (error) => error.type === 'approval_required');
 const approved = proposals.approve(rename.id);
 await assert.rejects(() => proposals.apply(rename.id, { approvalToken: approved.approvalToken, currentState: 'changed', apply: async () => {} }), (error) => error.type === 'tool_failed');
-assert.equal(rename.status, 'failed');
+assert.equal(proposals.get(rename.id).status, 'failed');
+assert.equal(rename.status, 'pending', 'published proposal snapshots remain immutable');
 
 const rejected = proposals.create({ kind: 'comment', target: '0x1000', before: '', after: 'candidate', evidenceIds: [verified.id] });
 proposals.reject(rejected.id);
@@ -20,5 +21,6 @@ const token = proposals.approve(applied.id).approvalToken;
 let invoked = false;
 await proposals.apply(applied.id, { approvalToken: token, currentState: 'void()', apply: async () => { invoked = true; } });
 assert.equal(invoked, true);
-assert.equal(applied.status, 'applied');
+assert.equal(proposals.get(applied.id).status, 'applied');
+assert.equal(applied.status, 'pending', 'state transitions publish a new snapshot');
 console.log('ai-approval: PASS');

@@ -39,6 +39,54 @@ function compareRegion(left, right) {
   return c !== d ? (c < d ? -1 : 1) : left.ownership.localeCompare(right.ownership);
 }
 
+function regionBounds(region) {
+  try {
+    const start = BigInt(region?.start);
+    const end = BigInt(region?.end);
+    if (end < start) return null;
+    return { start, end };
+  } catch {
+    return null;
+  }
+}
+
+// A partial range in the selected authority tier is an observation about the
+// same function. It must be contained by the agreed complete extent; otherwise
+// the complete claim and the partial claim contradict each other.
+function checkPartialContainment(completeRegions, partialItems) {
+  const complete = [];
+  for (const region of completeRegions ?? []) {
+    const bounds = regionBounds(region);
+    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
+    complete.push(bounds);
+  }
+  const ownershipByRange = new Map();
+  for (const item of partialItems ?? []) {
+    for (const region of item?.regions ?? []) {
+      const bounds = regionBounds(region);
+      if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const key = `${bounds.start}-${bounds.end}`;
+      const priorOwnership = ownershipByRange.get(key);
+      if (priorOwnership != null && priorOwnership !== region.ownership) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [...new Set([priorOwnership, region.ownership])].sort(),
+        };
+      }
+      ownershipByRange.set(key, region.ownership);
+      if (!complete.some((candidate) => candidate.start <= bounds.start && bounds.end <= candidate.end)) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent reaches outside the complete claim',
+          alternatives: [{ start: region.start, end: region.end }],
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function fuseExtent(evidence) {
   const withRegions = evidence.filter((item) => item.regions.length > 0);
   if (withRegions.length === 0) return { regions: [], state: 'unknown', conflicts: [] };
@@ -88,6 +136,8 @@ function fuseExtent(evidence) {
   }
   if (signatures.size === 1) {
     const only = [...signatures.values()][0];
+    const containment = checkPartialContainment(only.regions, partial);
+    if (containment) return { regions: [], state: 'unknown', conflicts: [containment] };
     return {
       regions: only.regions,
       state: authoritative.length > 0 ? 'exact' : new Set(only.sources).size > 1 ? 'probable' : 'heuristic',
