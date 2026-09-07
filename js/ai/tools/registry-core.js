@@ -54,17 +54,17 @@ export class ToolRegistry {
     const tool = this.get(name);
     if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
     if (options.signal?.aborted) throw abortError(options.signal);
-    assertSchema(args, tool.inputSchema, "invalid_tool_call");
-    this.assertScope(tool, args, options.scope || "auto");
-    await this.assertAddresses(args, options.scope || "auto");
-    if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
     const started = Date.now();
-    this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
     const previousSignal = this.executionSignal;
     const timeoutMs = resolveToolTimeout(tool, options);
     const execution = createExecutionSignal(options.signal, timeoutMs);
     this.executionSignal = execution.signal;
     try {
+      assertSchema(args, tool.inputSchema, "invalid_tool_call");
+      this.assertScope(tool, args, options.scope || "auto");
+      await this.assertAddresses(args, options.scope || "auto", execution.signal);
+      if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
+      this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
       let record = null;
       let raw;
       let cached = false;
@@ -134,10 +134,22 @@ export class ToolRegistry {
     if (typeof this.context.scopeAllowsTool === "function" && !this.context.scopeAllowsTool(scope, tool.name, args)) throw new AIError("scope_violation", `${tool.name} was rejected by the local scope boundary.`);
   }
 
-  async assertAddresses(args, scope) {
+  async assertAddresses(args, scope, signal) {
     for (const address of collectAddresses(args)) {
-      if (typeof this.context.addressExists === "function" && !await this.context.addressExists(address)) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
-      if (scope !== "auto" && typeof this.context.scopeContainsAddress === "function" && !await this.context.scopeContainsAddress(scope, address)) throw new AIError("scope_violation", `Address ${address} is outside ${scope} scope.`);
+      if (typeof this.context.addressExists === "function") {
+        const exists = await raceAbort(
+          Promise.resolve().then(() => this.context.addressExists(address, { signal })),
+          signal,
+        );
+        if (!exists) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
+      }
+      if (scope !== "auto" && typeof this.context.scopeContainsAddress === "function") {
+        const contained = await raceAbort(
+          Promise.resolve().then(() => this.context.scopeContainsAddress(scope, address, { signal })),
+          signal,
+        );
+        if (!contained) throw new AIError("scope_violation", `Address ${address} is outside ${scope} scope.`);
+      }
     }
   }
 

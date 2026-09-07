@@ -3,10 +3,31 @@ import { IframeWorkerPool } from '../../js/userscript/dev/frame-mesh/iframe-work
 import { startParentDevWorkerRuntime } from '../../js/userscript/dev/parent-worker-runtime.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevRunEventHost } from '../../js/ai/dev/events/dev-events.js';
+import { validateDevSupervisorDecision } from '../../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
 const NOW = '2026-08-20T00:00:00.000Z';
 const RUN = 'run-current';
+
+function testWaitDecisionEventIdentity() {
+  assert.deepEqual(
+    validateDevSupervisorDecision({
+      type: 'wait',
+      events: ['worker.completed', 'worker.failed', 'worker.cancelled'],
+      reason: 'wait for worker',
+    }).events,
+    ['worker.completed', 'worker.failed', 'worker.cancelled'],
+  );
+  assert.throws(
+    () => validateDevSupervisorDecision({ type: 'wait', events: [' worker.completed '], reason: 'wait' }),
+    /unsupported Dev event/,
+    '#6016: an accepted wait event must exactly match the canonical event stored by the event host',
+  );
+  assert.throws(
+    () => validateDevSupervisorDecision({ type: 'wait', events: ['worker.typo'], reason: 'wait' }),
+    /unsupported Dev event/,
+  );
+}
 
 function deferred() {
   let resolve;
@@ -359,6 +380,7 @@ async function testDevRunEventHostResumesSameRunExactlyOnce() {
   } finally { runtime.close(); }
 }
 
+testWaitDecisionEventIdentity();
 await testSupervisorInjectsCurrentRunId();
 await testWaitBeforeCompletionAndRetainedResult();
 await testCompletionBeforeWait();
