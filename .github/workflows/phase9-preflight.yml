@@ -1,16 +1,6 @@
 name: Phase 9 preflight
 
 on:
-  pull_request:
-    paths:
-      - 'js/symbolic/**'
-      - 'js/analysis/**'
-      - 'js/ai/tools/registry.js'
-      - 'js/ai/tools/storage/observation-store.js'
-      - 'tests/phase9/**'
-      - 'reports/phase9/**'
-      - 'docs/PHASE9_*'
-      - '.github/workflows/phase9-preflight.yml'
   workflow_dispatch:
 
 permissions:

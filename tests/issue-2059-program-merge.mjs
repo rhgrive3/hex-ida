@@ -162,4 +162,109 @@ const cardinalityMismatch = new ProgramIndex({
 assert.equal(cardinalityMismatch.callCount, 2, '#3633: call graph clamps to the shortest owned array');
 assert.equal(cardinalityMismatch.refCount, 1, '#3633: ref graph clamps to the shortest owned array');
 
-console.log('issue #2059/#3416/#3633/#4546/#4934 program merge/index regressions passed');
+// #4144: supplied completeness metadata is an authority boundary. Only an
+// explicit boolean true may assert source completeness; malformed explicit
+// values must fail closed rather than becoming true through `!== false`.
+const completenessScan = {
+  callFrom:new BigUint64Array(0),
+  callTo:new BigUint64Array(0),
+  refFrom:new BigUint64Array(0),
+  refTo:new BigUint64Array(0),
+  refKind:new Uint8Array(0),
+};
+for (const malformed of ['false', [], {}, 0, 1, null, undefined]) {
+  const program = new ProgramIndex({
+    ...completenessScan,
+    completeness:{ complete:malformed, reasons:[] },
+  }, null, null);
+  assert.equal(program.completeness.complete, false, `#4144: malformed completeness ${String(malformed)} must fail closed`);
+  assert.equal(program.graphCompleteness.callsComplete, false, '#4144: malformed source completeness must not authorize calls');
+  assert.equal(program.graphCompleteness.refsComplete, false, '#4144: malformed source completeness must not authorize refs');
+  assert.equal(program.queryIncompleteReason, 'program-analysis-incomplete', '#4144: malformed source completeness must retain an incomplete query reason');
+}
+
+const explicitComplete = new ProgramIndex({
+  ...completenessScan,
+  completeness:{ complete:true, reasons:[] },
+}, null, null);
+assert.equal(explicitComplete.completeness.complete, true, '#4144: explicit boolean true remains complete');
+assert.equal(explicitComplete.graphCompleteness.callsComplete, true, '#4144: explicit true still authorizes uncapped calls');
+assert.equal(explicitComplete.graphCompleteness.refsComplete, true, '#4144: explicit true still authorizes uncapped refs');
+
+const explicitIncomplete = new ProgramIndex({
+  ...completenessScan,
+  completeness:{ complete:false, reasons:['fixture-incomplete'] },
+}, null, null);
+assert.equal(explicitIncomplete.completeness.complete, false, '#4144: explicit boolean false remains incomplete');
+assert.equal(explicitIncomplete.queryIncompleteReason, 'fixture-incomplete', '#4144: producer incomplete reason is preserved');
+
+const legacyCompletenessFallback = new ProgramIndex(completenessScan, null, null);
+assert.equal(legacyCompletenessFallback.completeness.complete, true, '#4144: omitted completeness metadata retains legacy uncapped fallback');
+
+const legacyCappedFallback = new ProgramIndex({ ...completenessScan, callsCapped:true }, null, null);
+assert.equal(legacyCappedFallback.completeness.complete, false, '#4144: omitted metadata still fails closed when the legacy source is capped');
+
+// #4148: caller pagination is bounded by distinct callers, not by an arbitrary
+// raw call-site multiplier. A dense first caller must not starve later callers.
+const denseTarget = 0x9000n;
+const denseCallFrom = new BigUint64Array([
+  ...Array.from({ length:100 }, (_, i) => 0x1100n + BigInt(i * 4)),
+  0x2100n,
+]);
+const denseCallTo = new BigUint64Array(denseCallFrom.length);
+denseCallTo.fill(denseTarget);
+const denseCallerSymbols = {
+  gen:1,
+  functionCount:2,
+  functionStartAt(addr) {
+    if (addr >= 0x1000n && addr < 0x2000n) return 0x1000n;
+    if (addr >= 0x2000n && addr < 0x3000n) return 0x2000n;
+    return null;
+  },
+};
+const denseProgram = new ProgramIndex({
+  callFrom:denseCallFrom,
+  callTo:denseCallTo,
+  refFrom:new BigUint64Array(0),
+  refTo:new BigUint64Array(0),
+  refKind:new Uint8Array(0),
+  completeness:{ complete:true, reasons:[] },
+}, denseCallerSymbols, null);
+
+const oneCaller = denseProgram.callersOf(denseTarget, 1);
+assert.deepEqual(oneCaller.map((x) => x.addr), [0x1000n], '#4148: first distinct caller remains the first page source');
+assert.equal(oneCaller[0].count, 100, '#4148: the full dense caller contribution is counted before the next distinct caller');
+assert.equal(oneCaller.queryLimited, true, '#4148: an unseen second distinct caller keeps the limited result partial');
+assert.equal(oneCaller.complete, false, '#4148: one-of-two distinct callers must not be complete');
+
+const twoCallers = denseProgram.callersOf(denseTarget, 2);
+assert.deepEqual(twoCallers.map((x) => x.addr), [0x1000n, 0x2000n], '#4148: increasing the distinct limit reaches the later caller');
+assert.equal(twoCallers[0].count, 100);
+assert.equal(twoCallers[1].count, 1);
+assert.equal(twoCallers.queryLimited, false, '#4148: exhausting the target range with exactly two callers is not locally limited');
+assert.equal(twoCallers.complete, true, '#4148: complete source plus all distinct callers remains complete');
+assert.deepEqual(twoCallers.slice(1, 2).map((x) => x.addr), [0x2000n], '#4148: a second page derived from limit=2 is non-empty');
+
+const zeroCallers = denseProgram.callersOf(denseTarget, 0);
+assert.equal(zeroCallers.length, 0, '#4148: explicit zero limit remains valid');
+assert.equal(zeroCallers.queryLimited, true, '#4148: zero limit remains partial when matching callers exist');
+
+const missingCallers = denseProgram.callersOf(0xdeadn, 2);
+assert.equal(missingCallers.length, 0);
+assert.equal(missingCallers.complete, true, '#4148: an exhausted complete source can still prove no callers');
+
+const cappedDenseProgram = new ProgramIndex({
+  callFrom:denseCallFrom,
+  callTo:denseCallTo,
+  refFrom:new BigUint64Array(0),
+  refTo:new BigUint64Array(0),
+  refKind:new Uint8Array(0),
+  callsCapped:true,
+  completeness:{ complete:true, reasons:[] },
+}, denseCallerSymbols, null);
+const cappedCallers = cappedDenseProgram.callersOf(denseTarget, 2);
+assert.equal(cappedCallers.complete, false, '#4148: source call cap remains fail-closed after distinct enumeration');
+assert.equal(cappedCallers.capped, true);
+assert.equal(cappedCallers.incompleteReason, 'calls-source-capped');
+
+console.log('issue #2059/#3416/#3633/#4144/#4148/#4546/#4934 program merge/index regressions passed');

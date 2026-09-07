@@ -143,4 +143,28 @@ const imm = immNotes.find((n) => n.kind === 'imm');
 assert.ok(imm && /0x20/i.test(imm.text), 'an immediate note must include its hex form');
 console.log('  ok 6 operand notes render immediates and memory operands');
 
+/* ── #6271 pair register identity is GP-class-sensitive ───────────────── */
+
+const canonicalPairPush = explain('stp', 'x29, x30, [sp, #-16]!');
+assert.ok(canonicalPairPush.terms.includes('prologue'), 'x29/x30 stack save must remain a prologue');
+
+const canonicalPairPop = explain('ldp', 'x29, x30, [sp], #16');
+assert.ok(canonicalPairPop.terms.includes('epilogue'), 'x29/x30 stack restore must remain an epilogue');
+
+for (const [mn, ops] of [
+  ['stp', 'q29, q30, [sp, #-32]!'],
+  ['ldp', 'q29, q30, [sp], #32'],
+  ['stp', 'd29, d30, [sp, #-16]!'],
+]) {
+  const result = explain(mn, ops);
+  assert.ok(!result.terms.includes('prologue'), `${mn} ${ops} must not impersonate x29/x30 prologue`);
+  assert.ok(!result.terms.includes('epilogue'), `${mn} ${ops} must not impersonate x29/x30 epilogue`);
+}
+
+const vectorSavedPair = explain('stp', 'q19, q20, [sp, #-32]!');
+assert.ok(!vectorSavedPair.terms.includes('calleesaved'), 'SIMD q19/q20 must not inherit GP callee-saved explanation');
+const gpSavedPair = explain('stp', 'x19, x20, [sp, #-16]!');
+assert.ok(gpSavedPair.terms.includes('calleesaved'), 'GP x19/x20 must retain callee-saved explanation');
+console.log('  ok 7 pair register identity is class-sensitive (#6271)');
+
 console.log('ARM64 explainer semantics: PASS');
