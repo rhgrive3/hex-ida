@@ -5,12 +5,12 @@ import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semanti
 
 // Integer constant authority at the Semantic IR v2 -> v1 compatibility
 // boundary requires an explicit integer primitive or a strict integer
-// literal. BigInt() coercion laundered '' -> 0 and booleans -> 0/1 into
-// exact legacy constants (#5870).
+// literal. BigInt() and Number() coercion must not mint facts from malformed
+// payloads (#5870/#5847).
 
 const origin = { instructionIds: ['instruction_0'] };
 
-function irFor(payload) {
+function irFor(payload, machineType = { kind: 'bitvector', widthBits: 64 }) {
   return {
     schemaVersion: 2,
     contractVersion: '2.0.0',
@@ -19,7 +19,7 @@ function irFor(payload) {
     blocks: [{ id: 'b0', nodeIds: ['n0'] }],
     values: [{
       id: 'v0', kind: 'definition',
-      machineType: { kind: 'bitvector', widthBits: 64 },
+      machineType,
       definitionNodeId: 'n0', sourceEntityId: null, variableKey: null,
       origin,
     }],
@@ -33,14 +33,23 @@ function irFor(payload) {
   };
 }
 
-function constValueFor(payload) {
-  const inst = projectSemanticIrV2ToLegacyV1(irFor(payload))?.instructions?.[0];
-  return inst?.extra?.value;
+function projectionFor(payload, machineType) {
+  const out = projectSemanticIrV2ToLegacyV1(irFor(payload, machineType));
+  const inst = out?.instructions?.find((candidate) => candidate.semanticNodeId === 'n0') ?? out?.instructions?.[0];
+  return { inst, primaryOutput: inst?.dst };
 }
 
-test('#5870: blank and boolean const payloads do not become exact constants', () => {
-  for (const payload of ['', '   ', true, false]) {
-    assert.equal(constValueFor(payload), null, `payload ${JSON.stringify(payload)} must not mint an exact constant`);
+function constValueFor(payload) {
+  return projectionFor(payload).inst?.extra?.value;
+}
+
+test('#5870/#5847: malformed payloads do not become integer or float facts', () => {
+  for (const payload of ['', '   ', true, false, [], ['15'], {}, 'Infinity', '1e309', 2 ** 53]) {
+    const { inst, primaryOutput } = projectionFor(payload);
+    assert.equal(inst?.extra?.value, null, 'malformed payload must not become an integer');
+    assert.equal(inst?.extra?.float, undefined, 'malformed payload must not become a float');
+    assert.equal(primaryOutput?.float, undefined, 'malformed payload must not populate output.float');
+    assert.equal(primaryOutput?.floatConst, undefined, 'malformed payload must not populate output.floatConst');
   }
 });
 
@@ -51,13 +60,29 @@ test('#5870: strict integer payloads keep their exact constant', () => {
   assert.equal(constValueFor('0x2A'), 42n);
 });
 
-test('#5870: a safe bitvector-kind payload value still resolves', () => {
-  const ir = irFor(null);
-  ir.nodes[0].attributes = { value: { kind: 'bitvector', value: '7' } };
-  const inst = projectSemanticIrV2ToLegacyV1(ir)?.instructions?.[0];
-  assert.equal(inst?.extra?.value, 7n);
+test('#5847: canonical numeric strings and numbers retain integer authority', () => {
+  const stringProjection = projectionFor('42');
+  assert.equal(stringProjection.inst?.extra?.value, 42n);
+  assert.equal(stringProjection.primaryOutput?.const, 42n);
+  const numberProjection = projectionFor(7);
+  assert.equal(numberProjection.inst?.extra?.value, 7n);
+  assert.equal(numberProjection.primaryOutput?.const, 7n);
+});
+
+test('#5870: strict finite float payloads keep their float authority', () => {
+  for (const payload of [1.5, -2.25, '1.5', '-2.25', '1e2']) {
+    const { inst, primaryOutput } = projectionFor(payload, { kind: 'float', widthBits: 32, format: 'ieee754' });
+    const expected = Number(payload);
+    assert.equal(inst?.extra?.float, expected);
+    assert.equal(primaryOutput?.float, expected);
+    assert.equal(primaryOutput?.floatConst, expected);
+  }
 });
 
 test('#5870: fractional strings never mint integer constants', () => {
-  assert.equal(constValueFor('4.2'), null);
+  const { inst, primaryOutput } = projectionFor('4.2');
+  assert.equal(inst?.extra?.value, null);
+  assert.equal(inst?.extra?.float, 4.2);
+  assert.equal(primaryOutput?.const, null);
+  assert.equal(primaryOutput?.floatConst, 4.2);
 });
