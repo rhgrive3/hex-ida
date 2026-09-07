@@ -90,3 +90,71 @@ test('issue-5910: cumulative evidence admits a staged candidate over the weakest
   assert.ok(stagedResult.candidates.some((candidate) => candidate.address === stagedTarget));
   assert.equal(stagedResult.candidates.find((candidate) => candidate.address === stagedTarget)?.score, 25);
 });
+
+test('issue-5910: a full staged pool aggregates a candidate before top-k admission', async () => {
+  const stored = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0xa0000000n + BigInt(index * 0x10),
+    source: 'recognition',
+    score: 100,
+  }));
+  const staged = Array.from({ length: 48 }, (_, index) => ({
+    addr: 0xb0000000n + BigInt(index * 0x10),
+    source: 'recognition',
+    score: 45,
+  }));
+  const target = 0x9300n;
+  const options = {
+    tools,
+    maxFunctions: 2,
+    maxDisassembly: 16,
+    maxSearchResults: 8,
+    maxExpansions: 0,
+    timeoutMs: 1000,
+  };
+
+  const ordered = await planAnalysisGoal(query, {
+    candidateFunctions: [
+      ...stored,
+      ...staged,
+      { addr: target, source: 'recognition', score: 40 },
+      { addr: target, source: 'recognition', score: 40 },
+      { addr: target, source: 'recognition', score: 40 },
+    ],
+  }, options);
+  const orderedTarget = ordered.candidates.find((candidate) => candidate.address === target);
+  assert.equal(ordered.candidateSources.stored.recognition, 48);
+  assert.equal(orderedTarget?.score, 120,
+    '40 + 40 + 40 must be aggregated before the full-pool top-k comparison');
+
+  const permutedRows = [];
+  for (let index = 0; index < 48; index++) {
+    permutedRows.push(stored[index], staged[index]);
+    if (index < 3) {
+      permutedRows.push(
+        { addr: target, source: 'recognition', score: 40 },
+      );
+    }
+  }
+  const permuted = await planAnalysisGoal(query, {
+    candidateFunctions: permutedRows,
+  }, options);
+  const permutedTarget = permuted.candidates.find((candidate) => candidate.address === target);
+  assert.equal(permuted.candidateSources.stored.recognition, 48);
+  assert.equal(permutedTarget?.score, 120,
+    'the same evidence multiset must be arrival-order invariant');
+
+  const belowThreshold = await planAnalysisGoal(query, {
+    candidateFunctions: [
+      ...stored,
+      ...staged,
+      { addr: 0x9400n, source: 'recognition', score: 4 },
+      { addr: 0x9400n, source: 'recognition', score: 4 },
+    ],
+  }, options);
+  assert.equal(
+    belowThreshold.candidates.some((candidate) => candidate.address === 0x9400n),
+    false,
+    'an aggregate below the weakest staged score must not promote',
+  );
+  assert.equal(belowThreshold.candidateSources.stored.recognition, 48);
+});

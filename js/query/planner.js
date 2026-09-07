@@ -63,13 +63,49 @@ function worstEntry(map) {
   return { worstKey, worstScore };
 }
 
-function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity) {
+function aggregateCandidateEvidence(rows, read) {
+  const grouped = new Map();
+  for (const row of rows || []) {
+    const item = read(row);
+    const address = asAddr(item?.address);
+    if (address == null) continue;
+    const rawCoverage = Number(item?.coverage);
+    const quality = Number.isFinite(rawCoverage)
+      ? Math.max(0.2, Math.min(1, rawCoverage))
+      : 0.7;
+    const rawWeight = Number(item?.weight);
+    const weight = Number.isFinite(rawWeight) ? rawWeight : 0;
+    const key = address.toString();
+    let aggregate = grouped.get(key);
+    if (!aggregate) {
+      aggregate = {
+        address,
+        amount: 0,
+        sources: [],
+        terms: new Set(),
+        coverageSum: 0,
+        coverageWeight: 0,
+      };
+      grouped.set(key, aggregate);
+    }
+    aggregate.amount += weight * quality;
+    aggregate.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
+    aggregate.coverageWeight += Math.max(1, Math.abs(weight || 1));
+    if (item?.source != null) aggregate.sources.push(item.source);
+    if (item?.term) aggregate.terms.add(item.term);
+  }
+  return Array.from(grouped.values());
+}
+
+function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity, aggregate = null) {
   const addr = asAddr(address);
   if (addr == null) return;
   const map = poolMap(pools, pool);
   const key = addr.toString();
   const quality = Number.isFinite(Number(coverage)) ? Math.max(0.2, Math.min(1, Number(coverage))) : 0.7;
-  const amount = (weight || 0) * quality;
+  // A batch aggregate is admitted atomically; cap comparisons never see
+  // an early fragment of the same address's evidence.
+  const amount = aggregate?.amount ?? (weight || 0) * quality;
   let c = map.get(key);
   if (!c) {
     const staged = stagedPool(map);
@@ -102,10 +138,13 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
   c.score += amount;
   c.scoreComponents[sourceComponent(pool)] += amount;
   c.sourcePoolScores[pool] = (c.sourcePoolScores[pool] || 0) + amount;
-  c.sources.push(source);
-  if (term) c.terms.add(term);
-  c.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
-  c.coverageWeight += Math.max(1, Math.abs(weight || 1));
+  if (aggregate?.sources?.length) c.sources.push(...aggregate.sources);
+  else c.sources.push(source);
+  if (aggregate?.terms?.size) {
+    for (const aggregateTerm of aggregate.terms) c.terms.add(aggregateTerm);
+  } else if (term) c.terms.add(term);
+  c.coverageSum += aggregate?.coverageSum ?? quality * Math.max(1, Math.abs(weight || 1));
+  c.coverageWeight += aggregate?.coverageWeight ?? Math.max(1, Math.abs(weight || 1));
   if (c[STAGED_PENDING]) {
     const staged = stagedPool(map);
     const worst = worstEntry(map);
@@ -117,6 +156,20 @@ function addCandidate(pools, pool, address, source, term, weight, coverage = 1, 
     }
   }
 }
+function addCandidateAggregate(pools, pool, aggregate, cap) {
+  addCandidate(
+    pools,
+    pool,
+    aggregate.address,
+    aggregate.sources[0] || `${pool}-aggregate`,
+    null,
+    aggregate.amount,
+    1,
+    cap,
+    aggregate,
+  );
+}
+
 function mergeCandidateInto(target, source) {
   target.score += source.score;
   for (const key of Object.keys(target.scoreComponents)) target.scoreComponents[key] += source.scoreComponents[key] || 0;
@@ -332,10 +385,24 @@ async function candidatePools(query, tools, ctx, b) {
     }
   }
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
+  const priorRows = Object.fromEntries(POOL_ORDER.map((pool) => [pool, []]));
   for (const c of priors) {
     const pool = classifyPrior(c);
     b.sourceTotals[pool]++;
-    addCandidate(pools, pool, c?.addr != null ? c.addr : c?.address != null ? c.address : c, c?.source || `${pool}-prior`, null, Number(c?.score || 1), Number(c?.coverage ?? 1), sourcePoolCap(b, pool));
+    priorRows[pool].push({
+      address: c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      source: c?.source || `${pool}-prior`,
+      weight: Number(c?.score || 1),
+      coverage: Number(c?.coverage ?? 1),
+    });
+  }
+  // Aggregate each discovery snapshot by address before bounded top-k
+  // admission. This keeps repeated evidence for one candidate together even
+  // when the pool is already full, without increasing the pool cap.
+  for (const pool of POOL_ORDER) {
+    for (const aggregate of aggregateCandidateEvidence(priorRows[pool], (row) => row)) {
+      addCandidateAggregate(pools, pool, aggregate, sourcePoolCap(b, pool));
+    }
   }
   for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], pools[pool].size);
   return pools;
