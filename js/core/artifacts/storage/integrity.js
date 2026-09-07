@@ -183,19 +183,55 @@ export function storageRecordIdentity(record) {
   catch { return null; }
 }
 
+/**
+ * Record fields that decide whether an existing row is the same publication.
+ *
+ * Every canonical record identity field belongs here: a row that agrees on the
+ * payload but disagrees on which producer, binary, snapshot, config or
+ * upstream graph produced it is NOT the same publication, and accepting it as
+ * a duplicate would let a corrupted row poison the artifactId forever — the
+ * post-publication validation would reject it, but the duplicate path would
+ * refuse to delete it (#6206).
+ *
+ * `creation` and `originRefs` are deliberately absent: creation metadata is
+ * per-run bookkeeping and originRefs is non-key provenance, and both must keep
+ * the CAS-duplicate semantics the store contract pins (tests/phase4/store).
+ */
+const PUBLICATION_IDENTITY_KEYS = Object.freeze([
+  'recordSchemaVersion',
+  'artifactContractVersion',
+  'artifactId',
+  'artifactKind',
+  'producerId',
+  'producerVersion',
+  'binaryId',
+  'sliceId',
+  'entityId',
+  'runtimeSnapshotId',
+  'canonicalConfigHash',
+  'versions',
+  'upstreamArtifactIds',
+  'payloadEncoding',
+  'payloadEncodingVersion',
+  'payloadChecksum',
+  'payloadSize',
+  'completeness',
+]);
+
+function identityMaterialEqual(left, right) {
+  if (left === right) return true;
+  if (left == null || right == null) return false;
+  try { return canonicalSerializeArtifactRecord(left) === canonicalSerializeArtifactRecord(right); }
+  catch { return false; }
+}
+
 export function compatiblePublishedArtifact(existingRecord, newRecord, existingPayload, newPayload) {
   if (!existingRecord || !newRecord) return false;
-  for (const key of [
-    'recordSchemaVersion',
-    'artifactContractVersion',
-    'artifactId',
-    'payloadEncoding',
-    'payloadEncodingVersion',
-    'payloadChecksum',
-    'payloadSize',
-    'completeness',
-  ]) {
-    if (existingRecord[key] !== newRecord[key]) return false;
+  for (const key of PUBLICATION_IDENTITY_KEYS) {
+    // Nested identity material (versions, upstream lists) is compared by
+    // canonical content, never by reference: a stored row and a freshly
+    // created record are structurally equal but distinct objects.
+    if (!identityMaterialEqual(existingRecord[key] ?? null, newRecord[key] ?? null)) return false;
   }
   try { return equalBytes(existingPayload, newPayload); }
   catch { return false; }
