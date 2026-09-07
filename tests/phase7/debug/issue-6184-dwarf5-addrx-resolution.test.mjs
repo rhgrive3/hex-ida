@@ -319,3 +319,4 @@ function assertAddrxRejected(debugAddr, { addrBase = 8 } = {}) {
 }
 
 console.log('issue #6184 DWARF5 addrx resolution: PASS');
+

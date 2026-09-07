@@ -1008,3 +1008,4 @@ function normalizeSections(sections) {
   }
   return out;
 }
+
