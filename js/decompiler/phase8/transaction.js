@@ -21,13 +21,14 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
-import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION } from './contract.js';
+import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
 const ANALYSIS_LINEAGE = new WeakMap();
+
 
 /**
  * The authoritative analysis state.
@@ -164,6 +165,10 @@ function aborted(budget) {
   catch { return true; }
 }
 
+function isPassResultShapeUsable(result) {
+  return snapshotCanonicalPassResult(result);
+}
+
 /**
  * Computes what a committed pass invalidates.
  *
@@ -219,10 +224,36 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     return Object.freeze({ committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason: 'cancelled-mid-pass' });
   }
 
+  // Validate untrusted pass output before any later contract check can
+  // dereference it. This must remain before descriptor-identity validation.
+  const ownedResult = isPassResultShapeUsable(result);
+  if (ownedResult == null) {
+    return Object.freeze({
+      committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
+      stopReason: `malformed-result:${descriptor.id}`,
+    });
+  }
+  // From here onward every contract check and publication uses the same owned,
+  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
+  // value and later substitute another at the commit boundary.
+  result = ownedResult;
+
   const stagedWrites = take();
   const refuse = (stopReason) => Object.freeze({
     committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason,
   });
+  // A result may only exercise the descriptor authority of the pass that was
+  // actually invoked. Otherwise mutation/invalidation uses one descriptor while
+  // provenance and replay identity name another pass.  A malformed pass may
+  // return null/undefined (or another primitive); keep that contract failure
+  // inside the existing refusal boundary instead of dereferencing it here.
+  if (result == null || (typeof result !== 'object' && typeof result !== 'function')
+      || result.contractVersion !== descriptor.contractVersion
+      || result.passId !== descriptor.id
+      || result.passVersion !== descriptor.version
+      || result.stage !== descriptor.stage) {
+    return refuse(`result-descriptor-mismatch:${descriptor.id}`);
+  }
   // A contract violation is refused the same way a cancellation is: nothing
   // commits and the caller gets a reason. Throwing here instead would turn a
   // withheld ledger into an uncaught exception at the vertical, which is a
