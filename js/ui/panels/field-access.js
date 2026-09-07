@@ -1,7 +1,9 @@
-import { Sheet, el, list, kvRow, tapRow, noteBox } from '../../ui.js';
+import { Sheet, el, list, kvRow, tapRow, noteBox, button } from '../../ui.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
 import { fieldAccessAcrossExecutableRegions } from '../../analysis/field-access-artifact.js';
+
+const FIELD_ACCESS_PAGE_SIZE = 60;
 
 function fieldName(name) {
   return String(name || '?').replace(/^_+/, '');
@@ -74,27 +76,48 @@ function renderResults(app, sheet, host, className, field, aggregate, program) {
     `${sites.length} accesses found, including ${totalWrites} writes. ${complete ? 'Relevant executable regions are complete.' : 'Remaining regions are still being checked.'}`)));
 
   const rows = list();
-  for (const row of grouped.slice(0, 60)) {
-    const parts = [];
-    if (row.stores) parts.push(pick(`書き込み ${row.stores} か所`, `${row.stores} writes`));
-    if (row.loads) parts.push(pick(`読み出し ${row.loads} か所`, `${row.loads} reads`));
-    rows.append(tapRow(
-      row.owner
-        ? `${row.owner.kind || '-'}[${row.owner.className} ${row.owner.sel || '?'}]`
-        : (row.addr != null ? functionLabel(app, row.addr) : addrHex(row.first)),
-      {
-        sub:`${parts.join('  ·  ')}  ·  ${addrHex(row.first)}`,
-        tag:row.sameClass ? pick('このクラス', 'this class') : (row.owner ? pick('別のクラス', 'another class') : pick('クラス不明', 'unknown class')),
-        tagClass:row.sameClass ? 'tag-fact' : 'tag-infer',
-        right:row.stores ? '✎' : '',
-        onTap:() => {
-          sheet.close();
-          if (row.addr != null && typeof app.openFunctionReport === 'function') app.openFunctionReport(row.addr);
-          else app.goToAddress(row.first, { announce:true });
-        },
-      }));
-  }
+  let shownGroups = 0;
+  const paging = el('div', 'sub');
+  const renderMore = () => {
+    const end = Math.min(shownGroups + FIELD_ACCESS_PAGE_SIZE, grouped.length);
+    for (const row of grouped.slice(shownGroups, end)) {
+      const parts = [];
+      if (row.stores) parts.push(pick(`書き込み ${row.stores} か所`, `${row.stores} writes`));
+      if (row.loads) parts.push(pick(`読み出し ${row.loads} か所`, `${row.loads} reads`));
+      rows.append(tapRow(
+        row.owner
+          ? `${row.owner.kind || '-'}[${row.owner.className} ${row.owner.sel || '?'}]`
+          : (row.addr != null ? functionLabel(app, row.addr) : addrHex(row.first)),
+        {
+          sub:`${parts.join('  ·  ')}  ·  ${addrHex(row.first)}`,
+          tag:row.sameClass ? pick('このクラス', 'this class') : (row.owner ? pick('別のクラス', 'another class') : pick('クラス不明', 'unknown class')),
+          tagClass:row.sameClass ? 'tag-fact' : 'tag-infer',
+          right:row.stores ? '✎' : '',
+          onTap:() => {
+            sheet.close();
+            if (row.addr != null && typeof app.openFunctionReport === 'function') app.openFunctionReport(row.addr);
+            else app.goToAddress(row.first, { announce:true });
+          },
+        }));
+    }
+    shownGroups = end;
+    paging.replaceChildren();
+    if (shownGroups < grouped.length) {
+      paging.append(button(
+        pick(
+          `さらに表示（${shownGroups}/${grouped.length} 関数）`,
+          `Show more (${shownGroups}/${grouped.length} functions)`),
+        'tb-btn',
+        renderMore));
+    } else if (grouped.length > FIELD_ACCESS_PAGE_SIZE) {
+      paging.append(el('span', null, pick(
+        `${grouped.length} 関数をすべて表示しています。`,
+        `Showing all ${grouped.length} functions.`)));
+    }
+  };
+  renderMore();
   host.append(rows);
+  if (grouped.length > FIELD_ACCESS_PAGE_SIZE) host.append(paging);
   host.append(el('div', 'sub', pick(
     `同じ offset（${offsetHex(field.offset)}）を触る命令を全 executable region から集めています。別クラスの同一offsetは区別して表示します。`,
     `Instructions touching offset ${offsetHex(field.offset)} are collected across executable regions; same-offset accesses from other classes are labelled separately.`)));

@@ -17,6 +17,8 @@
    No storage, no model call, no embedding, no summarizer.
 */
 
+import { createAnalysisScopeRequest } from '../run/analysis-scope.js';
+
 export const DEV_CONTEXT_PACKET_SCHEMA = 'hex-dev-context-packet/v1';
 export const DEV_WORKER_RESULT_SCHEMA = 'hex-dev-worker-result/v1';
 
@@ -54,7 +56,7 @@ export function createDevContextPacket(input = {}) {
     role: text(input.role, MAX_SHORT) || null,
     objective,
     successCriteria: list(input.successCriteria, (value) => text(value, MAX_TEXT)),
-    scope: text(input.scope, MAX_TEXT) || null,
+    scope: normalizeScope(input.scope),
     constraints: list(input.constraints, (value) => text(value, MAX_TEXT)),
     authoritativeFacts: list(input.authoritativeFacts, authoritativeFact),
     dependencyResults: list(input.dependencyResults, dependencyResult),
@@ -247,6 +249,19 @@ function positiveInteger(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.floor(number);
+}
+function normalizeScope(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const normalized = value.trim().slice(0, MAX_TEXT);
+    return normalized || null;
+  }
+  if (!plainRecord(value)) {
+    throw new TypeError('ContextPacket scope must be a string or an analysis scope object.');
+  }
+  // Reuse the authoritative run contract so protocol normalization cannot drift
+  // or grant schema-invalid child values authority through String coercion.
+  return { ...createAnalysisScopeRequest(value) };
 }
 function text(value, max) {
   if (value == null) return '';

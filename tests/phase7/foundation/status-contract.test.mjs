@@ -73,7 +73,7 @@ test('merging statuses never strengthens the result', () => {
 
 test('a fail-closed stop reason wins over a benign one when merging', () => {
   const merged = mergeAnalysisStatus(
-    base({ completeness: 'truncated', stopReason: 'iteration-limit' }),
+    base({ completeness: 'truncated', stopReason: 'widened' }),
     base({ completeness: 'partial', stopReason: 'cancelled' }),
   );
   assert.equal(merged.stopReason, 'cancelled');

@@ -134,11 +134,11 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
           if (member === frame.node) break;
         }
         component.sort();
-        components.push(component);
-        if (components.length > maxComponents) {
+        if (components.length >= maxComponents) {
           truncated = true;
           break;
         }
+        components.push(component);
       }
 
       work.pop();

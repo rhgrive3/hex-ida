@@ -559,7 +559,11 @@ export function createAppAnalysisQueryAdapter(app) {
         ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const complete = refs.complete !== false && calls.complete !== false;
-      return paged(rows, page, complete ? 'complete' : 'partial', { reason:refs.incompleteReason ?? calls.incompleteReason ?? null });
+      const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, complete ? 'complete' : 'partial', {
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        ...(queryLimited ? { truncationReason:'query-limit' } : {}),
+      });
     },
 
     async types(_snapshot, scope, _page = {}, options = {}) {

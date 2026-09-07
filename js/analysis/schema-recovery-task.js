@@ -110,6 +110,7 @@ function publishBestSchemaResult(app, entry) {
 }
 
 function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {}) {
+  const reportProgress = typeof onProgress === 'function' ? onProgress : null;
   const controller = new AbortController();
   const signal = controller.signal;
   const map = taskMap(app);
@@ -124,11 +125,11 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
     };
     const stringsPromise = Promise.resolve().then(() => app.ensureStrings?.({
       ...dependencyOptions,
-      onProgress:(progress) => onProgress?.({ phase:'strings', ...progress }),
+      onProgress:(progress) => reportProgress?.({ phase:'strings', ...progress }),
     }));
     const programPromise = Promise.resolve().then(() => app.ensureProgram?.({
       ...dependencyOptions,
-      onProgress:(progress) => onProgress?.({ phase:'program', ...progress }),
+      onProgress:(progress) => reportProgress?.({ phase:'program', ...progress }),
     }));
     const [strings, program] = await Promise.all([stringsPromise, programPromise]);
     throwIfAborted(signal);
@@ -153,7 +154,7 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
       read,
       architecture,
       limit:maxSchemas,
-      onProgress:(progress) => onProgress?.({ phase:'recover', ...progress }),
+      onProgress:(progress) => reportProgress?.({ phase:'recover', ...progress }),
       isCancelled:() => signal.aborted || epoch !== app.backend?.gen,
     });
     throwIfAborted(signal);

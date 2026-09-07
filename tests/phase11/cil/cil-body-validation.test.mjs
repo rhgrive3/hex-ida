@@ -182,9 +182,11 @@ test('#5331 fat LocalVarSigTok resolves through StandAloneSig and #Blob authorit
     'truncated compressed local counts must fail closed',
   );
 
-  const legacyUnresolved = parseCil(fatBodyBuffer(0x11000001));
-  assert.equal(legacyUnresolved.methodBodies.length, 0,
-    'raw compatibility scanning must not publish a nonzero locals token without metadata authority');
+  assert.throws(
+    () => parseCil(fatBodyBuffer(0x11000001)),
+    /cil-unsupported-binary/,
+    'a raw metadata-root buffer without a PE/CLI directory must not cross the probe boundary at all',
+  );
 });
 
 test('#5350 truncated operands fail closed with a typed error', () => {
