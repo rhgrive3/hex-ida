@@ -56,8 +56,9 @@ export class DiscoveryProducerRegistry {
     // Registry identity and evidence provenance must be the same canonical
     // string authority. A structured id must not coerce into a real registry
     // key (String(['p1']) === 'p1') while the raw value keeps flowing into
-    // evidence provenance.
-    if (typeof producer.id !== 'string' || !producer.id) throw new TypeError('discovery-producer-id-required');
+    // evidence provenance, and a whitespace-only or padded id must not
+    // manufacture a second "independent" producer (#5792).
+    if (typeof producer.id !== 'string' || producer.id.trim() === '' || producer.id.trim() !== producer.id) throw new TypeError('discovery-producer-id-required');
     const id = producer.id;
     this.producers.set(id, producer);
     return this;

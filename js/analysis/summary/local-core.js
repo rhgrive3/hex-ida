@@ -118,6 +118,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   let sawNoreturnCall = false;
   let mayThrow = false;
   let controlUnknown = false;
+  // Set when an intrinsic's memory scope is unknown/missing: the summary
+  // carries broad effects for it and must not claim complete memory semantics
+  // (#5752).
+  let intrinsicScopeUnknown = false;
 
   if (options.signal?.aborted) {
     return {
@@ -371,8 +375,13 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
 
     if (node.kind === 'intrinsic') {
-      applyScope({ node, scope: node.intrinsic?.memoryRead, resolveRegion, into: memoryReadRegions, source: 'abi-rule' });
-      applyScope({ node, scope: node.intrinsic?.memoryWrite, resolveRegion, into: memoryWriteRegions, source: 'abi-rule' });
+      // An intrinsic whose memory scope the IR does not spell out gets a
+      // broad effect, but ignoring applyScope's verdict here published
+      // fully-complete summaries for semantics the analyzer never actually
+      // understood (#5752). The unknown scope must weaken completeness too.
+      const readUnderstood = applyScope({ node, scope: node.intrinsic?.memoryRead, resolveRegion, into: memoryReadRegions, source: 'abi-rule' });
+      const writeUnderstood = applyScope({ node, scope: node.intrinsic?.memoryWrite, resolveRegion, into: memoryWriteRegions, source: 'abi-rule' });
+      if (!readUnderstood || !writeUnderstood) intrinsicScopeUnknown = true;
       continue;
     }
 
@@ -473,7 +482,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   }
 
-  const hasUnknown = unknownCallEffects.length > 0;
+  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,
