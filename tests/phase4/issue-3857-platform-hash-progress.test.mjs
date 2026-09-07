@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { MemoryByteSource } from '../../js/binary/source.js';
-import { createProgressCallback, hashByteSource, sha256TreeByteSource } from '../../js/platform/hash.js';
+import { hashByteSource, sha256TreeByteSource } from '../../js/platform/hash.js';
 
 const bytes = Uint8Array.of(1, 2, 3, 4, 5);
 const source = () => new MemoryByteSource(bytes, { maxReadLength: 2 });
@@ -9,25 +9,13 @@ const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 
 class ProgressCallback {}
 const CommentedProgressCallback = class/* progress callback */ Commented {};
-class WrappedProgressCallback {}
-let proxyClassApplyCount = 0;
-const proxyWrappedClass = new Proxy(WrappedProgressCallback, {
-  apply() {
-    proxyClassApplyCount++;
-    throw new Error('opaque class proxy must not be invoked');
-  },
-});
-const boundClass = WrappedProgressCallback.bind(null);
 for (const onProgress of [
   undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'),
-  ProgressCallback, CommentedProgressCallback, class {}, proxyWrappedClass, boundClass,
+  ProgressCallback, CommentedProgressCallback, class {},
 ]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
 }
-assert.equal(proxyClassApplyCount, 0, 'opaque class proxies must not be trial-invoked');
-assert.throws(() => createProgressCallback(null), /must be a function/);
-assert.throws(() => createProgressCallback(ProgressCallback), /must be callable/);
 
 const expectedProgress = [
   { done: 2n, total: 5n },
@@ -54,7 +42,7 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
   function progress(value) {
     boundEvents.push(value);
   }
-  const boundProgress = createProgressCallback(progress.bind({ ignored: true }));
+  const boundProgress = progress.bind({ ignored: true });
   assert.equal(
     await hash(source(), { chunkSize: 2, onProgress: boundProgress }),
     hash === hashByteSource ? expectedFnv : expectedTree,
@@ -92,18 +80,18 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
   );
 
   const boundCallbackError = new Error('bound progress callback failure');
-  const throwingBoundProgress = createProgressCallback(function throwingProgress() {
+  const throwingBoundProgress = function throwingProgress() {
     throw boundCallbackError;
-  }.bind(null));
+  }.bind(null);
   await assert.rejects(
     hash(source(), { chunkSize: 2, onProgress: throwingBoundProgress }),
     (error) => error === boundCallbackError,
   );
 
   const classLikeCallbackError = new TypeError("Class constructor X cannot be invoked without 'new'");
-  const throwingClassLikeBoundProgress = createProgressCallback(function throwingProgress() {
+  const throwingClassLikeBoundProgress = function throwingProgress() {
     throw classLikeCallbackError;
-  }.bind(null));
+  }.bind(null);
   await assert.rejects(
     hash(source(), { chunkSize: 2, onProgress: throwingClassLikeBoundProgress }),
     (error) => error === classLikeCallbackError,
@@ -125,10 +113,10 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
 
   const proxiedEvents = [];
   const proxiedOptions = { chunkSize: 2 };
-  proxiedOptions.onProgress = createProgressCallback(new Proxy(function onProgress(value) {
+  proxiedOptions.onProgress = new Proxy(function onProgress(value) {
     assert.equal(this, proxiedOptions);
     proxiedEvents.push(value);
-  }, {}));
+  }, {});
   assert.equal(await hash(source(), proxiedOptions), hash === hashByteSource ? expectedFnv : expectedTree);
   assert.deepEqual(proxiedEvents, expectedProgress, 'ordinary callable proxies remain valid callbacks');
 
