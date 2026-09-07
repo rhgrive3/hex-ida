@@ -1,3 +1,68 @@
+# Integrated check update — 2026-09-08
+
+Task ledger: **43/61**. Physical-device execution is deferred by the owner; no
+physical PASS is claimed. The records below this update are historical.
+
+Main `65bc985e8` was merged as `51f28ab05`. Seven conflicts were reconciled with
+the strict main contracts and recovery behavior both retained. The current draft
+is [PR 7097](https://github.com/rhgrive3/hex-ida/pull/7097); its last published head
+is `9e0702fef7444538b6c2314a1c0629a7fc007a0f`. Later local repairs are not yet
+represented by that PR's CI result.
+
+Current repairs and verification:
+
+- `717e1df46`: built-in proposal state objects now undergo own-accessor checks
+  before cloning; getter-backed state is rejected without invoking getters.
+- `706c21c46`: the x86 long-mode memory denominator retains the malformed
+  16-bit address case and expects the strict decoder rejection adopted on main.
+- `d84067303`: undefined-result descriptors cannot erase call/store/control
+  effects by attaching to unsupported node kinds. Focused transport, constant,
+  node-kind, AI approval and multi-return checks pass.
+- `ca2259128`: decompiler semantic fixtures use deterministic finite rewrite
+  work. A controlled scheduler-delay reproduction now passes; production time
+  budgets and cancellation negatives remain intact.
+- `a9e04fd0d`: the SSA link-budget fixture has its required matching function ID.
+  The intended budget boundary and foreign-CFG rejection tests both pass.
+- `7569976ff`: Phase 6 discovery requires the complete canonical runner before
+  supplemental regression commands. Focused discovery/identity tests pass 7/7;
+  the repaired full `phase6:test` passes in 201.5 seconds.
+- `9765d3b75`, `fc27e090d`: restore main UI browser proof and align Phase 12 PR
+  scheduling with the development policy. Both focused workflow contracts pass.
+
+Canonical double generation on source
+`d8406730359e54630d80abe1918902c044ac052f` produced no second-run tracked diff;
+commit `0ef399790` contains the result. SHA-256 values:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `userscript/hex.user.template.js` | `c5e3dbdbb50a004daf16d974c5e6ac785e49893b1cfdb9a358789759caafbe0f` |
+| `userscript/release-version.json` | `1adc38b33bf80c33cc8115f9eeb6d5ee203531c18ec6c8bff17e452fd20c5599` |
+| `js/userscript/deployment-identity.generated.js` | `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252` |
+
+The reviewed full `npm run check` stopped in the semantic gate. Retained log:
+`/tmp/hex-reviewed-combined-check-9t7IXb/full.log`. Its required nested regression
+chain passed (324.9 s) and userscript synchronization passed (45.1 s). The two
+identified leaf failures above were repaired. The corrected complete v2/legacy
+current-corpus comparison passes (26.2 s). This does not relabel the original
+full-command failure as PASS.
+
+The remaining twelve canonical commands began at
+`a9e04fd0d8489d3e0c60040c29990cfacd5f0547`. Phase 4 (21.4 s), Phase 5 (144.9 s),
+effects (133.0 s) and Phase 7 (52 s) pass. Phase 6 initially failed only the
+stale runner assertion, then passed after the repair above. Phase 8 and later
+commands are still running. Machine-readable status is retained at
+`/mnt/workspace/.dev-state/hex-development-batch/combined-remaining-checks.json`.
+Only unaffected development results are reused across the later test/CI edits;
+this is not exact-final-head release evidence.
+
+T045 is complete as implementation: Stage 2 requires both identity-resolved
+physical scenario evidence and the fourteen-row numeric attachment in final
+mode. Physical collection itself remains deferred. The exact Phase 8 18.1.8
+native twin capture now passes for all nine artifacts including ARM64; remaining
+same-binary metric bindings and external benchmark identities are not complete.
+
+---
+
 # Current repair batch — 2026-09-08
 
 The owner deferred physical-device execution until development is complete; see

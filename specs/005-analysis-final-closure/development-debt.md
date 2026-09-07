@@ -1,49 +1,27 @@
 # Development debt and next actions
 
-Current batch update (2026-09-08): physical-device execution is deferred by owner.
-Proposal state/annotation approval fixtures are repaired. Legacy/compiler-truth
-focused tests pass, but the normal combined run exposed a multi-return regression
-at `tests/issue-142-multi-return.mjs:132`, now assigned to T011. T045 numeric
-contract passes focused tests; its Stage2 integration needs to retain both the
-scenario evidence and numeric lock verification. T026 still has unmeasured rows.
-See the current update in `evidence/stage-a-candidate.md`; the older round below is
-historical and does not supersede these findings.
+Current batch: 2026-09-08, **43/61** tasks checked. Stage A implementation is
+7/7; Stage B implementation is 10/11. Physical-device execution is deferred
+until development is finished. Historical observations are retained below;
+current results take precedence.
 
-The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011–T018, T027–T036 and T053–T056. T020 generation
-validation also passes; the ledger is 42/61.
-Product implementation and final release acceptance are separate. This check
-round is finished: all 18 canonical top-level commands were invoked; 16/18 have
-passing development evidence after focused repairs. Legacy semantic comparison
-and the normal regression chain remain failed. See `evidence/stage-a-candidate.md`
-for the full disposition, retained failures, source identities and rerun limits.
-
-| Area | Outstanding work | Next action / due |
+| Area | Current state | Next action |
 | --- | --- | --- |
-| Historical administration | T047/T049/T050/T061 receipts remain historical unchecked entries. | No receipt reconstruction is required under the amendment. Current product checks replace replay. |
-| Stage A | T011–T017 implementation is 7/7; bounded independent review of fourteen recovery rows passes focused implementation checks. | Resolve the recorded failing comparisons; retain separate release obligations. |
-| Stage B | T026–T036 implementation is 10/11. T026 has capture scaffolding but five workload metrics remain UNMEASURED. | Complete native workload truth and measurements; required Phase 8 compiler is 18.1.8. |
-| Environment | Actual extracted LLVM/clang/LLD 18.1.3 are available; versioned wrappers/symlinks were restored. Phase 6 exact toolchain probe and F6 oracle now pass. | Preserve explicit tool selection and cwd/non-login shell. Phase 8 competitive compiler 18.1.8 is a separate lock. |
-| Combined release | The development check round finished with unresolved legacy and AI/integration regressions. Canonical generation passes; current full release acceptance remains unproven. | Repair the recorded failures before final release; do not replay retired history. |
-| Normal regression chain | Approval-fixture, custom-class fingerprint, scanProgram integration and observation-count failures remain; see the candidate evidence for exact files. | Repair each at its canonical boundary; keep positive coverage and rejection checks. |
-| Legacy semantic comparison | Correct-checkout legacy mode fails apply_damage and compiler-truth max/min: absent return ABI metadata and unresolved exact stack PHI. Default/v2 corpus passes. | Repair the legacy return binding and sound PHI spill recovery; retain current assertions. See candidate evidence. |
-| Cold performance | Source11873792c measured cold622.195 ms >250; optimizer127.139 ms <=150 and interactive0.362 ms <=5. A subsequent private-artifact digest cache is implemented. | The current cold threshold remains unproven; do not reuse the earlier source-bound measurements as current acceptance. Repeated mutable-IR hashing needs a separate sound ownership solution. |
-| Hosted settings | This local change does not modify remote branch-protection requirements or other workflows. | When publishing this branch, inspect required checks and remove retired checkpoint job names from development-branch protection. Preserve final release checks. |
+| Local integration | Main65bc985e8 merged; legacy/v2 corpus and repaired Phase6 pass. Phase4/5/effects/7 pass; remaining canonical chain is active. | Finish the running batch, repair failing leaves, retain original failure logs. Full npm check is not yet PASS. |
+| T026 comparison | Native P5/P6 captures and exact18.1.8 P8 nine-artifact captures exist. Metric bindings are under independent review. Three real binary source/compiler/debug identities are unavailable. | Finish local measurement bindings; obtain corresponding external data or explicit deferral. No fabricated values or denominator reduction. |
+| Performance/platform | Earlier cold622.195 ms exceeded250; optimizer127.139 ms passed150 and interactive0.362 ms passed5. A subsequent immutable-artifact cache is implemented. | Current full acceptance remains unproven. Physical execution is deferred; retain browser/runtime requirements. |
+| Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership is being repaired. | Publish the reviewed batch and classify its exact-head checks. Draft CodeRabbit skip is not review approval. |
+| Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
+| Historical administration | T047/T049/T050/T061 remain retired unchecked history. | No checkpoint receipt reconstruction under the owner's speed amendment. |
+| T045 physical numeric contract | Collector, fourteen-row validation and Stage2 scenario/numeric binding implemented and tested. | Collect actual device evidence only after development, per owner instruction. |
 
-Typical commands:
+See `evidence/stage-a-candidate.md` for command identities and retained logs,
+and `evidence/post-development-device-checks.md` for deferred physical checks.
+Generated source at d84067303 was built twice with zero second-run tracked diff;
+0ef399790 contains the artifacts. Runtime source has not changed in the later
+fixture/CI commits. The original issue worktree and user tmp work are untouched.
 
-```sh
-npm run check:dev -- --base HEAD --plan
-npm run check:dev -- --base HEAD --test tests/development-check.test.mjs
-npm run check:one -- phase12:test
-# Final combined-product gate, once ready:
-node scripts/run-quiet-command.mjs --label check -- npm run check
-```
-
-`check:dev` is development feedback, not automatic release signoff. A focused
-failure stops that command but does not prohibit unrelated implementation.
-
-Current-main batch baseline: `a85e2b3693e2cffca17e4fcc6f77ece89eb50a7c`. The combined runtime is now generated: build `dd8deed2e9f1d8262fa0554a`, serial `2322242153`. Canonical double generation on source `f61484b58e` passed with identical tracked output. This is local build identity, not deployed acceptance.
+## Historical implementation observations
 
 Completed implementation evidence (2026-09-07): T012 reproduced three authority/publication failures before recovery; all 118 identity/GVN/adversarial tests pass after recovery and adapting old test seeding to the current private transaction API. T053–T056 dedicated and relevant original alias/debug/type/store tests pass. Type corpus structural truth changed intentionally; regenerate the Phase 7 manifest once at the affected batch boundary.
 
