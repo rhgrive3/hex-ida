@@ -21,7 +21,8 @@ test('unsupported RISC-V control is an unknown terminator with no invented fallt
 test('explicit big-endian input is rejected by the little-endian RISC-V profile (#891)', () => {
   assert.deepEqual(rv.supportedMemoryEndianness, ['little']);
   assert.throws(() => analyzeDecodedSemanticFunction({
-    architecture:'riscv64', platform:'linux', abiId:'lp64', endian:'big',
+    architecture:'riscv64', platform:'linux', abiId:'lp64',
+    instructionEndianness:'little', dataEndianness:'big',
     binaryId:'binary-test', sliceId:'slice-test', decoderSemanticVersion:'test', instructions:[],
   }), /semantic-function-unsupported-memory-endianness:big/);
 });
@@ -74,14 +75,14 @@ function fence(fields, id) {
   });
 }
 
-test('FENCE.TSO requires the full canonical fm/pred/succ tuple (#895)', () => {
+test('FENCE.TSO mode requires the full canonical tuple while other fields stay forward-compatible (#895/#6005)', () => {
   const canonical = fence({ fenceMode:0b1000, predecessor:0b0011, successor:0b0011 }, 'fence-tso');
   const reservedSucc = fence({ fenceMode:0b1000, predecessor:0b0011, successor:0b0010 }, 'fence-reserved-succ');
   const reservedPred = fence({ fenceMode:0b1000, predecessor:0b0001, successor:0b0011 }, 'fence-reserved-pred');
   const otherFm = fence({ fenceMode:0b0111, predecessor:0b0011, successor:0b0011 }, 'fence-other-fm');
   const mode = (bundle) => bundle?.operations.find((op) => op.kind === 'barrier').scope.fenceMode;
   assert.equal(mode(canonical), 'tso');
-  assert.equal(reservedSucc, null, 'non-canonical FENCE.TSO successor is reserved');
-  assert.equal(reservedPred, null, 'non-canonical FENCE.TSO predecessor is reserved');
-  assert.equal(otherFm, null, 'non-standard fm is reserved');
+  assert.equal(mode(reservedSucc), 'normal', 'non-canonical FENCE.TSO successor normalizes to ordinary FENCE');
+  assert.equal(mode(reservedPred), 'normal', 'non-canonical FENCE.TSO predecessor normalizes to ordinary FENCE');
+  assert.equal(mode(otherFm), 'normal', 'non-standard fm normalizes to ordinary FENCE');
 });
