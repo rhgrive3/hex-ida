@@ -38,3 +38,22 @@ test('existing non-contradictory producer completeness remains unchanged', async
     assert.equal(result.status.completeness, completeness);
   }
 });
+test('completeness evidence joins by severity regardless of source order', async () => {
+  const cases = [
+    [{ status:{ completeness:'complete' }, completeness:'truncated' }, 'truncated'],
+    [{ status:{ completeness:'unsupported' }, truncated:true }, 'unsupported'],
+    [{ status:{ completeness:'truncated' }, partial:true }, 'truncated'],
+    [{ status:{ completeness:'partial' }, completeness:'complete' }, 'partial'],
+  ];
+
+  for (const [producerResult, expected] of cases) {
+    const result = await searchStatus(producerResult);
+    assert.equal(result.status.completeness, expected, JSON.stringify(producerResult));
+  }
+});
+
+test('invalid completeness strings fail closed', async () => {
+  const result = await searchStatus({ status:{ completeness:'future-status' } });
+  assert.equal(result.status.completeness, 'partial');
+});
+
