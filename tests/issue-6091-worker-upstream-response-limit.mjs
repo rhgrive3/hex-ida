@@ -56,10 +56,14 @@ test('issue-6091: Content-Length over the ceiling rejects before materialization
 test('issue-6091: chunked oversized body without Content-Length is cancelled mid-stream', async () => {
   const chunk = new Uint8Array(512).fill(120); // 'x'
   let reads = 0;
+  let cancelled = false;
   const stream = new ReadableStream({
     pull(controller) {
       reads++;
       controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
     },
   });
   const response = new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
@@ -67,6 +71,7 @@ test('issue-6091: chunked oversized body without Content-Length is cancelled mid
     error instanceof HttpError && error.code === 'upstream_response_too_large'
   ));
   assert.ok(reads <= 4, `stream must stop early once over budget (reads=${reads})`);
+  assert.equal(cancelled, true, 'oversized success stream must be cancelled after overflow');
 });
 
 test('issue-6091: response at exactly the limit is accepted', async () => {
