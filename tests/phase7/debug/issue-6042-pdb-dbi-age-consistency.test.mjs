@@ -112,8 +112,19 @@ test('#6042: the authoritative record filter drops symbols from a mismatched DBI
   assert.ok(result.parsed, 'the parse still travels with the result for inspection');
   // The provider-level filter must treat every record of this result as
   // non-authoritative while the identity verdict is downgraded.
-  const page = { records: [{ kind: 'symbol', entityId: 'probe' }] };
-  for (const record of page.records) {
-    assert.equal(isDebugRecordAuthoritative(result, record), false);
-  }
+  // Use a canonical provider record so this assertion reaches the identity
+  // verdict check instead of failing early on record shape (#6042).
+  const page = { records: [{
+    kind: 'symbol',
+    entityId: 'probe',
+    name: 'probe',
+    address: '0x1000',
+    sizeBytes: 1,
+    descriptor: null,
+    providerId: result.providerId,
+    providerVersion: result.providerVersion,
+    buildIdentity: result.identity.observed,
+    evidenceIds: ['pdb:test'],
+  }] };
+  assert.equal(isDebugRecordAuthoritative(result, page.records[0]), false);
 });
