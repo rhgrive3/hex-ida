@@ -293,3 +293,4 @@ await import('./issue-4182-rust-v0-mutability.mjs');
 await import('./issue-6203-rust-v0-backref.mjs');
 await import('./issue-6237-rust-v0-punycode.mjs');
 await import('./issue-6239-rust-v0-array.mjs');
+await import('./issue-3715-rust-v0-impl-disambiguator.mjs');
