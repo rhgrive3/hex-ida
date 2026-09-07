@@ -16,6 +16,10 @@ assert.equal(byId.get('ghidra-differential').available, true);
 assert.equal(byId.get('ghidra-differential').semanticAuthority, 'not-absolute-isa-truth');
 assert.equal(byId.get('capstone').available, true);
 assert.equal(byId.get('capstone').semanticAuthority, 'disassembly-text-does-not-prove-semantics');
+assert.equal(byId.get('formal-architectural-models').available, true);
+assert.equal(byId.get('formal-architectural-models').semanticAuthority, 'complete-artifact-observable-partition-only');
+assert.equal(byId.get('herdtools7-aarch64-memory-model').available, true);
+assert.equal(byId.get('herdtools7-aarch64-memory-model').semanticAuthority, 'declared-litmus-outcome-universe-only');
 
 const compilerEvidence = createExternalOracleEvidence({
   oracleId:'compiler-truth',

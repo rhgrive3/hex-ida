@@ -3,7 +3,7 @@ import { createPackageEnvelope, createProjectOperation, compilePattern, createRe
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
 
 assert.equal(createPackageEnvelope({ kind: 'patterns', packageId: 'p12', packageVersion: '1', payload: { patterns: [] } }).kind, 'patterns');
-assert.equal(createProjectOperation({ projectIdentity: 'hex-project:p', targetEntityId: 'hex-entity:e', factKind: 'comment', action: 'add', payload: 'ok' }).schemaVersion, 'hex-project-operation-v1');
+assert.equal(createProjectOperation({ projectIdentity: 'hex-project:p', targetEntityId: 'hex-entity:e', factKind: 'comment', action: 'set', payload: 'ok' }).schemaVersion, 'hex-project-operation-v1');
 assert.ok(compilePattern('struct X { value: u8; }').patternId);
 assert.equal(createRebuildPlan({ binaryId: 'b', sourceHash: 'bytes:x', loaderVersion: '1', operations: [{ offset: 0, before: [1], after: [2] }] }).authority, 'L3-explicit-proposal');
 const provider = validatePhase12ProviderResult({ schemaVersion: 'provider-v1', targetIdentity: 'hex-binary:b', provenance: { source: 'external' }, completeness: 'complete', items: [{ id: 'candidate-1', targetIdentity: 'hex-binary:b' }] }, { targetIdentity: 'hex-binary:b' });

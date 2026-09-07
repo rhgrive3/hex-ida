@@ -1,5 +1,5 @@
 import { AIError } from '../schema.js';
-import { resolveBinaryIdentity } from './snapshot.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
   if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
@@ -13,46 +13,51 @@ export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).ma
 export function memoryAnchor(snapshot, effectiveScope, liveContext = null) {
   let runtimeSessionId = snapshot.runtimeSessionIdentity || null;
   let runtimeSessionState = snapshot.runtimeSessionState || (runtimeSessionId != null ? 'bound' : 'unknown');
-  // A runtime session can be created lazily by the first runtime tool in a
-  // turn. After the immutable snapshot has protected the turn, promote that
-  // observed binding into structured memory so the next user turn can enforce
-  // the exact session identity.
   if (runtimeSessionState === 'unknown' && liveContext?.runtimeSessionKnown === true) {
-    const observed = liveContext.runtimeSession?.id ?? liveContext.runtime?.sessionId ?? liveContext.runtimeSessionId ?? null;
-    runtimeSessionId = observed == null ? null : String(observed);
-    runtimeSessionState = runtimeSessionId == null ? 'none' : 'bound';
+    const observed = firstBinding(liveContext.runtimeSession?.id, liveContext.runtime?.sessionId, liveContext.runtimeSessionId);
+    runtimeSessionId = canonicalBindingId(observed);
+    runtimeSessionState = observed == null ? 'none' : runtimeSessionId == null ? 'unknown' : 'bound';
   }
   return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId, runtimeSessionState, effectiveScope };
 }
 export function sessionMatchesSnapshot(session, snapshot) {
   const sessionIdentity = session.binaryIdentity || null;
   const snapshotIdentity = snapshot.binaryIdentity || null;
-  const sessionId = session.binaryId ?? sessionIdentity?.id ?? null;
-  const snapshotId = snapshot.binaryId ?? snapshotIdentity?.id ?? null;
-  const sessionBindingId = sessionId == null ? null : String(sessionId);
-  const snapshotBindingId = snapshotId == null ? null : String(snapshotId);
-  let binaryMatches = sessionBindingId == null || sessionBindingId === snapshotBindingId;
+  const sessionRawId = session.binaryId ?? sessionIdentity?.id ?? null;
+  const snapshotRawId = snapshot.binaryId ?? snapshotIdentity?.id ?? null;
+  const sessionBindingId = canonicalBindingId(sessionRawId);
+  const snapshotBindingId = canonicalBindingId(snapshotRawId);
+  if (sessionRawId != null && sessionBindingId == null) return false;
+  if (snapshotRawId != null && snapshotBindingId == null) return false;
+  // An unbound session carries no positive evidence that it belongs to the
+  // current binary. Treating that as a wildcard match would silently adopt
+  // another binary's investigation state, so both sides must be unbound (or
+  // the session must prove its binding via a verifiable legacy id) to match.
+  let binaryMatches = sessionBindingId == null
+    ? snapshotBindingId == null
+    : sessionBindingId === snapshotBindingId;
   if (!binaryMatches) {
     const sessionStrong = strongIdentity(sessionIdentity, sessionBindingId);
     const snapshotStrong = strongIdentity(snapshotIdentity, snapshotBindingId);
     const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
     const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
 
-    // Backward compatibility: an old session that only stored filename:slice,
-    // or a weak pre-hash session, may be upgraded to a strong current binding.
-    // Never use a shared legacy name to equate two different strong identities,
-    // and never downgrade a strong stored binding to an unverifiable weak one.
     if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
-  const projectMatches = session.projectId == null || (snapshot.projectIdentity != null && String(session.projectId) === String(snapshot.projectIdentity));
+  const projectMatches = session.projectId == null
+    || (canonicalBindingId(session.projectId) != null
+      && canonicalBindingId(snapshot.projectIdentity) != null
+      && canonicalBindingId(session.projectId) === canonicalBindingId(snapshot.projectIdentity));
   const priorAnchor = session.investigationMemory?.anchor || null;
-  const priorRuntime = priorAnchor?.runtimeSessionId ?? null;
-  const priorRuntimeState = priorAnchor?.runtimeSessionState || (priorRuntime != null ? 'bound' : 'unknown');
+  const priorRuntimeRaw = priorAnchor?.runtimeSessionId ?? null;
+  const priorRuntime = canonicalBindingId(priorRuntimeRaw);
+  const priorRuntimeState = priorAnchor?.runtimeSessionState || (priorRuntimeRaw != null ? 'bound' : 'unknown');
+  const snapshotRuntime = canonicalBindingId(snapshot.runtimeSessionIdentity);
   const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
   let runtimeMatches = true;
-  if (priorRuntimeState === 'bound') runtimeMatches = snapshotRuntimeState === 'bound' && String(priorRuntime) === String(snapshot.runtimeSessionIdentity);
+  if (priorRuntimeState === 'bound') runtimeMatches = priorRuntime != null && snapshotRuntimeState === 'bound' && snapshotRuntime != null && priorRuntime === snapshotRuntime;
   else if (priorRuntimeState === 'none') runtimeMatches = snapshotRuntimeState === 'none';
   return binaryMatches && projectMatches && runtimeMatches;
 }
@@ -63,20 +68,18 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
   const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
   const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
-  const liveProject = local.projectId ?? local.project?.id ?? local.project?.binaryHash ?? null;
+  const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
     throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
   }
-  const liveRuntime = local.runtimeSession?.id ?? local.runtime?.sessionId ?? local.runtimeSessionId ?? null;
+  const liveRuntime = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const liveRuntimeKnown = local.runtimeSessionKnown === true || liveRuntime != null;
-  const liveRuntimeState = liveRuntimeKnown ? (liveRuntime == null ? 'none' : 'bound') : 'unknown';
+  const liveRuntimeBinding = canonicalBindingId(liveRuntime);
+  const liveRuntimeState = liveRuntimeKnown ? (liveRuntime == null ? 'none' : liveRuntimeBinding == null ? 'invalid' : 'bound') : 'unknown';
+  const snapshotRuntime = canonicalBindingId(snapshot.runtimeSessionIdentity);
   const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
-  // An unknown runtime binding is intentionally permissive for this turn: the
-  // first runtime-verification tool may lazily create the session. Once a
-  // concrete session has been observed, subsequent turns snapshot and enforce
-  // that exact ID. A known binding may never disappear or change mid-turn.
   if (snapshotRuntimeState === 'bound') {
-    if (liveRuntimeState !== 'bound' || String(liveRuntime) !== String(snapshot.runtimeSessionIdentity)) {
+    if (liveRuntimeState !== 'bound' || snapshotRuntime == null || liveRuntimeBinding !== snapshotRuntime) {
       throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
     }
   } else if (snapshotRuntimeState === 'none' && liveRuntimeState !== 'none') {
@@ -95,13 +98,6 @@ export function presentAnswer(answer, style, evidence, plan) { if (style === 'an
 export function ensureRunning(signal, started, timeoutMs) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (Date.now() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
 export function remainingTime(started, timeoutMs) { return Math.max(1, timeoutMs - (Date.now() - started)); }
 export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }
-/*
- * A provider failure must never lose the subtype that explains it. The friendly
- * label stays unchanged for beginners; these fields are the developer-visible
- * record of which provider, which bridge guard, and which deployed runtime
- * produced the failure. Only closed-vocabulary tokens are carried, so no DOM,
- * prompt or storage text can leak into activity or telemetry.
- */
 export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
 function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }
 const BRIDGE_DIAGNOSTIC_MESSAGES = Object.freeze({
@@ -138,10 +134,17 @@ export function stableStringify(value) { if (Array.isArray(value)) return `[${va
 export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
 
 function strongIdentity(identity, id) {
-  const value = id == null ? identity?.id : id;
-  if (identity?.hash != null && String(identity.hash)) return true;
+  const value = id == null ? canonicalBindingId(identity?.id) : canonicalBindingId(id);
+  if (canonicalBindingId(identity?.hash) != null) return true;
   if (typeof value === 'string' && value.startsWith('content:')) return true;
   return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof value === 'string' && !value.startsWith('fallback:');
 }
-function sameLegacy(a, b) { return a != null && b != null && String(a) === String(b); }
-function sameNullableBinding(a, b) { return a == null && b == null || a != null && b != null && String(a) === String(b); }
+function sameLegacy(a, b) {
+  const left = canonicalBindingId(a), right = canonicalBindingId(b);
+  return left != null && right != null && left === right;
+}
+function sameNullableBinding(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  const left = canonicalBindingId(a), right = canonicalBindingId(b);
+  return left != null && right != null && left === right;
+}

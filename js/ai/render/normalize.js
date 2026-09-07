@@ -53,8 +53,10 @@ const STATUS_ALIASES = new Map(Object.entries({
 
 /** Any spelling of a verdict -> one of the five UI states. */
 export function normalizeStatus(value, confidence) {
-  const key = String(value == null ? '' : value).toLowerCase().trim();
-  if (STATUS_ALIASES.has(key)) return STATUS_ALIASES.get(key);
+  if (typeof value === 'string') {
+    const key = value.toLowerCase().trim();
+    if (STATUS_ALIASES.has(key)) return STATUS_ALIASES.get(key);
+  }
   const n = num(confidence);
   if (n != null) {
     if (n >= 0.7) return STATUS.SUPPORTED;
@@ -83,6 +85,15 @@ function num(value) {
 function text(value, limit = 4000) {
   const out = String(value == null ? '' : value);
   return out.length > limit ? out.slice(0, limit - 1) + '…' : out;
+}
+
+function schemaStringId(value, fallback) {
+  if (value == null || value === '') return fallback;
+  return typeof value === 'string' ? value : null;
+}
+
+function schemaStringIds(value) {
+  return Array.isArray(value) ? value.filter((id) => typeof id === 'string') : [];
 }
 
 /** Core addresses are already `0x…` strings; anything else is coerced once. */
@@ -215,11 +226,13 @@ function normalizeEvidence(raw, index) {
       sourceTool: null, confidence: null, code: '',
     };
   }
+  const id = schemaStringId(raw.id, 'ev' + index);
+  if (id == null) return null;
   const status = normalizeStatus(raw.status, raw.confidence);
   const address = addressString(raw.address ?? raw.navigation?.address);
   const functionAddress = addressString(raw.functionAddress);
   return {
-    id: String(raw.id || 'ev' + index),
+    id,
     status,
     kind: text(raw.kind || 'observation', 60),
     title: text(raw.title || raw.kind || 'evidence', 200),
@@ -240,10 +253,12 @@ function normalizeHypothesis(raw, index, evidenceById) {
   if (typeof raw === 'string') {
     return { id: 'hyp' + index, claim: text(raw, 300), status: STATUS.HYPOTHESIS, confidence: null, support: [], contradictions: [], missing: [] };
   }
-  const support = (Array.isArray(raw.supportEvidenceIds) ? raw.supportEvidenceIds : []).map(String);
-  const contradictions = (Array.isArray(raw.contradictionEvidenceIds) ? raw.contradictionEvidenceIds : []).map(String);
+  const id = schemaStringId(raw.id, 'hyp' + index);
+  if (id == null) return null;
+  const support = schemaStringIds(raw.supportEvidenceIds);
+  const contradictions = schemaStringIds(raw.contradictionEvidenceIds);
   return {
-    id: String(raw.id || 'hyp' + index),
+    id,
     claim: text(raw.claim || raw.title || '', 600),
     status: normalizeStatus(raw.status, raw.confidence),
     confidence: num(raw.confidence),

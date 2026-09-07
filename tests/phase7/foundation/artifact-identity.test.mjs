@@ -107,6 +107,52 @@ test('budget class enters the key only when completeness depends on it', () => {
   assert.equal(ignored, ignoredOther);
 });
 
+test('explicit blank optional identities fail closed instead of becoming absent', () => {
+  const cases = [
+    [{ sliceId: '   ' }, /phase7-artifact-invalid-slice-id/],
+    [{ functionId: '   ' }, /phase7-artifact-invalid-entity-id/],
+    [{ budgetClass: '   ' }, /phase7-artifact-invalid-budget-class/],
+    [{ platformId: '   ' }, /phase7-artifact-invalid-platform-id/],
+  ];
+  for (const [overrides, expected] of cases) {
+    assert.throws(() => createPhase7ArtifactDescriptor(base(overrides)), expected);
+  }
+
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({
+      kind: 'phase7.debug.facts',
+      debugProviderVersion: '   ',
+    })),
+    /phase7-artifact-invalid-debug-provider-version/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({
+      kind: 'phase7.debug.facts',
+      debugProviderVersion: '1.0.0',
+      debugBuildIdentity: '   ',
+    })),
+    /phase7-artifact-invalid-debug-build-identity/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({
+      kind: 'phase7.discovery.candidates',
+      loaderEvidenceId: '   ',
+    })),
+    /phase7-artifact-invalid-loader-evidence-id/,
+  );
+
+  assert.equal(
+    createPhase7ArtifactDescriptor(base()).artifactId,
+    createPhase7ArtifactDescriptor(base({ sliceId: null })).artifactId,
+    'nullish optional identity must retain absent semantics',
+  );
+  assert.equal(
+    createPhase7ArtifactDescriptor(base({ sliceId: 'slice_1' })).artifactId,
+    createPhase7ArtifactDescriptor(base({ sliceId: '  slice_1  ' })).artifactId,
+    'non-empty optional identity keeps the existing trim-to-canonical policy',
+  );
+});
+
 test('a mismatch is always explained, never silently tolerated', () => {
   const expected = createPhase7ArtifactDescriptor(base());
   assert.equal(explainArtifactMismatch(expected, expected), null);

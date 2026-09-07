@@ -167,7 +167,7 @@ const API_TABLE = [
     args: ['dst', 'src', 'size'], ret: null, effect: 'copy' },
   { id: 'memset', re: /^_?(memset|bzero|__memset_chk)$/i, cat: 'memory',
     args: ['dst', 'fill', 'size'], ret: null, effect: 'fill' },
-  { id: 'malloc', re: /^_?(malloc|calloc|valloc|_Znwm|_Znam|operator new)/i, cat: 'memory',
+  { id: 'malloc', re: /^(?:_?(?:malloc|calloc|valloc)|_{1,2}Z(?:nw|na)m.*|_?operator new(?:\[\])?(?:\s*\(.*\))?)$/i, cat: 'memory',
     args: ['size'], ret: 'heap', effect: 'alloc' },
   { id: 'realloc', re: /^_?realloc$/i, cat: 'memory', args: ['ptr', 'size'], ret: 'heap', effect: 'alloc' },
   { id: 'free', re: /^_?(free|_ZdlPv|_ZdaPv|operator delete)/i, cat: 'memory',
@@ -188,7 +188,7 @@ const API_TABLE = [
   { id: 'strstr', re: /^_?(strstr|strchr|strrchr|strtok)$/i, cat: 'string', args: ['str', 'needle'], ret: 'ptr', effect: 'search' },
   { id: 'atoi', re: /^_?(atoi|atol|strtol|strtoul|strtod)$/i, cat: 'string', args: ['str'], ret: 'number', effect: 'convert' },
 
-  { id: 'log', re: /^_?(printf|fprintf|puts|putchar|NSLog|os_log|_os_log_impl|syslog)/i, cat: 'log',
+  { id: 'log', re: /^_?(?:printf|fprintf|puts|putchar|NSLog|os_log|_os_log_impl|syslog)$/i, cat: 'log',
     args: ['format'], ret: null, effect: 'log' },
 
   { id: 'objc_msgSend', re: /^_?objc_msgSend/i, cat: 'objc', args: ['receiver', 'selector'], ret: 'object', effect: 'call' },
@@ -197,7 +197,6 @@ const API_TABLE = [
   { id: 'objc_alloc', re: /^_?(objc_alloc|objc_allocWithZone|objc_opt_new)/i, cat: 'objc', args: ['class'], ret: 'object', effect: 'alloc' },
   { id: 'swift_object', re: /^_?swift_(retain|release|allocObject|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'objc', args: ['object'], ret: 'object', effect: 'refcount' },
-
   /* ── 言語のしくみが勝手に入れている処理 ─────────────────────
    *
    * ここを「知らない呼び出し」のままにしておくと、実際のアプリでは
@@ -322,8 +321,8 @@ const API_TABLE = [
 
 /** 名前 → API の知識。知らない名前なら null（知ったかぶりをしない）。 */
 export function apiInfo(name) {
-  if (!name) return null;
-  const clean = String(name).trim();
+  if (typeof name !== 'string') return null;
+  const clean = name.trim();
   for (const a of PRECISE_API_TABLE) {
     if (a.re.test(clean)) return a;
   }
@@ -1297,7 +1296,6 @@ function functionFacts(insns, flow, semantic, bbInfo, o) {
     evidence: [],
     leaf: flow.calls.length === 0,
   };
-
   // 戻り値: 最後の ret より前に x0 を作っているか
   const lastRet = [...insns].reverse().find((i) => i.isReturn);
   if (lastRet) {

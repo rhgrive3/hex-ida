@@ -323,7 +323,11 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   const inductionFacts = analysis?.get('induction');
   const limits = { ...DEFAULT_LIMITS, ...(budget.limits ?? {}) };
 
-  const blocks = (cfg?.blocks ?? []).slice(0, limits.maxBlocks);
+  const allBlocks = cfg?.blocks ?? [];
+  // Cutting the CFG to fit maxBlocks drops blocks and edges from the analysis,
+  // so the truncation marks the published accounting partial (#5475).
+  const truncatedByLimit = allBlocks.length > limits.maxBlocks;
+  const blocks = allBlocks.slice(0, limits.maxBlocks);
   const byIndex = new Map(blocks.map((block) => [block.index, block]));
   const blockOrder = blocks.map((block) => block.index).sort((left, right) => left - right);
   const postDominates = createRelation(dominatorFacts?.postDominators, dominatorFacts?.ipdom, limits);
@@ -384,7 +388,7 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
 
   const accountingContext = { byIndex, blockOrder, loopsByHeader, innermostLoopOf, loopExitedBy, postDominates, ipdom, sharedPostDominator };
   const edges = abortedNow() ? [] : accountEdges(accountingContext);
-  const budgetExhausted = abortedNow();
+  const budgetExhausted = truncatedByLimit || abortedNow();
 
   const byConstruct = new Map(EDGE_CONSTRUCTS.map((construct) => [construct, 0]));
   for (const record of edges) byConstruct.set(record.construct, (byConstruct.get(record.construct) ?? 0) + 1);
@@ -488,7 +492,9 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
       severity: 'warning',
       code: 'phase8.structuring.budget',
       message: 'Edge accounting stopped before every edge was classified.',
-      reason: 'The pass was cancelled; the accounting published is incomplete and must not be read as proof that no edge was lost.',
+      reason: truncatedByLimit
+        ? 'A deterministic resource limit (maxBlocks) cut the CFG; the accounting published is incomplete and must not be read as proof that no edge was lost.'
+        : 'The pass was cancelled; the accounting published is incomplete and must not be read as proof that no edge was lost.',
     });
   }
   if (constraintEdges.length > 0) {

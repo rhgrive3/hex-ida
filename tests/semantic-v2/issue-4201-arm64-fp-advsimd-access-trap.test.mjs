@@ -153,7 +153,7 @@ conditionalAccessTrap(
 
 const gpAdd = liftArm64MachineEffects(instruction('add', 'x0, x1, x2', 'issue-4201:integer:add'));
 assert.ok(gpAdd);
-assert.equal(gpAdd.metadata.family, 'arm64-integer');
+assert.equal(gpAdd.metadata.family, 'integer');
 assert.equal(gpAdd.possibleFaults.some((fault) => fault.kind === 'fp-advsimd-access-trap'), false,
   'ordinary GP integer instructions must not inherit the FP/AdvSIMD access gate');
 

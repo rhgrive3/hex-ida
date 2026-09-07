@@ -137,9 +137,21 @@ export function structureKnownSwitches(result, model, opts = {}) {
       }];
       continue;
     }
+    const hasExplicitDefault = sw.defaultAddress != null || sw.defaultTarget != null || sw.defaultBlock != null;
     let defaultAddress = sw.defaultAddress ?? sw.defaultTarget ?? null;
     if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, opts, sw.defaultBlock, index);
-    try { if (defaultAddress != null) defaultAddress = BigInt(defaultAddress); } catch { defaultAddress = null; }
+    let invalidDefault = hasExplicitDefault && defaultAddress == null;
+    try { if (defaultAddress != null) defaultAddress = BigInt(defaultAddress); } catch { invalidDefault = true; }
+    if (invalidDefault) {
+      result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because its explicit default target is invalid or unresolved.`];
+      result.evidence = [...(result.evidence || []), {
+        row: sw.row,
+        address: sw.address ?? null,
+        op: 'switch-conflict',
+        reason: 'invalid or unresolved explicit default target',
+      }];
+      continue;
+    }
     const allTargets = cases.map((c) => c.address);
     if (defaultAddress != null) allTargets.push(defaultAddress);
     if (!materializeVerifiedLabels(result, index, allTargets)) {

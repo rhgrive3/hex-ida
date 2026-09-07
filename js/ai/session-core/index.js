@@ -99,7 +99,7 @@ export class InvestigationSessionStore {
     const next = { ...current.investigationMemory };
     for (const key of MEMORY_KEYS) {
       if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
-      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key], key);
+      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key]);
     }
     return this.update(id, { investigationMemory: next });
   }
@@ -116,13 +116,35 @@ export class InvestigationSessionStore {
   list(binaryId = null) { return Array.from(this.sessions.values()).filter((session) => binaryId == null || session.binaryId === String(binaryId)); }
 }
 
-export function stripSecrets(value) {
+export function stripSecrets(value, seen = new Set()) {
   const blocked = /api.?key|token|secret|authorization|credential/i;
-  if (Array.isArray(value)) return value.map(stripSecrets);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [key, item] of Object.entries(value)) if (!blocked.test(key)) out[key] = stripSecrets(item);
-  return out;
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) throw new TypeError('Cannot strip secrets from cyclic object');
+    seen.add(value);
+  }
+  let result;
+  if (Array.isArray(value)) {
+    result = value.map((item) => stripSecrets(item, seen));
+  } else if (!value || typeof value !== 'object') {
+    return value;
+  } else {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (!blocked.test(key)) {
+        Object.defineProperty(out, key, {
+          value: stripSecrets(item, seen),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+    result = out;
+  }
+  if (value && typeof value === 'object') {
+    seen.delete(value);
+  }
+  return result;
 }
 
 export function createProjectSessionPersistence(project, { onChange } = {}) {
@@ -156,11 +178,15 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
 }
 
 function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit) : []; }
-function mergeUnique(current, incoming, key) {
+function mergeUnique(current, incoming) {
   const values = [...bounded(current, 100), ...bounded(incoming, 100)];
-  const seen = new Set();
-  return values.filter((item) => {
+  const latest = new Map();
+  for (const item of values) {
     const id = typeof item === 'string' ? item : String(item?.id ?? item?.claim ?? item?.summary ?? JSON.stringify(item));
-    if (seen.has(id)) return false; seen.add(id); return true;
-  }).slice(-64);
+    // Refresh both the snapshot and its retention order. A recently updated
+    // item must not be evicted merely because its first occurrence was old.
+    latest.delete(id);
+    latest.set(id, item);
+  }
+  return [...latest.values()].slice(-64);
 }

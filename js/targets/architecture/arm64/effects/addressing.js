@@ -24,7 +24,14 @@ function integer(value, code) {
   }
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+      const negative = text.startsWith('-');
+      const magnitude = BigInt(negative ? text.slice(1) : text);
+      return negative ? -magnitude : magnitude;
+    }
+  }
   fail(code);
 }
 
@@ -174,9 +181,10 @@ function extendIndex(expr, reg, shift, accessWidthBits = null) {
     if (reg.bits === 64) return expr;
     fail('arm64-register-offset-needs-extension', { register: reg.view });
   }
-  const op = String(shift.op || '').toLowerCase();
-  const amount = shift.amount == null ? 0 : Number(shift.amount);
-  if (!Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');
+  if (typeof shift.op !== 'string') fail('arm64-invalid-register-offset-shift');
+  const op = shift.op.toLowerCase();
+  const amount = shift.amount == null ? 0 : shift.amount;
+  if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || amount > 4) fail('arm64-invalid-register-offset-shift');
   if (accessWidthBits != null && amount !== 0) {
     const bytes = Number(accessWidthBits) / 8;
     const expected = Number.isInteger(bytes) && bytes > 0 ? Math.log2(bytes) : NaN;

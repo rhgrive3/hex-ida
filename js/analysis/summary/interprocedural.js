@@ -384,8 +384,27 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   for (const set of local.indirectCallSets) {
     for (const candidate of set.candidateEntityIds) {
       const callee = solved.get(candidate);
-      if (!callee) continue;
-      accumulateCallee(callee);
+      if (callee) {
+        accumulateCallee(callee);
+        continue;
+      }
+      if (component.includes(candidate)) continue;
+      const model = models.get(candidate);
+      if (model && !locals.has(candidate)) {
+        reads.push(model.memoryReadRegions ?? []);
+        writes.push(model.memoryWriteRegions ?? []);
+        noreturn.push(model.noreturn ?? 'unknown');
+        mayThrow.push(model.mayThrow ?? 'unknown');
+        continue;
+      }
+      writes.push([broadEffect('unknown-call-fallback')]);
+      unknowns.push(createUnknownCallEffect({
+        callSiteId: set.callSiteId,
+        reason: locals.has(candidate) ? 'summary-missing' : 'library-model-missing',
+        targetEntityIds: [candidate],
+      }));
+      noreturn.push('unknown');
+      mayThrow.push('unknown');
     }
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);

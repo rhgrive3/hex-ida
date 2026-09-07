@@ -37,6 +37,27 @@ const zeroLimitStrings = await scanSourceStrings(stringImage, stringBytes, {
 assert.equal(zeroLimitStrings.results.length, 1, 'explicit limit=0 must clamp to the minimum limit of 1');
 assert.equal(zeroLimitStrings.capped, true);
 
+// #3396: progress reporting is advisory; non-callable values must not abort a scan.
+const stringScanOptions = { minLength:4, utf16:false, chunkSize:5 };
+const stringScanBaseline = await scanSourceStrings(stringImage, stringBytes, stringScanOptions);
+for (const onProgress of [true, false, 1, 0, 'progress', '', {}, []]) {
+  const result = await scanSourceStrings(stringImage, stringBytes, { ...stringScanOptions, onProgress });
+  assert.deepEqual(
+    result,
+    stringScanBaseline,
+    `non-function onProgress ${Object.prototype.toString.call(onProgress)} must behave like no callback`,
+  );
+}
+const stringProgressEvents = [];
+const stringProgressResult = await scanSourceStrings(stringImage, stringBytes, {
+  ...stringScanOptions,
+  onProgress:event => stringProgressEvents.push(event),
+});
+assert.deepEqual(stringProgressResult, stringScanBaseline, 'valid progress callback must not affect scan results');
+assert.ok(stringProgressEvents.length > 0, 'valid progress callback must still be called');
+assert.equal(stringProgressEvents.at(-1).total, BigInt(stringBytes.byteLength));
+assert.equal(stringProgressEvents.at(-1).done, BigInt(stringBytes.byteLength));
+
 const strictBackend = new MemoryByteSource(bytes, { maxReadLength: 64 });
 assert.doesNotThrow(() => new CachedByteSource(strictBackend, { pageSize: 64, maxCachedBytes: 64 }));
 assert.throws(

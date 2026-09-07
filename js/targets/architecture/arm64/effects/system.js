@@ -168,8 +168,8 @@ function hasNoOperandModifier(op) {
   return op?.shift == null && op?.extend == null;
 }
 function sysRegText(op) {
-  if (!hasNoOperandModifier(op)) return null;
-  const text = String(op?.text || '').trim().toLowerCase();
+  if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+  const text = op.text.trim().toLowerCase();
   return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
 }
 function sysRegId(name) {
@@ -264,7 +264,8 @@ function barrier(instruction, context, mnemonic, ops) {
   const scope = {
     architecture:'arm64',
     barrier:mnemonic,
-    domain:String(operand?.text || instruction?.operands || 'sy').toLowerCase(),
+    domain:textOperand(operand)
+      ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() || 'sy' : 'sy'),
     semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
   };
   return bundle(instruction, context, {
@@ -283,7 +284,14 @@ function waitOrEvent(instruction, context, mnemonic) {
     symbolicDetail:'summary-only',
     metadata:{ architecturalEffect:mnemonic === 'sev' || mnemonic === 'sevl' ? 'event-signal' : mnemonic === 'yield' ? 'scheduling-hint' : 'wait' },
   });
-  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+  const possibleFaults = (mnemonic === 'wfi' || mnemonic === 'wfe')
+    ? [{ kind:'system-instruction-trap', condition:{ kind:'architectural-access-check', operation:mnemonic } }]
+    : [];
+  return bundle(instruction, context, {
+    operations:[operation],
+    possibleFaults,
+    completeness:'exact-with-intrinsic',
+  });
 }
 
 const EXCLUSIVE_MONITOR_STATE = Object.freeze([
@@ -478,7 +486,8 @@ function maintenance(instruction, context, mnemonic, ops) {
     inputs,
     registersRead:registerOperands.map(gpId),
     memory:mnemonic === 'dc',
-    metadata:{ operation:String(ops[0]?.text || instruction?.operands || '').toLowerCase(), maintenance:true },
+    metadata:{ operation:textOperand(ops[0])
+      ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() : ''), maintenance:true },
   });
   operations.push(operation);
   return bundle(instruction, context, {
@@ -546,8 +555,8 @@ function genericHint(instruction, context, ops) {
 }
 
 function textOperand(op) {
-  if (!hasNoOperandModifier(op)) return null;
-  const text = String(op?.text || '').trim().toLowerCase();
+  if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+  const text = op.text.trim().toLowerCase();
   return text || null;
 }
 function immediateInRange(op, max) {
