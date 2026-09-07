@@ -340,7 +340,16 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         return;
       }
       const bytes = align(Math.max(8, physicalBytes), 8);
-      stackOffset = align(stackOffset, Math.min(16, Math.max(8, Number(parameter?.alignment || 8))));
+      // psABI: a MEMORY argument is placed at an address respecting its own
+      // alignment, which may exceed 16 (e.g. _Alignas(512)).  Clamping the
+      // requirement to 16 publishes a stack location the real ABI never
+      // produces, so honor the declared alignment and fail closed below if it
+      // is not a usable integer.
+      const declaredMemoryAlignment = Number(parameter?.alignment);
+      const memoryAlignment = Number.isSafeInteger(declaredMemoryAlignment) && declaredMemoryAlignment > 0
+        ? Math.max(8, declaredMemoryAlignment)
+        : 8;
+      stackOffset = align(stackOffset, memoryAlignment);
       const pieces = physicalBytes > logicalBytes
         ? [{ index:0, pieceIndex:0, order:0, stackOffset,
           bits:classified.bits, bytes, byteOffset:0, abiClass:'aggregate-memory' }]
