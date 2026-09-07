@@ -60,7 +60,7 @@ test('malformed response does not consume a pending request', async () => {
   client.close();
 });
 
-test('valid explicit error response still rejects the request', async () => {
+test('valid explicit error response preserves its code independently of message text', async () => {
   const transport = {
     async send() {},
     onMessage() { return () => {}; },
@@ -68,8 +68,12 @@ test('valid explicit error response still rejects the request', async () => {
   const client = new RemoteProtocolClient(transport, { timeoutMs: 1000 });
   const pending = client.request('readMemory', { address: '0x0', size: 1 });
 
-  assert.equal(client.receive(response({ error: { code: 'remote-failed', message: 'nope' } })), true);
-  await assert.rejects(pending, /nope/);
+  assert.equal(client.receive(response({ error: { code: 'remote-failed', message: 'localized detail' } })), true);
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, 'remote-failed');
+    assert.equal(error.message, 'localized detail');
+    return true;
+  });
   assert.equal(client.pending.size, 0);
   client.close();
 });

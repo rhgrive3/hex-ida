@@ -58,7 +58,7 @@ import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './suppo
   assert.ok(store.stats().hotCache.evictions >= 1);
 }
 
-// Large payload accounting uses exact canonical payload bytes, preserving the P4-0 maxBytes contract.
+// Large payload accounting includes the retained canonical record and payload bytes.
 {
   const entries = new Map();
   const store = new ArtifactStore({
