@@ -131,7 +131,15 @@ test('#6152: network or delivery failure never reports sent', async () => {
   const result = await channelFor(transport).send(envelope);
   assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
   assert.equal(calls.length, 2);
+});
+
+test('#6152: HTTP delivery failure is normalized to delivery-unconfirmed rejection', async () => {
+  const { transport, calls } = harness(() => jsonResponse({ error:'delivery-unavailable' }, 503));
+  const envelope = await transport.authorizeEnvelope(INPUT);
+  const result = await channelFor(transport).send(envelope);
+  assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
   assert.equal(calls.length, 2);
+  assert.notEqual(result.status, 'sent');
 });
 
 test('#6152: delivery acknowledgement identity mismatch is rejected', async () => {
@@ -139,6 +147,18 @@ test('#6152: delivery acknowledgement identity mismatch is rejected', async () =
   const envelope = await transport.authorizeEnvelope(INPUT);
   const result = await channelFor(transport).send(envelope);
   assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
+});
+
+test('#6152: invalid delivery acknowledgement signature is normalized to rejection', async () => {
+  const { transport, calls } = harness((body) => {
+    const ack = signedDeliveryAck(body);
+    return jsonResponse({ ...ack, signature:'AAAA' });
+  });
+  const envelope = await transport.authorizeEnvelope(INPUT);
+  const result = await channelFor(transport).send(envelope);
+  assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
+  assert.equal(calls.length, 2);
+  assert.notEqual(result.status, 'sent');
 });
 
 test('#6152: only a matching signed delivery acknowledgement reports sent', async () => {
