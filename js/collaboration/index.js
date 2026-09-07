@@ -38,12 +38,14 @@ function snapshotCheckpoint(checkpoint) {
   // Read the untrusted checkpoint payload once. In particular, do not verify
   // one read of a stateful accessor and restore a later read of that accessor.
   // The owned clone is the sole input to identity checks and ChangeLog.
+  const state = checkpoint?.state;
+  const operationIds = checkpoint?.operationIds;
   return {
     schemaVersion: checkpoint?.schemaVersion,
     projectIdentity: checkpoint?.projectIdentity,
     binaryIdentity: checkpoint?.binaryIdentity,
-    state: cloneState(checkpoint?.state),
-    operationIds: Array.isArray(checkpoint?.operationIds) ? [...checkpoint.operationIds] : checkpoint?.operationIds,
+    state: cloneState(state),
+    operationIds: Array.isArray(operationIds) ? [...operationIds] : operationIds,
     digest: checkpoint?.digest,
   };
 }
