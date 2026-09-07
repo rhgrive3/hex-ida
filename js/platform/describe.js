@@ -56,8 +56,11 @@ export function regionsForImage(image, prefix = 'p0_') {
       const sStart = BigInt(s.address ?? 0n);
       const sSize = BigInt(s.size ?? s.fileSize ?? 0n);
       const sEnd = sStart + sSize;
-      const isMapped = !!(s.perms?.read || s.perms?.write || s.perms?.execute);
-      return isMapped && sSize > 0n && sStart < segEnd && sEnd > segStart;
+      // Only an executable section can replace executable PT_LOAD coverage.
+      // Allocated/read-only sections remain useful regions, but they do not
+      // override the segment's executable mapping authority.
+      const preservesExecutableCoverage = !!s.perms?.execute;
+      return preservesExecutableCoverage && sSize > 0n && sStart < segEnd && sEnd > segStart;
     }).map((s) => {
       const sStart = BigInt(s.address ?? 0n);
       const sSize = BigInt(s.size ?? s.fileSize ?? 0n);

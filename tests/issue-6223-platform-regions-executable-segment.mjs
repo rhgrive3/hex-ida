@@ -171,6 +171,38 @@ test('issue #6223: partial section coverage retains uncovered executable segment
   assert.equal(seg.exec, true);
 });
 
+test('issue #6223: an allocated non-executable section cannot erase executable segment authority', () => {
+  const image = new BinaryImage(new Uint8Array(0x2000), {
+    format: 'elf',
+    arch: 'x86_64',
+    bits: 64,
+  });
+
+  image.addSegment({
+    name: 'LOAD0',
+    address: 0x1000n,
+    size: 0x2000n,
+    fileOffset: 0n,
+    fileSize: 0x2000n,
+    perms: { read: true, write: false, execute: true },
+    source: 'PT_LOAD',
+  });
+  image.addSection({
+    name: '.data',
+    address: 0x1800n,
+    size: 0x800n,
+    fileOffset: 0x800n,
+    fileSize: 0x800n,
+    perms: { read: true, write: false, execute: false },
+    source: 'section-header',
+  });
+
+  const execRegions = regionsForImage(image).filter((region) => region.exec);
+  assert.equal(execRegions.length, 1);
+  assert.equal(execRegions[0].vmAddr, 0x1000n);
+  assert.equal(execRegions[0].size, 0x2000n);
+});
+
 test('issue #6223: describeBinaryImage slices and productDescriptor have identical safe regions', () => {
   const image = new BinaryImage(new Uint8Array(0x200), {
     format: 'elf',
