@@ -115,13 +115,26 @@ test('#6282 trailing partial block header fails closed', () => {
   assert.equal(image.relocations.length, 0, 'ABSOLUTE-only valid prefix publishes no relocations');
 });
 
-test('#6282 initial undersized directory size 1..7 fails closed', () => {
+test('#6282 unaligned directory size fails closed before block decoding', () => {
   const { bytes, r, image } = fixture();
-  bytes.set([0x11, 0x22, 0x33, 0x44], 0x2000);
-  parseBaseRelocations(r, { rva: 0x2000, size: 4 }, image, 0x8664);
-  assert.equal(image.metadata.peMetadata.complete, false, 'undersized initial directory must be marked incomplete');
+  writeBlock(bytes, 0x2000, 0x1000, 12, [DIRLOW(0x8), 0x0000]);
+  bytes.set([0xaa, 0xbb], 0x200c);
+  parseBaseRelocations(r, { rva: 0x2000, size: 14 }, image, 0x8664);
+  assert.equal(image.metadata.peMetadata.complete, false, 'unaligned directory size must be marked incomplete');
   assert.ok(image.metadata.peMetadata.reasons.includes('relocations:malformed-block'), image.metadata.peMetadata.reasons.join(','));
-  assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
-  assert.equal(image.relocations.length, 0, 'no relocations published from undersized directory');
+  assert.ok(image.warnings.some((w) => /4-byte aligned/.test(w)));
+  assert.equal(image.relocations.length, 0, 'unaligned directory must not publish a parsed prefix');
+});
+
+test('#6282 initial undersized directory sizes 1..7 fail closed', () => {
+  for (const size of [1, 2, 3, 4, 5, 6, 7]) {
+    const { bytes, r, image } = fixture();
+    for (let i = 0; i < size; i++) bytes[0x2000 + i] = 0x10 + i;
+    parseBaseRelocations(r, { rva: 0x2000, size }, image, 0x8664);
+    assert.equal(image.metadata.peMetadata.complete, false, `undersized directory size ${size} must be marked incomplete`);
+    assert.ok(image.metadata.peMetadata.reasons.includes('relocations:malformed-block'), image.metadata.peMetadata.reasons.join(','));
+    assert.ok(image.warnings.some((w) => /Malformed PE base-relocation block/.test(w)));
+    assert.equal(image.relocations.length, 0, `size ${size} must not publish relocations`);
+  }
 });
 
