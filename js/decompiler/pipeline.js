@@ -5,12 +5,37 @@ import { expr, mapChildren, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
+import { captureProjectionData } from './phase8/projection-origin.js';
+import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
+import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
+
+// Only this existing producer issues a usable projection. Neither a serialized
+// AST nor a caller-supplied valueId map establishes the IR -> rendered binding.
+const producerProjections = new WeakMap();
+function rememberProducerProjection(result, options) {
+  if (options.phase8PrepareProof !== true || !result?.semanticAst || !result?.cAst) return result;
+  try {
+    const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
+    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation});
+  } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
+  return result;
+}
+export function producerExpressionToken(result, expression) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst ? record.observation.tokenOf(expression) : null;
+}
+export function isProducerProjection(result) {
+  try {
+    const raw = queryRecord(result,null,256), record = producerProjections.get(raw.semanticAst);
+    return !!record && record.ir===raw.ir && record.cAst===raw.cAst && record.observation.matches();
+  } catch { return false; }
+}
 
 function valueOf(arg) { return arg?.value || null; }
 
@@ -338,7 +363,7 @@ function fullPhase8Projection(result, model, opts) {
     { ir:result.ir, types:result.types, opts },
     {
       stages:PHASE8_ALL_STAGES,
-      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:Number(opts.phase8TimeBudgetMs) } : {}),
+      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:opts.phase8TimeBudgetMs } : {}),
       ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
       shouldAbort:opts.shouldAbort,
       budgetClass:'standard',
@@ -380,5 +405,53 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
-  return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
+  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts),opts);
+}
+
+/** Demand-driven asynchronous proof path. The representation result comes from
+ * the existing decompiler; publication uses the existing Phase 8 stage and final
+ * projection, never a second optimizer or an in-place IR rewrite. */
+export async function optimizeSemanticDecompilation(result, options = {}) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  let submitted, original = {};
+  const fail = reason => ({...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+    phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})});
+  try {
+    submitted = queryRecord(options);
+    original = queryRecord(result,null,256);
+    if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return fail('semantic-projection-required');
+    if (!isProducerProjection(result)) return fail('unissued-or-stale-projection');
+    // Snapshot request scope before any asynchronous work. The prepared plan
+    // will separately bind the exact execution-relevant IR graph.
+    const identity = queryRecord(submitted.identity);
+    const rawValues = queryArray(queryRecord(original.ir,null,128).values ?? []);
+    const auto=[];
+    for(const value of rawValues) {
+      const fields=queryRecord(value), definition=fields.def==null?null:queryRecord(fields.def);
+      if(fields.const==null && ['bin','un','cmp','mov'].includes(definition?.op)) auto.push(value);
+    }
+    const targets = queryArray(submitted.targets ?? auto);
+    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
+    if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');
+    // Keep hot-loop cancellation checks O(1). Full IR/proof freshness is
+    // revalidated by admission and the final publication boundary.
+    const aborted = () => {try {if(submitted.signal?.aborted)return true;const stopped=submitted.isCancelled?.()===true;return stopped || submitted.signal?.aborted===true;} catch {return true;}};
+    // fullPhase8Projection is also the synchronous production callsite. The
+    // plan is opt-in and never reaches the ordinary interactive stage.
+    const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
+      phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
+      phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    const proofOptimization = Object.freeze({status:'complete',reason:null,
+      adopted:projected.phase8Projection?.transforms.filter(t=>t.kind==='solver-constant').length ?? 0,
+      planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
+      phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
+      elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
+    const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,shouldAbort:aborted});
+    if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');
+    return final;
+  } catch { return fail('invalid-or-unsupported-proof-optimization'); }
 }

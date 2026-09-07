@@ -1,5 +1,7 @@
+import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
+import { readProvedRewrites } from './pass-validation.js';
 
 function integer(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -158,9 +160,11 @@ function provenValueId(node, names) {
   return ids[0];
 }
 
-function transformExpression(root, names, records, memo = new Map()) {
+function transformExpression(root, names, records, memo = new Map(), replacements = new Map(), tokenOf = () => null) {
   if (!root || memo.has(root)) return memo.get(root) ?? root;
-  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo));
+  const replacement = replacements.get(root) ?? replacements.get(tokenOf(root));
+  if (replacement) { memo.set(root,replacement); return replacement; }
+  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo, replacements, tokenOf));
   mapped = collapseExactNestedTruncation(mapped, records);
   mapped = collapseExactExtensionUnderTruncation(mapped, records);
   mapped = collapseExactRepeatedExtension(mapped, records);
@@ -243,9 +247,45 @@ function refreshMetrics(result, semanticAst, printed, records) {
  */
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
-  const records = [];
+  const original = result;
+  const proofRequested = opts.phase8RewritePlan != null;
+  const proofContext = {ir:result.ir,opts};
+  const proved = proofRequested ? readProvedRewrites(analysis,proofContext) : null;
+  if (proofRequested) {
+    if (!isProducerProjection(original)) return original;
+    if (!proved && opts.phase8RewritePlan.entries.length) return original;
+    // The input projection remains intact on a late cancellation or refusal.
+    result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
+      body:(result.cAst.body ?? []).map(n=>({...n,semantic:n.semantic?{...n.semantic}:n.semantic}))}};
+    for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
+      (original.semanticAst[key] ?? []).map(item=>({...item}));
+  }
+  const records = [], replacements = new Map(), memo = new Map();
+  if (proved) {
+    const byId = new Map();
+    for (const item of result.semanticAst.values ?? []) {
+      byId.set(item.valueId,byId.has(item.valueId)?null:item);
+    }
+    for (const entry of proved.entries) {
+      const item = byId.get(entry.rawValueId), root = item?.expression;
+      if (!root || root.bits !== entry.bits || root.effect !== 'pure') continue;
+      if (root.kind === 'const' && root.value === entry.value) continue;
+      const source = evidenceSource(root.source,`Phase 8 solver proof ${entry.queryHash}`);
+      let replacement = expr.constant(entry.value,entry.bits,root.signed,source);
+      const token = producerExpressionToken(original,root);
+      if (token == null) continue;
+      const previous = replacements.get(token);
+      if (previous && (previous.bits !== replacement.bits || previous.value !== replacement.value)) return original;
+      if (previous) replacement = expr.constant(entry.value,entry.bits,root.signed,mergeSource(previous.source,source));
+      replacements.set(token,replacement);
+      records.push(Object.freeze({kind:'solver-constant',valueId:entry.valueId,
+        queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
+        origin:Object.freeze({addresses:Object.freeze([...source.addresses]),rows:Object.freeze([...source.rows]),
+          ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})}));
+    }
+  }
   const names = inductionNames(analysis);
-  const transform = (expression) => transformExpression(expression, names, records);
+  const transform = (expression) => transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node));
 
   for (const item of result.semanticAst.values || []) item.expression = transform(item.expression);
   for (const item of result.semanticAst.stores || []) if (item.expression) item.expression = transform(item.expression);
@@ -269,6 +309,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     }
   }
 
+  if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   const lines = (result.cAst.body || []).map((node) => ({
     kind:node.kind,
@@ -279,6 +320,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     note:null,
     source:node.source,
   }));
+  if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   return {
     ...result,
     lines,

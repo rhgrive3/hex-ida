@@ -7,3 +7,4 @@
 export * from './support-matrix.js';
 export * from './slice.js';
 export * from './semantic-ir.js';
+export * from './memory.js';

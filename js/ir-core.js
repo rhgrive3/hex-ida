@@ -643,7 +643,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
-  if (process.env.HEX_DEBUG_C2_MEM === '1') {
+  if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_MEM === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.memorySsa?.regions ?? [], null, 2) + '\n');
     process.stderr.write(JSON.stringify((result.memorySsa?.regions ?? []).filter((region) => region.kind === 'unknown').map((region) => {
       const sourceId = region.uncertaintyIdentity?.sourceEntityId;
@@ -707,7 +707,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts);
-  if (process.env.HEX_DEBUG_C2_LEGACY === '1') {
+  if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,
       loc: item.loc?.key,

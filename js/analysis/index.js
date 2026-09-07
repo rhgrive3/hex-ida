@@ -254,3 +254,6 @@ export {
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
 };
+
+// Original-byte discovery materialization reuses the canonical producer/fusion lane.
+export {queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS} from './discovery/layout.js';

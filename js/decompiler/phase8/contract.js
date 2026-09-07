@@ -35,7 +35,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 6;
+export const PHASE8_CONTRACT_VERSION = 7;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -75,6 +75,7 @@ export const ANALYSIS_KEYS = Object.freeze([
   'origins',
   'structuredRegions',
   'providerHints',
+  'provedRewrites',
 ]);
 
 /** What a pass run did. `unsupported` is a first-class answer, never skip-green. */
@@ -147,6 +148,10 @@ function transformList(values) {
           .map((target) => nonEmptyString(target, 'phase8-pass-transform-target-invalid')),
       )].sort()),
       proof: nonEmptyString(item.proof, 'phase8-pass-transform-proof-required'),
+      // Proof capability objects stay private authority; the transaction validates
+      // them before snapshotting and publishes only their bounded plain-data view.
+      ...(item.rewrite != null ? { rewrite: item.rewrite } : {}),
+      ...(item.validation != null ? { validation: item.validation } : {}),
       originRefs: Object.freeze([...new Set(
         (item.originRefs ?? []).map((ref) => nonEmptyString(ref, 'phase8-pass-transform-origin-invalid')),
       )].sort()),
@@ -278,13 +283,19 @@ const SNAPSHOT_DIAGNOSTICS = 'diagnostics';
 const SNAPSHOT_TRANSFORMS = 'transforms';
 const SNAPSHOT_STRING_ARRAY = 'string-array';
 const SNAPSHOT_SCALAR = 'scalar';
+const SNAPSHOT_PROOF_REWRITE = 'proof-rewrite';
+const SNAPSHOT_PROOF_VALIDATION = 'proof-validation';
 const DIAGNOSTIC_RESULT_KEYS = new Set(['severity', 'code', 'message', 'reason']);
-const TRANSFORM_RESULT_KEYS = new Set(['kind', 'targets', 'proof', 'originRefs']);
+const TRANSFORM_RESULT_KEYS = new Set(['kind', 'targets', 'proof', 'originRefs', 'rewrite', 'validation']);
+const PROOF_REWRITE_RESULT_KEYS = new Set(['beforeHash', 'afterHash']);
+const PROOF_VALIDATION_RESULT_KEYS = new Set(['schemaVersion', 'verifier', 'planId', 'queryHash']);
 
 function snapshotAllowedKeys(schema) {
   if (schema === SNAPSHOT_RESULT) return PASS_RESULT_KEYS;
   if (schema === SNAPSHOT_DIAGNOSTIC) return DIAGNOSTIC_RESULT_KEYS;
   if (schema === SNAPSHOT_TRANSFORM) return TRANSFORM_RESULT_KEYS;
+  if (schema === SNAPSHOT_PROOF_REWRITE) return PROOF_REWRITE_RESULT_KEYS;
+  if (schema === SNAPSHOT_PROOF_VALIDATION) return PROOF_VALIDATION_RESULT_KEYS;
   return null;
 }
 
@@ -297,8 +308,12 @@ function snapshotChildSchema(schema, key) {
   }
   if (schema === SNAPSHOT_DIAGNOSTIC) return SNAPSHOT_SCALAR;
   if (schema === SNAPSHOT_TRANSFORM) {
-    return key === 'targets' || key === 'originRefs' ? SNAPSHOT_STRING_ARRAY : SNAPSHOT_SCALAR;
+    if (key === 'targets' || key === 'originRefs') return SNAPSHOT_STRING_ARRAY;
+    if (key === 'rewrite') return SNAPSHOT_PROOF_REWRITE;
+    if (key === 'validation') return SNAPSHOT_PROOF_VALIDATION;
+    return SNAPSHOT_SCALAR;
   }
+  if (schema === SNAPSHOT_PROOF_REWRITE || schema === SNAPSHOT_PROOF_VALIDATION) return SNAPSHOT_SCALAR;
   return SNAPSHOT_SCALAR;
 }
 
@@ -507,6 +522,20 @@ function isCanonicalPassResultOwned(result, descriptor = null) {
         for (let k = 0; k < tx.originRefs.length; k++) {
           if (!isNonEmptyString(tx.originRefs[k])) return false;
         }
+      }
+      const hasRewrite = tx.rewrite != null;
+      const hasValidation = tx.validation != null;
+      if (hasRewrite !== hasValidation) return false;
+      if (hasRewrite) {
+        if (typeof tx.rewrite !== 'object' || Array.isArray(tx.rewrite)) return false;
+        const rewriteKeys = Reflect.ownKeys(tx.rewrite);
+        if (rewriteKeys.length !== 2 || rewriteKeys.some((key) => typeof key !== 'string' || !PROOF_REWRITE_RESULT_KEYS.has(key))) return false;
+        if (!isNonEmptyString(tx.rewrite.beforeHash) || !isNonEmptyString(tx.rewrite.afterHash)) return false;
+        if (typeof tx.validation !== 'object' || Array.isArray(tx.validation)) return false;
+        const validationKeys = Reflect.ownKeys(tx.validation);
+        if (validationKeys.length !== 4 || validationKeys.some((key) => typeof key !== 'string' || !PROOF_VALIDATION_RESULT_KEYS.has(key))) return false;
+        if (!isNonEmptyString(tx.validation.schemaVersion) || !isNonEmptyString(tx.validation.verifier)
+          || !isNonEmptyString(tx.validation.planId) || !isNonEmptyString(tx.validation.queryHash)) return false;
       }
     }
 

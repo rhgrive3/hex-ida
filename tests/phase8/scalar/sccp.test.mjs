@@ -437,10 +437,15 @@ test('replacing canonical ranges invalidates dependent scalar analyses', () => {
   f.block(0);
   f.constant(1, 8);
   f.ret();
-  const state = seedAnalysisState(f.build());
-  state.__write('valueNumbers', Object.freeze({ completeness: 'complete' }));
-  state.__write('induction', Object.freeze({ completeness: 'complete' }));
-  state.__write('aggregates', Object.freeze({ completeness: 'complete' }));
+  const seed = seedAnalysisState(f.build());
+  // Use the public initial-state boundary; the private __write API is gone.
+  const initial = Object.fromEntries(Object.keys(seed.snapshot())
+    .filter(key => seed.version(key) > 0).map(key => [key, seed.get(key)]));
+  const state = createAnalysisState({ ...initial,
+    valueNumbers: Object.freeze({ completeness: 'complete' }),
+    induction: Object.freeze({ completeness: 'complete' }),
+    aggregates: Object.freeze({ completeness: 'complete' }),
+  });
   const outcome = runPassTransaction(state, PASS, { analysis: state }, {});
   assert.equal(outcome.committed, true);
   assert.deepEqual(outcome.invalidated, ['aggregates', 'induction', 'valueNumbers']);

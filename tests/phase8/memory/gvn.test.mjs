@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
+import { createAnalysisState, runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
 import { GVN_PASS, loadIsReusable, runGvnPass } from '../../../js/decompiler/phase8/valuenumber.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
@@ -51,13 +51,17 @@ test('GVN refuses a scalar artifact with stale identity', () => {
   f.constant(7, 32);
   f.ret();
   const ir = f.build();
-  const state = seedAnalysisState(ir);
-  state.__write('ranges', Object.freeze({
+  const seed = seedAnalysisState(ir);
+  // __write was intentionally removed. Seed the same stale fixture through
+  // the public constructor; do not restore an unguarded mutation capability.
+  const initial = Object.fromEntries(Object.keys(seed.snapshot())
+    .filter(key => seed.version(key) > 0).map(key => [key, seed.get(key)]));
+  const state = createAnalysisState({ ...initial, ranges: Object.freeze({
     completeness: 'complete',
     identity: { ...VALID_IDENTITY, snapshotId: 'old-snapshot' },
     facts: new Map(),
     constants: new Map(),
-  }));
+  }) });
   const outcome = runPassTransaction(state, { descriptor: GVN_PASS, run: runGvnPass }, {
     analysis: state,
     ir,

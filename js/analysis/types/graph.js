@@ -31,6 +31,7 @@ import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/i
 import { createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
 import {
   TYPE_LAYERS,
+  canonicalDescriptorString,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -40,7 +41,7 @@ import {
 import { condenseTypeGraph } from './scc.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.2.0';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
 export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
 
@@ -134,36 +135,16 @@ function softIdentity(evidence) {
 }
 
 function extractDependencies(claim) {
-  const deps = new Set();
-  const d = claim?.descriptor;
-  if (!d || typeof d !== 'object') return deps;
-
-  if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
-    deps.add(d.targetEntityId.trim());
-  }
-  if (typeof d.elementEntityId === 'string' && d.elementEntityId.trim()) {
-    deps.add(d.elementEntityId.trim());
-  }
-  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
-    deps.add(d.entityId.trim());
-  }
-  if (d.memberType && typeof d.memberType === 'object') {
-    if (typeof d.memberType.targetEntityId === 'string' && d.memberType.targetEntityId.trim()) {
-      deps.add(d.memberType.targetEntityId.trim());
+  // Descriptors already passed the canonical bounded data snapshot. Walk all
+  // nested type constructors; an array of unions can contain recursive pointers.
+  const deps=new Set(),seen=new WeakSet(),pending=[claim?.descriptor];
+  while(pending.length) {
+    const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;seen.add(node);
+    for(const key of ['targetEntityId','elementEntityId']) {
+      if(typeof node[key]==='string'&&node[key].trim())deps.add(node[key].trim());
     }
-    if (typeof d.memberType.elementEntityId === 'string' && d.memberType.elementEntityId.trim()) {
-      deps.add(d.memberType.elementEntityId.trim());
-    }
-    if (d.memberType.elementType?.targetEntityId) {
-      deps.add(String(d.memberType.elementType.targetEntityId).trim());
-    }
-  }
-  if (Array.isArray(d.members)) {
-    for (const member of d.members) {
-      if (member?.memberType?.targetEntityId) deps.add(String(member.memberType.targetEntityId).trim());
-      if (member?.memberType?.elementEntityId) deps.add(String(member.memberType.elementEntityId).trim());
-      if (member?.memberType?.elementType?.targetEntityId) deps.add(String(member.memberType.elementType.targetEntityId).trim());
-    }
+    if(node===claim.descriptor&&typeof node.entityId==='string'&&node.entityId.trim()&&node.entityId!==claim.entityId)deps.add(node.entityId.trim());
+    for(const value of Object.values(node))if(value&&typeof value==='object')pending.push(value);
   }
   return deps;
 }
@@ -171,6 +152,7 @@ function extractDependencies(claim) {
 function isMemberRecursive(member, entityId, sccMembers = []) {
   const target = member?.memberType?.targetEntityId ?? member?.targetEntityId ?? null;
   const elementTarget = member?.memberType?.elementType?.targetEntityId ?? member?.memberType?.elementEntityId ?? null;
+  if ([...extractDependencies({entityId,descriptor:member})].some(id=>id===entityId||sccMembers.includes(id))) return true;
   if (target === entityId || (target && sccMembers.includes(target))) return true;
   if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
@@ -185,6 +167,29 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
   if (descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))) return null;
 
   if (layer === 'structural') {
+    const declaredKinds = [...new Set(descriptors.filter(d => d.offset == null && d.kind != null).map(d => d.kind))];
+    if (declaredKinds.length > 1) return null;
+    const kind = declaredKinds[0] ?? 'struct';
+    if (!['struct','union'].includes(kind)) {
+      // Preserve an existing type constructor; array and pointer declarations
+      // are not field evidence from which to invent a struct.
+      if (descriptors.some(d => d.offset != null)) return null;
+      const merged = {};
+      for (const descriptor of descriptors) for (const [key,value] of Object.entries(descriptor)) {
+        if (Object.hasOwn(merged,key) && canonicalDescriptorString(layer,{[key]:merged[key]}) !== canonicalDescriptorString(layer,{[key]:value})) return null;
+        Object.defineProperty(merged,key,{value,enumerable:true,writable:true,configurable:true});
+      }
+      if (kind === 'array') {
+        const stride = exactStructuralInteger(merged.strideBytes), length = exactStructuralInteger(merged.length);
+        if (stride != null && length != null) {
+          const size = stride * length, explicit = exactStructuralInteger(merged.totalSizeBytes ?? merged.sizeBytes);
+          if (explicit != null && explicit !== size) return null;
+          merged.sizeBytes = structuralIntegerWire(size);merged.totalSizeBytes = merged.sizeBytes;
+        }
+      }
+      const recursive = sccContext?.isRecursive === true || [...extractDependencies({entityId,descriptor:merged})].includes(entityId);
+      return createTypeClaim({layer,entityId,descriptor:{...merged,isRecursive:recursive,recursiveIdentity:recursive?entityId:null,sccMembers:recursive?(sccContext?.sccMembers??[entityId]):null}});
+    }
     const rawMembers = [];
     let explicitSize = null;
     let explicitAlign = null;
@@ -195,11 +200,17 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (desc.sizeBytes != null && desc.offset == null) {
+      // An offset-less structural-field descriptor still describes member
+      // metadata; its width/alignment must not be promoted to aggregate root
+      // authority. Aggregate declarations carry a constructor/members or lack
+      // field-only metadata.
+      const fieldOnly = desc.offset == null && !Array.isArray(desc.members) && desc.kind == null
+        && (desc.fieldName != null || desc.memberType != null);
+      if (!fieldOnly && desc.sizeBytes != null && desc.offset == null) {
         explicitSize = exactStructuralInteger(desc.sizeBytes);
         if (explicitSize == null) return null;
       }
-      if (desc.alignBytes != null && desc.offset == null) {
+      if (!fieldOnly && desc.alignBytes != null && desc.offset == null) {
         explicitAlign = exactStructuralInteger(desc.alignBytes);
         if (explicitAlign == null) return null;
       }
@@ -209,10 +220,10 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
     for (const member of rawMembers) {
       const offset = exactStructuralInteger(member.offset, 0n);
       if (offset == null) return null;
-      const key = offset.toString();
+      const key = kind === 'union' ? (member.fieldName ?? member.name ?? canonicalDescriptorString(layer,member)) : offset.toString();
       const existing = membersByOffset.get(key);
       if (existing) {
-        if (stableStringify(existing.member) !== stableStringify(member)) return null;
+        if (canonicalDescriptorString(layer,existing.member) !== canonicalDescriptorString(layer,member)) return null;
       } else {
         membersByOffset.set(key, { offset, member });
       }
@@ -244,11 +255,12 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
     for (const m of updatedMembers) {
       let mAlign = null;
       if (m.alignBytes == null) {
-        mAlign = defaultStructuralAlign(m.sizeBytes);
+        mAlign = explicitAlign ?? defaultStructuralAlign(m.sizeBytes);
       } else {
         mAlign = exactStructuralInteger(m.alignBytes);
         if (mAlign == null) return null;
       }
+      if (explicitAlign != null && mAlign > explicitAlign) return null;
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
@@ -265,13 +277,25 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       calculatedSize = maxAlign > 1n
         ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
         : maxOffsetSpan;
-      if (explicitSize != null && explicitSize > calculatedSize) calculatedSize = explicitSize;
+      if (explicitSize != null && explicitSize < calculatedSize) return null;
+      if (explicitSize != null) calculatedSize = explicitSize;
     }
 
+    if(kind !== 'union') {
+      let priorEnd = 0n;
+      for(const member of updatedMembers) {
+        const offset=exactStructuralInteger(member.offset,0n),size=exactStructuralInteger(member.sizeBytes);
+        if(size==null||offset<priorEnd)return null;
+        priorEnd=offset+size;
+      }
+    } else if(updatedMembers.some(member=>member.sizeBytes==null))return null;
+    if(!updatedMembers.length&&explicitSize==null) {
+      return createTypeClaim({layer,entityId,descriptor:{kind,members:[],...(explicitAlign==null?{}:{alignBytes:structuralIntegerWire(explicitAlign)}),isRecursive,recursiveIdentity:isRecursive?entityId:null,sccMembers:isRecursive?sccMembers:null}});
+    }
     const calculatedSizeWire = structuralIntegerWire(calculatedSize);
     const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
-      kind: 'struct',
+      kind,
       members: updatedMembers,
       sizeBytes: calculatedSizeWire,
       totalSizeBytes: calculatedSizeWire,
@@ -763,74 +787,48 @@ export function createTypeGraphResult(input = {}) {
  * or TypeConstraintGraph.
  */
 export function reconstructStructuralType(graphOrResult, entityId, options = {}) {
-  let result = null;
-  if (graphOrResult instanceof TypeConstraintGraph) {
-    result = graphOrResult.solveEntity(entityId, options);
-  } else if (graphOrResult && graphOrResult.layers) {
-    result = graphOrResult;
-  } else {
-    return null;
+  const result = graphOrResult instanceof TypeConstraintGraph
+    ? graphOrResult.solveEntity(entityId,options) : graphOrResult?.layers ? graphOrResult : null;
+  if (!result || (entityId != null && entityId !== result.entityId)) return null;
+  if (options.snapshotId != null && options.snapshotId !== result.status?.snapshotId) return null;
+  const structuralLayer = result.layers.structural, nominalLayer = result.layers.nominal;
+  const canPublish = isCompleteStatus(result.status) && !options.signal?.aborted && !(structuralLayer?.contradictions?.length);
+  const selected = canPublish ? structuralLayer?.selected?.descriptor : null;
+  const nominalName = canPublish ? nominalLayer?.selected?.descriptor?.name ?? null : null;
+  if (!selected) return deepFreeze({
+    kind:'unknown',entityId:result.entityId,name:nominalName,sizeBytes:null,alignBytes:null,members:[],
+    isRecursive:false,recursiveIdentity:null,sccMembers:null,confidence:'unknown',status:result.status,
+  });
+  // Standalone TypeResults are accepted by this API. Snapshot their descriptor
+  // through the same bounded canonical authority, never freeze caller data.
+  let descriptor;
+  try { descriptor = createTypeClaim({layer:'structural',entityId:result.entityId,descriptor:selected}).descriptor; }
+  catch { return null; }
+  const explicitAlign = exactStructuralInteger(descriptor.alignBytes);
+  let maxAlign = explicitAlign ?? 1n, span = 0n;
+  const members = [];
+  for (const m of descriptor.members ?? []) {
+    if (options.signal?.aborted) return null;
+    const offset = exactStructuralInteger(m.offset,0n), size = exactStructuralInteger(m.sizeBytes,0n);
+    const align = exactStructuralInteger(m.alignBytes,explicitAlign ?? defaultStructuralAlign(m.sizeBytes));
+    if (offset == null || size == null || align == null || offset < 0n || size < 0n || align < 1n) return null;
+    if (explicitAlign != null && align > explicitAlign) return null;
+    if (align > maxAlign) maxAlign = align;
+    if (offset + size > span) span = offset + size;
+    members.push({offset:structuralIntegerWire(offset),sizeBytes:structuralIntegerWire(size),alignBytes:structuralIntegerWire(align),name:m.fieldName??m.name??null,type:m.memberType??{kind:'unknown'}});
   }
-
-  const structuralLayer = result?.layers?.structural;
-  const nominalLayer = result?.layers?.nominal;
-  const selected = structuralLayer?.selected?.descriptor;
-  const nominalName = nominalLayer?.selected?.descriptor?.name ?? null;
-
-  if (!selected) {
-    return deepFreeze({
-      kind: 'unknown',
-      entityId: String(entityId ?? result?.entityId ?? ''),
-      name: nominalName,
-      sizeBytes: null,
-      alignBytes: null,
-      members: [],
-      isRecursive: false,
-      recursiveIdentity: null,
-      sccMembers: null,
-      confidence: structuralLayer?.confidence ?? 'unknown',
-      status: result?.status ?? null,
-    });
-  }
-
-  const members = (selected.members ?? []).map((m) => deepFreeze({
-    offset: Number(m.offset ?? 0),
-    sizeBytes: Number(m.sizeBytes ?? 0),
-    alignBytes: Number(m.alignBytes ?? defaultAlign(m.sizeBytes)),
-    name: m.fieldName ?? m.name ?? null,
-    type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
-  }));
-
-  let maxAlign = selected.alignBytes != null ? Number(selected.alignBytes) : 1;
-  for (const m of members) {
-    if (m.alignBytes > maxAlign) maxAlign = m.alignBytes;
-  }
-
-  let totalSize = selected.totalSizeBytes != null
-    ? Number(selected.totalSizeBytes)
-    : selected.sizeBytes != null
-      ? Number(selected.sizeBytes)
-      : null;
-
-  if (members.length > 0) {
-    const maxOffsetSpan = Math.max(...members.map((m) => m.offset + m.sizeBytes));
-    if (totalSize == null || totalSize < maxOffsetSpan) {
-      totalSize = maxAlign > 1 ? Math.ceil(maxOffsetSpan / maxAlign) * maxAlign : maxOffsetSpan;
-    }
-  }
-
+  let size = exactStructuralInteger(descriptor.totalSizeBytes ?? descriptor.sizeBytes);
+  if (size != null && size < span) return null;
+  if (size == null && members.length) size = ((span + maxAlign - 1n) / maxAlign) * maxAlign;
+  const extra = {};
+  for (const key of ['elementType','elementEntityId','targetEntityId','pointeeType']) if (descriptor[key] != null) extra[key] = descriptor[key];
+  for (const key of ['length','strideBytes']) if (descriptor[key] != null) extra[key] = structuralIntegerWire(exactStructuralInteger(descriptor[key]));
+  if (options.signal?.aborted) return null;
   return deepFreeze({
-    kind: selected.kind ?? 'struct',
-    entityId: String(entityId ?? result?.entityId ?? ''),
-    name: nominalName,
-    sizeBytes: totalSize,
-    alignBytes: maxAlign,
-    isRecursive: selected.isRecursive === true,
-    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? String(entityId ?? result?.entityId ?? '') : null),
-    sccMembers: selected.sccMembers ?? null,
-    members: deepFreeze(members),
-    confidence: structuralLayer.confidence,
-    status: result.status,
+    kind:descriptor.kind??'struct',entityId:result.entityId,name:nominalName,
+    sizeBytes:size==null?null:structuralIntegerWire(size),alignBytes:size==null&&members.length===0&&explicitAlign==null?null:structuralIntegerWire(maxAlign),
+    isRecursive:descriptor.isRecursive===true,recursiveIdentity:descriptor.recursiveIdentity??null,
+    sccMembers:descriptor.sccMembers??null,members, ...extra,confidence:structuralLayer.confidence,status:result.status,
   });
 }
 

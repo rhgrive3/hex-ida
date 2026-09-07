@@ -6,6 +6,7 @@
  * partial, and unsupported boundaries.
  */
 
+import { scalarOperationSupported } from './scalar.js';
 import { OP, MK } from '../../ir-base.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -74,23 +75,9 @@ export function classifyOpSupport(op, inst = null) {
     case OP.ADDR:
       return TRANSLATION_STATUS.EXACT;
 
-    case OP.BIN: {
-      const sub = inst?.subOp || inst?.name;
-      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
-      if (!sub || supportedBin.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
-
-    case OP.UN: {
-      const sub = inst?.subOp || inst?.name;
-      const supportedUn = ['not', 'neg'];
-      if (!sub || supportedUn.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
+    case OP.BIN:
+    case OP.UN:
+      return scalarOperationSupported(inst) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.CMP:
     case OP.SEL:

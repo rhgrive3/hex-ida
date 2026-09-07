@@ -18,6 +18,8 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { PROOF_REWRITE_PASS, runProofRewritePass, isPhase8RewritePlan } from './pass-validation.js';
+export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
@@ -58,6 +60,9 @@ export { STRUCTURING_PASS, STRUCTURING_SUMMARY_VERSION, EDGE_CONSTRUCTS, account
  * so adding a pass in the wrong place cannot silently reorder the pipeline.
  * Later checkpoints append their passes here; nothing else registers passes.
  */
+// Callback-free deadline check used only at the final publication boundary.
+const PUBLICATION_DEADLINES = new WeakMap();
+
 const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: IDENTITY_PASS, run: runIdentityPass, observe: identityPassObservation }),
   Object.freeze({ descriptor: SCCP_PASS, run: runSccpPass }),
@@ -122,9 +127,12 @@ function orderWithinStage(passes) {
   return ordered;
 }
 
-export function phase8Passes({ stages = null } = {}) {
+export function phase8Passes({ stages = null, proofRewritePlan = null } = {}) {
   const enabled = stages == null ? null : new Set(stages);
-  const selected = [...REGISTERED].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
+  const registry = proofRewritePlan == null
+    ? REGISTERED
+    : [...REGISTERED, Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })];
+  const selected = [...registry].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
   const byStage = new Map();
   for (const pass of selected) {
     if (!byStage.has(pass.descriptor.stageIndex)) byStage.set(pass.descriptor.stageIndex, []);
@@ -265,7 +273,8 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
-  const passes = phase8Passes({ stages: enabledStages });
+  const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
+  const passes = phase8Passes({ stages: enabledStages, proofRewritePlan });
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -419,19 +428,6 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
   }
 
-  if (!commitAnalysisState(authoritative, analysis, before)) {
-    return {
-      ledger: withheldLedger('failed', 'analysis-concurrent-change', [{
-        severity: 'error',
-        code: 'phase8.analysis.concurrent-change',
-        message: 'Phase 8 discarded its private result because authoritative analysis changed during the run.',
-        reason: 'The initial analysis version snapshot no longer matches the commit boundary.',
-      }], registryDigest, before),
-      timings: Object.freeze(timings),
-      analysis: authoritative,
-    };
-  }
-
   const diagnostics = results.flatMap((result) => result.diagnostics);
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
@@ -451,10 +447,34 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     enabledStages: Object.freeze(enabledStages == null ? [...PASS_STAGES] : [...enabledStages]),
     // Analysis versions before and after. Invalidation is a property a consumer
     // can check, not a claim it has to believe.
-    analysisVersions: Object.freeze({ before, after: authoritative.snapshot() }),
+    analysisVersions: Object.freeze({ before, after: analysis.snapshot() }),
     stopReason: null,
   };
   ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
+  if (aborted(budget) || (proofRewritePlan != null && !isPhase8RewritePlan(proofRewritePlan, context))) {
+    return {
+      ledger: withheldLedger('cancelled', 'cancelled-or-stale-before-publication', [], registryDigest, before),
+      timings: Object.freeze(timings), analysis: authoritative,
+    };
+  }
+  if (PUBLICATION_DEADLINES.get(budget)?.()) {
+    return {
+      ledger: withheldLedger('cancelled', 'deadline-before-publication', [], registryDigest, before),
+      timings: Object.freeze(timings), analysis: authoritative,
+    };
+  }
+  if (!commitAnalysisState(authoritative, analysis, before)) {
+    return {
+      ledger: withheldLedger('failed', 'analysis-concurrent-change', [{
+        severity: 'error',
+        code: 'phase8.analysis.concurrent-change',
+        message: 'Phase 8 discarded its private result because authoritative analysis changed during the run.',
+        reason: 'The initial analysis version snapshot no longer matches the commit boundary.',
+      }], registryDigest, before),
+      timings: Object.freeze(timings),
+      analysis: authoritative,
+    };
+  }
   return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis: authoritative };
 }
 
@@ -478,14 +498,14 @@ export function runPhase8Stage(context = {}, options = {}) {
   const started = clock();
   const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
   const explicitDeadline = options.timeBudgetMs != null;
-  const parsedTimeBudget = explicitDeadline ? Number(options.timeBudgetMs) : null;
+  const parsedTimeBudget = explicitDeadline && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
   // Invalid explicit deadlines fail closed as an immediate cancellation. A
   // NaN deadline would otherwise never compare true and silently disable the
   // caller's requested resource bound.
   const timeBudgetMs = explicitDeadline && Number.isFinite(parsedTimeBudget)
     ? Math.max(0, parsedTimeBudget) : explicitDeadline ? 0 : null;
   const deadline = explicitDeadline ? started + timeBudgetMs : null;
-  const parsedWorkBudget = Number(options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET);
+  const parsedWorkBudget = options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET;
   const maxWorkItems = Number.isSafeInteger(parsedWorkBudget) && parsedWorkBudget >= 0
     ? parsedWorkBudget : 0;
   let workChecks = 0;
@@ -503,14 +523,16 @@ export function runPhase8Stage(context = {}, options = {}) {
           return true;
         }
       }
-      if (!explicitDeadline) {
-        if (workChecks >= maxWorkItems) return true;
-        workChecks += 1;
-        return false;
-      }
-      return clock() >= deadline;
+      if (workChecks >= maxWorkItems) return true;
+      workChecks += 1;
+      return explicitDeadline && clock() >= deadline;
     },
   };
-  const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
-  return { ...outcome, elapsedMs: clock() - started };
+  PUBLICATION_DEADLINES.set(budget, () => explicitDeadline && clock() >= deadline);
+  try {
+    const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
+    return { ...outcome, elapsedMs: clock() - started };
+  } finally {
+    PUBLICATION_DEADLINES.delete(budget);
+  }
 }

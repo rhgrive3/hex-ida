@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
-import { INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { ANALYSIS_KEYS, createPassResult, INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
 
 /**
  * A minimal IR carrying exactly the canonical facts the identity pass declares
@@ -67,7 +67,23 @@ test('an incomplete optimizer run cannot overwrite a prior complete result', () 
   const ir = { ...CONTEXT.ir, blocks: [{ id: 'entry', index: 0 }] };
   const state = seedAnalysisState(ir);
   const priorRanges = Object.freeze({ completeness: 'complete', marker: 'authoritative' });
-  state.__write('ranges', priorRanges);
+  // Seed through the production transaction boundary. __write was removed
+  // when state mutation became private; restoring that hook would bypass the
+  // same authority boundary this regression is meant to protect.
+  assert.equal(Object.hasOwn(state, '__write'), false);
+  const descriptor = createPassDescriptor({
+    id: 'phase8.test.complete-ranges', version: '1.0.0', stage: 'scalar-optimization',
+    consumes: ['ssa'], produces: ['ranges'], preserves: ANALYSIS_KEYS.filter(key => key !== 'ranges'),
+  });
+  const seeded = runPassTransaction(state, {
+    descriptor,
+    run(_context, _budget, staging) {
+      staging.stage('ranges', priorRanges);
+      return createPassResult({ descriptor, status: 'changed', produced: ['ranges'] });
+    },
+  });
+  assert.equal(seeded.committed, true, seeded.stopReason);
+  assert.equal(state.get('ranges'), priorRanges);
   const before = state.snapshot();
   const { ledger, analysis } = runPhase8Vertical({
     ...CONTEXT,

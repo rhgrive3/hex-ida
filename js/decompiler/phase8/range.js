@@ -874,6 +874,45 @@ function constantFromFact(fact) {
   return singletonValue(fact?.range);
 }
 
+/** One-bit abstract full-adder, lifted over the existing known-bit domain.
+ * This is a bounded transfer function, not another concrete evaluator. Every
+ * carry consistent with the input masks is retained (including correlations
+ * we cannot express). Work is at most 8 combinations per supported bit.
+ */
+function arithmeticKnownBits(left, right, bits, subtract) {
+  if ((left.knownZero | left.knownOne | right.knownZero | right.knownOne) === 0n) {
+    return { knownZero:0n, knownOne:0n };
+  }
+  let carries = subtract ? 2 : 1; // bitset: carry 0 / carry 1
+  let knownZero = 0n, knownOne = 0n;
+  for (let index = 0; index < bits; index++) {
+    const bit = 1n << BigInt(index);
+    const a = (left.knownOne & bit) ? 2 : (left.knownZero & bit) ? 1 : 3;
+    let b = (right.knownOne & bit) ? 2 : (right.knownZero & bit) ? 1 : 3;
+    if (subtract) b = ((b & 1) << 1) | ((b & 2) >> 1);
+    let outputs = 0, next = 0;
+    for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) for (let c = 0; c < 2; c++) {
+      if (!(a & (1 << x)) || !(b & (1 << y)) || !(carries & (1 << c))) continue;
+      const sum = x + y + c;
+      outputs |= 1 << (sum & 1);
+      next |= 1 << (sum >> 1);
+    }
+    if (outputs === 1) knownZero |= bit;
+    if (outputs === 2) knownOne |= bit;
+    carries = next;
+  }
+  return { knownZero, knownOne };
+}
+
+function congruenceFromKnownLowBits(knownZero, knownOne, bits) {
+  const fixed = knownZero | knownOne;
+  let count = 0;
+  while (count < bits && (fixed & (1n << BigInt(count)))) count++;
+  if (!count) return NO_CONGRUENCE;
+  const modulus = 1n << BigInt(count);
+  return Object.freeze({ remainder:knownOne % modulus, modulus });
+}
+
 /** Width-exact product-domain binary evaluation. */
 export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}) {
   const left = factInput(leftInput);
@@ -884,7 +923,10 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
   if (!isSupportedWidth(left.bits) || !isSupportedWidth(right.bits)) {
     return fullFact(isSupportedWidth(left.bits) ? left.bits : 32, { status: 'malformed', reason: 'unsupported operand width' });
   }
-  if (isEmpty(left.range) || isEmpty(right.range)) return emptyFact(bits);
+  if (!VALID_FACT_STATUSES.has(left.status) || !VALID_FACT_STATUSES.has(right.status)) {
+    return fullFact(COMPARISON_OPERATORS.has(operator) ? 1 : bits, {status:combinedFactStatus(left,right),reason:'incomplete operand fact'});
+  }
+  if (isEmpty(left.range) || isEmpty(right.range)) return emptyFact(COMPARISON_OPERATORS.has(operator) ? 1 : bits);
   if (right.bits !== bits && !['shl', 'lshr', 'ashr'].includes(operator)) return fullFact(bits, { reason: 'operands have different widths' });
   const combined = evaluateBinaryRange(operator, left.range, right.range);
   let knownZero = 0n;
@@ -903,6 +945,10 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
         provenance: options.provenance === false ? null : mergeProvenance(left.provenance, right.provenance),
       });
     }
+    const op = normalizedComparison(operator);
+    if ((op === 'eq' || op === 'ne') && ((left.knownZero & right.knownOne) || (left.knownOne & right.knownZero))) {
+      return singletonFact(bitvector(op === 'ne' ? 1n : 0n, 1), {provenance:options.provenance === false ? null : mergeProvenance(left.provenance,right.provenance)});
+    }
     return fullFact(1, {
       status: 'conservative',
       reason: `comparison ${operator} is not a proven singleton`,
@@ -912,10 +958,7 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
   const mask = widthMask(bits);
   if (operator === 'add' || operator === 'sub') {
     congruence = addCongruence(left.congruence, right.congruence, bits, operator === 'sub');
-    // Carries make addition bit facts non-local.  Without a carry proof, an
-    // apparently zero bit in both operands can become one in the sum.
-    knownZero = 0n;
-    knownOne = 0n;
+    ({ knownZero, knownOne } = arithmeticKnownBits(left, right, bits, operator === 'sub'));
     if (rightConstant != null && left.pointerOffset != null) {
       const delta = operator === 'sub' ? -rightConstant : rightConstant;
       pointerOffset = shiftedPointerOffset(left.pointerOffset, delta);
@@ -924,26 +967,15 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
       pointerOffset = shiftedPointerOffset(right.pointerOffset, leftConstant);
       alignment = shiftedAlignment(right.alignment, leftConstant, bits);
     }
-  } else if (operator === 'and' && rightConstant != null) {
-    ({ knownZero, knownOne, congruence } = maskFactsForConstant(rightConstant, bits, left));
-  } else if (operator === 'and' && leftConstant != null) {
-    ({ knownZero, knownOne, congruence } = maskFactsForConstant(leftConstant, bits, right));
-  } else if (operator === 'or' && rightConstant != null) {
-    const c = unsignedOf(rightConstant, bits);
-    knownOne = (left.knownOne | c) & mask;
-    knownZero = left.knownZero & (mask ^ c);
-  } else if (operator === 'or' && leftConstant != null) {
-    const c = unsignedOf(leftConstant, bits);
-    knownOne = (right.knownOne | c) & mask;
-    knownZero = right.knownZero & (mask ^ c);
-  } else if (operator === 'xor' && rightConstant != null) {
-    const c = unsignedOf(rightConstant, bits);
-    knownOne = ((left.knownOne & (mask ^ c)) | (left.knownZero & c)) & mask;
-    knownZero = ((left.knownZero & (mask ^ c)) | (left.knownOne & c)) & mask;
-  } else if (operator === 'xor' && leftConstant != null) {
-    const c = unsignedOf(leftConstant, bits);
-    knownOne = ((right.knownOne & (mask ^ c)) | (right.knownZero & c)) & mask;
-    knownZero = ((right.knownZero & (mask ^ c)) | (right.knownOne & c)) & mask;
+  } else if (operator === 'and') {
+    knownZero = (left.knownZero | right.knownZero) & mask;
+    knownOne = left.knownOne & right.knownOne;
+  } else if (operator === 'or') {
+    knownOne = (left.knownOne | right.knownOne) & mask;
+    knownZero = left.knownZero & right.knownZero;
+  } else if (operator === 'xor') {
+    knownOne = ((left.knownOne & right.knownZero) | (left.knownZero & right.knownOne)) & mask;
+    knownZero = ((left.knownZero & right.knownZero) | (left.knownOne & right.knownOne)) & mask;
   } else if (['shl', 'lshr', 'ashr'].includes(operator) && rightConstant != null) {
     const amount = rightConstant;
     if (amount < BigInt(bits)) {
@@ -963,6 +995,11 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
           ? ((left.knownZero >> shift) | (mask ^ shiftedMask)) & mask
           : (left.knownZero >> shift) & mask;
         knownOne = (left.knownOne >> shift) & mask;
+        if (operator === 'ashr') {
+          const sign = 1n << BigInt(bits - 1), fill = mask ^ shiftedMask;
+          if (left.knownZero & sign) knownZero |= fill;
+          if (left.knownOne & sign) knownOne |= fill;
+        }
       }
     }
   } else if (operator === 'mul' && rightConstant != null) {
@@ -970,6 +1007,11 @@ export function evaluateBinaryFact(operator, leftInput, rightInput, options = {}
   } else if (operator === 'mul' && leftConstant != null) {
     congruence = multiplyCongruence(right.congruence, leftConstant, bits);
   }
+  // Both residues are powers of two; the stronger compatible residue retains
+  // all represented values. Masks add low-bit information not present in the
+  // coarse interval without inventing address alignment or pointer provenance.
+  const maskCongruence = congruenceFromKnownLowBits(knownZero, knownOne, bits);
+  if (maskCongruence.modulus > congruence.modulus) congruence = maskCongruence;
   return factFromRange(combined.range.bits === bits ? combined.range : fullRange(bits), {
     knownZero,
     knownOne,
@@ -1374,6 +1416,16 @@ function wrappingAdd(range, delta) {
  * report the full range and a reason, so a consumer can tell "we proved nothing"
  * apart from "nobody looked".
  */
+function scaleRange(source, constant) {
+  const bits = source.bits, modulus = 1n << BigInt(bits);
+  let answer = emptyRange(bits);
+  for (const [lo,hi] of rangeSegments(source)) {
+    if ((hi - lo) * constant >= modulus) return {range:fullRange(bits),exact:false,reason:'scaled span covers the width'};
+    answer = join(answer,rangeOf(lo * constant,hi * constant,bits));
+  }
+  return {range:answer,exact:constant <= 1n,reason:'constant multiplier interval projection'};
+}
+
 export function evaluateBinaryRange(operator, left, right) {
   if (isEmpty(left) || isEmpty(right)) return { range: emptyRange(left.bits), exact: true, reason: null };
   const bits = left.bits;
@@ -1410,9 +1462,14 @@ export function evaluateBinaryRange(operator, left, right) {
       };
       return unknown('bitwise and of two ranges is not modelled');
     }
+    case 'mul': {
+      const constant = singletonValue(right) ?? singletonValue(left);
+      if (constant == null) return unknown('multiply requires a constant operand');
+      const source = singletonValue(right) != null ? left : right;
+      return scaleRange(source, constant);
+    }
     case 'or':
     case 'xor':
-    case 'mul':
     case 'udiv':
     case 'sdiv':
     case 'urem':
@@ -1420,8 +1477,23 @@ export function evaluateBinaryRange(operator, left, right) {
       return unknown(`${operator} of two ranges is not modelled`);
     case 'shl':
     case 'lshr':
-    case 'ashr':
-      return unknown(`${operator} of two ranges is not modelled`);
+    case 'ashr': {
+      const amount = singletonValue(right);
+      if (amount == null || amount >= BigInt(bits)) return unknown('shift amount is unknown or requires architecture semantics');
+      if (operator === 'shl') return scaleRange(left, 1n << amount);
+      let answer = emptyRange(bits);
+      for (const [lower, upper] of rangeSegments(left)) {
+        const sign = 1n << BigInt(bits - 1);
+        const parts = operator === 'ashr' && lower < sign && upper >= sign
+          ? [[lower,sign - 1n],[sign,upper]] : [[lower,upper]];
+        for (const [lo,hi] of parts) {
+          const from = operator === 'ashr' ? signedOf(lo,bits) : lo;
+          const to = operator === 'ashr' ? signedOf(hi,bits) : hi;
+          answer = join(answer,rangeOf(from >> amount,to >> amount,bits));
+        }
+      }
+      return {range:answer,exact:false,reason:'constant shift interval projection'};
+    }
     default:
       return unknown(`unmodelled operator: ${operator}`);
   }

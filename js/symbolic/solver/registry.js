@@ -7,6 +7,8 @@
 import { FakeSolverBackend } from './fake-backend.js';
 import { PROOF_AUTHORITY } from './backend.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { TieredBvBackend } from './tiered-backend.js';
+import { TieredWorkerSolverBackend } from './tiered-worker-backend.js';
 import { WorkerSolverBackend } from './worker-backend.js';
 
 export class SolverRegistry {
@@ -73,12 +75,15 @@ export class SolverRegistry {
   }
 }
 
-export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true } = {}) {
+export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true, backendTier = 'exhaustive' } = {}) {
+  if (!['exhaustive', 'tiered'].includes(backendTier)) throw new TypeError('unsupported-solver-tier');
   const registry = new SolverRegistry({ allowNonExactDefault: false });
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
+  // Wide solving is opt-in; keep the existing lightweight production floor.
+  const WorkerBackend = backendTier === 'tiered' ? TieredWorkerSolverBackend : WorkerSolverBackend;
   const backend = canUseWorker
-    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined })
-    : new ExhaustiveBvBackend();
+    ? new WorkerBackend({ workerFactory: workerFactory || undefined })
+    : backendTier === 'tiered' ? new TieredBvBackend() : new ExhaustiveBvBackend();
   registry.registerBackend(backend);
   return registry;
 }

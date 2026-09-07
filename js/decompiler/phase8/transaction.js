@@ -22,12 +22,14 @@
 import { stableDigest } from '../../core/identity/index.js';
 
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult } from './contract.js';
+import { PROOF_REWRITE_PASS, proofAdmissionReason, proofPublicationResult } from './pass-validation.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
 const ANALYSIS_LINEAGE = new WeakMap();
+const COMMITTED_PROOF_OVERLAYS = new WeakMap();
 
 
 /**
@@ -98,6 +100,9 @@ export function forkAnalysisState(source) {
   const initial = {};
   for (const key of ANALYSIS_KEYS) if (versions[key] > 0) initial[key] = source.get(key);
   const working = createAnalysisState(initial, versions);
+  if (COMMITTED_PROOF_OVERLAYS.has(source)) {
+    COMMITTED_PROOF_OVERLAYS.set(working, COMMITTED_PROOF_OVERLAYS.get(source));
+  }
   ANALYSIS_LINEAGE.set(working, Object.freeze({
     source,
     before: Object.freeze(Object.fromEntries(ANALYSIS_KEYS.map((key) => [key, versions[key]]))),
@@ -132,7 +137,19 @@ export function commitAnalysisState(target, working, before) {
       else targetMutators.write(key, last ? finalValue : null);
     }
   }
+  if (COMMITTED_PROOF_OVERLAYS.has(working)
+    && working.get('provedRewrites') === COMMITTED_PROOF_OVERLAYS.get(working)) {
+    COMMITTED_PROOF_OVERLAYS.set(target, COMMITTED_PROOF_OVERLAYS.get(working));
+  } else {
+    COMMITTED_PROOF_OVERLAYS.delete(target);
+  }
   return true;
+}
+
+/** Read-only proof authority for projection consumers. */
+export function committedProofOverlay(state) {
+  const overlay = COMMITTED_PROOF_OVERLAYS.get(state);
+  return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRewrites') === overlay ? overlay : null;
 }
 
 /**
@@ -224,24 +241,31 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     return Object.freeze({ committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason: 'cancelled-mid-pass' });
   }
 
-  // Validate untrusted pass output before any later contract check can
-  // dereference it. This must remain before descriptor-identity validation.
-  const ownedResult = ownedPassResult(result, descriptor);
-  if (ownedResult == null) {
-    return Object.freeze({
-      committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
-      stopReason: `malformed-result:${descriptor.id}`,
-    });
-  }
-  // From here onward every contract check and publication uses the same owned,
-  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
-  // value and later substitute another at the commit boundary.
-  result = ownedResult;
-
+  const rawResult = result;
   const stagedWrites = take();
   const refuse = (stopReason) => Object.freeze({
     committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason,
   });
+
+  // Proof capabilities are object-identity authority and cannot survive a data
+  // snapshot. Validate them while private, then snapshot only a bounded audit
+  // projection for the public ledger. Other pass results stay on the generic
+  // untrusted PassResult snapshot path.
+  if (descriptor === PROOF_REWRITE_PASS) {
+    const proofFailure = proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (proofFailure) return refuse(proofFailure);
+    result = proofPublicationResult(rawResult);
+    if (result == null) return refuse('proof-publication-invalid');
+  }
+
+  // Validate untrusted pass output before any later contract check can
+  // dereference it. This must remain before descriptor-identity validation.
+  const ownedResult = ownedPassResult(result, descriptor);
+  if (ownedResult == null) return refuse(`malformed-result:${descriptor.id}`);
+  // From here onward every contract check and publication uses the same owned,
+  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
+  // value and later substitute another at the commit boundary.
+  result = ownedResult;
   // A result may only exercise the descriptor authority of the pass that was
   // actually invoked. Otherwise mutation/invalidation uses one descriptor while
   // provenance and replay identity name another pass. Shape, ownership and the
@@ -273,6 +297,10 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // Last check immediately before the only mutation point.  A cancellation
   // that arrives while validating the staged result must not become a commit.
   if (aborted(budget)) return refuse('cancelled-before-commit');
+  if (descriptor === PROOF_REWRITE_PASS) {
+    const finalProofFailure = proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (finalProofFailure) return refuse(finalProofFailure);
+  }
 
   // Commit. Nothing above this line touched authoritative state.
   const mutators = analysisMutators(state);
@@ -280,6 +308,11 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   const actuallyInvalidated = [];
   for (const key of invalidated) if (mutators.drop(key)) actuallyInvalidated.push(key);
   for (const [key, value] of stagedWrites) mutators.write(key, value);
+  if (stagedWrites.has('provedRewrites')) {
+    COMMITTED_PROOF_OVERLAYS.set(state, stagedWrites.get('provedRewrites'));
+  } else if (actuallyInvalidated.includes('provedRewrites')) {
+    COMMITTED_PROOF_OVERLAYS.delete(state);
+  }
 
   return Object.freeze({
     committed: true,
