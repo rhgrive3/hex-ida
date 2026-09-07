@@ -9,7 +9,42 @@ const APPLE_ARM64E_PLATFORMS = new Set([
 ]);
 
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
+function requiredCanonicalId(value, label) {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  const id = value.trim().toLowerCase();
+  if (!id) throw new TypeError(`${label} is required`);
+  return id;
+}
+function optionalIdentity(value, fallback, label) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a primitive string`);
+  if (!value.trim()) throw new TypeError(`${label} is required`);
+  return value;
+}
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
+function normalizeABIHook(value, name, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  if (isClassConstructorSource(value) || isBoundClassConstructor(value)) {
+    throw new TypeError(`${name} must be an invocable callback, not a class constructor`);
+  }
+  return value;
+}
+
+function isClassConstructorSource(value) {
+  try { return /^class[\s{;]/.test(Function.prototype.toString.call(value)); }
+  catch { return false; }
+}
+
+function isBoundClassConstructor(value) {
+  if (typeof value.name !== 'string' || !value.name.startsWith('bound ')) return false;
+  try {
+    Reflect.apply(value, undefined, []);
+    return false;
+  } catch (error) {
+    return error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message);
+  }
+}
 
 function canonicalCallingConvention(value) {
   return canonicalId(value).replace(/^__/, '');
@@ -27,33 +62,33 @@ function claimedCallingConventions(plugin) {
 
 export class ABIPlugin {
   constructor(definition = {}) {
-    const id = canonicalId(definition.id);
-    if (!id) throw new TypeError('ABI id is required');
-    const architectureId = canonicalId(definition.architectureId);
-    if (!architectureId) throw new TypeError(`ABI ${id} architectureId is required`);
+    const id = requiredCanonicalId(definition.id, 'ABI id');
+    const architectureId = requiredCanonicalId(definition.architectureId, `ABI ${id} architectureId`);
 
     this.id = id;
-    this.semanticVersion = String(definition.semanticVersion || '1');
-    this.semanticIdentity = String(definition.semanticIdentity || `${id}@${this.semanticVersion}`);
+    this.semanticVersion = optionalIdentity(definition.semanticVersion, '1', `ABI ${id} semanticVersion`);
+    this.semanticIdentity = optionalIdentity(
+      definition.semanticIdentity,
+      `${id}@${this.semanticVersion}`,
+      `ABI ${id} semanticIdentity`,
+    );
     this.architectureId = architectureId;
-    this.platformPredicate = typeof definition.platformPredicate === 'function'
-      ? definition.platformPredicate
-      : (() => true);
-    this.callingConventions = definition.callingConventions || (() => frozenArray([]));
-    this.classifyArguments = definition.classifyArguments || (() => ({
+    this.platformPredicate = normalizeABIHook(definition.platformPredicate, 'platformPredicate', () => true);
+    this.callingConventions = normalizeABIHook(definition.callingConventions, 'callingConventions', () => frozenArray([]));
+    this.classifyArguments = normalizeABIHook(definition.classifyArguments, 'classifyArguments', () => ({
       srcs: [], arguments: [], stackArguments: [], stackArgsUnknown: true,
       stackArgsMayContainPointers: true, evidence: 'unsupported-abi', unsupported: true,
     }));
-    this.classifyCallReturn = definition.classifyCallReturn || (() => null);
-    this.classifyFunctionReturn = definition.classifyFunctionReturn || (() => null);
-    this.classifyEntryRegister = definition.classifyEntryRegister || (() => ({ kind:'incoming-register-state' }));
-    this.callerSaved = definition.callerSaved || (() => frozenArray([]));
-    this.calleeSaved = definition.calleeSaved || (() => frozenArray([]));
-    this.stackRules = definition.stackRules || (() => Object.freeze({ unknown:true }));
-    this.redZone = definition.redZone || (() => null);
+    this.classifyCallReturn = normalizeABIHook(definition.classifyCallReturn, 'classifyCallReturn', () => null);
+    this.classifyFunctionReturn = normalizeABIHook(definition.classifyFunctionReturn, 'classifyFunctionReturn', () => null);
+    this.classifyEntryRegister = normalizeABIHook(definition.classifyEntryRegister, 'classifyEntryRegister', () => ({ kind:'incoming-register-state' }));
+    this.callerSaved = normalizeABIHook(definition.callerSaved, 'callerSaved', () => frozenArray([]));
+    this.calleeSaved = normalizeABIHook(definition.calleeSaved, 'calleeSaved', () => frozenArray([]));
+    this.stackRules = normalizeABIHook(definition.stackRules, 'stackRules', () => Object.freeze({ unknown:true }));
+    this.redZone = normalizeABIHook(definition.redZone, 'redZone', () => null);
     this.syscallABI = definition.syscallABI || null;
-    this.unwindRules = definition.unwindRules || (() => Object.freeze({ unknown:true }));
-    this.defaultUnknownCallEffects = definition.defaultUnknownCallEffects || (() => Object.freeze({
+    this.unwindRules = normalizeABIHook(definition.unwindRules, 'unwindRules', () => Object.freeze({ unknown:true }));
+    this.defaultUnknownCallEffects = normalizeABIHook(definition.defaultUnknownCallEffects, 'defaultUnknownCallEffects', () => Object.freeze({
       registerEffects:'unknown', memoryEffects:'unknown', mayThrow:true,
     }));
     this.supported = definition.supported !== false;
@@ -166,7 +201,23 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   if (id) {
     const explicit = abiPlugin(id);
     if (!explicit || explicit.id === 'unknown') return explicit;
-    return abiPluginClaimsCallingConvention(explicit, callingConvention) ? explicit : abiPlugin('unknown');
+    if (!abiPluginClaimsCallingConvention(explicit, callingConvention)) return abiPlugin('unknown');
+    // An explicit id selects the profile, not a waiver of target identity:
+    // the plugin must still match the target architecture (with the
+    // established arm64e->arm64 exception) and any given platform.
+    const arch = canonicalId(architecture);
+    if (arch && explicit.architectureId !== arch && !(arch === 'arm64e' && explicit.architectureId === 'arm64')) {
+      return abiPlugin('unknown');
+    }
+    const platformId = canonicalId(platform);
+    if (platformId) {
+      let matches = false;
+      try {
+        matches = explicit.platformPredicate({ architecture: arch || explicit.architectureId, platform: platformId });
+      } catch { matches = false; }
+      if (!matches) return abiPlugin('unknown');
+    }
+    return explicit;
   }
   const arch = canonicalId(architecture);
   const platformId = canonicalId(platform);

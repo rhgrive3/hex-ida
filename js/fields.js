@@ -117,17 +117,19 @@ export class FieldIndex {
         }
         return null;
       };
-      for (const m of (c.methods || []).concat(c.classMethods || [])) {
-        if (m.addr == null) continue;
+      const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
+        if (m.addr == null) return;
         const key = m.addr.toString();
         const owner = {
-          className: c.name, sel: m.sel || null, kind: m.kind || '-',
-          accessorField: accessorField(m.sel),
+          className: c.name, sel: m.sel || null, kind: m.kind || defaultKind,
+          accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
         const owners = this.methodOwner.get(key) || [];
         if (!owners.some((x) => x.className === owner.className && x.sel === owner.sel && x.kind === owner.kind)) owners.push(owner);
         this.methodOwner.set(key, owners);
-      }
+      };
+      for (const m of c.methods || []) addMethodOwner(m, '-', true);
+      for (const m of c.classMethods || []) addMethodOwner(m, '+', false);
     }
   }
 
