@@ -170,6 +170,13 @@ export class RuntimeAnalysisPlatform {
   }
   async verifyHypothesis(hypothesis, options = {}) {
     const session = this.currentSession();
+    // A hypothesis explicitly bound to a binary must not be silently re-bound
+    // to the active session: compileExperiment() prefers the injected
+    // options.binaryHash, which overwrote the hypothesis' own binding and
+    // defeated the runExperiment() mismatch guard below (#6139). Fail closed
+    // on disagreement; unbound hypotheses keep inheriting the session
+    // identity.
+    if (hypothesis?.binaryHash && session.binaryHash && hypothesis.binaryHash !== session.binaryHash) throw new DebugAdapterError('binary-version-mismatch','hypothesis binary hash does not match the active runtime session',{hypothesisHash:hypothesis.binaryHash,sessionHash:session.binaryHash});
     const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash });
     return this.runExperiment(experiment, options);
   }
