@@ -33,8 +33,8 @@ function optionalCallback(value) {
   // functions, which may be class constructors and would throw on call.
   let source;
   try { source = Function.prototype.toString.call(value).trim(); } catch { return null; }
-  if (/^class(?:\\s|\\{)/.test(source)) return null;
-  if (/^function\\s*\\([^)]*\\)\\s*\\{\\s*\\[native code\\]\\s*\\}$/.test(source)) return null;
+  if (/^class(?:\s|\{)/.test(source)) return null;
+  if (/^function\s*\([^)]*\)\s*\{\s*\[native code\]\s*\}$/.test(source)) return null;
   return value;
 }
 function addressOf(value) {
