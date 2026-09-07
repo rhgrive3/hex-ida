@@ -28,10 +28,11 @@ function addIntervention(bridge, {
   interventionId,
   parentInterventionIds = [],
   sequence = 1,
+  runtimeSessionId = 'session-A',
 } = {}) {
   return bridge.interventions.add({
     interventionId,
-    runtimeSessionId: 'session-A',
+    runtimeSessionId,
     providerId: 'provider-A',
     kind: 'memory-write',
     target: { address: '0x1000' },
@@ -82,6 +83,22 @@ test('known intervention ancestry remains complete and exact evidence stays comp
     ['child-intervention', 'parent-intervention'],
   );
   assert.equal(evidence.completeness, 'complete');
+});
+
+test('runtime evidence rejects a known intervention from another session (#5973)', () => {
+  const bridge = new RuntimeEvidenceBridge();
+  addIntervention(bridge, {
+    interventionId: 'foreign-intervention',
+    runtimeSessionId: 'session-B',
+  });
+
+  assert.throws(
+    () => bridge.eventToEvidence({
+      ...baseEvent,
+      interventionIds: ['foreign-intervention'],
+    }, exactResolution),
+    (error) => error?.code === 'runtime-intervention-session-mismatch',
+  );
 });
 
 test('events without interventions preserve existing evidence behavior (#5973)', () => {
