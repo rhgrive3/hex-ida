@@ -243,6 +243,31 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         continue;
       }
     } else {
+      // AAPCS64 Stage B.4 (Apple arm64 follows the same parameter-marshal
+      // rule): a composite larger than 16 bytes is copied by the caller and
+      // the argument is replaced by a pointer to the copy.  Passing the
+      // object itself split across x0..xN invents by-value placement facts
+      // for aggregates the real ABI never passes in registers (issue #5601).
+      const aggregatePhysicalBytes = c.aggregateBytes ?? Math.ceil(c.bits / 8);
+      if (c.aggregate && aggregatePhysicalBytes > 16) {
+        const reg = gp < 8 ? `x${gp++}` : null;
+        const entry = reg
+          ? { index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true,
+            bits:64, bytes:8, pointeeBits:c.bits, pointeeBytes:aggregatePhysicalBytes,
+            aggregate:true, callerCopy:true,
+            pieces:[{ pieceIndex:0, order:0, reg, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
+            possible:false, mustUse:true }
+          : { index, location:'stack', offset:stackOffset, bytes:8, abiClass:'aggregate-indirect-copy', pointer:true,
+            bits:64, pointeeBits:c.bits, pointeeBytes:aggregatePhysicalBytes,
+            aggregate:true, callerCopy:true,
+            pieces:[{ pieceIndex:0, order:0, stackOffset, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
+            possible:false, mustUse:true };
+        if (reg) srcs.push(registerSource(reg, 64));
+        else { stackArguments.push(entry); stackOffset += 8; }
+        arguments_.push(entry);
+        stackArgsMayContainPointers = true;
+        continue;
+      }
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
       // A padded aggregate needs a physical lane proof that differs from its
       // logical bit width.  Do not publish an invented register split until a
