@@ -126,43 +126,47 @@ export class DebugSession {
     return snapshot();
   }
   _prepareEvent(event, sourceEpoch = null) {
-    if (!event) return { present:false, value:null };
+    if (!event) return { ok:true, present:false, value:null };
     const epochAuthority = traceEventEpochAuthority(event);
-    if (epochAuthority == null) return null;
+    if (epochAuthority == null) return { ok:false, reason:'event-epoch-invalid' };
     const safeEvent = wireSafeTraceEvent(event);
-    if (safeEvent == null) return null;
+    if (safeEvent == null) return { ok:false, reason:'wire-unsafe' };
     let epoch;
     if (epochAuthority.materialize) {
-      if (!safeEvent || typeof safeEvent !== 'object' || Array.isArray(safeEvent)) return null;
+      if (!safeEvent || typeof safeEvent !== 'object' || Array.isArray(safeEvent)) {
+        return { ok:false, reason:'event-epoch-invalid' };
+      }
       Object.defineProperty(safeEvent,'epoch',{value:epochAuthority.value,enumerable:true,writable:true,configurable:true});
       epoch = epochAuthority.epoch;
     } else {
       const hasSafeEpoch = safeEvent && typeof safeEvent === 'object'
         && Object.prototype.hasOwnProperty.call(safeEvent, 'epoch');
-      if (epochAuthority.explicit && !hasSafeEpoch) return null;
+      if (epochAuthority.explicit && !hasSafeEpoch) return { ok:false, reason:'event-epoch-missing' };
       const safeEpoch = hasSafeEpoch ? safeEvent.epoch : null;
       epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
     }
-    if (epoch == null || epoch !== this.epoch) return null;
-    return { present:true, value:safeEvent };
+    if (epoch == null) return { ok:false, reason:'event-epoch-invalid' };
+    if (epoch !== this.epoch) return { ok:false, reason:'event-epoch-mismatch' };
+    return { ok:true, present:true, value:safeEvent };
   }
   acceptEvent(event, sourceEpoch = null) {
     if (this.closed) return false;
     const prepared = this._prepareEvent(event, sourceEpoch);
-    if (prepared == null) return false;
+    if (!prepared.ok) return false;
     if (prepared.present) this.traces.push(prepared.value);
     return true;
   }
   acceptEvents(events, sourceEpoch = null) {
-    if (this.closed || !Array.isArray(events)) return false;
+    if (this.closed) return { ok:false, reason:'closed-session' };
+    if (!Array.isArray(events)) return { ok:false, reason:'events-not-array' };
     const prepared = [];
     for (const event of events) {
       const item = this._prepareEvent(event, sourceEpoch);
-      if (item == null) return false;
+      if (!item.ok) return item;
       if (item.present) prepared.push(item.value);
     }
     for (const event of prepared) this.traces.push(event);
-    return true;
+    return { ok:true, count:prepared.length };
   }
   newEpoch() {
     const next = this.epoch + 1;
