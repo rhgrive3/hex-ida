@@ -25,8 +25,18 @@ function finiteConfidence(value, fallback = 0.5) {
 }
 
 function normalizePerms(p) {
-  if (!p) return { read: false, write: false, execute: false };
-  return { read: !!p.read, write: !!p.write, execute: !!p.execute };
+  // Permissions are a typed R/W/X authority: truthiness would promote
+  // 'false'/[]/{} to granted access (#5886).
+  if (!p || typeof p !== 'object') return { read: false, write: false, execute: false };
+  const flag = (value) => value === true;
+  return { read: flag(p.read), write: flag(p.write), execute: flag(p.execute) };
+}
+
+// Extents merge as BigInt arithmetic; accept only genuine integers (#5891).
+function toExtentBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  return null;
 }
 
 function minBigInt(a, b) { return a < b ? a : b; }
@@ -376,9 +386,25 @@ export function functionSeed(address, opts = {}) {
 export function mergeFunctionSeeds(input, context = {}) {
   const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
-  for (const f0 of input || []) {
-    if (f0 == null || f0.address == null) continue;
-    const f = { ...f0, address: BigInt(f0.address), confidence: finiteConfidence(f0.confidence, 0.5), extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5) };
+  for (const rawSeed of input || []) {
+    if (rawSeed == null || rawSeed.address == null) continue;
+    let f0 = rawSeed;
+    const address = toExtentBigInt(rawSeed.address);
+    if (address == null) continue;
+    // size/end participate in BigInt extent arithmetic; safe-integer numbers
+    // are canonicalized here instead of throwing a raw mixed-type TypeError
+    // downstream (#5891).
+    if (f0.size != null) {
+      const size = toExtentBigInt(f0.size);
+      if (size == null) continue;
+      f0 = { ...f0, size };
+    }
+    if (f0.end != null) {
+      const end = toExtentBigInt(f0.end);
+      if (end == null) continue;
+      f0 = { ...f0, end };
+    }
+    const f = { ...f0, address, confidence: finiteConfidence(f0.confidence, 0.5), extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5) };
     if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
     if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
     const k = f.address.toString();
