@@ -125,6 +125,10 @@ export function normalizeNavigation(value = {}) {
  */
 const BIGINT_TAG = '$hexBigInt';
 const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
+// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
+// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
+// inside the size-limited file from paying unbounded conversion cost (#5906).
+const MAX_BIGINT_HEX_DIGITS = 128;
 
 function escapeBigIntTag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
@@ -174,6 +178,7 @@ export function parseHexProject(input) {
         const encoded = value[BIGINT_TAG];
         if (!/^-?[0-9a-f]+$/i.test(encoded) || encoded === '-') throw new ProjectFormatError('invalid bigint encoding');
         const negative = encoded.startsWith('-'); const magnitude = negative ? encoded.slice(1) : encoded;
+        if (magnitude.length > MAX_BIGINT_HEX_DIGITS) throw new ProjectFormatError('bigint magnitude exceeds the project resource limit', 'resource-limit');
         const parsed = BigInt('0x' + magnitude); return negative ? -parsed : parsed;
       }
       return unescapeBigIntTag(value);

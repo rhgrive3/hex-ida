@@ -41,7 +41,22 @@ function nextNoteGeneration() {
 /** BigInt でも Number でも同じ鍵になるように、10 進の文字列にそろえる。 */
 function key(addr) {
   if (addr == null) return '';
-  return typeof addr === 'bigint' ? addr.toString() : String(BigInt(Math.trunc(Number(addr))));
+  if (typeof addr === 'bigint') return addr.toString();
+  if (typeof addr === 'number') {
+    if (!Number.isSafeInteger(addr)) return '';
+    return BigInt(addr).toString();
+  }
+  if (typeof addr === 'string') {
+    // Decimal/hex strings are exact identities and must not pass through
+    // Number, which silently rounds > 2^53 addresses into each other (#5909).
+    const text = addr.trim();
+    if (!text) return '';
+    try {
+      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return BigInt(text).toString();
+    } catch { /* fall through: not an address */ }
+    return '';
+  }
+  return '';
 }
 
 /**
