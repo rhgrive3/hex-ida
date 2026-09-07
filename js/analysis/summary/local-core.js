@@ -62,7 +62,7 @@ function effectsForAccesses(node, scope, resolveRegion, source) {
       }));
     }
   }
-  return { effects, complete: true };
+  return { effects, complete };
 }
 
 function broadEffect(node, addressSpaces, source) {
