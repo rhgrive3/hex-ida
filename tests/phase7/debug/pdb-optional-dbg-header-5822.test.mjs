@@ -19,16 +19,20 @@ import {
 // Rewrite optionalDbgHeaderSize (DBI header field at offset 48) in every copy
 // of the DBI header found in the physical image. The DBI header is identified
 // by its version field plus the exact parsed optionalDbgHeaderSize at 48.
-function rewriteOptionalDbgHeaderSize(image, dbi, value) {
+function rewriteDbiField(image, dbi, fieldOffset, value) {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   let rewritten = 0;
   for (let offset = 0; offset + 64 <= image.length; offset += 4) {
     if (view.getUint32(offset + 4, true) !== dbi.versionHeader) continue;
     if (view.getInt32(offset + 48, true) !== dbi.optionalDbgHeaderSize) continue;
-    view.setInt32(offset + 48, value, true);
+    view.setInt32(offset + fieldOffset, value, true);
     rewritten += 1;
   }
   return rewritten;
+}
+
+function rewriteOptionalDbgHeaderSize(image, dbi, value) {
+  return rewriteDbiField(image, dbi, 48, value);
 }
 
 test('#5822 zero optionalDbgHeaderSize fails closed instead of reading past the declared extent', () => {
@@ -91,6 +95,34 @@ test('#5822 negative optionalDbgHeaderSize fails closed', () => {
   const after = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: negative });
   assert.equal(after.parsed.sectionHeaders.length, 0);
   assert.equal(after.status.completeness, 'partial');
+});
+
+test('#5822 negative preceding DBI substream size fails closed before offset calculation', () => {
+  const variant = loadPdbFixtures().variants[0];
+  const original = new Uint8Array(Buffer.from(variant.pdb, 'base64'));
+  const msf = parseMsf(original);
+  const dbi = parseDbiHeader(msf.streams[3].read());
+  assert.ok(dbi, 'fixture must parse a DBI header');
+  assert.ok(dbi.optionalDbgHeaderSize >= (5 + 1) * 2,
+    'fixture must declare the SectionHdr entry');
+
+  const malformed = new Uint8Array(original);
+  // moduleSubstreamSize is the first variable-size DBI substream at offset 24.
+  // Keep optionalDbgHeaderSize intact; only the preceding signed size is hostile.
+  assert.ok(rewriteDbiField(malformed, dbi, 24, -1) >= 1,
+    'DBI header must be present in the image');
+
+  const after = new PdbDebugInfoProvider().probe({ ...pdbImage(variant), pdbBytes: malformed });
+  assert.equal(after.parsed.sectionHeaders.length, 0,
+    'negative preceding DBI size must not shift into a fabricated SectionHdr');
+  assert.equal(after.status.completeness, 'partial');
+  const symbolAddresses = after.symbols ? after.symbols(after, {}) : null;
+  if (symbolAddresses?.records?.length) {
+    for (const record of symbolAddresses.records) {
+      assert.equal(record.address, null,
+        'without trusted section headers, symbol addresses stay segment-relative');
+    }
+  }
 });
 
 test('#5822 an optional debug header extending past the DBI stream fails closed', () => {
