@@ -345,7 +345,7 @@ export const FEATURE_OF_CATEGORY = {
    命令の事実（Instruction Model）
    ──────────────────────────────────────────────────────────── */
 
-const CALL_MN = /^(bl|blr|blraa|blrab)$/;
+const CALL_MN = /^(bl|blr|blraa|blrab|blraaz|blrabz)$/;
 const RET_MN = /^(ret|retaa|retab)$/;
 const COND_BRANCH = /^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/;
 const COMPARE_MN = /^(cmp|cmn|tst|ccmp|ccmn|fcmp|fcmpe)$/;
@@ -487,6 +487,9 @@ export function makeInstruction(raw) {
     }
   }
   insn.reads = Array.from(reads);
+  // BL/BLR (and authenticated link forms) architecturally write X30/LR with
+  // the return address. Expose that implicit write to generic dataflow users.
+  if (insn.isCall) writes.add('x30');
   insn.writes = Array.from(writes);
   insn.destination = wIdx.length ? parsed[wIdx[0]] || null : null;
   insn.source = parsed.length > 1 ? parsed[wIdx.length ? 1 : 0] || null : (parsed[0] || null);
@@ -586,6 +589,15 @@ function value(kind, extra, conf, evList, def) {
  */
 
 const CALLER_SAVED = 18;   // x0〜x17 は呼び出しで壊れる（x18 はプラットフォーム予約）
+
+function toLinkReturnAddress(address) {
+  try {
+    if (address == null) return null;
+    const pc = typeof address === 'bigint' ? address : BigInt(address);
+    if (pc < 0n) return null;
+    return pc + 4n;
+  } catch { return null; }
+}
 
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
@@ -786,9 +798,18 @@ export function analyzeDataFlow(insns, opts) {
       for (let a = 0; a < CALLER_SAVED; a++) regs.delete('x' + a);
       // BL/BLR は分岐と同時に X30/LR を書く（Arm ISA: branch-with-link は
       // return address を X30 に格納する）。呼び出し前の X30 値は必ず死ぬ。
-      // 呼び出し先が返った後の正確な戻りアドレス表現は legacy IR では
-      // mint しない。ここでは古い値の残存だけを確実に潰す（#6126）。
-      regs.delete('x30');
+      // 末尾呼び出しとして昇格した plain B は link write を持たないため除外する。
+      if (!insn.isTailCall) {
+        regs.delete('x30');
+        const linkAddr = toLinkReturnAddress(insn.address);
+        if (linkAddr != null) {
+          const link = value('imm', { value: linkAddr },
+            SCORE.confirmed,
+            [ev('call-link', insn.row, { value: linkAddr })], insn.row);
+          set('x30', link);
+          flow('call-link', insn.row, null, 'x30', link);
+        }
+      }
       const retKind = api && api.ret ? api.ret : null;
       const ret = value('callResult', { call, ret: retKind },
         name ? SCORE.high : SCORE.inferred,
