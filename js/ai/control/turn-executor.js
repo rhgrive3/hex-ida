@@ -96,6 +96,7 @@ export async function executeTurn(input = {}, options = {}) {
       try {
         ensureRunning(signal, started, turnTimeoutMs);
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
@@ -104,6 +105,7 @@ export async function executeTurn(input = {}, options = {}) {
             isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = this.evidenceStore.ingestPlan(plan);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
@@ -203,29 +205,49 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // Live-binding violations must never become a fallback decision.
+        // The inner catch runs caller-supplied onActivity synchronously, so a
+        // drift detected at the planner boundary could otherwise be masked by
+        // restoring the bindings before the final guard. Latch fail-closed.
+        if (normalized.type === 'scope_violation') throw normalized;
         limitReason = normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
 
+      assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
       const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
-      await this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer });
-      await this.sessionStore.updateMemory(session.id, {
-        anchor: memoryAnchor(snapshot, scopeController.effectiveScope, this.localContext),
+      // Every asynchronous persistence boundary gets a pre/post binding check.
+      // The payloads below are snapshot-derived; a live workbench switch while
+      // a persistence adapter is awaiting cannot turn this turn into a normal
+      // completion or inject current runtime identity into old session memory.
+      const persistWithBindingCheck = async (operation) => {
+        assertLiveBindingsUnchanged(this.localContext, snapshot);
+        try {
+          return await operation();
+        } finally {
+          // A rejected write must still prove that the live binding did not
+          // drift before the rejection escapes this turn.
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
+        }
+      };
+      await persistWithBindingCheck(() => this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer }));
+      await persistWithBindingCheck(() => this.sessionStore.updateMemory(session.id, {
+        anchor: memoryAnchor(snapshot, scopeController.effectiveScope),
         confirmedFacts: result.evidence.filter((item) => item.status === 'verified').map((item) => ({ id: item.id, summary: item.summary || item.title, functionAddress: item.functionAddress })),
         activeHypotheses: result.hypotheses.filter((item) => item.status === 'open' || item.status === 'supported'),
         rejectedHypotheses: result.hypotheses.filter((item) => item.status === 'rejected'),
         unresolvedQuestions: result.followups,
         importantPriorActions: result.actions,
-      });
-      await this.sessionStore.update(session.id, {
+      }));
+      await persistWithBindingCheck(() => this.sessionStore.update(session.id, {
         effectiveScope: scopeController.effectiveScope, hypotheses: this.hypothesisStore.all(),
         confirmedFindings: typeof this.evidenceStore.byStatus === 'function'
           ? this.evidenceStore.byStatus('verified')
           : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
         lastActivity: activity[activity.length - 1] || null,
-      });
+      }));
       result.sessionId = session.id;
       return validateAIResult(result);
     } finally {

@@ -706,9 +706,9 @@
             "type": "source-includes",
             "path": "js/collaboration/index.js",
             "markers": [
-              "const actionInput = input.action ?? 'set';",
-              "operation.action === 'remove'",
-              "operation.action === 'resolve'",
+              "const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect'])",
+              "const actionInput = input.action ?? 'set'",
+              "!OPERATION_ACTIONS.has(action)",
               "operation.action !== 'resurrect'"
             ]
           }
@@ -808,6 +808,7 @@
             "end": "\n  }\n\n  accept(envelope)",
             "regex": "reason: '([^']+)'",
             "expected": [
+              "remote-envelope-shape-invalid",
               "remote-envelope-schema-unsupported",
               "remote-operation-schema-unsupported",
               "remote-project-identity-required",

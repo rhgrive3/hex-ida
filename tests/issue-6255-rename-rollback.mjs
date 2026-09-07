@@ -86,11 +86,12 @@ function appFor({ renameThrows = false, rollbackThrows = false } = {}) {
   assert.equal(state().refreshes, 0, 'display state must not be refreshed from a partially applied rename');
 }
 
-// #3758 persistence/atomicity regressions live in the AI test lane. Importing
+// AI persistence/atomicity regressions live in the AI test lane. Importing
 // them here keeps them inside the existing required `ai:test` denominator
-// without widening Phase 12 ownership for the AI capability executor.
+// without widening Phase 12 ownership for AI production files.
 await import('./ai/adversarial/issue-3758-ai-annotation-persistence.test.mjs');
 await import('./ai/adversarial/issue-3758-ai-annotation-save-adapter.test.mjs');
+await import('./ai/adversarial/issue-3773-ai-approval-token-atomic.test.mjs');
 await import('./ai-proposal-note-readiness.mjs');
 
 console.log('issue-6255-rename-rollback: ok');

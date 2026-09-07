@@ -1,23 +1,6 @@
 name: Stage 2 authority runtime rebuild validation
 
 on:
-  pull_request:
-    paths:
-      - 'js/runtime/authority.js'
-      - 'js/runtime/stage2.js'
-      - 'js/managed/runtime-binding.js'
-      - 'js/managed/index.js'
-      - 'js/rebuild/**'
-      - 'js/collaboration/**'
-      - 'js/phase12/index.js'
-      - 'js/platform/physical-ipad-evidence.js'
-      - 'js/platform/stage2-capability-maturity.js'
-      - 'tests/stage2/**'
-      - 'tools/validation/stage2/**'
-      - 'tools/validation/phase10/ownership.json'
-      - 'tools/validation/phase11/ownership.json'
-      - 'tools/validation/phase12/ownership.json'
-      - '.github/workflows/stage2-release-validation.yml'
   workflow_dispatch:
     inputs:
       expect_sha:

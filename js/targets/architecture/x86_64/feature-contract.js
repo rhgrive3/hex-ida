@@ -30,6 +30,10 @@ function bool(value, code) {
   return value;
 }
 
+function featureProfileId(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 function normalizeFeatureState(input) {
   if (input == null) return X86_LONG64_BASE_FEATURE_STATE;
   if (typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-feature-state-object-required');
@@ -50,12 +54,11 @@ function normalizeFeatureState(input) {
 }
 
 export function resolveX86Long64FeatureEnvelope(instruction = {}, context = {}) {
-  const profileId = String(
-    context.targetProfileId
+  const selectedProfileId = context.targetProfileId
     ?? context.featureProfileId
     ?? instruction.featureProfileId
-    ?? X86_LONG64_BASE_PROFILE_ID
-  );
+    ?? X86_LONG64_BASE_PROFILE_ID;
+  const profileId = featureProfileId(selectedProfileId);
   if (profileId !== X86_LONG64_BASE_PROFILE_ID) {
     return Object.freeze({ supported:false, profileId, reason:'x86-feature-profile-mismatch', contractVersion:X86_LONG64_FEATURE_CONTRACT_VERSION });
   }

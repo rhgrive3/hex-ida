@@ -79,7 +79,8 @@ export class SolverSession {
     if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true });
     if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true });
     if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true });
-    if (options.signal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
+    const externalSignal = options.signal;
+    if (externalSignal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
 
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
@@ -149,8 +150,9 @@ export class SolverSession {
     record.settle = settle;
     this._inFlight.set(token, record);
 
-    if (options.signal?.addEventListener) {
+    if (externalSignal?.addEventListener) {
       const onAbort = () => {
+        if (record.settled) return;
         record.cancelled = true;
         this.currentQueryToken++;
         this.state = SESSION_STATE.CANCELLED;
@@ -158,8 +160,11 @@ export class SolverSession {
         Promise.resolve(this._onCancel()).catch(() => {});
         settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }));
       };
-      options.signal.addEventListener('abort', onAbort, { once: true });
-      record.removeExternalAbort = () => options.signal.removeEventListener?.('abort', onAbort);
+      // Install cleanup before subscribing: compatible signals may dispatch synchronously.
+      record.removeExternalAbort = () => externalSignal.removeEventListener?.('abort', onAbort);
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+      if (externalSignal.aborted) onAbort();
+      if (record.settled) return promise;
     }
 
     if (timeoutMs > 0) {
@@ -176,7 +181,7 @@ export class SolverSession {
     }
 
     Promise.resolve()
-      .then(() => this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
+      .then(() => record.settled ? undefined : this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
       .then((result) => { if (!record.settled) settle(result); })
       .catch((error) => {
         if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure'));
