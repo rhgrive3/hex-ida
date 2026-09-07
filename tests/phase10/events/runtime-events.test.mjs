@@ -49,10 +49,11 @@ test('P10.3 event pressure creates explicit loss and cannot return complete evid
   assert.ok(normalizer.push({ type: 'call', streamId: 't1', sequence: 1 }));
   assert.equal(normalizer.push({ type: 'return', streamId: 't1', sequence: 2 }), null);
   const batch = normalizer.flush();
-  assert.equal(batch.dropped, 1);
+  assert.equal(batch.dropped, 2);
   assert.equal(batch.completeness, 'truncated');
+  assert.equal(batch.events.length, 1);
   assert.equal(batch.events[0].kind, 'dropped-events');
-  assert.equal(batch.events[0].payload.dropped, 1);
+  assert.equal(batch.events[0].payload.dropped, 2);
   assert.throws(() => createRuntimeEventBatch({ ...context, completeness: 'complete', events: [batch.events[0]] }), /cannot be complete|upgrade/i);
 });
 

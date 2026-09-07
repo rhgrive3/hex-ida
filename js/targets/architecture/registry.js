@@ -49,6 +49,10 @@ export class ArchitecturePluginV2 {
       (Array.isArray(definition.supportedMemoryEndianness) ? definition.supportedMemoryEndianness : [])
         .map((value) => canonicalArchitectureId(value)).filter(Boolean)
     )]);
+    this.supportedInstructionEndianness = Object.freeze([...new Set(
+      (Array.isArray(definition.supportedInstructionEndianness) ? definition.supportedInstructionEndianness : [])
+        .map((value) => canonicalArchitectureId(value)).filter(Boolean)
+    )]);
     this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
     this.fixedInstructionSize = normalizeArchitecturePositiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable:true });
     this.viewerCompatible = !!definition.viewerCompatible;
