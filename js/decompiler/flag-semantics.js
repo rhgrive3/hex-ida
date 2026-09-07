@@ -94,7 +94,7 @@ export function isNZCVCondition(cond) {
   return CONDITIONS.has(cond.toLowerCase());
 }
 
-export function evaluateNZCVCondition(sub, cond, left, right, bits = 64) {
+export function evaluateNZCVCondition(sub, cond, left, right, bits) {
   const producer = canonicalProducer(sub);
   if (producer === null) return null;
   const condition = canonicalCondition(cond);
@@ -104,7 +104,7 @@ export function evaluateNZCVCondition(sub, cond, left, right, bits = 64) {
   } else {
     if (canonicalOperandValue(left) === null || canonicalOperandValue(right) === null) return null;
   }
-  const width = canonicalBits(bits);
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
   const f = flagsFor(producer, left, right, width);
   if (!f || !CONDITIONS.has(condition)) return null;
@@ -167,7 +167,7 @@ function intrinsicCondition(sub, cond, left, right, bits, source) {
  * losing carry/overflow semantics, retain it as an explicit architecture
  * intrinsic instead of manufacturing a false high-level predicate.
  */
-export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, source = null) {
+export function buildNZCVConditionExpression(sub, cond, left, right, bits, source = null) {
   const producer = canonicalProducer(sub);
   if (producer === null) return null;
   const condition = canonicalCondition(cond);
@@ -236,7 +236,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
   return intrinsicCondition(sub, cond, left, right, bits, source);
 }
 
-export function renderNZCVCondition(sub, cond, leftText, rightText, bits = 64, source = null) {
+export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
   if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
   const width = canonicalBits(bits);
   if (width === null || !WIDTH_BITS.has(width)) return null;
