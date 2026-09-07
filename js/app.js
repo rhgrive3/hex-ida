@@ -138,6 +138,34 @@ export async function buildRecognitionState({
   };
 }
 
+// Keep the App cache/epoch wrapper executable in integration tests without
+// constructing the browser UI. App.ensureRecognition delegates to this seam,
+// so tests exercise the same production state and completeness path.
+export async function ensureRecognitionState(app, options = {}) {
+  const sym = app?.symbols;
+  if (!sym || sym === EMPTY_INDEX) return null;
+  if (app.recognition && app.recognition.gen === sym.gen) return app.recognition;
+  if (app.recognitionBusy) return app.recognitionBusy;
+  const epoch = app.backend.gen;
+  const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
+  const knowledgeLimit = Math.min(2048, Math.max(0, Number(options.knowledgeLimit ?? 512)));
+  const pending = (async () => {
+    try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
+    if (epoch !== app.backend.gen || sym !== app.symbols) return null;
+    const state = await buildRecognitionState({
+      sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
+      binaryHash:app.backend.contentHash || null,
+      isCurrent:() => epoch === app.backend.gen && sym === app.symbols,
+    });
+    if (state == null) return null;
+    if (epoch === app.backend.gen && sym === app.symbols) app.recognition = state;
+    return state;
+  })();
+  app.recognitionBusy = pending;
+  try { return await pending; }
+  finally { if (app.recognitionBusy === pending) app.recognitionBusy = null; }
+}
+
 
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
@@ -1286,28 +1314,7 @@ class App {
   }
 
   async ensureRecognition(options={}) {
-    const sym=this.symbols;
-    if(!sym || sym===EMPTY_INDEX) return null;
-    if(this.recognition && this.recognition.gen===sym.gen) return this.recognition;
-    if(this.recognitionBusy) return this.recognitionBusy;
-    const epoch=this.backend.gen;
-    const max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
-    const knowledgeLimit=Math.min(2048,Math.max(0,Number(options.knowledgeLimit ?? 512)));
-    const pending=(async()=>{
-      try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
-      if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-      const state=await buildRecognitionState({
-        sym, maxFunctions:max, knowledgeLimit, fields:this.fields, knowledge:this.knowledge,
-        binaryHash:this.backend.contentHash||null,
-        isCurrent:()=>epoch===this.backend.gen && sym===this.symbols,
-      });
-      if(state==null)return null;
-      if(epoch===this.backend.gen && sym===this.symbols)this.recognition=state;
-      return state;
-    })();
-    this.recognitionBusy=pending;
-    try { return await pending; }
-    finally { if(this.recognitionBusy===pending)this.recognitionBusy=null; }
+    return ensureRecognitionState(this, options);
   }
 
   /** その関数がどのクラスのメソッドか。分からなければ null。 */
