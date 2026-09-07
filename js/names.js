@@ -445,6 +445,27 @@ export class NoteStore {
   }
 
   /**
+   * Structural revalidation for a delta record that was unreadable at load
+   * time (#7160): mirrors the _loadDeltas decode boundary. Returns false when
+   * the record still fails the boundary; true when it parses as a well-formed
+   * current-generation delta (or has become safely ignorable).
+   */
+  _isUnreadableDeltaRecord(raw) {
+    try {
+      const delta = JSON.parse(raw);
+      if (!delta || typeof delta !== 'object') return false;
+      const hasGeneration = Object.prototype.hasOwnProperty.call(delta, 'generation');
+      if (hasGeneration && (typeof delta.generation !== 'string' || !delta.generation)) return false;
+      if (delta.generation !== this._snapshotGeneration) return true;
+      const map = this._mapForDelta(delta.kind);
+      if (!map || typeof delta.key !== 'string') return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Quarantine (or explicitly discard) only delta records that failed the
    * structural read/parse/schema boundary. Readable deltas remain intact, and
    * a successful recovery re-enables full snapshot compaction without using
@@ -460,6 +481,27 @@ export class NoteStore {
       try { raw = localStorage.getItem(storageKey); }
       catch { failed.push(storageKey); continue; }
       if (raw == null) continue;
+      if (this._isUnreadableDeltaRecord(raw)) {
+        // Repaired live record (transient read failure at load time): it stays
+        // live. Recovery is blocked with an explicit reload requirement — the
+        // caller must re-read the store so the record is incorporated in normal
+        // delta order; deleting it here would destroy live evidence (#7160).
+        if (!this._deltaBytes.has(storageKey)) {
+          try {
+            const bytes = new TextEncoder().encode(raw).byteLength;
+            this._deltaBytes.set(storageKey, bytes);
+            this._deltaTotalBytes += bytes;
+          } catch { failed.push(storageKey); continue; }
+        }
+        this._unreadableDeltaKeys.delete(storageKey);
+        this.lastSaveError = {
+          code: 'DELTA_RECOVERY_REPAIRED',
+          message: 'previously unreadable delta is now readable; reload to incorporate it safely',
+          recoveryRequired: true,
+          pendingKeys: [storageKey],
+        };
+        return false;
+      }
       try {
         if (quarantine) localStorage.setItem(
           quarantinePrefix + encodeURIComponent(storageKey),
