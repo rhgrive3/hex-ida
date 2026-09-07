@@ -98,15 +98,20 @@ function pruneSettledCache(cache) {
     cache.delete(cacheKey);
   }
 }
-function waitForShared(entry, signal) {
+function waitForShared(entry, signal, onDetach = null) {
   abortIfNeeded(signal); entry.waiters++;
   return new Promise((resolve, reject) => {
     let settled = false;
+    const detach = () => {
+      if (!onDetach) return;
+      const cleanup = onDetach; onDetach = null;
+      cleanup();
+    };
     const finish = (fn, value) => {
-      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); fn(value);
+      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach(); fn(value);
     };
     const onAbort = () => {
-      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1);
+      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach();
       if (!entry.settled && entry.waiters === 0) {
         entry.cancelled = true;
         entry.cancel?.();
@@ -250,7 +255,7 @@ function installDemandRecognition(app) {
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
     const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); bootstrapEpochs.add(epoch);
-    const result = originalApplySlice(...args); Promise.resolve(app.symbolsReady).finally(() => bootstrapEpochs.delete(epoch)); return result;
+    const result = originalApplySlice(...args); const clearBootstrap = () => bootstrapEpochs.delete(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
   };
   return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
 }
@@ -336,11 +341,24 @@ function installCancellableFunctionDiscovery(app) {
         entry = {
           request:{ cancel:() => producerController.abort('function-discovery-no-consumers') },
           promise:null, settled:false, waiters:0,
+          // Every consumer's progress observer is registered here so the
+          // shared producer notifies all of them, not only the consumer that
+          // happened to create the entry (#5860).
+          observers:new Set(),
         };
         entry.promise = (async () => {
           let remaining = Math.max(0, 400_000 - Math.min(400_000, symbols.functionCount || 0));
           let remainingBytes = unique.reduce((sum, item) => sum + BigInt(item.size), 0n);
           const results = [], reasons = [];
+          const emitProgress = (index, item, progress) => {
+            const payload = {
+              phase:'functions', region:item.id,
+              done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:unique.length,
+            };
+            for (const observer of entry.observers) {
+              try { observer.callback(payload); } catch { /* a broken observer never breaks discovery */ }
+            }
+          };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
             if (epoch !== Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0)) throw Object.assign(new Error('stale function discovery'), { stale:true });
@@ -354,10 +372,7 @@ function installCancellableFunctionDiscovery(app) {
               remainingBytes -= size;
               continue;
             }
-            const request = app.backend.guessFunctions(item.id, share, (progress) => options.onProgress?.({
-              phase:'functions', region:item.id,
-              done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:unique.length,
-            }));
+            const request = app.backend.guessFunctions(item.id, share, (progress) => emitProgress(index, item, progress));
             const onAbort = () => request.cancel?.();
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
@@ -393,7 +408,18 @@ function installCancellableFunctionDiscovery(app) {
         });
         producers.set(key, entry);
       }
-      return waitForShared(entry, options.signal ?? null);
+      // Register every consumer's observer on the shared entry, whether it
+      // created the producer or attached to an existing one (#5860).
+      const observer = typeof options.onProgress === 'function' ? { callback: options.onProgress } : null;
+      if (observer) entry.observers.add(observer);
+      try {
+        return waitForShared(entry, options.signal ?? null, () => {
+          if (observer) entry.observers.delete(observer);
+        });
+      } catch (error) {
+        if (observer) entry.observers.delete(observer);
+        throw error;
+      }
     };
     return run();
   };
@@ -474,8 +500,13 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
       const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const relationReason=source?.incompleteReason ?? reason ?? null;
-      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      // The scan only covers the validated range. When the function extent
+      // itself is unproven (analysis window or region clip), the scan cannot
+      // be complete no matter how the local scan ended (#5991).
+      const rangeIncomplete = range.complete === false;
+      const relationReason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null) ?? reason ?? null;
+      const incomplete = source?.complete === false || !!reason || rangeIncomplete;
+      const result = paged(Array.from(source || []), page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {

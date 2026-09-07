@@ -78,16 +78,34 @@ function canonicalOwn(out, key, value) {
   return out;
 }
 
+/* Host-locale independent total order over string keys (UTF-16 code units).
+ * Map entries must project into canonical records by key/value content only;
+ * insertion history and ICU collation differences must not leak (#5774). */
+function compareCanonicalKey(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortedMapEntries(map) {
+  const entries = [...map.entries()]
+    .map(([key, value]) => ({ key: String(key), value }))
+    .sort((a, b) => compareCanonicalKey(a.key, b.key));
+  for (let i = 1; i < entries.length; i += 1) {
+    if (entries[i - 1].key === entries[i].key) {
+      throw new TypeError('createSymbolicEvidence: map key projection collision');
+    }
+  }
+  return entries;
+}
+
 function canonicalize(val) {
   if (val === null || typeof val !== 'object') {
     if (typeof val === 'bigint') return `0x${val.toString(16)}`;
     return val;
   }
   if (val instanceof Map) {
-    const entries = [...val.entries()].sort(([k1], [k2]) => String(k1).localeCompare(String(k2)));
     let out = {};
-    for (const [k, v] of entries) {
-      out = canonicalOwn(out, String(k), canonicalize(v));
+    for (const { key, value } of sortedMapEntries(val)) {
+      out = canonicalOwn(out, key, canonicalize(value));
     }
     return out;
   }
@@ -279,11 +297,13 @@ export function createSymbolicEvidence({
   if (witnessModel) {
     if (witnessModel instanceof Map) {
       normalizedWitness = {};
-      for (const [k, v] of witnessModel.entries()) {
+      // Deterministic code-unit order for Map projection; canonicalOwn keeps
+      // proto-like keys as own data properties (#5774/#5903).
+      for (const { key, value } of sortedMapEntries(witnessModel)) {
         canonicalOwn(
           normalizedWitness,
-          String(k),
-          typeof v === 'bigint' ? `0x${v.toString(16)}` : canonicalize(v)
+          key,
+          typeof value === 'bigint' ? `0x${value.toString(16)}` : canonicalize(value)
         );
       }
     } else if (typeof witnessModel === 'object') {
@@ -295,11 +315,15 @@ export function createSymbolicEvidence({
   let normalizedOrigins = origins;
   if (origins instanceof Map) {
     normalizedOrigins = {};
-    for (const [k, v] of origins.entries()) {
+    // Deterministic code-unit order for Map projection; retain canonical values.
+    for (const { key, value: rawValue } of sortedMapEntries(origins)) {
+      const value = Array.isArray(rawValue) || rawValue instanceof Set
+        ? [...rawValue].map(String).sort()
+        : canonicalize(rawValue);
       canonicalOwn(
         normalizedOrigins,
-        String(k),
-        Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v)
+        key,
+        value
       );
     }
   } else if (typeof origins === 'object' && origins !== null) {
