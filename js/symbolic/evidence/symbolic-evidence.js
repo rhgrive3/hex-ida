@@ -62,6 +62,22 @@ function deepFreeze(obj) {
   return obj;
 }
 
+/*
+ * Dynamic keys are stored as own data properties. Assigning with `out[k] = ...`
+ * routes the key `'__proto__'` through the prototype setter, so an own
+ * `__proto__` target silently disappears and distinct targets normalize to the
+ * same canonical form — and therefore to the same Evidence ID (#5903).
+ */
+function canonicalOwn(out, key, value) {
+  Object.defineProperty(out, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return out;
+}
+
 function canonicalize(val) {
   if (val === null || typeof val !== 'object') {
     if (typeof val === 'bigint') return `0x${val.toString(16)}`;
@@ -69,18 +85,18 @@ function canonicalize(val) {
   }
   if (val instanceof Map) {
     const entries = [...val.entries()].sort(([k1], [k2]) => String(k1).localeCompare(String(k2)));
-    const out = {};
+    let out = {};
     for (const [k, v] of entries) {
-      out[String(k)] = canonicalize(v);
+      out = canonicalOwn(out, String(k), canonicalize(v));
     }
     return out;
   }
   if (Array.isArray(val)) {
     return val.map(canonicalize);
   }
-  const sorted = {};
+  let sorted = {};
   for (const k of Object.keys(val).sort()) {
-    sorted[k] = canonicalize(val[k]);
+    sorted = canonicalOwn(sorted, k, canonicalize(val[k]));
   }
   return sorted;
 }
