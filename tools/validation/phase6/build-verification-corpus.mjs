@@ -73,7 +73,7 @@ function targetFlagsFor(target) {
   throw new TypeError(`unknown Phase 6 corpus target: ${target.id}`);
 }
 
-function buildOne({ toolchain, target, optimization, outDir, debug = false }) {
+function buildOne({ toolchain, target, optimization, outDir, debug = false, reuseExisting = false }) {
   const output = path.join(outDir, `p6-${target.id}-${optimization}.elf`);
   const flags = [
     `--target=${PROFILE.toolchain.targetTriple}`,
@@ -91,7 +91,8 @@ function buildOne({ toolchain, target, optimization, outDir, debug = false }) {
     SOURCE,
     '-o', output,
   ];
-  run(toolchain.clang, flags);
+  if (!reuseExisting) run(toolchain.clang, flags);
+  else if (!fs.existsSync(output)) throw new Error(`Phase 6 reused artifact missing: ${output}`);
   const bytes = fs.readFileSync(output);
   const objectMetadata = run(toolchain.readobj, ['--file-headers', '--sections', '--symbols', '--relocations', '--dynamic-table', output]).stdout;
   const disassembly = run(toolchain.objdump, ['-d', '--print-imm-hex', '--show-all-symbols', output]).stdout;
@@ -112,7 +113,7 @@ function buildOne({ toolchain, target, optimization, outDir, debug = false }) {
   });
 }
 
-export function buildPhase6VerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p6-corpus-')), toolchainBin = process.env.HEX_P56_TOOLCHAIN_BIN || null, debug = false } = {}) {
+export function buildPhase6VerificationCorpus({ outDir = process.env.HEX_P56_CORPUS_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p6-corpus-')), toolchainBin = process.env.HEX_P56_TOOLCHAIN_BIN || null, debug = process.env.HEX_P56_CORPUS_DEBUG === '1', reuseExisting = process.env.HEX_P56_REUSE_CORPUS === '1' } = {}) {
   const toolchain = probeToolchain({ binDirectory: toolchainBin });
   if (!toolchain.exact) {
     const error = new Error(`Phase 6 exact frozen toolchain unavailable: ${JSON.stringify(toolchain)}`);
@@ -124,7 +125,7 @@ export function buildPhase6VerificationCorpus({ outDir = fs.mkdtempSync(path.joi
   const fixtures = [];
   for (const target of PROFILE.corpus.mandatoryTargets) {
     for (const optimization of PROFILE.corpus.mandatoryOptimizationLevels) {
-      fixtures.push(buildOne({ toolchain, target, optimization, outDir, debug }));
+      fixtures.push(buildOne({ toolchain, target, optimization, outDir, debug, reuseExisting }));
     }
   }
   return Object.freeze({

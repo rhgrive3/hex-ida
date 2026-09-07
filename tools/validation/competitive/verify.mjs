@@ -7,6 +7,7 @@ import {
   validateTwinManifestReference,
 } from './twin-manifest.mjs';
 import { currentCompetitiveGitIdentity, loadCompetitiveProfile, generateCompetitiveScorecard } from './score.mjs';
+import { validateCompetitiveMeasurement } from './measurements.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_SCHEMA = 'hex-competitive-profile/v2';
@@ -136,9 +137,15 @@ function verifyEntryShape(entry, metricId) {
     'referenceTool', 'referenceVersion', 'configuration', 'runtimeClass',
     'runPolicy', 'hexValue', 'referenceValue', 'comparison', 'historical',
     'groundTruth', 'groundTruthAuthority', 'groundTruthStatus', 'twinManifest', 'evidenceRefs',
+    'measurement',
   ]);
   for (const key of Object.keys(entry)) if (!expectedKeys.has(key)) fail(`entry-unknown-field:${metricId}`, key);
-  for (const key of expectedKeys) if (!Object.prototype.hasOwnProperty.call(entry, key)) fail(`entry-missing-field:${metricId}`, key);
+  for (const key of expectedKeys) {
+    // Measurement evidence was added after the v2 scorecard shape; old
+    // hand-built scorecards remain valid when no evidence was captured.
+    if (key === 'measurement') continue;
+    if (!Object.prototype.hasOwnProperty.call(entry, key)) fail(`entry-missing-field:${metricId}`, key);
+  }
   if (entry.metricId !== metricId) fail(`entry-id-mismatch:${metricId}`);
   for (const key of ['corpusId', 'inputIdentity', 'hexVersion', 'referenceTool', 'referenceVersion', 'configuration', 'runtimeClass', 'runPolicy', 'groundTruthAuthority', 'groundTruthStatus']) requiredText(entry[key], `entry-${key}:${metricId}`);
   if (entry.functionIdentity != null && typeof entry.functionIdentity !== 'string') fail(`entry-function-identity:${metricId}`);
@@ -158,6 +165,13 @@ function verifyEntryShape(entry, metricId) {
     if (!ALLOWED_COMPARISONS.has(entry.historical.comparison)) fail(`entry-historical-comparison:${metricId}`);
   }
   if (!Array.isArray(entry.evidenceRefs) || entry.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) fail(`entry-evidence-refs:${metricId}`);
+  if (entry.measurement != null) {
+    try { validateCompetitiveMeasurement(entry.measurement, { expectedMetricId: metricId }); }
+    catch (error) { fail('entry-measurement-invalid', `${metricId}:${error.message}`); }
+    if (entry.measurement.status === 'MEASURED' && entry.inputIdentity !== entry.measurement.inputIdentity) {
+      fail('entry-measurement-input-mismatch', metricId);
+    }
+  }
 }
 
 function verifyMeasuredBinaryEvidence(metricId, entry, manifest, twinEvidenceByMetric) {

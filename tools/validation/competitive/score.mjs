@@ -4,12 +4,14 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import '../../../js/targets/architecture/index.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
 import { ALIAS_QUERIES_V2, buildFixture, memoryAccessOf, regionOf, scoreAliasQueriesV2 } from '../phase7/scoring.mjs';
 import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
 import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { validateTwinManifest } from './twin-manifest.mjs';
 import { competitiveTwinWorkloadFor, validateCompetitiveTwinCapture } from './workload-twins.mjs';
+import { validateCompetitiveMeasurement } from './measurements.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -105,8 +107,9 @@ function runPolicyFor(config) {
 function makeEntry(profile, metricId, fields) {
   const config = metricConfig(profile, metricId);
   const groundTruth = groundTruthFor(config, metricId);
-  const hexValue = fields.hexValue ?? null;
-  const referenceValue = fields.referenceValue ?? null;
+  const measurement = fields.measurement ?? null;
+  const hexValue = fields.hexValue ?? measurement?.candidateValue ?? null;
+  const referenceValue = fields.referenceValue ?? measurement?.referenceValue ?? null;
   const historicalComparison = comparisonFor(config, hexValue, referenceValue);
   // Historical synthetic rows retain their old values only in an explicitly
   // non-authoritative object. Active UNMEASURED values must remain null.
@@ -124,11 +127,11 @@ function makeEntry(profile, metricId, fields) {
   return {
     metricId,
     corpusId: fields.corpusId ?? config.corpusWorkloadIds?.[0] ?? metricId,
-    inputIdentity: fields.inputIdentity ?? `profile:${metricId}`,
+    inputIdentity: fields.inputIdentity ?? measurement?.inputIdentity ?? `profile:${metricId}`,
     functionIdentity: fields.functionIdentity ?? null,
     hexVersion: fields.hexVersion,
-    referenceTool: fields.referenceTool ?? 'unmeasured',
-    referenceVersion: fields.referenceVersion ?? 'unmeasured',
+    referenceTool: fields.referenceTool ?? measurement?.referenceTool ?? 'unmeasured',
+    referenceVersion: fields.referenceVersion ?? measurement?.referenceVersion ?? 'unmeasured',
     configuration: fields.configuration ?? 'profile-default',
     runtimeClass: profile.runtimeHardwareClass,
     runPolicy: fields.runPolicy ?? runPolicyFor(config),
@@ -141,6 +144,7 @@ function makeEntry(profile, metricId, fields) {
     groundTruthStatus: groundTruth.status,
     twinManifest: groundTruth.twinManifest,
     evidenceRefs: fields.evidenceRefs ?? [],
+    ...(measurement == null ? {} : { measurement }),
   };
 }
 
@@ -156,7 +160,7 @@ function atomicWriteJson(filePath, value) {
   }
 }
 
-export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile(), twinCapturesByMetric = {} } = {}) {
+export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile(), twinCapturesByMetric = {}, measurementsByMetric = {} } = {}) {
   const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
 
   if (twinCapturesByMetric == null || typeof twinCapturesByMetric !== 'object' || Array.isArray(twinCapturesByMetric)) {
@@ -167,6 +171,24 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       throw new TypeError(`competitive-twin-capture-metric-unknown:${metricId}`);
     }
     validateCompetitiveTwinCapture(twinCapturesByMetric[metricId], { replayArtifacts: false, expectedMetricId: metricId });
+  }
+  if (measurementsByMetric == null || typeof measurementsByMetric !== 'object' || Array.isArray(measurementsByMetric)) {
+    throw new TypeError('competitive-measurements-object-required');
+  }
+  for (const metricId of Object.keys(measurementsByMetric)) {
+    if (!Object.prototype.hasOwnProperty.call(profile.metrics || {}, metricId)) {
+      throw new TypeError(`competitive-measurement-metric-unknown:${metricId}`);
+    }
+    validateCompetitiveMeasurement(measurementsByMetric[metricId], { expectedMetricId: metricId });
+    const measurement = measurementsByMetric[metricId];
+    const capture = twinCapturesByMetric[metricId];
+    if (measurement.status === 'MEASURED') {
+      if (capture?.status !== 'READY') throw new TypeError(`competitive-measurement-capture-required:${metricId}`);
+      if (measurement.captureDigest !== capture.captureDigest
+          || measurement.artifactIdsDigest !== capture.denominator?.artifactIdsDigest) {
+        throw new TypeError(`competitive-measurement-capture-mismatch:${metricId}`);
+      }
+    }
   }
 
   // 1. Alias v2 candidate answerer
@@ -283,6 +305,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     if (known.has(metricId)) continue;
     const workload = competitiveTwinWorkloadFor(metricId);
     const twinCapture = twinCapturesByMetric[metricId] ?? null;
+    const measurement = measurementsByMetric[metricId] ?? null;
     const evidenceRefs = [
       ...(profile.metrics[metricId].corpusWorkloadIds || []),
       ...(workload == null ? [] : [`${workload.producer}#${workload.workloadId}`]),
@@ -291,16 +314,22 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       evidenceRefs.push(`capture:${twinCapture.captureDigest ?? twinCapture.status}`);
       if (twinCapture.denominator?.artifactIdsDigest) evidenceRefs.push(`capture-denominator:${twinCapture.denominator.artifactIdsDigest}`);
     }
+    if (measurement != null) {
+      evidenceRefs.push(`measurement:${stableDigest(measurement)}`);
+      evidenceRefs.push(...measurement.evidenceRefs);
+    }
     entries.push(makeEntry(profile, metricId, {
       corpusId: profile.metrics[metricId].corpusWorkloadIds?.[0] ?? metricId,
-      inputIdentity: twinCapture?.status === 'READY' ? `capture_${twinCapture.captureDigest}` : `unmeasured:${metricId}`,
+      inputIdentity: measurement?.inputIdentity
+        ?? (twinCapture?.status === 'READY' ? `capture_${twinCapture.captureDigest}` : `unmeasured:${metricId}`),
       hexVersion: headCommit,
-      referenceTool: 'unmeasured',
-      referenceVersion: 'unmeasured',
+      referenceTool: measurement?.referenceTool ?? 'unmeasured',
+      referenceVersion: measurement?.referenceVersion ?? 'unmeasured',
       configuration: 'profile-default',
-      hexValue: null,
-      referenceValue: null,
+      hexValue: measurement?.candidateValue ?? null,
+      referenceValue: measurement?.referenceValue ?? null,
       evidenceRefs,
+      measurement,
     }));
   }
 
