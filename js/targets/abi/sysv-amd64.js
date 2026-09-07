@@ -77,7 +77,11 @@ function parameterClass(parameter) {
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
+  // Keep declared widths lossless: the model's register ceiling is enforced by
+  // vectorRegisterView(), which routes unrepresentable widths to the explicit
+  // unsupported path instead of re-typing a wider input as an exact narrower
+  // argument (issue #6049).
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
   return {
@@ -437,10 +441,12 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
     }
 
     if ((classified.floating || classified.vector) && vectorIndex < VECTOR_ARGUMENT_REGISTERS.length) {
-      const registerIndex = vectorIndex++;
-      const exactVectorView = classified.vector ? vectorRegisterView(registerIndex, classified.bits, options) : VECTOR_ARGUMENT_REGISTERS[registerIndex];
-      const architecturalView = classified.vector ? (exactVectorView || vectorRegisterName(registerIndex, classified.bits)) : exactVectorView;
-      if (!architecturalView) {
+      const registerIndex = vectorIndex;
+      // An unrepresentable width must not consume a register cursor slot: the
+      // argument was never allocated, so the next argument keeps its
+      // architectural position (issue #6049).
+      if (classified.vector && vectorRegisterView(registerIndex, classified.bits, options) == null
+        && vectorRegisterName(registerIndex, classified.bits) == null) {
         vectorPartial = true;
         allocationUnknown = true;
         arguments_.push({
@@ -451,6 +457,9 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         });
         return;
       }
+      vectorIndex += 1;
+      const exactVectorView = classified.vector ? vectorRegisterView(registerIndex, classified.bits, options) : VECTOR_ARGUMENT_REGISTERS[registerIndex];
+      const architecturalView = classified.vector ? (exactVectorView || vectorRegisterName(registerIndex, classified.bits)) : exactVectorView;
       const unsupported = classified.vector && exactVectorView == null;
       vectorPartial ||= unsupported;
       appendRegisterSource(srcs, seenSources, architecturalView, classified.bits, unsupported
