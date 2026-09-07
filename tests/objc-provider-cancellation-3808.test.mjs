@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { parseObjcExtendedMetadata } from '../../../js/apple/objc-metadata.js';
+import { parseObjcExtendedMetadata } from '../js/apple/objc-metadata.js';
 
 function pointerPage(...addresses) {
   const page = new Uint8Array(64);
