@@ -206,15 +206,21 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       return;
     }
 
-    if (c.aggregate && c.bits > 128) {
+    // Stage B.4 keys on the composite's physical size: trailing padding and
+    // over-alignment make an object larger than 16 bytes even when its
+    // logical payload bits are not, and such an argument is replaced by a
+    // pointer to a caller copy (issue #6035).  HFAs/HVAs stay on their own
+    // register/stack-spill paths above and below instead of this pointer rule.
+    const aggregatePhysicalBytes = c.aggregateBytes ?? Math.ceil(c.bits / 8);
+    if (c.aggregate && !c.homogeneous && aggregatePhysicalBytes > 16) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
         ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,bytes:8,
-          pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
+          pointeeBits:c.bits,pointeeBytes:aggregatePhysicalBytes,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
           pieces:[{pieceIndex:0,order:0,reg,bits:64,bytes:8,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
           possible:false,mustUse:true}
         : {index,location:'stack',offset:stackOffset,bytes:8,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,
-          pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
+          pointeeBits:c.bits,pointeeBytes:aggregatePhysicalBytes,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
           pieces:[{pieceIndex:0,order:0,stackOffset,bits:64,bytes:8,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
           possible:false,mustUse:true};
       if (reg) srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-indirect-copy',possible:false,mustUse:true});
