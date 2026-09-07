@@ -28,6 +28,10 @@ const INCOMPATIBLE_CODES = new Set([
 const UPSTREAM_VALID = 'valid';
 const UPSTREAM_INVALID = 'invalid';
 const UPSTREAM_BUDGET_EXHAUSTED = 'budget-exhausted';
+// A dependency read raced a mutation: the captured epoch no longer matches, so
+// the observed bytes cannot be trusted either way. Callers must retry rather
+// than fail-closed to a miss, mirroring the parent's own epoch retry.
+const UPSTREAM_MUTATED = 'mutated';
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -157,8 +161,8 @@ export class ArtifactStore {
             allowIncomplete:options.allowIncomplete,
           });
           const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+          if (upstreamStatus === UPSTREAM_MUTATED || epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
           if (upstreamStatus !== UPSTREAM_VALID) {
-            if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
             if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, 'hot');
             return this.#staleDependency(artifactId, 'hot', validated.record, validated.payloadBytes);
           }
@@ -194,8 +198,8 @@ export class ArtifactStore {
         });
         this.metrics.readBytes += validated.payloadBytes.byteLength;
         const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+        if (upstreamStatus === UPSTREAM_MUTATED || epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
         if (upstreamStatus !== UPSTREAM_VALID) {
-          if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
           if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, source);
           return this.#staleDependency(artifactId, source, validated.record, validated.payloadBytes);
         }
@@ -236,9 +240,22 @@ export class ArtifactStore {
         if (ctx.validated.has(upstreamId)) continue;
         if (++ctx.nodesVisited > ctx.maxNodes) return UPSTREAM_BUDGET_EXHAUSTED;
 
+        // Upstream dependency reads must observe the same mutation discipline
+        // as the artifact's own reads: wait for an in-flight mutation, capture
+        // the upstream epoch, and re-verify it after the read completes. A
+        // backend read can capture pre-mutation bytes while a concurrent
+        // delete/publish lands, and without this epoch check the stale bytes
+        // would validate a dependency the store no longer contains.
+        await this.#waitForMutation(upstreamId);
+        aborted(options.signal);
+        const upstreamEpochBefore = this.#epoch(upstreamId);
         let raw;
         try { this.metrics.reads++; raw = await this.#backendHooks.getRaw(upstreamId); }
         catch (error) { this.metrics.storageFailures++; throw error; }
+        if (upstreamEpochBefore !== this.#epoch(upstreamId)) {
+          this.metrics.mutationRetries++;
+          return UPSTREAM_MUTATED;
+        }
         if (!raw) return UPSTREAM_INVALID;
         try {
           const validated = validateStoredArtifact(raw, {
@@ -248,6 +265,10 @@ export class ArtifactStore {
           this.metrics.readBytes += validated.payloadBytes.byteLength;
           const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
           if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
+          if (upstreamEpochBefore !== this.#epoch(upstreamId)) {
+            this.metrics.mutationRetries++;
+            return UPSTREAM_MUTATED;
+          }
           ctx.validated.add(upstreamId);
         } catch (error) {
           if (error instanceof ArtifactCorruptionError) {
