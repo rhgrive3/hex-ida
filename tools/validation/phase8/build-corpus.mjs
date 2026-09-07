@@ -15,6 +15,7 @@
  * with this measurement tooling only; never from the candidate implementation.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,8 @@ export const ARCHITECTURES = Object.freeze([
 // opaque to the function under test: the public product only decompiles the
 // selected STT_FUNC bytes and does not inline or import this companion body.
 const LINK_SUPPORT_SOURCE = '__attribute__((noinline,used)) void opaque(void) { __asm__ __volatile__("" ::: "memory"); }\n';
+
+function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
@@ -166,10 +169,11 @@ function compileAssembly(clang, architecture, optimization, sourcePath) {
   return compiled.stdout;
 }
 
-function compileObject(clang, architecture, optimization, sourcePath, outputPath) {
+function compileObject(clang, architecture, optimization, sourcePath, outputPath, debug = false) {
   const compiled = spawnSync(clang, [
     `--target=${architecture.targetTriple}`,
     ...architecture.compilerArgs,
+    ...(debug ? ['-g'] : []),
     optimization,
     '-c',
     '-fno-asynchronous-unwind-tables',
@@ -179,11 +183,11 @@ function compileObject(clang, architecture, optimization, sourcePath, outputPath
   return outputPath;
 }
 
-function compileLinkSupport(clang, architecture, optimization, directory) {
+function compileLinkSupport(clang, architecture, optimization, directory, debug = false) {
   const sourcePath = path.join(directory, `${architecture.architectureId}-link-support.c`);
   const outputPath = path.join(directory, `${architecture.architectureId}-${optimization.slice(1)}-link-support.o`);
   if (!fs.existsSync(sourcePath)) fs.writeFileSync(sourcePath, LINK_SUPPORT_SOURCE);
-  return compileObject(clang, architecture, optimization, sourcePath, outputPath);
+  return compileObject(clang, architecture, optimization, sourcePath, outputPath, debug);
 }
 
 function linkObjects(clang, architecture, optimization, objectPaths, outputPath) {
@@ -208,13 +212,19 @@ function entryId(sourceName, functionName, optimization, architectureId) {
   return architectureId === 'arm64' ? legacy : `${architectureId}.${legacy}`;
 }
 
-export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
+export function buildCorpus({ clang = process.env.CLANG || 'clang', artifactDirectory = null, debug = false } = {}) {
+  if (typeof debug !== 'boolean') throw new TypeError('phase8 corpus: debug must be boolean');
   const identity = clangIdentity(clang);
   if (!identity) throw new Error(`phase8 corpus: ${clang} is unavailable; the frozen corpus cannot be rebuilt without it`);
   const sources = fs.readdirSync(SOURCE_DIRECTORY).filter((name) => name.endsWith('.c')).sort();
   if (sources.length === 0) throw new Error('phase8 corpus: no sources found');
+  if (artifactDirectory != null) {
+    if (typeof artifactDirectory !== 'string' || !artifactDirectory.trim()) throw new TypeError('phase8 corpus: artifact directory must be a non-empty path');
+    fs.mkdirSync(artifactDirectory, { recursive:true });
+  }
 
   const functions = [];
+  const artifacts = [];
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-phase8-corpus-'));
   try {
     for (const sourceName of sources) {
@@ -244,9 +254,25 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
             const stem = `${architecture.architectureId}-${path.basename(sourceName)}-${optimization.slice(1)}`;
             const objectPath = path.join(temporaryDirectory, `${stem}.o`);
             const linkedPath = path.join(temporaryDirectory, `${stem}.elf`);
-            compileObject(clang, architecture, optimization, sourcePath, objectPath);
-            const supportObject = compileLinkSupport(clang, architecture, optimization, temporaryDirectory);
+            compileObject(clang, architecture, optimization, sourcePath, objectPath, debug);
+            const supportObject = compileLinkSupport(clang, architecture, optimization, temporaryDirectory, debug);
             const linked = linkObjects(clang, architecture, optimization, [objectPath, supportObject], linkedPath);
+            let capturedArtifact = null;
+            if (artifactDirectory != null) {
+              const capturedPath = path.join(artifactDirectory, `${stem}.elf`);
+              fs.copyFileSync(linkedPath, capturedPath);
+              capturedArtifact = {
+                id:stem,
+                source:sourceName,
+                architectureId:architecture.architectureId,
+                targetTriple:architecture.targetTriple,
+                optimization,
+                path:capturedPath,
+                sha256:sha256(linked),
+                size:linked.byteLength,
+              };
+              artifacts.push(capturedArtifact);
+            }
             for (const name of names) {
               const bytes = extractElfFunctionBytes(linked, name);
               if (!bytes) throw new Error(`phase8 corpus: function not found in linked ELF: ${architecture.architectureId} ${name} ${optimization}`);
@@ -259,6 +285,7 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
                 targetTriple:architecture.targetTriple,
                 representation:'machine-bytes',
                 bytes:Buffer.from(bytes).toString('hex'),
+                ...(capturedArtifact == null ? {} : { artifactId:capturedArtifact.id }),
               });
             }
           }
@@ -285,8 +312,15 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
     },
     sourceDigest:stableDigest(sources.map((name) => ({ name, text:fs.readFileSync(path.join(SOURCE_DIRECTORY, name), 'utf8') }))),
     functions,
+    ...(debug ? { debug:true } : {}),
   };
-  corpus.corpusDigest = stableDigest({ ...corpus, corpusDigest:undefined });
+  if (artifactDirectory != null) corpus.artifacts = artifacts.map(({ path:artifactPath, ...artifact }) => ({ ...artifact, path:artifactPath }));
+  const digestArtifacts = artifacts.map(({ path:ignoredPath, ...artifact }) => artifact);
+  corpus.corpusDigest = stableDigest({
+    ...corpus,
+    corpusDigest:undefined,
+    ...(artifactDirectory == null ? {} : { artifacts:digestArtifacts }),
+  });
   return corpus;
 }
 

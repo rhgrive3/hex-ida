@@ -9,6 +9,7 @@ import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
 import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { validateTwinManifest } from './twin-manifest.mjs';
+import { competitiveTwinWorkloadFor } from './workload-twins.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -270,6 +271,11 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   const known = new Set(entries.map((entry) => entry.metricId));
   for (const metricId of Object.keys(profile.metrics || {})) {
     if (known.has(metricId)) continue;
+    const workload = competitiveTwinWorkloadFor(metricId);
+    const evidenceRefs = [
+      ...(profile.metrics[metricId].corpusWorkloadIds || []),
+      ...(workload == null ? [] : [`${workload.producer}#${workload.workloadId}`]),
+    ];
     entries.push(makeEntry(profile, metricId, {
       corpusId: profile.metrics[metricId].corpusWorkloadIds?.[0] ?? metricId,
       inputIdentity: `unmeasured:${metricId}`,
@@ -279,7 +285,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       configuration: 'profile-default',
       hexValue: null,
       referenceValue: null,
-      evidenceRefs: profile.metrics[metricId].corpusWorkloadIds || [],
+      evidenceRefs,
     }));
   }
 

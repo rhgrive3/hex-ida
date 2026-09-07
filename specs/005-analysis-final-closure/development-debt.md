@@ -73,3 +73,20 @@ Combined source11873792c: userscript build PASS (2.8 s), module boundaries PASS 
 T025/T048 development reconciliation independently audited: 23 unique rows, 22 implementation-complete/1 partial, eleven unique residual task owners, zero uncovered/duplicate rows. This does not close T037/T038 or protected-main release acceptance.
 
 Phase 8 full performance observation:135 function IDs,125 stage-applicable IDs,405 samples (three repetitions, initial and optimized modes), zero unpublished applicable optimizer results and zero complete-result divergences. Elapsed557.8 s. Cold622.195 ms FAIL; interactive0.362 ms and optimizer127.139 ms pass their aggregate thresholds. Individual function latencies can exceed these aggregate values. Full measurements and profile/source binding are committed in `evidence/development-performance.json`.
+
+T026 capture implementation checkpoint: repository-owned Phase5/6/8 builders now
+support capture-only debug output while preserving their default frozen output.
+The collector creates and independently replays strip-only lineage and exposes
+all five binary metric owners in the scorecard. Real native captures passed for
+P5:6 artifacts (ELF/PE), P6:12 artifacts. P8:6 x86/RISC-V artifacts passed only
+with the explicitly scoped18.1.3 compiler override; the required18.1.8 invocation
+is BLOCKED-TOOLCHAIN. ARM64 still uses historical assembly and has no native
+capture path, and the benchmark input lacks source/compiler/debug identity.
+These are explicit remaining T026 gaps. All five score rows remain UNMEASURED;
+capture success does not supply measured values or close the denominator.
+Focused twin/capture/scorecard contracts and default-versus-debug isolation pass.
+
+Generated-runtime checks: current host and release-version checks pass. The old
+unused 1.0 timestamp-version entry point conflicted with canonical content-bound
+2.0 serials; it now delegates to the single current release-version contract.
+Compatibility rerun passes (1.1s), without restoring a historical version rule.

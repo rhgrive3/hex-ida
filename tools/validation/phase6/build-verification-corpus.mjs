@@ -34,18 +34,19 @@ function run(executable, args, options = {}) {
   return result;
 }
 
-function firstExecutable(candidates) {
-  for (const candidate of candidates) {
+function firstExecutable(candidates, binDirectory = null) {
+  const preferred = binDirectory == null ? [] : candidates.map((candidate) => path.join(binDirectory, path.basename(candidate)));
+  for (const candidate of [...new Set([...preferred, ...candidates])]) {
     if (candidate.includes('/') ? fs.existsSync(candidate) : spawnSync('bash', ['-lc', `command -v ${candidate}`], { encoding: 'utf8' }).status === 0) return candidate;
   }
   return null;
 }
 
-export function probeToolchain() {
-  const clang = firstExecutable(['/usr/bin/clang-18', 'clang-18', '/usr/bin/clang', 'clang']);
-  const lld = firstExecutable(['/usr/bin/ld.lld-18', 'ld.lld-18', '/usr/bin/ld.lld', 'ld.lld']);
-  const objdump = firstExecutable(['/usr/bin/llvm-objdump-18', 'llvm-objdump-18', '/usr/bin/llvm-objdump', 'llvm-objdump']);
-  const readobj = firstExecutable(['/usr/bin/llvm-readobj-18', 'llvm-readobj-18', '/usr/bin/llvm-readobj', 'llvm-readobj']);
+export function probeToolchain({ binDirectory = process.env.HEX_P56_TOOLCHAIN_BIN || null } = {}) {
+  const clang = firstExecutable(['/usr/bin/clang-18', 'clang-18', '/usr/bin/clang', 'clang'], binDirectory);
+  const lld = firstExecutable(['/usr/bin/ld.lld-18', 'ld.lld-18', '/usr/bin/ld.lld', 'ld.lld'], binDirectory);
+  const objdump = firstExecutable(['/usr/bin/llvm-objdump-18', 'llvm-objdump-18', '/usr/bin/llvm-objdump', 'llvm-objdump'], binDirectory);
+  const readobj = firstExecutable(['/usr/bin/llvm-readobj-18', 'llvm-readobj-18', '/usr/bin/llvm-readobj', 'llvm-readobj'], binDirectory);
   const compilerVersion = clang ? run(clang, ['--version']).stdout.trim() : null;
   const linkerVersion = lld ? run(lld, ['--version']).stdout.trim() : null;
   // Upstream support for a target is not evidence that this build has it.
@@ -72,13 +73,14 @@ function targetFlagsFor(target) {
   throw new TypeError(`unknown Phase 6 corpus target: ${target.id}`);
 }
 
-function buildOne({ toolchain, target, optimization, outDir }) {
+function buildOne({ toolchain, target, optimization, outDir, debug = false }) {
   const output = path.join(outDir, `p6-${target.id}-${optimization}.elf`);
   const flags = [
     `--target=${PROFILE.toolchain.targetTriple}`,
     `-march=${PROFILE.isaProfile.id}`,
     `-mabi=${target.abiId}`,
     '-std=c11',
+    ...(debug ? ['-g'] : []),
     optimizationFlag(optimization),
     '-fno-stack-protector',
     '-nostdlib',
@@ -99,6 +101,7 @@ function buildOne({ toolchain, target, optimization, outDir }) {
     elfType: target.elfType,
     abiId: target.abiId,
     optimization,
+    ...(debug ? { debug: true } : {}),
     path: output,
     flags,
     sha256: sha256(bytes),
@@ -109,8 +112,8 @@ function buildOne({ toolchain, target, optimization, outDir }) {
   });
 }
 
-export function buildPhase6VerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p6-corpus-')) } = {}) {
-  const toolchain = probeToolchain();
+export function buildPhase6VerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p6-corpus-')), toolchainBin = process.env.HEX_P56_TOOLCHAIN_BIN || null, debug = false } = {}) {
+  const toolchain = probeToolchain({ binDirectory: toolchainBin });
   if (!toolchain.exact) {
     const error = new Error(`Phase 6 exact frozen toolchain unavailable: ${JSON.stringify(toolchain)}`);
     error.code = 'P6_TOOLCHAIN_MISMATCH';
@@ -121,7 +124,7 @@ export function buildPhase6VerificationCorpus({ outDir = fs.mkdtempSync(path.joi
   const fixtures = [];
   for (const target of PROFILE.corpus.mandatoryTargets) {
     for (const optimization of PROFILE.corpus.mandatoryOptimizationLevels) {
-      fixtures.push(buildOne({ toolchain, target, optimization, outDir }));
+      fixtures.push(buildOne({ toolchain, target, optimization, outDir, debug }));
     }
   }
   return Object.freeze({
