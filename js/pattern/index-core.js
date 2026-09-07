@@ -158,12 +158,30 @@ function staticSize(type, ctx, values = {}) {
   if (type.kind === 'pointer' || type.kind === 'offset') return 8;
   if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values);
   if (type.kind === 'array' && Number.isSafeInteger(type.count)) { const item = staticSize(type.element, ctx, values); return item == null ? null : item * type.count; }
-  if (type.kind === 'struct') { let total = 0; for (const field of type.fields) { const size = staticSize(field.type, ctx, values); if (size == null) return null; total += size; } return total; }
+  if (type.kind === 'struct') {
+    let total = 0;
+    for (const field of type.fields) {
+      if (field.when && !evaluateExpression(field.when, values)) continue;
+      const size = staticSize(field.type, ctx, values);
+      if (size == null) return null;
+      total += size;
+    }
+    return total;
+  }
   if (type.kind === 'conditional') {
     if (evaluateExpression(type.when, values)) return staticSize(type.then, ctx, values);
     return type.else ? staticSize(type.else, ctx, values) : 0;
   }
   return null;
+}
+
+function consumedSize(type, result, ctx, values) {
+  // Lazy arrays deliberately publish zero-byte provenance until expanded, but
+  // their containing struct still has a statically known layout when possible.
+  if (result?.lazy === true && result.type === 'array') return staticSize(type, ctx, values);
+  const length = result?.provenance?.length;
+  if (typeof length === 'string' && /^\d+$/.test(length)) return BigInt(length);
+  return staticSize(type, ctx, values);
 }
 
 function readType(type, offset, space, ctx, values, depth = 0) {
@@ -207,7 +225,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     for (const field of type.fields) {
       if (field.when && !evaluateExpression(field.when, localValues)) { fields[field.name] = fieldValue(field.type, null, ctx, cursor, 0, space, { absent: true }); continue; }
       const relative = field.at == null ? 0 : safeNumber(typeof field.at === 'number' ? field.at : valueAt(localValues, field.at), 'pattern-field-offset-invalid');
-      const fieldOffset = cursor + BigInt(relative); const result = readType(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; const size = staticSize(field.type, ctx, localValues); localValues[field.name] = result; if (field.at == null && size != null) cursor += BigInt(size);
+      const fieldOffset = cursor + BigInt(relative); const result = readType(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; const size = consumedSize(field.type, result, ctx, localValues); localValues[field.name] = result; if (field.at == null && size != null) cursor += BigInt(size);
     }
     const size = cursor - BigInt(offset); return fieldValue(type, fields, ctx, offset, size, space, { fields });
   }

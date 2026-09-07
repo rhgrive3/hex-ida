@@ -83,6 +83,46 @@ function run(fields, bytes, options = {}) {
 }
 
 {
+  const nested = {
+    kind: 'struct',
+    fields: [
+      { name: 'flag', type: u8 },
+      { name: 'optional', when: eq(ref('flag'), constant(1)), type: u16 },
+    ],
+  };
+  const result = run([
+    { name: 'nested', type: nested },
+    { name: 'next', type: u8 },
+  ], [0, 0xaa, 0xbb, 0xcc]);
+  assert.equal(result.value.fields.nested.fields.optional.absent, true);
+  assert.equal(result.value.fields.nested.fields.optional.provenance.length, '0');
+  assert.equal(result.value.fields.nested.provenance.length, '1');
+  assert.equal(result.value.fields.next.value, 0xaa);
+  assert.equal(result.value.fields.next.provenance.offset, '1');
+  assert.equal(result.value.provenance.length, '2');
+}
+
+{
+  const nested = {
+    kind: 'struct',
+    fields: [
+      { name: 'flag', type: u8 },
+      { name: 'optional', when: eq(ref('flag'), constant(1)), type: u16 },
+    ],
+  };
+  const result = run([
+    { name: 'nested', type: nested },
+    { name: 'next', type: u8 },
+  ], [1, 0x34, 0x12, 0xaa]);
+  assert.equal(result.value.fields.nested.fields.optional.value, 0x1234);
+  assert.equal(result.value.fields.nested.fields.optional.provenance.length, '2');
+  assert.equal(result.value.fields.nested.provenance.length, '3');
+  assert.equal(result.value.fields.next.value, 0xaa);
+  assert.equal(result.value.fields.next.provenance.offset, '3');
+  assert.equal(result.value.provenance.length, '4');
+}
+
+{
   const result = run([
     { name: 'flag', type: u8 },
     { name: 'optional', type: { kind: 'conditional', when: eq(ref('flag'), constant(1)), then: u16, else: u8 } },
