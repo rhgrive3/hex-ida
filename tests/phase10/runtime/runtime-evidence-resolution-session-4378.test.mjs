@@ -77,7 +77,7 @@ test('runtime evidence snapshots caller-owned resolution before authority use (#
   assert.equal(evidence.payload.resolution.runtimeSessionId, 'session-A');
   assert.equal(evidence.payload.resolution.state, 'exact');
   assert.equal(evidence.payload.resolution.method, 'verified-module-offset');
-  assert.equal(evidence.payload.resolution.staticAddress, 0x1000n);
+  assert.equal(evidence.payload.resolution.staticAddress, '4096');
   assert.equal(evidence.payload.resolution.functionMatchId, 'match-session-A');
   assert.deepEqual(evidence.payload.resolution.evidenceIds, ['evidence-session-A']);
 });

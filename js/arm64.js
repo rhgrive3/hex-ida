@@ -69,7 +69,8 @@ function memText(m) {
       ? '（アクセスの前に ' + base + ' 自体もそのアドレスに書き換える）'
       : ' (and ' + base + ' is updated to it first)';
   } else if (m.mode === 'post') {
-    const v = m.disp && m.disp.value != null ? m.disp.value : 0n;
+    const dispObj = m.disp || m.writebackDisp;
+    const v = dispObj && dispObj.value != null ? dispObj.value : 0n;
     const a = v < 0n ? -v : v;
     where += isJa()
       ? '（アクセスの後で ' + base + ' を ' + a.toString(10) + ' バイト' + (v < 0n ? '戻す' : '進める') + '）'
@@ -948,9 +949,13 @@ function pairLoadStore(isLoad) {
       '2 本を 1 命令で扱えるので、関数の入口と出口でレジスタを退避／復元するときの定番です。',
       'Two registers in one instruction — the standard way to save and restore around a function.'));
     // 典型的なプロローグ / エピローグ
-    const isFpLr = a && b && a.num === 29 && b.num === 30;
+    const isFpLr = a && b && a.k === 'reg' && b.k === 'reg'
+      && a.cls === 'gp' && b.cls === 'gp'
+      && a.bits === 64 && b.bits === 64
+      && a.num === 29 && b.num === 30;
     const onStack = mem.base && mem.base.cls === 'sp';
-    const dispVal = mem.disp && mem.disp.value != null ? mem.disp.value : 0n;
+    const dispObj = mem.disp || mem.writebackDisp;
+    const dispVal = dispObj && dispObj.value != null ? dispObj.value : 0n;
     if (onStack && mem.mode === 'pre' && dispVal < 0n && !isLoad) {
       o.title = J('スタックへ積む（push）', 'Push onto the stack');
       o.summary = J(
@@ -978,7 +983,7 @@ function pairLoadStore(isLoad) {
         'スタックに預けておいた戻り先アドレス (x30) とフレーム位置 (x29) を取り戻す。もうすぐ ret で帰ります。',
         'Restore the saved return address and frame pointer — a ret is coming.');
       o.terms.push('epilogue', 'lr', 'stack');
-    } else if (a && a.num >= 19 && a.num <= 28) {
+    } else if (a && a.k === 'reg' && a.cls === 'gp' && a.num >= 19 && a.num <= 28) {
       o.detail.push(isLoad
         ? J('x19〜x28 は「呼ばれた側が元に戻す約束」のレジスタです。ここで戻しています。',
             'x19–x28 are callee-saved; this restores them.')
