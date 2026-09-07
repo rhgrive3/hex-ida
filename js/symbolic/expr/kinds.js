@@ -10,6 +10,8 @@ export const SORT_KIND = Object.freeze({
   BV: 'bv',
 });
 
+export const MAX_BV_WIDTH = 65536;
+
 export function boolSort() {
   return Object.freeze({ kind: SORT_KIND.BOOL });
 }
@@ -17,6 +19,9 @@ export function boolSort() {
 export function bvSort(width) {
   if (typeof width !== 'number' || !Number.isSafeInteger(width) || width <= 0) {
     throw new TypeError(`bvSort: width must be a positive safe integer >= 1, got ${width}`);
+  }
+  if (width > MAX_BV_WIDTH) {
+    throw new RangeError(`bvSort: width exceeds maximum supported width (${MAX_BV_WIDTH}), got ${width}`);
   }
   return Object.freeze({ kind: SORT_KIND.BV, width });
 }
@@ -26,7 +31,7 @@ export function isBoolSort(sort) {
 }
 
 export function isBvSort(sort) {
-  return !!sort && sort.kind === SORT_KIND.BV && Number.isSafeInteger(sort.width) && sort.width > 0;
+  return !!sort && sort.kind === SORT_KIND.BV && Number.isSafeInteger(sort.width) && sort.width > 0 && sort.width <= MAX_BV_WIDTH;
 }
 
 export function assertValidSort(sort, context = 'sort') {
