@@ -10,10 +10,9 @@ const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
 class ProgressCallback {}
 class WrappedProgressCallback {}
 const proxyWrappedClass = new Proxy(WrappedProgressCallback, {});
-const boundClass = WrappedProgressCallback.bind(null);
 for (const onProgress of [
   undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'),
-  ProgressCallback, class {}, proxyWrappedClass, boundClass,
+  ProgressCallback, class {}, proxyWrappedClass,
 ]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
@@ -58,6 +57,21 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
   await assert.rejects(
     hash(source(), { chunkSize: 2, onProgress: throwingBoundProgress }),
     (error) => error === boundCallbackError,
+  );
+
+  const classLikeCallbackError = new TypeError("Class constructor X cannot be invoked without 'new'");
+  const throwingClassLikeBoundProgress = function throwingProgress() {
+    throw classLikeCallbackError;
+  }.bind(null);
+  await assert.rejects(
+    hash(source(), { chunkSize: 2, onProgress: throwingClassLikeBoundProgress }),
+    (error) => error === classLikeCallbackError,
+  );
+
+  const boundClass = WrappedProgressCallback.bind(null);
+  await assert.rejects(
+    hash(source(), { chunkSize: 2, onProgress: boundClass }),
+    (error) => error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message),
   );
 
   await assert.rejects(

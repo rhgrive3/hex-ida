@@ -4,11 +4,6 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
-function isClassConstructorInvocationError(error) {
-  return error instanceof TypeError
-    && /constructor\b.*cannot be invoked without\s+["']new["']/i.test(error.message);
-}
-
 function optionalProgressCallback(value) {
   if (typeof value !== 'function') return null;
   try {
@@ -20,23 +15,14 @@ function optionalProgressCallback(value) {
       constructible = false;
     }
     // Avoid invoking constructor-only callbacks just to classify them: that would
-    // either run user code early or force us to swallow real callback exceptions.
-    // Ordinary functions have a writable own prototype; non-constructible
-    // functions (arrows/methods) are safe to invoke directly.
+    // run user code early. Ordinary functions have a writable own prototype;
+    // non-constructible functions (arrows/methods) are safe to invoke directly.
     if (constructible && !prototype) {
       // A bound ordinary function and a bound class have the same observable
-      // shape: neither exposes its target or an own prototype. Preserve the
-      // callable form and defer the class-only check until normal progress
-      // delivery. The engine error is the only failure swallowed here; errors
-      // raised by an ordinary bound callback still propagate unchanged.
-      return function safeBoundProgressCallback(...args) {
-        try {
-          return Reflect.apply(value, this, args);
-        } catch (error) {
-          if (isClassConstructorInvocationError(error)) return undefined;
-          throw error;
-        }
-      };
+      // shape: neither exposes its target or an own prototype. Accept all bound
+      // functions and let the normal progress call determine its result/error;
+      // a user callback's exception must never be classified from its message.
+      return value;
     }
     if (constructible && prototype.writable !== true) return null;
     return value;
