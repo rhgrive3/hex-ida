@@ -37,6 +37,10 @@ const legacyDoc = (customValue) => JSON.stringify({
   const parsed = parseHexProject(legacyDoc({ nested:{ '$$hexBigInt':'keep' }, plain:'v' }));
   assert.deepEqual(parsed.binary.metadata.custom.nested, { '$$hexBigInt':'keep' });
 }
+{
+  const parsed = parseHexProject(legacyDoc([{ '$$hexBigInt':'keep-in-array' }]));
+  assert.deepEqual(parsed.binary.metadata.custom, [{ '$$hexBigInt':'keep-in-array' }]);
+}
 
 {
   // A v2 (escape-aware) document still unescapes exactly one level.
