@@ -45,12 +45,29 @@ export function shortName(name,opts){if(typeof name!=='string'||!name)return nam
 export function isMangled(name){return typeof name==='string'&&!!name&&(/^_?_Z/.test(name)||/^_?\$s/.test(name)||/^_?\$S/.test(name));}
 export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length&&out.size<limit;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls))out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
 
+// Resolver results are an authority boundary: only typed, in-range addresses
+// may become canonical pointers (#5721). BigInt()/Number() coercion would
+// launder booleans, arrays and numeric strings into resolved addresses.
+function normalizedResolverAddress(addr){
+  if(typeof addr==='bigint')return addr;
+  if(typeof addr==='number'&&Number.isSafeInteger(addr)&&addr>=0)return BigInt(addr);
+  if(typeof addr==='string'&&/^-?(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(addr.trim())){try{return BigInt(addr.trim());}catch{return null;}}
+  return null;
+}
+
 function normalizeResolvedPointer(result,raw){
   if(result==null)return{raw,addr:null,binding:null,unresolved:true,reason:'resolver-returned-null'};
-  if(typeof result==='bigint'||typeof result==='number')return{raw,addr:BigInt(result),binding:null,unresolved:false};
+  if(typeof result==='bigint')return{raw,addr:result,binding:null,unresolved:false};
+  if(typeof result==='number'){
+    if(!Number.isSafeInteger(result)||result<0)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-address'};
+    return{raw,addr:BigInt(result),binding:null,unresolved:false};
+  }
   if(typeof result==='object'){
     const addr=result.address??result.addr??null;
-    return{raw,addr:addr==null?null:BigInt(addr),binding:result.binding||result.bind||null,unresolved:addr==null&&!result.binding&&!result.bind,reason:result.reason||null,decoded:result};
+    if(addr==null)return{raw,addr:null,binding:result.binding||result.bind||null,unresolved:!result.binding&&!result.bind,reason:result.reason||null,decoded:result};
+    const normalized=normalizedResolverAddress(addr);
+    if(normalized==null)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-address'};
+    return{raw,addr:normalized,binding:result.binding||result.bind||null,unresolved:false,reason:result.reason||null,decoded:result};
   }
   return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-result'};
 }
@@ -104,7 +121,10 @@ async function resolveVtablePointer(raw,address,opts){
   if(typeof opts.resolvePointer==='function'){
     try{return normalizeResolvedPointer(await opts.resolvePointer(raw,{address,pointerFormat:opts.pointerFormat??null,imageBase:opts.imageBase??null}),raw);}catch(e){return{raw,addr:null,binding:null,unresolved:true,reason:`pointer-resolver-failed:${e?.message||'unknown'}`};}
   }
-  if(opts.pointerFormat!=null)return decodeChainedVtablePointer(raw,Number(opts.pointerFormat),opts.imageBase);
+  if(opts.pointerFormat!=null){
+    if(typeof opts.pointerFormat!=='number'||!Number.isSafeInteger(opts.pointerFormat)||opts.pointerFormat<0)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-pointer-format'};
+    return decodeChainedVtablePointer(raw,opts.pointerFormat,opts.imageBase);
+  }
   // Plain relocations are already materialized as canonical user-space VAs.
   // Values with high encoding/tag bits are not safe to reinterpret by masking:
   // without fixup context a bind ordinal and a rebase target are indistinguishable.
