@@ -36,12 +36,26 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
   assert.equal(replay.completeness, 'truncated');
   await session.close();
 
-  for (const dropped of ['2', true, {}, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-    const provider = new TraceProvider(recording([{ kind:'dropped-events', payload:{ dropped } }]));
-    await assert.rejects(
-      () => provider.openSession({ sessionNonce:`invalid-${String(dropped)}` }),
-      (error) => error?.code === 'trace-invalid-dropped-count',
-    );
+  const envelope = new TraceProvider(recording([
+    { type:'event', event:'dropped-events', data:{ dropped:2 } },
+  ]));
+  const envelopeSession = await envelope.openSession({ sessionNonce:'valid-envelope' });
+  assert.equal(envelopeSession.sourceCompleteness, 'truncated');
+  assert.equal((await envelopeSession.facets.trace.replay()).dropped, 2);
+  await envelopeSession.close();
+
+  const invalidDropped = ['2', true, {}, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1];
+  for (const dropped of invalidDropped) {
+    for (const [label, event] of [
+      ['record', { kind:'dropped-events', payload:{ dropped } }],
+      ['envelope', { type:'event', event:'dropped-events', data:{ dropped } }],
+    ]) {
+      const provider = new TraceProvider(recording([event]));
+      await assert.rejects(
+        () => provider.openSession({ sessionNonce:`invalid-${label}-${String(dropped)}` }),
+        (error) => error?.code === 'trace-invalid-dropped-count',
+      );
+    }
   }
 
   const overflow = new TraceProvider(recording([
@@ -101,4 +115,3 @@ test('#6138 validates dropped-event counts before opening and while aggregating 
   assert.equal(eventBatch.dropped, 3);
   await agreementSession.close();
 });
-

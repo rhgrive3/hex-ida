@@ -103,7 +103,11 @@ function normalizeRecording(recording = {}, options = {}) {
 }
 
 function normalizedEventFromRecord(record, context, index) {
-  const source = record && record.type === 'event' && record.event ? record.event : record;
+  const source = record && record.type === 'event' && record.event
+    ? typeof record.event === 'string'
+      ? { ...record, kind: record.event, payload: record.data ?? {} }
+      : record.event
+    : record;
   const rawKind = source?.kind ?? source?.type ?? 'trace-marker';
   const rawType = typeof rawKind === 'string' ? rawKind : 'trace-marker';
   const kindMap = { branch: 'basic-block', trace: 'trace-marker', 'stream-truncated': 'gap' };
