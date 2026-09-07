@@ -5,18 +5,20 @@ import {
   mergeRangeDomain,
   normalizeRangeDomain,
   rangeWithDomain,
-} from '../../js/range-domain.js';
+} from '../js/range-domain.js';
 
 test('rangeWithDomain rejects endpoints outside the declared unsigned domain', () => {
   assert.deepEqual(rangeWithDomain(0n, 255n, 8, false), { min:0n, max:255n, bits:8, signed:false });
   assert.throws(() => rangeWithDomain(-1n, 1n, 8, false), RangeError);
   assert.throws(() => rangeWithDomain(0n, 256n, 8, false), RangeError);
+  assert.throws(() => rangeWithDomain(255n, 0n, 8, false), RangeError, 'reversed endpoints must fail closed on the range-order invariant');
 });
 
 test('rangeWithDomain rejects endpoints outside the declared signed domain', () => {
   assert.deepEqual(rangeWithDomain(-128n, 127n, 8, true), { min:-128n, max:127n, bits:8, signed:true });
   assert.throws(() => rangeWithDomain(-129n, 0n, 8, true), RangeError);
   assert.throws(() => rangeWithDomain(0n, 128n, 8, true), RangeError);
+  assert.throws(() => rangeWithDomain(127n, -128n, 8, true), RangeError, 'reversed signed endpoints must fail closed too');
 });
 
 test('normalizeRangeDomain fails closed on source ranges outside their domain', () => {

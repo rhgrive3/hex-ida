@@ -39,7 +39,7 @@ export function rangeWithDomain(min, max, bits = 64, signed = null) {
   const domainSigned = normalizedSignedness(signed);
   const normalizedMin = strictBigInt(min);
   const normalizedMax = strictBigInt(max);
-  if (!rangeFitsDomain(normalizedMin, normalizedMax, width, domainSigned)) {
+  if (normalizedMin > normalizedMax || !rangeFitsDomain(normalizedMin, normalizedMax, width, domainSigned)) {
     throw new RangeError('range exceeds declared integer domain');
   }
   return {
