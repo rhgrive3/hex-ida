@@ -564,7 +564,7 @@ export class Emulator {
   }
 
   externalReturn(at, target) {
-    const label = (this.io.labelFor && this.io.labelFor(at)) ||
+    const label = (target != null && this.io.labelFor && this.io.labelFor(target)) ||
       (target != null ? '0x' + target.toString(16).toUpperCase() : '不明');
     this.log.push({
       call: label,
