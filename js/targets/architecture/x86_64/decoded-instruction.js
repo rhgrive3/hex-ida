@@ -215,6 +215,10 @@ export function createX86DecodedInstruction(input = {}) {
   const operands = rawOperands.map((operand, index) => normalizeOperand(operand, index, mode));
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
+  // Strip provider-zero/nullish address-size metadata from the copied detail.
+  // It means "not stated" and must not survive the raw detail spread as
+  // canonical width authority.
+  const { addressSizeBits:rawAddressSizeBits, ...detailWithoutAddressSizeBits } = rawDetail;
   // `detailStatus` is the single authority for decoder-detail availability.
   // Only canonical primitive status tokens are accepted: structured values
   // must never acquire exact-detail authority through String() coercion.
@@ -239,12 +243,12 @@ export function createX86DecodedInstruction(input = {}) {
     decoderContractVersion:contractVersion,
     detailStatus,
     detail:Object.freeze({
-      ...rawDetail,
+      ...detailWithoutAddressSizeBits,
       // The provider leaves addressSizeBits 0 when Capstone does not populate
       // `addr_size` (no memory operand); 0 is "not stated", not a width.
-      ...(rawDetail.addressSizeBits == null || rawDetail.addressSizeBits === 0
+      ...(rawAddressSizeBits == null || rawAddressSizeBits === 0
         ? {}
-        : { addressSizeBits:addressSizeBitsOf(rawDetail.addressSizeBits, mode) }),
+        : { addressSizeBits:addressSizeBitsOf(rawAddressSizeBits, mode) }),
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
       operandCount,
       operands:Object.freeze(operands),

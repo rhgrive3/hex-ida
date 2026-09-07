@@ -64,6 +64,21 @@ for (const bits of [16, 48]) {
   });
   assert.equal(decoded.detail.addressSizeBits, 32);
 }
+
+// Capstone/provider zero and explicit nullish values mean "not stated". They
+// must not survive the raw detail copy as a canonical address-size property.
+for (const unstated of [0, null, undefined]) {
+  const decoded = createX86DecodedInstruction({
+    ...base,
+    detail: { ...memoryDetail(64), addressSizeBits: unstated },
+  });
+  assert.equal(
+    Object.hasOwn(decoded.detail, 'addressSizeBits'),
+    false,
+    `detail addressSizeBits ${String(unstated)} must remain unspecified`,
+  );
+}
+
 {
   const decoded = createX86DecodedInstruction({
     ...base,
