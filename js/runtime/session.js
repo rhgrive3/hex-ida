@@ -50,8 +50,13 @@ function traceEventEpochAuthority(value) {
 
 function debugSessionId(value) {
   if (value == null) return `debug:${nextSession++}`;
-  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
-  return value;
+  // The trimmed form is the canonical session identity: accepting the raw
+  // string while validating the trimmed one would let `' session-1 '` and
+  // `'session-1'` register as two different sessions and hide the padded one
+  // from trimmed lookups (#5959).
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  return text;
 }
 
 export class DebugSession {
@@ -219,7 +224,7 @@ export class DebugSessionManager {
     if(this.sessions.get(session.id)===session)this.sessions.delete(session.id);
     if(this.current===session)this.current=null;
   }
-  get(id){return this.sessions.get(id)||null;}
+  get(id){return id==null?null:(this.sessions.get(debugSessionId(id))||null);}
   switch(id){
     const next=this.get(id);if(!next)throw new DebugAdapterError('session-not-found',`debug session not found: ${id}`);
     // Selecting a session is UI/manager state and must not invalidate execution state.
