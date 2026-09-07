@@ -183,7 +183,7 @@ for (const { label, aggregate, elementBytes } of COMPACT_PRODUCTION_FORMS) {
           ...EXHAUSTED_BANKS,
           { type:'float', bits:32, bytes:4, alignmentBytes:4 },
           { ...withoutAggregateAlignment(aggregate), type:`production-${label}` },
-          { type:'unsigned char' },
+          { type:'unsigned char', bits:8, bytes:1, alignmentBytes:1 },
         ],
       },
     });
