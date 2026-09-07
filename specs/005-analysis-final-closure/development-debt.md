@@ -1,5 +1,14 @@
 # Development debt and next actions
 
+Current batch update (2026-09-08): physical-device execution is deferred by owner.
+Proposal state/annotation approval fixtures are repaired. Legacy/compiler-truth
+focused tests pass, but the normal combined run exposed a multi-return regression
+at `tests/issue-142-multi-return.mjs:132`, now assigned to T011. T045 numeric
+contract passes focused tests; its Stage2 integration needs to retain both the
+scenario evidence and numeric lock verification. T026 still has unmeasured rows.
+See the current update in `evidence/stage-a-candidate.md`; the older round below is
+historical and does not supersede these findings.
+
 The policy amendment itself completed no feature tasks. Subsequent focused
 implementation completed T011–T018, T027–T036 and T053–T056. T020 generation
 validation also passes; the ledger is 42/61.

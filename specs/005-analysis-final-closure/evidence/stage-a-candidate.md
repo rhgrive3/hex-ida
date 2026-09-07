@@ -1,3 +1,55 @@
+# Current repair batch — 2026-09-08
+
+The owner deferred physical-device execution until development is complete; see
+[the deferred device checks](post-development-device-checks.md). No physical PASS
+is claimed. The previous check round below remains historical evidence.
+
+Completed changes in this batch:
+
+- `631e1d503`: reject custom-class and nested accessor state before proposal
+  cloning; capture outer payload getters once. Five focused files pass.
+- `5bb982583`: repair observation loss accounting and explicit complete-program
+  fixtures; annotation persistence tests now exercise real single-use proposal
+  authority. Focused integration, persistence, and schema checks pass.
+- `46d92c109`: legacy return ABI context and exact stack/PHI recovery. Legacy
+  compiler truth passes 36/36; T011 focused tests pass 50/50. The later normal
+  chain exposed a multi-return regression, so combined acceptance is still open.
+- `64e8b1ac6`, `9240ebd18`: approved runtime/patch commands share the existing
+  private proposal authority. Bind the binary, runtime adapter, app, patch set,
+  and immutable file identity. An independent review caught cross-app patch
+  authority; the repair and positive/negative regressions pass four focused files.
+- `ce991646e`: fourteen-row H9 collector/schema and initial Stage2 wiring.
+  Root review found that numeric-only evidence bypassed physical scenario checks;
+  `a52830237` now requires both scenario and locked numeric evidence; root
+  verification passes and T045 is checked (43/61 total).
+
+`npm run ai:test` advanced through the repaired capability tests, then found a
+note-readiness test adapter without `reject`. The compatible optional cleanup was
+repaired; all six remaining/focused files passed. Retained original failure log:
+`/tmp/hex-ai-batch-qWM9ur/full.log`.
+
+Full quiet `npm test` ran for 278.3 seconds and reached `integration:test` /
+`decompiler:test`. It failed at `tests/issue-142-multi-return.mjs:132`:
+`return local_join;` did not contain the expected ternary. A subsequent complete
+`decompiler:test` passed; investigation identified the semantic fixture's 50 ms
+wall-clock budget as a load-sensitive boundary. A deterministic finite-work
+fixture correction is committed as `48d526dcb` and passes ten repetitions,
+including zero-work and immediate-abort negatives; time-budget tests pass. Retained log:
+`/tmp/hex-normal-repaired-1R6pZT/full.log`. The original full-run failure is retained; the focused pass does not relabel it.
+
+`semantic-v2:test` completed: the v2 and legacy corpus/differential assertions
+passed; the mandatory nested scripts failed only `effects:test` and
+`invariants:test` because `/usr/bin/*-18` links were absent and the tests selected
+old LLVM executables. The old assembler rejected `+cssc`; old objdump produced
+0/267 expected decoded rows. Actual extracted LLVM 18.1.3 wrappers were verified
+and the missing links restored. Only the two failed denominator files are being
+rerun. Original log: `/tmp/hex-semantic-repaired-V3JHmV/full.log`. Full `npm run check`, T019/T021, and protected
+main acceptance are not yet complete. The current main reconciliation baseline
+was fetched once at `65bc985e8`; merge-tree inspection found seven conflicting
+files. The working tree has not yet been merged while lane edits are active.
+
+---
+
 # Combined development check — 2026-09-07
 
 The check round is finished: all **18/18** canonical top-level script names
