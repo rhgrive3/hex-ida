@@ -64,8 +64,15 @@ export class CursorCodec {
   }
 }
 
+// This serialization builds cache and cursor identities, not display text.
+// The old depth-8 sentinel collapsed every deeper value into one string, so
+// two tool arguments differing only below depth 8 shared a cache key and a
+// cursor could bind to the wrong query (#5941). Serialize losslessly instead,
+// and reject pathologically deep inputs explicitly rather than aliasing them.
+const MAX_STABLE_IDENTITY_DEPTH = 64;
+
 export function stableSerialize(value, depth = 0) {
-  if (depth > 8) return '"[depth]"';
+  if (depth > MAX_STABLE_IDENTITY_DEPTH) throw new Error('stable-serialize-depth-exceeded');
   if (typeof value === 'bigint') return JSON.stringify(`0x${value.toString(16)}`);
   if (value == null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item, depth + 1)).join(',')}]`;
