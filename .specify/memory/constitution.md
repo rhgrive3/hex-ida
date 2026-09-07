@@ -8,6 +8,18 @@ Sync Impact Report
 -->
 # Hex Engineering Constitution
 
+## Current execution policy — 2026-09-07
+
+The user-authorized development-speed amendment in
+`docs/ENGINEERING_PROCESS_GUARDRAILS.md` supersedes the historical process below.
+Development requires focused tests; integration checks run per batch and full
+product proof runs at release. Per-component I/M/G/E/P receipt reconstruction,
+checkpoint replay, generated-output locks and Stage A/B administrative dependencies
+are retired. Actual code dependencies still apply. Implementation checkboxes,
+integration status and release acceptance are separate; existing boxes are unchanged.
+The remainder preserves historical
+requirements and evidence; conflicting execution instructions are superseded.
+
 ## Core Principles
 
 ### I. One Canonical Semantic Truth

@@ -2,6 +2,64 @@
 
 Status: **normative**
 
+## Development-speed amendment — 2026-09-07 (user-authorized)
+
+The repository owner explicitly prioritizes development throughput and permits
+unfinished integration work to be repaired at the final combined-product gate.
+This amendment supersedes conflicting per-component and inter-stage process rules
+below, in AGENTS.md, the constitution, Spec Kit artifacts, and historical receipts.
+It changes verification frequency and development acceptance, not product truth.
+
+| Boundary | Required now | Deferred until a batch or release |
+| --- | --- | --- |
+| Edit / local commit / development PR | Inspect the diff; run changed tests and the smallest relevant regression. Record failures honestly. | Full suites, historical replay, formal handoffs, double generation, independent review of low-risk edits. |
+| Batch integration / runnable demo | Run affected subsystem suites once on the combined tree; build once if runtime output is needed; record remaining failures. | Unrelated suites and platform matrices; full historical receipt reconstruction. |
+| Release / protected-main promotion | Verify the final candidate and applicable product, generated-output, independent-oracle, browser/runtime and post-merge requirements. | Nothing required for the release may be represented as passing without evidence. |
+
+Development branches may integrate multiple components before a batch gate. The
+I/M/G/E/P commit topology, per-component checkpoint lock, immutable first-DONE
+handoff seal, cumulative path-inventory publication and replay of all historical
+checkpoints are RETIRED as advancement and release requirements. Preserve old
+records as history; do not repair history solely to obtain acceptance. A current
+combined-product result replaces receipt replay, not the product tests themselves.
+No T061 maintenance receipt is required to start the next implementation task.
+
+Stage A and Stage B are planning groups, not global execution locks. Work may start
+when its actual code/API dependency is available; administrative task completion,
+a new worktree per stage, hosted review, or main merge is not a prerequisite.
+Use isolated branches when concurrent edits would collide. One integration owner
+resolves shared changes at batch boundaries and before release. Do not refetch and
+rebase every component for unrelated main changes.
+
+An implementation checkbox means its code and focused tests are complete. Report
+batch integration and release verification separately; an implementation checkbox
+is not a release claim. Preserve current checkbox values during this policy change.
+Maintain one short list of deferred defects/checks with affected area, reason and
+next action. Known integration failures may remain on development branches while
+independent work proceeds; they must be resolved or explicitly descoped before release.
+
+Use `npm run check:dev -- --base <commit>` for changed-test feedback, with repeatable
+`--test tests/path.test.mjs` arguments for production changes. Tests are selected
+explicitly when automatic discovery cannot establish relevance; no whole-repository
+fallback. Use `npm run check:one -- <subsystem-script>` for batch checks. These
+commands do not certify release. Reuse passing development checks when code, tests,
+dependencies and relevant environment are unchanged; a new evidence-only commit
+alone does not justify rerunning them. Release evidence still binds the final product.
+
+Before an expensive run, verify cwd, candidate, dependencies and required tool
+versions. On failure, read the retained log and rerun the smallest failing test.
+Do not restart a broad run while its process is live. Stop on the user's stop
+instruction; goal continuation is not new user authorization.
+
+The final-closure workflow now runs focused development checks for PRs. Broad
+subsystem checks are manual batch actions. Full canonical checks are explicit
+release actions, not per-component work. Legacy checkpoint tests/verifier remain
+available as historical diagnostics, not default npm test prerequisites.
+Repository-host branch protection is managed separately: local policy edits do
+not change remote required-check settings automatically.
+
+
+
 Audit baseline: `main` at `320b1f97f2ddd20435946724573e298a185bb7e4` (2026-08-18, after Phase 5 production cutover).
 
 This document records the confirmed engineering-process failure classes found in the repository history reviewed through the audit baseline. It is not a changelog of every product bug. A product bug is included when it exposed a repeatable process failure.

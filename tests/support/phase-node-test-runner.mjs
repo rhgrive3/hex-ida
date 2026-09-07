@@ -46,6 +46,7 @@ export function runPhaseNodeTests({
   phase,
   root,
   argv = [],
+  include = () => true,
   label = null,
   cwd = path.resolve(root, "../.."),
   spawn = spawnSync,
@@ -54,7 +55,7 @@ export function runPhaseNodeTests({
   stderr = process.stderr,
 }) {
   void label;
-  const all = discoverPhaseTests(root);
+  const all = discoverPhaseTests(root).filter(include);
   if (all.length === 0) throw new Error(`${phase}: no contract tests discovered`);
   const group = parsePhaseGroup(argv, { phase });
   const selected = selectPhaseTests(all, { root, group });

@@ -76,7 +76,8 @@ const ownership = syntheticPlanningSeed.ownership;
 const integrationInventory = syntheticPlanningSeed.integrationInventory;
 const platformLocks = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/final-platform-locks.json', 'utf8'));
 const performanceLocks = JSON.parse(fs.readFileSync('specs/005-analysis-final-closure/contracts/performance-locks.json', 'utf8'));
-const workflowText = fs.readFileSync('.github/workflows/final-closure-preflight.yml', 'utf8');
+// Historical verifier self-tests use the retired workflow contract.
+const workflowText = fs.readFileSync('tests/final-closure/fixtures/legacy-workflow.yml', 'utf8');
 const preFanoutText = fs.readFileSync('specs/005-analysis-final-closure/evidence/pre-fanout.md', 'utf8');
 const shadowAuthority = Object.fromEntries(
   ownership.candidateGates.shadowEvidence.authorityArtifacts.map((artifact) => [

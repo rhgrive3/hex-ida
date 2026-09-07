@@ -6,6 +6,12 @@ import {
   runPhaseNodeTests,
 } from '../support/phase-node-test-runner.mjs';
 
+export const LEGACY_CHECKPOINT_TESTS = new Set([
+  'preflight.test.mjs', 'fixture-maintenance.test.mjs',
+  'foundation-amendment.test.mjs', 'moving-main-amendment.test.mjs',
+  'cross-lane-ownership.test.mjs',
+]);
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function discoverFinalClosureTests(root = HERE) {
@@ -38,10 +44,12 @@ export function ownedFinalClosureTestSubtrees(ownership) {
 
 export function runFinalClosureTests(argv = process.argv.slice(2), { root = HERE } = {}) {
   discoverFinalClosureTests(root);
+  const productOnly = argv.length === 1 && argv[0] === '--product';
   return runPhaseNodeTests({
     phase: 'final-closure',
     root,
-    argv,
+    argv: productOnly ? [] : argv,
+    include: file => !productOnly || !LEGACY_CHECKPOINT_TESTS.has(path.relative(root, file).replaceAll('\\', '/')),
     cwd: path.resolve(root, '../..'),
   });
 }

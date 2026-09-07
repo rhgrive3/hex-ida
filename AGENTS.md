@@ -2,7 +2,12 @@
 
 For any master-phase, component-lane, living-integration, release/cutover, generated-output, ownership/governance, CI, moving-main reconciliation, Dev Supervisor, or iOS/browser automation work, read `docs/ENGINEERING_PROCESS_GUARDRAILS.md` before acting.
 
-Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, candidate-merge-tree, generated-output, independent-verifier, active-runtime, or target-device requirement with a weaker proxy. A repeated process failure must gain a permanent automated regression where technically possible. A phase is not done until the applicable completion checklist in that document is satisfied.
+Apply the 2026-09-07 development-speed amendment first. During development,
+run focused tests and batch integration checks; do not require checkpoint replay,
+per-component double generation, immutable handoff receipts, or Stage A/B process
+locks before continuing implementation. Full product verification belongs at release.
+Keep integration debt explicit and preserve honest test results. User stop instructions
+remain effective across automatic goal continuations.
 
 ## Low-token test execution
 
