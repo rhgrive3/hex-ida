@@ -172,6 +172,11 @@ export async function executeTurn(input = {}, options = {}) {
                 signal,
                 ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs) } : {}),
               });
+              // Deadline enforcement cannot depend on provider cooperation: a
+              // provider that ignores the signal and resolves after the timer
+              // fired must not hand its late decision to validation or become
+              // the adopted final (#5815).
+              ensureRunning(signal, started, turnTimeoutMs);
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
               if (
