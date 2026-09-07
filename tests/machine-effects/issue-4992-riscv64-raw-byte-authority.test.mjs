@@ -28,6 +28,22 @@ canonicalTyped[0] = 0x6f;
 assert.equal(fromTyped.fields.op, 'addi');
 assert.deepEqual([...fromTyped.rawBytes], [0x13, 0x00, 0x00, 0x00], 'Uint8Array authority must remain defensively copied');
 
+let subclassSliceCalls = 0;
+class ForgedUint8Array extends Uint8Array {
+  slice() {
+    subclassSliceCalls += 1;
+    return Uint8Array.of(0x6f, 0x00, 0x00, 0x00);
+  }
+}
+const subclassBytes = new ForgedUint8Array([0x13, 0x00, 0x00, 0x00]);
+const fromSubclass = decode(subclassBytes);
+assert.equal(fromSubclass.fields.op, 'addi',
+  'typed-array subclasses must decode their intrinsic backing bytes');
+assert.deepEqual([...fromSubclass.rawBytes], [0x13, 0x00, 0x00, 0x00],
+  'typed-array subclass methods must not forge authoritative bytes');
+assert.equal(subclassSliceCalls, 0,
+  'typed-array subclass slice() must not be called at the authority boundary');
+
 const sparse = new Array(4);
 sparse[0] = 0x13;
 sparse[1] = 0x00;
