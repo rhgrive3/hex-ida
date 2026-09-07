@@ -132,7 +132,27 @@ function pendingRequest(onCancel) {
   );
   assert.equal(frozenReason.name, 'Error');
   assert.equal(frozenReason.code, undefined);
-  assert.equal(cancelCalls, 0, 'pre-aborted requests must not start or cancel backend work');
+  assert.equal(cancelCalls, 1, 'an already-created request must be cancelled even when the signal is already aborted');
+}
+
+{
+  let backendCalls = 0;
+  const controller = new AbortController();
+  controller.abort('pre-aborted search');
+  const app = {
+    backend: {
+      search() {
+        backendCalls++;
+        return pendingRequest(() => {});
+      },
+    },
+  };
+  const adapter = createAppAnalysisQueryAdapter(app);
+  await assert.rejects(
+    adapter.search(null, { text:'needle' }, {}, { signal:controller.signal }),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(backendCalls, 0, 'the adapter precheck must prevent backend work for a pre-aborted search');
 }
 
 {
