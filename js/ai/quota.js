@@ -9,9 +9,27 @@ export const AI_QUOTA = Object.freeze({
 
 const MAX_SESSION_ID = 128;
 
+// A truncated session id is a non-injective key: two distinct sessions whose
+// ids share the first 128 characters would collide into one quota principal
+// and exhaust each other's rate/concurrency budget (#5775). Long ids keep
+// their full identity — the bound is preserved via the collision-resistant
+// digest tail.
+function sessionKeyDigest(text) {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x1000193;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + code, 0x85ebca6b) >>> 0;
+  }
+  return `${h1.toString(36)}${h2.toString(36)}`;
+}
+
 export function normalizeQuotaSessionId(value) {
-  const text = typeof value === 'string' ? value.trim().slice(0, MAX_SESSION_ID) : '';
-  return text || 'anonymous';
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return 'anonymous';
+  if (text.length <= MAX_SESSION_ID) return text;
+  return `${text.slice(0, MAX_SESSION_ID)}~${sessionKeyDigest(text)}`;
 }
 
 function finiteInt(value, fallback = 0) {
