@@ -143,15 +143,57 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #3608 Swift legacy prefix normalization passed');
 }
 
-// --- Test 6: #3632 canonical Itanium prefix survives Darwin normalization ---
+// --- Test 6: #3632/#4046 canonical Itanium prefix survives Darwin normalization ---
 {
   assert.equal(isMangled('_Z3foov'), true);
   assert.equal(demangleCxx('_Z3foov'), 'foo()');
   assert.equal(demangleCxx('__Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_Z1fv'), 'f()');
   assert.equal(readableName('_Z3foov'), 'foo()');
   assert.equal(demangleCxx('_foo'), null);
   assert.equal(demangleCxx('___Z3foov'), null);
-  console.log('✔ #3632 canonical Itanium prefix normalization passed');
+  console.log('✔ #3632/#4046 canonical Itanium prefix normalization passed');
+}
+
+// --- Regression: #4040 nested-name volatile/restrict qualifiers ---
+{
+  // These encodings are accepted by the Itanium ABI demangler (c++filt).
+  for (const [name, expected] of [
+    ['_ZN1A1fEv', 'A::f()'],
+    ['_ZNr1A1fEv', 'A::f() restrict'],
+    ['_ZNV1A1fEv', 'A::f() volatile'],
+    ['_ZNK1A1fEv', 'A::f() const'],
+    ['_ZNrV1A1fEv', 'A::f() volatile restrict'],
+    ['_ZNrK1A1fEv', 'A::f() const restrict'],
+    ['_ZNVK1A1fEv', 'A::f() const volatile'],
+    ['_ZNrVK1A1fEv', 'A::f() const volatile restrict'],
+  ]) assert.equal(demangleCxx(name), expected, name);
+  assert.equal(demangleCxx('_ZNVV1A1fEv'), null, 'duplicate volatile qualifier must fail closed');
+  assert.equal(demangleCxx('_ZNKV1A1fEv'), null, 'out-of-order CV qualifiers must fail closed');
+  console.log('✔ #4040 Itanium nested-name CV qualifiers passed');
+}
+
+// --- Regression: #5238 Itanium non-virtual thunk call-offset and function type ---
+{
+  // g++ -std=c++20 -O0 -fno-inline emits _ZThn8_N1C1fEi for a
+  // non-virtual multiple-inheritance thunk; c++filt calls it a
+  // "non-virtual thunk to C::f(int)".
+  const target = 'thunk to C::f(int)';
+  assert.equal(demangleCxx('_ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('__ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZThn8_N1CD1Ev'), 'thunk to C::~C()');
+  assert.equal(demangleCxx('_ZThn8_NK1C1fEv'), 'thunk to C::f() const');
+
+  // The ABI's h <nv-offset> _ grammar also admits positive and zero offsets.
+  assert.equal(demangleCxx('_ZTh8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZTh0_N1C1fEi'), target);
+
+  // A signed offset still needs digits and the target needs its bare function type.
+  assert.equal(demangleCxx('_ZThn_N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1fE'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1f'), null);
+  console.log('✔ #5238 Itanium non-virtual thunk parsing passed');
 }
 
 // --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
