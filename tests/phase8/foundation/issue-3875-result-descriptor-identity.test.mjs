@@ -168,6 +168,33 @@ test('descriptor policy metadata is bound before commit and digesting', () => {
     Object.freeze({ ...canonical, invalidated: ['cfg'] }),
     invalidatingDescriptor,
   );
+  assertRefusedPolicy(
+    Object.freeze({ ...canonical, produced: ['ssa'] }),
+    invalidatingDescriptor,
+  );
+
+  // Same public identity is not enough: a result created for a descriptor with
+  // different policy arrays must still be refused by the descriptor actually
+  // invoked. This models a stale/malicious pass descriptor that tries to reuse
+  // an otherwise well-formed result from a different authority.
+  const alternateDescriptor = createPassDescriptor({
+    id: invalidatingDescriptor.id,
+    version: invalidatingDescriptor.version,
+    stage: invalidatingDescriptor.stage,
+    preserves: ['cfg'],
+    invalidates: [],
+    produces: ['ranges'],
+  });
+  assertRefusedPolicy(
+    createPassResult({
+      descriptor: alternateDescriptor,
+      status: 'changed',
+      changed: true,
+      completeness: 'complete',
+      produced: ['ranges'],
+    }),
+    invalidatingDescriptor,
+  );
 });
 
 test('null and undefined pass results are refused without mutation', () => {
