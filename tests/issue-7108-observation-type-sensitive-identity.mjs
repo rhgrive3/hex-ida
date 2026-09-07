@@ -1,7 +1,6 @@
 // Regression for #7108: observation identity must be sensitive to payload
-// TYPES. stableDigest canonicalizes 1n, '1' and new Date(1) to the same text,
-// which let a type-swapped payload keep the original observationId and pass
-// tamper detection.
+// TYPES and canonical values. Type swaps and special-number swaps must not
+// retain an observationId, while semantic Map/Set insertion order is irrelevant.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -30,13 +29,17 @@ const binding = createRuntimeAuthorityBinding({
   epoch: 0,
 });
 
-const original = createRuntimeObservation({
-  binding,
-  sequence: 1,
-  observedAt: '2026-09-08T00:00:00Z',
-  kind: 'register',
-  payload: { value: 1n },
-});
+function observation(payload) {
+  return createRuntimeObservation({
+    binding,
+    sequence: 1,
+    observedAt: '2026-09-08T00:00:00Z',
+    kind: 'register',
+    payload,
+  });
+}
+
+const original = observation({ value: 1n });
 
 test('#7108 the honest observation validates', () => {
   assert.equal(validateRuntimeObservation(binding, original).ok, true);
@@ -56,8 +59,28 @@ test('#7108 a bigint→Date payload swap fails tamper detection too', () => {
 });
 
 test('#7108 same-type payloads keep a stable observationId', () => {
-  const twin = createRuntimeObservation({
-    binding, sequence: 1, observedAt: '2026-09-08T00:00:00Z', kind: 'register', payload: { value: 1n },
-  });
+  const twin = observation({ value: 1n });
   assert.equal(twin.observationId, original.observationId);
+});
+
+test('#7108 NaN, infinities, signed zero have distinct value witnesses', () => {
+  const values = [NaN, Infinity, -Infinity, -0, 0];
+  const ids = values.map((value) => observation({ value }).observationId);
+  assert.equal(new Set(ids).size, values.length);
+
+  const nan = observation({ value: NaN });
+  const forged = { ...nan, payload: { value: Infinity } };
+  assert.equal(validateRuntimeObservation(binding, forged).ok, false);
+});
+
+test('#7108 Map identity is independent of insertion order', () => {
+  const first = observation({ value: new Map([['b', 2], ['a', 1]]) });
+  const second = observation({ value: new Map([['a', 1], ['b', 2]]) });
+  assert.equal(first.observationId, second.observationId);
+});
+
+test('#7108 Set identity is independent of insertion order', () => {
+  const first = observation({ value: new Set(['b', 1n, 'a']) });
+  const second = observation({ value: new Set(['a', 'b', 1n]) });
+  assert.equal(first.observationId, second.observationId);
 });
