@@ -14,6 +14,40 @@ function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
 
+// `rawBytes` are the architectural authority for every decoded field, so each
+// element must be a genuine byte. Typed conversion coercion (`Uint8Array.from`)
+// must never remap out-of-domain values (275 -> 19) or non-numeric entries into
+// a different canonical instruction. Decoder bridges run in separate realms, so
+// cross-realm Uint8Array views are recognized via their toStringTag, matching
+// the canonical boundary pattern used by the x86-64 decoded instruction.
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
+function isUint8ArrayView(value) {
+  if (value instanceof Uint8Array) return true;
+  if (!ArrayBuffer.isView(value)) return false;
+  let tag = null;
+  try { tag = TYPED_ARRAY_TAG_GETTER?.call(value) ?? null; } catch { tag = null; }
+  return tag === 'Uint8Array';
+}
+
+function rawBytesOf(input) {
+  if (isUint8ArrayView(input)) return Uint8Array.from(input);
+  if (!Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+  const bytes = new Uint8Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-byte');
+    }
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
 /**
  * Normalize one decoder row into the canonical RISC-V decoded instruction.
  *
@@ -27,7 +61,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
   const size = Number(input.size ?? input.length);
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
-  const rawBytes = input.rawBytes instanceof Uint8Array ? input.rawBytes.slice() : Uint8Array.from(input.rawBytes || []);
+  const rawBytes = rawBytesOf(input.rawBytes ?? []);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
   const encodedLength = riscvInstructionLength(rawBytes[0] | (rawBytes[1] << 8));
   if (encodedLength !== size) throw new TypeError('riscv64-decoded-instruction-length-disagrees-with-encoding');
