@@ -32,6 +32,7 @@ export class CapabilityExecutor {
     const session = runtimePlatform?.currentSession?.(false);
     if (!session) throw new AIError('tool_failed', 'No runtime session is available.');
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
+    if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
   }
 
@@ -59,7 +60,7 @@ export class CapabilityExecutor {
   async executeBuiltIn(entry, args, options, runtimePlatform = null) {
     const app = this.app;
     switch (entry.id) {
-      case 'annotation.rename': return setNote(app, 'name', args, () => app.symbols?.rename?.(BigInt(args.address), String(args.value)));
+      case 'annotation.rename': return renameSymbol(app, args);
       case 'annotation.comment': return setNote(app, 'comment', args);
       case 'annotation.set-type': return setType(app, args);
       case 'annotation.struct-field': return setStructField(app, args);
@@ -129,11 +130,91 @@ async function boundedMemoryWrite(adapter, args) {
   return { address: String(args.address), written: bytes.length, before: Array.from(expected), after: Array.from(bytes) };
 }
 
+function noteStatusSnapshot(notes) {
+  return {
+    dirty: notes?.dirty,
+    lastSaveError: notes?.lastSaveError,
+    lastMutationSaved: notes?.lastMutationSaved,
+  };
+}
+
+function noteMutationSnapshot(notes, getter, address) {
+  let canRestore = false, value = null;
+  if (typeof notes?.[getter] === 'function') {
+    try { value = notes[getter](address); canRestore = true; } catch { /* preserve adapter behavior if snapshot lookup is unavailable */ }
+  }
+  return { canRestore, value, ...noteStatusSnapshot(notes) };
+}
+
+function restoreNoteStatus(notes, snapshot) {
+  notes.dirty = snapshot.dirty;
+  notes.lastSaveError = snapshot.lastSaveError;
+  notes.lastMutationSaved = snapshot.lastMutationSaved;
+}
+
+function rollbackNoteMutation(notes, method, address, snapshot) {
+  if (!snapshot.canRestore) return true;
+  let result;
+  try {
+    result = notes[method](address, snapshot.value == null ? '' : snapshot.value, { save: false });
+  } finally {
+    restoreNoteStatus(notes, snapshot);
+  }
+  return result !== false;
+}
+
 function setNote(app, kind, args, after = null) {
   const address = BigInt(args.address); const value = String(args.value ?? '');
   const method = kind === 'name' ? 'setName' : 'setComment';
+  const getter = kind === 'name' ? 'nameOf' : 'comment';
   if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
-  app.notes[method](address, value); after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+  const snapshot = noteMutationSnapshot(app.notes, getter, address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', `${kind} annotation adapter cannot provide the snapshot required for atomic persistence.`);
+  if (app.notes[method](address, value) === false) {
+    const label = kind === 'name' ? 'Name' : 'Comment';
+    try {
+      if (!rollbackNoteMutation(app.notes, method, address, snapshot)) throw new Error('in-memory rollback failed');
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `${label} annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    }
+    throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
+  }
+  after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+  return { ok: true, address: address.toString(), value };
+}
+
+// annotation.rename commits two coupled mutations (notes.setName +
+// symbols.rename). A failure of the second must not leave the first applied:
+// restore the prior note state and only then surface the original error, so a
+// failed proposal never ends up partially written (#6255).
+function renameSymbol(app, args) {
+  const address = BigInt(args.address); const value = String(args.value ?? '');
+  if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
+  const snapshot = noteMutationSnapshot(app.notes, 'nameOf', address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', 'name annotation adapter cannot provide the snapshot required for atomic persistence.');
+  const previousName = snapshot.value;
+  if (app.notes.setName(address, value) === false) {
+    try {
+      if (!rollbackNoteMutation(app.notes, 'setName', address, snapshot)) throw new Error('in-memory rollback failed');
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Name annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    }
+    throw new AIError('tool_failed', 'Name annotation could not be persisted.');
+  }
+  try {
+    app.symbols?.rename?.(address, value);
+  } catch (error) {
+    try {
+      if (app.notes.setName(address, previousName == null ? '' : previousName) === false) {
+        throw new Error('name annotation rollback could not be persisted');
+      }
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
+    }
+    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    throw error;
+  }
+  app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
   return { ok: true, address: address.toString(), value };
 }
 
@@ -144,17 +225,57 @@ function setType(app, args) {
   return { ok: true, address: address.toString(), key, value };
 }
 
+function restoreStructMutation(notes, snapshot) {
+  if (snapshot.created) {
+    const index = notes.structs.indexOf(snapshot.struct);
+    if (index >= 0) notes.structs.splice(index, 1);
+  } else if (snapshot.fieldsWasArray) {
+    snapshot.fieldsRef.splice(0, snapshot.fieldsRef.length, ...snapshot.fields);
+    snapshot.struct.fields = snapshot.fieldsRef;
+  } else if (snapshot.hadFields) {
+    snapshot.struct.fields = snapshot.previousFields;
+  } else {
+    delete snapshot.struct.fields;
+  }
+  restoreNoteStatus(notes, snapshot.noteStatus);
+}
+
 function setStructField(app, args) {
-  if (!Array.isArray(app?.notes?.structs)) throw new AIError('tool_failed', 'Structure annotation adapter is unavailable.');
+  if (!Array.isArray(app?.notes?.structs) || typeof app.notes.save !== 'function') throw new AIError('tool_failed', 'Structure annotation adapter is unavailable.');
   const name = String(args.struct || args.name || '').trim(), offset = Number(args.offset);
   if (!name || !Number.isSafeInteger(offset) || offset < 0) throw new AIError('invalid_tool_call', 'A structure name and non-negative field offset are required.');
   let struct = app.notes.structs.find((item) => item?.name === name);
-  if (!struct) { struct = { name, fields: [] }; app.notes.structs.push(struct); }
+  const snapshot = {
+    noteStatus: noteStatusSnapshot(app.notes),
+    created: !struct,
+    struct: struct || null,
+    hadFields: struct ? Object.prototype.hasOwnProperty.call(struct, 'fields') : false,
+    previousFields: struct?.fields,
+    fieldsWasArray: Array.isArray(struct?.fields),
+    fieldsRef: Array.isArray(struct?.fields) ? struct.fields : null,
+    fields: Array.isArray(struct?.fields) ? struct.fields.slice() : null,
+  };
+  if (!struct) {
+    struct = { name, fields: [] };
+    app.notes.structs.push(struct);
+    snapshot.struct = struct;
+  }
   if (!Array.isArray(struct.fields)) struct.fields = [];
   const field = { offset, name: String(args.field || args.fieldName || ''), type: String(args.type || '') };
   const index = struct.fields.findIndex((item) => Number(item?.offset) === offset);
   if (index >= 0) struct.fields[index] = field; else struct.fields.push(field);
-  app.notes.dirty = true; app.notes.save?.();
+  app.notes.dirty = true;
+  let saved;
+  try {
+    saved = app.notes.save();
+  } catch (error) {
+    restoreStructMutation(app.notes, snapshot);
+    throw new AIError('tool_failed', `Structure annotation could not be persisted: ${error?.message || error}`);
+  }
+  if (saved === false) {
+    restoreStructMutation(app.notes, snapshot);
+    throw new AIError('tool_failed', 'Structure annotation could not be persisted.');
+  }
   return { ok: true, struct: name, field };
 }
 

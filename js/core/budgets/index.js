@@ -77,8 +77,8 @@ export class ResourceBudget {
     throw this.signal.reason ?? new DOMException('Aborted', 'AbortError');
   }
 
-  scope(name, limits = {}, options = {}) {
-    return new ResourceBudget(limits, { ...options, parent: this, name });
+  scope(name, limits = {}) {
+    return new ResourceBudget(limits, { parent: this, name });
   }
 
   consume(resource, amount = 1) {
@@ -88,6 +88,7 @@ export class ResourceBudget {
     // Preflight check across local and all ancestors
     let curr = this;
     while (curr) {
+      if (curr !== this) curr.checkCancelled();
       const next = (curr.used[resource] || 0) + n;
       const limit = curr.limits[resource];
       if (limit != null && next > limit) {
