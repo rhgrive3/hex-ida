@@ -70,6 +70,35 @@ function producerIdentity() {
   return { gitSha: gitSha.toLowerCase(), treeSha: treeSha.toLowerCase() };
 }
 
+function validatePipelineExecutionIdentity(ledger) {
+  const execution = ledger?.executionIdentity;
+  if (execution == null || typeof execution !== 'object' || Array.isArray(execution)) {
+    return { ok: false, reason: 'ledger-execution-identity-missing' };
+  }
+  if (!HEX40_RE.test(String(execution.gitSha || '')) || !HEX40_RE.test(String(execution.treeSha || ''))
+      || execution.sourceStable !== true) {
+    return { ok: false, reason: 'ledger-execution-identity-invalid' };
+  }
+  const current = producerIdentity();
+  if (current == null) return { ok: false, reason: 'ledger-execution-identity-unavailable' };
+  if (execution.gitSha.toLowerCase() !== current.gitSha || execution.treeSha.toLowerCase() !== current.treeSha) {
+    return {
+      ok: false,
+      reason: 'ledger-execution-identity-stale',
+      expected: current,
+      observed: { gitSha: execution.gitSha, treeSha: execution.treeSha },
+    };
+  }
+  return {
+    ok: true,
+    identity: {
+      gitSha: execution.gitSha.toLowerCase(),
+      treeSha: execution.treeSha.toLowerCase(),
+      sourceStable: true,
+    },
+  };
+}
+
 function measurementError(code, detail = '') {
   throw new TypeError(`competitive-measurement-${code}${detail ? `:${detail}` : ''}`);
 }
@@ -311,6 +340,14 @@ function captureIdentity(capture, { expectedMetricId = null } = {}) {
   };
 }
 
+/** Return true only when the exact profile twin manifest is in this capture. */
+export function captureContainsTwinManifest(capture, manifest) {
+  if (capture == null || typeof capture !== 'object' || !Array.isArray(capture.artifacts)
+      || manifest == null || typeof manifest !== 'object' || Array.isArray(manifest)) return false;
+  return capture.artifacts.some((artifact) => artifact?.manifest?.manifestDigest === manifest.manifestDigest
+    && stableDigest(artifact.manifest) === stableDigest(manifest));
+}
+
 function unmeasured(metricId, capture, reason, details = {}) {
   const identity = captureIdentity(capture, { expectedMetricId: metricId });
   return Object.freeze({
@@ -349,6 +386,7 @@ function measured({
   referenceVersion,
   semanticOracle,
   evidenceRefs = [],
+  producer: producerOverride = null,
   details = {},
 }) {
   const identity = captureIdentity(capture, { expectedMetricId: metricId });
@@ -362,7 +400,7 @@ function measured({
   if (semanticOracle == null || typeof semanticOracle !== 'object' || Array.isArray(semanticOracle)) {
     return unmeasured(metricId, capture, 'semantic-oracle-identity-missing');
   }
-  const producer = producerIdentity();
+  const producer = producerOverride || producerIdentity();
   if (producer == null) return unmeasured(metricId, capture, 'producer-git-identity-unavailable');
   const result = {
     schemaVersion: COMPETITIVE_MEASUREMENT_SCHEMA,
@@ -576,6 +614,8 @@ function validatePipelineRows(metricId, ledger, capture, canonical, fixtureRows)
 }
 
 function validatePipelineLedger(metricId, ledger, capture) {
+  const execution = validatePipelineExecutionIdentity(ledger);
+  if (!execution.ok) return execution;
   const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return { ok: false, reason: identity.reason };
   if (ledger == null || typeof ledger !== 'object' || Array.isArray(ledger)) return { ok: false, reason: 'ledger-object-missing' };
@@ -618,6 +658,7 @@ function validatePipelineLedger(metricId, ledger, capture) {
   return {
     ok: true,
     identity,
+    execution: execution.identity,
     categories,
     categoryIdsDigest: canonical.categoryIdsDigest,
     fixtureRows: hashes.fixtureRows,
@@ -687,6 +728,7 @@ export function measurePhase56Coverage({ metricId, ledger, capture, direction = 
       ledgerDigest: stableDigest({ totals: ledger.totals, ledger: rows }),
     },
     evidenceRefs: [P56_METRIC[metricId].testPath, P56_METRIC[metricId].producer],
+    producer: valid.execution,
   });
 }
 
@@ -999,14 +1041,23 @@ export function parsePipelineLedgerOutput(output, marker) {
 export function runPipelineLedger(metricId, { env = {}, node = process.execPath } = {}) {
   const spec = P56_METRIC[metricId];
   if (!spec) throw new TypeError(`competitive-pipeline-metric-unsupported:${metricId}`);
+  const executionBefore = producerIdentity();
+  if (executionBefore == null) throw new Error(`competitive-pipeline-execution-identity-unavailable:${metricId}`);
   const result = spawnSync(node, ['--test', spec.testPath], {
     cwd: ROOT,
     env: { ...process.env, ...env },
     encoding: 'utf8',
     maxBuffer: 128 * 1024 * 1024,
   });
+  const executionAfter = producerIdentity();
+  if (executionAfter == null
+      || executionBefore.gitSha !== executionAfter.gitSha
+      || executionBefore.treeSha !== executionAfter.treeSha) {
+    throw new Error(`competitive-pipeline-source-changed-during-run:${metricId}`);
+  }
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
   const ledger = parsePipelineLedgerOutput(output, spec.marker);
+  ledger.executionIdentity = Object.freeze({ ...executionBefore, sourceStable: true });
   if (result.status !== 0) {
     const error = new Error(`competitive-pipeline-failed:${metricId}:${result.status}`);
     error.ledger = ledger;

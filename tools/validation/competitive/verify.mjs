@@ -7,7 +7,7 @@ import {
   validateTwinManifestReference,
 } from './twin-manifest.mjs';
 import { currentCompetitiveGitIdentity, loadCompetitiveProfile, generateCompetitiveScorecard } from './score.mjs';
-import { validateCompetitiveMeasurement } from './measurements.mjs';
+import { captureContainsTwinManifest, validateCompetitiveMeasurement } from './measurements.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_SCHEMA = 'hex-competitive-profile/v2';
@@ -188,7 +188,10 @@ function verifyEntryShape(entry, metricId, { measurementCapture = null, expected
   }
 }
 
-function verifyMeasuredBinaryEvidence(metricId, entry, manifest, twinEvidenceByMetric) {
+function verifyMeasuredBinaryEvidence(metricId, entry, manifest, twinEvidenceByMetric, measurementCapture) {
+  if (!captureContainsTwinManifest(measurementCapture, manifest)) {
+    fail('binary-measurement-twin-manifest-mismatch', metricId);
+  }
   if (twinEvidenceByMetric == null || typeof twinEvidenceByMetric !== 'object' || Array.isArray(twinEvidenceByMetric)) {
     fail('binary-twin-evidence-required', metricId);
   }
@@ -272,7 +275,7 @@ export function verifyCompetitiveScorecard(scorecard, profile = loadCompetitiveP
           || entry.comparison !== entry.measurement.comparison) {
         fail('binary-measurement-values-required', metricId);
       }
-      verifyMeasuredBinaryEvidence(metricId, entry, actualGroundTruth.twinManifest, options.twinEvidenceByMetric);
+      verifyMeasuredBinaryEvidence(metricId, entry, actualGroundTruth.twinManifest, options.twinEvidenceByMetric, measurementCapturesByMetric[metricId]);
     }
 
     // Ensure a hard alias invariant cannot be hidden behind an unmeasured flag

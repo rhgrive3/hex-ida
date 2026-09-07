@@ -11,7 +11,7 @@ import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-flo
 import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { validateTwinManifest } from './twin-manifest.mjs';
 import { competitiveTwinWorkloadFor, validateCompetitiveTwinCapture } from './workload-twins.mjs';
-import { validateCompetitiveMeasurement } from './measurements.mjs';
+import { captureContainsTwinManifest, validateCompetitiveMeasurement } from './measurements.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -195,6 +195,23 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
           || measurement.artifactIdsDigest !== capture.denominator?.artifactIdsDigest) {
         throw new TypeError(`competitive-measurement-capture-mismatch:${metricId}`);
       }
+      const groundTruth = profile.metrics[metricId].groundTruth;
+      if (groundTruth?.binaryScored === true && groundTruth.status === 'measured'
+          && !captureContainsTwinManifest(capture, groundTruth.twinManifest)) {
+        throw new TypeError(`competitive-measurement-twin-manifest-mismatch:${metricId}`);
+      }
+    }
+  }
+  for (const [metricId, metric] of Object.entries(profile.metrics || {})) {
+    const groundTruth = metric.groundTruth;
+    if (groundTruth?.binaryScored !== true || groundTruth.status !== 'measured') continue;
+    const measurement = measurementsByMetric[metricId];
+    if (measurement?.status !== 'MEASURED') {
+      throw new TypeError(`competitive-measurement-required:${metricId}`);
+    }
+    const capture = twinCapturesByMetric[metricId];
+    if (!captureContainsTwinManifest(capture, groundTruth.twinManifest)) {
+      throw new TypeError(`competitive-measurement-twin-manifest-mismatch:${metricId}`);
     }
   }
 

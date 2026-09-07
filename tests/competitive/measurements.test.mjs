@@ -7,17 +7,22 @@ import {
   captureTwinArtifacts,
   validateCompetitiveTwinCapture,
 } from '../../tools/validation/competitive/workload-twins.mjs';
+import { createTwinManifest } from '../../tools/validation/competitive/twin-manifest.mjs';
 import {
   measurePhase56Coverage,
   measurePhase8Quality,
   validateCompetitiveMeasurement,
 } from '../../tools/validation/competitive/measurements.mjs';
 import { buildTwinFixture, removeTwinFixture } from './twin-fixture.mjs';
-import { generateCompetitiveScorecard } from '../../tools/validation/competitive/score.mjs';
+import { currentCompetitiveGitIdentity, generateCompetitiveScorecard } from '../../tools/validation/competitive/score.mjs';
 import { verifyCompetitiveScorecard } from '../../tools/validation/competitive/verify.mjs';
 import profileJson from '../../tools/validation/competitive/profile.json' with { type: 'json' };
 import { extractElfFunctionBytes } from '../../tools/validation/phase8/build-corpus.mjs';
 import { stableDigest } from '../../js/core/identity/index.js';
+
+function currentExecutionIdentity() {
+  return { ...currentCompetitiveGitIdentity(), sourceStable: true };
+}
 
 function tinyCapture(fixture, { metricId = 'machine-effects-x86_64-coverage', corpusId = fixture.context.corpusId, corpusVersion = fixture.context.corpusVersion, sourceIdentityId = null } = {}) {
   const metadata = {
@@ -51,6 +56,7 @@ test('P5/P6 value binding requires the exact captured artifact bytes', async () 
     const ledgerFixture = { id: 'tiny-O0', target: 'tiny-target', targetTriple: 'x86_64-unknown-linux-gnu', optimization: 'O0', abiId: 'sysv-amd64', sha256: artifact.manifest.debugArtifactSha256 };
     const ledger = {
       productSha: 'cede2af69e446fdf628903881eb698c0ccad91f9',
+      executionIdentity: currentExecutionIdentity(),
       source: { sha256: fixture.context.sourceIdentity.sha256 },
       fixtures: [ledgerFixture],
       totals: { mandatory: categories.length, passed: categories.length, blocked: 0, notProven: 0 },
@@ -125,6 +131,16 @@ test('P5/P6 value binding requires the exact captured artifact bytes', async () 
     const producerBlocked = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger: staleProducer });
     assert.equal(producerBlocked.status, 'UNMEASURED');
     assert.match(producerBlocked.reason, /producer-head-mismatch/);
+    const historicalLedger = structuredClone(ledger);
+    delete historicalLedger.executionIdentity;
+    const historical = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger: historicalLedger });
+    assert.equal(historical.status, 'UNMEASURED');
+    assert.match(historical.reason, /execution-identity-missing/);
+    const staleExecution = structuredClone(ledger);
+    staleExecution.executionIdentity.gitSha = '0'.repeat(40);
+    const staleExecutionMeasurement = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger: staleExecution });
+    assert.equal(staleExecutionMeasurement.status, 'UNMEASURED');
+    assert.match(staleExecutionMeasurement.reason, /execution-identity-stale/);
   } finally {
     removeTwinFixture(fixture);
   }
@@ -140,6 +156,7 @@ test('measured binary scorecards require a replayed measurement capture and nume
     const ledgerFixture = { id: 'tiny-O0', target: 'tiny-target', targetTriple: 'x86_64-unknown-linux-gnu', optimization: 'O0', sha256: artifact.manifest.debugArtifactSha256 };
     const ledger = {
       productSha: 'cede2af69e446fdf628903881eb698c0ccad91f9',
+      executionIdentity: currentExecutionIdentity(),
       source: { sha256: fixture.context.sourceIdentity.sha256 },
       fixtures: [ledgerFixture],
       totals: { mandatory: categories.length, passed: categories.length, failed: 0, blocked: 0, notProven: 0 },
@@ -172,6 +189,22 @@ test('measured binary scorecards require a replayed measurement capture and nume
       measurementCapturesByMetric: { [metricId]: capture },
       twinEvidenceByMetric: evidence,
     }));
+    await assert.rejects(() => generateCompetitiveScorecard({
+      profile,
+      twinCapturesByMetric: { [metricId]: capture },
+    }), /measurement-required/);
+
+    const foreignProfile = structuredClone(profile);
+    foreignProfile.metrics[metricId].groundTruth.twinManifest = createTwinManifest({
+      ...artifact.manifest,
+      corpusId: 'foreign-corpus',
+    });
+    await assert.rejects(() => generateCompetitiveScorecard({
+      profile: foreignProfile,
+      twinCapturesByMetric: { [metricId]: capture },
+      measurementsByMetric: { [metricId]: measurement },
+    }), /twin-manifest-mismatch/);
+
     const nullScoreValues = structuredClone(scorecard);
     const nullScoreEntry = nullScoreValues.entries.find((entry) => entry.metricId === metricId);
     nullScoreEntry.hexValue = null;
