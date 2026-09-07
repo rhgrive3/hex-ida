@@ -11,7 +11,8 @@ const DEFAULT_MAX_VERIFIED_BINDINGS = 256;
 const DEFAULT_MAX_VERIFIED_BINDING_BYTES = 4 * 1024 * 1024;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
