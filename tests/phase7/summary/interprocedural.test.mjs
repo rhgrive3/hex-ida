@@ -291,6 +291,7 @@ test('an unproven library model cannot bypass the unknown-call fallback (#6074)'
   const valid = provenLibraryModel('fn_absent');
   const impostors = [
     ['empty object', {}],
+    ['control-only knowledge', { noreturn: false, mayThrow: true }],
     ['null', null],
     ['undefined', undefined],
     ['array', []],
