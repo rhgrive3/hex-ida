@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   FINAL_HEAD_ADMISSION_CONTEXT,
   FINAL_HEAD_ADMISSION_CHECK_NAME,
@@ -43,6 +44,21 @@ const evaluate = (input) => evaluateFinalHeadAdmission({
   ...input,
 });
 
+const workflowSource = fs.readFileSync(
+  new URL('../../.github/workflows/final-head-admission.yml', import.meta.url),
+  'utf8',
+);
+assert.match(
+  workflowSource,
+  /github\.paginate\(\s*github\.rest\.checks\.listForRef[\s\S]*filter: 'latest'/,
+  'the privileged controller must paginate every check-run page',
+);
+assert.doesNotMatch(
+  workflowSource,
+  /const \{ data: checkData \} = await github\.rest\.checks\.listForRef/,
+  'the privileged controller must not inspect only the first check-run page',
+);
+
 // Reproduces the #6570 landing class: approval was for an older head and the
 // final head carried a red ownership status. Both facts must be visible.
 {
@@ -75,6 +91,21 @@ const evaluate = (input) => evaluateFinalHeadAdmission({
   const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD, 'APPROVED', 'untrusted-contributor')],
+    ...greenEvidence(),
+  });
+  assert.equal(result.state, 'pending');
+  assert.equal(result.evidence.exactAutoApprovalCount, 0);
+  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+}
+
+// A trusted exact-text marker without the review object's commit binding is
+// insufficient evidence and must remain pending.
+{
+  const missingCommit = auto(HEAD);
+  delete missingCommit.commit_id;
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [missingCommit],
     ...greenEvidence(),
   });
   assert.equal(result.state, 'pending');
@@ -224,6 +255,63 @@ const evaluate = (input) => evaluateFinalHeadAdmission({
   assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
 }
 
+// Equal-newest conflicting CI statuses are all retained, so neither input
+// order can hide a failure.
+{
+  const at = '2026-09-07T00:03:00Z';
+  const conflicts = [
+    [
+      status('ci/circleci: phase7-ownership', 'success', at),
+      status('ci/circleci: phase7-ownership', 'failure', at),
+    ],
+    [
+      status('ci/circleci: phase7-ownership', 'failure', at),
+      status('ci/circleci: phase7-ownership', 'success', at),
+    ],
+  ];
+  for (const conflict of conflicts) {
+    assert.equal(latestStatuses(conflict).length, 2);
+    const result = evaluate({
+      headSha: HEAD,
+      reviews: [auto(HEAD)],
+      statuses: [
+        ...conflict,
+        status('ci/circleci: migration-guardrails', 'success', at),
+        status('CodeRabbit', 'success', at),
+      ],
+      checkRuns: [check('PR fast gate')],
+    });
+    assert.equal(result.state, 'failure');
+    assert.ok(result.blockers.includes('CI status failed: ci/circleci: phase7-ownership'));
+  }
+}
+
+// Equal-newest conflicting trusted AUTO verdicts are likewise blocking in both
+// input orders.
+{
+  const at = '2026-09-07T00:04:00Z';
+  const conflicts = [
+    [
+      auto(HEAD, 'APPROVED', TRUSTED, at),
+      auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, at),
+    ],
+    [
+      auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, at),
+      auto(HEAD, 'APPROVED', TRUSTED, at),
+    ],
+  ];
+  for (const reviews of conflicts) {
+    assert.equal(latestReviewsByAuthor(reviews).length, 2);
+    const result = evaluate({
+      headSha: HEAD,
+      reviews,
+      ...greenEvidence(),
+    });
+    assert.equal(result.state, 'failure');
+    assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
+  }
+}
+
 // Review blockers remain blockers even if every check is green.
 {
   const unresolved = evaluate({
@@ -245,6 +333,23 @@ const evaluate = (input) => evaluateFinalHeadAdmission({
   });
   assert.equal(requested.state, 'failure');
   assert.ok(requested.blockers.includes('active GitHub changes-requested review'));
+}
+
+// A failing additional check beyond the first API page must still block
+// admission after workflow pagination.
+{
+  const lateChecks = [
+    ...Array.from({ length: 100 }, (_, index) => check(`observed-check-${index}`)),
+    check('late-failing-check', 'failure'),
+  ];
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    ...greenEvidence(),
+    checkRuns: [check('PR fast gate'), ...lateChecks],
+  });
+  assert.equal(result.state, 'failure');
+  assert.ok(result.blockers.includes('CI check failed: late-failing-check'));
 }
 
 // In-flight CI stays pending rather than being misclassified as a pass/fail.

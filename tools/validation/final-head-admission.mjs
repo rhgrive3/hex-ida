@@ -10,20 +10,31 @@ function string(value) {
   return typeof value === 'string' ? value : '';
 }
 
+function evidenceTime(value) {
+  const parsed = Date.parse(value?.updated_at || value?.submitted_at || value?.created_at || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function newestFirst(left, right) {
-  const l = Date.parse(left?.updated_at || left?.submitted_at || left?.created_at || '') || 0;
-  const r = Date.parse(right?.updated_at || right?.submitted_at || right?.created_at || '') || 0;
-  return r - l;
+  return evidenceTime(right) - evidenceTime(left);
 }
 
 export function latestStatuses(statuses = []) {
   const result = new Map();
   for (const status of [...statuses].sort(newestFirst)) {
     const context = string(status?.context);
-    if (!context || result.has(context)) continue;
-    result.set(context, status);
+    if (!context) continue;
+    const timestamp = evidenceTime(status);
+    const current = result.get(context);
+    if (!current || timestamp > current.timestamp) {
+      result.set(context, { timestamp, items: [status] });
+    } else if (timestamp === current.timestamp) {
+      // Preserve every equally-new record so conflicting status states are
+      // aggregated fail-closed instead of being selected by input order.
+      current.items.push(status);
+    }
   }
-  return [...result.values()];
+  return [...result.values()].flatMap((entry) => entry.items);
 }
 
 function reviewAuthor(review) {
@@ -35,10 +46,18 @@ export function latestReviewsByAuthor(reviews = []) {
   let anonymous = 0;
   for (const review of [...reviews].sort(newestFirst)) {
     const author = reviewAuthor(review) || `__anonymous_${anonymous++}`;
-    if (result.has(author)) continue;
-    result.set(author, review);
+    const timestamp = evidenceTime(review);
+    const current = result.get(author);
+    if (!current || timestamp > current.timestamp) {
+      result.set(author, { timestamp, items: [review] });
+    } else if (timestamp === current.timestamp) {
+      // Equal-newest AUTO records remain visible together; a conflicting
+      // APPROVED/CHANGES_REQUESTED pair must block rather than depend on
+      // stable input ordering.
+      current.items.push(review);
+    }
   }
-  return [...result.values()];
+  return [...result.values()].flatMap((entry) => entry.items);
 }
 
 function trustedReviewerSet(values = []) {
@@ -90,7 +109,7 @@ function isExactHeadAutoReview(review, headSha, trustedReviewers) {
   if (!/\[AUTO-REVIEW:[^\]]+\]/.test(body)) return false;
   if (!exactHeadMarker(body, headSha)) return false;
   const commitId = string(review?.commit_id);
-  if (commitId && commitId !== headSha) return false;
+  if (!commitId || commitId !== headSha) return false;
   return trustedReviewers.has(reviewAuthor(review));
 }
 
