@@ -217,6 +217,46 @@ test('clean built-in contents remain part of artifact identity', () => {
   );
 });
 
+test('cross-realm built-ins retain intrinsic key material', () => {
+  const descriptor = (options) => createPhase8ArtifactDescriptor({ ...BASE, options }).artifactId;
+
+  const mapSigned = vm.runInNewContext("new Map([['mode', 'signed']])");
+  const mapUnsigned = vm.runInNewContext("new Map([['mode', 'unsigned']])");
+  assert.notEqual(
+    descriptor({ map: mapSigned }),
+    descriptor({ map: mapUnsigned }),
+    'cross-realm Map entries must not be dropped as plain-object options',
+  );
+
+  const setSigned = vm.runInNewContext("new Set(['signed'])");
+  const setUnsigned = vm.runInNewContext("new Set(['unsigned'])");
+  assert.notEqual(
+    descriptor({ set: setSigned }),
+    descriptor({ set: setUnsigned }),
+    'cross-realm Set entries must not be dropped as plain-object options',
+  );
+
+  const bufferSigned = vm.runInNewContext(
+    '(() => { const value = new ArrayBuffer(4); new Uint8Array(value)[0] = 1; return value; })()',
+  );
+  const bufferUnsigned = vm.runInNewContext(
+    '(() => { const value = new ArrayBuffer(4); new Uint8Array(value)[0] = 2; return value; })()',
+  );
+  assert.notEqual(
+    descriptor({ buffer: bufferSigned }),
+    descriptor({ buffer: bufferUnsigned }),
+    'cross-realm ArrayBuffer bytes must remain key material',
+  );
+
+  const dateSigned = vm.runInNewContext('new Date(0)');
+  const dateUnsigned = vm.runInNewContext('new Date(1)');
+  assert.notEqual(
+    descriptor({ date: dateSigned }),
+    descriptor({ date: dateUnsigned }),
+    'cross-realm Date timestamps must remain key material',
+  );
+});
+
 test('cross-realm DataViews use the intrinsic DataView classification', () => {
   const foreign = vm.runInNewContext('new DataView(new ArrayBuffer(8))');
   Object.defineProperty(foreign, '0', { value: 'foreign-payload', enumerable: true });
