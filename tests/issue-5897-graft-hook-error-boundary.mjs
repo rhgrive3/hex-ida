@@ -9,6 +9,17 @@ import { fileURLToPath } from 'node:url';
 
 const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', import.meta.url));
 
+function makeEsmHookProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graft-hook-'));
+  // The production hook is hooks.js with ESM exports.  Give each temporary
+  // project the same module boundary so Cases 3–5 reach hook execution,
+  // export-shape, and syntax-error handling respectively.
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}\n');
+  const dist = path.join(dir, 'dist', 'claude');
+  fs.mkdirSync(dist, { recursive: true });
+  return { dir, dist };
+}
+
 // Case 1: real graft installed, main runs -> exit 0.
 {
   const result = spawnSync(process.execPath, [helper, 'post-edit'], { encoding: 'utf8' });
@@ -27,9 +38,7 @@ const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', impor
 
 // Case 3: main() rejects -> non-zero exit with stderr evidence.
 {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graft-hook-'));
-  const dist = path.join(dir, 'dist', 'claude');
-  fs.mkdirSync(dist, { recursive: true });
+  const { dir, dist } = makeEsmHookProject();
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export async function main() { throw new Error("post-edit verification failed"); }\n');
   const result = spawnSync(process.execPath, [helper, 'post-edit'], {
     encoding: 'utf8',
@@ -41,9 +50,7 @@ const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', impor
 
 // Case 4: module loads but has no main() export -> non-zero exit.
 {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graft-hook-'));
-  const dist = path.join(dir, 'dist', 'claude');
-  fs.mkdirSync(dist, { recursive: true });
+  const { dir, dist } = makeEsmHookProject();
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export const notMain = () => {};\n');
   const result = spawnSync(process.execPath, [helper, 'post-edit'], { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir, GRAFT_TEST_NO_FALLBACK: '1' } });
   assert.equal(result.status, 1, 'incompatible export shape is a hook failure, not "unavailable"');
@@ -54,9 +61,7 @@ console.log('graft-hooks error-boundary regression: PASS');
 
 // Case 5: an installed but syntactically invalid hook is not "unavailable".
 {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graft-hook-'));
-  const dist = path.join(dir, 'dist', 'claude');
-  fs.mkdirSync(dist, { recursive: true });
+  const { dir, dist } = makeEsmHookProject();
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export function main( {\n');
   const result = spawnSync(process.execPath, [helper, 'post-edit'], {
     encoding: 'utf8',
