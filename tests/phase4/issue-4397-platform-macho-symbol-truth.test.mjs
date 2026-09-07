@@ -29,6 +29,15 @@ for (const metadata of [
   assert.ok(unknown.reasons.includes('symbol-metadata-unavailable'));
 }
 
+for (const metadata of [
+  { machoMetadata:{ complete:true }, exportTrie:{} },
+  { machoMetadata:{}, exportTrie:{ complete:true } },
+]) {
+  const mixed = machoSymbolTruth({ format:'macho', metadata });
+  assert.equal(mixed.complete, false);
+  assert.ok(mixed.reasons.includes('symbol-metadata-unavailable'));
+}
+
 const explicitIncomplete = machoSymbolTruth({
   format:'macho',
   metadata:{ machoMetadata:{ complete:false } },
