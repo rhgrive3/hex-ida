@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   PHASE8_CONTRACT_VERSION,
   createPassDescriptor,
+  isCanonicalPassResult,
   createPassResult,
   unchangedResult,
 } from '../../../js/decompiler/phase8/contract.js';
@@ -231,4 +232,27 @@ test('stateful produced accessor cannot validate one value and drift before comm
   assert.deepEqual(state.snapshot(), before);
   assert.equal(state.version('ranges'), 0);
   assert.equal(state.get('ranges'), null);
+});
+
+
+test('shared result graphs are bounded and rejected as malformed', () => {
+  let node = {};
+  for (let depth = 0; depth < 40; depth += 1) node = { a: node, b: node };
+  assertMalformedRefused({ ...unchangedResult(descriptor()), extra: node });
+});
+
+test('the public validator rejects accessor-backed fields without invoking them', () => {
+  const candidate = { ...unchangedResult(descriptor()) };
+  let reads = 0;
+  Object.defineProperty(candidate, 'contractVersion', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      reads += 1;
+      return PHASE8_CONTRACT_VERSION;
+    },
+  });
+
+  assert.equal(isCanonicalPassResult(candidate), false);
+  assert.equal(reads, 0);
 });
