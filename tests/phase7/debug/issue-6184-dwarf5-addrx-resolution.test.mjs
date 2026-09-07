@@ -109,6 +109,16 @@ function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, v
 
 function addrBaseFor(dwarf64) { return dwarf64 ? 16 : 8; }
 
+function concat(...arrays) {
+  const out = new Uint8Array(arrays.reduce((size, array) => size + array.length, 0));
+  let offset = 0;
+  for (const array of arrays) {
+    out.set(array, offset);
+    offset += array.length;
+  }
+  return out;
+}
+
 function parseWith(form, raw, { tableEntries = [ADDRESS], addrBase, dwarf64 = false, withTable = true } = {}) {
   const unit = buildUnit({ form, raw, addrBase: addrBase === undefined ? addrBaseFor(dwarf64) : addrBase, dwarf64 });
   return parseDebugInfo({
@@ -173,6 +183,40 @@ for (const [form, encoded] of [
   assert.equal(subprograms[1].complete, true);
   assert.equal(subprograms[1].attributes.get(DW_AT_low_pc).value, ADDRESS);
   assert.equal(parsed.complete, false);
+}
+
+// 4b. Repeated addrx lookups share one bounded contribution scan.
+{
+  const parsed = parseDebugInfo({
+    ...buildUnit({ form: 0x29, raw: 0, trailingRaw: 0 }),
+    debug_addr: debugAddrSection([ADDRESS]),
+  }, { maxRecords: 10, maxAddrContributionScans: 1 });
+  const subprograms = [...parsed.dies.values()].filter((die) => die.tag === DW_TAG_subprogram);
+  assert.equal(subprograms.length, 2);
+  assert.equal(parsed.complete, true);
+  assert.deepEqual(
+    subprograms.map((die) => die.attributes.get(DW_AT_low_pc).value),
+    [ADDRESS, ADDRESS],
+  );
+}
+
+// 4c. A distinct contribution cannot trigger unbounded repeated full scans.
+{
+  const firstTable = debugAddrSection([ADDRESS]);
+  const secondBase = firstTable.length + 8;
+  const first = buildUnit({ form: 0x29, raw: 0, addrBase: 8 });
+  const second = buildUnit({ form: 0x29, raw: 0, addrBase: secondBase });
+  const parsed = parseDebugInfo({
+    debug_info: concat(first.debug_info, second.debug_info),
+    debug_abbrev: first.debug_abbrev,
+    debug_addr: concat(firstTable, debugAddrSection([ADDRESS])),
+  }, { maxRecords: 10, maxAddrContributionScans: 1 });
+  const subprograms = [...parsed.dies.values()].filter((die) => die.tag === DW_TAG_subprogram);
+  assert.equal(subprograms.length, 2);
+  assert.equal(subprograms[0].attributes.get(DW_AT_low_pc).value, ADDRESS);
+  assert.equal(subprograms[1].attributes.get(DW_AT_low_pc).value, null);
+  assert.equal(parsed.complete, false);
+  assert.ok(parsed.diagnostics.includes('debug_addr contribution scan budget exhausted'));
 }
 
 // 5. Truncated table (entry crosses the section end) fails closed the same way.

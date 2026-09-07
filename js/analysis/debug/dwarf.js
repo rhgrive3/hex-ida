@@ -93,6 +93,7 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
 
 const DW_UT = Object.freeze({
   compile: 0x01,
@@ -377,10 +378,21 @@ function debugAddrContributionAtBase(table, base) {
 }
 
 /** Resolves a DW_FORM_addrx* index through a validated DWARF5 `.debug_addr` contribution. */
-function addrxAddress(index, unit, sections) {
+function addrxAddress(index, unit, sections, state = null) {
   const table = sections.debug_addr;
   const base = unit.addrBase;
-  const contribution = debugAddrContributionAtBase(table, base);
+  let contribution;
+  if (state?.cache?.has(base)) {
+    contribution = state.cache.get(base);
+  } else {
+    if (state && state.scans >= state.maxScans) {
+      state.exhausted = true;
+      return null;
+    }
+    if (state) state.scans += 1;
+    contribution = debugAddrContributionAtBase(table, base);
+    if (state?.cache) state.cache.set(base, contribution);
+  }
   if (!contribution
       || contribution.version !== 5
       || contribution.addressSize !== unit.addressSize
@@ -427,6 +439,16 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const units = [];
   const cursor = new Cursor(info, 0);
   const abbrevCache = new Map();
+  const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
+    && budget.maxAddrContributionScans > 0
+    ? budget.maxAddrContributionScans
+    : DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS;
+  const addrContributionState = {
+    cache: new Map(),
+    maxScans: Math.max(1, Math.min(requestedAddrContributionScans, DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS, maxRecords)),
+    scans: 0,
+    exhausted: false,
+  };
   const abbrevState = {
     declarations: 0,
     attributes: 0,
@@ -615,7 +637,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           // An unresolvable index stays unknown (null) and marks the DIE
           // partial: publishing the raw index as an address would point
           // consumers at a function start that does not exist.
-          const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections) : null;
+          const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections, addrContributionState) : null;
           attributes.set(attribute, { form: entry.form, value: resolved, addressForm: resolved != null });
           if (resolved == null) {
             // An address the parser cannot establish must make the whole unit's
@@ -624,6 +646,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
             dieComplete = false;
             complete = false;
             diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
+            if (addrContributionState.exhausted) {
+              const diagnostic = 'debug_addr contribution scan budget exhausted';
+              if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+            }
           }
         }
       }
