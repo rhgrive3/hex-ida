@@ -185,6 +185,7 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
+    const traceEpoch = session.epoch;
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
     let observation = { stop:null, returnValue:null, branches:[] }, trace;
     const started = Date.now();
@@ -193,7 +194,8 @@ export class RuntimeAnalysisPlatform {
         await adapter.launch(launchSpec,{signal:operation.signal});
       } else if (adapter.capabilities.attach && options.attach) {
         await adapter.attach(options.attach,{signal:operation.signal});
-      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+      } else if (!adapter.capabilities.traceFunction) {
+        if (adapter.capabilities.attach) throw new DebugAdapterError('attach-target-required','adapter requires an attach target before tracing');
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {
@@ -206,7 +208,21 @@ export class RuntimeAnalysisPlatform {
         trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
       }
     } finally { operation.release(); }
-    for (const event of trace.events || []) session.acceptEvent(event);
+    if (session.epoch !== traceEpoch) {
+      throw new DebugAdapterError('session-epoch-changed','runtime trace completed after the active session epoch changed',{traceEpoch,sessionEpoch:session.epoch});
+    }
+    const acceptance = session.acceptEvents(trace?.events == null ? [] : trace.events,traceEpoch);
+    if (!acceptance.ok) {
+      const rejection = {
+        'closed-session': { code:'session-closed', message:'runtime trace session is closed' },
+        'events-not-array': { code:'session-trace-invalid', message:'runtime trace events must be an array' },
+        'wire-unsafe': { code:'session-trace-not-wire-safe', message:'runtime trace contains a non-wire-safe event' },
+        'event-epoch-invalid': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event with an invalid epoch' },
+        'event-epoch-missing': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event without a valid epoch' },
+        'event-epoch-mismatch': { code:'session-epoch-event-mismatch', message:'runtime trace contains an event outside the captured session epoch' },
+      }[acceptance.reason] || { code:'session-trace-invalid', message:'runtime trace event batch was rejected' };
+      throw new DebugAdapterError(rejection.code,rejection.message,{traceEpoch,eventEpoch:null,reason:acceptance.reason});
+    }
     const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const facts = factExtraction.facts;
     const replayable=isReplayable(adapter,observation,trace);

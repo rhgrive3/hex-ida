@@ -14,6 +14,11 @@ import {
   createArm64RegisterRead,
   createArm64RegisterWrite,
 } from './addressing.js';
+import {
+  arm64BarrierOptionFromImmediate,
+  arm64BarrierOptionFromText,
+  arm64BarrierScope,
+} from './barrier-options.js';
 
 const EXCLUSIVE_LOAD_RE = /^lda?xr([bh])?$/;
 const EXCLUSIVE_STORE_RE = /^stl?xr([bh])?$/;
@@ -534,69 +539,33 @@ function barrierOption(decoded) {
   const normalized = (raw ?? '').trim().toLowerCase().replace(/^#/, '');
   return normalized || 'sy';
 }
-const BARRIER_OPTIONS = Object.freeze({
-  sy:{ domain:'full-system', access:'all' },
-  st:{ domain:'full-system', access:'stores' },
-  ld:{ domain:'full-system', access:'loads' },
-  ish:{ domain:'inner-shareable', access:'all' },
-  ishst:{ domain:'inner-shareable', access:'stores' },
-  ishld:{ domain:'inner-shareable', access:'loads' },
-  nsh:{ domain:'non-shareable', access:'all' },
-  nshst:{ domain:'non-shareable', access:'stores' },
-  nshld:{ domain:'non-shareable', access:'loads' },
-  osh:{ domain:'outer-shareable', access:'all' },
-  oshst:{ domain:'outer-shareable', access:'stores' },
-  oshld:{ domain:'outer-shareable', access:'loads' },
-});
-const DMB_OPTION_BY_CRM = Object.freeze([
-  'sy','oshld','oshst','osh',
-  'sy','nshld','nshst','nsh',
-  'sy','ishld','ishst','ish',
-  'sy','ld','st','sy',
-]);
-const DSB_OPTION_BY_CRM = Object.freeze([
-  'ssbb','oshld','oshst','osh',
-  'pssbb','nshld','nshst','nsh',
-  'sy','ishld','ishst','ish',
-  'sy','ld','st','sy',
-]);
-
 function dmbOption(decoded) {
   const ops = operands(decoded);
   if (ops.length === 0) return { option:'sy', crm:null };
   const immediate = immediateValue(ops[0]);
-  if (immediate != null) {
-    if (immediate < 0n || immediate > 15n) return null;
-    const crm = Number(immediate);
-    return { option:DMB_OPTION_BY_CRM[crm], crm };
-  }
+  if (immediate != null) return arm64BarrierOptionFromImmediate('dmb', immediate);
   const option = barrierOption(decoded);
-  return BARRIER_OPTIONS[option] ? { option, crm:null } : null;
+  return arm64BarrierOptionFromText('dmb', option);
 }
 
 function dsbOption(decoded) {
   const ops = operands(decoded);
   if (ops.length === 0) return { option:'sy', crm:null, reservedEncoding:false };
   const immediate = immediateValue(ops[0]);
-  if (immediate != null) {
-    if (immediate < 0n || immediate > 15n) return null;
-    const crm = Number(immediate);
-    return { option:DSB_OPTION_BY_CRM[crm], crm, reservedEncoding:crm === 8 || crm === 12 };
-  }
+  if (immediate != null) return arm64BarrierOptionFromImmediate('dsb', immediate);
   const option = barrierOption(decoded);
-  return BARRIER_OPTIONS[option] ? { option, crm:null, reservedEncoding:false } : null;
+  // DSB (and only DSB) accepts the nXS option variants; their exact handling
+  // lives here because the memory/atomic family owns barriers in the
+  // production dispatch order (#6073).
+  return arm64BarrierOptionFromText('dsb', option);
 }
 
 function isbOption(decoded) {
   const ops = operands(decoded);
   if (ops.length === 0) return { crm:null, reservedEncoding:false };
   const immediate = immediateValue(ops[0]);
-  if (immediate != null) {
-    if (immediate < 0n || immediate > 15n) return null;
-    const crm = Number(immediate);
-    return { crm, reservedEncoding:crm !== 15 };
-  }
-  return barrierOption(decoded) === 'sy' ? { crm:null, reservedEncoding:false } : null;
+  if (immediate != null) return arm64BarrierOptionFromImmediate('isb', immediate);
+  return arm64BarrierOptionFromText('isb', barrierOption(decoded));
 }
 
 function speculationStoreBypassBarrier(decoded, context, mnemonic, crm) {
@@ -610,7 +579,7 @@ function speculationStoreBypassBarrier(decoded, context, mnemonic, crm) {
 
 function dataFullBarrier(decoded, context) {
   if (operands(decoded).length !== 0) return partial(decoded, context, 'DFB operand shape is invalid', ['memory','other']);
-  const scope = BARRIER_OPTIONS.sy;
+  const scope = arm64BarrierScope('sy');
   return bundle(decoded, context, {
     operations:[createMachineOperation({
       kind:'barrier',
@@ -629,7 +598,7 @@ function barrier(decoded, context, mnemonic) {
     const normalized = dmbOption(decoded);
     if (!normalized) return partial(decoded, context, `unsupported DMB option: ${barrierOption(decoded)}`, ['memory','other']);
     const { option, crm } = normalized;
-    const scope = BARRIER_OPTIONS[option];
+    const scope = arm64BarrierScope(option);
     return bundle(decoded, context, {
       operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dmb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }) } })],
       metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dmb', option, ...scope, ...(crm == null ? {} : { crm }) },
@@ -646,7 +615,7 @@ function barrier(decoded, context, mnemonic) {
         metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, crm, alias:option },
       });
     }
-    const scope = BARRIER_OPTIONS[option];
+    const scope = arm64BarrierScope(option);
     return bundle(decoded, context, {
       operations:[createMachineOperation({ kind:'barrier', scope:{ kind:'dsb', option, ...scope }, metadata:{ architecture:'arm64', ordering:'barrier', ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) } })],
       metadata:{ family:'arm64-atomic', kind:'barrier', mnemonic:'dsb', option, ...scope, ...(crm == null ? {} : { crm }), ...(reservedEncoding ? { reservedEncoding:true } : {}) },

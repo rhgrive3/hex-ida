@@ -86,10 +86,10 @@ export class InstrumentationProvider {
       provider: this,
       request,
       close: async () => {
+        if (typeof this.backend.disconnect === 'function') await this.backend.disconnect();
         if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
         unsubscribe = null;
-        try { if (typeof this.backend.disconnect === 'function') await this.backend.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     const normalizer = new RuntimeEventNormalizer({

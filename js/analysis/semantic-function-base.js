@@ -47,7 +47,13 @@ function frozenAbiRecord(value, seen = new WeakMap()) {
   return Object.freeze(copy);
 }
 
-function optionalIdentity(value) { return value == null ? null : String(value); }
+function optionalIdentity(value, label) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`semantic-function-abi-${label}-invalid`);
+  }
+  return value;
+}
 
 function abiEvidenceState(options = {}, call = null, adapter = null) {
   const optionState = abiResultInvalidState(options);
@@ -301,10 +307,19 @@ export function canonicalDecodedInstructions(instructions) {
   if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
   const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
   const byAddress = new Map();
+  let previousEnd = null;
   for (const instruction of ordered) {
     const address = addressOf(instruction);
     instructionLengthOf(instruction);
     if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
+    // Sorted neighbors must not overlap byte ranges: [start,end) intervals of
+    // a linear decoded stream are disjoint geometry (#5821). Overlapping
+    // ranges would launder the same bytes into one linear path twice.
+    const end = endOf(instruction);
+    if (previousEnd != null && address < previousEnd) {
+      throw new TypeError('semantic-function-instruction-range-overlap');
+    }
+    previousEnd = end;
     byAddress.set(address.toString(), instruction);
   }
   return { instructions: ordered, byAddress };
@@ -487,12 +502,12 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     registryDigest,
     registryGeneration,
     schemaVersion:schemaVersion == null ? null : String(schemaVersion),
-    snapshotId:snapshotId == null ? null : String(snapshotId),
-    analyzerId:analyzerId == null ? null : String(analyzerId),
-    analyzerVersion:analyzerVersion == null ? null : String(analyzerVersion),
-    binaryId:optionalIdentity(binaryId),
-    sliceId:optionalIdentity(sliceId),
-    functionId:optionalIdentity(functionId),
+    snapshotId:optionalIdentity(snapshotId, 'snapshot-id'),
+    analyzerId:optionalIdentity(analyzerId, 'analyzer-id'),
+    analyzerVersion:optionalIdentity(analyzerVersion, 'analyzer-version'),
+    binaryId:optionalIdentity(binaryId, 'binary-id'),
+    sliceId:optionalIdentity(sliceId, 'slice-id'),
+    functionId:optionalIdentity(functionId, 'function-id'),
     architectureProfile,
   });
   const provenance = Object.freeze({

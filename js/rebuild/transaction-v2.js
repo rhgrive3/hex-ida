@@ -834,7 +834,15 @@ async function executeExternal(name, fn, context) {
   }
   try {
     const result = await fn(context);
-    if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    // Fail-closed normalization (#5785): explicit failure tokens win over
+    // success tokens. A result that says both `ok:false` and `status:'passed'`
+    // is a contradiction, and contradictions must never count as passed.
+    if (!result) return validatorResult(name, true, false, 'validator-rejected', null);
+    if (result.ok === false) return validatorResult(name, true, false, result?.reason || 'validator-reported-failure', result);
+    if (result.status === 'failed' || result.status === 'invalid' || result.status === 'rejected') {
+      return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
+    }
+    if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
     if (name === 'independent-differential') {
       const contractFailure = independentOracleResultFailure(result, context);
       if (contractFailure) return validatorResult(name, true, false, contractFailure, result);

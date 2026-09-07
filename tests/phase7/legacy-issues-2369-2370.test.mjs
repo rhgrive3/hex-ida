@@ -54,6 +54,7 @@ test("Issue #2369: call node recovers return pointer provenance from complete ca
         outputs: ["call_ret"],
         call: {
           targetEntityIds: ["fn_identity"],
+          arguments: ["base"],
           completeness: "complete",
           memoryRead: { scope: "none" },
           memoryWrite: { scope: "none" },

@@ -92,19 +92,23 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   if (!dir || !dir.rva || !dir.size) {
     return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
   }
+  const directorySize = dir.size;
   const recordSize = machine === 0x8664
     ? 12
     : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+  const validDirectorySize = typeof directorySize === 'number'
+    && Number.isSafeInteger(directorySize)
+    && directorySize >= 0;
   if (
     recordSize
-    && Number.isSafeInteger(dir.size)
-    && dir.size % recordSize !== 0
-    && mappedFileSpanForRva(image, dir.rva, dir.size)
+    && validDirectorySize
+    && directorySize % recordSize !== 0
+    && mappedFileSpanForRva(image, dir.rva, directorySize)
   ) {
     const budget = ensureBudget(image, sharedBudget);
     budget.partial(
       'exception:directory-record-remainder',
-      `PE exception directory size ${dir.size} is not a multiple of ${recordSize}`,
+      `PE exception directory size ${directorySize} is not a multiple of ${recordSize}`,
     );
     return parseExceptionFunctionsCore(r, dir, image, machine, budget);
   }
@@ -206,8 +210,13 @@ export function parseExports(r, dir, image, sharedBudget = null) {
   for(let i=0;i<numberOfNames;i++){
     if(!budget.take({inputBytes:6,records:1,objects:1,operations:2,estimatedHeapBytes:96},'export-name-record'))break;
     const nrva=r.u32(nr.start+i*4),ordIndex=r.u16(or.start+i*2);
+    // The ordinal table maps names into the Export Address Table; an index at
+    // or past NumberOfFunctions has no EAT entry to resolve to (#6115).
+    // Silently keeping it as a Map key lets the function loop invisibly drop
+    // the name, laundering a malformed table into a complete parse.
+    if(ordIndex>=numberOfFunctions){budget.partial('exports:name-ordinal-range',`Ignored PE export name with ordinal-table index ${ordIndex} outside the export address table (${numberOfFunctions} entries)`);continue;}
     const name=mappedCStringAtRva(r,image,nrva,budget,'PE export name');
-    if(!name||ordIndex>=numberOfFunctions)continue;
+    if(!name)continue;
     const aliases=names.get(ordIndex);
     if(aliases)aliases.add(name);else names.set(ordIndex,new Set([name]));
   }
