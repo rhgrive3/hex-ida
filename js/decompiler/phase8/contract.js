@@ -269,68 +269,144 @@ export function unchangedResult(descriptor, { completeness = 'complete', diagnos
 }
 
 const PASS_RESULT_SNAPSHOT_NODE_LIMIT = 10_000;
+const PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT = 10_000;
+const PASS_RESULT_SNAPSHOT_EDGE_LIMIT = 20_000;
+const SNAPSHOT_RESULT = 'result';
+const SNAPSHOT_DIAGNOSTIC = 'diagnostic';
+const SNAPSHOT_TRANSFORM = 'transform';
+const SNAPSHOT_DIAGNOSTICS = 'diagnostics';
+const SNAPSHOT_TRANSFORMS = 'transforms';
+const SNAPSHOT_STRING_ARRAY = 'string-array';
+const SNAPSHOT_SCALAR = 'scalar';
+const DIAGNOSTIC_RESULT_KEYS = new Set(['severity', 'code', 'message', 'reason']);
+const TRANSFORM_RESULT_KEYS = new Set(['kind', 'targets', 'proof', 'originRefs']);
+
+function snapshotAllowedKeys(schema) {
+  if (schema === SNAPSHOT_RESULT) return PASS_RESULT_KEYS;
+  if (schema === SNAPSHOT_DIAGNOSTIC) return DIAGNOSTIC_RESULT_KEYS;
+  if (schema === SNAPSHOT_TRANSFORM) return TRANSFORM_RESULT_KEYS;
+  return null;
+}
+
+function snapshotChildSchema(schema, key) {
+  if (schema === SNAPSHOT_RESULT) {
+    if (key === 'diagnostics') return SNAPSHOT_DIAGNOSTICS;
+    if (key === 'transforms') return SNAPSHOT_TRANSFORMS;
+    if (key === 'invalidated' || key === 'produced' || key === 'preserved') return SNAPSHOT_STRING_ARRAY;
+    return SNAPSHOT_SCALAR;
+  }
+  if (schema === SNAPSHOT_DIAGNOSTIC) return SNAPSHOT_SCALAR;
+  if (schema === SNAPSHOT_TRANSFORM) {
+    return key === 'targets' || key === 'originRefs' ? SNAPSHOT_STRING_ARRAY : SNAPSHOT_SCALAR;
+  }
+  return SNAPSHOT_SCALAR;
+}
+
+function snapshotArrayElementSchema(schema) {
+  if (schema === SNAPSHOT_DIAGNOSTICS) return SNAPSHOT_DIAGNOSTIC;
+  if (schema === SNAPSHOT_TRANSFORMS) return SNAPSHOT_TRANSFORM;
+  return SNAPSHOT_SCALAR;
+}
 
 function snapshotPassResultData(value) {
   const active = new Set();
   const cloned = new Map();
   let nodes = 0;
+  let properties = 0;
+  let edges = 0;
 
-  const clone = (current) => {
-    if (typeof current === 'function') throw new TypeError('phase8-pass-result-function-property');
-    if (current == null || typeof current !== 'object') return current;
+  const clone = (current, schema) => {
+    if (schema === SNAPSHOT_SCALAR) {
+      if (typeof current === 'function') throw new TypeError('phase8-pass-result-function-property');
+      if (current == null || typeof current !== 'object') return current;
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+    if (current == null || typeof current !== 'object' || typeof current === 'function') {
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
     if (active.has(current)) throw new TypeError('phase8-pass-result-cycle');
-    if (cloned.has(current)) return cloned.get(current);
+    const previous = cloned.get(current);
+    if (previous !== undefined) {
+      if (previous.schema !== schema) throw new TypeError('phase8-pass-result-shared-shape');
+      return previous.value;
+    }
     if (nodes >= PASS_RESULT_SNAPSHOT_NODE_LIMIT) throw new TypeError('phase8-pass-result-too-large');
-    nodes += 1;
 
     const array = Array.isArray(current);
+    const arraySchema = schema === SNAPSHOT_DIAGNOSTICS
+      || schema === SNAPSHOT_TRANSFORMS || schema === SNAPSHOT_STRING_ARRAY;
+    if (array !== arraySchema) throw new TypeError('phase8-pass-result-shape');
     const prototype = Object.getPrototypeOf(current);
     if (array ? prototype !== Array.prototype : (prototype !== Object.prototype && prototype !== null)) {
       throw new TypeError('phase8-pass-result-non-data-object');
     }
 
-    const descriptors = Object.getOwnPropertyDescriptors(current);
-    const keys = Reflect.ownKeys(descriptors);
-    if (keys.some((key) => typeof key !== 'string')) throw new TypeError('phase8-pass-result-symbol-property');
+    // Enumerate once, reject schema-incompatible keys before reading any
+    // descriptors, and account for the whole container before cloning a value.
+    const keys = Reflect.ownKeys(current);
+    if (keys.length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT) {
+      throw new TypeError('phase8-pass-result-too-large');
+    }
+    const allowedKeys = snapshotAllowedKeys(schema);
+    if (allowedKeys && keys.some((key) => typeof key !== 'string' || !allowedKeys.has(key))) {
+      throw new TypeError('phase8-pass-result-unknown-property');
+    }
+    if (keys.some((key) => typeof key !== 'string')) {
+      throw new TypeError('phase8-pass-result-symbol-property');
+    }
+
+    let length = null;
+    let edgeCount = keys.length;
+    if (array) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(current, 'length');
+      if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+        throw new TypeError('phase8-pass-result-array-length-invalid');
+      }
+      length = lengthDescriptor.value;
+      if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
+      edgeCount = length;
+    }
+    if (properties + keys.length > PASS_RESULT_SNAPSHOT_PROPERTY_LIMIT
+      || edges + edgeCount > PASS_RESULT_SNAPSHOT_EDGE_LIMIT) {
+      throw new TypeError('phase8-pass-result-too-large');
+    }
+    properties += keys.length;
+    edges += edgeCount;
+    nodes += 1;
 
     active.add(current);
     try {
       if (array) {
-        const lengthDescriptor = descriptors.length;
-        if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
-          || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
-          throw new TypeError('phase8-pass-result-array-length-invalid');
-        }
-        const length = lengthDescriptor.value;
-        if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
         const copy = new Array(length);
+        const elementSchema = snapshotArrayElementSchema(schema);
         for (let index = 0; index < length; index += 1) {
-          const descriptor = descriptors[String(index)];
+          const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
           if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
             throw new TypeError('phase8-pass-result-accessor');
           }
-          copy[index] = clone(descriptor.value);
+          copy[index] = clone(descriptor.value, elementSchema);
         }
         const frozen = Object.freeze(copy);
-        cloned.set(current, frozen);
+        cloned.set(current, { schema, value: frozen });
         return frozen;
       }
 
       const copy = Object.create(null);
       for (const key of keys) {
-        const descriptor = descriptors[key];
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
         if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
           throw new TypeError('phase8-pass-result-accessor');
         }
         Object.defineProperty(copy, key, {
-          value: clone(descriptor.value),
+          value: clone(descriptor.value, snapshotChildSchema(schema, key)),
           enumerable: true,
           writable: true,
           configurable: true,
         });
       }
       const frozen = Object.freeze(copy);
-      cloned.set(current, frozen);
+      cloned.set(current, { schema, value: frozen });
       return frozen;
     } finally {
       active.delete(current);
@@ -338,7 +414,7 @@ function snapshotPassResultData(value) {
   };
 
   try {
-    return clone(value);
+    return clone(value, SNAPSHOT_RESULT);
   } catch {
     return null;
   }

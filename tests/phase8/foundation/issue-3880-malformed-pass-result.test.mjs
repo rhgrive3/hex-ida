@@ -241,37 +241,40 @@ test('shared result graphs are bounded and rejected as malformed', () => {
   assertMalformedRefused({ ...unchangedResult(descriptor()), extra: node });
 });
 
-test('nested function values cannot escape the owned result snapshot', () => {
+test('nested functions and unknown transform fields cannot escape the owned result snapshot', () => {
   const ownDescriptor = descriptor(['ranges']);
   const candidates = [
     {
       ...unchangedResult(ownDescriptor),
-      diagnostics: [{ severity: 'info', code: 'function', message: 'nested', details: { hook() {} } }],
+      diagnostics: [{ severity: 'info', code: 'function', message: () => 'not-data', reason: null }],
     },
-    createPassResult({
-      descriptor: ownDescriptor,
-      status: 'changed',
-      completeness: 'complete',
-      produced: ['ranges'],
+    {
+      ...createPassResult({
+        descriptor: ownDescriptor,
+        status: 'changed',
+        completeness: 'complete',
+        produced: ['ranges'],
+      }),
+      // The hostile transform must be assigned after canonicalization: the
+      // constructor intentionally drops unknown fields such as `details`.
       transforms: [{ kind: 'transform', proof: 'nested-function', targets: ['node'], details: { hook() {} } }],
-    }),
+    },
   ];
 
   for (const candidate of candidates) assertMalformedRefused(candidate);
 });
 
 test('shared diagnostic DAGs are memoized while permitted result graphs stay bounded', () => {
-  let node = {};
-  for (let depth = 0; depth < 40; depth += 1) node = { a: node, b: node };
+  const shared = Object.freeze({ severity: 'info', code: 'shared-dag', message: 'bounded', reason: null });
   const candidate = {
     ...unchangedResult(descriptor()),
-    diagnostics: [{ severity: 'info', code: 'shared-dag', message: 'bounded', details: node }],
+    diagnostics: [shared, shared],
   };
 
   assert.equal(isCanonicalPassResult(candidate), true);
 });
 
-test('oversized permitted diagnostic graphs are refused at the snapshot node bound', () => {
+test('oversized permitted diagnostic graphs are refused by property and edge budgets', () => {
   const ownDescriptor = descriptor(['ranges']);
   const diagnostics = [];
   for (let index = 0; index < 10_001; index += 1) {
@@ -284,6 +287,22 @@ test('oversized permitted diagnostic graphs are refused at the snapshot node bou
     produced: ['ranges'],
     diagnostics,
   }));
+});
+
+test('large unknown top-level properties are rejected before recursive copying', () => {
+  const large = {};
+  for (let index = 0; index < 12_000; index += 1) large[`unknown${index}`] = index;
+  let reads = 0;
+  Object.defineProperty(large, 'tripwire', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      throw new Error('nested unknown property was copied');
+    },
+  });
+
+  assertMalformedRefused({ ...unchangedResult(descriptor()), extra: large });
+  assert.equal(reads, 0, 'top-level allowlisting must precede recursive cloning');
 });
 
 test('the public validator rejects accessor-backed fields without invoking them', () => {
