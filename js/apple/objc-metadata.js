@@ -229,7 +229,7 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
-  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96);
+  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts?.signal });
   get.base = opts.imageBase == null ? null : pointerTableAddress(opts.imageBase);
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;
