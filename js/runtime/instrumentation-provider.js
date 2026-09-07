@@ -47,6 +47,41 @@ function eventProbeHandle(raw) {
   return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
 }
 
+function materializeRuntimeValue(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') {
+    if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+
+  const output = Array.isArray(value) ? [] : {};
+  seen.set(value, output);
+  if (Array.isArray(value)) output.length = value.length;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || key === 'length') continue;
+    Object.defineProperty(output, key, {
+      value: materializeRuntimeValue(value[key], seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+}
+
+function materializeRuntimeEvent(raw) {
+  try {
+    return materializeRuntimeValue(raw);
+  } catch (error) {
+    if (error instanceof DebugAdapterError) throw error;
+    throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
+  }
+}
+
 export class InstrumentationProvider {
   constructor(backend, options = {}) {
     if (!backend || typeof backend !== 'object') throw new DebugAdapterError('instrumentation-backend-required', 'InstrumentationProvider requires a backend');
@@ -113,12 +148,13 @@ export class InstrumentationProvider {
     const probes = new Map();
 
     const ingest = (raw) => {
-      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
-      const handle = eventProbeHandle(raw);
+      const ownedRaw = materializeRuntimeEvent(raw);
+      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
+      const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
       const event = interventionId
-        ? normalizer.push({ ...raw, interventionIds: [...new Set([...(Array.isArray(raw?.interventionIds) ? raw.interventionIds : []), interventionId])] })
-        : normalizer.push(raw);
+        ? normalizer.push({ ...ownedRaw, interventionIds: [...new Set([...(Array.isArray(ownedRaw?.interventionIds) ? ownedRaw.interventionIds : []), interventionId])] })
+        : normalizer.push(ownedRaw);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
