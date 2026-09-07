@@ -85,7 +85,6 @@ test('field-access rejects lossy numeric boundaries while preserving exact bigin
     ['fractional offset', 1.5, 4],
     ['NaN offset', Number.NaN, 4],
     ['unsafe number size', 0n, Number.MAX_SAFE_INTEGER + 1],
-    ['oversized bigint size', 0n, BigInt(Number.MAX_SAFE_INTEGER) + 1n],
     ['negative size', 0n, -1],
     ['fractional size', 0n, 1.5],
     ['numeric string size', 0n, '4'],
@@ -96,4 +95,17 @@ test('field-access rejects lossy numeric boundaries while preserving exact bigin
   const largeOffset = BigInt(Number.MAX_SAFE_INTEGER) + 123n;
   await fieldAccessRegion(backend, REGION, largeOffset, null);
   assert.deepEqual(calls[0], { regionId:'text', offset:largeOffset, size:0 });
+});
+
+test('field-access preserves exact oversized bigint sizes without lossy coercion (#3143 contract)', async (t) => {
+  const { backend, calls } = backendSpy();
+  t.after(() => clearFieldAccessArtifacts(backend));
+
+  const huge = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+  await fieldAccessRegion(backend, REGION, 0x20n, huge);
+  assert.deepEqual(calls[0], { regionId:'text', offset:0x20n, size:huge }, 'oversized bigint size must reach the backend exactly');
+
+  await fieldAccessRegion(backend, REGION, 0x20n, huge + 1n);
+  assert.deepEqual(calls[1], { regionId:'text', offset:0x20n, size:huge + 1n }, 'distinct oversized bigint sizes must not collapse onto one cache entry');
+  assert.equal(calls.length, 2);
 });

@@ -56,8 +56,8 @@ function canonicalOffset(offset) {
 function canonicalSize(size) {
   if (size == null) return 0;
   if (typeof size === 'bigint') {
-    if (size < 0n || size > BigInt(Number.MAX_SAFE_INTEGER)) throw new TypeError('field-access-size-invalid');
-    return Number(size);
+    if (size < 0n) throw new TypeError('field-access-size-invalid');
+    return size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(size) : size;
   }
   if (typeof size === 'number' && Number.isSafeInteger(size) && size >= 0) return size === 0 ? 0 : size;
   throw new TypeError('field-access-size-invalid');
