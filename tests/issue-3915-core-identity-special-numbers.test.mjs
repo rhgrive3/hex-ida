@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   createEntityId,
   createEvidenceId,
+  jsonSafe,
 } from '../js/core/identity/index.js';
 
 const entityBase = {
@@ -15,6 +16,27 @@ const evidenceBase = {
 
 function idFor(factory, base, value) {
   return factory({ ...base, identity: { value } });
+}
+
+for (const [label, makeCycle] of [
+  ['Map', () => { const value = new Map(); value.set('self', value); return value; }],
+  ['Set', () => { const value = new Set(); value.add(value); return value; }],
+]) {
+  assert.throws(
+    () => jsonSafe(makeCycle()),
+    (error) => error instanceof TypeError && error.message === 'identity-cyclic-value',
+    `${label} self-cycle must fail closed in jsonSafe`,
+  );
+  assert.throws(
+    () => createEntityId({ ...entityBase, identity: makeCycle() }),
+    (error) => error instanceof TypeError && error.message === 'identity-cyclic-value',
+    `${label} self-cycle must fail closed in createEntityId`,
+  );
+  assert.throws(
+    () => createEvidenceId({ ...evidenceBase, identity: makeCycle() }),
+    (error) => error instanceof TypeError && error.message === 'identity-cyclic-value',
+    `${label} self-cycle must fail closed in createEvidenceId`,
+  );
 }
 
 for (const [label, factory, base] of [
