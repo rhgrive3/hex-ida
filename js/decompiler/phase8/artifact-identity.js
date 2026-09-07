@@ -158,6 +158,9 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       failOnEnumerableOwnProperties(descriptors, 'map');
       const out = new Map();
       for (const [key, entryValue] of Map.prototype.entries.call(value)) {
+        if (typeof key === 'string' && FORBIDDEN_KEY_FIELDS.includes(key)) {
+          fail(`phase8-artifact-presentation-state-in-key:${key}`);
+        }
         out.set(snapshotArtifactOptions(key, active, done), snapshotArtifactOptions(entryValue, active, done));
       }
       done.set(value, out);
@@ -232,7 +235,7 @@ function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakM
       for (const key of Reflect.ownKeys(descriptors)) {
         const descriptor = descriptors[key];
         if (key === 'length') continue;
-        if (!descriptor.enumerable && !isArrayIndex(key)) continue;
+        if (!descriptor.enumerable && (typeof key === 'symbol' || !isArrayIndex(key))) continue;
         // The core canonicalizer reads only intrinsic array elements, so an
         // enumerable non-index own property (string or symbol) is invisible
         // key material: fail closed instead of minting a colliding identity.

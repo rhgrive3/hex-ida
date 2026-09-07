@@ -400,3 +400,43 @@ test('plain objects cannot carry enumerable symbol-key payload into artifact key
     'plain string-keyed objects stay accepted',
   );
 });
+
+test('presentation-only Map keys fail closed while semantic Map keys remain identity material', () => {
+  let minted = null;
+  for (const theme of ['dark', 'light']) {
+    assert.throws(
+      () => {
+        const descriptor = createPhase8ArtifactDescriptor({
+          ...BASE,
+          options: { display: new Map([['theme', theme]]) },
+        });
+        minted = descriptor.artifactId;
+      },
+      /phase8-artifact-presentation-state-in-key:theme/,
+    );
+  }
+  assert.equal(minted, null, 'presentation Map entries must not mint an artifactId');
+
+  const descriptor = (mode) => createPhase8ArtifactDescriptor({
+    ...BASE,
+    options: { semantic: new Map([['mode', mode]]) },
+  }).artifactId;
+  assert.notEqual(
+    descriptor('signed'),
+    descriptor('unsigned'),
+    'semantic Map entries must remain artifact identity material',
+  );
+});
+
+test('non-enumerable symbol metadata on arrays stays outside artifact identity safely', () => {
+  const rows = [1, 2, 3];
+  Object.defineProperty(rows, Symbol('hidden'), {
+    value: 'ignored',
+    enumerable: false,
+  });
+
+  assert.doesNotThrow(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { rows } }),
+    'non-enumerable symbol metadata must be ignored without symbol-to-string coercion',
+  );
+});
