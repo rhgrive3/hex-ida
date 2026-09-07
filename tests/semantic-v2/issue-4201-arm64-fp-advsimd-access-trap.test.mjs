@@ -143,6 +143,14 @@ conditionalAccessTrap(
   'issue-4201:malformed-context',
 );
 
+conditionalAccessTrap(
+  liftArm64MachineEffects(
+    instruction('fadd', 's0, s1, s2', 'issue-4201:el3-unimplemented'),
+    { arm64AccessControl:{ currentEL:3, el3Implemented:false } },
+  ),
+  'issue-4201:el3-unimplemented',
+);
+
 const gpAdd = liftArm64MachineEffects(instruction('add', 'x0, x1, x2', 'issue-4201:integer:add'));
 assert.ok(gpAdd);
 assert.equal(gpAdd.metadata.family, 'arm64-integer');
