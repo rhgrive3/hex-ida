@@ -74,6 +74,47 @@ assertConservative(sysvAggregate, 'rdi', 'sysv structured aggregate classes');
 assert.equal(exactRegister(sysvAggregate, 'xmm0'), false,
   'sysv structured aggregate classes must not mint mixed INTEGER/SSE placement');
 
+let nestedClassReads = 0;
+const statefulEightbyteClasses = [];
+Object.defineProperty(statefulEightbyteClasses, 0, {
+  enumerable:true,
+  get() {
+    nestedClassReads += 1;
+    return nestedClassReads === 1 ? 'INTEGER' : 'SSE';
+  },
+});
+statefulEightbyteClasses.length = 1;
+const statefulClassesResult = SYSV_AMD64_ABI.classifyArguments({
+  callPrototype: {
+    parameters: [{
+      aggregate:true,
+      bits:64,
+      eightbyteClasses:statefulEightbyteClasses,
+    }],
+  },
+});
+assertConservative(statefulClassesResult, 'rdi',
+  'nested eightbyte class accessor');
+assert.equal(nestedClassReads, 0,
+  'nested eightbyte class accessors must be rejected without validation/classification reads');
+
+let nestedParameterReads = 0;
+const statefulParameters = [];
+Object.defineProperty(statefulParameters, 0, {
+  enumerable:true,
+  get() {
+    nestedParameterReads += 1;
+    return { type:'double', bits:64 };
+  },
+});
+statefulParameters.length = 1;
+const statefulParametersResult = SYSV_AMD64_ABI.classifyArguments({
+  callPrototype: { parameters:statefulParameters },
+});
+assertConservative(statefulParametersResult, 'xmm0', 'nested parameter accessor');
+assert.equal(nestedParameterReads, 0,
+  'nested parameter accessors must be rejected without validation/classification reads');
+
 const riscvVector = RISCV_LP64D_ABI.classifyArguments({
   callingConvention:'riscv-vector-variant',
   callPrototype: {

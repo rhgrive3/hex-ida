@@ -126,7 +126,7 @@ function ownDataValue(record, key) {
 }
 
 function safeEnumerableDataCopy(value) {
-  if (!value || typeof value !== 'object') return {};
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return {};
   const copy = {};
   try {
     for (const key of Reflect.ownKeys(value)) {
@@ -143,6 +143,116 @@ function safeEnumerableDataCopy(value) {
     return {};
   }
   return copy;
+}
+
+/*
+ * Prototype metadata is caller-owned authority.  Validation must not inspect
+ * one view of an array and then let a classifier inspect another view of that
+ * same array.  Capture only own data properties into an owned graph before
+ * validation/classification; accessors, unsupported objects, proxies whose
+ * reflection fails, and cycles are all malformed authority.
+ */
+function snapshotMetadataValue(value, seen = new WeakSet()) {
+  if (value == null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return { valid:true, value };
+  }
+  if (typeof value === 'function' || seen.has(value)) return { valid:false, value:null };
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      if (!lengthDescriptor || !('value' in lengthDescriptor)
+        || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+        return { valid:false, value:null };
+      }
+      const snapshot = [];
+      for (const key of Reflect.ownKeys(value)) {
+        if (key === 'length') continue;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !('value' in descriptor)) return { valid:false, value:null };
+        const nested = snapshotMetadataValue(descriptor.value, seen);
+        if (!nested.valid) return { valid:false, value:null };
+        Object.defineProperty(snapshot, key, {
+          configurable:true,
+          enumerable:descriptor.enumerable,
+          writable:true,
+          value:nested.value,
+        });
+      }
+      Object.defineProperty(snapshot, 'length', {
+        configurable:false,
+        enumerable:false,
+        writable:true,
+        value:lengthDescriptor.value,
+      });
+      return { valid:true, value:snapshot };
+    }
+    if (!plainRecord(value)) return { valid:false, value:null };
+    const prototype = Object.getPrototypeOf(value);
+    const snapshot = Object.create(prototype === null ? null : Object.prototype);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) return { valid:false, value:null };
+      const nested = snapshotMetadataValue(descriptor.value, seen);
+      if (!nested.valid) return { valid:false, value:null };
+      Object.defineProperty(snapshot, key, {
+        configurable:true,
+        enumerable:descriptor.enumerable,
+        writable:true,
+        value:nested.value,
+      });
+    }
+    return { valid:true, value:snapshot };
+  } catch {
+    return { valid:false, value:null };
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function snapshotPrototypeValue(value) {
+  const snapshot = snapshotMetadataValue(value);
+  return snapshot.valid && strictPrototype(snapshot.value)
+    ? snapshot
+    : { valid:false, value:null };
+}
+
+function snapshotAuthorityOptions(options) {
+  if (options == null) return { valid:true, value:options };
+  if (typeof options !== 'object' && typeof options !== 'function') {
+    return { valid:false, value:null };
+  }
+  const snapshot = safeEnumerableDataCopy(options);
+  try {
+    const providerEntry = ownDataValue(options, 'callPrototypeFor');
+    if (providerEntry.accessor) return { valid:false, value:null };
+    if (providerEntry.present) {
+      Object.defineProperty(snapshot, 'callPrototypeFor', {
+        configurable:true,
+        enumerable:true,
+        writable:true,
+        value:providerEntry.value,
+      });
+    }
+    for (const key of ABI_AUTHORITY_OPTION_FIELDS) {
+      const entry = ownDataValue(options, key);
+      if (!entry.present || entry.accessor) {
+        if (entry.accessor) return { valid:false, value:null };
+        continue;
+      }
+      const nested = snapshotMetadataValue(entry.value);
+      if (!nested.valid) return { valid:false, value:null };
+      Object.defineProperty(snapshot, key, {
+        configurable:true,
+        enumerable:true,
+        writable:true,
+        value:nested.value,
+      });
+    }
+    return { valid:true, value:snapshot };
+  } catch {
+    return { valid:false, value:null };
+  }
 }
 
 function strictInteger(value) {
@@ -253,7 +363,7 @@ function withoutCallPrototype(instruction) {
   return sanitized;
 }
 
-function guardedProviderOptions(options = {}, state) {
+function guardedProviderOptions(options = {}, state, providerThis = options) {
   if (!options || typeof options !== 'object') return options;
   const providerEntry = ownDataValue(options, 'callPrototypeFor');
   if (providerEntry.accessor) {
@@ -273,7 +383,7 @@ function guardedProviderOptions(options = {}, state) {
   guarded.callPrototypeFor = function guardedCallPrototypeFor(...args) {
     let prototype;
     try {
-      prototype = provider.apply(options, args);
+      prototype = provider.apply(providerThis, args);
     } catch {
       // A provider is caller-controlled authority.  A throw is malformed
       // metadata, not permission to let the target classifier fall back to
@@ -281,11 +391,12 @@ function guardedProviderOptions(options = {}, state) {
       state.invalid = true;
       return null;
     }
-    if (!strictPrototype(prototype)) {
+    const snapshot = snapshotPrototypeValue(prototype);
+    if (!snapshot.valid) {
       state.invalid = true;
       return null;
     }
-    return prototype;
+    return snapshot.value;
   };
   return guarded;
 }
@@ -306,15 +417,25 @@ function guardArgumentClassifier(classifier) {
     const explicitPrototype = instruction && typeof instruction === 'object'
       ? ownDataValue(instruction, 'callPrototype')
       : { present:false, value:undefined };
-    if ((explicitPrototype.present && (explicitPrototype.accessor || !strictPrototype(explicitPrototype.value)))
+    const prototypeSnapshot = explicitPrototype.present && !explicitPrototype.accessor
+      ? snapshotPrototypeValue(explicitPrototype.value)
+      : { valid:false, value:null };
+    const optionsSnapshot = snapshotAuthorityOptions(options);
+    if ((explicitPrototype.present && (explicitPrototype.accessor || !prototypeSnapshot.valid))
       || !strictCallingConventionMetadata(instruction)
-      || !strictOptionsMetadata(options)) {
+      || !optionsSnapshot.valid
+      || !strictOptionsMetadata(optionsSnapshot.value)) {
       return classifier.call(this, withoutCallPrototype(instruction), sanitizedClassifierOptions(options));
     }
+    const instructionSnapshot = instruction && typeof instruction === 'object'
+      ? safeEnumerableDataCopy(instruction)
+      : instruction;
+    if (explicitPrototype.present) instructionSnapshot.callPrototype = prototypeSnapshot.value;
     const state = { invalid:false };
-    const result = classifier.call(this, instruction, guardedProviderOptions(options, state));
+    const result = classifier.call(this, instructionSnapshot,
+      guardedProviderOptions(optionsSnapshot.value, state, options));
     if (!state.invalid) return result;
-    return classifier.call(this, withoutCallPrototype(instruction), sanitizedClassifierOptions(options));
+    return classifier.call(this, withoutCallPrototype(instructionSnapshot), sanitizedClassifierOptions(options));
   };
 }
 
@@ -324,11 +445,21 @@ function guardCallReturnClassifier(classifier) {
     const explicitPrototype = instruction && typeof instruction === 'object'
       ? ownDataValue(instruction, 'callPrototype')
       : { present:false, value:undefined };
-    if ((explicitPrototype.present && (explicitPrototype.accessor || !strictPrototype(explicitPrototype.value)))
+    const prototypeSnapshot = explicitPrototype.present && !explicitPrototype.accessor
+      ? snapshotPrototypeValue(explicitPrototype.value)
+      : { valid:false, value:null };
+    const optionsSnapshot = snapshotAuthorityOptions(options);
+    if ((explicitPrototype.present && (explicitPrototype.accessor || !prototypeSnapshot.valid))
       || !strictCallingConventionMetadata(instruction)
-      || !strictOptionsMetadata(options)) return invalidReturnClassification();
+      || !optionsSnapshot.valid
+      || !strictOptionsMetadata(optionsSnapshot.value)) return invalidReturnClassification();
+    const instructionSnapshot = instruction && typeof instruction === 'object'
+      ? safeEnumerableDataCopy(instruction)
+      : instruction;
+    if (explicitPrototype.present) instructionSnapshot.callPrototype = prototypeSnapshot.value;
     const state = { invalid:false };
-    const result = classifier.call(this, instruction, guardedProviderOptions(options, state));
+    const result = classifier.call(this, instructionSnapshot,
+      guardedProviderOptions(optionsSnapshot.value, state, options));
     return state.invalid ? invalidReturnClassification() : result;
   };
 }
@@ -336,8 +467,9 @@ function guardCallReturnClassifier(classifier) {
 function guardFunctionReturnClassifier(classifier) {
   if (typeof classifier !== 'function') return classifier;
   return function guardedABIFunctionReturn(options = {}) {
-    if (!strictOptionsMetadata(options)) return invalidReturnClassification();
-    return classifier.call(this, options);
+    const optionsSnapshot = snapshotAuthorityOptions(options);
+    if (!optionsSnapshot.valid || !strictOptionsMetadata(optionsSnapshot.value)) return invalidReturnClassification();
+    return classifier.call(this, optionsSnapshot.value);
   };
 }
 
