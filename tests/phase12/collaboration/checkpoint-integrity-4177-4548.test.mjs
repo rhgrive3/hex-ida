@@ -93,4 +93,38 @@ assert.equal(replayed.state.facts['entity-2\u0000type'].values[0].value, 'functi
 assert.equal(typeof replayed.digest, 'string');
 assert.ok(replayed.digest.length > 0);
 
+function statefulCheckpoint() {
+  const original = structuredClone(checkpoint.state);
+  const altered = structuredClone(original);
+  const [fact] = Object.values(altered.facts);
+  fact.values[0].value = 'accessor-tampered';
+  let reads = 0;
+  const candidate = {
+    schemaVersion: checkpoint.schemaVersion,
+    projectIdentity: checkpoint.projectIdentity,
+    binaryIdentity: checkpoint.binaryIdentity,
+    operationIds: checkpoint.operationIds,
+    digest: checkpoint.digest,
+    get state() {
+      reads += 1;
+      return reads === 1 ? original : altered;
+    },
+  };
+  return { candidate, reads: () => reads, original };
+}
+
+{
+  const { candidate, reads, original } = statefulCheckpoint();
+  const restored = restoreCheckpoint(candidate, { projectIdentity });
+  assert.equal(reads(), 1, 'restore must own checkpoint state before validation');
+  assert.equal(restored.state.facts['entity-1\u0000name'].values[0].value, original.facts['entity-1\u0000name'].values[0].value);
+}
+
+{
+  const { candidate, reads, original } = statefulCheckpoint();
+  const replayedStateful = replayOperations({ projectIdentity, checkpoint: candidate });
+  assert.equal(reads(), 1, 'replay must own checkpoint state before validation');
+  assert.equal(replayedStateful.state.facts['entity-1\u0000name'].values[0].value, original.facts['entity-1\u0000name'].values[0].value);
+}
+
 console.log('collaboration checkpoint integrity #4177/#4548: PASS');
