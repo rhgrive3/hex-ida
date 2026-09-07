@@ -18,6 +18,8 @@ function finiteFloatValue(value) {
   if (typeof value !== 'string' || !STRICT_FLOAT_LITERAL.test(value)) return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
+  const significand = value.split(/[eE]/, 1)[0];
+  if (number === 0 && /[1-9]/.test(significand)) return null;
   if (Number.isInteger(number) && !Number.isSafeInteger(number)) return null;
   return number;
 }
