@@ -290,7 +290,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const signal = resumeSignal(options.signal);
     const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
+    if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     // Injectable per call or at construction time (tests, embedders) so the
