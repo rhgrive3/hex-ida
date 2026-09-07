@@ -26,6 +26,18 @@ function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
   return 0;
 }
 
+// Pointer width is architectural ABI authority for symbolic reference payloads.
+// Only the canonical primitive integers 4 and 8 are accepted (#5871); a
+// structured value must never select a different ABI through Number()
+// coercion, and an explicit malformed width fails closed instead of falling
+// back to the 8-byte default.
+function canonicalPointerBytes(options) {
+  const raw = options.pointerBytes ?? options.pointerSize;
+  if (raw == null) return 8;
+  if (raw !== 4 && raw !== 8) throw new TypeError('swift-invalid-pointer-bytes');
+  return raw;
+}
+
 function swiftMangledFragment(bytes) {
   if (!bytes.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
@@ -34,7 +46,7 @@ function swiftMangledFragment(bytes) {
 export async function readSwiftMangledName(read, address, options = {}) {
   if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
-  const pointerBytes = Number(options.pointerBytes ?? options.pointerSize ?? 8) === 4 ? 4 : 8;
+  const pointerBytes = canonicalPointerBytes(options);
   let bytes;
   try { bytes = await read(BigInt(address), maxBytes, true); } catch { bytes = null; }
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
