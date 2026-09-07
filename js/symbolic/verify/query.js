@@ -55,6 +55,23 @@ function normalizeBitWidth(value) {
   return value;
 }
 
+function normalizeTargetEntity(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
+  }
+  // Copy once so hash material and the returned record share the same
+  // canonical target representation, including null-prototype records.
+  const normalized = Object.create(null);
+  for (const key of Object.keys(value)) normalized[key] = value[key];
+  return normalized;
+}
+
 export function isVerificationQuery(query) {
   return (
     !!query &&
@@ -93,6 +110,7 @@ export function createVerificationQuery({
   const normalizedTranslatorVersion = requireIdentityString(translatorVersion, 'translatorVersion');
   const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
   const normalizedBitWidth = normalizeBitWidth(bitWidth);
+  const normalizedTargetEntity = normalizeTargetEntity(targetEntity);
 
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
@@ -104,7 +122,7 @@ export function createVerificationQuery({
   const normalizedAssumptions = Array.isArray(assumptions) ? [...assumptions] : [];
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
-  freezeDeep(targetEntity);
+  freezeDeep(normalizedTargetEntity);
   freezeDeep(normalizedConstraints);
   freezeDeep(assertion);
   freezeDeep(normalizedAssumptions);
@@ -116,7 +134,7 @@ export function createVerificationQuery({
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
-    targetEntity: targetEntity && typeof targetEntity === 'object' ? targetEntity : String(targetEntity || ''),
+    targetEntity: normalizedTargetEntity,
     constraints: normalizedConstraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
     assertion: assertion ? { hash: computeStructuralHash(assertion), expression: assertion } : null,
     assumptions: normalizedAssumptions,
@@ -135,7 +153,7 @@ export function createVerificationQuery({
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
-    targetEntity: targetEntity && typeof targetEntity === 'object' ? Object.freeze({ ...targetEntity }) : targetEntity,
+    targetEntity: normalizedTargetEntity,
     constraints: Object.freeze(normalizedConstraints),
     assertion: assertion || null,
     assumptions: Object.freeze(normalizedAssumptions),

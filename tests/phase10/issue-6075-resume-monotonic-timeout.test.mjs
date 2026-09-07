@@ -69,3 +69,30 @@ test('#6075 monotonic clock does not fire before the budget elapses', async () =
   assert.notEqual(adapter.sandbox.emulator.stopped, 'timeout');
   assert.ok(result);
 });
+
+test('#6075 no monotonic source fails closed instead of using Date.now', async () => {
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  const originalHrtimeBigint = process.hrtime.bigint;
+  const originalDateNow = Date.now;
+  try {
+    Object.defineProperty(globalThis, 'performance', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    process.hrtime.bigint = () => { throw new Error('hrtime unavailable'); };
+    Date.now = () => 123_456;
+    const { adapter } = harness();
+    await assert.rejects(
+      adapter.resume({ timeoutMs: 2000, maxSteps: 100 }),
+      (error) => error?.code === 'monotonic-clock-unavailable',
+    );
+    const noTimeout = harness();
+    await noTimeout.adapter.resume({ maxSteps: 100 });
+  } finally {
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor);
+    else delete globalThis.performance;
+    process.hrtime.bigint = originalHrtimeBigint;
+    Date.now = originalDateNow;
+  }
+});
