@@ -335,15 +335,34 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
       };
 
       let forwardedStackOperand = false;
-      if (mergedFact.status !== 'exact' && canonicalIr != null && source.loc?.kind === V1_MK.STACK) {
-        const operandProof = forwardExactStackOperandIdentity(memorySsa, use, canonicalIr);
+      if (canonicalIr != null && source.loc?.kind === V1_MK.STACK) {
+        // The helper is a projection-shape check over the same canonical
+        // query, never a fallback acceptance algorithm. It may issue the
+        // operand-shaped fact when the ordinary byte fact is exact, because
+        // non-constant stores need their Semantic IR value identity.
+        const operandProof = forwardExactStackOperandIdentity(memorySsa, use, canonicalIr, {
+          context: currentContext,
+        });
         const forwardedValue = operandProof?.exact === true
           ? valuesById.get(String(operandProof.storedValueId ?? '')) ?? null
           : null;
         const preservesCompatibilityLoad = valueDependsOnProjectedPhi(forwardedValue)
           || storedValueComesFromCfgJoin(projected, operandProof, instructionBySemanticId)
           || !hasProjectedConsumerBeyondLoad(source);
-        if (loadUseCounts.get(source) === 1
+        // A join/PHI value is intentionally kept as a physical LOAD so the
+        // decompiler can project its committed source lvalue later.  Preserve
+        // the canonical producer proof on that LOAD, but publish it only when
+        // one MemorySSA use owns the projected instruction; a single v1 object
+        // cannot carry distinct proofs for multiple region rows.
+        if (loadUseCounts.get(source) === 1 && operandProof?.exact === true) {
+          source.memoryOperandForwarding = operandProof;
+          source.extra = {
+            ...source.extra,
+            memoryOperandForwarding: operandProof,
+          };
+        }
+        if (mergedFact.status !== 'exact'
+            && loadUseCounts.get(source) === 1
             && forwardedValue && !preservesCompatibilityLoad
             && String(source.dst?.semanticValueId ?? source.dst?.sourceSemanticValueId ?? '') !== '') {
           // Do not mutate the projected LOAD while MemorySSA uses are still

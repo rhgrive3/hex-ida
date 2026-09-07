@@ -1,0 +1,1474 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { expr } from '../../../js/decompiler/ast/nodes.js';
+import {
+  DEFAULT_PASS_BUDGET,
+  PassManager,
+} from '../../../js/decompiler/passes/manager.js';
+import {
+  DEFAULT_REWRITE_BUDGET,
+  RewriteEngine,
+} from '../../../js/decompiler/rewrite/engine.js';
+import {
+  exactLegacySameBlockStackStore as canonicalExactLegacySameBlockStackStore,
+  materializeLegacyExactStackValues,
+} from '../../../js/decompiler/legacy-exact-return-repair.js';
+import {
+  enhanceSemanticDecompilation as enhancePipeline,
+  exactLegacySameBlockStackStore,
+} from '../../../js/decompiler/pipeline.js';
+import { recoverExactStackPhiExpressions } from '../../../js/decompiler/passes/stack-phi-recovery.js';
+import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
+import {
+  compilerTruthAccepted,
+  compilerTruthGateResult,
+} from './compiler-truth-gate.mjs';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
+import { validateSemanticIrFunction } from '../../../js/semantics/ir/index.js';
+import { createMemoryRegionRef } from '../../../js/semantics/memoryssa/contract.js';
+import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { forwardExactStackOperandIdentity } from '../../../js/semantics/memoryssa/operand-forwarding.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
+
+function coerciveValue(counter) {
+  return Object.defineProperties({}, {
+    valueOf: { get() { counter.count += 1; return () => 1; } },
+    [Symbol.toPrimitive]: { get() { counter.count += 1; return () => 1; } },
+  });
+}
+
+function stackReturnFixture({ includeLoad = true, storeSize = 4, barrier = false, sourceId = 11, storeKind = 'stack' } = {}) {
+  const key = 'stack:sp:e0:-16:s4';
+  const value = { id:100 };
+  const store = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:storeKind, key, size:storeSize }, args:[{ value }] };
+  const load = { id:11, op:'load', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[] };
+  const unknown = { id:12, op:'unknown', block:0, row:1, address:0x1004n, args:[] };
+  const ret = { id:13, op:'ret', block:0, row:3, address:0x100cn, args:[] };
+  const instructions = [store, ...(barrier ? [unknown] : []), ...(includeLoad ? [load] : []), ret];
+  const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:sourceId });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:3, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{
+      values:[{ valueId:value.id, expression:expr.constant(11n, 32, true) }],
+      conditions:[],
+      outputs:[{ name:'return', expression }],
+    },
+    cAst:{ body:[{
+      kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    }] },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function multiReturnFixture() {
+  const key = 'stack:sp:e0:-16:s4';
+  const instructions = [];
+  const blocks = [];
+  const values = [];
+  const body = [];
+  for (const [index, literal] of [[0, 11n], [1, 22n]]) {
+    const value = { id:100 + index };
+    const store = { id:10 + index * 3, op:'store', block:index, row:index * 3, address:0x1000n + BigInt(index * 12), loc:{ kind:'stack', key, size:4 }, args:[{ value }] };
+    const load = { id:11 + index * 3, op:'load', block:index, row:index * 3 + 1, address:0x1004n + BigInt(index * 12), loc:{ kind:'stack', key, size:4 }, args:[] };
+    const ret = { id:12 + index * 3, op:'ret', block:index, row:index * 3 + 2, address:0x1008n + BigInt(index * 12), args:[] };
+    const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
+    instructions.push(store, load, ret);
+    blocks.push({ index, startRow:store.row, endRow:ret.row, pred:[], succ:[], insts:[store, load, ret] });
+    values.push({ valueId:value.id, expression:expr.constant(literal, 32, true) });
+    body.push({
+      kind:'stmt', indent:0, text:`return local_${index};`,
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    });
+  }
+  return {
+    semantic:true,
+    ir:{ compat:{ projection:'semantic-ir-v2-to-v1' }, instructions, blocks, idom:[-1, -1] },
+    semanticAst:{ values, conditions:[], outputs:[{ name:'return', expression:body[1].semantic.expression }] },
+    cAst:{ body },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function legacyForgedReachingStoreFixture() {
+  const key = 'stack:sp:e0:-16:s4';
+  const source = { id:100 };
+  const store = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:8 }, args:[{ value:source }] };
+  const unknown = { id:11, op:'unknown', block:0, row:1 };
+  const load = { id:12, op:'load', block:1, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:store, args:[] };
+  return {
+    ir:{ values:[source, { id:200, def:load }], instructions:[store, unknown, load], blocks:[
+      { index:0, insts:[store, unknown] },
+      { index:1, insts:[load] },
+    ] },
+    semanticAst:{ values:[
+      { valueId:100, expression:expr.constant(11n, 32, true) },
+      { valueId:200, expression:expr.load({ kind:'stack', key }, 32, { row:load.row, ir:load.id }) },
+    ] },
+  };
+}
+
+function legacyStaleReachingStoreFixture(writerRow = 1, writerKind = 'stack', writerHasKey = true) {
+  const key = 'stack:sp:e0:-16:s4';
+  const oldSource = { id:100 };
+  const newSource = { id:101 };
+  const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldSource }] };
+  const newerStore = { id:11, op:'store', block:0, row:writerRow,
+    loc:{ kind:writerKind, ...(writerHasKey ? { key } : {}), size:4 }, args:[{ value:newSource }] };
+  const load = { id:12, op:'load', block:0, row:2, loc:{ kind:'stack', key, size:4 }, reachingStore:oldStore, args:[] };
+  return {
+    ir:{ values:[oldSource, newSource, { id:200, def:load }], instructions:[oldStore, newerStore, load], blocks:[
+      { index:0, insts:[oldStore, newerStore, load] },
+    ] },
+    semanticAst:{ values:[
+      { valueId:100, expression:expr.constant(11n, 32, true) },
+      { valueId:101, expression:expr.constant(22n, 32, true) },
+      { valueId:200, expression:expr.load({ kind:'stack', key }, 32, { row:load.row, ir:load.id }) },
+    ] },
+  };
+}
+
+function stackReturnWriterFixture(mode, writerRow = 1) {
+  const key = 'stack:sp:e0:-16:s4';
+  const oldValue = { id:100 };
+  const newValue = { id:101 };
+  const oldStore = { id:10, op:'store', block:0, row:0, address:0x1000n, loc:{ kind:'stack', key, size:4 }, args:[{ value:oldValue }] };
+  const malformedRow = mode === 'malformed-row';
+  const middle = mode === 'wrong-width'
+    ? { id:11, op:'store', block:0, row:1, address:0x1004n, loc:{ kind:'stack', key, size:8 }, args:[{ value:newValue }] }
+    : { id:12, op:'store', block:0, row:malformedRow ? writerRow : 2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[{ value:newValue }] };
+  const load = mode === 'wrong-width'
+    ? { id:13, op:'load', block:0, row:2, address:0x1008n, loc:{ kind:'stack', key, size:4 }, args:[] }
+    : { id:11, op:'load', block:0, row:malformedRow ? 2 : 1, address:0x1004n, loc:{ kind:'stack', key, size:4 }, args:[] };
+  const ret = { id:14, op:'ret', block:0, row:3, address:0x100cn, args:[] };
+  const instructions = mode === 'wrong-width'
+    ? [oldStore, middle, load, ret]
+    : malformedRow ? [oldStore, middle, load, ret] : [oldStore, load, middle, ret];
+  const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:ret.row, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{
+      values:[
+        { valueId:oldValue.id, expression:expr.constant(11n, 32, true) },
+        { valueId:newValue.id, expression:expr.constant(22n, 32, true) },
+      ],
+      conditions:[],
+      outputs:[{ name:'return', expression }],
+    },
+    cAst:{ body:[{
+      kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    }] },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function sameRowUnknownStoreFixture(reverse = false) {
+  const result = stackReturnFixture();
+  const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+  const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+  const originalStore = result.ir.instructions.find((instruction) => instruction.op === 'store');
+  const unknownStore = {
+    id:14, op:'store', block:load.block, row:load.row, address:0x1008n,
+    loc:{ kind:'unknown', key:'unknown:other', size:4 }, args:[{ value:{ id:101 } }],
+  };
+  const ordered = reverse
+    ? [originalStore, load, unknownStore, ret]
+    : [originalStore, unknownStore, load, ret];
+  result.ir.instructions = ordered;
+  result.ir.blocks[0].insts = ordered;
+  return result;
+}
+
+function callReturnFixture(effect = 'missing') {
+  const key = 'stack:sp:e0:-16:s4';
+  const value = { id:100 };
+  const store = { id:10, op:'store', block:0, row:0, address:0x1000n,
+    loc:{ kind:'stack', key, size:4 }, args:[{ value }] };
+  const call = { id:11, op:'call', block:0, row:1, address:0x1004n, args:[] };
+  if (effect === 'empty') call.memKills = [];
+  if (effect === 'wrong-key') call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
+  if (effect === 'malformed') call.memKills = [{ key:{}, kind:'stack', size:4 }];
+  if (effect === 'private') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture',
+      memoryWrite:{ scope:'none' },
+    };
+  }
+  if (effect === 'unbound-private') {
+    call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'none' } };
+  }
+  if (effect === 'mismatched-private') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'other-call', summarySource:'fixture',
+      memoryWrite:{ scope:'none' },
+    };
+  }
+  if (effect === 'private-access') {
+    call.semanticNodeId = 'call-fixture';
+    call.sourceEntityId = 'call-fixture';
+    call.extra = {
+      callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture',
+      memoryWrite:{
+        scope:'accesses',
+        accesses:[{
+          addressSpace:'memory', addressExpr:{ valueId:'address-fixture' }, widthBits:32,
+          endian:'little', alignment:null, volatility:false, atomic:false, ordering:'unknown', faults:[],
+        }],
+      },
+    };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'field', key:'field:other', size:4 }];
+  }
+  if (effect === 'unknown-scope') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'unknown' } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'unknown', key:'unknown:call', size:null }];
+  }
+  if (effect === 'malformed-all') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'all' } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
+  }
+  if (effect === 'unbound-complete') {
+    call.extra = { callCompleteness:'complete', memoryWrite:{ scope:'all', addressSpaces:['memory'] } };
+    call.memKills = [{ kind:'stack', key:'stack:sp:e0:-20:s4', size:4 }];
+  }
+  if (effect === 'unknown-kind-kill') {
+    call.extra = { callCompleteness:'complete', semanticNodeId:'call-fixture', summarySource:'fixture', memoryWrite:{ scope:'all', addressSpaces:['memory'] } };
+    call.memoryBarrier = true;
+    call.memKills = [{ kind:'unknown', key:'unknown:call', size:null }];
+  }
+  const load = { id:12, op:'load', block:0, row:2, address:0x1008n,
+    loc:{ kind:'stack', key, size:4 }, args:[] };
+  const ret = { id:13, op:'ret', block:0, row:3, address:0x100cn, args:[] };
+  const instructions = [store, call, load, ret];
+  const expression = expr.load({ kind:'stack', key }, 32, { row:load.row, address:load.address, ir:load.id });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:ret.row, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{ values:[{ valueId:value.id, expression:expr.constant(11n, 32, true) }], conditions:[], outputs:[{ name:'return', expression }] },
+    cAst:{ body:[{ kind:'stmt', indent:0, text:'return local_0;', semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] } }] },
+    rewriteProof:[], metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function largeStackReturnFixture(count = 512) {
+  const result = stackReturnFixture();
+  const store = result.ir.instructions.find((instruction) => instruction.op === 'store');
+  const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+  const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+  load.row = count + 1;
+  ret.row = count + 2;
+  result.cAst.body[0].source.rows = [ret.row];
+  const nops = Array.from({ length:count }, (_item, index) => ({
+    id:2000 + index, op:'nop', block:0, row:1 + index, args:[],
+  }));
+  result.ir.instructions = [store, ...nops, load, ret];
+  result.ir.blocks[0].endRow = ret.row;
+  result.ir.blocks[0].insts = result.ir.instructions.filter(i => i.block === 0);
+  return result;
+}
+
+function largeLegacyFixture(count = 512) {
+  const result = legacyStaleReachingStoreFixture(1);
+  const [oldStore, newerStore, load] = result.ir.instructions;
+  load.row = count + 2;
+  const nops = Array.from({ length:count }, (_item, index) => ({
+    id:3000 + index, op:'nop', block:0, row:2 + index, args:[],
+  }));
+  result.ir.instructions = [oldStore, newerStore, ...nops, load];
+  result.ir.blocks[0].insts = result.ir.instructions;
+  return result;
+}
+
+function committedSpillReturnFixture() {
+  const result = committedReturnFixture({ registerKind:'field', registerRow:4 });
+  const rootLoad = result.ir.instructions.find((instruction) => instruction.id === 500);
+  const stackStore = result.ir.instructions.find((instruction) => instruction.id === 502);
+  const registerLoad = result.ir.instructions.find((instruction) => instruction.id === 501);
+  const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+  rootLoad.row = 3;
+  ret.row = 5;
+  const expression = result.semanticAst.outputs[0].expression;
+  expression.source.row = rootLoad.row;
+  result.cAst.body = [
+    { kind:'stmt', indent:0, text:'local_0 = spilled;', semantic:{ op:'assign' },
+      source:{ rows:[stackStore.row], addresses:[stackStore.address], ir:[stackStore.id] } },
+    { kind:'stmt', indent:0, text:'return local_0;', semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] } },
+  ];
+  result.ir.instructions = [...result.ir.instructions.filter(i => ![500,501,502,503].includes(i.id)), stackStore, rootLoad, registerLoad, ret];
+  result.ir.blocks[0].endRow = ret.row;
+  result.ir.blocks[0].insts = result.ir.instructions;
+  result.pseudocode = 'local_0 = spilled;\nreturn local_0;';
+  result.sourceMap = [{ row:stackStore.row }, { row:ret.row }];
+  result.lines = [{ text:'local_0 = spilled;' }, { text:'return local_0;' }];
+  result.rewriteProof = [{ rule:'prior-proof' }];
+  result.metrics = { rewrittenExpressions:0, priorMetric:true };
+  result.ctx = { priorContext:true };
+  return result;
+}
+
+function committedReturnFixture({ registerKind = 'stack', registerSize = 4, registerRow = 3, operandProof = false } = {}) {
+  const origin = (id, address = 0x3000n) => ({
+    instructionIds:[id], virtualRanges:[{ start:address, end:address + 4n }],
+  });
+  const definitionValue = (id, definitionNodeId, machineType, address) => ({
+    id, kind:'definition', machineType, definitionNodeId, sourceEntityId:definitionNodeId,
+    origin:origin(`ins_${id}`, address),
+  });
+  const memory = (addressValueId, widthBits) => ({
+    addressSpace:'memory', addressExpr:{ valueId:addressValueId }, widthBits,
+    endian:'little', alignment:Math.max(1, widthBits / 8), volatility:false, atomic:false,
+    ordering:'unknown', faults:[],
+  });
+  const bit32 = { kind:'bitvector', widthBits:32 };
+  const addr64 = { kind:'address', widthBits:64, addressSpace:'memory' };
+  const values = [
+    definitionValue('addr', 'n_addr', addr64, 0x3000n),
+    { ...definitionValue('value', 'n_value', bit32, 0x3004n),
+      metadata:{ constant:{ kind:'bitvector', widthBits:32, value:0x12345678n } } },
+    definitionValue('loaded', 'n_load', bit32, 0x300cn),
+  ];
+  const nodes = [
+    { id:'n_addr', kind:'address', blockId:'b0', inputs:[], outputs:['addr'],
+      attributes:{ value:'0x4000' }, origin:origin('addr') },
+    { id:'n_value', kind:'const', blockId:'b0', inputs:[], outputs:['value'],
+      attributes:{ value:0x12345678 }, origin:origin('value', 0x3004n) },
+    { id:'n_store', kind:'store', blockId:'b0', inputs:['addr','value'], outputs:[],
+      memory:memory('addr', 32), attributes:{ machineEffects:{ operationMetadata:{ addressing:{ addressDisplacement:'0' } } } },
+      origin:origin('store', 0x3008n) },
+    { id:'n_load', kind:'load', blockId:'b0', inputs:['addr'], outputs:['loaded'],
+      memory:memory('addr', 32), attributes:{ machineEffects:{ operationMetadata:{ addressing:{ addressDisplacement:'0' } } } },
+      origin:origin('load', 0x300cn) },
+    { id:'n_return', kind:'return', blockId:'b0', inputs:['loaded'], outputs:[], origin:origin('return', 0x3010n) },
+  ];
+  const rawIr = {
+    schemaVersion:2, contractVersion:'2.0.0', functionId:'fn_t011_committed', entryBlockId:'b0',
+    blocks:[{ id:'b0', nodeIds:nodes.map((node) => node.id), origin:origin('block') }], values, nodes,
+    completeness:'complete', unknowns:[], origin:origin('function'),
+  };
+  const canonicalIr = validateSemanticIrFunction(rawIr);
+  const canonicalCfg = createSemanticCfg({
+    functionId:canonicalIr.functionId, entryBlockId:'b0', blocks:[{ id:'b0', successors:[] }],
+  });
+  const region = operandProof
+    ? createMemoryRegionRef({
+      id:'r_stack', kind:'stack-fixed', functionId:canonicalIr.functionId, offset:'-16', widthBits:32,
+      origin:origin('region', 0x4000n),
+    })
+    : createMemoryRegionRef({
+      id:'r_global', kind:'global-absolute', binaryId:'binary_fixture', address:'0x4000', widthBits:32,
+      origin:origin('region', 0x4000n),
+    });
+  const identity = {
+    binaryId:'binary_fixture', sliceId:'slice_fixture', functionId:canonicalIr.functionId,
+    semanticIrId:'ir_fixture', scalarSsaId:'ssa_fixture', memorySsaId:'mssa_fixture', snapshotId:'snapshot_fixture',
+    semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonicalIr), scalarSsaBuildVersion:'1.0.0',
+    scalarSsaDigest:'ssa_fixture_digest', memorySsaBuildVersion:'1.0.0', analyzerVersion:'memoryssa-fixture',
+  };
+  const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
+    regions:[region], resolveRegion:() => region,
+    queryAlias:() => ({ relation:'must', reasonCodes:['identical-region-identity'], evidenceIds:['canonical-fixture-alias'],
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+    identity, snapshotId:'snapshot_fixture', canonicalIrIdentity:{
+      functionId:canonicalIr.functionId, semanticIrId:'ir_fixture', semanticIrContractVersion:'2.0.0',
+      semanticIrDigest:stableDigest(canonicalIr),
+    },
+  });
+  const projected = projectSemanticIrV2ToLegacyV1(rawIr, { memorySsa });
+  const canonicalLoad = projected.instructions.find((instruction) => instruction.op === 'load');
+  assert.ok(canonicalLoad?.memoryForwarding?.status === 'exact');
+  const directOperandProof = operandProof
+    ? forwardExactStackOperandIdentity(memorySsa, memorySsa.uses.find((use) => use.sourceEntityId === 'n_load'), canonicalIr)
+    : null;
+  if (operandProof) assert.ok(directOperandProof?.exact === true);
+
+  const key = 'stack:sp:e0:-16:s4';
+  const rootLoad = { id:500, op:'load', block:0, row:1, address:0x5004n,
+    loc:{ kind:'stack', key, size:4 }, args:[] };
+  const registerLoad = {
+    id:501, op:'load', block:0, row:registerRow, address:0x5008n,
+    semanticNodeId:'n_load', sourceEntityId:'n_load',
+    loc:{ kind:registerKind, key, size:registerSize }, args:[],
+    memoryForwarding:canonicalLoad.memoryForwarding,
+    memoryForwardingContext:canonicalLoad.memoryForwardingContext,
+  };
+  const incomingValues = [{ id:'incoming-left', bits:32 }, { id:'incoming-right', bits:32 }];
+  const fieldStores = incomingValues.map((value, index) => ({
+    id:600 + index, op:'store', block:index + 1, row:0, address:0x4ff0n + BigInt(index * 4),
+    loc:{ kind:'field', key:'field:secret', name:'secret', size:4 }, args:[{ value }],
+  }));
+  const snapshot = { id:'committed_phi', op:'phi', block:0, row:0,
+    incoming:incomingValues.map((value, index) => ({ from:index + 1, value })),
+    dst:{ id:'committed_dest' } };
+  const spilled = { id:'spilled_value', bits:32, def:snapshot };
+  const stackStore = { id:502, op:'store', block:0, row:2, address:0x5000n,
+    semanticNodeId:'n_store', sourceEntityId:'n_store',
+    loc:{ kind:'stack', key, size:4 },
+    memDef:{ definitionId:canonicalLoad.memoryForwarding.contributingDefinitionIds[0] },
+    args:[{ value:spilled }] };
+  if (operandProof) {
+    const canonicalStore = projected.instructions.find((instruction) => instruction.op === 'store');
+    registerLoad.memoryForwarding = { status:'unknown', exact:false, reason:'test-direct-operand-route', completeness:'partial' };
+    registerLoad.memoryOperandForwarding = directOperandProof;
+    registerLoad.extra = { memoryOperandForwarding:directOperandProof };
+    registerLoad.memoryAliasRelation = 'must';
+    registerLoad.memUse = { ...canonicalLoad.memUse, key, inst:stackStore };
+    stackStore.origin = canonicalStore?.origin ?? null;
+  }
+  const ret = { id:503, op:'ret', block:0, row:4, address:0x5010n, args:[] };
+  const registerValue = { id:'return_reg', reg:'x0', bits:32, def:registerLoad };
+  const rootExpression = expr.load({ kind:'stack', key }, 32, { row:rootLoad.row, address:rootLoad.address, ir:rootLoad.id });
+  return {
+    semantic:true,
+    ir:{ instructions:[snapshot, ...fieldStores, rootLoad, stackStore, registerLoad, ret], values:[registerValue], blocks:[{
+      index:0, startRow:0, endRow:ret.row, pred:[1,2], succ:[], insts:[snapshot,rootLoad,stackStore,registerLoad,ret],
+    }, ...fieldStores.map((store,index) => ({ index:index+1, pred:[], succ:[0], insts:[store] }))], idom:[-1,-1,-1] },
+    semanticAst:{ values:[{ valueId:'committed_dest', expression:expr.load({ kind:'field', key:'field:secret', name:'secret' }, 32) }],
+      stores:fieldStores.map(store => ({ location:{ kind:'field', key:'field:secret', name:'secret', text:'secret' }, source:{ ir:[store.id] } })),
+      conditions:[], outputs:[{ name:'return', expression:rootExpression }] },
+    cAst:{ body:[{ kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression:rootExpression }, source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] } }] },
+    rewriteProof:[], metrics:{ rewrittenExpressions:0 },
+  };
+}
+
+function committedReturnViewFixture(kind = 'zext', operandProof = false) {
+  const result = committedReturnFixture({ operandProof });
+  const registerLoad = result.ir.instructions.find((instruction) => instruction.id === 501);
+  const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+  const loaded = { id:'view_loaded', bits:32, def:registerLoad };
+  const widen = { id:504, op:'mov', sub:'zext', block:0, row:3, args:[{ value:loaded }] };
+  const viewInstructions = [widen];
+  let returned = { id:'return_view', reg:'x0', bits:64, def:widen };
+  if (kind === 'lossy') {
+    const wide = { id:'view_wide', bits:64, def:widen };
+    const narrowDef = { id:505, op:'mov', sub:'trunc', block:0, row:3, args:[{ value:wide }] };
+    const narrow = { id:'view_narrow', bits:16, def:narrowDef };
+    const finalDef = { id:506, op:'mov', sub:'zext', block:0, row:3, args:[{ value:narrow }] };
+    returned = { id:'return_view', reg:'x0', bits:32, def:finalDef };
+    viewInstructions.push(narrowDef, finalDef);
+  }
+  result.ir.values = [returned];
+  result.ir.instructions = [...result.ir.instructions, ...viewInstructions];
+  result.ir.blocks[0].insts = result.ir.instructions;
+  result.ir.blocks[0].endRow = ret.row;
+  return result;
+}
+
+function detachedNestedLoadFixture() {
+  const sourceKey = 'stack:sp:e0:-24:s4';
+  const returnKey = 'stack:sp:e0:-16:s4';
+  const literal = { id:100 };
+  const nested = { id:101 };
+  const sourceStore = { id:20, op:'store', block:0, row:0, address:0x2000n,
+    loc:{ kind:'stack', key:sourceKey, size:4 }, args:[{ value:literal }] };
+  const detachedLoad = { id:90, op:'load', block:0, row:1, address:0x2004n,
+    loc:{ kind:'stack', key:sourceKey, size:4 }, args:[] };
+  nested.def = detachedLoad;
+  const returnStore = { id:21, op:'store', block:0, row:2, address:0x2008n,
+    loc:{ kind:'stack', key:returnKey, size:4 }, args:[{ value:nested }] };
+  const returnLoad = { id:22, op:'load', block:0, row:3, address:0x200cn,
+    loc:{ kind:'stack', key:returnKey, size:4 }, args:[] };
+  const ret = { id:23, op:'ret', block:0, row:4, address:0x2010n, args:[] };
+  const instructions = [sourceStore, returnStore, returnLoad, ret];
+  const expression = expr.load({ kind:'stack', key:returnKey }, 32, { ir:returnLoad.id, row:returnLoad.row });
+  return {
+    semantic:true,
+    ir:{ instructions, blocks:[{ index:0, startRow:0, endRow:4, pred:[], succ:[], insts:instructions }], idom:[-1] },
+    semanticAst:{
+      values:[
+        { valueId:literal.id, expression:expr.constant(11n, 32, true) },
+        { valueId:nested.id, expression:expr.load({ kind:'stack', key:sourceKey }, 32) },
+      ],
+      conditions:[],
+      outputs:[{ name:'return', expression }],
+    },
+    cAst:{ body:[{
+      kind:'stmt', indent:0, text:'return local_0;',
+      semantic:{ op:'return', expression },
+      source:{ rows:[ret.row], addresses:[ret.address], ir:[ret.id] },
+    }] },
+    rewriteProof:[],
+    metrics:{ rewrittenExpressions:0 },
+    detachedLoad,
+  };
+}
+
+test('T011 time budgets require primitive finite nonnegative numbers', () => {
+  const counter = { count:0 };
+  const malformed = [NaN, Infinity, -Infinity, -1, '40', 40n, new Number(40), coerciveValue(counter)];
+  for (const value of malformed) {
+    assert.equal(new PassManager([], { timeBudgetMs:value }).budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs);
+    assert.equal(new RewriteEngine([], { timeBudgetMs:value }).budget.timeBudgetMs, DEFAULT_REWRITE_BUDGET.timeBudgetMs);
+  }
+  assert.equal(counter.count, 0);
+  assert.equal(new PassManager([], { timeBudgetMs:0 }).budget.timeBudgetMs, 0);
+  assert.equal(new RewriteEngine([], { timeBudgetMs:1.5 }).budget.timeBudgetMs, 1.5);
+});
+
+test('T011 pass-local malformed time budgets use the bounded default before the total cap', () => {
+  const counter = { count:0 };
+  let observed = null;
+  new PassManager([{
+    name:'local-budget',
+    budget:{ timeBudgetMs:coerciveValue(counter) },
+    run(state, budget) { observed = budget.timeBudgetMs; return state; },
+  }], { timeBudgetMs:100 }).run({ opts:{ deterministicTransforms:true } });
+  assert.equal(observed, DEFAULT_PASS_BUDGET.timeBudgetMs);
+  assert.equal(counter.count, 0);
+});
+
+test('T011 rewrite work limits require primitive nonnegative safe integers', () => {
+  const counter = { count:0 };
+  const malformed = [NaN, Infinity, -Infinity, -1, 1.5, '12', 12n, new Number(12), coerciveValue(counter)];
+  for (const key of ['maxIterations', 'nodeBudget', 'maxApplications']) {
+    for (const value of malformed) {
+      assert.equal(new RewriteEngine([], { [key]:value }).budget[key], DEFAULT_REWRITE_BUDGET[key]);
+    }
+    assert.equal(new RewriteEngine([], { [key]:0 }).budget[key], 0);
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 deterministic rewrite mode disables only the deadline', () => {
+  const increment = {
+    name:'increment',
+    phase:'test',
+    match(node) { return node?.kind === 'const' ? {} : null; },
+    rewrite(node) { return expr.constant(node.value + 1n); },
+    proof() { return { reason:'deterministic-budget-regression' }; },
+  };
+  const engine = new RewriteEngine([increment], {
+    deterministic:true,
+    timeBudgetMs:0,
+    maxIterations:1,
+    nodeBudget:4,
+    maxApplications:1,
+  });
+  const result = engine.rewrite(expr.constant(0n));
+  assert.equal(result.root.value, 1n);
+  assert.equal(result.stats.applications, 1);
+  assert.equal(result.stats.budgetExceeded, false);
+  assert.deepEqual(engine.budget, {
+    deterministic:true,
+    timeBudgetMs:0,
+    maxIterations:1,
+    nodeBudget:4,
+    maxApplications:1,
+  });
+});
+
+test('T011 stack return requires a width-bound physical LOAD and its source provenance', () => {
+  const exact = stackReturnFixture();
+  recoverExactStackPhiExpressions(exact, { decompilerTimeBudgetMs:50 });
+  assert.equal(exact.cAst.body[0].text, 'return 11;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  for (const options of [
+    { includeLoad:false },
+    { storeSize:8 },
+    { barrier:true },
+    { sourceId:13 },
+  ]) {
+    const ambiguous = stackReturnFixture(options);
+    recoverExactStackPhiExpressions(ambiguous, { decompilerTimeBudgetMs:50 });
+    assert.equal(ambiguous.cAst.body[0].text, 'return local_0;');
+    assert.equal(ambiguous.metrics.rewrittenExpressions, 0);
+  }
+});
+
+test('T011 composed PHI then return recovery preserves each physical return', () => {
+  const result = multiReturnFixture();
+  recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+  assert.deepEqual(result.cAst.body.map((node) => node.text), ['return 11;', 'return 22;']);
+  recoverExactStackReturn(result);
+  assert.deepEqual(result.cAst.body.map((node) => node.text), ['return 11;', 'return 22;']);
+  assert.equal(result.metrics.rewrittenExpressions, 2);
+});
+
+test('T011 PHI recovery binds the expression width to the physical LOAD', () => {
+  const result = stackReturnFixture();
+  result.cAst.body[0].semantic.expression.bits = 64;
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 PHI recovery reads the slot at LOAD time, before a later writer', () => {
+  const result = stackReturnWriterFixture('after-load');
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return 11;');
+  assert.equal(result.metrics.rewrittenExpressions, 1);
+});
+
+test('T011 duplicate same-row memory writers fail closed independent of IR order', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const reverse of [false, true]) {
+      const result = stackReturnWriterFixture('after-load');
+      const stores = result.ir.instructions.filter((instruction) => instruction.op === 'store');
+      assert.equal(stores.length, 2);
+      stores[1].row = stores[0].row;
+      const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+      const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+      const ordered = reverse ? [stores[1], stores[0], load, ret] : [stores[0], stores[1], load, ret];
+      result.ir.instructions = ordered;
+      result.ir.blocks[0].insts = ordered;
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;', reverse ? 'reversed store order' : 'original store order');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+
+  for (const reverse of [false, true]) {
+    const result = legacyStaleReachingStoreFixture();
+    const [oldStore, newerStore, load] = result.ir.instructions;
+    newerStore.row = oldStore.row;
+    const ordered = reverse ? [newerStore, oldStore, load] : [oldStore, newerStore, load];
+    result.ir.instructions = ordered;
+    result.ir.blocks[0].insts = ordered;
+    materializeLegacyExactStackValues(result, { deterministicTransforms:true });
+    assert.equal(result.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load');
+    assert.equal(exactLegacySameBlockStackStore(load, result.ir, { deterministicTransforms:true }), null);
+  }
+});
+
+test('T011 equal-row physical LOAD and STORE metadata fail closed independent of order', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const reverse of [false, true]) {
+      const result = stackReturnWriterFixture('after-load');
+      const stores = result.ir.instructions.filter((instruction) => instruction.op === 'store');
+      const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+      const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+      stores[1].row = load.row;
+      const ordered = reverse ? [stores[1], stores[0], load, ret] : [stores[0], load, stores[1], ret];
+      result.ir.instructions = ordered;
+      result.ir.blocks[0].insts = ordered;
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;', reverse ? 'reversed LOAD/STORE order' : 'original LOAD/STORE order');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+
+  for (const reverse of [false, true]) {
+    const result = legacyStaleReachingStoreFixture();
+    const [oldStore, newerStore, load] = result.ir.instructions;
+    newerStore.row = load.row;
+    const ordered = reverse ? [newerStore, oldStore, load] : [oldStore, newerStore, load];
+    result.ir.instructions = ordered;
+    result.ir.blocks[0].insts = ordered;
+    materializeLegacyExactStackValues(result, { deterministicTransforms:true });
+    assert.equal(result.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load',
+      reverse ? 'reversed LOAD/STORE order' : 'original LOAD/STORE order');
+    assert.equal(exactLegacySameBlockStackStore(load, result.ir, { deterministicTransforms:true }), null);
+  }
+});
+
+test('T011 same-row UNKNOWN-kind STORE is broad even with an unrelated key', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const reverse of [false, true]) {
+      const result = sameRowUnknownStoreFixture(reverse);
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;', `${recover.name}:${reverse}`);
+      assert.equal(result.metrics.rewrittenExpressions, 0, `${recover.name}:${reverse}`);
+    }
+  }
+
+  for (const reverse of [false, true]) {
+    const result = legacyStaleReachingStoreFixture();
+    const [oldStore, newerStore, load] = result.ir.instructions;
+    newerStore.row = load.row;
+    newerStore.loc.kind = 'unknown';
+    newerStore.loc.key = 'unknown:other';
+    const ordered = reverse ? [newerStore, oldStore, load] : [oldStore, newerStore, load];
+    result.ir.instructions = ordered;
+    result.ir.blocks[0].insts = ordered;
+    materializeLegacyExactStackValues(result, { deterministicTransforms:true });
+    assert.equal(result.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load', `legacy:${reverse}`);
+    assert.equal(exactLegacySameBlockStackStore(load, result.ir, { deterministicTransforms:true }), null, `legacy:${reverse}`);
+  }
+});
+
+test('T011 return fallback requires complete canonical CALL memory effects', () => {
+  for (const effect of ['missing', 'empty', 'wrong-key', 'malformed', 'unknown-scope', 'malformed-all', 'unbound-complete', 'unbound-private', 'mismatched-private', 'unknown-kind-kill']) {
+    const result = callReturnFixture(effect);
+    recoverExactStackReturn(result, { deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', effect);
+    assert.equal(result.metrics.rewrittenExpressions, 0, effect);
+  }
+  const privateCall = callReturnFixture('private');
+  recoverExactStackReturn(privateCall, { deterministicTransforms:true });
+  assert.equal(privateCall.cAst.body[0].text, 'return 11;');
+  assert.equal(privateCall.metrics.rewrittenExpressions, 1);
+  const privateAccessCall = callReturnFixture('private-access');
+  recoverExactStackReturn(privateAccessCall, { deterministicTransforms:true });
+  assert.equal(privateAccessCall.cAst.body[0].text, 'return 11;');
+  assert.equal(privateAccessCall.metrics.rewrittenExpressions, 1);
+});
+
+test('T011 PHI recovery does not infer missing or malformed STORE widths from a stack key', () => {
+  for (const storeSize of [undefined, null, '4', 4n, new Number(4), NaN, Infinity]) {
+    const result = stackReturnFixture({ storeSize });
+    result.ir.instructions[0].loc.size = storeSize;
+    recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
+  const instructionWidth = stackReturnFixture();
+  delete instructionWidth.ir.instructions[0].loc.size;
+  instructionWidth.ir.instructions[0].size = 4;
+  recoverExactStackPhiExpressions(instructionWidth, { deterministicTransforms:true });
+  assert.equal(instructionWidth.cAst.body[0].text, 'return 11;');
+});
+
+test('T011 direct PHI recovery rejects malformed STORE rows, including throwing getters', () => {
+  for (const row of ['1', 1.5, 1n, new Number(1), null, undefined]) {
+    const result = stackReturnFixture();
+    result.ir.instructions[0].row = row;
+    recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', String(row));
+    assert.equal(result.metrics.rewrittenExpressions, 0, String(row));
+  }
+  const counter = { count:0 };
+  const result = stackReturnFixture();
+  Object.defineProperty(result.ir.instructions[0], 'row', {
+    configurable:true,
+    get() { counter.count += 1; throw new Error('row getter must not run'); },
+  });
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+  assert.equal(counter.count, 0);
+});
+
+test('T011 PHI recovery requires a physical nested LOAD instead of detached value.def metadata', () => {
+  const result = detachedNestedLoadFixture();
+  recoverExactStackPhiExpressions(result, { deterministicTransforms:true });
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 return fallback rejects width, LOAD, and location-kind ambiguity', () => {
+  for (const options of [
+    { name:'wrong-width', options:{ storeSize:8 } },
+    { name:'missing-physical-load', options:{ includeLoad:false } },
+    { name:'non-stack-key-collision', options:{ storeKind:'field' } },
+  ]) {
+    const result = stackReturnFixture(options.options);
+    recoverExactStackPhiExpressions(result, { decompilerTimeBudgetMs:50 });
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;', options.name);
+    assert.equal(result.metrics.rewrittenExpressions, 0, options.name);
+  }
+});
+
+test('T011 legacy reachingStore metadata cannot cross width, block, or unknown barriers', () => {
+  const result = legacyForgedReachingStoreFixture();
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+});
+
+test('T011 legacy reachingStore metadata cannot skip a newer same-slot writer', () => {
+  const result = legacyStaleReachingStoreFixture();
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+});
+
+test('T011 legacy malformed same-slot writer rows fail closed', () => {
+  for (const writerRow of ['1', 1.5, new Number(1)]) {
+    const result = legacyStaleReachingStoreFixture(writerRow);
+    materializeLegacyExactStackValues(result);
+    const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+    assert.equal(expression.kind, 'load', String(writerRow));
+  }
+});
+
+test('T011 legacy materialization forwards active cancellation before publication', () => {
+  const result = legacyStaleReachingStoreFixture(1);
+  let calls = 0;
+  materializeLegacyExactStackValues(result, {
+    shouldAbort() { calls += 1; return calls >= 2; },
+  });
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+  assert.ok(calls >= 2);
+});
+
+test('T011 malformed unknown/no-key STORE rows fail closed through legacy and pipeline helpers', () => {
+  const result = legacyStaleReachingStoreFixture('1', 'unknown', false);
+  materializeLegacyExactStackValues(result);
+  const expression = result.semanticAst.values.find((entry) => entry.valueId === 200).expression;
+  assert.equal(expression.kind, 'load');
+  const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+  assert.equal(exactLegacySameBlockStackStore(load, result.ir), null);
+});
+
+test('T011 pipeline legacy helper cannot skip a newer same-slot writer', () => {
+  assert.equal(exactLegacySameBlockStackStore, canonicalExactLegacySameBlockStackStore);
+  const key = 'stack:sp:e0:-16:s4';
+  const oldStore = { id:10, op:'store', block:0, row:0, loc:{ kind:'stack', key, size:4 } };
+  const newerStore = { id:11, op:'store', block:0, row:1, loc:{ kind:'stack', key, size:4 } };
+  const load = { id:12, op:'load', block:0, row:2, reachingStore:oldStore, loc:{ kind:'stack', key, size:4 } };
+  assert.equal(exactLegacySameBlockStackStore(load, {
+    blocks:[{ index:0, insts:[oldStore, newerStore, load] }],
+  }), null);
+});
+
+test('T011 stack-return fallback stops at the authenticated physical LOAD', () => {
+  const result = stackReturnWriterFixture('post-load');
+  recoverExactStackReturn(result);
+  assert.equal(result.cAst.body[0].text, 'return 11;');
+  assert.equal(result.metrics.rewrittenExpressions, 1);
+});
+
+test('T011 committed forwarding requires a physical stack LOAD with matching width and readpoint', () => {
+  const exact = committedReturnFixture();
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  for (const options of [
+    { registerKind:'field' },
+    { registerSize:8 },
+    { registerRow:5 },
+  ]) {
+    const ambiguous = committedReturnFixture(options);
+    recoverExactStackReturn(ambiguous, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(ambiguous.cAst.body[0].text, 'return local_0;', JSON.stringify(options));
+    assert.equal(ambiguous.metrics.rewrittenExpressions, 0, JSON.stringify(options));
+  }
+});
+
+test('T011 committed forwarding authenticates the complete published state-view chain', () => {
+  const exact = committedReturnViewFixture('zext');
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  const lossy = committedReturnViewFixture('lossy');
+  recoverExactStackReturn(lossy, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(lossy.cAst.body[0].text, 'return local_0;');
+  assert.equal(lossy.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 canonical operand forwarding survives an authenticated widening view', () => {
+  const exact = committedReturnViewFixture('zext', true);
+  recoverExactStackReturn(exact, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(exact.cAst.body[0].text, 'return secret;');
+  assert.equal(exact.metrics.rewrittenExpressions, 1);
+
+  const lossy = committedReturnViewFixture('lossy', true);
+  recoverExactStackReturn(lossy, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(lossy.cAst.body[0].text, 'return local_0;');
+  assert.equal(lossy.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 committed forwarding requires live definition order and intervening-effect authority', () => {
+  const baseline = committedReturnFixture();
+  recoverExactStackReturn(baseline, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(baseline.cAst.body[0].text, 'return secret;');
+  assert.equal(baseline.metrics.rewrittenExpressions, 1);
+
+  const stalePlainFields = committedReturnFixture();
+  const staleLoad = stalePlainFields.ir.instructions.find((instruction) => instruction.id === 501);
+  delete staleLoad.memoryForwarding;
+  delete staleLoad.memoryForwardingContext;
+  staleLoad.memUse = {
+    kind:'store', key:'stack:sp:e0:-16:s4', aliasRelation:'must', unknownAlias:false,
+    effectSummary:{ relation:'must', role:'write', broad:false, sourceKind:'store' },
+    proof:{ aliasRelation:'must', kind:'must-alias-memory-write' }, definitionId:'detached-definition',
+    inst:stalePlainFields.ir.instructions.find((instruction) => instruction.id === 502),
+  };
+  recoverExactStackReturn(stalePlainFields, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(stalePlainFields.cAst.body[0].text, 'return local_0;');
+  assert.equal(stalePlainFields.metrics.rewrittenExpressions, 0);
+
+  for (const mutation of ['unknown-call', 'unknown-store', 'store-after-load']) {
+    const result = committedReturnFixture();
+    const direct = result.ir.instructions.find((instruction) => instruction.id === 502);
+    const load = result.ir.instructions.find((instruction) => instruction.id === 501);
+    const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+    delete load.memoryForwarding;
+    const unknown = mutation === 'unknown-call'
+      ? { id:507, op:'call', block:0, row:3, args:[] }
+      : { id:508, op:'store', block:0, row:3,
+        loc:{ kind:'unknown', key:'unknown:other', size:4 }, args:[{ value:{ id:'unknown-value' } }] };
+    if (mutation === 'store-after-load') direct.row = load.row + 1;
+    else result.ir.instructions.splice(2, 0, unknown);
+    result.ir.blocks[0].insts = result.ir.instructions;
+    ret.row = Math.max(ret.row, load.row + 2);
+    result.ir.blocks[0].endRow = ret.row;
+    recoverExactStackReturn(result, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', mutation);
+    assert.equal(result.metrics.rewrittenExpressions, 0, mutation);
+  }
+});
+
+test('T011 committed forwarding consumes the canonical operand proof at the live physical readpoint', () => {
+  const baseline = committedReturnFixture({ operandProof:true });
+  recoverExactStackReturn(baseline, { legacyAArch64:true, deterministicTransforms:true });
+  assert.equal(baseline.cAst.body[0].text, 'return secret;');
+  assert.equal(baseline.metrics.rewrittenExpressions, 1);
+
+  for (const mutation of ['unknown-call', 'equal-row', 'peer-load-equal-direct', 'malformed-row', 'store-after-load', 'cross-block-unknown']) {
+    const result = committedReturnFixture({ operandProof:true });
+    const direct = result.ir.instructions.find((instruction) => instruction.id === 502);
+    const load = result.ir.instructions.find((instruction) => instruction.id === 501);
+    const ret = result.ir.instructions.find((instruction) => instruction.id === 503);
+    if (mutation === 'cross-block-unknown') {
+      const effect = { id:507, op:'call', block:1, row:3, args:[] };
+      load.block = 1;
+      load.row = 4;
+      ret.block = 1;
+      ret.row = 5;
+      result.ir.instructions.splice(2, 0, effect);
+      result.ir.blocks = [
+        { index:0, startRow:0, endRow:2, pred:[], succ:[1], insts:result.ir.instructions.slice(0, 2) },
+        { index:1, startRow:3, endRow:ret.row, pred:[0], succ:[], insts:[effect, load, ret] },
+      ];
+      result.ir.idom = [-1, 0];
+    } else if (mutation === 'peer-load-equal-direct') {
+      const peerLoad = {
+        id:509, op:'load', block:0, row:direct.row, args:[],
+        loc:{ kind:'stack', key:'stack:sp:e0:-16:s4', size:4 },
+      };
+      result.ir.instructions.splice(2, 0, peerLoad);
+    } else if (mutation === 'store-after-load') {
+      direct.row = load.row + 1;
+      ret.row = load.row + 2;
+    } else {
+      const effect = {
+        id:507, op:mutation === 'unknown-call' ? 'call' : 'unknown', block:0,
+        row:mutation === 'equal-row' ? direct.row : mutation === 'malformed-row' ? '3' : direct.row + 1, args:[],
+      };
+      result.ir.instructions.splice(2, 0, effect);
+    }
+    if (mutation !== 'cross-block-unknown') {
+      result.ir.blocks[0].endRow = ret.row;
+      result.ir.blocks[0].insts = result.ir.instructions;
+    }
+    recoverExactStackReturn(result, { legacyAArch64:true, deterministicTransforms:true });
+    assert.equal(result.cAst.body[0].text, 'return local_0;', mutation);
+    assert.equal(result.metrics.rewrittenExpressions, 0, mutation);
+  }
+});
+
+test('T011 malformed same-slot STORE is a barrier to older stack values', () => {
+  const result = stackReturnWriterFixture('wrong-width');
+  recoverExactStackReturn(result);
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 malformed same-slot STORE rows fail closed as barriers', () => {
+  for (const writerRow of ['1', 1.5, new Number(1)]) {
+    const result = stackReturnWriterFixture('malformed-row', writerRow);
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;', String(writerRow));
+    assert.equal(result.metrics.rewrittenExpressions, 0, String(writerRow));
+  }
+});
+
+test('T011 stack recoveries forward early and mid-scan cancellation without partial publication', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const early = stackReturnFixture();
+    let earlyCalls = 0;
+    recover(early, { deterministicTransforms:true, shouldAbort() { earlyCalls += 1; return true; } });
+    assert.equal(early.cAst.body[0].text, 'return local_0;');
+    assert.equal(early.metrics.rewrittenExpressions, 0);
+    assert.ok(earlyCalls > 0);
+
+    const mid = stackReturnFixture();
+    const { instructions, blocks } = mid.ir;
+    const load = instructions.find((instruction) => instruction.op === 'load');
+    const ret = instructions.find((instruction) => instruction.op === 'ret');
+    load.row = 64;
+    ret.row = 65;
+    blocks[0].endRow = ret.row;
+    const nops = Array.from({ length:32 }, (_item, index) => ({
+      id:1000 + index, op:'nop', block:0, row:1 + index, args:[],
+    }));
+    mid.ir.instructions = [instructions[0], ...nops, load, ret];
+    blocks[0].insts = mid.ir.instructions;
+    let midCalls = 0;
+    recover(mid, { deterministicTransforms:true, shouldAbort() { midCalls += 1; return midCalls >= 4; } });
+    assert.equal(mid.cAst.body[0].text, 'return local_0;');
+    assert.equal(mid.metrics.rewrittenExpressions, 0);
+    assert.ok(midCalls >= 4);
+  }
+
+  const multi = multiReturnFixture();
+  let sawFirstPublication = false;
+  recoverExactStackPhiExpressions(multi, {
+    deterministicTransforms:true,
+    shouldAbort() {
+      if (multi.cAst.body[0].text === 'return 11;') sawFirstPublication = true;
+      return sawFirstPublication;
+    },
+  });
+  assert.deepEqual(multi.cAst.body.map((node) => node.text), ['return local_0;', 'return local_1;']);
+  assert.equal(multi.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 stack recoveries honor an expired deadline and RewriteEngine rolls back mid-rewrite cancellation', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const result = stackReturnFixture();
+    recover(result, { deadline:0 });
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
+
+  const increment = {
+    name:'increment-once',
+    phase:'test',
+    match(node) { return node?.kind === 'const' ? {} : null; },
+    rewrite(node) { return expr.constant(node.value + 1n, node.bits, node.signed); },
+    proof() { return { reason:'mid-rewrite-cancellation-regression' }; },
+  };
+  const root = expr.binary('add', expr.constant(0n, 32, true), expr.constant(1n, 32, true), 32, true);
+  const engine = new RewriteEngine([increment], {
+    deterministic:true,
+    maxIterations:2,
+    nodeBudget:32,
+    maxApplications:8,
+  });
+  let calls = 0;
+  const result = engine.rewrite(root, {
+    deterministicTransforms:true,
+    shouldAbort() { calls += 1; return calls >= 6; },
+  });
+  assert.ok(result.stats.applications >= 1);
+  assert.ok(calls >= 6);
+  assert.equal(result.root, root);
+  assert.equal(result.proof.length, 0);
+});
+
+test('T011 positive caller budgets bound structural scans before publication', () => {
+  const expanded = () => {
+    const result = stackReturnFixture();
+    const store = result.ir.instructions.find((instruction) => instruction.op === 'store');
+    const load = result.ir.instructions.find((instruction) => instruction.op === 'load');
+    const ret = result.ir.instructions.find((instruction) => instruction.op === 'ret');
+    load.row = 66;
+    ret.row = 67;
+    result.cAst.body[0].source.rows = [ret.row];
+    const nops = Array.from({ length:65 }, (_item, index) => ({
+      id:1000 + index, op:'nop', block:0, row:1 + index, args:[],
+    }));
+    result.ir.instructions = [store, ...nops, load, ret];
+    result.ir.blocks[0].endRow = ret.row;
+    result.ir.blocks[0].insts = result.ir.instructions;
+    return result;
+  };
+
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    const workLimited = expanded();
+    recover(workLimited, { deterministicTransforms:true, decompilerNodeBudget:5 });
+    assert.equal(workLimited.cAst.body[0].text, 'return local_0;');
+    assert.equal(workLimited.metrics.rewrittenExpressions, 0);
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let tick = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => ++tick } });
+  try {
+    for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+      const timeLimited = expanded();
+      recover(timeLimited, { decompilerTimeBudgetMs:5 });
+      assert.equal(timeLimited.cAst.body[0].text, 'return local_0;');
+      assert.equal(timeLimited.metrics.rewrittenExpressions, 0);
+    }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
+    else delete globalThis.performance;
+  }
+});
+
+test('T011 stack recoveries honor zero budgets and forward deterministic mode', () => {
+  for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+    for (const options of [{ decompilerNodeBudget:0 }, { decompilerTimeBudgetMs:0 }]) {
+      const result = stackReturnFixture();
+      recover(result, options);
+      assert.equal(result.cAst.body[0].text, 'return local_0;');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+  const deterministic = stackReturnFixture();
+  deterministic.semanticAst.values[0].expression.bits = 64;
+  recoverExactStackPhiExpressions(deterministic, {
+    decompilerTimeBudgetMs:0,
+    deterministicTransforms:true,
+  });
+  assert.equal(deterministic.cAst.body[0].text, 'return 11;');
+  assert.equal(deterministic.metrics.rewrittenExpressions, 1);
+
+  const counter = { count:0 };
+  const malformed = stackReturnFixture();
+  Object.defineProperty(malformed, 'decompilerTimeBudgetMs', {
+    configurable:true,
+    get() { counter.count += 1; return 0; },
+  });
+  // The option object is separate from the result; this descriptor exercises
+  // the same coercion boundary without allowing a getter to execute.
+  const options = {};
+  Object.defineProperty(options, 'decompilerTimeBudgetMs', {
+    configurable:true,
+    get() { counter.count += 1; return 0; },
+  });
+  recoverExactStackPhiExpressions(malformed, options);
+  assert.equal(counter.count, 0);
+  assert.equal(malformed.cAst.body[0].text, 'return 11;');
+
+  for (const key of ['decompilerNodeBudget', 'decompilerTimeBudgetMs']) {
+    for (const [index, value] of ['0', 0n, new Number(0), NaN, coerciveValue(counter)].entries()) {
+      for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+        const result = stackReturnFixture();
+        recover(result, { [key]:value });
+        assert.equal(result.cAst.body[0].text, 'return 11;', `${key}:case-${index}`);
+        assert.equal(result.metrics.rewrittenExpressions, 1, `${key}:case-${index}`);
+      }
+    }
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 public pipeline rejects coercive and zero decompiler budgets before core passes', () => {
+  const counter = { count:0 };
+  const coercive = coerciveValue(counter);
+  const base = {
+    semantic:true,
+    ir:{ instructions:[], blocks:[], values:[] },
+    semanticAst:{ values:[], conditions:[], outputs:[] },
+    cAst:{ body:[] },
+  };
+  for (const value of [coercive, '0', 0n, new Number(0), NaN]) {
+    const result = structuredClone(base);
+    assert.doesNotThrow(() => enhancePipeline(result, null, { decompilerNodeBudget:value }));
+    assert.deepEqual(result.cAst.body, []);
+  }
+  for (const options of [
+    { decompilerNodeBudget:0 },
+    { decompilerTimeBudgetMs:0 },
+    { decompilerIterationCap:0 },
+    { phase8TimeBudgetMs:0 },
+    { phase8WorkBudget:0 },
+  ]) {
+    const result = structuredClone(base);
+    const returned = enhancePipeline(result, null, options);
+    assert.equal(returned, result);
+    assert.deepEqual(result.cAst.body, []);
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 public pipeline rejects coercive Phase 8 budgets before optimizer entry', () => {
+  const counter = { count:0 };
+  const base = {
+    semantic:true,
+    ir:{ instructions:[], blocks:[], values:[] },
+    semanticAst:{ values:[], conditions:[], outputs:[] },
+    cAst:{ body:[] },
+  };
+  const malformed = [coerciveValue(counter), '20', 20n, new Number(20), NaN, Infinity, -1];
+  for (const key of ['phase8TimeBudgetMs', 'phase8WorkBudget']) {
+    for (const value of malformed) {
+      const result = structuredClone(base);
+      assert.doesNotThrow(() => enhancePipeline(result, null, {
+        phase8Optimize:true,
+        [key]:value,
+      }));
+      assert.deepEqual(result.cAst.body, []);
+    }
+  }
+  assert.equal(counter.count, 0);
+});
+
+test('T011 row, block, and provenance values are noncoercive', () => {
+  const malformed = [
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'load').row = '2'; },
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'load').block = '0'; },
+    result => { result.ir.instructions.find((instruction) => instruction.op === 'ret').row = new Number(3); },
+    result => { result.semanticAst.outputs[0].expression.source.ir = [null]; },
+    result => { result.cAst.body[0].source.rows = [null]; },
+    result => { result.cAst.body[0].source.ir = [{}]; },
+  ];
+  for (const mutate of malformed) {
+    for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+      const result = stackReturnFixture();
+      mutate(result);
+      recover(result, { deterministicTransforms:true });
+      assert.equal(result.cAst.body[0].text, 'return local_0;');
+      assert.equal(result.metrics.rewrittenExpressions, 0);
+    }
+  }
+});
+
+test('T011 stack-return proof keeps scalar widths and rows type-strict', () => {
+  const malformed = [
+    result => { result.semanticAst.outputs[0].expression.bits = '32'; },
+    result => { result.semanticAst.outputs[0].expression.bits = NaN; },
+    result => { result.ir.instructions.find((inst) => inst.op === 'load').row = '2'; },
+    result => { result.ir.instructions.find((inst) => inst.op === 'load').row = NaN; },
+  ];
+  for (const mutate of malformed) {
+    const result = stackReturnFixture();
+    mutate(result);
+    recoverExactStackReturn(result);
+    assert.equal(result.cAst.body[0].text, 'return local_0;');
+    assert.equal(result.metrics.rewrittenExpressions, 0);
+  }
+});
+
+test('T011 deterministic PassManager mode does not report a disabled deadline', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let tick = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => ++tick } });
+  try {
+    const state = new PassManager([
+      { name:'deterministic', run:innerState => innerState },
+    ], { timeBudgetMs:0 }).run({ opts:{ deterministicTransforms:true } });
+    assert.equal(state.degraded, undefined);
+    assert.equal(state.passDeadlineExceeded, false);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
+    else delete globalThis.performance;
+  }
+});
+
+test('T011 malformed or omitted caller time budgets retain a finite structural deadline', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let tick = 0;
+  let getterCalls = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => ++tick } });
+  try {
+    const malformed = [
+      {},
+      { decompilerTimeBudgetMs:'1' },
+      { decompilerTimeBudgetMs:NaN },
+      { decompilerTimeBudgetMs:new Number(1) },
+      { decompilerTimeBudgetMs:1n },
+    ];
+    const accessor = {};
+    Object.defineProperty(accessor, 'decompilerTimeBudgetMs', {
+      configurable:true,
+      get() { getterCalls += 1; return 1; },
+    });
+    Object.defineProperty(accessor, 'decompilerNodeBudget', {
+      configurable:true,
+      value:200000,
+    });
+    malformed.push(accessor);
+    for (const options of malformed) {
+      tick = 0;
+      const boundedOptions = options === accessor ? options : { ...options, decompilerNodeBudget:200000 };
+      for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+        const result = largeStackReturnFixture();
+        recover(result, boundedOptions);
+        assert.equal(result.cAst.body[0].text, 'return local_0;', recover.name);
+        assert.equal(result.metrics.rewrittenExpressions, 0, recover.name);
+      }
+      const legacy = largeLegacyFixture();
+      materializeLegacyExactStackValues(legacy, boundedOptions);
+      assert.equal(legacy.semanticAst.values.find((entry) => entry.valueId === 200).expression.kind, 'load');
+      assert.ok(tick < 300, `one malformed option exceeded its structural bound: ${tick}`);
+    }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor);
+    else delete globalThis.performance;
+  }
+  assert.equal(getterCalls, 0);
+});
+
+test('T011 proof-only spill cleanup cancellation rolls back the complete return publication', () => {
+  const baseline = committedSpillReturnFixture();
+  let baselineCalls = 0;
+  recoverExactStackReturn(baseline, {
+    deterministicTransforms:true,
+    shouldAbort() { baselineCalls += 1; return false; },
+  });
+  assert.equal(baseline.cAst.body[0].text, 'return secret;');
+  assert.equal(baseline.cAst.body.length, 1);
+  assert.ok(baselineCalls > 4);
+
+  const result = committedSpillReturnFixture();
+  const originalBody = result.cAst.body;
+  const originalNodes = [...originalBody];
+  const originalExpressions = originalNodes.map((node) => node.semantic?.expression);
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  let calls = 0;
+  const abortAt = Math.max(1, baselineCalls - 1);
+  recoverExactStackReturn(result, {
+    deterministicTransforms:true,
+    shouldAbort() { calls += 1; return calls >= abortAt; },
+  });
+  assert.ok(calls >= abortAt);
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.deepEqual(result.cAst.body, originalNodes);
+  assert.deepEqual(result.cAst.body.map((node) => node.semantic?.expression), originalExpressions);
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.cAst.body[0].text, 'local_0 = spilled;');
+  assert.equal(result.cAst.body[1].text, 'return local_0;');
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 return publication rolls back when printing throws after rewrite mutation', () => {
+  const result = stackReturnFixture();
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalBody = result.cAst.body;
+  const originalText = result.cAst.body[0].text;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[0], 'indent', {
+    configurable:true,
+    get() { throw new Error('indent failure'); },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, originalText);
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 PHI publication rolls back all fields when printing throws after AST mutation', () => {
+  const result = stackReturnFixture();
+  const originalBody = result.cAst.body;
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[0], 'indent', {
+    configurable:true,
+    get() { throw new Error('PHI indent failure'); },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackPhiExpressions(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, 'return local_0;');
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 return publication surfaces rollback failures instead of swallowing them', () => {
+  const result = stackReturnFixture();
+  const node = result.cAst.body[0];
+  let text = node.text;
+  Object.defineProperty(node, 'text', {
+    configurable:true,
+    get() { return text; },
+    set(value) {
+      if (value === 'return local_0;') throw new Error('text rollback failure');
+      text = value;
+    },
+  });
+  Object.defineProperty(node, 'indent', {
+    configurable:true,
+    get() { throw new Error('indent failure'); },
+  });
+
+  assert.throws(() => recoverExactStackReturn(result, { deterministicTransforms:true }), /rollback failed/);
+  assert.equal(text, 'return 11;');
+});
+
+test('T011 proof-only spill cleanup rolls back when its print throws', () => {
+  const result = committedSpillReturnFixture();
+  const originalBody = result.cAst.body;
+  const originalOutput = result.semanticAst.outputs[0].expression;
+  const originalFields = {
+    pseudocode:result.pseudocode,
+    sourceMap:result.sourceMap,
+    lines:result.lines,
+    rewriteProof:result.rewriteProof,
+    metrics:result.metrics,
+    ctx:result.ctx,
+  };
+  Object.defineProperty(result.cAst.body[1], 'indent', {
+    configurable:true,
+    get() {
+      if (result.cAst.body.length === 1) throw new Error('cleanup print failure');
+      return 0;
+    },
+  });
+
+  assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms:true }));
+  assert.strictEqual(result.cAst.body, originalBody);
+  assert.equal(result.cAst.body[0].text, 'local_0 = spilled;');
+  assert.equal(result.cAst.body[1].text, 'return local_0;');
+  assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+  for (const [key, value] of Object.entries(originalFields)) assert.strictEqual(result[key], value, key);
+  assert.equal(result.metrics.rewrittenExpressions, 0);
+});
+
+test('T011 compiler truth requires every real C, extended, C++, and Objective-C denominator', () => {
+  const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const repositoryRoot = path.resolve(testDirectory, '../../..');
+  const gate = compilerTruthGateResult({ repositoryRoot });
+  assert.equal(gate.status, 0, String(gate.stderr || gate.stdout || 'compiler-truth command failed').slice(-4000));
+  assert.equal(gate.accepted, true, 'empty, skipped, or incomplete compiler truth must not pass T011');
+
+  // The canonical suites historically exited zero with clang unavailable and
+  // reported zero executed cases. Run that real path with a missing compiler;
+  // the T011 gate must reject the resulting 0-of-0 summaries.
+  const unavailable = compilerTruthGateResult({
+    repositoryRoot,
+    env: { ...process.env, CLANG:'/definitely/missing/t011-clang' },
+  });
+  assert.equal(unavailable.status, 0, 'unavailable compiler should still produce canonical diagnostics');
+  assert.equal(unavailable.summaries.core?.clangAvailable, false);
+  assert.equal(unavailable.summaries.core?.executed, 0);
+  assert.equal(unavailable.accepted, false, 'unavailable/0-of-0 compiler truth must fail T011');
+
+  // Keep the pure evaluator negative for a missing or truncated output, too.
+  assert.equal(compilerTruthAccepted({
+    core:{ clangAvailable:false, executed:0, expectedCases:0, hardFailures:0, results:[] },
+    extended:{ clangAvailable:false, executed:0, results:[] },
+    languages:{
+      cpp:{ status:'skipped', executed:0, semanticChecks:0, rows:[] },
+      objc:{ status:'skipped', executed:0, semanticChecks:0, rows:[] },
+    },
+  }), false);
+  assert.equal(compilerTruthAccepted({ core:null, extended:null, languages:null }), false);
+});

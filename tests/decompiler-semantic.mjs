@@ -111,7 +111,13 @@ function make(lines, opts = {}) {
   assert.ok(callLine, r.pseudocode);
   assert.equal(callLine.text, 'puts("damage dealt to enemy");');
   assert.doesNotMatch(callLine.text, /\ba[234]\b/);
-  assert.match(r.pseudocode, /return\s+self->hp;/);
+  // The call has no complete memory summary. Preserve the captured pre-call
+  // value instead of turning the return into a potentially stale field reread.
+  const snapshot = r.lines.find(l => /^(local_\w+) = self->hp;$/.test(l.text));
+  assert.ok(snapshot, r.pseudocode);
+  const savedName = snapshot.text.split(' = ')[0];
+  assert.ok(r.lines.indexOf(snapshot) < r.lines.indexOf(callLine));
+  assert.ok(r.lines.some(l => l.text === `return ${savedName};`), r.pseudocode);
 
   const update = r.lines.find((l) => /self->hp\s*-=/.test(l.text));
   assert.ok(update, r.pseudocode);
@@ -129,9 +135,9 @@ function make(lines, opts = {}) {
 
   const zeroStore = r.lines.find((l) => /self->hp\s*=\s*0;/.test(l.text));
   assert.ok(zeroStore);
-  assert.equal(formatDecompilerSource(zeroStore), '0004B8–0004C0');
+  assert.equal(formatDecompilerSource(zeroStore), '000498 · 0004B8–0004C0');
   assert.equal(formatDecompilerSource(callLine), '0004C8–0004D0');
-  const returnLine = r.lines.find((l) => /return\s+self->hp;/.test(l.text));
+  const returnLine = r.lines.find((l) => l.text === `return ${savedName};`);
   assert.ok(returnLine);
   assert.equal(formatDecompilerSource(returnLine), '0004D4 · 0004DC');
 

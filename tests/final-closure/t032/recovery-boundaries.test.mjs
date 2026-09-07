@@ -112,4 +112,3 @@ test('T032 cancellation remains a non-publishable lifecycle boundary', async () 
   assert.equal(result.lifecycle.publishable, false);
   assert.equal(result.lifecycle.cancelled, true);
 });
-
