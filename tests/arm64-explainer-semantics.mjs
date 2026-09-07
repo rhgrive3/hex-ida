@@ -207,28 +207,28 @@ assert.match(smull.summary, /符号付き|Sign-extend/i, 'SMULL summary must sta
 assert.match(umull.summary, /符号なし|Zero-extend/i, 'UMULL summary must state unsigned widening (#3627)');
 console.log('  ok 8 REV16/REV32 scope and SMULL/UMULL signedness stay distinct (#3627)');
 
-+/* SIMD encodings must not inherit scalar explanations (#3627) */
-+const smullVector = explain('smull', 'v0.4s, v1.4h, v2.4h');
-+const umullVector = explain('umull', 'v0.4s, v1.4h, v2.4h');
-+assert.equal(smullVector.handlerError, undefined, 'SIMD SMULL handler must not throw (#3627)');
-+assert.equal(umullVector.handlerError, undefined, 'SIMD UMULL handler must not throw (#3627)');
-+assert.equal(smullVector.pseudo, 'v0.4s = signed_lane_widen_mul(v1.4h, v2.4h)');
-+assert.equal(umullVector.pseudo, 'v0.4s = unsigned_lane_widen_mul(v1.4h, v2.4h)');
-+assert.ok(smullVector.terms.includes('simd'));
-+assert.ok(umullVector.terms.includes('simd'));
-+assert.match(smullVector.summary, /レーン|lane/i);
-+assert.match(umullVector.summary, /レーン|lane/i);
-+
-+const rev16Vector = explain('rev16', 'v0.8h, v1.8h');
-+const rev32Vector = explain('rev32', 'v0.4s, v1.4s');
-+assert.equal(rev16Vector.handlerError, undefined, 'SIMD REV16 handler must not throw (#3627)');
-+assert.equal(rev32Vector.handlerError, undefined, 'SIMD REV32 handler must not throw (#3627)');
-+assert.equal(rev16Vector.pseudo, 'v0.8h = vector_byteswap16(v1.8h)');
-+assert.equal(rev32Vector.pseudo, 'v0.4s = vector_byteswap32(v1.4s)');
-+assert.ok(rev16Vector.terms.includes('simd'));
-+assert.ok(rev32Vector.terms.includes('simd'));
-+assert.match(rev16Vector.summary, /レーン|lane/i);
-+assert.match(rev32Vector.summary, /レーン|lane/i);
-+console.log('  ok 9 SIMD encodings retain lane-specific semantics (#3627)');
+/* SIMD encodings must not inherit scalar explanations (#3627) */
+const smullVector = explain('smull', 'v0.4s, v1.4h, v2.4h');
+const umullVector = explain('umull', 'v0.4s, v1.4h, v2.4h');
+assert.equal(smullVector.handlerError, undefined, 'SIMD SMULL handler must not throw (#3627)');
+assert.equal(umullVector.handlerError, undefined, 'SIMD UMULL handler must not throw (#3627)');
+assert.equal(smullVector.pseudo, 'v0.4s = signed_lane_widen_mul(v1.4h, v2.4h)');
+assert.equal(umullVector.pseudo, 'v0.4s = unsigned_lane_widen_mul(v1.4h, v2.4h)');
+assert.ok(smullVector.terms.includes('simd'));
+assert.ok(umullVector.terms.includes('simd'));
+assert.match(smullVector.summary, /レーン|lane/i);
+assert.match(umullVector.summary, /レーン|lane/i);
+
+const rev16Vector = explain('rev16', 'v0.8h, v1.8h');
+const rev32Vector = explain('rev32', 'v0.4s, v1.4s');
+assert.equal(rev16Vector.handlerError, undefined, 'SIMD REV16 handler must not throw (#3627)');
+assert.equal(rev32Vector.handlerError, undefined, 'SIMD REV32 handler must not throw (#3627)');
+assert.equal(rev16Vector.pseudo, 'v0.8h = vector_byteswap16(v1.8h)');
+assert.equal(rev32Vector.pseudo, 'v0.4s = vector_byteswap32(v1.4s)');
+assert.ok(rev16Vector.terms.includes('simd'));
+assert.ok(rev32Vector.terms.includes('simd'));
+assert.match(rev16Vector.summary, /レーン|lane/i);
+assert.match(rev32Vector.summary, /レーン|lane/i);
+console.log('  ok 9 SIMD encodings retain lane-specific semantics (#3627)');
 
 console.log('ARM64 explainer semantics: PASS');
