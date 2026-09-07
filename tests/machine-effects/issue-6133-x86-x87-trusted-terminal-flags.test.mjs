@@ -50,6 +50,10 @@ try {
       // condition dependency.
       assert.ok(hasRflags(summary.registersRead), 'fcmovbe must read RFLAGS');
       assert.ok(!hasFpswFlags(summary.registersRead), 'fcmovbe must not read FPSW');
+      assert.ok(
+        summary.registersRead.includes('x86.x87.environment'),
+        'fcmovbe must read x86.x87.environment',
+      );
     } else {
       const flags = [...summary.registersRead, ...summary.registersWritten];
       assert.ok(hasRflags(flags), `${family} must retain RFLAGS evidence`);
