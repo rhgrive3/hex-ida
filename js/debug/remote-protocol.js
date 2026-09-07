@@ -184,6 +184,24 @@ export function validateRemotePacket(packet) {
   return packet;
 }
 
+function defaultMonotonicNow() {
+  try {
+    const perf = globalThis.performance;
+    if (typeof perf?.now === 'function') {
+      const now = perf.now();
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* try the next monotonic source */ }
+  try {
+    const hrtime = globalThis.process?.hrtime;
+    if (typeof hrtime?.bigint === 'function') {
+      const now = Number(hrtime.bigint()) / 1e6;
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* fail closed below */ }
+  throw new DebugAdapterError('monotonic-clock-unavailable', 'a monotonic clock is required for remote event rate limiting');
+}
+
 export class RemoteProtocolClient {
   constructor(transport, options = {}) {
     if (!transport || typeof transport.send !== 'function') throw new DebugAdapterError('transport', 'transport.send is required');
@@ -195,7 +213,11 @@ export class RemoteProtocolClient {
     this.listeners = new Set();
     this.maxEventsPerSecond = boundedInteger(options.maxEventsPerSecond, 256, 1, 10000, 'maxEventsPerSecond');
     this.maxEventBytesPerSecond = boundedInteger(options.maxEventBytesPerSecond, 4 * 1024 * 1024, 1024, 64 * 1024 * 1024, 'maxEventBytesPerSecond');
-    this.eventWindowStart = Date.now(); this.eventWindowCount = 0; this.eventWindowBytes = 0; this.droppedEvents = 0;
+    // Rate windows measure elapsed time, so they must use a monotonic clock.
+    // Date.now() can jump backwards (NTP/manual correction) and would pin a
+    // saturated window shut until the wall clock catches up.
+    this._monotonicNow = typeof options.monotonicNow === 'function' ? options.monotonicNow : defaultMonotonicNow;
+    this.eventWindowStart = this._monotonicNow(); this.eventWindowCount = 0; this.eventWindowBytes = 0; this.droppedEvents = 0;
     this.epoch = 0;
     this.closed = false;
     this.unsubscribe = typeof transport.onMessage === 'function' ? transport.onMessage((packet) => this.receive(packet)) : null;
@@ -297,7 +319,7 @@ export class RemoteProtocolClient {
       return true;
     }
     if (packet.type === 'event') {
-      const now=Date.now();
+      const now=this._monotonicNow();
       if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
       const bytes=jsonByteSize(wire);
       if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
