@@ -400,9 +400,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   let p = dc.offset;
   const end = dc.offset + dc.size;
   // Classic bind state mirrors dyld's BindOpcodes state machine: only
-  // lazy-bind streams carry an implicit pointer type, and a bind location exists
-  // only after SET_SEGMENT_AND_OFFSET_ULEB has run.
-  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
+  // lazy-bind streams carry an implicit pointer type and weak-bind streams an
+  // implicit library ordinal (-3); a bind location exists only after
+  // SET_SEGMENT_AND_OFFSET_ULEB has run, and normal/lazy binds must have set a
+  // library ordinal explicitly (issues #5834/#5835/#5832).
+  let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
+  let libraryOrdinalSet = source === 'weak-bind';
   let threadedTable = null, threadedTableLimit = 0;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
@@ -434,6 +437,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       return;
     }
     if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
+    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return; }
     if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
@@ -477,20 +481,27 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const byte = r.u8(p++);
     const op = byte & BIND_OPCODE_MASK;
     const imm = byte & BIND_IMMEDIATE_MASK;
+    // dyld's lazy-bind decoder accepts only DONE, the dylib-ordinal setters,
+    // SET_SYMBOL_TRAILING_FLAGS_IMM, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB
+    // and DO_BIND; everything else is "bad lazy bind opcode" (issue #5889).
+    if (source === 'lazy-bind' && ![0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90].includes(op)) {
+      fail(`bad lazy bind opcode 0x${byte.toString(16)}`, byte);
+      break;
+    }
     if (op === 0x00) {
-      if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
+      if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; libraryOrdinalSet = false; addend = 0n; continue; }
       break;
     } else if (op === 0x10) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      libOrdinal = imm;
+      libOrdinal = imm; libraryOrdinalSet = true;
     }
     else if (op === 0x20) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value);
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); libraryOrdinalSet = true;
     }
     else if (op === 0x30) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
     }
     else if (op === 0x40) {
       const x = rawCString(r, p, end);
