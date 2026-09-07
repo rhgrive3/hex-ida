@@ -196,13 +196,31 @@ export async function parseSwiftNominalDescriptor(read, address) {
   return out;
 }
 
-export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
+/*
+ * Field descriptor parsing must distinguish "the type has zero fields" from
+ * "the descriptor header was unreadable / the record size is invalid / the
+ * declared count exceeded the budget / a record read failed mid-way" — all of
+ * which previously collapsed into a bare [] with no completeness signal, so
+ * the metadata model kept claiming complete coverage (#5943).
+ */
+export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096, options = {}) {
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
-  if (address == null) return []; const addr=BigInt(address), h=await exact(read,addr,16); if(!h)return[];
-  const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000); if(recordSize<12||count>limit)return[];
+  const completeness = {
+    present: address != null, declared: null, scanned: 0, parsed: 0,
+    capped: false, unreadableEntries: 0, invalidHeader: false, complete: true, reason: null,
+  };
+  const finish = (fields) => ({ fields, completeness });
+  if (address == null) return finish([]);
+  const addr=BigInt(address), h=await exact(read,addr,16);
+  if (!h) { completeness.complete=false; completeness.reason='descriptor-header-unreadable'; return finish([]); }
+  const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000);
+  if (recordSize<12) { completeness.invalidHeader=true; completeness.complete=false; completeness.reason='descriptor-record-size-invalid'; return finish([]); }
+  if (count>limit) { completeness.capped=true; completeness.complete=false; completeness.reason='descriptor-count-exceeds-budget'; return finish([]); }
+  completeness.declared=count;
   const out=[];
   for(let i=0;i<count;i++){
-    const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);if(!r)break;
+    const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);
+    if(!r){completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;completeness.complete=false;completeness.reason='field-record-unreadable';return finish(out);}
     const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));
     const typeInfo=typeTarget==null?null:await readSwiftMangledName(read,typeTarget,{...options,compilerMetadata:true});
     const symbolic=!!typeInfo?.symbolicReferences?.length;
@@ -217,7 +235,12 @@ export async function parseSwiftFieldDescriptor(read, address, budget = 4096, op
       indirect:!!(flags&1),var:!!(flags&2),
     });
   }
-  return out;
+  completeness.scanned=count;completeness.parsed=out.length;
+  return finish(out);
+}
+
+export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
+  return (await parseSwiftFieldDescriptorScan(read, address, budget, options)).fields;
 }
 
 export async function parseSwiftProtocolDescriptor(read,address){const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),requirements:[]};}
@@ -329,7 +352,12 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   }
   for(const t of types)if(t.fieldDescriptor!=null){try{
     if(signal?.aborted)return null;
-    t.fields=await parseSwiftFieldDescriptor(get,t.fieldDescriptor,Math.min(budget,4096),opts);
+    const fieldScan=await parseSwiftFieldDescriptorScan(get,t.fieldDescriptor,Math.min(budget,4096),opts);
+    t.fields=fieldScan.fields;
+    if(!fieldScan.completeness.complete){
+      typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;
+      warnings.push(`Swift type ${t.name||t.address}: field metadata is incomplete (${fieldScan.completeness.reason||'unknown'}).`);
+    }
     for(const f of t.fields){
       if(f.mangledTypeEncoding?.complete===false)warnings.push(`Swift field ${t.name||t.address}.${f.name}: mangled type metadata is partial (${f.mangledTypeEncoding.reason||'unknown'}).`);
       else if(f.mangledTypeEncoding?.symbolicReferences?.length&&!f.mangledTypeEncoding.referencesResolved)warnings.push(`Swift field ${t.name||t.address}.${f.name}: symbolic mangled type reference remains unresolved.`);
