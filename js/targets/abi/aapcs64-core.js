@@ -544,7 +544,10 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
     || aggregateLayoutDescriptorPresent(proto)
     || malformedReturnAggregate
     ||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
-  const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  // opts.returnBits is a call-site override with the same authority as
+  // opts.returnType/opts.returnClass; it must not lose to the prototype's own
+  // width metadata (issue #5636).  Darwin arm64 inherits this path.
+  const explicitReturnBits = explicitReturnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
   if (aggregate && !aggregateLayout) {
     return { reg:null, regs:[], bits:explicitReturnBits, bytes:null, aggregate:true, partial:true,
@@ -558,7 +561,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   if (scalableReturnClass(proto,type,cls)) return null;
   const returnBits = aggregate
     ? explicitReturnBits ?? aggregateLayout?.bits ?? null
-    : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+    : returnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };

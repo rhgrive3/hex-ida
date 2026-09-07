@@ -615,7 +615,10 @@ function classifyReturn(prototype, options = {}) {
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  // options.returnBits is a call-site override with the same authority as
+  // options.returnType/options.returnClass; it must not lose to the
+  // prototype's own width metadata (issue #5636).
+  const rawBits = Number(options.returnBits || prototype.returnBits || prototype.bits || typeBits(type, vector ? 128 : 64));
   const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   if (vector && saneBits > 128) {
     const reg = vectorRegisterView(0, saneBits, options);

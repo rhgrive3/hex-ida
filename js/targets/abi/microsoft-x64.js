@@ -221,7 +221,10 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   }
   const vector = /vector|simd|sse|__m128/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  // A call-site options.returnBits is a return-width override with the same
+  // authority as options.returnType/options.returnClass; it must not lose to
+  // the prototype's own width metadata (issue #5636).
+  const rawBits = Number(options.returnBits || prototype.returnBits || prototype.bits || typeBits(type, vector ? 128 : 64));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;
   if (floating) return { kind:'direct', reg:'xmm0', bits };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) return { kind:'direct', reg:'rax', bits };
