@@ -1,9 +1,46 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { resolveJvmFieldRef } from './field-reference.js';
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
+
+function collectJvmInstructionStarts(bytecode) {
+  const starts = new Set();
+  let offset = 0;
+  while (offset < bytecode.length) {
+    const boundary = decodeJvmInstructionBoundary(bytecode, offset);
+    if (!boundary.complete || boundary.end <= offset) break;
+    starts.add(offset);
+    offset = boundary.end;
+  }
+  return starts;
+}
+
+function appendJvmBranchEffect(
+  controlEffects,
+  unknownEffects,
+  instructionStarts,
+  bytecodeLength,
+  kind,
+  targetOffset,
+) {
+  if (
+    !Number.isSafeInteger(targetOffset) ||
+    targetOffset < 0 ||
+    targetOffset >= bytecodeLength ||
+    !instructionStarts.has(targetOffset)
+  ) {
+    unknownEffects.push({
+      category: 'other',
+      reason: 'invalid-jvm-branch-target',
+    });
+    return false;
+  }
+  controlEffects.push({ kind, targetOffset });
+  return true;
+}
 
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
@@ -40,6 +77,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const codeAttr = method.code;
   const bytecode = codeAttr.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  const instructionStarts = collectJvmInstructionStarts(bytecode);
 
   let pc = 0;
   let opSeq = 0;
@@ -247,7 +285,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           mnemonic = names[opcode];
           consumedValues.push({ id: 'val', bits: 32 });
           currentStackHeight--;
-          controlEffects.push({ kind: 'conditional-branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'conditional-branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -263,7 +308,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           mnemonic = names[opcode];
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
           currentStackHeight -= 2;
-          controlEffects.push({ kind: 'conditional-branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'conditional-branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -272,7 +324,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const offset = view.getInt16(pc, false);
           pc += 2;
           mnemonic = 'goto';
-          controlEffects.push({ kind: 'branch', targetOffset: opOffset + offset });
+          if (!appendJvmBranchEffect(
+            controlEffects,
+            unknownEffects,
+            instructionStarts,
+            bytecode.length,
+            'branch',
+            opOffset + offset,
+          )) completeness = 'partial';
         }
         break;
 
@@ -294,19 +353,47 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc += 2;
           const isWrite = opcode === 0xb3 || opcode === 0xb5;
           const isStatic = opcode === 0xb2 || opcode === 0xb3;
+          const field = resolveJvmFieldRef(jvmClass, fieldIdx);
           mnemonic = opcode === 0xb2 ? 'getstatic' : opcode === 0xb3 ? 'putstatic' : opcode === 0xb4 ? 'getfield' : 'putfield';
+
+          const receiver = { id: 'obj', bits: 64, category: 1, valueKind: 'reference' };
+          if (!field) {
+            completeness = 'partial';
+            if (isWrite) consumedValues.push({ id: 'val', typeUnknown: true });
+            else producedValues.push({ id: 'field-value', typeUnknown: true });
+            if (!isStatic) consumedValues.push(receiver);
+            unknownEffects.push(
+              { category: 'types', reason: 'unresolved-jvm-field-reference' },
+              { category: 'stack', reason: 'unresolved-jvm-field-width' },
+              { category: 'memory', reason: 'unresolved-jvm-field-reference' },
+            );
+            break;
+          }
+
+          const value = {
+            bits: field.bits,
+            category: field.category,
+            valueKind: field.valueKind,
+            descriptor: field.descriptor,
+          };
           if (isWrite) {
-            consumedValues.push({ id: 'val' });
-            if (!isStatic) consumedValues.push({ id: 'obj' });
-            currentStackHeight -= isStatic ? 1 : 2;
+            consumedValues.push({ id: 'val', ...value });
+            if (!isStatic) consumedValues.push(receiver);
+            currentStackHeight -= field.slots + (isStatic ? 0 : 1);
           } else {
-            if (!isStatic) consumedValues.push({ id: 'obj' });
-            producedValues.push({ bits: 32 });
-            if (isStatic) currentStackHeight++;
+            if (!isStatic) consumedValues.push(receiver);
+            producedValues.push(value);
+            currentStackHeight += field.slots - (isStatic ? 0 : 1);
           }
           memoryEffects.push({
             space: isStatic ? 'static-field' : 'field',
             cpIndex: fieldIdx,
+            owner: field.owner,
+            name: field.name,
+            descriptor: field.descriptor,
+            valueKind: field.valueKind,
+            valueBits: field.bits,
+            valueCategory: field.category,
             isWrite,
           });
         }
