@@ -118,6 +118,24 @@ function pageOf(page = {}) {
   };
 }
 
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
+
+function nextPageOffset(offset, advance) {
+  const next = offset + Math.max(1, advance);
+  return Number.isSafeInteger(next) && next > offset ? next : null;
+}
+
+function unsupportedPage(id, page, reason) {
+  const { offset, limit } = pageOf(page);
+  return {
+    value:[],
+    functionId:id,
+    page:{ offset, limit, returned:0, total:0, next:null },
+    status:{ completeness:'unsupported', reason, paged:true },
+  };
+}
 function unsupported(id, reason) {
   return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
 }
@@ -594,12 +612,16 @@ export function createAppAnalysisQueryAdapter(app) {
       // MAX_PAGE bounds a single page (via pageOf), never the cumulative
       // offset: the producer only serves a leading prefix, so reaching an
       // offset beyond MAX_PAGE requires fetching the full prefix.
-      const source = program.callersOf(address, offset + limit);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.callersOf(address, cumulativeLimit);
       const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
       if (source?.queryLimited === true && result.page.next == null) {
-        result.page.next = result.page.returned > 0
-          ? result.page.offset + result.page.returned
-          : result.page.total;
+        const next = nextPageOffset(
+          result.page.offset,
+          result.page.returned > 0 ? result.page.returned : result.page.limit,
+        );
+        if (next != null) result.page.next = next;
       }
       return result;
     },
