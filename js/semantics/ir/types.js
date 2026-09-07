@@ -163,8 +163,13 @@ export function createSemanticCallSummary(input) {
     completeness,
     unknownEffects,
   };
+  // A null/omitted `noreturn`/`mayThrow` is unprovided knowledge, not a
+  // `false`-equivalent: treating it as benign let a complete call skip its
+  // control-flow knowledge entirely (#5854). Omission and 'unknown' both make
+  // the summary unresolved, so only explicitly provided values can be complete.
   const unresolved = out.memoryRead.scope === 'unknown' || out.memoryWrite.scope === 'unknown'
-    || out.determinism === 'unknown' || out.noreturn === 'unknown' || out.mayThrow === 'unknown';
+    || out.determinism === 'unknown' || out.noreturn === 'unknown' || out.noreturn == null
+    || out.mayThrow === 'unknown' || out.mayThrow == null;
   if (completeness === 'complete' && (unknownEffects != null || unresolved)) fail('semantic-ir-complete-call-has-unknown-effects');
   if (completeness !== 'complete' && unknownEffects == null) fail('semantic-ir-partial-call-requires-unknown-effects');
   return deepFreeze(out);
