@@ -67,7 +67,7 @@ export async function handleAITurn(request, env) {
       continue;
     }
     if (upstream.ok) break;
-    const failure = await readUpstreamFailure(upstream, responseByteLimit(adapter));
+    const failure = await readUpstreamFailure(upstream, responseByteLimit(adapter, payload.mode));
     if (!isRetryableUpstreamFailure(upstream.status, failure.code) || attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return upstreamError(upstream.status, failure.code, upstream.headers.get('retry-after')); }
     if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
   }
@@ -75,7 +75,7 @@ export async function handleAITurn(request, env) {
   let interaction;
   // The provider response is untrusted transport input: materialize it under
   // the same class of byte ceiling the request path enforces (#6144).
-  try { interaction = adapter.normalize(JSON.parse(await readLimitedText(upstream, responseByteLimit(adapter)))); }
+  try { interaction = adapter.normalize(JSON.parse(await readLimitedText(upstream, responseByteLimit(adapter, payload.mode)))); }
   catch {
     // readLimitedText can reject on Content-Length before it acquires a reader.
     // Close that still-unconsumed upstream body before releasing the request
@@ -101,8 +101,15 @@ function positiveLimit(value, fallback) {
 // Worker-owned transport ceiling for a single upstream response body. It is
 // deliberately independent of provider generation limits: HTTP errors, proxies,
 // and malformed providers never renegotiate this boundary (#6144).
-function responseByteLimit(adapter) {
-  const maxOutputTokens = Number(adapter?.capabilities?.maxOutputTokens);
-  const tokenEnvelope = Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens * 16 : 0;
+function responseByteLimit(adapter, mode = 'chat') {
+  const configuredMaxOutputTokens = Number(adapter?.capabilities?.maxOutputTokens);
+  // Provider adapters cap each turn at 4,096 chat or 8,192 agent tokens.
+  // Apply that effective cap before multiplying so a merely finite but huge
+  // capability value cannot turn the byte limit into Infinity (#6144).
+  const providerMaxOutputTokens = mode === 'agent' ? 8192 : 4096;
+  const maxOutputTokens = Number.isFinite(configuredMaxOutputTokens) && configuredMaxOutputTokens > 0
+    ? Math.min(configuredMaxOutputTokens, providerMaxOutputTokens)
+    : 0;
+  const tokenEnvelope = maxOutputTokens * 16;
   return Math.max(tokenEnvelope, MAX_RESPONSE_BYTES);
 }

@@ -200,6 +200,18 @@ try {
     assert.equal((await oversizedSuccess.json()).error.code, 'invalid_model_output');
     assert.ok(readBytes <= 4 * 1024 * 1024 + 262144, `oversized body must be cut off at the ceiling, read ${readBytes} bytes`);
 
+    // A finite but unbounded capability must not make responseByteLimit()
+    // become Infinity: the adapter still enforces its effective per-turn cap.
+    globalThis.fetch = async () => trackedResponse(
+      JSON.stringify({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'x'.repeat(6 * 1024 * 1024) } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+    readBytes = 0;
+    const hugeOutputCapability = await worker.fetch(request(), { ...env, GEMINI_MAX_OUTPUT_TOKENS: '1e308' });
+    assert.equal(hugeOutputCapability.status, 502, 'huge finite output capability still rejects oversized response');
+    assert.equal((await hugeOutputCapability.json()).error.code, 'invalid_model_output');
+    assert.ok(readBytes <= 4 * 1024 * 1024 + 262144, `huge output capability must retain the response ceiling, read ${readBytes} bytes`);
+
     // A Content-Length rejection happens before readLimitedText acquires a
     // reader, so the worker must still cancel the untouched upstream body.
     let oversizedBodyCancelled = 0;
