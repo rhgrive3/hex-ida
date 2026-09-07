@@ -10,13 +10,13 @@ import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 const reg = (id) => ({ kind: 'register', registerId: id, widthBits: 64 });
 const shl = (amount, value) => ({ kind: 'shift-left', amount, value });
 
-function bundleWithAddress(addressExpr) {
+function bundleWithAddress(addressExpr, kind = 'memory-read') {
   return createMachineEffectBundle({
     instructionId: 'i0',
     architectureId: 'arm64',
     mode: 'a64',
     operations: [{
-      kind: 'memory-read',
+      kind,
       access: {
         space: 'memory',
         widthBits: 64,
@@ -51,6 +51,24 @@ assert.equal(projectedScale(shl(4, reg('x1'))), 4);
 
 // Plain index keeps scale 0.
 assert.equal(projectedScale(reg('x1')), 0);
+
+// The complete address must agree for loads and stores, including three
+// nested shifts and the existing extend-then-shift representation.
+for (const kind of ['memory-read', 'memory-write']) {
+  for (const [expression, expectedScale, expectedExtend] of [
+    [shl(1, shl(3, shl(2, reg('x1')))), 6, null],
+    [shl(3, { kind: 'zero-extend', value: reg('x1') }), 3, 'uxtw'],
+    [shl(2, { kind: 'sign-extend', value: reg('x1') }), 2, 'sxtw'],
+  ]) {
+    const [{ addr }] = lowerMachineEffectsToLegacyV1(bundleWithAddress(expression, kind));
+    assert.equal(addr.base, 'x0');
+    assert.equal(addr.index, 'x1');
+    assert.equal(addr.scale, expectedScale);
+    assert.equal(addr.extend, expectedExtend);
+    assert.equal(addr.disp, 0n);
+    assert.equal(4096n + (7n << BigInt(addr.scale)), 4096n + 7n * (2n ** BigInt(expectedScale)));
+  }
+}
 
 // Only non-negative safe integer amounts may become an exact scale. Values
 // that would be coerced by Number() must fail closed without an index.
