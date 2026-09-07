@@ -4,16 +4,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
+      - 'js/userscript/**'
       - 'scripts/build-userscript.mjs'
       - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
+      - 'scripts/sync-generated-userscript.mjs'
+      - 'tools/validation/generated-output-policy.mjs'
+      - 'tests/dev-agent/sync-generated-userscript.mjs'
+      - 'userscript/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+      - '.github/workflows/generated-userscript-autofix.yml'
+      - '.github/workflows/generated-userscript-main-sync.yml'
 
 permissions:
   contents: write
@@ -25,8 +27,13 @@ concurrency:
 jobs:
   autofix:
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref != github.event.pull_request.base.ref
+      github.event.pull_request.head.ref != github.event.pull_request.base.ref &&
+      (
+        github.event.pull_request.base.ref == 'release' ||
+        startsWith(github.event.pull_request.head.ref, 'dev-agent-hardening/integration/')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,7 +41,6 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
-
       - name: Checkout exact PR head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,28 +48,19 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           fetch-depth: 0
           persist-credentials: false
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-
       - run: npm ci
-
       - name: Resolve generated-output ownership policy
         id: generated-policy
         shell: bash
         run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
-
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-
       - name: Restore deployment-only build identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
-
+        run: git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
       - name: Reject unexpected build side effects
         shell: bash
         run: |
@@ -74,7 +71,6 @@ jobs:
             printf '%s\n' "$unexpected" >&2
             exit 1
           fi
-
       - name: Commit canonical outputs when stale
         id: canonical-commit
         if: steps.generated-policy.outputs.mode == 'enforce'
@@ -88,23 +84,17 @@ jobs:
             echo 'push=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           git fetch origin "${{ github.event.pull_request.head.ref }}"
           if [[ "$(git rev-parse FETCH_HEAD)" != "$HEAD_SHA" ]]; then
             echo 'PR head moved during autofix; refusing stale push.' >&2
             exit 1
           fi
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- userscript/hex.user.template.js userscript/release-version.json
-          git diff --cached --quiet && {
-            echo 'push=false' >> "$GITHUB_OUTPUT"
-            exit 0
-          }
+          git diff --cached --quiet && { echo 'push=false' >> "$GITHUB_OUTPUT"; exit 0; }
           git commit -m 'chore: sync generated userscript'
           echo 'push=true' >> "$GITHUB_OUTPUT"
-
       - name: Push canonical outputs
         if: steps.generated-policy.outputs.mode == 'enforce' && steps.canonical-commit.outputs.push == 'true'
         shell: bash

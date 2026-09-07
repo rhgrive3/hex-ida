@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget } from './elf-budget.js';
-import { executableELFRange } from './elf-mapping.js';
+import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -79,10 +79,16 @@ export function parseELF(input, options = {}) {
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
   if (h.type !== ET_REL && image.entrypoint != null) {
-    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && !!image.segmentAt(0n)?.perms?.execute;
+    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64';
     if (image.entrypoint !== 0n || zeroResetVector) {
-      image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
-      if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+      const rejection = elfEntrypointRejection(image, image.entrypoint);
+      if (rejection == null) {
+        image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+        if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+      } else {
+        image.warnings.push(`Ignored ELF entrypoint 0x${image.entrypoint.toString(16)}: ${rejection}`);
+        if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
+      }
     } else {
       image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
     }
@@ -135,6 +141,15 @@ export function parseELF(input, options = {}) {
   image.metadata.elfMetadata = metadataBudget.snapshot();
 
   return image.finalize();
+}
+
+function elfEntrypointRejection(image, address) {
+  const instructionBytes = image.arch === 'arm64' ? 4n : 1n;
+  if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
+  if (image.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
+  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  return null;
 }
 
 function alignUp(value, alignment) {
