@@ -66,7 +66,10 @@ console.log('Testing integrated PRs and issue fixes...');
 
   // flush queue
   const batch = normalizer.flush();
-  assert.equal(batch.dropped, 1);
+  assert.equal(batch.dropped, 2, 'loss includes the queued event evicted to fit the mandatory loss marker');
+  assert.equal(batch.events.length, 1);
+  assert.equal(batch.events[0].kind, 'dropped-events');
+  assert.equal(batch.events[0].payload.dropped, 2);
 
   // retry e2: should now succeed because it wasn't permanently marked seen when dropped
   const e2retry = normalizer.push({ kind: 'trace-marker', streamId: 'st1', sequence: 2 });

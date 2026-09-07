@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createApi, makeEmulator, UnsupportedArchitectureError } from '../js/script.js';
 import { architectureAdapter } from '../js/architecture/index.js';
+import { PROGRAM_MERGE_LIMITS } from '../js/program.js';
 import './architecture-abi.mjs';
 
 const BASE = 0x100000000n;
@@ -149,6 +150,7 @@ function fakeApp(architecture, overrides = {}) {
     calleesOf: () => [{ addr:0x3000n }],
     mostCalled: () => [{ addr:0x3000n, count:5 }],
     graphCompleteness:{ complete:true, supported:true },
+    completeness:{ complete:true },
     callsCapped:false,
     refsCapped:false,
     statsComplete:true,
@@ -174,6 +176,7 @@ function fakeApp(architecture, overrides = {}) {
     ensureProgram: async () => program,
     program,
     programKey:'text',
+    programBudgetProfile:PROGRAM_MERGE_LIMITS,
     analysisQueries,
   });
   const { api } = createApi(app, () => {});
