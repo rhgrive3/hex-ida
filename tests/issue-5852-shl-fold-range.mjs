@@ -27,6 +27,29 @@ test('#5852 huge shl shift count does not throw an uncaught RangeError', () => {
   assert.doesNotThrow(() => projectSemanticIrV2ToLegacyV1(ir));
 });
 
+function shiftInstruction(operator, count) {
+  const projected = projectSemanticIrV2ToLegacyV1(irWith([
+    { id: 'one', kind: 'const', blockId: 'b0', inputs: [], outputs: ['v0'], attributes: { value: '1' }, completeness: 'complete', origin },
+    { id: 'count', kind: 'const', blockId: 'b0', inputs: [], outputs: ['v1'], attributes: { value: count }, completeness: 'complete', origin },
+    { id: 'shift', kind: 'binary', operator, blockId: 'b0', inputs: ['v0', 'v1'], outputs: ['v2'], completeness: 'complete', origin },
+  ]));
+  const fn = projected.functions?.[0] ?? projected;
+  return (fn.instructions ?? []).find((instruction) => instruction.op === 'bin' && instruction.sub === operator);
+}
+
+test('#5852 negative, width-sized, and huge counts stay unknown for every shift operator', () => {
+  for (const operator of ['shl', 'lshr', 'ashr']) {
+    for (const count of [-1n, 64n, 10n ** 400n]) {
+      let instruction;
+      assert.doesNotThrow(() => {
+        instruction = shiftInstruction(operator, count);
+      }, `${operator} with ${String(count)} must not throw`);
+      assert.ok(instruction, `${operator} instruction must remain in the projection`);
+      assert.equal(instruction.dst?.const, null, `${operator} with ${String(count)} must remain unknown`);
+    }
+  }
+});
+
 test('#5852 in-range shifts keep folding; oversized shifts stay unfolded (unknown)', () => {
   const folded = projectSemanticIrV2ToLegacyV1(irWith([
     { id: 'one', kind: 'const', blockId: 'b0', inputs: [], outputs: ['v0'], attributes: { value: '1' }, completeness: 'complete', origin },
