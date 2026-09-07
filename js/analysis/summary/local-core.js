@@ -35,6 +35,7 @@ function regionsFor(node, resolveRegion) {
   if (typeof resolveRegion !== 'function' || node.memory == null) return [];
   try {
     const resolved = resolveRegion(node.memory, { node });
+    if (resolved == null) return [];
     return Array.isArray(resolved) ? resolved : [resolved];
   } catch { return []; }
 }

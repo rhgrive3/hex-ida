@@ -9,7 +9,10 @@ const DT_VERNEEDNUM = 0x6fffffffn;
 
 class Reader {
   constructor() { this.length = 0x100; }
-  u16() { return 2; }
+  u16(offset) {
+    if (offset === 0x20 || offset === 0x40) return 1; // current record revision
+    return 2;
+  }
   u32(offset) {
     if (offset === 0x2c) return 20; // DT_VERDEF vd_aux
     if (offset === 0x48) return 16; // DT_VERNEED vn_aux

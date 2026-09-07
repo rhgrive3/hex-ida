@@ -118,6 +118,9 @@ test('unknown call memory scope and partial callee composition stay incomplete (
   };
   const partialCallee = createFunctionSummary({
     functionId:'fn:callee',
+    memoryWriteRegions:[{
+      regionKind:'unknown', broad:true, addressSpaces:['memory'], source:'unknown-call-fallback',
+    }],
     unknownCallEffects:[{
       callSiteId:'inner-call', reason:'summary-missing', targetEntityIds:['fn:missing'],
     }],
