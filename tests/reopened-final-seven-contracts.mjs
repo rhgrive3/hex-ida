@@ -113,7 +113,10 @@ function abortError(){const e=new Error('aborted');e.name='AbortError';return e;
 
 // #2540: route cancellation owns baseline task; App bridge carries options; compact set is O(1) wrt per-function objects on main realm.
 {
-  const product=source('js/ui/product.js'); const workspace=source('js/workspace.js'); const app=source('js/app.js');
+  const productEntry=source('js/ui/product.js');
+  assert.match(productEntry,/installProductUI as installBaseProductUI.*product-base\.js/);
+  assert.match(productEntry,/return installBaseProductUI\(app\)/);
+  const product=source('js/ui/product-base.js'); const workspace=source('js/workspace.js'); const app=source('js/app.js');
   assert.match(product,/createChildTaskScope\(routeSignal\)/); assert.match(product,/compareScope\.spawn\('diff-baseline-replaced'\)/); assert.match(product,/compareScope\.abort\('diff-route-disposed'\)/);
   assert.match(workspace,/signal\?\.addEventListener\('abort',onAbort/); assert.match(workspace,/if\(ownedBackend\)other\?\.dispose\?\.\(\)/);
   assert.match(app,/async loadDiffBaseline\(file, options=\{\}\)\{return this\.workspace\.loadBaseline\(file, options\);\}/);
