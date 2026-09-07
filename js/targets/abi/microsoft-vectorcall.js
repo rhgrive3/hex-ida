@@ -31,8 +31,12 @@ function descriptorBoolean(parameter, key) {
   if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
   const values = owners.filter((owner) => Object.hasOwn(owner, key)).map((owner) => owner[key]);
   if (!values.length) return { present:false, value:false };
-  const normalized = values.map((value) => value === true);
-  return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+  // hfa/hva are boolean contract fields.  A present non-boolean value is
+  // malformed metadata, not a canonical `false`: collapse it and a layout
+  // that only exists alongside the malformed flag would classify exactly
+  // (issue #5612).
+  if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
+  return { present:true, value:values.every((value) => value === values[0]) ? values[0] : null };
 }
 
 function vectorRegister(index, bits) {
