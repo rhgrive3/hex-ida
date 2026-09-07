@@ -105,6 +105,7 @@
       "js/ai/evidence.js",
       "js/ai/capabilities/executor.js",
       "js/ai/proposals.js",
+      "tests/ai/adversarial/issue-3773-ai-approval-token-atomic.test.mjs",
       "js/analysis/producer-wait.js",
       "js/analyze.js",
       "js/auto.js",
