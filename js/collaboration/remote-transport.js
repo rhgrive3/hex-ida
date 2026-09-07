@@ -3,6 +3,8 @@ import { createRemoteCollaborationEnvelope } from './remote-authority.js';
 
 export const REMOTE_CANONICAL_TRANSPORT_SCHEMA = 'hex-remote-canonical-transport/v1';
 export const REMOTE_CANONICAL_RESPONSE_SCHEMA = 'hex-remote-canonical-transport-response/v1';
+export const REMOTE_CANONICAL_DELIVERY_SCHEMA = 'hex-remote-canonical-delivery/v1';
+export const REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA = 'hex-remote-canonical-delivery-ack/v1';
 export const REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY = 'oracle:S2-P12-COLLAB-REMOTE:webcrypto-ed25519-aes-gcm-v1';
 
 const textEncoder = new TextEncoder();
@@ -106,6 +108,17 @@ function signedResponsePayload(response) {
     requestId:required(response.requestId, 'remote-transport-response-request-id-required'),
     bindingDigest:required(response.bindingDigest, 'remote-transport-response-binding-digest-required'),
     keyId:required(response.keyId, 'remote-transport-response-key-id-required'),
+  };
+}
+
+function signedDeliveryAckPayload(response) {
+  return {
+    schemaVersion:REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA,
+    requestId:required(response.requestId, 'remote-transport-delivery-ack-request-id-required'),
+    envelopeId:required(response.envelopeId, 'remote-transport-delivery-ack-envelope-id-required'),
+    bindingDigest:required(response.bindingDigest, 'remote-transport-delivery-ack-binding-digest-required'),
+    status:required(response.status, 'remote-transport-delivery-ack-status-required'),
+    keyId:required(response.keyId, 'remote-transport-delivery-ack-key-id-required'),
   };
 }
 
@@ -220,6 +233,61 @@ export class RemoteCanonicalHttpTransport {
 
   async send(envelope) {
     if (!this.verifyTransportProof(envelope?.transportProof, envelope)) throw new Error('remote-transport-unverified-envelope');
-    return Object.freeze({ status:'verified-and-authorized-for-channel-send', envelopeId:envelope.envelopeId });
+    const envelopeId = required(envelope?.envelopeId, 'remote-transport-delivery-envelope-id-required');
+    const proofIdentity = required(envelope?.transportProof?.proofIdentity, 'remote-transport-delivery-proof-identity-required');
+    const bindingDigest = await sha256(textEncoder.encode(stableStringify(remoteCanonicalTransportBinding(envelope))));
+    const requestId = `remote-delivery:${await sha256(textEncoder.encode(stableStringify({
+      schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
+      envelopeId,
+      proofIdentity,
+      bindingDigest,
+    })))}`;
+    const deliveryPlaintext = textEncoder.encode(stableStringify(envelope));
+    const deliveryIv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const deliveryAad = textEncoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${this.serverKeyId}`);
+    const deliveryCiphertext = new Uint8Array(await subtle().encrypt(
+      { name:'AES-GCM', iv:deliveryIv, additionalData:deliveryAad, tagLength:128 },
+      this.sessionEncryptionKey,
+      deliveryPlaintext,
+    ));
+    const response = await this.fetchImpl(this.endpoint, {
+      method:'POST',
+      headers:{ 'content-type':'application/json' },
+      body:JSON.stringify({
+        schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
+        requestId,
+        envelopeId,
+        bindingDigest,
+        proofIdentity,
+        iv:base64(deliveryIv),
+        ciphertext:base64(deliveryCiphertext),
+      }),
+    });
+    if (!response || response.ok !== true) throw new Error(`remote-transport-delivery-http-rejected:${response?.status ?? 'unavailable'}`);
+    const result = await readBoundedResponseJson(response, this.maxResponseBytes);
+    if (result?.schemaVersion !== REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA) {
+      throw new Error('remote-transport-delivery-ack-schema-invalid');
+    }
+    let signed;
+    try { signed = signedDeliveryAckPayload(result); }
+    catch { throw new Error('remote-transport-delivery-ack-invalid'); }
+    if (signed.requestId !== requestId
+      || signed.envelopeId !== envelopeId
+      || signed.bindingDigest !== bindingDigest
+      || signed.keyId !== this.serverKeyId
+      || signed.status !== 'sent') {
+      throw new Error('remote-transport-delivery-ack-identity-mismatch');
+    }
+    let signature;
+    try { signature = fromBase64(result.signature, 'remote-transport-delivery-ack-signature-invalid'); }
+    catch { throw new Error('remote-transport-delivery-ack-signature-invalid'); }
+    const verified = await subtle().verify(
+      { name:'Ed25519' },
+      this.serverVerificationKey,
+      signature,
+      textEncoder.encode(stableStringify(signed)),
+    );
+    if (!verified) throw new Error('remote-transport-delivery-ack-signature-rejected');
+    return Object.freeze({ status:'sent', envelopeId });
   }
 }

@@ -113,13 +113,29 @@ export class ProposalStore {
     this.approvals.delete(authority.id);
     this.audit.push({ type: 'proposal-applying', proposalId: authority.id, timestamp: new Date().toISOString() });
 
-    if (authority.bindingRevision !== fingerprint(this.binding?.() || null)) {
+    let bindingRevision;
+    try {
+      bindingRevision = fingerprint(this.binding?.() || null);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (authority.bindingRevision !== bindingRevision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-binding-mismatch', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
     }
 
-    if (fingerprint(currentState) !== authority.revision) {
+    let currentRevision;
+    try {
+      currentRevision = fingerprint(currentState);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (currentRevision !== authority.revision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
@@ -325,6 +341,7 @@ function snapshotProposalPayload(value) {
 function assertSnapshotStateShape(value, seen = new WeakSet()) {
   if (value === null || typeof value !== 'object' || seen.has(value)) return;
   seen.add(value);
+  if (Object.getOwnPropertySymbols(value).length) throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
   if (value instanceof Map) {
     for (const [key, item] of Map.prototype.entries.call(value)) {
       assertSnapshotStateShape(key, seen);
@@ -343,7 +360,6 @@ function assertSnapshotStateShape(value, seen = new WeakSet()) {
     throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
   }
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-    if (!descriptor.enumerable) continue;
     if (!('value' in descriptor)) throw new AIError('tool_failed', 'Proposal state contains an accessor and cannot be snapshotted safely.');
     assertSnapshotStateShape(descriptor.value, seen);
   }
@@ -435,6 +451,13 @@ function canonicalIdentity(value, stack = new Set()) {
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
   stack.add(value);
   try {
+    // Symbol-keyed own properties are own state too, but a canonical text
+    // cannot distinguish two distinct symbols sharing a description. The
+    // stale-state contract therefore refuses symbol-keyed state explicitly
+    // instead of silently omitting part of the value (#5945).
+    if (Object.getOwnPropertySymbols(value).length) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
       const bytes = value instanceof ArrayBuffer
