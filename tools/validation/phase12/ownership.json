@@ -103,6 +103,7 @@
       "js/adapters/index.js",
       "js/address-provenance.js",
       "js/ai/evidence.js",
+      "js/ai/capabilities/executor.js",
       "js/ai/proposals.js",
       "tests/ai/adversarial/issue-3773-ai-approval-token-atomic.test.mjs",
       "js/analysis/producer-wait.js",
