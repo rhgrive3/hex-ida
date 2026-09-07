@@ -95,7 +95,18 @@ export function functionPaths(program, from, to, opts) {
   const maxPaths = boundedOption(opts && opts.maxPaths, 8, 1, 32);
   const maxVisited = boundedOption(opts && opts.maxVisited, 10000, 16, 20000);
   const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
-  if (!program || from == null || to == null) return result;
+  if (!program) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['program-unavailable'];
+    return result;
+  }
+  if (from == null || to == null) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['invalid-endpoint'];
+    return result;
+  }
 
   const reasons = new Set();
   const q = [[from]];
@@ -105,7 +116,8 @@ export function functionPaths(program, from, to, opts) {
     result.visited++;
     const head = path[path.length - 1];
     if (head === to) { result.paths.push(path); continue; }
-    if (path.length >= maxDepth) { reasons.add('depth-limit'); continue; }
+    // The source is depth zero; only traversed call edges consume depth.
+    if (path.length - 1 >= maxDepth) { reasons.add('depth-limit'); continue; }
 
     let range = null;
     try {

@@ -70,6 +70,7 @@ function priorityValueOf(p) {
 
 const queue = [];
 let processing = false;
+let activeRequestId = null;
 const cancelledIds = new Set();
 
 async function decodeMessage(msg) {
@@ -145,7 +146,13 @@ async function processQueue() {
       cancelledIds.delete(msg.id);
       continue;
     }
-    await decodeMessage(msg);
+    activeRequestId = msg.id;
+    try {
+      await decodeMessage(msg);
+    } finally {
+      if (activeRequestId === msg.id) activeRequestId = null;
+      cancelledIds.delete(msg.id);
+    }
   }
   processing = false;
 }
@@ -155,10 +162,25 @@ self.onmessage = (event) => {
   if (!msg) return;
   if (msg.t === 'cancel') {
     if (msg.id != null) {
-      cancelledIds.add(msg.id);
+      if (activeRequestId === msg.id) {
+        cancelledIds.add(msg.id);
+        return;
+      }
       const idx = queue.findIndex((j) => j.id === msg.id);
       if (idx >= 0) queue.splice(idx, 1);
     }
+    return;
+  }
+
+  // Generation safety: a bare id cannot distinguish two live generations of
+  // the same id (active A + queued B). Cancelling by id would then hit the
+  // wrong generation, so live id reuse is rejected fail-closed at entry.
+  // Sequential reuse after settle/cancel remains valid.
+  if (msg.id != null
+      && (activeRequestId === msg.id
+        || queue.some((pending) => pending.id === msg.id)
+        || cancelledIds.has(msg.id))) {
+    self.postMessage({ id: msg.id, ok: false, error: `duplicate live request id: ${msg.id}` });
     return;
   }
 
