@@ -1,5 +1,6 @@
 import {
   createPEMetadataBudget,
+  mappedFileSpanForRva,
   parseCoffSymbols as parseCoffSymbolsCore,
   parseDelayImports as parseDelayImportsCore,
   parseImports as parseImportsCore,
@@ -7,6 +8,11 @@ import {
 
 function exactCStringAccounting(reader, budget) {
   const rawCStringBytes = [];
+  const descriptorState = {
+    import: { seen: 0, terminated: false, budgetStopped: false },
+    delayImport: { seen: 0, terminated: false, budgetStopped: false },
+  };
+  let descriptorCapture = null;
 
   const accountingReader = new Proxy(reader, {
     get(target, property) {
@@ -15,6 +21,39 @@ function exactCStringAccounting(reader, budget) {
           const value = target.cstring(start, max);
           const nulAt = target.slice(start, max).indexOf(0);
           rawCStringBytes.push(nulAt >= 0 ? nulAt + 1 : null);
+          return value;
+        };
+      }
+      if (property === 'u32') {
+        return (offset) => {
+          if (descriptorCapture?.kind === 'delay-import') {
+            const capture = descriptorCapture;
+            if (!capture.snapshot) {
+              capture.baseOffset = offset;
+              capture.snapshot = Array.from({ length: 8 }, (_, index) => target.u32(offset + index * 4));
+              if (capture.snapshot.every((field) => field === 0)) capture.state.terminated = true;
+              capture.moduleHandleOnly = capture.snapshot[2] !== 0
+                && capture.snapshot.every((field, index) => index === 2 || field === 0);
+            }
+            const index = (offset - capture.baseOffset) / 4;
+            if (Number.isInteger(index) && index >= 0 && index < 8) {
+              let value = capture.snapshot[index];
+              // The delegated core currently skips ModuleHandleRVA (+8). For the one
+              // otherwise-all-zero shape, project that truthiness through `bound`,
+              // which the core uses only in its descriptor-zero predicate.
+              if (index === 5 && capture.moduleHandleOnly) value = capture.snapshot[2];
+              if (index === 7) descriptorCapture = null;
+              return value;
+            }
+          }
+          const value = target.u32(offset);
+          if (descriptorCapture) {
+            descriptorCapture.values.push(value);
+            if (descriptorCapture.values.length === descriptorCapture.expected) {
+              if (descriptorCapture.values.every((field) => field === 0)) descriptorCapture.state.terminated = true;
+              descriptorCapture = null;
+            }
+          }
           return value;
         };
       }
@@ -32,7 +71,22 @@ function exactCStringAccounting(reader, budget) {
             const inputBytes = rawCStringBytes.shift();
             if (inputBytes != null) exactCost = { ...cost, inputBytes };
           }
-          return Reflect.apply(Reflect.get(target, 'take', target), target, [exactCost, reason]);
+          const accepted = Reflect.apply(Reflect.get(target, 'take', target), target, [exactCost, reason]);
+          const descriptor = reason === 'import-descriptor'
+            ? { state: descriptorState.import, expected: 5 }
+            : reason === 'delay-import-descriptor'
+              ? { state: descriptorState.delayImport, expected: 8, kind: 'delay-import' }
+              : null;
+          if (descriptor) {
+            if (accepted) {
+              descriptor.state.seen++;
+              descriptorCapture = { ...descriptor, values: [] };
+            } else {
+              descriptor.state.budgetStopped = true;
+              descriptorCapture = null;
+            }
+          }
+          return accepted;
         };
       }
       const value = Reflect.get(target, property, target);
@@ -40,12 +94,49 @@ function exactCStringAccounting(reader, budget) {
     },
   });
 
-  return { reader: accountingReader, budget: accountingBudget };
+  return { reader: accountingReader, budget: accountingBudget, descriptorState };
 }
 
 function delegatedContext(reader, image, sharedBudget) {
   const budget = sharedBudget || createPEMetadataBudget(image);
   return exactCStringAccounting(reader, budget);
+}
+
+// The core parser walks the *mapped* file-backed span for the directory
+// (mappedFileSpanForRva), never the raw declared directory.size: capacity
+// beyond the mapped span is not reachable and must not drive exhaustion
+// classification. Mirrors parseImportsCore's loop conditions exactly.
+function mappedDescriptorCapacity(directory, image, descriptorSize) {
+  const dirRange = mappedFileSpanForRva(image, directory.rva, directory.size);
+  if (!dirRange) return null;
+  const mappedBytes = Math.min(directory.size, dirRange.spanEnd - dirRange.start);
+  return Math.floor(mappedBytes / descriptorSize);
+}
+
+function markImportDescriptorGuard(context, directory, image) {
+  const state = context.descriptorState.import;
+  const capacity = mappedDescriptorCapacity(directory, image, 20);
+  if (!capacity || state.terminated || state.budgetStopped || state.seen !== 65536) return;
+  const hasTrailingDescriptor = capacity > state.seen;
+  if (!hasTrailingDescriptor) return;
+  image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
+  image.metadata.peImports.complete = false;
+  image.metadata.peImports.truncatedTables++;
+  context.budget.partial('imports-partial', 'PE import descriptor table exceeded its 65536-record safety guard without a zero descriptor');
+}
+
+function markDelayImportDescriptorTermination(context, directory, image) {
+  const state = context.descriptorState.delayImport;
+  if (state.seen === 0) return;
+  const capacity = mappedDescriptorCapacity(directory, image, 32);
+  if (state.terminated || state.budgetStopped) return;
+  const hitGuardWithTrailingCapacity = state.seen === 65536 && capacity !== null && capacity > state.seen;
+  context.budget.partial(
+    'delay-imports:unterminated-descriptor',
+    hitGuardWithTrailingCapacity
+      ? 'PE delay-import descriptor table exceeded its 65536-record safety guard without a zero descriptor'
+      : 'PE delay-import descriptor table reached its mapped boundary without a zero descriptor',
+  );
 }
 
 function coffSectionNumberGuard(reader, image, budget, pointer, count) {
@@ -125,7 +216,9 @@ export function parseImports(reader, directory, image, sharedBudget = null) {
     return parseImportsCore(reader, directory, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
-  return parseImportsCore(context.reader, directory, image, context.budget);
+  const result = parseImportsCore(context.reader, directory, image, context.budget);
+  markImportDescriptorGuard(context, directory, image);
+  return result;
 }
 
 export function parseCoffSymbols(reader, pointer, count, image, sharedBudget = null) {
@@ -155,5 +248,7 @@ export function parseDelayImports(reader, directory, image, sharedBudget = null)
     return parseDelayImportsCore(reader, directory, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
-  return parseDelayImportsCore(context.reader, directory, image, context.budget);
+  const result = parseDelayImportsCore(context.reader, directory, image, context.budget);
+  markDelayImportDescriptorTermination(context, directory, image);
+  return result;
 }

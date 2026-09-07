@@ -26,3 +26,5 @@ node scripts/run-quiet-command.mjs --label check -- npm run check
 
 `check:dev` is development feedback, not automatic release signoff. A focused
 failure stops that command but does not prohibit unrelated implementation.
+
+Current-main batch baseline: `a85e2b3693e2cffca17e4fcc6f77ece89eb50a7c`. Generated artifacts currently retain that main snapshot and require canonical combined generation before a runnable release/demo; no generated identity is claimed for this development merge.

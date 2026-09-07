@@ -66,6 +66,7 @@ const STOP_REASON_SET = new Set(ANALYSIS_STOP_REASONS);
 const FAIL_CLOSED_SET = new Set(FAIL_CLOSED_STOP_REASONS);
 const BUDGET_CLASS_SET = new Set(ANALYSIS_BUDGET_CLASSES);
 const COMPLETENESS_RANK = new Map(ANALYSIS_COMPLETENESS.map((value, index) => [value, index]));
+const STOP_REASON_RANK = new Map(ANALYSIS_STOP_REASONS.map((value, index) => [value, index]));
 
 function fail(code) { throw new TypeError(code); }
 
@@ -146,6 +147,20 @@ export function weakestCompleteness(...values) {
   return worst;
 }
 
+function canonicalStopReason(statuses) {
+  const stopped = statuses.filter((status) => status.stopReason != null);
+  if (stopped.length === 0) return null;
+  stopped.sort((left, right) => {
+    const leftFailClosed = FAIL_CLOSED_SET.has(left.stopReason);
+    const rightFailClosed = FAIL_CLOSED_SET.has(right.stopReason);
+    if (leftFailClosed !== rightFailClosed) return leftFailClosed ? -1 : 1;
+    const completenessDelta = completenessRank(right.completeness) - completenessRank(left.completeness);
+    if (completenessDelta !== 0) return completenessDelta;
+    return STOP_REASON_RANK.get(left.stopReason) - STOP_REASON_RANK.get(right.stopReason);
+  });
+  return stopped[0].stopReason;
+}
+
 /**
  * Merges several statuses into the one status a fused result may claim.
  *
@@ -161,13 +176,7 @@ export function mergeAnalysisStatus(base, ...others) {
     if (status.snapshotId !== base.snapshotId) fail('analysis-status-snapshot-mismatch');
   }
   const completeness = weakestCompleteness(all.map((status) => status.completeness));
-  let stopReason = null;
-  for (const status of all) {
-    if (status.stopReason == null) continue;
-    if (stopReason == null || (FAIL_CLOSED_SET.has(status.stopReason) && !FAIL_CLOSED_SET.has(stopReason))) {
-      stopReason = status.stopReason;
-    }
-  }
+  const stopReason = canonicalStopReason(all);
   if (completeness === 'complete' && stopReason != null) fail('analysis-status-merge-inconsistent');
   const evidenceIds = [...new Set(all.flatMap((status) => status.evidenceIds ?? []))].sort();
   const dependencyIds = [...new Set(all.flatMap((status) => status.dependencyIds ?? []))].sort();
