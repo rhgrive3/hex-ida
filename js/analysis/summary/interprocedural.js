@@ -489,14 +489,19 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   // has a solved summary; a model-covered or still-unknown target keeps the
   // local fallback in place.
   const resolvedCallSites = new Set();
+  // A summary can exist in the solve map while still being partial (for
+  // example, because its own callee or memory evidence is unresolved). Such a
+  // summary is not enough to replace this caller's conservative fallback: only
+  // a complete callee proves that the call boundary is closed.
+  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
   for (const call of local.directCalls) {
-    if (call.targetEntityIds.length > 0 && call.targetEntityIds.every((target) => solved.has(target))) {
+    if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
       resolvedCallSites.add(call.callSiteId);
     }
   }
   for (const set of local.indirectCallSets) {
     if (set.exhaustive && set.candidateEntityIds.length > 0
-      && set.candidateEntityIds.every((candidate) => solved.has(candidate))) {
+      && set.candidateEntityIds.every(isCompleteSolved)) {
       resolvedCallSites.add(set.callSiteId);
     }
   }

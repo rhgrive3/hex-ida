@@ -122,6 +122,27 @@ test('#5851 a solved writing callee replaces the fallback with its specific writ
   assert.equal(summary.status.completeness, 'complete');
 });
 
+test('#5851 an incomplete callee keeps the caller fallback conservative', () => {
+  const localA = callerWithFallback('A', 'B');
+  const localB = createFunctionSummary({
+    functionId: 'B',
+    unknownCallEffects: [createUnknownCallEffect({
+      callSiteId: 'unresolved_B', reason: 'unresolved-target',
+    })],
+    status: partialStatus(),
+  });
+
+  const summary = solveInterproceduralSummaries({
+    roots: ['A'],
+    localSummaries: new Map([['A', localA], ['B', localB]]),
+  }).summaries.get('A');
+
+  assert.ok(summary.unknownCallEffects.some((unknown) => unknown.callSiteId === 'unresolved_B'));
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
+    'an incomplete callee must not let the caller drop its broad fallback');
+  assert.notEqual(summary.status.completeness, 'complete');
+});
+
 test('#5851 a missing callee summary keeps the local fallback exactly as before', () => {
   const localA = callerWithFallback('A', 'B');
 
