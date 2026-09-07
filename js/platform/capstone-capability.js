@@ -4,4 +4,5 @@
 export const DEPLOYED_CAPSTONE_SUPPORT = Object.freeze({
   arm64: true,
   x86_64: true,
+  riscv64: true,
 });

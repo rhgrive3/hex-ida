@@ -91,5 +91,6 @@ function appFor({ renameThrows = false, rollbackThrows = false } = {}) {
 // without widening Phase 12 ownership for the AI capability executor.
 await import('./ai/adversarial/issue-3758-ai-annotation-persistence.test.mjs');
 await import('./ai/adversarial/issue-3758-ai-annotation-save-adapter.test.mjs');
+await import('./ai-proposal-note-readiness.mjs');
 
 console.log('issue-6255-rename-rollback: ok');
