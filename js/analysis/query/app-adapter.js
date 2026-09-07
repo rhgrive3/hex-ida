@@ -76,10 +76,20 @@ function throwIfAborted(signal) {
 }
 
 async function requestWithSignal(request, signal) {
-  throwIfAborted(signal);
-  if (!request || typeof request.then !== 'function') return Promise.resolve(request);
-  if (!signal?.addEventListener) return Promise.resolve(request);
+  if (!request || typeof request.then !== 'function') {
+    throwIfAborted(signal);
+    return Promise.resolve(request);
+  }
   const task = Promise.resolve(request);
+  // A producer can abort synchronously while creating its request. Once a
+  // cancelable request exists, observe it and cancel it before normalizing the
+  // consumer abort; the pre-abort search check still prevents new work.
+  if (signal?.aborted) {
+    try { request.cancel?.(); } catch { /* best effort */ }
+    void task.catch(() => {});
+    throw abortError(signal);
+  }
+  if (!signal?.addEventListener) return task;
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {

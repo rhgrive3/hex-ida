@@ -85,6 +85,40 @@ function pendingRequest(onCancel) {
 
 {
   let cancelCalls = 0;
+  let rejectRequest;
+  let addCalls = 0;
+  let removeCalls = 0;
+  const request = new Promise((_, reject) => { rejectRequest = reject; });
+  request.cancel = () => {
+    cancelCalls++;
+    rejectRequest(new Error('synchronous producer cancellation'));
+  };
+  const signal = {
+    aborted:false,
+    reason:'synchronous producer abort',
+    addEventListener() { addCalls++; },
+    removeEventListener() { removeCalls++; },
+  };
+  const app = {
+    backend: {
+      search() {
+        signal.aborted = true;
+        return request;
+      },
+    },
+  };
+  const adapter = createAppAnalysisQueryAdapter(app);
+  await assert.rejects(
+    adapter.search(null, { text:'needle' }, {}, { signal }),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(cancelCalls, 1, 'an abort during synchronous request creation must cancel the created request exactly once');
+  assert.equal(addCalls, 0, 'a request created during abort must not register a stale listener');
+  assert.equal(removeCalls, 0, 'no listener should require cleanup when abort precedes registration');
+}
+
+{
+  let cancelCalls = 0;
   const frozenReason = Object.freeze(new Error('frozen cancellation'));
   const signal = { aborted:true, reason:frozenReason };
   await assert.rejects(
