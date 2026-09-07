@@ -784,6 +784,11 @@ export function analyzeDataFlow(insns, opts) {
       calls.push(call);
       // 呼び出しで x0〜x17 は壊れる。x0 だけは戻り値として意味を持つ。
       for (let a = 0; a < CALLER_SAVED; a++) regs.delete('x' + a);
+      // BL/BLR は分岐と同時に X30/LR を書く（Arm ISA: branch-with-link は
+      // return address を X30 に格納する）。呼び出し前の X30 値は必ず死ぬ。
+      // 呼び出し先が返った後の正確な戻りアドレス表現は legacy IR では
+      // mint しない。ここでは古い値の残存だけを確実に潰す（#6126）。
+      regs.delete('x30');
       const retKind = api && api.ret ? api.ret : null;
       const ret = value('callResult', { call, ret: retKind },
         name ? SCORE.high : SCORE.inferred,
