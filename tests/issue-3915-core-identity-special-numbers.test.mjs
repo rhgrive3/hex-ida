@@ -92,6 +92,38 @@ for (const [label, factory, base] of [
   );
 }
 
+// Map keys that normalize to the same JSON value still need their associated
+// values to travel with the canonical ordering. Otherwise swapping the values
+// assigned to NaN and Infinity would produce the same payload and witness.
+const specialKeyValues = new Map([
+  [NaN, 'x'],
+  [Infinity, 'y'],
+]);
+const specialKeyValuesSwapped = new Map([
+  [NaN, 'y'],
+  [Infinity, 'x'],
+]);
+const specialKeyValuesReordered = new Map([
+  [Infinity, 'y'],
+  [NaN, 'x'],
+]);
+for (const [label, factory, base] of [
+  ['entity', createEntityId, entityBase],
+  ['evidence', createEvidenceId, evidenceBase],
+]) {
+  const first = idFor(factory, base, specialKeyValues);
+  assert.notEqual(
+    first,
+    idFor(factory, base, specialKeyValuesSwapped),
+    `${label} Map values associated with special-number keys must stay distinct`,
+  );
+  assert.equal(
+    first,
+    idFor(factory, base, specialKeyValuesReordered),
+    `${label} special-number-key Map identity must not depend on insertion order`,
+  );
+}
+
 // Ordinary JSON-safe numeric identities do not gain a witness and therefore
 // retain their exact persisted IDs.
 const ordinaryIdentity = { value: 42, nested: ['x', 1] };
