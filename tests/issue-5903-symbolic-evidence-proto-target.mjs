@@ -59,3 +59,39 @@ test('#5903 origins dynamic-key canonicalization preserves __proto__ as data in 
   assert.notEqual(JSON.stringify(a.origins), JSON.stringify(b.origins));
   assert.ok(JSON.stringify(b.origins).includes('inst:0x1004'));
 });
+
+test('#5903 all object-shaped evidence fields preserve an own __proto__ key', () => {
+  const value = JSON.parse('{"__proto__":{"marker":"kept"}}');
+  const evidence = createSymbolicEvidence({
+    ...base,
+    targetEntities: ['func:0x1000'],
+    origins: value,
+    witnessModel: value,
+    limits: value,
+    proofScope: value,
+    metadata: value,
+  });
+
+  for (const field of ['origins', 'witnessModel', 'limits', 'proofScope', 'metadata']) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(evidence[field], '__proto__'),
+      true,
+      `${field} must preserve __proto__ as an own data property`
+    );
+    assert.equal(evidence[field].__proto__.marker, 'kept');
+  }
+});
+
+test('#5903 Map-backed origins and witness models preserve __proto__ as data', () => {
+  const evidence = createSymbolicEvidence({
+    ...base,
+    targetEntities: ['func:0x1000'],
+    origins: new Map([['__proto__', ['inst:0x1004']]]),
+    witnessModel: new Map([['__proto__', { marker: 'kept' }]]),
+  });
+
+  assert.deepEqual(evidence.origins.__proto__, ['inst:0x1004']);
+  assert.deepEqual(evidence.witnessModel.__proto__, { marker: 'kept' });
+  assert.equal(Object.prototype.hasOwnProperty.call(evidence.origins, '__proto__'), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(evidence.witnessModel, '__proto__'), true);
+});

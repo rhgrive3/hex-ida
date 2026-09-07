@@ -280,7 +280,11 @@ export function createSymbolicEvidence({
     if (witnessModel instanceof Map) {
       normalizedWitness = {};
       for (const [k, v] of witnessModel.entries()) {
-        normalizedWitness[String(k)] = typeof v === 'bigint' ? `0x${v.toString(16)}` : v;
+        canonicalOwn(
+          normalizedWitness,
+          String(k),
+          typeof v === 'bigint' ? `0x${v.toString(16)}` : canonicalize(v)
+        );
       }
     } else if (typeof witnessModel === 'object') {
       normalizedWitness = canonicalize(witnessModel);
@@ -292,7 +296,11 @@ export function createSymbolicEvidence({
   if (origins instanceof Map) {
     normalizedOrigins = {};
     for (const [k, v] of origins.entries()) {
-      normalizedOrigins[String(k)] = Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v);
+      canonicalOwn(
+        normalizedOrigins,
+        String(k),
+        Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v)
+      );
     }
   } else if (typeof origins === 'object' && origins !== null) {
     normalizedOrigins = canonicalize(origins);
