@@ -145,9 +145,9 @@ export class TraceProvider {
       // imported trace is external input: only canonical non-empty string
       // evidence IDs count toward proven static identity, and `unresolved`
       // must not be promoted to `resolved` by array length alone.
-      const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-      const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0
-        && identityEvidenceIds.every((id) => typeof id === 'string' && id.trim().length > 0);
+      const rawEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+      const identityEvidenceIds = rawEvidenceIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
+      const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0 && identityEvidenceIds.length === rawEvidenceIds.length;
       const hasProvenStaticIdentity = module.binaryId != null
         && (module.identityState === 'exact' || (module.identityState === 'resolved' && hasCanonicalIdentityEvidence) || hasCanonicalIdentityEvidence);
       session.modules.load({

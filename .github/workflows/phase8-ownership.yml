@@ -36,6 +36,10 @@ concurrency:
 
 jobs:
   ownership:
+    # PR execution is offloaded to the CircleCI `phase8-ownership` lane.
+    # Keep this GitHub workflow as an explicit manual fallback without consuming
+    # a GitHub-hosted runner for every matching pull request.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,8 +60,6 @@ jobs:
           set -euo pipefail
           node tools/validation/phase8-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
       - name: Prove the ownership gate still rejects an out-of-lane change
-        # A gate that has silently stopped rejecting anything is worse than no
-        # gate, because it reports success. This proves it still fails.
         run: |
           set -euo pipefail
           if node tools/validation/phase8-ownership.mjs --files-json '["js/semantics/ssa/build.js"]'; then
