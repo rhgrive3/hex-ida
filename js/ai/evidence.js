@@ -256,21 +256,28 @@ export class EvidenceStore {
 
   ingestPlan(plan) {
     const out = [];
-    const exactIdentity = (value) => {
-      if (value == null) return null;
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return `${typeof value}:${value}`;
-      return `structured:${typeof value}:${stableDigest(jsonSafe(value))}`;
+    /*
+     * 決定的検証 authority の照合に使う identity は、canonical に潰せない値を
+     * 受理しない。address は addressText() で正規化できる表現だけ、evidence ID は
+     * primitive string だけを比較する。jsonSafe() のような打切り projection で
+     * hash すると、打切り範囲外だけが異なる別値を同一視できる（#5952）。
+     */
+    const addressIdentity = (value) => {
+      const text = addressText(value);
+      return text == null ? null : `address:${text}`;
     };
+    const evidenceIdIdentity = (value) =>
+      typeof value === 'string' && value.length > 0 ? `id:${value}` : null;
     for (const candidate of plan && plan.candidates || []) {
       const isVerifiedBest = !!(candidate.verification?.verified && plan.best
-        && exactIdentity(plan.best.address) !== null
-        && exactIdentity(plan.best.address) === exactIdentity(candidate.address));
+        && addressIdentity(plan.best.address) !== null
+        && addressIdentity(plan.best.address) === addressIdentity(candidate.address));
       const explicitlyVerified = new Set([
         ...(candidate.verification?.evidenceIds || []),
         ...(candidate.verification?.verifiedEvidenceIds || []),
-      ].map((id) => exactIdentity(id)).filter((id) => id !== null));
+      ].map((id) => evidenceIdIdentity(id)).filter((id) => id !== null));
       for (const sourceId of candidate.evidence || []) {
-        const verified = isVerifiedBest && explicitlyVerified.has(exactIdentity(sourceId));
+        const verified = isVerifiedBest && explicitlyVerified.has(evidenceIdIdentity(sourceId));
         out.push(this.add({
           sourceId, sourceTool: 'deterministic-goal-planner', kind: 'candidate-source', status: verified ? 'verified' : 'supported',
           functionAddress: candidate.address, functionName: candidate.name,
