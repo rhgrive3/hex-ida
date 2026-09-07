@@ -113,9 +113,10 @@ test('manifest has the exact frozen-contract write-owner policy', () => {
 
 test('completed Phase 4 ownership wrapper is retired while canonical invariant checks retain Phase 4/5 contracts', () => {
   assert.equal(fs.existsSync(RETIRED_OWNERSHIP_WORKFLOW), false);
-  assert.match(INVARIANT_WORKFLOW, /const phaseCommands = new Set\(\['npm run phase4:test', 'npm run phase5:test'\]\)/);
-  assert.match(INVARIANT_WORKFLOW, /name: 'contracts-phase'/);
-  assert.match(INVARIANT_WORKFLOW, /Run exact check shard/);
+  assert.match(INVARIANT_WORKFLOW, /name:\s*['"](?:contracts-phase|phase45)['"]/);
+  assert.match(INVARIANT_WORKFLOW, /npm run phase4:test/);
+  assert.match(INVARIANT_WORKFLOW, /npm run phase5:test/);
+  assert.match(INVARIANT_WORKFLOW, /Run (?:all remaining exact check commands|exact check shard)/);
   assert.match(INVARIANT_WORKFLOW, /Require complete repository check/);
 });
 

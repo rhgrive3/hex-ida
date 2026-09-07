@@ -143,6 +143,33 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   assert.equal(fakeApp.prefs.lang, 'en');
   assert.equal(fakeApp.lastGoal?.text, 'find coins');
   assert.equal(fakeStore.get('currentAddress'), 0x100001000n);
+
+  // Issue #3652: rebasing cursorIndex when imported history is truncated to navigation.limit.
+  const longHistory = Array.from({ length: 100 }, (_entry, index) => ({ addr: BigInt(index) }));
+  const truncatedNavigationProject = {
+    ...snap,
+    navigation: {
+      ...snap.navigation,
+      currentFunction: null,
+      history: longHistory,
+      cursorIndex: 70,
+    },
+  };
+  fakeApp.navigation.limit = 40;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.entries.length, 40);
+  assert.equal(fakeApp.navigation.entries[0].addr, 60n);
+  assert.equal(fakeApp.navigation.index, 10, 'cursor must be rebased by the 60 dropped history entries');
+
+  truncatedNavigationProject.navigation.cursorIndex = 20;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.index, 0, 'cursor in dropped prefix must clamp to first retained entry');
+
+  truncatedNavigationProject.navigation.history = longHistory.slice(0, 30);
+  truncatedNavigationProject.navigation.cursorIndex = 20;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.index, 20, 'cursor must remain unchanged when history is not truncated');
+
   fakeApp.notes.clear();
 }
 

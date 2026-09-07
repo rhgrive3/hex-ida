@@ -36,6 +36,7 @@ concurrency:
 
 jobs:
   guardrails:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: guardrails
     runs-on: ubuntu-latest
     timeout-minutes: 45

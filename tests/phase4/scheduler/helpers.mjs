@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createArtifactDescriptor } from '../../../js/core/artifacts/contracts.js';
 import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
 
 export class TestStore {
@@ -20,9 +21,17 @@ export class TestStore {
 }
 
 export function descriptor(name, dependencies=[]) {
-  const artifactId=String(name).startsWith('artifact_')?String(name):`artifact_${name}`;
   const upstreamArtifactIds=[...new Set(dependencies.map((item)=>typeof item==='string'?item:item.artifactId))].sort((a,b)=>a.localeCompare(b));
-  return Object.freeze({ artifactId,upstreamArtifactIds });
+  return createArtifactDescriptor({
+    binaryId:'bin_phase4_scheduler_fixture',
+    artifactKind:'phase4-scheduler-fixture',
+    producerId:'phase4-scheduler-tests',
+    producerVersion:'1',
+    versions:{ loader:'fixture-1' },
+    relevance:{ architectureSemantic:false, abiSemantic:false, semanticSchema:false },
+    config:{ name:String(name) },
+    upstreamArtifactIds,
+  });
 }
 export function scheduler(options={}) { const store=options.store||new TestStore(); return {store,scheduler:new AnalysisScheduler({store,...options})}; }
 export function deferred() { let resolve,reject; const promise=new Promise((yes,no)=>{resolve=yes;reject=no;}); return {promise,resolve,reject}; }

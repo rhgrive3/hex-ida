@@ -2,6 +2,7 @@ import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
+import { RuntimeModuleBindingTable } from './provider-identity.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function moduleFields(event) {
@@ -16,6 +17,46 @@ function validateInterventionDraft(ledger, input) {
     if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
   }
   return record;
+}
+
+function registerCallOptions(callOptions) {
+  if (callOptions === null) {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (typeof callOptions !== 'object') {
+    return { threadId: callOptions, parentInterventionIds: [] };
+  }
+
+  let prototype;
+  let descriptors;
+  try {
+    prototype = Object.getPrototypeOf(callOptions);
+    descriptors = Object.getOwnPropertyDescriptors(callOptions);
+  } catch {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new DebugAdapterError('runtime-invalid-register-call-options', 'register write options must be a plain data object');
+  }
+
+  const ownData = (key) => {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, key)) return undefined;
+    const descriptor = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('runtime-invalid-register-call-options', `register write option ${key} must be a data property`);
+    }
+    return descriptor.value;
+  };
+  return {
+    threadId: ownData('threadId'),
+    parentInterventionIds: ownData('parentInterventionIds') ?? [],
+  };
 }
 
 function moduleBindingKey(module, index) {
@@ -121,15 +162,16 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
+        const normalizedCallOptions = registerCallOptions(callOptions);
         const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
           target: { register: String(name) },
           requestedChange: { value },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          parentInterventionIds: normalizedCallOptions.parentInterventionIds,
         });
-        const raw = await this.adapter.writeRegister(name, value, callOptions);
+        const raw = await this.adapter.writeRegister(name, value, normalizedCallOptions.threadId);
         const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
         return { result: raw, intervention };
       },
@@ -157,19 +199,27 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         const modules = await this.adapter.getModules();
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
 
+        // Transactional commit: validate every canonical binding in a scratch
+        // table before mutating the active table. Loading before Map insertion
+        // is essential: duplicate normalized keys must reject rather than let a
+        // later entry overwrite the earlier authority in `next`.
         const next = new Map();
+        const scratch = new RuntimeModuleBindingTable(session.runtimeSessionId);
+        const staged = new Map();
         for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
           const bindingKey = moduleBindingKey(module, i);
           const normalized = normalizeRuntimeModuleBinding(module, { bindingKey });
+          const validated = scratch.load({ ...normalized, bindingKey: normalized.bindingKey });
           next.set(normalized.bindingKey, normalized);
+          staged.set(normalized.bindingKey, validated);
         }
 
         for (const active of session.modules.active()) {
           if (!next.has(active.bindingKey)) session.modules.unload(active.bindingKey);
         }
-        for (const [bindingKey, normalized] of next) {
+        for (const [bindingKey, normalized] of staged) {
           const active = session.modules.get(bindingKey);
           if (active && sameModuleBinding(active, normalized)) continue;
           if (active) session.modules.unload(bindingKey);

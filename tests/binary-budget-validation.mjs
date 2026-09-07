@@ -61,7 +61,7 @@ for (const bad of [-1, -0.5, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.N
 }
 console.log('  ok 1 relocation step() only spends non-negative safe integers (#1377)');
 
-/* ── #1376 上限値は有限の正整数へ正規化 ─────────────────────── */
+/* ── #1376 不正な上限値の正規化・#4299 明示的なゼロ上限 ─────────────────────── */
 
 {
   // Issue の最小反例: records: NaN で 250000 の上限が消えていた。
@@ -79,8 +79,9 @@ console.log('  ok 1 relocation step() only spends non-negative safe integers (#1
 
 // A numeric string coerces to a valid limit and is accepted, matching the
 // `positiveLimit` helpers elsewhere in the loader; only values that cannot be
-// a finite positive integer fall back.
-for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 0, 1.5, 'lots', null, undefined, {}, []]) {
+// a finite positive integer fall back. Explicit numeric zero is covered by
+// #4299 and is a valid zero budget, not a default-budget request.
+for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 1.5, 'lots', null, undefined, {}, []]) {
   const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, {
     limits: { records: bad, stringBytes: bad, warnings: bad, wallClockMs: bad, objects: bad, operations: bad, inputBytes: bad, estimatedHeapBytes: bad },
   });
@@ -119,6 +120,10 @@ for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINIT
   const budget = createMachOMetadataBudget(image, { limits: { warnings: Number.NaN } });
   assert.equal(budget.used.warnings, MACHO_METADATA_LIMITS.warnings, 'the seeded warning count must clamp to the resolved limit (#1376)');
 }
-console.log('  ok 2 Mach-O metadata limits normalize to finite positive integers (#1376)');
+for (const key of Object.keys(MACHO_METADATA_LIMITS)) {
+  const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, { limits: { [key]: 0 } });
+  assert.equal(budget.limits[key], 0, `explicit zero ${key} must not become a default budget (#4299)`);
+}
+console.log('  ok 2 Mach-O metadata limits preserve explicit zero and default invalid inputs (#1376/#4299)');
 
 console.log('binary decode budget validation: PASS');
