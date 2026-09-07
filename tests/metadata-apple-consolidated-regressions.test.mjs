@@ -154,6 +154,19 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #3632 canonical Itanium prefix normalization passed');
 }
 
+// --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
+{
+  // These are compiler-emitted names (g++ -std=c++20), including pointer arguments.
+  assert.equal(demangleCxx('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(demangleCxx('_Z2f8Du'), 'f8(char8_t)');
+  assert.equal(demangleCxx('_Z3f32Di'), 'f32(char32_t)');
+  assert.equal(demangleCxx('_Z4fp16PDs'), 'fp16(char16_t *)');
+  assert.equal(demangleCxx('_Z3fp8PDu'), 'fp8(char8_t *)');
+  assert.equal(readableName('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(readableName('_Z2f8Du'), 'f8(char8_t)');
+  console.log('✔ #4036 Itanium Ds/Du builtin mappings passed');
+}
+
 // --- Test 7: #6062 unified metadata dispatcher provider discovery parity ---
 {
   // Rust discovery via __R and ZN
@@ -419,3 +432,4 @@ console.log('\nAll metadata-apple consolidated regression tests PASSED!');
 // Keep ObjC provider cancellation regressions in the canonical metadata gate.
 await import('./issue-6270-objc-methodlist-cancellation.mjs');
 await import('./objc-provider-cancellation-3808.test.mjs');
+await import('./test-objc-metadata-demand-cancellation.mjs');
