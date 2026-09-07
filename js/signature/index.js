@@ -103,13 +103,24 @@ function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
 function normalizeEntry(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
+// String-list metadata carries a primitive-string leaf contract (#5975):
+// structured values must never launder into canonical metadata via String(),
+// and the create path must accept the same schema the fail-closed validator
+// enforces on import.
+function normalizedStringList(value, code) {
+  if (value == null || !Array.isArray(value)) return [];
+  for (const item of value) {
+    if (typeof item !== 'string') throw new TypeError(code);
+  }
+  return [...new Set(value)];
+}
 function normalizeSignatureEntry(entry = {}, pack = {}) {
   const source = normalizeEntry(entry);
-  return { architecture: source.architecture || pack.architecture || 'any', compiler: source.compiler ?? pack.compiler ?? null, library: source.library ?? pack.library ?? null, version: source.version ?? pack.libraryVersion ?? null, fingerprint: source.fingerprint || null, symbols: Array.isArray(source.symbols) ? [...new Set(source.symbols.map(String))] : [], provenance: source.provenance || pack.provenance || { source:'local', author:null }, license: source.license || pack.license || 'unspecified', confidence: clamp(source.confidence ?? pack.confidence ?? 1), classification: source.classification || null, name: source.name || source.symbol || null };
+  return { architecture: source.architecture || pack.architecture || 'any', compiler: source.compiler ?? pack.compiler ?? null, library: source.library ?? pack.library ?? null, version: source.version ?? pack.libraryVersion ?? null, fingerprint: source.fingerprint || null, symbols: normalizedStringList(source.symbols, 'signature symbols must contain only primitive strings'), provenance: source.provenance || pack.provenance || { source:'local', author:null }, license: source.license || pack.license || 'unspecified', confidence: clamp(source.confidence ?? pack.confidence ?? 1), classification: source.classification || null, name: source.name || source.symbol || null };
 }
 function normalizeMappingEntry(entry = {}, pack = {}) {
   const source = normalizeEntry(entry);
-  return { identity: source.identity || source.identityKey || null, name: source.name || null, roles: Array.isArray(source.roles) ? [...new Set(source.roles.map(String))] : [], types: Array.isArray(source.types) ? [...new Set(source.types.map(String))] : [], comments: Array.isArray(source.comments) ? [...new Set(source.comments.map(String))] : [], semanticLabels: Array.isArray(source.semanticLabels) ? [...new Set(source.semanticLabels.map(String))] : [], confirmation: source.confirmation || 'weak-inferred', negative: source.negative === true, provenance: source.provenance || pack.provenance || { source:'local', author:null }, license: source.license || pack.license || 'unspecified', confidence: clamp(source.confidence ?? pack.confidence ?? 1) };
+  return { identity: source.identity || source.identityKey || null, name: source.name || null, roles: normalizedStringList(source.roles, 'mapping roles must contain only primitive strings'), types: normalizedStringList(source.types, 'mapping types must contain only primitive strings'), comments: normalizedStringList(source.comments, 'mapping comments must contain only primitive strings'), semanticLabels: normalizedStringList(source.semanticLabels, 'mapping semanticLabels must contain only primitive strings'), confirmation: source.confirmation || 'weak-inferred', negative: source.negative === true, provenance: source.provenance || pack.provenance || { source:'local', author:null }, license: source.license || pack.license || 'unspecified', confidence: clamp(source.confidence ?? pack.confidence ?? 1) };
 }
 
 export function createKnowledgePack(input = {}) {
@@ -128,6 +139,9 @@ export function validateKnowledgePack(pack) {
       if (!entry.architecture || typeof entry.architecture !== 'string') throw new Error('signature architecture is required');
       if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('signature confidence must be in [0,1]');
       if (!Array.isArray(entry.symbols)) throw new Error('signature symbols must be an array');
+      for (const symbol of entry.symbols) {
+        if (typeof symbol !== 'string') throw new Error('signature symbols must contain only primitive strings');
+      }
       if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('signature provenance is required');
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('signature license is required');
     }
@@ -140,6 +154,14 @@ export function validateKnowledgePack(pack) {
       if (!identity && !name) throw new Error('mapping requires a stable identity or non-empty name');
       if (entry.identity != null && typeof entry.identity !== 'string') throw new Error('mapping identity must be a string');
       if (entry.name != null && typeof entry.name !== 'string') throw new Error('mapping name must be a string');
+      for (const [field, label] of [['roles', 'mapping roles'], ['types', 'mapping types'], ['comments', 'mapping comments'], ['semanticLabels', 'mapping semanticLabels']]) {
+        const list = entry[field];
+        if (list == null) continue;
+        if (!Array.isArray(list)) throw new Error(`${label} must be an array`);
+        for (const item of list) {
+          if (typeof item !== 'string') throw new Error(`${label} must contain only primitive strings`);
+        }
+      }
     }
     return { ok:true, pack };
   } catch (error) { return { ok:false, error:error.message }; }
