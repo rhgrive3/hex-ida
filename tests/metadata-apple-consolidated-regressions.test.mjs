@@ -131,7 +131,7 @@ import '../js/objc-stub-recovery.js';
   assert.equal(demangleSwift('_T04Test3'), null, 'truncated legacy component must fail closed');
   assert.equal(demangleSwift('_T00'), null, 'zero-length legacy component must fail closed');
   assert.equal(demangleSwift('_T0C'), null, 'nameless legacy symbol must fail closed');
-  assert.equal(demangleSwift('_T4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_T4Test3Foo'), null, 'bare legacy marker must fail closed');
   assert.equal(readableName('_T04Test3Foo'), 'Test.Foo');
 
   // Existing modern Swift spellings keep their accepted normalization.
