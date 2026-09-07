@@ -5,6 +5,25 @@ import {
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
 
+const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
+
+function finiteFloatValue(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    // An integer-valued Number above MAX_SAFE_INTEGER has already lost
+    // integer identity and must not become an exact compatibility fact.
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) return null;
+    return value;
+  }
+  if (typeof value !== 'string' || !STRICT_FLOAT_LITERAL.test(value)) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const significand = value.split(/[eE]/, 1)[0];
+  if (number === 0 && /[1-9]/.test(significand)) return null;
+  if (Number.isInteger(number) && !Number.isSafeInteger(number)) return null;
+  return number;
+}
+
 function constantPayload(node) {
   const attrs = node?.attributes || {};
   const metadata = node?.metadata || {};
@@ -15,8 +34,8 @@ function constantPayload(node) {
   if (raw == null) return { value: null, float: null, constKind: null };
   const integer = safeBigInt(raw);
   if (integer != null) return { value: integer, float: null, constKind: attrs.constKind ?? metadata.constKind ?? null };
-  const number = Number(raw);
-  if (Number.isFinite(number)) return { value: null, float: number, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
+  const number = finiteFloatValue(raw);
+  if (number != null) return { value: null, float: number, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
   return { value: null, float: null, constKind: null };
 }
 
