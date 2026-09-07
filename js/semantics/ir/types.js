@@ -33,8 +33,14 @@ export function createSemanticMachineType(input, seenTypes = new WeakSet()) {
   } else if (kind === 'float') {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width'), format: nonEmpty(input.format, 'semantic-ir-float-format-required') };
   } else if (kind === 'vector') {
-    out = { kind, laneCount: positiveInteger(input.laneCount, 'semantic-ir-invalid-vector-lane-count'), elementType: createSemanticMachineType(input.elementType, seenTypes) };
-    if (out.elementType.kind === 'vector' || out.elementType.kind === 'address') fail('semantic-ir-invalid-vector-element-type');
+    // Reject disallowed nesting before descending. Otherwise a long chain of
+    // distinct vector objects can exhaust the call stack before the existing
+    // post-recursion shape check runs (#5855).
+    const elementType = input.elementType;
+    if (elementType?.kind === 'vector' || elementType?.kind === 'address') {
+      fail('semantic-ir-invalid-vector-element-type');
+    }
+    out = { kind, laneCount: positiveInteger(input.laneCount, 'semantic-ir-invalid-vector-lane-count'), elementType: createSemanticMachineType(elementType, seenTypes) };
   } else if (kind === 'predicate') {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width') };
     if (input.laneCount != null) out.laneCount = positiveInteger(input.laneCount, 'semantic-ir-invalid-predicate-lane-count');

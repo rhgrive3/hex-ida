@@ -21,3 +21,15 @@ test('#5855 valid flat and one-level-nested vectors keep working', () => {
   });
   assert.equal(predicateElem.elementType.kind, 'predicate');
 });
+
+
+test('#5855 deeply nested vector chains reject before recursive descent', () => {
+  let elementType = { kind: 'bitvector', widthBits: 8 };
+  for (let depth = 0; depth < 10_000; depth++) {
+    elementType = { kind: 'vector', laneCount: 1, elementType };
+  }
+  assert.throws(
+    () => createSemanticMachineType(elementType),
+    (err) => err.message === 'semantic-ir-invalid-vector-element-type',
+  );
+});
