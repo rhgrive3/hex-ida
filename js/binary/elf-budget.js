@@ -39,15 +39,19 @@ export function createELFMetadataBudget(image, options = {}) {
   meta.limits = { ...limits };
   meta.used = used;
   let nextTimeCheck = 1024;
+  // Budget exhaustion is irreversible for this instance, unlike partial metadata.
+  let stopped = false;
   const stop = (reason) => {
+    stopped = true;
     markELFMetadataPartial(image, `budget:${reason}`, `ELF metadata budget exhausted: ${reason}`);
     return false;
   };
   return {
     limits, used, signal,
-    get stopped() { return meta.complete === false && meta.reasons.some((r) => r.startsWith('budget:')); },
+    get stopped() { return stopped; },
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
     take(cost = {}, reason = 'metadata') {
+      if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
       const opCost = Math.max(0, Number(cost.operations || 0));
       if (used.operations + opCost >= nextTimeCheck) {

@@ -129,6 +129,20 @@ const x86Structured = x86.parseInstruction(
 );
 const x86Canonical = createX86DecodedInstruction(x86Structured);
 assert.equal(x86Canonical.address, semanticAddress, 'x86 canonical decoded instruction must preserve the high uint64 address');
+
+const forgedLegacy = new Uint16Array([0x66]);
+Object.defineProperty(forgedLegacy, Symbol.toStringTag, { value:'Uint8Array' });
+assert.throws(
+  () => createX86DecodedInstruction({
+    ...x86Structured,
+    detail:{
+      ...x86Structured.detail,
+      prefixes:{ ...x86Structured.detail.prefixes, legacy:forgedLegacy },
+    },
+  }),
+  /x86-decoded-instruction-invalid-legacy-prefix-byte/,
+  'forged Symbol.toStringTag must not let a non-byte typed array acquire prefix authority',
+);
 const x86Effects = liftX86MachineEffects({ ...x86Canonical, instructionId: 'issue-4087:x86-high-address-nop' });
 assert.ok(x86Effects, 'x86 high-address instruction must reach MachineEffects');
 

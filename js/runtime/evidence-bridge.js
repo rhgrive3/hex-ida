@@ -224,7 +224,33 @@ export class RuntimeEvidenceBridge {
     const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
-    const interventionRecords = this.interventions.ancestry(event.interventionIds);
+    const topLevelInterventions = event.interventionIds.map((interventionId) => {
+      const record = this.interventions.get(interventionId);
+      if (!record) {
+        throw new DebugAdapterError(
+          'runtime-intervention-not-found',
+          `runtime event intervention not found: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      if (record.runtimeSessionId !== event.runtimeSessionId) {
+        throw new DebugAdapterError(
+          'runtime-intervention-session-mismatch',
+          `runtime event intervention belongs to a different session: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      return record;
+    });
+    const interventionRecords = this.interventions.ancestry(
+      topLevelInterventions.map((record) => record.interventionId),
+    );
+    if (interventionRecords.some((record) => record.runtimeSessionId !== event.runtimeSessionId)) {
+      throw new DebugAdapterError(
+        'runtime-intervention-session-mismatch',
+        'runtime event intervention ancestry crosses session boundary',
+      );
+    }
     const evidenceId = createEvidenceId({
       binaryId,
       kind: 'runtime-event',

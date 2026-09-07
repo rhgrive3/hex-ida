@@ -37,6 +37,9 @@ export async function hashByteSource(input, options = {}) {
 export function hashBytes(bytes) {
   let hash = FNV_OFFSET;
   for (const b of bytes || []) {
+    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
+      throw new TypeError('hashBytes byte must be an integer 0..255');
+    }
     hash ^= BigInt(b);
     hash = (hash * FNV_PRIME) & MASK64;
   }

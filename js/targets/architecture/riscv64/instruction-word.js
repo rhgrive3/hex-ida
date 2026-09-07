@@ -202,9 +202,8 @@ function decodeUncompressed(word) {
         const fenceMode = bits(word, 31, 28);
         // RV64I allocates FENCE code points with fm=0 and an empty
         // predecessor or successor set as architectural HINTs when at least
-        // one register field is x0.  Classify those before ordinary-FENCE
-        // reserved-field validation: PAUSE is the pred=W/succ=0/x0/x0 member
-        // and, like the other FENCE HINTs, mandates no memory ordering.
+        // one register field is x0. Preserve those classifications before
+        // normalizing ordinary FENCE's forward-compatible reserved fields.
         const fenceHint = fenceMode === 0
           && (predecessor === 0 || successor === 0)
           && (rd === 'x0' || rs1 === 'x0');
@@ -217,20 +216,24 @@ function decodeUncompressed(word) {
           });
         }
 
-        // Ordinary FENCE still requires the frozen profile's canonical
-        // reserved fields.  Treat any remaining non-zero rd/rs1 pattern as
-        // unsupported rather than promoting it to an exact barrier.
-        if (rd !== 'x0' || rs1 !== 'x0') {
-          return unsupported('riscv64-reserved-fence-registers', {
-            opcode, funct3, rd, rs1, predecessor, successor, fenceMode,
-          });
-        }
-        if (fenceMode !== 0 && !(fenceMode === 0b1000 && predecessor === 0b0011 && successor === 0b0011)) {
-          return unsupported('riscv64-reserved-fence-mode', {
-            opcode, funct3, rd, rs1, predecessor, successor, fenceMode,
-          });
-        }
-        return { ...base, op: 'fence', format: 'I', predecessor, successor, fenceMode };
+        // FENCE reserves rd/rs1 for future finer-grained fences and requires
+        // base implementations to ignore them. Non-zero fm values are likewise
+        // ignored unless they name the canonical FENCE.TSO tuple, so normalize
+        // all other modes to ordinary fm=0 semantics instead of rejecting the
+        // instruction as unsupported.
+        const semanticFenceMode = fenceMode === 0b1000
+          && predecessor === 0b0011
+          && successor === 0b0011
+          ? fenceMode
+          : 0;
+        return {
+          ...base,
+          op: 'fence',
+          format: 'I',
+          predecessor,
+          successor,
+          fenceMode: semanticFenceMode,
+        };
       }
       if (funct3 === 1) return unsupported('riscv64-zifencei-outside-phase6-profile', { opcode, funct3, extension: 'Zifencei' });
       return unsupported('riscv64-reserved-misc-mem-funct3', { opcode, funct3 });

@@ -49,101 +49,28 @@ assert.ok(
 
 console.log("  ok 1-18 reusable workflow assertions");
 
-function extractPaths(text, event) {
-  const match = text.match(new RegExp(event + ":[\\s\\S]*?paths:\\s*\\n([\\s\\S]*?)(?:\\n\\s*\\w+:|\\Z)"));
-  if (!match) return [];
-  const lines = match[1].split("\n").map(l => l.trim()).filter(l => l.startsWith("-"));
-  return lines.map(l => l.replace(/^-\s*['"]?/, "").replace(/['"]?$/, "")).sort();
+// Phase 10/11 callers retain exact manual release proof but do not auto-run
+// on development PRs or ordinary main pushes. The reusable verifier remains
+// unchanged and is exercised through workflow_dispatch.
+for (const [phase, text, ownership, verifier, artifact] of [
+  ['Phase 10', phase10Text, 'tools/validation/phase10/ownership-check.mjs', 'tools/validation/phase10/verify.mjs', 'phase10-release-evidence'],
+  ['Phase 11', phase11Text, 'tools/validation/phase11/ownership-check.mjs', 'tools/validation/phase11/verify.mjs', 'phase11-release-evidence'],
+]) {
+  assert.doesNotMatch(text, /^  push:/m, `${phase} must not auto-run on development pushes`);
+  assert.doesNotMatch(text, /^  pull_request:/m, `${phase} must not auto-run on PR synchronization`);
+  assert.match(text, /^  workflow_dispatch:/m, `${phase} must retain explicit release dispatch`);
+  assert.ok(text.includes('sha:'), `${phase} exact SHA input`);
+  assert.ok(text.includes('shadow:'), `${phase} shadow input`);
+  assert.ok(text.includes(ownership), `${phase} ownership verifier`);
+  assert.ok(text.includes(verifier), `${phase} product verifier`);
+  assert.ok(text.includes(artifact), `${phase} evidence artifact`);
+  const checkoutMatch = text.match(/checkout_ref:\s*(.+)/);
+  const suffixMatch = text.match(/artifact_suffix:\s*(.+)/);
+  assert.ok(checkoutMatch && suffixMatch, `${phase} has checkout_ref and artifact_suffix`);
+  assert.equal(checkoutMatch[1].trim(), suffixMatch[1].trim(), `${phase} checkout_ref and artifact suffix match`);
 }
 
-// Phase 10 assertions. Shared reusable-workflow changes are validated by
-// Invariant Gates on PRs; main/push still revalidates the Phase release path.
-const p10PushExpectedPaths = [
-  ".github/workflows/_phase-release-validation.yml",
-  ".github/workflows/phase10-release-validation.yml",
-  "js/adapters/**",
-  "js/core/evidence/**",
-  "js/core/identity/**",
-  "js/debug/**",
-  "js/runtime/**",
-  "js/runtime-evidence/**",
-  "package.json",
-  "tests/phase10/**",
-  "tests/runtime-evidence-fusion.mjs",
-  "tests/runtime-platform.mjs",
-  "tools/validation/phase10/**",
-].sort();
-const p10PrExpectedPaths = p10PushExpectedPaths.filter((path) => path !== ".github/workflows/_phase-release-validation.yml");
-
-assert.deepEqual(extractPaths(phase10Text, "push"), p10PushExpectedPaths, "Phase 10 push paths match");
-assert.deepEqual(extractPaths(phase10Text, "pull_request"), p10PrExpectedPaths, "Phase 10 PR paths match");
-
-assert.ok(phase10Text.includes("main"));
-assert.ok(phase10Text.includes("phase10/**"));
-assert.ok(phase10Text.includes("workflow_dispatch:"));
-assert.ok(phase10Text.includes("sha:"));
-assert.ok(phase10Text.includes("shadow:"));
-assert.ok(phase10Text.includes("group: phase10-release-"));
-assert.ok(phase10Text.includes("tools/validation/phase10/ownership-check.mjs"));
-assert.ok(phase10Text.includes("tools/validation/phase10/verify.mjs"));
-assert.ok(phase10Text.includes("phase10-release-evidence"));
-assert.ok(phase10Text.includes("reports/phase10/phase10-release-evidence.json"));
-assert.ok(phase10Text.includes("reports/phase10/checkpoints.json"));
-
-const p10CheckoutMatch = phase10Text.match(/checkout_ref:\s*(.+)/);
-const p10SuffixMatch = phase10Text.match(/artifact_suffix:\s*(.+)/);
-assert.ok(p10CheckoutMatch && p10SuffixMatch, "Phase 10 has checkout_ref and artifact_suffix");
-assert.equal(p10CheckoutMatch[1].trim(), p10SuffixMatch[1].trim(), "Phase 10 checkout_ref and artifact_suffix expressions match");
-
-console.log("  ok Phase 10 caller assertions");
-
-// Phase 11 assertions
-const p11PushExpectedPaths = [
-  ".github/workflows/_phase-release-validation.yml",
-  ".github/workflows/phase11-release-validation.yml",
-  "docs/SUPPORT_MATRIX.md",
-  "js/managed/**",
-  "js/platform/capability-maturity.js",
-  "package.json",
-  "tests/capability-maturity.mjs",
-  "tests/phase11/**",
-  "tools/validation/phase11/**",
-  "userscript/hex.user.template.js",
-  "userscript/release-version.json",
-].sort();
-
-const p11PrExpectedPaths = [
-  ".github/workflows/phase11-release-validation.yml",
-  "docs/SUPPORT_MATRIX.md",
-  "js/managed/**",
-  "js/platform/capability-maturity.js",
-  "package.json",
-  "tests/capability-maturity.mjs",
-  "tests/phase11/**",
-  "tools/validation/phase11/**",
-].sort();
-
-assert.deepEqual(extractPaths(phase11Text, "push"), p11PushExpectedPaths, "Phase 11 push paths match");
-assert.deepEqual(extractPaths(phase11Text, "pull_request"), p11PrExpectedPaths, "Phase 11 PR paths match");
-
-assert.ok(phase11Text.includes("main"));
-assert.ok(phase11Text.includes("phase11/**"));
-assert.ok(phase11Text.includes("workflow_dispatch:"));
-assert.ok(phase11Text.includes("sha:"));
-assert.ok(phase11Text.includes("shadow:"));
-assert.ok(phase11Text.includes("group: phase11-release-"));
-assert.ok(phase11Text.includes("tools/validation/phase11/ownership-check.mjs"));
-assert.ok(phase11Text.includes("tools/validation/phase11/verify.mjs"));
-assert.ok(phase11Text.includes("phase11-release-evidence"));
-assert.ok(phase11Text.includes("reports/phase11/phase11-release-evidence.json"));
-assert.ok(phase11Text.includes("reports/phase11/checkpoints.json"));
-
-const p11CheckoutMatch = phase11Text.match(/checkout_ref:\s*(.+)/);
-const p11SuffixMatch = phase11Text.match(/artifact_suffix:\s*(.+)/);
-assert.ok(p11CheckoutMatch && p11SuffixMatch, "Phase 11 has checkout_ref and artifact_suffix");
-assert.equal(p11CheckoutMatch[1].trim(), p11SuffixMatch[1].trim(), "Phase 11 checkout_ref and artifact_suffix expressions match");
-
-console.log("  ok Phase 11 caller assertions");
+console.log("  ok Phase 10/11 manual release caller assertions");
 
 // No duplicated mechanics in caller files
 for (const caller of [phase10Text, phase11Text]) {
