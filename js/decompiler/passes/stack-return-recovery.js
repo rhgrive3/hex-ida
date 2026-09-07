@@ -709,6 +709,38 @@ function storeValue(inst, key, size, values) {
   return node;
 }
 
+/* A branch-local stack spill can itself store a value reloaded from another
+ * exact stack slot (the clang -O0 argument-spill shape). Resolve that nested
+ * load through the same physical Memory-SSA/CFG proof before publishing the
+ * outer join. A rendered stack key or an ambiguous source id is insufficient.
+ */
+function exactNestedStackLoad(ir, expression, control) {
+  const location = fieldValue(expression, 'location');
+  if (fieldValue(expression, 'kind') !== 'load' || fieldValue(location, 'kind') !== 'stack') return null;
+  const key = fieldValue(location, 'key');
+  const bits = fieldValue(expression, 'bits');
+  if (typeof key !== 'string' || key.length === 0 || !validBits(bits)) return null;
+  const sourceIds = sourceValues(expression, 'ir', idKey, control);
+  if (!sourceIds?.length) return null;
+  const instructions = arrayField(ir, 'instructions');
+  if (!instructions.ok) return null;
+  const candidates = instructions.value.filter((instruction) => {
+    const instructionId = idKey(fieldValue(instruction, 'id'));
+    const instructionLocation = fieldValue(instruction, 'loc');
+    return instructionId != null && sourceIds.includes(instructionId)
+      && fieldValue(instruction, 'op') === 'load'
+      && fieldValue(instructionLocation, 'kind') === 'stack'
+      && fieldValue(instructionLocation, 'key') === key;
+  });
+  if (candidates.length !== 1) return null;
+  const load = candidates[0];
+  const size = positiveAccessSize(fieldValue(fieldValue(load, 'loc'), 'size'));
+  const block = fieldValue(load, 'block');
+  const row = fieldValue(load, 'row');
+  return size != null && size * 8 === bits && validBlock(block) && validRow(row)
+    ? { load, key, size } : null;
+}
+
 function reachingRegisterDefinition(ir, atInst, reg, control) {
   if (control?.isAborted?.()) return null;
   const values = arrayField(ir, 'values');
@@ -1467,7 +1499,17 @@ function resolve(ir, blockIndex, beforeRow, key, size, values, opts, engine, act
     for (const inst of instructions) {
       if (control?.isAborted?.()) return null;
       const stored = storeValue(inst, key, size, values);
-      if (stored) return stored;
+      if (stored) {
+        if (stored.kind === 'load' && stored.location?.kind === 'stack') {
+          const nested = exactNestedStackLoad(ir, stored, control);
+          if (!nested) return null;
+          const resolved = resolve(ir, nested.load.block, nested.load.row, nested.key, nested.size,
+            values, opts, engine, active, depth + 1, control);
+          if (!resolved) return null;
+          return resolved;
+        }
+        return stored;
+      }
       if (unsafeBarrier(inst, key, control)) return null;
     }
 

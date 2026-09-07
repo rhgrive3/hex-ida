@@ -32,8 +32,10 @@ function constNode(v, value = v?.const ?? 0n) { return expr.constant(value, v?.b
 function typeFor(state, v) { return state.types?.values?.get?.(v?.id) || null; }
 function signedFor(state, v) { const t = typeFor(state, v); return t?.signed ?? v?.signed ?? null; }
 function origin(inst, v = null, reason = null) {
-  return sourceOf({ address: inst?.address ?? null, row: inst?.row ?? null, ir: inst?.id ?? null, ssaDef: v?.id ?? inst?.dst?.id ?? null,
-    ssaUses: (inst?.args || []).map(valueOf).filter(Boolean).map((x) => x.id), evidence: reason ? [{ reason }] : [] });
+  return mergeSource(inst?.extra?.compatExactPointerProvenance, {
+    address: inst?.address ?? null, row: inst?.row ?? null, ir: inst?.id ?? null, ssaDef: v?.id ?? inst?.dst?.id ?? null,
+    ssaUses: (inst?.args || []).map(valueOf).filter(Boolean).map((x) => x.id), evidence: reason ? [{ reason }] : [],
+  });
 }
 
 function abiArgumentLocationsForState(state) {

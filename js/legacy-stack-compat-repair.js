@@ -138,6 +138,16 @@ function exactProjectionSource(value, accessBits) {
   return exactBitWidth(current) >= accessBits ? current : null;
 }
 
+/* A register-width value may be carried in a wider SSA object while the
+ * machine operand on an exact-width store explicitly selects its low bits
+ * (for example `str w8` with a 64-bit x8 PHI). */
+function exactStoredProjectionSource(operand, accessBits) {
+  const value = operand?.value ?? null;
+  const declaredBits = Number(operand?.bits ?? 0);
+  if (declaredBits === accessBits && exactBitWidth(value) >= accessBits) return value;
+  return exactProjectionSource(value, accessBits);
+}
+
 function isExactLowBitsProjectionOf(value, source, accessBits) {
   if (!value || !source || exactBitWidth(value) !== accessBits) return false;
   let current = value;
@@ -188,18 +198,175 @@ function terminalCommittedFieldStore(projected, predecessor, incomingValue, acce
   return null;
 }
 
+/*
+ * A legacy field location can lose its original pointer root when the same
+ * object pointer is saved in a private stack slot and reloaded on another
+ * CFG path.  The legacy lifter intentionally gives that reload a fresh
+ * `loaded:<id>` alias root.  Recover that root only through an exact,
+ * MemorySSA-backed stack load: the load and store must have the same location
+ * and width, the load's reaching definition must be that store, and the store
+ * value must itself have one exact pointer root.  This is a forwarding proof,
+ * not an alias guess; unknown loads, calls, mixed PHIs, and widened copies
+ * remain unrooted and fail closed.
+ */
+function exactForwardedPointerRoot(value, active = new Set()) {
+  if (!value) return null;
+  const key = value.id ?? value;
+  if (active.has(key)) return null;
+  active.add(key);
+
+  let root = null;
+  if (value.kind === 'arg' && typeof value.reg === 'string' && value.reg.length > 0) {
+    root = `arg:${value.reg}`;
+  }
+
+  const def = value.def;
+  if (!root && def?.op === 'mov' && def.args?.length === 1 && def.args[0]?.shift == null) {
+    const source = def.args[0]?.value ?? null;
+    if (exactBitWidth(value) === exactBitWidth(source)) root = exactForwardedPointerRoot(source, active);
+  }
+
+  if (!root && def?.op === 'load' && def.loc?.kind === 'stack') {
+    const store = def.reachingStore ?? null;
+    const stored = store?.args?.[0]?.value ?? null;
+    const loadSize = exactAccessSize(def);
+    const storeSize = exactAccessSize(store);
+    const memoryUse = def.memUse ?? null;
+    const sameLocation = typeof def.loc.key === 'string' && def.loc.key.length > 0
+      && def.loc.key === store?.loc?.key;
+    const exactWidth = loadSize != null && loadSize === storeSize
+      && exactBitWidth(value) === loadSize * 8
+      && exactBitWidth(stored) === loadSize * 8;
+    const exactDefinition = memoryUse?.kind === 'store'
+      && (!memoryUse.inst || memoryUse.inst === store || memoryUse.inst === store.id
+        || String(memoryUse.inst) === String(store.id));
+    if (store?.op === 'store' && sameLocation && exactWidth && exactDefinition) {
+      root = exactForwardedPointerRoot(stored, active);
+    }
+  }
+
+  if (!root && def?.op === 'phi') {
+    const incoming = Array.isArray(def.incoming) ? def.incoming : def.args;
+    if (Array.isArray(incoming) && incoming.length > 0) {
+      const roots = incoming.map((item) => exactForwardedPointerRoot(item?.value ?? null, active));
+      if (roots.every(Boolean) && roots.every((candidate) => candidate === roots[0])) root = roots[0];
+    }
+  }
+
+  if (!root && def?.op === 'bin' && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const left = def.args[0]?.value ?? null;
+    const right = def.args[1]?.value ?? null;
+    if (right?.const != null) root = exactForwardedPointerRoot(left, active);
+    else if (def.sub === 'add' && left?.const != null) root = exactForwardedPointerRoot(right, active);
+  }
+
+  active.delete(key);
+  return root;
+}
+
+function sourceEvidenceForInstruction(instruction) {
+  if (!instruction || instruction.address == null || instruction.row == null || instruction.id == null) return null;
+  return {
+    addresses:[instruction.address],
+    rows:[instruction.row],
+    ir:[instruction.id],
+    evidence:[{ reason:'exact private-stack pointer forwarding' }],
+  };
+}
+
+function mergePointerSourceEvidence(...sources) {
+  const out = { addresses:[], rows:[], ir:[], evidence:[] };
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of ['addresses', 'rows', 'ir']) {
+      for (const value of source[key] ?? []) {
+        if (!out[key].some((existing) => String(existing) === String(value))) out[key].push(value);
+      }
+    }
+    out.evidence.push(...(source.evidence ?? []));
+  }
+  return out.addresses.length || out.rows.length || out.ir.length || out.evidence.length ? out : null;
+}
+
+/* Return the physical source records for the exact forwarding proof above.
+ * These records are presentation evidence only; they never authorize a
+ * rewrite without the root/width/location checks in exactFieldIdentity(). */
+function exactForwardedPointerSourceEvidence(value, active = new Set()) {
+  if (!value) return null;
+  const key = value.id ?? value;
+  if (active.has(key)) return null;
+  active.add(key);
+  let evidence = null;
+  const def = value.def;
+  if (def?.op === 'mov' && def.args?.length === 1 && def.args[0]?.shift == null
+      && exactBitWidth(value) === exactBitWidth(def.args[0]?.value)) {
+    evidence = exactForwardedPointerSourceEvidence(def.args[0]?.value, active);
+  } else if (def?.op === 'load' && def.loc?.kind === 'stack') {
+    const store = def.reachingStore ?? null;
+    const stored = store?.args?.[0]?.value ?? null;
+    const loadSize = exactAccessSize(def);
+    const storeSize = exactAccessSize(store);
+    const memoryUse = def.memUse ?? null;
+    const sameLocation = typeof def.loc.key === 'string' && def.loc.key.length > 0
+      && def.loc.key === store?.loc?.key;
+    const exactWidth = loadSize != null && loadSize === storeSize
+      && exactBitWidth(value) === loadSize * 8
+      && exactBitWidth(stored) === loadSize * 8;
+    const exactDefinition = memoryUse?.kind === 'store'
+      && (!memoryUse.inst || memoryUse.inst === store || memoryUse.inst === store.id
+        || String(memoryUse.inst) === String(store.id));
+    if (store?.op === 'store' && sameLocation && exactWidth && exactDefinition
+        && exactForwardedPointerRoot(stored) != null) {
+      evidence = mergePointerSourceEvidence(
+        exactForwardedPointerSourceEvidence(stored, active),
+        sourceEvidenceForInstruction(store),
+        sourceEvidenceForInstruction(def),
+      );
+    }
+  } else if (def?.op === 'phi') {
+    const incoming = Array.isArray(def.incoming) ? def.incoming : def.args;
+    if (Array.isArray(incoming) && incoming.length > 0) {
+      const parts = incoming.map((item) => exactForwardedPointerSourceEvidence(item?.value ?? null, active));
+      if (parts.every((part) => part != null)) evidence = mergePointerSourceEvidence(...parts);
+    }
+  } else if (def?.op === 'bin' && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const left = def.args[0]?.value ?? null;
+    const right = def.args[1]?.value ?? null;
+    if (right?.const != null) evidence = exactForwardedPointerSourceEvidence(left, active);
+    else if (def.sub === 'add' && left?.const != null) evidence = exactForwardedPointerSourceEvidence(right, active);
+  }
+  active.delete(key);
+  return evidence;
+}
+
+function annotateExactForwardedFieldStore(store) {
+  const base = store?.loc?.rawBase ?? store?.loc?.base ?? null;
+  if (!base || exactForwardedPointerRoot(base) == null) return;
+  const evidence = exactForwardedPointerSourceEvidence(base);
+  if (!evidence) return;
+  store.extra = {
+    ...(store.extra ?? {}),
+    compatExactPointerProvenance:evidence,
+  };
+}
+
 function exactFieldIdentity(store) {
   const loc = store?.loc;
   const size = exactAccessSize(store);
   const baseEntityId = typeof loc?.baseEntityId === 'string' && loc.baseEntityId ? loc.baseEntityId : null;
-  if (loc?.kind !== 'field' || typeof loc.key !== 'string' || !loc.key || !loc.base
-      || !baseEntityId || size == null) return null;
-  return { key:loc.key, baseEntityId, disp:String(loc.disp ?? store?.addr?.disp ?? ''), size };
+  if (loc?.kind !== 'field' || typeof loc.key !== 'string' || !loc.key || !loc.base || size == null) return null;
+  const root = exactForwardedPointerRoot(loc.rawBase ?? loc.base);
+  // Keep the existing canonical entity proof when available.  A precise
+  // forwarded pointer root is the equivalent proof for legacy locations that
+  // predate `baseEntityId` metadata.
+  if (!baseEntityId && !root) return null;
+  return { key:loc.key, baseEntityId, root, disp:String(loc.disp ?? store?.addr?.disp ?? ''), size };
 }
 
 function sameFieldIdentity(left, right) {
-  return !!left && !!right && left.key === right.key && left.baseEntityId === right.baseEntityId
-    && left.disp === right.disp && left.size === right.size;
+  if (!left || !right || left.disp !== right.disp || left.size !== right.size) return false;
+  if (left.root || right.root) return !!left.root && !!right.root && left.root === right.root;
+  return left.key === right.key && left.baseEntityId === right.baseEntityId;
 }
 
 function valueDominatesInstruction(value, inst, projected) {
@@ -251,7 +418,7 @@ function materializeExactPhiFieldSpills(projected) {
     const accessBits = stackSize == null ? null : stackSize * 8;
     const operand = stackStore.args?.[0] ?? null;
     const spilled = operand?.value ?? null;
-    const phiValue = accessBits == null ? null : exactProjectionSource(spilled, accessBits);
+    const phiValue = accessBits == null ? null : exactStoredProjectionSource(operand, accessBits);
     const phi = phiValue?.def;
     if (stackSize == null || operand?.shift != null || phi?.op !== 'phi'
         || phi.block !== stackStore.block || !Array.isArray(phi.incoming)) continue;
@@ -274,6 +441,7 @@ function materializeExactPhiFieldSpills(projected) {
     let identity = null;
     for (const pred of predecessors) {
       const store = terminalCommittedFieldStore(projected, pred, incomingByPred.get(pred), accessBits);
+      annotateExactForwardedFieldStore(store);
       const candidate = exactFieldIdentity(store);
       if (!store || !candidate || (identity && !sameFieldIdentity(identity, candidate))) {
         identity = null;
@@ -288,9 +456,11 @@ function materializeExactPhiFieldSpills(projected) {
     const fieldBase = fieldStores.map((store) => store.loc?.base ?? null)
       .find((base) => valueDominatesInstruction(base, stackStore, projected)) ?? null;
     if (!fieldBase) continue;
-    const bits = exactBitWidth(spilled);
-    if (bits !== accessBits) continue;
+    const bits = accessBits;
     const fieldLoc = { ...fieldStores[0].loc, base:fieldBase };
+    const pointerEvidence = mergePointerSourceEvidence(
+      ...fieldStores.map((store) => store.extra?.compatExactPointerProvenance),
+    );
     const templateAddr = fieldStores[0].addr ?? {};
     const syntheticDef = {
       id:nextInstructionId++,
@@ -302,6 +472,7 @@ function materializeExactPhiFieldSpills(projected) {
         compatSyntheticView:true,
         compatPhiFieldIdentity:identity.key,
         compatPhiFieldEvidence:fieldStores.map((store) => store.id),
+        ...(pointerEvidence ? { compatExactPointerProvenance:pointerEvidence } : {}),
       },
     };
     const syntheticValue = {

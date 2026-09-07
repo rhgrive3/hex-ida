@@ -1,6 +1,6 @@
 export * from './semantic-core.js';
 
-import { irFor, getSemanticMigrationMode, OP, MK } from '../ir.js';
+import { irFor, OP, MK } from '../ir.js';
 import {
   decompileSemantic as decompileSemanticCore,
   recoverInductionVariables as recoverInductionVariablesCore,
@@ -393,16 +393,18 @@ export function recoverInductionVariables(ir, ctx = null) {
 }
 
 /**
- * Preserve the historical legacy decompiler construction exactly. Full ABI /
- * prototype context and the committed-snapshot compatibility projections are
- * enabled only for the explicit semantic-v2-to-v1 route.
+ * Preserve the historical legacy decompiler construction while retaining the
+ * caller's ABI/prototype context. The committed-snapshot compatibility
+ * projections remain enabled only for the explicit semantic-v2-to-v1 route.
  */
 export function decompileSemantic(model, opts = {}) {
   const semanticOpts = canonicalRuntimeOptions(opts);
-  const v2Requested = getSemanticMigrationMode() === 'semantic-v2-compat';
-  let ir = semanticOpts.ir || irFor(model, v2Requested
-    ? irOptionsFromDecompilerOptions(semanticOpts)
-    : { rowOfAddress: semanticOpts.rowOfAddress });
+  // The legacy oracle also needs the caller's ABI/prototype context while
+  // lifting RET and call results.  Supplying that context does not enable any
+  // v2 projection; the migration switch still selects the same legacy
+  // builder.  Keeping the options on both routes also makes the IR cache key
+  // include the return contract instead of silently dropping it.
+  let ir = semanticOpts.ir || irFor(model, irOptionsFromDecompilerOptions(semanticOpts));
   const isV2Compat = ir?.compat?.projection === 'semantic-ir-v2-to-v1';
   if (isV2Compat) {
     ir = projectLegacyCfgSetShape(ir);
