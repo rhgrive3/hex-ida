@@ -39,9 +39,10 @@ test('#5875 zero-length identifiers remain valid in nested paths', () => {
 });
 
 test('#5866 X productions require all three mandatory components', () => {
-  // impl-path only: type and trait must not be substituted with placeholders.
-  const x = demangleRustV0('_RXC3foo');
-  assert.equal(x.parsed, false, 'missing type/trait must not fabricate `<type as trait>`');
+  // Every partial form must fail closed; no placeholder may fabricate a path.
+  for (const malformed of ['_RX', '_RXC3foo', '_RXC3fooi']) {
+    assert.equal(demangleRustV0(malformed).parsed, false, malformed);
+  }
 
   // Fully-formed X still demangles.
   const ok = demangleRustV0('_RXC3fooiC3bar');
