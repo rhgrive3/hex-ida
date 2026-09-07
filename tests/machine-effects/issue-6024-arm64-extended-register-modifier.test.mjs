@@ -48,7 +48,10 @@ function assertExtensionChain(bundle, opcode, fromBits, amount) {
 
 const sxtw = lift('add', gp(2,32,{ extend:{ op:'sxtw', amount:1 } }), 'add-sxtw-extend-field');
 const shiftedSigned = assertExtensionChain(sxtw, 'sext', 32, 1);
-const addSxtw = valueOps(sxtw, 'add');
+// ADD lowering also materializes NZCV through the canonical add-with-carry
+// operation. Keep the assertion tied to the arithmetic operation that
+// consumes the extended operand, rather than the older shorthand opcode.
+const addSxtw = valueOps(sxtw, 'add-with-carry');
 assert.equal(addSxtw.length, 1);
 assert.deepEqual(addSxtw[0].inputs[1], shiftedSigned.outputs[0], 'ADD must consume the shifted SXTW value');
 
