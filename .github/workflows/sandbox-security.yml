@@ -1,0 +1,51 @@
+name: Sandbox security
+
+on:
+  pull_request:
+    paths:
+      - 'js/sandbox.js'
+      - 'js/plugin*.js'
+      - 'js/plugins/**'
+      - 'js/**/script*.js'
+      - 'tests/sandbox.mjs'
+      - 'package.json'
+      - '.github/workflows/sandbox-security.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: sandbox-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sandbox-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Restore pinned Playwright Chromium cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.55.0-chromium-v1
+      - name: Ensure pinned Playwright Chromium is runnable
+        shell: bash
+        run: |
+          npx --no-install playwright install chromium
+          if ! node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ headless: true });
+          await browser.close();
+          NODE
+          then
+            echo 'Preinstalled runner libraries are insufficient; installing pinned Chromium OS dependencies.'
+            npx --no-install playwright install-deps chromium
+          fi
+      - name: Run sandbox security regression
+        env:
+          CI: '1'
+        run: npm run sandbox

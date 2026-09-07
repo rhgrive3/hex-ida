@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "phase12-release-evidence/v1",
+  "phase": 12,
+  "verdict": "READY",
+  "verifier": {
+    "id": "phase12.verifier",
+    "version": "1.0.0"
+  },
+  "product": {
+    "commitSha": "199a057a080862fadce92eea101ff03b9c064e78",
+    "treeSha": "3013909232490925f80a2230dd45932a4b16ab04",
+    "clean": true,
+    "dirtyFiles": []
+  },
+  "foundation": {
+    "commitSha": "4e6df2d645b86628f542a1ebcbb91d13b169b4fb",
+    "treeSha": "d1d5e6015fcb0c32e5e5eb9e06ac45415bd3d668",
+    "observedAt": "2026-08-21T04:43:23.868Z",
+    "source": "live origin/main",
+    "phase11Evidence": {
+      "commitSha": "4e6df2d645b86628f542a1ebcbb91d13b169b4fb",
+      "treeSha": "d1d5e6015fcb0c32e5e5eb9e06ac45415bd3d668",
+      "verifierId": "phase11.verifier",
+      "verifierVersion": "1.0.0",
+      "evidenceDigest": "a33a882bcda7d308f4e92d9964811715b43ad6901c9aaef4c53c6e234410bb87"
+    }
+  },
+  "ownership": {
+    "baseSha": "c78e1b98c69deed0eb0d27cae453c36de55be03c",
+    "headSha": "199a057a080862fadce92eea101ff03b9c064e78",
+    "inventoryDigest": "6139090e9b49691d7bb5e77eaf10da5ba1038aaa9d35b4dfdb07c1f66f6a3239",
+    "fileCount": 41
+  },
+  "phase11": {
+    "product": {
+      "commitSha": "199a057a080862fadce92eea101ff03b9c064e78",
+      "treeSha": "3013909232490925f80a2230dd45932a4b16ab04",
+      "clean": true,
+      "dirtyFiles": []
+    },
+    "evidenceDigest": "68e0d34a4e10a2745add278474ac1a8e788936f69bcc2936e13e8a4853bfc89e",
+    "verifier": {
+      "id": "phase11.verifier",
+      "version": "1.0.0"
+    }
+  },
+  "gates": [
+    {
+      "id": "P12.0-foundation",
+      "status": "PASSED"
+    },
+    {
+      "id": "P12.0-aggregate-ownership",
+      "status": "PASSED"
+    },
+    {
+      "id": "P12.0-phase11-current-head",
+      "status": "PASSED"
+    },
+    {
+      "id": "P12.V0-negative-oracles",
+      "status": "PASSED"
+    }
+  ],
+  "supportTruth": {
+    "nativeRebuild": "operation-profile-only",
+    "remoteCollaboration": "local-only",
+    "patternMutation": "read-only",
+    "capabilityAuthority": "evidence-only"
+  },
+  "supportMatrixDigest": "bb9d2c1f8fa13e11cc51a765ae8791ef8eae0280ce2502e3976b1e63a4858338",
+  "timestamp": "2026-09-02T02:47:22.536Z",
+  "evidenceDigest": "ebe6f30788b9b4f2a40e4fb438667c76d96d440dece18998842dd1b53c1fe461"
+}
