@@ -18,6 +18,7 @@ function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
 
 function bigint(value, code) {
   if (typeof value !== 'bigint') throw new TypeError(code);
+  return value;
 }
 
 function text(value, code, { empty = false } = {}) {

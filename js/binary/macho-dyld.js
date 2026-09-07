@@ -556,15 +556,23 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
         if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported: importedX.text || null, source: 'exports-trie' });
+          const imported = importedX.text || null;
+          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
         } else {
-          const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next; const exportKind = flags & 0x03;
-          const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
-          const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
-          const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-          if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-          if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-          if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          const exportKind = flags & 0x03;
+          if (exportKind === 3) {
+            markPartial(`unsupported export kind ${exportKind}`);
+          } else {
+            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
+            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
+            if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          }
         }
       }
       p = terminalEnd; if (p >= end) return;

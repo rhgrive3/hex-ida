@@ -147,4 +147,23 @@ function context(id, btiGuardedPage) {
   assert.equal(mappedFalse.conflict, undefined);
 }
 
+// 11. A normalized conflict must remain conflict-specific after a second pass.
+{
+  const normalizedConflict = normalizeArm64BtiGuardedPageState({
+    mappedPageGuarded: false,
+    state: 'guarded',
+  });
+  const bundle = liftArm64MachineEffects(
+    btiInstruction('c'),
+    context('c11', normalizedConflict),
+  );
+  assert.equal(normalizedConflict.conflict, true);
+  assert.equal(bundle.completeness, 'partial');
+  assert.equal(bundle.unknownEffects.reason, 'bti-mapped-page-guarded-state-conflict');
+  assert.equal(
+    bundle.unknownEffects.detail.conflictReason,
+    normalizedConflict.conflictReason,
+  );
+}
+
 console.log('#6034 tests passed successfully.');

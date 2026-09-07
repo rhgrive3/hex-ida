@@ -84,9 +84,6 @@ export function conditionOf(instruction) {
   // not coerce into a real condition identity.
   if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
-  const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
-    && Array.isArray(instruction?.ops)
-    && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
   const match = /^(?:b|bc)\.([a-z]+)$/.exec(mnemonic);
   if (match) return match[1];
   return null;
@@ -136,6 +133,9 @@ function registerDescriptor(op) {
 
 export function createArm64EffectContext(instruction, options = {}) {
   const mnemonic = instructionMnemonic(instruction);
+  const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
+    && Array.isArray(instruction?.ops)
+    && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
   const instructionId = String(instruction?.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('arm64-effects-instruction-id-required');
   const mode = String(instruction?.mode || ARM64_MODE);

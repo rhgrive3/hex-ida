@@ -72,7 +72,27 @@ for (const cond of conditions) {
   assert.equal(conditionOf(insn), cond, `conditionOf extracts ${cond}`);
 }
 
-// 6. Fail-closed: misaligned target and out-of-range displacement
+// 6. BC.AL and BC.NV are unconditional branch effects, not conditional edges
+for (const mnemonic of ['bc.al', 'bc.nv']) {
+  const bundle = liftArm64ControlEffects({
+    instructionId: `i_${mnemonic.replace('.', '_')}`,
+    mnemonic,
+    operands: '#0x5000',
+    ops: parseOperands('#0x5000'),
+    address: 0x4000n,
+    branchTarget: 0x5000n,
+    origin: { instructionIds: [`i_${mnemonic.replace('.', '_')}`] },
+  });
+  assert.ok(bundle, `${mnemonic} produces a bundle`);
+  assert.equal(bundle.completeness, 'exact');
+  assert.equal(bundle.controlEffect.kind, 'branch');
+  assert.equal(bundle.controlEffect.target.value, String(0x5000));
+  assert.equal(bundle.controlEffect.fallthrough, undefined);
+  assert.equal(bundle.metadata.conditionCode, undefined);
+  assert.equal(bundle.operations.some((op) => op.kind === 'flag-read'), false);
+}
+
+// 7. Fail-closed: misaligned target and out-of-range displacement
 {
   const misaligned = liftArm64ControlEffects({
     instructionId: 'i_misaligned',

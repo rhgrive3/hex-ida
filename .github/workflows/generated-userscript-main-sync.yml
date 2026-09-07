@@ -4,17 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
+      - 'js/userscript/**'
       - 'scripts/build-userscript.mjs'
       - 'scripts/userscript-release-version.mjs'
       - 'scripts/sync-generated-userscript.mjs'
       - 'tools/validation/generated-output-policy.mjs'
       - 'tests/dev-agent/sync-generated-userscript.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
+      - 'userscript/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/generated-sync.yml'

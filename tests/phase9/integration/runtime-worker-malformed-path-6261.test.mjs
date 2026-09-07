@@ -3,9 +3,17 @@ import assert from 'node:assert/strict';
 import { register } from 'node:module';
 
 register('data:text/javascript,' + encodeURIComponent(`
+const runtimeSecrets = ${JSON.stringify(`export const RUNTIME_BUILD = Object.freeze({
+  manifest: Object.freeze({ buildId: 'phase9-test-build', assetPath: '/.runtime/runtime.test.bin', byteLength: 0 }),
+  signingKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+});`)};
+
 export function resolve(specifier, context, nextResolve) {
   if (specifier === 'cloudflare:workers') {
     return { url: 'data:text/javascript,export class DurableObject {}', shortCircuit: true };
+  }
+  if (specifier.endsWith('.runtime-build/runtime-secrets.js')) {
+    return { url: 'data:text/javascript,' + encodeURIComponent(runtimeSecrets), shortCircuit: true };
   }
   return nextResolve(specifier, context);
 }

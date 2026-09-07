@@ -463,11 +463,19 @@ function normalizedInstruction(decoded, context) {
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
-  const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
-  const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
+  const addressImmediate = mnemonic === 'adr' || mnemonic === 'adrp';
+  const adrImmediate = addressImmediate && operands.length > 1 ? immediateOf(operands[1]) : null;
+  const normalizedPcRelTarget = addressImmediate && decoded.pcRelTarget == null
     ? (adrImmediate ?? directTargetOf(decoded))
     : decoded.pcRelTarget;
-  if (instructionId == null && origin == null && mode == null && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
+  // Preserve the original object when it already carries the required
+  // identity fields.  Rebuilding an otherwise-complete instruction here
+  // would launder proxy traps/accessor evidence before the immediate
+  // authority snapshot gets a chance to fail closed.
+  const needsIdentityAugmentation = (decoded.instructionId == null && instructionId != null)
+    || (decoded.origin == null && origin != null)
+    || (decoded.mode == null && mode != null);
+  if (!needsIdentityAugmentation && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
   return {
     ...decoded,
     ...(instructionId == null ? {} : { instructionId }),
@@ -642,3 +650,9 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   }
   return null;
 }
+
+export function arm64MachineEffectFamilies() {
+  return Object.freeze(ARM64_EFFECT_FAMILIES.map(({ id }) => id));
+}
+
+export const liftExact = liftArm64MachineEffects;

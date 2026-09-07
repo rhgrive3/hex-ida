@@ -60,10 +60,17 @@ export function normalizeArm64BtiGuardedPageState(input = null) {
 
   let state = 'unknown';
   let mappedPageGuarded = null;
-  let conflict = false;
-  let conflictReason = null;
+  let conflict = input.conflict === true;
+  let conflictReason = conflict
+    ? (typeof input.conflictReason === 'string' && input.conflictReason.trim()
+      ? input.conflictReason.trim()
+      : 'conflicting-guarded-page-state')
+    : null;
 
-  if (hasMalformed) {
+  if (conflict) {
+    // Preserve a prior normalized conflict; re-parsing its null aliases must
+    // not turn a fail-closed state into a selectable guarded/unguarded state.
+  } else if (hasMalformed) {
     conflict = true;
     conflictReason = 'malformed-guarded-page-state-alias';
   } else if (hasGuarded && hasUnguarded) {

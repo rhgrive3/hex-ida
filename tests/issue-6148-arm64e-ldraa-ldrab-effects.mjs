@@ -131,7 +131,60 @@ const xzrBaseBundle = liftArm64eEffects({
 });
 assert.equal(xzrBaseBundle.completeness, 'partial');
 
-// 10. Arity validation
+// 10. Textual operands preserve commas inside the bracketed memory operand
+{
+  const textualBundle = liftArm64eEffects({
+    mnemonic: 'ldrab',
+    instructionId: 'i_textual',
+    operands: 'x2, [x3, #16]',
+  });
+  assert.equal(textualBundle.completeness, 'exact-with-intrinsic');
+  assert.equal(textualBundle.metadata.baseRegister, 'x3');
+  assert.equal(textualBundle.metadata.displacement, '16');
+  assert.equal(textualBundle.metadata.keyIdentity, 'APDBKey');
+}
+
+// 11. Structured register presentation must agree with cls/num
+{
+  const conflictBundle = liftArm64eEffects({
+    mnemonic: 'ldraa',
+    instructionId: 'i_register_conflict',
+    ops: [
+      { k: 'reg', cls: 'gp', num: 5, bits: 64, register: 'x6' },
+      { k: 'mem', base: 'x1' },
+    ],
+  });
+  assert.equal(conflictBundle.completeness, 'partial');
+}
+
+// 12. Structured memory authority is primitive and alias-consistent
+for (const [id, memory] of [
+  ['i_bad_disp', { k: 'mem', base: 'x1', disp: [] }],
+  ['i_bad_pre', { k: 'mem', base: 'x1', pre: 'false' }],
+]) {
+  const bundle = liftArm64eEffects({
+    mnemonic: 'ldraa',
+    instructionId: id,
+    ops: [{ k: 'reg', cls: 'gp', num: 0, bits: 64 }, memory],
+  });
+  assert.equal(bundle.completeness, 'partial');
+  assert.equal(bundle.operations.some((op) => op.kind === 'memory-read'), false);
+  assert.equal(bundle.operations.some((op) => op.kind === 'register-write'), false);
+}
+
+// 13. Pre-index destination/base overlap is not published as deterministic effects
+{
+  const bundle = liftArm64eEffects({
+    mnemonic: 'ldraa',
+    instructionId: 'i_overlap',
+    operands: 'x0, [x0, #8]!',
+  });
+  assert.equal(bundle.completeness, 'partial');
+  assert.equal(bundle.operations.some((op) => op.kind === 'memory-read'), false);
+  assert.equal(bundle.operations.some((op) => op.kind === 'register-write'), false);
+}
+
+// 14. Arity validation
 const shapeFailure = arm64ePointerAuthenticationOperandShapeFailure({
   mnemonic: 'ldraa',
   instructionId: 'i_bad_arity',

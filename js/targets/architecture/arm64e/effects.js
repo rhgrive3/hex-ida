@@ -113,7 +113,27 @@ function mnemonicOf(decoded) {
 }
 
 function splitOperands(text) {
-  return String(text || '').split(',').map((part) => part.trim()).filter(Boolean);
+  if (typeof text !== 'string') return [];
+  const parts = [];
+  let start = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character === '[') {
+      bracketDepth++;
+    } else if (character === ']') {
+      if (bracketDepth === 0) return [];
+      bracketDepth--;
+    } else if (character === ',' && bracketDepth === 0) {
+      const part = text.slice(start, index).trim();
+      if (part) parts.push(part);
+      start = index + 1;
+    }
+  }
+  if (bracketDepth !== 0) return [];
+  const last = text.slice(start).trim();
+  if (last) parts.push(last);
+  return parts;
 }
 
 function operandList(decoded) {
@@ -129,27 +149,44 @@ function operandList(decoded) {
   return splitOperands(decoded?.opStr ?? decoded?.op_str ?? decoded?.operandString ?? decoded?.args);
 }
 
-function structuredRegisterIdentity(operand) {
-  if (operand?.k !== 'reg') return null;
-  if (operand.cls === 'sp') return operand.num == null || operand.num === 31 ? 'sp' : null;
-  if (operand.cls === 'zr') return operand.num == null || operand.num === 31 ? 'xzr' : null;
-  if (operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) return `x${operand.num}`;
-  return null;
-}
-
-function operandRegisterId(operand) {
-  if (operand == null) return null;
-  const structured = structuredRegisterIdentity(operand);
-  if (structured) return structured;
-  const raw = typeof operand === 'string'
-    ? operand
-    : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
+function normalizePresentedRegisterIdentity(raw) {
   if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
   let id = String(raw).trim().toLowerCase().replace(/^%/, '');
   if (id === 'lr') id = 'x30';
   if (id === 'fp') id = 'x29';
   if (/^x(?:[0-9]|[12][0-9]|30)$/.test(id) || id === 'sp' || id === 'xzr') return id;
   return null;
+}
+
+function structuredRegisterIdentity(operand) {
+  if (operand?.k !== 'reg') return null;
+  let identity = null;
+  if (operand.cls === 'sp') identity = operand.num == null || operand.num === 31 ? 'sp' : null;
+  else if (operand.cls === 'zr') identity = operand.num == null || operand.num === 31 ? 'xzr' : null;
+  else if (operand.cls === 'gp' && Number.isInteger(operand.num) && operand.num >= 0 && operand.num <= 30) identity = `x${operand.num}`;
+  if (identity == null) return null;
+
+  const presentationValues = [
+    operand.registerId,
+    operand.register,
+    operand.reg,
+    operand.name,
+    operand.text,
+    operand.value?.registerId,
+    operand.value?.reg,
+  ].filter((value) => value != null);
+  if (presentationValues.some((value) => normalizePresentedRegisterIdentity(value) !== identity)) return null;
+  return identity;
+}
+
+function operandRegisterId(operand) {
+  if (operand == null) return null;
+  if (operand?.k === 'reg') return structuredRegisterIdentity(operand);
+  const raw = typeof operand === 'string'
+    ? operand
+    : operand.registerId ?? operand.register ?? operand.reg ?? operand.name ?? operand.text ?? operand.value?.registerId ?? operand.value?.reg;
+  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'number')) return null;
+  return normalizePresentedRegisterIdentity(raw);
 }
 
 // Pointer-authentication encodings operate on 64-bit X-register views.  A
@@ -657,25 +694,67 @@ function authenticateExceptionReturn(decoded, context, instructionId, descriptor
   });
 }
 
+function strictBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (/^[+-]?\d+$/.test(text)) {
+    try { return BigInt(text); } catch { return null; }
+  }
+  if (/^\+?0x[0-9a-f]+$/i.test(text)) {
+    try { return BigInt(text.replace(/^\+/, '')); } catch { return null; }
+  }
+  if (/^-0x[0-9a-f]+$/i.test(text)) {
+    try { return -BigInt(text.slice(1)); } catch { return null; }
+  }
+  return null;
+}
+
+function strictAliasedBigInt(object, keys) {
+  const values = [];
+  for (const key of keys) {
+    const raw = object[key];
+    if (raw == null) continue;
+    const value = strictBigInt(raw);
+    if (value == null) return { valid: false, value: null };
+    values.push(value);
+  }
+  if (values.length === 0) return { valid: true, value: 0n };
+  if (values.some((value) => value !== values[0])) return { valid: false, value: null };
+  return { valid: true, value: values[0] };
+}
+
+function strictAliasedBoolean(object, keys) {
+  const values = [];
+  for (const key of keys) {
+    const raw = object[key];
+    if (raw == null) continue;
+    values.push(raw);
+  }
+  if (values.length === 0) return { valid: true, value: false };
+  if (values.some((value) => typeof value !== 'boolean')) return { valid: false, value: false };
+  if (values.some((value) => value !== values[0])) return { valid: false, value: false };
+  return { valid: true, value: values[0] };
+}
+
 function parseArm64eAuthLoadMemory(operand) {
   if (operand == null) return null;
   if (typeof operand === 'object' && !Array.isArray(operand)) {
     if (operand.k !== 'mem' && operand.kind !== 'memory' && operand.base == null) return null;
-    const base = operand.base ?? operand.baseRegister ?? operand.reg;
-    const baseId = pointerRegisterId(base);
-    if (!baseId || baseId === 'xzr') return null;
-    let disp = 0n;
-    if (operand.disp != null || operand.displacement != null || operand.offset != null) {
-      const rawDisp = operand.disp ?? operand.displacement ?? operand.offset;
-      try {
-        disp = typeof rawDisp === 'bigint' ? rawDisp : BigInt(rawDisp);
-      } catch {
-        return null;
-      }
-    }
-    const pre = Boolean(operand.pre ?? operand.preIndex ?? operand.preIndexed);
+    const baseValues = [operand.base, operand.baseRegister, operand.reg].filter((value) => value != null);
+    if (baseValues.length === 0) return null;
+    const baseIds = baseValues.map((value) => pointerRegisterId(value));
+    if (baseIds.some((value) => !value) || baseIds.some((value) => value !== baseIds[0])) return null;
+    const baseId = baseIds[0];
+    if (baseId === 'xzr') return null;
+    const displacement = strictAliasedBigInt(operand, ['disp', 'displacement', 'offset']);
+    if (!displacement.valid) return null;
+    const preIndex = strictAliasedBoolean(operand, ['pre', 'preIndex', 'preIndexed']);
+    if (!preIndex.valid) return null;
+    const { value: disp } = displacement;
     if (disp < -4096n || disp > 4088n || disp % 8n !== 0n) return null;
-    return { baseId, disp, pre };
+    return { baseId, disp, pre: preIndex.value };
   }
 
   if (typeof operand === 'string') {
@@ -687,7 +766,7 @@ function parseArm64eAuthLoadMemory(operand) {
     }
     if (!str.startsWith('[') || !str.endsWith(']')) return null;
     const inner = str.slice(1, -1).trim();
-    const parts = inner.split(',').map((s) => s.trim()).filter(Boolean);
+    const parts = splitOperands(inner);
     if (parts.length === 0 || parts.length > 2) return null;
     const baseId = pointerRegisterId(parts[0]);
     if (!baseId || baseId === 'xzr') return null;
@@ -695,11 +774,8 @@ function parseArm64eAuthLoadMemory(operand) {
     if (parts.length === 2) {
       let rawDisp = parts[1];
       if (rawDisp.startsWith('#')) rawDisp = rawDisp.slice(1).trim();
-      try {
-        disp = BigInt(rawDisp);
-      } catch {
-        return null;
-      }
+      disp = strictBigInt(rawDisp);
+      if (disp == null) return null;
     }
     if (disp < -4096n || disp > 4088n || disp % 8n !== 0n) return null;
     return { baseId, disp, pre };
@@ -722,6 +798,14 @@ function authenticateLoad(decoded, context, instructionId, descriptor) {
     return partialMissing(decoded, context, instructionId, 'authenticated load: invalid memory operand');
   }
   const { baseId, disp, pre: preIndex } = mem;
+  if (preIndex && destId === baseId && baseId !== 'sp') {
+    return partialMissing(
+      decoded,
+      context,
+      instructionId,
+      'authenticated load: pre-index destination/base overlap has unknown register effects',
+    );
+  }
 
   const operations = [];
   const baseValue = readRegister(operations, baseId, `${instructionId}.base`, POINTER_BITS, {
