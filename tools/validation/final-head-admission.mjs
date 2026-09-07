@@ -130,10 +130,15 @@ function exactHeadMarker(body, headSha) {
   return string(body).includes(`[HEAD:${headSha}]`);
 }
 
+function autoReviewerId(review) {
+  const matches = [...string(review?.body).matchAll(/\[AUTO-REVIEW:([^\]\s]+)\]/g)];
+  if (matches.length !== 1) return '';
+  return string(matches[0]?.[1]).trim().toUpperCase();
+}
+
 function isExactHeadAutoReview(review, headSha, trustedReviewers) {
-  const body = string(review?.body);
-  if (!/\[AUTO-REVIEW:[^\]]+\]/.test(body)) return false;
-  if (!exactHeadMarker(body, headSha)) return false;
+  if (!autoReviewerId(review)) return false;
+  if (!exactHeadMarker(review?.body, headSha)) return false;
   const commitId = string(review?.commit_id);
   if (!commitId || commitId !== headSha) return false;
   return trustedReviewers.has(reviewAuthor(review));
@@ -145,9 +150,22 @@ function autoVerdict(review) {
 }
 
 function latestExactAutoReviews(reviews, headSha, trustedReviewers) {
-  return latestReviewsByAuthor(
-    reviews.filter((review) => isExactHeadAutoReview(review, headSha, trustedReviewers)),
-  );
+  const result = new Map();
+  const exactReviews = reviews.filter((review) => isExactHeadAutoReview(review, headSha, trustedReviewers));
+  for (const review of [...exactReviews].sort(newestFirst)) {
+    const reviewerId = autoReviewerId(review);
+    const timestamp = evidenceTime(review);
+    const current = result.get(reviewerId);
+    if (!current || timestamp > current.timestamp) {
+      result.set(reviewerId, { timestamp, items: [review] });
+    } else if (timestamp === current.timestamp) {
+      // Logical AUTO reviewers (R0/R1/...) share the trusted GitHub author in
+      // this repository. Preserve equal-newest conflicts within one reviewer,
+      // but never let another reviewer overwrite its state.
+      current.items.push(review);
+    }
+  }
+  return [...result.values()].flatMap((entry) => entry.items);
 }
 
 const FORMAL_REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
