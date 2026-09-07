@@ -187,6 +187,36 @@ test('built-in containers with enumerable own properties fail closed instead of 
   );
 });
 
+test('clean built-in contents remain part of artifact identity', () => {
+  const descriptor = (options) => createPhase8ArtifactDescriptor({ ...BASE, options }).artifactId;
+
+  assert.notEqual(
+    descriptor({ map: new Map([['mode', 'signed']]) }),
+    descriptor({ map: new Map([['mode', 'unsigned']]) }),
+    'Map entries must remain key material after the owned clone',
+  );
+  assert.notEqual(
+    descriptor({ set: new Set(['signed']) }),
+    descriptor({ set: new Set(['unsigned']) }),
+    'Set entries must remain key material after the owned clone',
+  );
+  assert.notEqual(
+    descriptor({ date: new Date(0) }),
+    descriptor({ date: new Date(1) }),
+    'Date timestamps must remain key material after the owned clone',
+  );
+
+  const firstBytes = new ArrayBuffer(4);
+  new Uint8Array(firstBytes)[0] = 1;
+  const secondBytes = new ArrayBuffer(4);
+  new Uint8Array(secondBytes)[0] = 2;
+  assert.notEqual(
+    descriptor({ bytes: firstBytes }),
+    descriptor({ bytes: secondBytes }),
+    'ArrayBuffer bytes must remain key material after the owned clone',
+  );
+});
+
 test('cross-realm DataViews use the intrinsic DataView classification', () => {
   const foreign = vm.runInNewContext('new DataView(new ArrayBuffer(8))');
   Object.defineProperty(foreign, '0', { value: 'foreign-payload', enumerable: true });
