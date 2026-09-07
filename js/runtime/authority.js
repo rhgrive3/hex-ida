@@ -85,9 +85,30 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
+// Canonical authority records must be immutable after their identity is
+// computed (#6214). structuredClone keeps TypedArray/ArrayBuffer payloads as
+// mutable views and Object.freeze cannot protect their elements, so binary
+// content is canonicalized to plain byte arrays — the same shape
+// stableDigest/jsonSafe already project, so identity is unchanged.
+function canonicalizeBinary(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object') return value;
+  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = canonicalizeBinary(value[i], seen);
+    return value;
+  }
+  for (const key of Object.keys(value)) value[key] = canonicalizeBinary(value[key], seen);
+  return value;
+}
+
 function clone(value) {
-  if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
+  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  if (typeof structuredClone === 'function') return canonicalizeBinary(structuredClone(value));
   if (Array.isArray(value)) return value.map(clone);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
 }
