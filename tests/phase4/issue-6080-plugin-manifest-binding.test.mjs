@@ -45,7 +45,18 @@ function withGlobals(run) {
             assert.ok(port, 'sandbox init must transfer a MessagePort');
             port.onmessage = (event) => {
               if (event.data?.t === 'terminate') { port.close(); return; }
-              if (event.data?.t === 'start') port.postMessage({ t: 'done', value: run.discovered });
+              if (event.data?.t !== 'start') return;
+              run.started?.push(event.data);
+              if (event.data.mode === 'plugin' && event.data.expectedDefinition) {
+                const actual = run.discovered?.[event.data.index];
+                if (!actual
+                  || actual.name !== event.data.expectedDefinition.name
+                  || actual.description !== event.data.expectedDefinition.description) {
+                  port.postMessage({ t: 'error', error: 'プラグイン定義がsourceのcanonical discoveryと一致しません。' });
+                  return;
+                }
+              }
+              port.postMessage({ t: 'done', value: run.discovered });
             };
             port.start?.();
             port.postMessage({ t: 'ready' });
@@ -185,6 +196,62 @@ test('#6080 save() persists the binding digests for the next restore', async () 
       await host2.ready;
       assert.equal(host2.plugins.length, 1);
       assert.equal(host2.plugins[0].name, 'A');
+    },
+  });
+});
+
+test('#6080 run rejects selected metadata drift before executing the source', async () => {
+  const store = new Map();
+  store.set(STORE_KEY, JSON.stringify([{
+    v: 3,
+    installationId: 'demo',
+    source: SOURCE,
+    definitions: TRUE_DEFINITIONS,
+    enabledIndexes: [0],
+    sourceDigest: stableDigest(SOURCE),
+    definitionsDigest: stableDigest(TRUE_DEFINITIONS),
+  }]));
+  await withGlobals({
+    store,
+    discovered: null,
+    fn: async () => {
+      const host = new PluginHost({ store: new Map() });
+      await host.ready;
+      const selected = host.plugins[0];
+      selected.name = 'B';
+      const result = await host.run(selected.id, () => {});
+      assert.match(result?.error || '', /一致しません/);
+    },
+  });
+});
+
+test('#6080 runtime sandbox rejects a forged but self-consistent digest pair', async () => {
+  const store = new Map();
+  const forgedDefinitions = [{ index: 1, name: 'A', description: 'A' }];
+  const started = [];
+  store.set(STORE_KEY, JSON.stringify([{
+    v: 3,
+    installationId: 'demo',
+    source: SOURCE,
+    definitions: forgedDefinitions,
+    enabledIndexes: [1],
+    // Both stored checksums match the forged record, so restore alone must
+    // still take the fast path; run() must verify against source discovery.
+    sourceDigest: stableDigest(SOURCE),
+    definitionsDigest: stableDigest(forgedDefinitions),
+  }]));
+  await withGlobals({
+    store,
+    discovered: TRUE_DEFINITIONS.map(({ name, description }) => ({ name, description })),
+    started,
+    fn: async () => {
+      const host = new PluginHost({ store: new Map() });
+      await host.ready;
+      assert.equal(host.plugins[0].name, 'A');
+      assert.equal(host.plugins[0].index, 1);
+      const result = await host.run(host.plugins[0].id, () => {});
+      assert.match(result?.error || '', /canonical discovery/);
+      assert.deepEqual(started.at(-1)?.expectedDefinition, { name: 'A', description: 'A' });
     },
   });
 });

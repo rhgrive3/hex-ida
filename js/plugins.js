@@ -24,6 +24,13 @@ function manifestIsBound(record) {
   return record.sourceDigest === manifestSourceDigest(record.source)
     && record.definitionsDigest === manifestDefinitionsDigest(record.definitions);
 }
+function selectedPluginIsBound(plugin, installation) {
+  if (!installation || installation.source !== plugin.source || !Array.isArray(installation.definitions)) return false;
+  const definition = installation.definitions.find((candidate) => candidate?.index === plugin.index);
+  return !!definition
+    && definition.name === plugin.name
+    && definition.description === plugin.description;
+}
 let fallbackInstallSeq = 1;
 
 let scriptSandboxPromise = null;
@@ -312,12 +319,20 @@ export class PluginHost {
   async run(id, out, options = {}) {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
+    // The manifest check protects restore, but the public registry objects can
+    // still be mutated after load. Never execute a selected entry whose source
+    // or display metadata has drifted from its canonical installation record.
+    const installation = this.installations.get(p.installationId);
+    if (!selectedPluginIsBound(p, installation)) {
+      return { error: 'プラグイン定義が保存内容と一致しません。再読み込みしてください。' };
+    }
     const signal = options?.signal ?? null;
     if (signal?.aborted) return { error:'キャンセルされました。', aborted:true };
     const { createApi, runInSandbox } = await loadScriptSandbox();
     const { api, print } = createApi(this.app, out, options);
     return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
-      out: (...args) => print(...args), signal });
+      out: (...args) => print(...args),
+      expectedDefinition: { name: p.name, description: p.description }, signal });
   }
 }
 
