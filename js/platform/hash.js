@@ -4,14 +4,46 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
+const explicitProgressCallbacks = new WeakMap();
+const DIRECT_CLASS_SOURCE = /^\s*class(?:\s|\{)/;
+// Bound functions and Proxy-wrapped functions deliberately stringify as native
+// code. Treat every such opaque callable as unsafe by default: the standard
+// reflection API cannot distinguish a bound ordinary callback from a bound
+// class constructor without invoking user code.
+const OPAQUE_FUNCTION_SOURCE = /^\s*(?:async\s+)?function(?:\s+[^\s(]+)?\s*\([^)]*\)\s*\{\s*\[native code\]\s*\}\s*$/;
+
+/**
+ * Explicitly opt in an opaque function (for example, a bound ordinary
+ * callback) after the caller has established that it is callable. The token is
+ * intentionally not itself callable, so an unwrapped opaque value remains a
+ * fail-closed no-op at the public option boundary.
+ */
+export function createProgressCallback(callback) {
+  if (typeof callback !== 'function') throw new TypeError('progress callback must be a function');
+  let source;
+  try {
+    source = Function.prototype.toString.call(callback);
+  } catch {
+    throw new TypeError('progress callback must be callable');
+  }
+  if (DIRECT_CLASS_SOURCE.test(source)) throw new TypeError('progress callback must be callable');
+  const token = Object.freeze({});
+  explicitProgressCallbacks.set(token, callback);
+  return token;
+}
+
 function optionalProgressCallback(value) {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+    const explicit = explicitProgressCallbacks.get(value);
+    if (explicit) return explicit;
+  }
   if (typeof value !== 'function') return null;
   try {
-    // Direct class syntax is visibly non-callable, but an opaque proxy can hide
-    // its target. Do not inspect prototype descriptors or constructors: ordinary
-    // callbacks may replace either property and remain callable. All other
-    // function-valued options are accepted and their invocation errors propagate.
-    if (/^\s*class(?:\s|\{)/.test(Function.prototype.toString.call(value))) return null;
+    // Only source-transparent functions are safe to classify as callbacks
+    // without trial invocation. Direct class constructors and opaque
+    // native/bound/proxy functions are fail-closed no-ops.
+    const source = Function.prototype.toString.call(value);
+    if (DIRECT_CLASS_SOURCE.test(source) || OPAQUE_FUNCTION_SOURCE.test(source)) return null;
     return value;
   } catch {
     return null;
