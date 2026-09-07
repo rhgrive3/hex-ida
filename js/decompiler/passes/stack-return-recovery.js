@@ -1,4 +1,4 @@
-import { expr, structuralKey, sourceOf } from '../ast/nodes.js';
+import { expr, structuralKey, mergeSource } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
@@ -1868,7 +1868,7 @@ export function recoverCommittedPhiSpillSnapshots(result, opts = {}) {
     if (nodes.length !== 1) continue;
     const node = nodes[0];
     const expression = expr.load(location, size * 8,
-      sourceOf(node.semantic.expression?.source, location.expression?.source, node.source),
+      mergeSource(node.semantic.expression?.source, location.expression?.source, node.source),
       { signed:fieldValue(value, 'signed') ?? null });
     const stores = (result.semanticAst.stores || []).filter(item =>
       item.location?.key === loc.key && item.source?.ir?.includes(store.id));

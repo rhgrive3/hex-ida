@@ -233,7 +233,7 @@
         "baseline": { "status": "UNMEASURED_AT_FREEZE", "source": "tests/benchmark-baseline.json#/metrics/performance/decompilerLatency", "candidateMeasurementRequired": true },
         "targets": [
           { "metric": "firstUsefulPseudocodeLatency", "unit": "milliseconds", "operator": "<=", "threshold": 1500 },
-          { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 },
+          { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 150 },
           { "metric": "retainedMemoryDelta", "unit": "bytes", "operator": "<=", "threshold": 134217728 },
           { "metric": "cancellationSettlement", "unit": "milliseconds", "operator": "<=", "threshold": 250 }
         ]

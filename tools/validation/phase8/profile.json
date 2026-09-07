@@ -1,7 +1,7 @@
 {
-  "profileVersion": 3,
+  "profileVersion": 4,
   "phase": 8,
-  "note": "Frozen Phase 8 acceptance profile. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 8 evidence and requires the baseline to be re-captured under the new profile (ENGINEERING_PROCESS_GUARDRAILS \u00a75, \u00a73.5). v3 replaces the rendering-node sourceMappedNodes floor with a frozen source-address provenance-set floor; sourceMappedNodes and IR provenance sets/counts remain telemetry with identity/digest validation only. The provenance sidecar is captured from the exact pre-Phase-8 product at bd03d1a860863814dbdcc00559709794d460189d.",
+  "note": "Phase 8 acceptance profile. v4 applies the user-authorized 150 ms optimizer ceiling (2026-09-07); all v3 candidate performance results require remeasurement. The pre-Phase-8 corpus/provenance baseline remains unchanged. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 8 evidence and requires the baseline to be re-captured under the new profile (ENGINEERING_PROCESS_GUARDRAILS \u00a75, \u00a73.5). v3 replaces the rendering-node sourceMappedNodes floor with a frozen source-address provenance-set floor; sourceMappedNodes and IR provenance sets/counts remain telemetry with identity/digest validation only. The provenance sidecar is captured from the exact pre-Phase-8 product at bd03d1a860863814dbdcc00559709794d460189d.",
   "hardZero": {
     "semanticMismatchCount": 0,
     "provenanceLossCount": 0,
@@ -34,7 +34,7 @@
     "gotosAreNotACorrectnessGoal": true
   },
   "performance": {
-    "procedureVersion": 1,
+    "procedureVersion": 2,
     "repetitions": 3,
     "aggregate": "median",
     "environmentClass": "ci-linux-x64",
@@ -42,7 +42,7 @@
     "budgetsMs": {
       "coldActiveFunction": 250,
       "phase8InteractiveStage": 5,
-      "phase8OptimizeStage": 120
+      "phase8OptimizeStage": 150
     },
     "note": "coldActiveFunction is the whole-function decompile. phase8InteractiveStage is the canonical-facts stage that runs on every decompile; phase8OptimizeStage is the demand-driven optimizer stage, which only runs when a caller asks for the middle-end facts."
   },

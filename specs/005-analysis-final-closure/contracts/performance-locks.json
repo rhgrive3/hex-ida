@@ -168,7 +168,7 @@
         { "metric": "ruleApplications", "unit": "applications", "operator": "<=", "threshold": 8192 },
         { "metric": "workItems", "unit": "items", "operator": "<=", "threshold": 50000 },
         { "metric": "extractedCandidates", "unit": "candidates", "operator": "<=", "threshold": 32 },
-        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 }
+        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 150 }
       ],
       "budgetOutcome": "budget-or-cancellation returns no candidate and cannot publish a rewrite"
     },
@@ -235,7 +235,7 @@
         { "metric": "sources", "unit": "sources", "operator": "<=", "threshold": 4096 },
         { "metric": "sinks", "unit": "sinks", "operator": "<=", "threshold": 4096 },
         { "metric": "emittedRecords", "unit": "records", "operator": "<=", "threshold": 100000 },
-        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 120 }
+        { "metric": "phase8OptimizeStage", "unit": "milliseconds", "operator": "<=", "threshold": 150 }
       ],
       "budgetOutcome": "budget, unknown sanitizer, incomplete aliasing, or missing equivalence proof withholds deobfuscation"
     }

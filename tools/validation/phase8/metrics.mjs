@@ -24,7 +24,7 @@ import { providerAuthorityFailures, providerView } from '../../../js/decompiler/
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
-import { decompileEntry, observeCorpus } from './decompile-corpus.mjs';
+import { decompileEntry, observeCorpus, observationOf } from './decompile-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
@@ -581,26 +581,71 @@ function median(values) {
  * Phase 8 stage cost is reported separately so a regression can be attributed.
  */
 export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = {}) {
-  const perFunction = [];
-  const phase8PerFunction = [];
-  const runs = [];
+  if (!Number.isSafeInteger(repetitions) || repetitions < 1 || !corpus?.functions?.length) {
+    throw new TypeError('phase8-performance-denominator-required');
+  }
+  const cold = [], interactive = [], optimized = [], runs = [], samples = [];
+  let unpublishedOptimizerCount = 0;
+  const baseline = new Map(loadFrozenBaseline().observations.map(row => [row.id, row.semantic]));
+  const applicableIds = new Set();
+  const clock = () => performance.now();
+  const elapsed = result => result?.ctx?.decompilerPipeline?.phase8ElapsedMs;
   for (let repetition = 0; repetition < repetitions; repetition += 1) {
-    const started = Date.now();
-    const observations = observeCorpus({ corpus, deterministicTransforms: false });
-    perFunction.push((Date.now() - started) / Math.max(1, observations.length));
-    // The Phase 8 stage reports its own elapsed time through the pipeline ctx;
-    // when no ledger is published there is nothing to attribute.
-    phase8PerFunction.push(observations.filter((observation) => observation.phase8?.published).length);
+    const observations = [];
+    const times = { cold:[], interactive:[], optimized:[] };
+    for (const [index, entry] of corpus.functions.entries()) {
+      const started = clock();
+      const initial = decompileEntry(entry, { index, deterministicTransforms:false, phase8Optimize:false });
+      const coldMs = clock() - started;
+      const optimizedResult = decompileEntry(entry, { index, deterministicTransforms:false, phase8Optimize:true });
+      const interactiveMs = elapsed(initial.result);
+      const optimizedMs = elapsed(optimizedResult.result);
+      // Frozen nonsemantic rows never entered Phase 8. Keep their whole-function
+      // timing and explicit applicability instead of inventing a zero stage time.
+      // A formerly semantic row cannot disappear from the stage denominator.
+      const applicable = baseline.get(entry.id) !== false || initial.result?.semantic === true
+        || optimizedResult.result?.semantic === true;
+      if (applicable) {
+        applicableIds.add(entry.id);
+        if (optimizedResult.result?.phase8?.published !== true) unpublishedOptimizerCount += 1;
+        times.interactive.push(interactiveMs); times.optimized.push(optimizedMs);
+      }
+      times.cold.push(initial.failure ? null : coldMs);
+      samples.push({ id:entry.id, repetition, stageApplicable:applicable, coldActiveFunctionMs:coldMs,
+        phase8InteractiveStageMs:interactiveMs ?? null, phase8OptimizeStageMs:optimizedMs ?? null,
+        interactivePublished:initial.result?.phase8?.published === true,
+        optimizePublished:optimizedResult.result?.phase8?.published === true });
+      observations.push(observationOf(entry, optimizedResult));
+    }
+    const mean = values => values.length > 0 && values.every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0)
+      ? values.reduce((a,b)=>a+b,0) / values.length : null;
+    cold.push(mean(times.cold)); interactive.push(mean(times.interactive)); optimized.push(mean(times.optimized));
     runs.push(observations);
   }
+  const summary = values => ({ medianMs:values.every(v => v != null) ? median(values) : null,
+    samples:values.map(v => v == null ? null : Number(v.toFixed(3))) });
   return {
-    procedureVersion: 1,
-    repetitions,
-    aggregate: 'median',
-    coldActiveFunctionMs: { medianMs: median(perFunction), samples: perFunction.map((value) => Number(value.toFixed(3))) },
-    publishedLedgers: median(phase8PerFunction),
-    runs,
+    procedureVersion:2, repetitions, aggregate:'median',
+    denominator:corpus.functions.map(entry=>entry.id), stageDenominator:[...applicableIds], samples,
+    coldActiveFunctionMs:summary(cold), phase8InteractiveStageMs:summary(interactive),
+    phase8OptimizeStageMs:summary(optimized), unpublishedOptimizerCount,
+    publishedLedgers:median(runs.map(run=>run.filter(row=>row.phase8?.published).length)), runs,
   };
+}
+
+/** Current product performance validation, without historical checkpoint replay. */
+export function phase8PerformanceFailures(performance, profile) {
+  const failures = [];
+  for (const [name, target] of Object.entries(profile.performance.budgetsMs)) {
+    const value = performance?.[`${name}Ms`]?.medianMs;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > target) {
+      failures.push({ metric:name, expected:`finite median <= ${target} ms`, actual:value ?? null });
+    }
+  }
+  if (!performance || performance.unpublishedOptimizerCount !== 0) {
+    failures.push({ metric:'unpublishedOptimizerCount', expected:0, actual:performance?.unpublishedOptimizerCount ?? null });
+  }
+  return failures;
 }
 
 /**

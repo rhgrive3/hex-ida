@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
 
-import { collectPhase8Metrics, loadFrozenBaseline } from './metrics.mjs';
+import { collectPhase8Metrics, loadFrozenBaseline, phase8PerformanceFailures } from './metrics.mjs';
 
 /**
  * Permanent Phase 8 verifier.
@@ -207,11 +207,10 @@ export function verifyPhase8({ shadow = false, expectedSha = null, gates = false
     blocking('readiness', 'readiness matrix contains an unclassified capability', 'every capability classified', unresolved.join(','));
   }
 
-  // Performance budgets.
-  const coldMedian = metrics.performance?.coldActiveFunctionMs?.medianMs ?? null;
-  if (coldMedian != null && coldMedian > PROFILE.performance.budgetsMs.coldActiveFunction) {
-    blocking('performance', 'active-function latency budget exceeded',
-      `<= ${PROFILE.performance.budgetsMs.coldActiveFunction} ms`, `${coldMedian.toFixed(1)} ms`);
+  // All three current-profile rows must be measured; missing stage timing is not a pass.
+  for (const failure of phase8PerformanceFailures(metrics.performance, PROFILE)) {
+    blocking('performance', `${failure.metric} budget or measurement failed`,
+      String(failure.expected), String(failure.actual));
   }
 
   const gateResults = gates ? PROFILE.requiredGates.map(runGate) : [];
