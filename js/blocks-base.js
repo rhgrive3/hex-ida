@@ -345,7 +345,7 @@ export const FEATURE_OF_CATEGORY = {
    命令の事実（Instruction Model）
    ──────────────────────────────────────────────────────────── */
 
-const CALL_MN = /^(bl|blr|blraa|blrab)$/;
+const CALL_MN = /^(bl|blr|blraa|blrab|blraaz|blrabz)$/;
 const RET_MN = /^(ret|retaa|retab)$/;
 const COND_BRANCH = /^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/;
 const COMPARE_MN = /^(cmp|cmn|tst|ccmp|ccmn|fcmp|fcmpe)$/;
