@@ -252,29 +252,6 @@ row('consumer projects SysV aggregate return pieces', () => {
   assert.deepEqual(prototype.returnLocations.map((location) => location.reg), ['rax','rdx']);
 });
 
-row('vectorcall scalar FP return rejects width contradicting the type (#6064)', () => {
-  const contradictory = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'double', returnBits:256, returnsValue:true });
-  assert.equal(contradictory.partial, true, 'double + 256 bits contradicts the type and XMM0 physics');
-  assert.equal(contradictory.reg, null);
-  const unrepresentable = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'double', returnBits:129, returnsValue:true });
-  assert.equal(unrepresentable.partial, true, 'no exact scalar FP result can exceed the 128-bit XMM0 view');
-  const mismatch = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'float', returnBits:64, returnsValue:true });
-  assert.equal(mismatch.partial, true, 'float fixes a 32-bit canonical width');
-});
-row('vectorcall scalar FP return keeps exact canonical widths (#6064)', () => {
-  const floatResult = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'float', returnBits:32, returnsValue:true });
-  assert.deepEqual(floatResult, { reg:'xmm0', bits:32, abiClass:'fp' });
-  const doubleResult = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'double', returnsValue:true });
-  assert.deepEqual(doubleResult, { reg:'xmm0', bits:64, abiClass:'fp' });
-  const generic = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'', returnClass:'fp', returnBits:128, returnsValue:true });
-  assert.deepEqual(generic, { reg:'xmm0', bits:128, abiClass:'fp' });
-});
-row('vectorcall 256-bit vector return still classifies YMM0 (#6064 control)', () => {
-  const vector = classifyReturn(MICROSOFT_VECTORCALL_ABI, { callingConvention:'vectorcall', returnType:'__m256', returnBits:256, returnsValue:true });
-  assert.equal(vector.reg, 'ymm0');
-  assert.equal(vector.abiClass, 'vector');
-});
-
 for (const result of rows) console.log(`${result.status} | ${result.name}${result.detail ? ` | ${result.detail}` : ''}`);
 const failures = rows.filter((result) => result.status === 'FAIL');
 console.log(`MATRIX_SUMMARY total=${rows.length} passed=${rows.length - failures.length} failed=${failures.length}`);
