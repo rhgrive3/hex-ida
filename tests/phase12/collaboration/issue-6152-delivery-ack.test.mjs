@@ -118,7 +118,9 @@ test('#6152: authorization alone is not delivery, and send performs delivery I/O
   const { transport, calls } = harness(() => jsonResponse({ schemaVersion:REMOTE_CANONICAL_RESPONSE_SCHEMA }));
   const envelope = await transport.authorizeEnvelope(INPUT);
   assert.equal(calls.length, 1, 'authorization must be the only request before channel.send');
-  await assert.rejects(() => channelFor(transport).send(envelope), /remote-transport-delivery-ack-schema-invalid/);
+  const result = await channelFor(transport).send(envelope);
+  assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
+  assert.equal(calls[1].schemaVersion, REMOTE_CANONICAL_DELIVERY_SCHEMA);
   assert.equal(calls.length, 2, 'channel.send must invoke a second delivery operation');
   assert.equal(calls[1].schemaVersion, REMOTE_CANONICAL_DELIVERY_SCHEMA);
 });
@@ -126,14 +128,17 @@ test('#6152: authorization alone is not delivery, and send performs delivery I/O
 test('#6152: network or delivery failure never reports sent', async () => {
   const { transport, calls } = harness(() => { throw new Error('delivery-network-down'); });
   const envelope = await transport.authorizeEnvelope(INPUT);
-  await assert.rejects(() => channelFor(transport).send(envelope), /delivery-network-down/);
+  const result = await channelFor(transport).send(envelope);
+  assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
+  assert.equal(calls.length, 2);
   assert.equal(calls.length, 2);
 });
 
 test('#6152: delivery acknowledgement identity mismatch is rejected', async () => {
   const { transport } = harness((body) => jsonResponse(signedDeliveryAck(body, { envelopeId:'envelope:other' })));
   const envelope = await transport.authorizeEnvelope(INPUT);
-  await assert.rejects(() => channelFor(transport).send(envelope), /remote-transport-delivery-ack-identity-mismatch/);
+  const result = await channelFor(transport).send(envelope);
+  assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
 });
 
 test('#6152: only a matching signed delivery acknowledgement reports sent', async () => {
