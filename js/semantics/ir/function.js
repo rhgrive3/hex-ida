@@ -64,6 +64,29 @@ function arrayLength(value) {
   return Array.isArray(value) ? value.length : 0;
 }
 
+// Cache every raw object/collection read used by the reference preflight. This
+// keeps accessor-backed nested summaries and scopes identical when the same
+// inputs are normalized after the preflight. The cache is lazy, so the
+// preflight still reads collection lengths without enumerating their elements.
+function cacheReferenceReads(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object'
+    || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  const cached = seen.get(value);
+  if (cached) return cached;
+  const reads = new Map();
+  const proxy = new Proxy(value, {
+    get(target, property, receiver) {
+      if (reads.has(property)) return reads.get(property);
+      const result = Reflect.get(target, property, receiver);
+      const captured = cacheReferenceReads(result, seen);
+      reads.set(property, captured);
+      return captured;
+    },
+  });
+  seen.set(value, proxy);
+  return proxy;
+}
+
 // Every collection that can carry a reference or bounded work item is part of
 // the maxReferences denominator. Raw lengths are a conservative upper bound
 // because normalization only deduplicates/sorts or maps one item to one item.
@@ -217,9 +240,10 @@ export function createSemanticIrFunction(input, options = {}) {
     'completeness', 'unknowns', 'origin',
   ]), 'semantic-ir-unexpected-function-field');
   assertVersion(input);
-  const rawBlocks = array(input.blocks, 'semantic-ir-blocks-required');
-  const rawValues = array(input.values, 'semantic-ir-values-required');
-  const rawNodes = array(input.nodes, 'semantic-ir-nodes-required');
+  const referenceReads = new WeakMap();
+  const rawBlocks = cacheReferenceReads(array(input.blocks, 'semantic-ir-blocks-required'), referenceReads);
+  const rawValues = cacheReferenceReads(array(input.values, 'semantic-ir-values-required'), referenceReads);
+  const rawNodes = cacheReferenceReads(array(input.nodes, 'semantic-ir-nodes-required'), referenceReads);
   assertWithinBudget(rawBlocks.length, options, 'maxBlocks');
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');

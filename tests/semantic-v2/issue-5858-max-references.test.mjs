@@ -216,6 +216,49 @@ test('#5858 raw preflight uses captured top-level collections when input accesso
   assert.equal(normalized, false, 'preflight must reject before nested element normalization');
 });
 
+test('#5858 raw preflight reuses nested summary and scope snapshots', () => {
+  let argumentReads = 0;
+  let memoryReads = 0;
+  let unknownReads = 0;
+  const input = makeFunction('call', { completeness: 'partial' }, { completeness: 'partial' });
+  const summary = input.nodes[0].call;
+  Object.defineProperty(summary, 'arguments', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      argumentReads += 1;
+      return argumentReads === 1 ? [] : ['late', 'late', 'late'];
+    },
+  });
+  Object.defineProperty(summary, 'memoryRead', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      memoryReads += 1;
+      return memoryReads === 1
+        ? { scope: 'accesses', accesses: [memoryAccess] }
+        : { scope: 'accesses', accesses: [memoryAccess, memoryAccess, memoryAccess, memoryAccess] };
+    },
+  });
+  Object.defineProperty(summary, 'unknownEffects', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      unknownReads += 1;
+      return unknownReads === 1
+        ? { reason: 'unresolved', categories: ['state'] }
+        : { reason: 'late', categories: ['state', 'control', 'memory', 'unknown'] };
+    },
+  });
+  const result = createSemanticIrFunction(input, { budget: { maxReferences: 3 } });
+  assert.deepEqual(result.nodes[0].call.arguments, []);
+  assert.equal(result.nodes[0].call.memoryRead.accesses.length, 1);
+  assert.deepEqual(result.nodes[0].call.unknownEffects.categories, ['state']);
+  assert.equal(argumentReads, 1, 'summary arguments accessor must be captured once');
+  assert.equal(memoryReads, 1, 'memory scope accessor must be captured once');
+  assert.equal(unknownReads, 1, 'unknown-effect accessor must be captured once');
+});
+
 test('#5858 raw preflight remains conservative for duplicate inputs', () => {
   const input = makeFunction('call', { targetEntityIds: ['callee', 'callee'] });
   assert.throws(
