@@ -13,6 +13,7 @@ import { toast } from '../../ui.js';
 import { AiSession } from './session.js';
 import { createPanel } from './panel.js';
 import { createLauncher } from './launcher.js';
+import { launcherStateForSessionEvent } from './launcher-state.js';
 import { createAiEngine } from './bridge.js';
 import { workbenchContext } from './workbench.js';
 import { createActionRunner } from '../interaction/actions.js';
@@ -183,11 +184,12 @@ export function installAssistant(app, ui) {
   }
 
   session.on((event) => {
-    if (event.type === 'settled') {
-      launcher.setState('idle');
-      if (!open) { unread += 1; launcher.setUnread(unread); launcher.setState('attention'); }
-    } else if (event.type === 'turn') {
-      launcher.setState('running');
+    const launcherState = launcherStateForSessionEvent(event.type, session.busy);
+    if (launcherState) launcher.setState(launcherState);
+    if (event.type === 'settled' && launcherState === 'idle' && !open) {
+      unread += 1;
+      launcher.setUnread(unread);
+      launcher.setState('attention');
     }
     panel.update();
   });

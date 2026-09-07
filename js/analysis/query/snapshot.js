@@ -1,4 +1,4 @@
-import { deepFreeze, jsonSafe, stableDigest } from "../../core/identity/index.js";
+import { deepFreeze, jsonSafe, lossyTypeWitness, stableDigest, validateCanonicalIdentityNumbers } from "../../core/identity/index.js";
 
 export const ANALYSIS_SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -25,19 +25,118 @@ function nonEmptyString(value, code) {
   return text;
 }
 
-function normalizeArtifacts(value) {
+function artifactVersionValueInvalid() {
+  throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+}
+
+function snapshotArtifactVersionValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
+    return value;
+  }
+  if (typeof value !== "object") artifactVersionValueInvalid();
+  if (seen.has(value)) artifactVersionValueInvalid();
+
+  let isArray;
+  let prototype;
+  let descriptors;
+  try {
+    isArray = Array.isArray(value);
+    prototype = Object.getPrototypeOf(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    artifactVersionValueInvalid();
+  }
+  if (!isArray && prototype !== Object.prototype && prototype !== null) artifactVersionValueInvalid();
+
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(descriptors);
+    if (isArray) {
+      const lengthDescriptor = descriptors.length;
+      const length = lengthDescriptor?.value;
+      if (!lengthDescriptor || !Object.prototype.hasOwnProperty.call(lengthDescriptor, "value")
+        || !Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+        artifactVersionValueInvalid();
+      }
+      const out = new Array(length);
+      for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+          artifactVersionValueInvalid();
+        }
+        out[index] = snapshotArtifactVersionValue(descriptor.value, seen);
+      }
+      for (const key of keys) {
+        if (key === "length") continue;
+        if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
+          artifactVersionValueInvalid();
+        }
+      }
+      return out;
+    }
+
+    const out = {};
+    for (const key of keys) {
+      if (typeof key !== "string") artifactVersionValueInvalid();
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+        artifactVersionValueInvalid();
+      }
+      Object.defineProperty(out, key, {
+        value: snapshotArtifactVersionValue(descriptor.value, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function normalizeArtifactVersionValue(value) {
+  let owned;
+  try {
+    owned = snapshotArtifactVersionValue(value);
+    validateCanonicalIdentityNumbers(owned);
+  } catch {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+  if (lossyTypeWitness(owned)) {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+  try {
+    return jsonSafe(owned);
+  } catch {
+    throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+  }
+}
+
+export function normalizeAnalysisArtifactVersions(value) {
   if (value == null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    throw new TypeError("analysis-snapshot-artifact-versions-invalid");
+  }
   const normalized = {};
-  for (const key of Object.keys(value).sort()) {
+  for (const key of Object.keys(descriptors).sort()) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable) continue;
+    if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      throw new TypeError("analysis-snapshot-artifact-version-value-invalid");
+    }
     const cleanKey = String(key).trim();
     if (!cleanKey) throw new TypeError("analysis-snapshot-artifact-version-key-invalid");
     if (Object.prototype.hasOwnProperty.call(normalized, cleanKey)) {
       throw new TypeError("analysis-snapshot-artifact-version-key-ambiguous");
     }
-    normalized[cleanKey] = jsonSafe(value[key]);
+    normalized[cleanKey] = normalizeArtifactVersionValue(descriptor.value);
   }
   return normalized;
 }
@@ -48,7 +147,7 @@ function identityTuple(value) {
     binaryId: nonEmptyString(value.binaryId, "analysis-snapshot-binary-id-required"),
     projectRevision: nonNegativeSafeInteger(value.projectRevision, "analysis-snapshot-project-revision-invalid"),
     analysisEpoch: nonNegativeSafeInteger(value.analysisEpoch, "analysis-snapshot-epoch-invalid"),
-    artifactVersions: normalizeArtifacts(value.artifactVersions),
+    artifactVersions: normalizeAnalysisArtifactVersions(value.artifactVersions),
   };
 }
 

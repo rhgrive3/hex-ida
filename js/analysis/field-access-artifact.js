@@ -1,8 +1,10 @@
 const CACHE = new WeakMap();
 
 function abortError(signal, fallback = 'Field-access search aborted') {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
+  if (signal?.reason instanceof Error) return signal.reason;
+  const reason = signal?.reason !== undefined ? signal.reason : fallback;
+  const error = new Error(String(reason));
+  error.name = 'AbortError';
   return error;
 }
 
@@ -16,10 +18,27 @@ function resultState(result) {
   };
 }
 
+function backendGeneration(backend) {
+  try {
+    const generation = backend?.analysisEpoch;
+    return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+  } catch {
+    return null;
+  }
+}
+
 function cacheFor(backend) {
-  let map = CACHE.get(backend);
-  if (!map) { map = new Map(); CACHE.set(backend, map); }
-  return map;
+  const generation = backendGeneration(backend);
+  if (generation == null) {
+    CACHE.delete(backend);
+    return new Map();
+  }
+  let state = CACHE.get(backend);
+  if (!state || state.generation !== generation) {
+    state = { generation, entries:new Map() };
+    CACHE.set(backend, state);
+  }
+  return state.entries;
 }
 
 function artifactKey(region, offset, size) {

@@ -87,7 +87,7 @@ function use(useId, valueId) {
   const signal = {
     get aborted() {
       signalReads += 1;
-      return signalReads >= 3;
+      return normalized >= 1;
     },
   };
   const tracked = (id) => ({
