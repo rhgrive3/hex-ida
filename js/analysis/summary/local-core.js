@@ -35,6 +35,7 @@ function regionsFor(node, resolveRegion) {
   if (typeof resolveRegion !== 'function' || node.memory == null) return [];
   try {
     const resolved = resolveRegion(node.memory, { node });
+    if (resolved == null) return [];
     return Array.isArray(resolved) ? resolved : [resolved];
   } catch { return []; }
 }
@@ -62,7 +63,7 @@ function effectsForAccesses(node, scope, resolveRegion, source) {
       }));
     }
   }
-  return { effects, complete: true };
+  return { effects, complete };
 }
 
 function broadEffect(node, addressSpaces, source) {
