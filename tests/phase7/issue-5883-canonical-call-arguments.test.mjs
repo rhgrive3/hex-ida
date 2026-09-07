@@ -161,9 +161,9 @@ test('#5883 an explicit argument list still transfers arg provenance', () => {
 
 test('#5883 local summary composition does not compose a target-only input as arg 0', () => {
   const { ir } = zeroArgIndirectCallIr();
-  // fnptr's formal-argument mapping is nonexistent (it is not ir.inputs), and
-  // the call carries canonical arguments: [], so no arg-0 provenance can be
-  // composed from the target value.
+  ir.inputs = ['fnptr'];
+  // fnptr is a caller input, but the call carries canonical arguments: [].
+  // The target value must not become argument 0 of this zero-argument call.
   const { summary } = buildLocalFunctionSummary(ir, null, { definitions: [], uses: [] }, null, {
     snapshotId: SNAPSHOT_ID,
     calleeSummaries: new Map([['callee', calleeSummary()]]),

@@ -41,8 +41,25 @@ test('#3414 exhaustive indirect external candidate uses a library model', () => 
     libraryModels: new Map([['external_modeled', {
       modelSchema: 'phase7-library-model',
       modelVersion: '1',
-      memoryReadRegions: [{ regionId:'model-read', regionKind:'global-absolute', source:'library-model' }],
-      memoryWriteRegions: [{ regionId:'model-write', regionKind:'global-absolute', source:'library-model' }],
+      targetEntityId: 'external_modeled',
+      snapshotId: 'snapshot-unbound',
+      completeness: 'complete',
+      stopReason: null,
+      current: true,
+      provenance: {
+        schema: 'phase7-library-model-provenance',
+        providerId: 'issue-3414-provider',
+        providerVersion: '1.0.0',
+        evidenceIds: ['issue-3414-model'],
+      },
+      memoryReadRegions: [{
+        regionId:'model-read', regionKind:'global-absolute', broad:false,
+        addressSpaces:['memory'], source:'library-model', evidenceIds:['issue-3414-read'],
+      }],
+      memoryWriteRegions: [{
+        regionId:'model-write', regionKind:'global-absolute', broad:false,
+        addressSpaces:['memory'], source:'library-model', evidenceIds:['issue-3414-write'],
+      }],
       noreturn:false,
       mayThrow:true,
     }]]),

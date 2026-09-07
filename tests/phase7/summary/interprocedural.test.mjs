@@ -5,6 +5,9 @@ import { createAnalysisStatus } from '../../../js/analysis/status.js';
 import { createFunctionSummary, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import {
   condenseCallGraph,
+  LIBRARY_MODEL_PROVENANCE_SCHEMA,
+  LIBRARY_MODEL_SCHEMA,
+  LIBRARY_MODEL_VERSION,
   solveInterproceduralSummaries,
 } from '../../../js/analysis/summary/interprocedural.js';
 import { collectSummaryMetrics } from '../../../tools/validation/phase7/lanes/summary.mjs';
@@ -12,6 +15,36 @@ import { SUMMARY_QUERIES, buildSummaryGraph } from '../corpus/summaries.mjs';
 
 function solve(graphId, root, options = {}) {
   return solveInterproceduralSummaries({ roots: [root], localSummaries: buildSummaryGraph(graphId), ...options });
+}
+
+function provenLibraryModel(targetEntityId, overrides = {}) {
+  return {
+    modelSchema: LIBRARY_MODEL_SCHEMA,
+    modelVersion: LIBRARY_MODEL_VERSION,
+    targetEntityId,
+    snapshotId: 'snapshot-unbound',
+    completeness: 'complete',
+    stopReason: null,
+    current: true,
+    provenance: {
+      schema: LIBRARY_MODEL_PROVENANCE_SCHEMA,
+      providerId: 'test-library-provider',
+      providerVersion: '1.0.0',
+      evidenceIds: [`model:${targetEntityId}`],
+    },
+    memoryReadRegions: [],
+    memoryWriteRegions: [{
+      regionId: 'region_model',
+      regionKind: 'global-absolute',
+      broad: false,
+      addressSpaces: ['memory'],
+      source: 'library-model',
+      evidenceIds: [`effect:${targetEntityId}:write`],
+    }],
+    noreturn: false,
+    mayThrow: false,
+    ...overrides,
+  };
 }
 
 test('SCCs are condensed in reverse topological order', () => {
@@ -244,21 +277,42 @@ test('a library model fills in a callee the binary does not define', () => {
   const locals = buildSummaryGraph('missing-callee-summary');
   const solved = solveInterproceduralSummaries({
     roots: ['fn_caller'], localSummaries: locals,
-    libraryModels: new Map([['fn_absent', {
-      modelSchema: 'phase7-library-model',
-      modelVersion: '1',
-      memoryWriteRegions: [{ regionId: 'region_model', regionKind: 'global-absolute', source: 'library-model' }],
-      noreturn: false, mayThrow: false,
-    }]]),
+    libraryModels: new Map([['fn_absent', provenLibraryModel('fn_absent')]]),
   });
   const summary = solved.summaries.get('fn_caller');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
+  assert.ok(!summary.memoryWriteRegions.some((effect) => effect.broad));
   assert.equal(summary.status.completeness, 'complete');
 });
 
 test('an unproven library model cannot bypass the unknown-call fallback (#6074)', () => {
   const locals = buildSummaryGraph('missing-callee-summary');
-  for (const impostor of [null, undefined, {}, { modelSchema: 'phase7-library-model' }, { modelVersion: '1' }, []]) {
+  const valid = provenLibraryModel('fn_absent');
+  const impostors = [
+    ['null', null],
+    ['undefined', undefined],
+    ['array', []],
+    ['wrong schema', { ...valid, modelSchema: 'phase7-library-model-unknown' }],
+    ['wrong version', { ...valid, modelVersion: '2' }],
+    ['wrong target', { ...valid, targetEntityId: 'fn_other' }],
+    ['stale snapshot', { ...valid, snapshotId: 'snapshot-old' }],
+    ['incomplete status', { ...valid, completeness: 'partial', stopReason: 'evidence-missing' }],
+    ['not current', { ...valid, current: false }],
+    ['missing reads', { ...valid, memoryReadRegions: undefined }],
+    ['non-array writes', { ...valid, memoryWriteRegions: {} }],
+    ['malformed effect', {
+      ...valid,
+      memoryWriteRegions: [{ ...valid.memoryWriteRegions[0], source: 'proven-summary' }],
+    }],
+    ['invalid noreturn', { ...valid, noreturn: 'maybe' }],
+    ['invalid mayThrow', { ...valid, mayThrow: 1 }],
+    ['missing provenance', { ...valid, provenance: undefined }],
+    ['invalid provenance evidence', {
+      ...valid,
+      provenance: { ...valid.provenance, evidenceIds: 'not-an-array' },
+    }],
+  ];
+  for (const [label, impostor] of impostors) {
     const solved = solveInterproceduralSummaries({
       roots: ['fn_caller'], localSummaries: locals,
       libraryModels: new Map([['fn_absent', impostor]]),
@@ -266,9 +320,32 @@ test('an unproven library model cannot bypass the unknown-call fallback (#6074)'
     const summary = solved.summaries.get('fn_caller');
     assert.ok(summary.unknownCallEffects.some((effect) =>
       effect.reason === 'library-model-missing' && effect.targetEntityIds.includes('fn_absent')),
-    `an unproven model ${JSON.stringify(impostor)} must fall back to unknown-call`);
+    `${label} model must fall back to unknown-call`);
+    assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
+      `${label} model must retain the broad fallback`);
     assert.notEqual(summary.status.completeness, 'complete');
   }
+});
+
+test('a proven library model propagates through a recursive component (#6074)', () => {
+  const base = buildSummaryGraph('self-recursive');
+  const local = createFunctionSummary({
+    ...base.get('fn_self'),
+    directCalls: [
+      ...base.get('fn_self').directCalls,
+      { callSiteId: 'call_fn_self_model', targetEntityIds: ['fn_modeled'] },
+    ],
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['fn_self'],
+    localSummaries: new Map([['fn_self', local]]),
+    libraryModels: new Map([['fn_modeled', provenLibraryModel('fn_modeled')]]),
+  });
+  const summary = solved.summaries.get('fn_self');
+  assert.equal(summary.status.completeness, 'complete');
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_self'));
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
+  assert.equal(summary.unknownCallEffects.length, 0);
 });
 
 test('cancellation publishes nothing complete', () => {

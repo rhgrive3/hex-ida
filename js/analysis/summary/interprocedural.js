@@ -33,7 +33,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.1.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -130,6 +130,121 @@ function broadEffect(source, addressSpaces = ['memory']) {
 /** Authority rank: lower wins, because proven evidence outranks a model. */
 const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
 
+/**
+ * Versioned external-model wire contract. A model is authority only when its
+ * identity is bound to the requested target and snapshot, its producer says
+ * it is current and complete, and every effect/control fact is validated.
+ * Empty arrays are valid explicit evidence of absence; omitted or malformed
+ * arrays are not evidence at all and must keep the unknown-call fallback.
+ */
+export const LIBRARY_MODEL_SCHEMA = 'phase7-library-model';
+export const LIBRARY_MODEL_VERSION = '1';
+export const LIBRARY_MODEL_PROVENANCE_SCHEMA = 'phase7-library-model-provenance';
+
+function isPlainRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function nonEmptyModelString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function canonicalModelEvidenceIds(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const entries = Array.from(values);
+  if (!entries.every(nonEmptyModelString)) return null;
+  return [...new Set(entries.map((value) => value.trim()))].sort();
+}
+
+function validateLibraryModelEffect(effect) {
+  if (!isPlainRecord(effect)
+    || effect.source !== 'library-model'
+    || typeof effect.broad !== 'boolean'
+    || (effect.broad !== true && !nonEmptyModelString(effect.regionId))) {
+    return null;
+  }
+  if (!Array.isArray(effect.addressSpaces) || !Array.isArray(effect.evidenceIds)) return null;
+  const addressSpaces = Array.from(effect.addressSpaces);
+  const evidenceIds = Array.from(effect.evidenceIds);
+  if (addressSpaces.length === 0 || !addressSpaces.every(nonEmptyModelString)
+    || evidenceIds.length === 0 || !evidenceIds.every(nonEmptyModelString)) return null;
+  try {
+    const normalized = createMemoryEffect({ ...effect, addressSpaces, evidenceIds });
+    if (normalized.source !== 'library-model'
+      || normalized.addressSpaces.length === 0
+      || normalized.evidenceIds.length === 0) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validates and normalizes the canonical library-model contract for one call
+ * target. Returning null is deliberate: malformed, stale, incomplete, or
+ * mis-bound models follow the same fail-closed path as a missing model.
+ */
+export function validateLibraryModel(model, { targetEntityId, snapshotId } = {}) {
+  try {
+    const target = typeof targetEntityId === 'string' ? targetEntityId.trim() : '';
+    const snapshot = typeof snapshotId === 'string' ? snapshotId.trim() : '';
+    if (!isPlainRecord(model)
+      || model.modelSchema !== LIBRARY_MODEL_SCHEMA
+      || model.modelVersion !== LIBRARY_MODEL_VERSION
+      || !target
+      || model.targetEntityId !== target
+      || !snapshot
+      || model.snapshotId !== snapshot
+      || model.completeness !== 'complete'
+      || model.stopReason !== null
+      || model.current !== true
+      || !isPlainRecord(model.provenance)
+      || model.provenance.schema !== LIBRARY_MODEL_PROVENANCE_SCHEMA
+      || !nonEmptyModelString(model.provenance.providerId)
+      || !nonEmptyModelString(model.provenance.providerVersion)) {
+      return null;
+    }
+
+    const provenanceEvidenceIds = canonicalModelEvidenceIds(model.provenance.evidenceIds);
+    if (!provenanceEvidenceIds
+      || !Array.isArray(model.memoryReadRegions)
+      || !Array.isArray(model.memoryWriteRegions)
+      || ![true, false, 'unknown'].includes(model.noreturn)
+      || ![true, false, 'unknown'].includes(model.mayThrow)) {
+      return null;
+    }
+
+    const normalizeEffects = (values) => Array.from(values, validateLibraryModelEffect).map((effect) => {
+      if (!effect) return null;
+      return createMemoryEffect({
+        ...effect,
+        evidenceIds: [...new Set([...effect.evidenceIds, ...provenanceEvidenceIds])],
+      });
+    });
+    const memoryReadRegions = normalizeEffects(model.memoryReadRegions);
+    const memoryWriteRegions = normalizeEffects(model.memoryWriteRegions);
+    if (memoryReadRegions.some((effect) => effect == null)
+      || memoryWriteRegions.some((effect) => effect == null)) return null;
+
+    return Object.freeze({
+      memoryReadRegions: Object.freeze(memoryReadRegions),
+      memoryWriteRegions: Object.freeze(memoryWriteRegions),
+      noreturn: model.noreturn,
+      mayThrow: model.mayThrow,
+    });
+  } catch {
+    // Treat hostile getters, proxies, and future-shaped values as missing
+    // evidence rather than allowing untrusted model input to escape the gate.
+    return null;
+  }
+}
+
 function strongestSource(left, right) {
   const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
   const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
@@ -190,21 +305,6 @@ function mergeEffects(lists, cap) {
 function unionKnowledge(values) {
   if (values.some((value) => value === 'unknown')) return 'unknown';
   return values.some((value) => value === true);
-}
-
-/**
- * Minimum proof that a library-model entry is a versioned external model and
- * not an accidental empty/shapeless value (P7-INV-004). A model that cannot
- * prove its identity is never consulted: an unproven model is exactly as
- * trustworthy as a missing one, and a missing callee falls back to the
- * conservative unknown-call effect.
- */
-function isProvenLibraryModel(model) {
-  if (!model || typeof model !== 'object' || Array.isArray(model)) return false;
-  return typeof model.modelVersion === 'string'
-    && !!model.modelVersion.trim()
-    && typeof model.modelSchema === 'string'
-    && !!model.modelSchema.trim();
 }
 
 /**
@@ -293,7 +393,7 @@ export function solveInterproceduralSummaries({
       totalIterations += 1;
       changed = false;
       for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status });
+        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId });
         const digest = functionSummaryDigest(next);
         if (componentDigests.get(functionId) !== digest) {
           componentDigests.set(functionId, digest);
@@ -311,7 +411,7 @@ export function solveInterproceduralSummaries({
       // result instead of a plausible-looking complete one (P7-INV-010).
       for (const functionId of component) {
         solved.set(functionId, composeSummary({
-          functionId, locals, models, solved, component, limits, status, unconverged: true,
+          functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true,
         }));
       }
       worstStopReason = 'iteration-limit';
@@ -334,7 +434,7 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, unconverged = false }) {
+function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
 
@@ -376,13 +476,16 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       const model = models.get(target);
-      if (model && !locals.has(target) && isProvenLibraryModel(model)) {
+      const validatedModel = model && !locals.has(target)
+        ? validateLibraryModel(model, { targetEntityId: target, snapshotId })
+        : null;
+      if (validatedModel) {
         // A library model applies only where the binary does not define the
         // callee, so it can never override contradictory binary evidence.
-        reads.push(model.memoryReadRegions ?? []);
-        writes.push(model.memoryWriteRegions ?? []);
-        noreturn.push(model.noreturn ?? 'unknown');
-        mayThrow.push(model.mayThrow ?? 'unknown');
+        reads.push(validatedModel.memoryReadRegions);
+        writes.push(validatedModel.memoryWriteRegions);
+        noreturn.push(validatedModel.noreturn);
+        mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
@@ -405,11 +508,14 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       }
       if (component.includes(candidate)) continue;
       const model = models.get(candidate);
-      if (model && !locals.has(candidate) && isProvenLibraryModel(model)) {
-        reads.push(model.memoryReadRegions ?? []);
-        writes.push(model.memoryWriteRegions ?? []);
-        noreturn.push(model.noreturn ?? 'unknown');
-        mayThrow.push(model.mayThrow ?? 'unknown');
+      const validatedModel = model && !locals.has(candidate)
+        ? validateLibraryModel(model, { targetEntityId: candidate, snapshotId })
+        : null;
+      if (validatedModel) {
+        reads.push(validatedModel.memoryReadRegions);
+        writes.push(validatedModel.memoryWriteRegions);
+        noreturn.push(validatedModel.noreturn);
+        mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
