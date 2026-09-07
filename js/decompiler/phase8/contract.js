@@ -91,6 +91,11 @@ const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const STATUS_SET = new Set(PASS_STATUSES);
 const COMPLETENESS_SET = new Set(COMPLETENESS);
 const BUDGET_SET = new Set(BUDGET_CLASSES);
+const PASS_RESULT_KEYS = new Set([
+  'contractVersion', 'passId', 'passVersion', 'stage', 'status', 'changed',
+  'completeness', 'transforms', 'diagnostics', 'invalidated', 'produced',
+  'preserved', 'stopReason',
+]);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -263,6 +268,81 @@ export function unchangedResult(descriptor, { completeness = 'complete', diagnos
   return createPassResult({ descriptor, status: 'unchanged', changed: false, completeness, diagnostics, stopReason });
 }
 
+const PASS_RESULT_SNAPSHOT_NODE_LIMIT = 10_000;
+
+function snapshotPassResultData(value) {
+  const active = new Set();
+  const cloned = new Map();
+  let nodes = 0;
+
+  const clone = (current) => {
+    if (current == null || typeof current !== 'object') return current;
+    if (active.has(current)) throw new TypeError('phase8-pass-result-cycle');
+    if (cloned.has(current)) return cloned.get(current);
+    if (nodes >= PASS_RESULT_SNAPSHOT_NODE_LIMIT) throw new TypeError('phase8-pass-result-too-large');
+    nodes += 1;
+
+    const array = Array.isArray(current);
+    const prototype = Object.getPrototypeOf(current);
+    if (array ? prototype !== Array.prototype : (prototype !== Object.prototype && prototype !== null)) {
+      throw new TypeError('phase8-pass-result-non-data-object');
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(current);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== 'string')) throw new TypeError('phase8-pass-result-symbol-property');
+
+    active.add(current);
+    try {
+      if (array) {
+        const lengthDescriptor = descriptors.length;
+        if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')
+          || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+          throw new TypeError('phase8-pass-result-array-length-invalid');
+        }
+        const length = lengthDescriptor.value;
+        if (keys.length !== length + 1) throw new TypeError('phase8-pass-result-array-shape-invalid');
+        const copy = new Array(length);
+        for (let index = 0; index < length; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+            throw new TypeError('phase8-pass-result-accessor');
+          }
+          copy[index] = clone(descriptor.value);
+        }
+        const frozen = Object.freeze(copy);
+        cloned.set(current, frozen);
+        return frozen;
+      }
+
+      const copy = Object.create(null);
+      for (const key of keys) {
+        const descriptor = descriptors[key];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+          throw new TypeError('phase8-pass-result-accessor');
+        }
+        Object.defineProperty(copy, key, {
+          value: clone(descriptor.value),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      const frozen = Object.freeze(copy);
+      cloned.set(current, frozen);
+      return frozen;
+    } finally {
+      active.delete(current);
+    }
+  };
+
+  try {
+    return clone(value);
+  } catch {
+    return null;
+  }
+}
+
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.length > 0;
 }
@@ -273,9 +353,11 @@ function isNonEmptyString(value) {
  * Guaranteed never to call `.toString()`, `.valueOf()`, getters, or convert
  * objects into strings or numbers.
  */
-export function isCanonicalPassResult(result) {
+function isCanonicalPassResultOwned(result) {
   try {
     if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
+    const keys = Reflect.ownKeys(result);
+    if (keys.some((key) => typeof key !== 'string' || !PASS_RESULT_KEYS.has(key))) return false;
     if (result.contractVersion !== PHASE8_CONTRACT_VERSION) return false;
     if (!isNonEmptyString(result.passId)) return false;
     if (!isNonEmptyString(result.passVersion)) return false;
@@ -351,4 +433,10 @@ export function isCanonicalPassResult(result) {
   } catch {
     return false;
   }
+}
+
+
+/** Returns whether an untrusted pass result is a canonical, owned data value. */
+export function isCanonicalPassResult(result) {
+  return snapshotPassResultData(result) != null && isCanonicalPassResultOwned(snapshotPassResultData(result));
 }
