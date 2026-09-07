@@ -276,8 +276,14 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
 
     stackOffset = alignUp(stackOffset, c.alignmentBytes);
-    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, c.elementBytes ?? 0) : null;
-    const stackBytes = c.homogeneous ? homogeneousStackElementBytes * c.members
+    /* Apple ARM64 stack arguments consume compact slots of their natural
+     * layout, not 8-byte-padded registers ("Function arguments may consume
+     * slots on the stack that are not multiples of 8 bytes"). An HFA/HVA that
+     * spills keeps its canonical member packing (float[4] = 16 bytes at
+     * offsets 0/4/8/12) and the next argument starts right after it, so the
+     * per-member slot width is the element's own size, never a widened 8. */
+    const homogeneousStackElementBytes = c.homogeneous ? (c.elementBytes ?? 0) : null;
+    const stackBytes = c.homogeneous ? Math.max(c.bytes ?? 0, homogeneousStackElementBytes * c.members)
       : c.aggregate ? Math.max(8, Math.ceil((c.aggregateBytes ?? c.bytes) / 8) * 8)
         : c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
     const entry = {
