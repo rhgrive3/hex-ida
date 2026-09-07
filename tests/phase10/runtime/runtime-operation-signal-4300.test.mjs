@@ -137,3 +137,69 @@ test('valid AbortSignal pre-abort and in-flight abort keep controller cleanup se
     assert.equal(session.controllers.size, 0);
   }
 });
+
+class ImmediateTraceAdapter extends DebugAdapter {
+  constructor({ error = null } = {}) {
+    super({ id:'runtime-signal-4300-immediate', kind:'test', capabilities:{ traceFunction:true } });
+    this.error = error;
+  }
+
+  async trace() {
+    if (this.error) throw this.error;
+    return { events:[] };
+  }
+}
+
+class ImmediateExperimentAdapter extends DebugAdapter {
+  constructor() {
+    super({ id:'runtime-signal-4300-experiment', kind:'test', capabilities:{ launch:true, resume:true } });
+  }
+
+  async launch() {}
+
+  async resume() {
+    return { stop:{ kind:'halt' }, memoryDelta:[], memoryAfter:[], returnValue:null };
+  }
+}
+
+function throwingDetachSignal() {
+  return {
+    aborted:false,
+    addEventListener() {},
+    removeEventListener() { throw new Error('detach-failed'); },
+  };
+}
+
+test('release never masks success, operation errors, or verifyHypothesis outcomes (#4300)', async () => {
+  {
+    const adapter = new ImmediateTraceAdapter();
+    const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+    const session = await platform.startSession({ adapter, binaryHash:'fixture:4300-success', connect:false });
+    const result = await platform.traceFunction(0x1000n, { signal:throwingDetachSignal() });
+    assert.deepEqual(result.trace, { events:[] });
+    assert.equal(session.controllers.size, 0);
+  }
+
+  {
+    const adapter = new ImmediateTraceAdapter({ error:new DebugAdapterError('engine-failed', 'engine-failed') });
+    const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+    const session = await platform.startSession({ adapter, binaryHash:'fixture:4300-error', connect:false });
+    await assert.rejects(
+      platform.traceFunction(0x1000n, { signal:throwingDetachSignal() }),
+      (error) => error instanceof DebugAdapterError && error.code === 'engine-failed',
+    );
+    assert.equal(session.controllers.size, 0);
+  }
+
+  {
+    const adapter = new ImmediateExperimentAdapter();
+    const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+    const session = await platform.startSession({ adapter, binaryHash:'fixture:4300-hypothesis', connect:false });
+    const result = await platform.verifyHypothesis(
+      { id:'hypothesis:4300', functionAddress:0x1000n, fieldOffset:null },
+      { signal:throwingDetachSignal() },
+    );
+    assert.equal(result.experimentId, 'hypothesis:4300');
+    assert.equal(session.controllers.size, 0);
+  }
+});
