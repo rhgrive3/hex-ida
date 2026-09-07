@@ -110,6 +110,7 @@ test('issue #4396: TraceProvider envelope fields agree with the shared legacy no
       value: 9,
       threadKey: 'data-thread',
     },
+    epoch: 1,
     streamId: 'stream-9',
     sequence: 9,
     providerEventId: 'provider-event-9',
@@ -125,6 +126,7 @@ test('issue #4396: TraceProvider envelope fields agree with the shared legacy no
   };
 
   const [traceEvent] = await replay([envelope]);
+  assert.equal(traceEvent.sessionEpoch, 1, 'explicit protocol epoch must be preserved');
   const sharedEvent = normalizeLegacyRuntimeEvent(envelope, {
     runtimeSessionId: traceEvent.runtimeSessionId,
     providerId: traceEvent.providerId,

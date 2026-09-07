@@ -118,6 +118,7 @@ function normalizedEventFromRecord(record, context, index) {
   const truncated = record?.truncated === true || source?.truncated === true || rawType === 'stream-truncated';
   return createRuntimeEvent({
     ...context,
+    sessionEpoch: envelopeValue('epoch') ?? context.sessionEpoch,
     eventId: envelopeValue('eventId'),
     streamId: envelopeValue('streamId') ?? envelopeValue('threadKey') ?? 'trace',
     sequence: envelopeValue('sequence') ?? index,
