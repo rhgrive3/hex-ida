@@ -3,7 +3,10 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
 } from '../../../../semantics/effects/index.js';
-import { isX87Instruction, isX87RflagsInstruction } from './extended-state-helpers.js';
+import {
+  isX87RflagsInstruction,
+  X87_FAMILIES,
+} from './extended-state-helpers.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -76,17 +79,35 @@ function decoderRegisterSets(instruction) {
   return { reads, writes };
 }
 
-function flagSets(instruction, family) {
+function isX87ByIdentity(instruction, family) {
+  const normalizedFamily = String(
+    family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '',
+  ).toLowerCase();
+  if (X87_FAMILIES.has(normalizedFamily)) return true;
+  const groups = instruction?.detail?.groups;
+  return Array.isArray(groups)
+    && groups.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
+}
+
+function flagDomain(instruction, family) {
+  const isX87 = isX87ByIdentity(instruction, family);
+  const usesRflags = isX87RflagsInstruction(instruction, family);
+  const expected = isX87 && !usesRflags ? 'fpu-flags' : 'eflags';
+  return Object.freeze({
+    isX87,
+    usesRflags,
+    usesFpuFlags:expected === 'fpu-flags',
+    valid:instruction?.detail?.flagsKind === expected,
+  });
+}
+
+function flagSets(instruction, domain) {
   const reads = new Set();
   const writes = new Set();
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
 
-  const isX87 = isX87Instruction(instruction, family);
-  const usesRflags = isX87RflagsInstruction(instruction, family);
-  const usesFpuFlags = (instruction?.detail?.flagsKind === 'fpu-flags' || isX87) && !usesRflags;
-
-  if (usesFpuFlags) {
+  if (domain.usesFpuFlags) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {
       if (bit(raw, test)) reads.add(`fpsw.${name.toLowerCase()}`);
       if (bit(raw, modify) || bit(raw, reset) || bit(raw, set) || bit(raw, undef)) writes.add(`fpsw.${name.toLowerCase()}`);
@@ -215,7 +236,7 @@ function memorySummary(accesses) {
 }
 
 function hiddenState(ownerId, family, registersRead, registersWritten, instruction) {
-  if (isX87Instruction(instruction, family)) {
+  if (isX87ByIdentity(instruction, family)) {
     registersRead.add('x86.x87.environment');
     registersWritten.add('x86.x87.environment');
   }
@@ -277,19 +298,18 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const controlEffect = promotedControlEffect(partial, instruction, ownerId);
   if (!controlEffect) return partial;
 
+  const domain = flagDomain(instruction, family);
+  if (!domain.valid) return partial;
   const registers = decoderRegisterSets(instruction);
-  const flags = flagSets(instruction, family);
-  const isX87 = isX87Instruction(instruction, family);
-  const usesRflags = isX87RflagsInstruction(instruction, family);
-  const usesFpuFlags = (instruction?.detail?.flagsKind === 'fpu-flags' || isX87) && !usesRflags;
+  const flags = flagSets(instruction, domain);
   for (const value of flags.reads) {
-    if (usesFpuFlags && value.startsWith('rflags.')) return partial;
-    if (!usesFpuFlags && value.startsWith('fpsw.')) return partial;
+    if (domain.usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!domain.usesFpuFlags && value.startsWith('fpsw.')) return partial;
     registers.reads.add(value);
   }
   for (const value of flags.writes) {
-    if (usesFpuFlags && value.startsWith('rflags.')) return partial;
-    if (!usesFpuFlags && value.startsWith('fpsw.')) return partial;
+    if (domain.usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!domain.usesFpuFlags && value.startsWith('fpsw.')) return partial;
     registers.writes.add(value);
   }
   hiddenState(ownerId, family, registers.reads, registers.writes, instruction);

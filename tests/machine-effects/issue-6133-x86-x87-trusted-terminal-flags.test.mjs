@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { closeTrustedX86Partial } from '../../js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js';
 import { isX87Instruction, isX87RflagsInstruction, X87_FAMILIES } from '../../js/targets/architecture/x86_64/effects/extended-state-helpers.js';
 
 const capstone = await createCapstoneX86Session();
@@ -16,6 +17,7 @@ try {
     const decoded = createX86DecodedInstruction(capstone.decode(raw, 0x1000n)[0]);
     assert.equal(decoded.mnemonic, mnemonic);
     assert.ok(isX87Instruction(decoded, mnemonic));
+    assert.equal(decoded.detail?.flagsKind, 'fpu-flags');
     const effects = liftX86MachineEffects(decoded, { instructionId: `issue-6133:${mnemonic}` });
     assert.equal(effects.completeness, 'exact-with-intrinsic');
     const summary = effects.operations[0].effectSummary;
@@ -85,6 +87,45 @@ try {
   const randomFlags = randomEffects.operations[0].effectSummary.registersWritten;
   assert.ok(hasRflags(randomFlags));
   assert.ok(!hasFpswFlags(randomFlags));
+
+  // A forged or stale flagsKind must not override the architectural identity
+  // inferred from the family and decoder groups. Both mismatch directions
+  // remain partial so trusted terminalization stays fail-closed.
+  const mismatchPartial = (family) => Object.freeze({
+    instructionId:`issue-6133:mismatch:${family}`,
+    architectureId:'x86_64',
+    mode:'long-64',
+    completeness:'partial',
+    controlEffect:Object.freeze({ kind:'unknown', reason:'x86-effects-unproven' }),
+    possibleFaults:Object.freeze([]),
+  });
+  const trustedMismatch = (family, flagsKind, groups, rawBytes) => Object.freeze({
+    instructionFamily:family,
+    length:rawBytes.length,
+    rawBytes:Uint8Array.from(rawBytes),
+    decoderSemanticVersion:'capstone-5-x86-structured-v2',
+    detailAvailable:true,
+    detailStatus:'complete',
+    detail:Object.freeze({
+      abiContractVersion:'capstone-5-wasm32-x86-detail/v1',
+      operands:Object.freeze([]),
+      groups:Object.freeze(groups.map((name) => Object.freeze({ name }))),
+      eflags:0n,
+      flagsKind,
+    }),
+  });
+  const nonX87WithFpuFlags = closeTrustedX86Partial(
+    trustedMismatch('add', 'fpu-flags', [], [0x01, 0xd8]),
+    'integer',
+    mismatchPartial('add'),
+  );
+  assert.equal(nonX87WithFpuFlags.completeness, 'partial');
+  const x87WithEflags = closeTrustedX86Partial(
+    trustedMismatch('fsqrt', 'eflags', ['fpu'], [0xd9, 0xfa]),
+    'fp',
+    mismatchPartial('fsqrt'),
+  );
+  assert.equal(x87WithEflags.completeness, 'partial');
 
   console.log('issue #6133 x87 trusted terminal flags tests: PASS');
 } finally {

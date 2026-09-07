@@ -205,7 +205,11 @@
     const normalizedFamily = String(opcodeName || mnemonic || '').toLowerCase();
     const usesRflags = normalizedFamily.startsWith('fcmov')
       || ['fcomi', 'fcomip', 'fcompi', 'fucomi', 'fucomip', 'fucompi'].includes(normalizedFamily);
-    const flagsKind = isFpuGroup && !usesRflags ? 'fpu-flags' : 'eflags';
+    // Capstone omits the FPU group for some stack-register x87 forms (for
+    // example `fstp st(0)`). The x87 mnemonic namespace is still authoritative
+    // for the flag domain; retain EFLAGS only for the x87 families that use it.
+    const isX87Mnemonic = normalizedFamily.startsWith('f') || normalizedFamily === 'wait';
+    const flagsKind = (isFpuGroup || isX87Mnemonic) && !usesRflags ? 'fpu-flags' : 'eflags';
     const detail = Object.freeze({
       abiContractVersion:ABI.contractVersion,
       prefixes:Object.freeze({ legacy:legacyPrefixes, rex:u8(M, x86 + 8) || null, vector:vectorPrefix(rawBytes) }),
