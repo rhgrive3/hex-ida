@@ -320,6 +320,7 @@ test('issue 3749 integration: CFG and ABI consume one cached callsite prototype 
   assert.deepEqual(blockAt(blocks, 0).successors, [], 'fatal second call terminates the live block');
   assert.deepEqual(blockAt(blocks, 12).instructions.map(({ decoded:instruction }) => instruction.address), [12n, 16n]);
   const unknowns = semanticControlUnknowns(blocks, integrationPlugin, cfgOptions);
+  assert.deepEqual(unknowns, [], 'noreturn topology must stay complete: no missing-fallthrough control unknowns');
   assert.equal(resolverCalls, 2, 'control-completeness pass must reuse the cached authority');
 
   const abiAdapter = semanticAbiAdapter(integrationAbi, {
