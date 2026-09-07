@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
 import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
@@ -156,9 +156,57 @@ function canonicalBinding(input, { throwOnError = true } = {}) {
   }
 }
 
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function numberWitness(value) {
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Infinity) return '+Infinity';
+  if (value === -Infinity) return '-Infinity';
+  if (Object.is(value, -0)) return '-0';
+  return String(value);
+}
+
+// Observation identity must be sensitive to TYPES and canonical values, not
+// just core jsonSafe text. This wrapper preserves special-number distinctions
+// and gives Map/Set semantic collections insertion-order-independent material.
+function typeTagged(value, seen = new WeakSet()) {
+  if (value === null) return { $t: 'null' };
+  switch (typeof value) {
+    case 'bigint': return { $t: 'bigint', v: value.toString() };
+    case 'number': return { $t: 'number', v: numberWitness(value) };
+    case 'boolean': return { $t: 'boolean', v: value };
+    case 'string': return { $t: 'string', v: value };
+    case 'undefined': case 'function': case 'symbol': return { $t: typeof value };
+  }
+  if (seen.has(value)) fail('runtime-observation-cyclic-payload');
+  seen.add(value);
+  const nested = (item) => typeTagged(item, seen);
+  let out;
+  if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
+  else if (ArrayBuffer.isView(value)) out = { $t: value.constructor?.name ?? 'view', v: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+  else if (value instanceof ArrayBuffer) out = { $t: 'ArrayBuffer', v: Array.from(new Uint8Array(value)) };
+  else if (value instanceof Map) {
+    const entries = [...value.entries()].map(([key, item]) => [nested(key), nested(item)]);
+    entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
+    out = { $t: 'Map', v: entries };
+  } else if (value instanceof Set) {
+    const values = [...value].map(nested);
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
+    out = { $t: 'Set', v: values };
+  } else if (Array.isArray(value)) out = { $t: 'array', v: value.map(nested) };
+  else {
+    out = { $t: 'object' };
+    for (const key of Object.keys(value).sort()) out[key] = nested(value[key]);
+  }
+  seen.delete(value);
+  return out;
+}
+
 function observationIdentity(observation) {
   const payload = {};
-  for (const field of OBSERVATION_FIELDS) payload[field] = observation[field];
+  for (const field of OBSERVATION_FIELDS) payload[field] = typeTagged(observation[field]);
   return `runtime-observation:${stableDigest(payload)}`;
 }
 

@@ -74,6 +74,23 @@ export function createOffsetRange(min, max) {
 
 export const UNBOUNDED_RANGE = createOffsetRange(null, null);
 
+/**
+ * Canonical offset-range view for a points-to target (#6068).
+ *
+ * A caller-supplied `{min, max, exact:true}` would otherwise smuggle an
+ * internal invariant violation past `rangeRelation()`, which trusts `exact`
+ * and ignores `max` — manufacturing strong NoAlias for overlapping ranges or
+ * MustAlias for non-single locations. The range is rebuilt through
+ * `createOffsetRange`, so `exact` is re-derived from `min === max` instead of
+ * being taken on faith. End values pass through unchanged: a `null` end stays
+ * unbounded toward that side, so widening results are preserved.
+ */
+function canonicalOffsetRange(range) {
+  if (range == null) return UNBOUNDED_RANGE;
+  if (range === UNBOUNDED_RANGE) return range;
+  return createOffsetRange(range.min ?? null, range.max ?? null);
+}
+
 export function exactRange(value) {
   const v = big(value);
   if (v == null) return UNBOUNDED_RANGE;
@@ -269,7 +286,7 @@ export function createPointsToTarget(input = {}) {
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
       ? String(input.address)
       : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
-    offsetRange: input.offsetRange ?? UNBOUNDED_RANGE,
+    offsetRange: canonicalOffsetRange(input.offsetRange),
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
   };
@@ -320,7 +337,13 @@ export function provenSeparationAuthority(target) {
  */
 export function createPointsToSet(input = {}) {
   const top = input.top === true;
-  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => a.rootKey.localeCompare(b.rootKey));
+  // Canonical target order must be locale-independent: rootKey is a digest
+  // identity, and localeCompare() ranks non-ASCII identifiers differently per
+  // host locale (ICU collation), which would change both the canonical order
+  // and pointsToDigest() for the identical semantic set (#5715). UTF-16
+  // code-unit order is the same total order stableDigest's string encoding
+  // already uses elsewhere in the identity stack.
+  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
   const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
   // A loss reason outside the declared vocabulary would be an unexplainable
   // imprecision: the alias layer maps these onto proof reasons, and a free-form

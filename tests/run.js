@@ -2013,8 +2013,32 @@ test('EVIDENCE: 内訳の掛け算が、出している確からしさと一致�
    ──────────────────────────────────────────────────────────── */
 
 const {
-  verifyAccessor, fieldUse, verifyGuard, verifyFunctionHandlesField, selfRegisters,
+  verifyAccessor, fieldUse, verifyGuard, verifyFunctionHandlesField, selfRegisters, callsSelector,
 } = await import('../js/verify.js');
+
+test('VERIFY #3613: selector の正規表現は call ごとに独立し、呼出元の状態を保つ', () => {
+  const model = { calls: [{ selector: 'foo', row: 1 }, {}, null, { selector: 'foo', row: 2 }] };
+  for (const re of [/foo/, /foo/g, /foo/y, /foo/gy]) {
+    re.lastIndex = 2;
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const result = callsSelector(model, re);
+      eq(result.length, 2);
+      eq(result[0].row, 1);
+      eq(result[1].row, 2);
+      eq(re.lastIndex, 2, '呼出元の lastIndex を変更しない');
+    }
+  }
+});
+
+test('VERIFY #3613: sticky の先頭一致と通常検索の意味を保持する', () => {
+  const model = { calls: [{ selector: 'xfoo', row: 0 }, { selector: 'foo' }, { selector: '' }] };
+  eq(callsSelector(model, /foo/g).length, 2);
+  const sticky = callsSelector(model, /foo/y);
+  eq(sticky.length, 1);
+  eq(sticky[0].selector, 'foo');
+  eq(sticky[0].row, null);
+  eq(callsSelector(null, /foo/g).length, 0);
+});
 
 test('VERIFY: getter を逆アセンブルして、位置が合っているか確かめられる', () => {
   const getter = build(['ldr w0, [x0, #0x20]', 'ret']);
@@ -3405,6 +3429,33 @@ test('EXPR: 条件つき代入の条件を、比べた式として書く', async
   const text = render(vg.defAt(1, 'x2'), {});
   has(text, '== 5');
   ok(!/flag_/.test(text), '比較を復元できていない: ' + text);
+});
+
+test('EXPR: AArch64 の NV は常に真として条件つき代入を選ぶ', async () => {
+  const { buildValues, constOf } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'mov w0, #0',
+    'cmp w0, #0',
+    'csel w8, w1, w2, nv',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(4, 'x8');
+  eq(constOf(v), 11n, 'NV は常に真なので真側を選ぶ');
+});
+
+test('EXPR: NZCV が不明な条件つき代入は条件を保ったままにする', async () => {
+  const { buildValues, constOf, render } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'csel w8, w1, w2, eq',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(2, 'x8');
+  eq(constOf(v), null, 'NZCV 不明時に定数へ畳み込まない');
+  has(render(v, {}), 'flag_eq', 'NZCV 不明時の条件を保持する');
 });
 
 test('EXPR: 比べたものが分からなければ、min とは言わない', async () => {
