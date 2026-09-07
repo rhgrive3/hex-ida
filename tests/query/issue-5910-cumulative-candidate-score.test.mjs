@@ -164,16 +164,16 @@ function resultBatch(rows) {
   return { results: rows, complete: true, returned: rows.length, total: rows.length };
 }
 
-function makeIncrementalTools(path, target, stored, staged) {
+function makeIncrementalTools(path, target, stored, staged, targetRepeat = 3) {
   let functionCall = 0;
   let stringCall = 0;
   let xrefCall = 0;
   let callerCall = 0;
   let calleeCall = 0;
   const searchBatches = [
-    [...stored, ...staged, { addr: target }],
-    [{ addr: target }],
-    [{ addr: target }],
+    [...stored, ...staged, ...(targetRepeat >= 1 ? [{ addr: target }] : [])],
+    targetRepeat >= 2 ? [{ addr: target }] : [],
+    targetRepeat >= 3 ? [{ addr: target }] : [],
   ];
   const graphStored = Array.from({ length: 24 }, (_, index) => ({
     addr: 0xc0000000n + BigInt(index * 0x10),
@@ -192,13 +192,19 @@ function makeIncrementalTools(path, target, stored, staged) {
       return resultBatch([]);
     },
     async search_strings() {
-      if (path === 'string') return resultBatch(searchBatches[stringCall++] || []);
+      if (path === 'string') {
+        return resultBatch((searchBatches[stringCall++] || []).map((row) => ({ functionAddress: row.addr })));
+      }
       if (path === 'xref') return resultBatch([{ stringAddress: 0xf000n }]);
       return resultBatch([]);
     },
     async get_xrefs() {
       if (path !== 'xref') return { functions: [] };
-      return { functions: searchBatches[xrefCall++] || [] };
+      const rows = searchBatches[xrefCall++] || [];
+      return {
+        functions: rows,
+        completeness: { complete: true, coverage: 1, returned: rows.length, total: rows.length },
+      };
     },
     async get_callers() {
       if (path !== 'graph') return resultBatch([]);
@@ -297,7 +303,7 @@ test('issue-5910: incremental evidence is permutation-invariant with an equal-th
 
   const negative = await planAnalysisGoal(incrementalQuery, {}, {
     ...options,
-    tools: makeIncrementalTools('function', 0x9900n, stored, staged),
+    tools: makeIncrementalTools('function', 0x9900n, stored, staged, 1),
   });
   assert.equal(
     negative.candidates.some((row) => row.address === 0x9900n),
