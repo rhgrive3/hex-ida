@@ -145,7 +145,16 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
     if (ArrayBuffer.isView(value)) {
       const backingBuffer = viewBackingBuffer(value);
       if (isSharedArrayBuffer(backingBuffer)) fail('phase8-artifact-options-shared-buffer');
-      if (value instanceof DataView) {
+      let dataView = false;
+      if (typeof DATA_VIEW_BUFFER_GETTER === 'function') {
+        try {
+          // The intrinsic getter recognizes cross-realm DataViews, whereas
+          // instanceof only recognizes the current realm's constructor.
+          DATA_VIEW_BUFFER_GETTER.call(value);
+          dataView = true;
+        } catch {}
+      }
+      if (dataView) {
         // DataView has no intrinsic index elements; its canonical key material
         // is only its bytes, so any enumerable own property is invisible
         // semantic payload and must fail closed.
