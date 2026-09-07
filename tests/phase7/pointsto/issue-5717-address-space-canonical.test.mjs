@@ -5,6 +5,10 @@ import { createAnalysisStatus } from '../../../js/analysis/status.js';
 import { createPointsToSet, createPointsToTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
 import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
 
+// The five additional #5717 cases live in the original issue file so the
+// canonical Phase 7 runner executes them through this discovered test.
+import '../issue-5717-points-to-address-space-canonical.mjs';
+
 // #5717: createPointsToTarget() stored `addressSpace` verbatim, and alias
 // separation treats a differing addressSpace as a strong NoAlias. A trailing
 // space on 'memory ' therefore manufactured a distinct-space NoAlias with no

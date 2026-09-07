@@ -898,6 +898,13 @@ class App {
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
   async ensureStrings(onProgress) {
+    // Positional `(onProgress)` is the canonical signature; an options object
+    // with an `onProgress` field is tolerated exactly like ensureProgram so a
+    // legacy caller can never register a non-function as the backend progress
+    // callback (#5719).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     if (this.stringIndex) return this.stringIndex;
     const epoch = this.backend.gen;
     if (this.stringsBusy && this.stringsBusyEpoch === epoch) return this.stringsBusy;
@@ -947,7 +954,7 @@ class App {
         const remaining = collectionBudget.requestLimit();
         if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
-          onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+          progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
