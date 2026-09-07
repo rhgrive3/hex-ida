@@ -218,22 +218,36 @@ export async function executeTurn(input = {}, options = {}) {
       assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
       const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
-      await this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer });
-      await this.sessionStore.updateMemory(session.id, {
-        anchor: memoryAnchor(snapshot, scopeController.effectiveScope, this.localContext),
+      // Every asynchronous persistence boundary gets a pre/post binding check.
+      // The payloads below are snapshot-derived; a live workbench switch while
+      // a persistence adapter is awaiting cannot turn this turn into a normal
+      // completion or inject current runtime identity into old session memory.
+      const persistWithBindingCheck = async (operation) => {
+        assertLiveBindingsUnchanged(this.localContext, snapshot);
+        try {
+          return await operation();
+        } finally {
+          // A rejected write must still prove that the live binding did not
+          // drift before the rejection escapes this turn.
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
+        }
+      };
+      await persistWithBindingCheck(() => this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer }));
+      await persistWithBindingCheck(() => this.sessionStore.updateMemory(session.id, {
+        anchor: memoryAnchor(snapshot, scopeController.effectiveScope),
         confirmedFacts: result.evidence.filter((item) => item.status === 'verified').map((item) => ({ id: item.id, summary: item.summary || item.title, functionAddress: item.functionAddress })),
         activeHypotheses: result.hypotheses.filter((item) => item.status === 'open' || item.status === 'supported'),
         rejectedHypotheses: result.hypotheses.filter((item) => item.status === 'rejected'),
         unresolvedQuestions: result.followups,
         importantPriorActions: result.actions,
-      });
-      await this.sessionStore.update(session.id, {
+      }));
+      await persistWithBindingCheck(() => this.sessionStore.update(session.id, {
         effectiveScope: scopeController.effectiveScope, hypotheses: this.hypothesisStore.all(),
         confirmedFindings: typeof this.evidenceStore.byStatus === 'function'
           ? this.evidenceStore.byStatus('verified')
           : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
         lastActivity: activity[activity.length - 1] || null,
-      });
+      }));
       result.sessionId = session.id;
       return validateAIResult(result);
     } finally {

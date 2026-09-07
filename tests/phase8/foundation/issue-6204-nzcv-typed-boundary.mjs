@@ -65,6 +65,8 @@ assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, undefined), nul
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 
+assert.ok(buildNZCVConditionExpression('sub', 'eq', a32, b32));
+
 // Canonical builder results still hold.
 const addGe = buildNZCVConditionExpression('add', 'ge', a32, b32, 32);
 assert.equal(addGe.kind, 'intrinsic');
@@ -78,6 +80,7 @@ assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', null), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ''), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', undefined), null);
 assert.equal(renderNZCVCondition(['sub'], 'eq', 'a', 'b', 32), null);
+assert.equal(typeof renderNZCVCondition('sub', 'eq', 'a', 'b'), 'string');
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', 32), '(uint32_t)a == (uint32_t)b');
 assert.equal(renderNZCVCondition('sub', 'hs', 'a', 'b', 32), '(uint32_t)a >= (uint32_t)b');
 
