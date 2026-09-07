@@ -62,7 +62,7 @@ test('P10 entity identity: the witness names the path and the kind', () => {
   assert.deepEqual(lossyTypeWitness(1n), [['', 'bigint']]);
   assert.deepEqual(lossyTypeWitness({ offset: 1n }), [['.offset', 'bigint']]);
   assert.deepEqual(lossyTypeWitness([1n]), [['[0]', 'bigint']]);
-  assert.deepEqual(lossyTypeWitness({ b: 1n, a: Number.NaN }), [['.a', 'non-finite-number'], ['.b', 'bigint']]);
+  assert.deepEqual(lossyTypeWitness({ b: 1n, a: Number.NaN }), [['.a', 'number:nan'], ['.b', 'bigint']]);
 });
 
 test('P10 entity identity: a cyclic identity does not hang the witness', () => {
