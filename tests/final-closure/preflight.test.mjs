@@ -5563,6 +5563,63 @@ try {
   fs.rmSync(t058Revalidation.sandbox, { recursive: true, force: true });
 }
 
+// A moving-main reconciliation may replace a sealed owner blob only when the
+// integration tree carries the exact current-main blob.  This regression
+// keeps that narrow exception separate from arbitrary post-handoff edits.
+function verifyCurrentMainExactReplacementSeal() {
+  const fixture = createPostT060RefreshFixture();
+  const root = fixture.candidate;
+  const workflowPath = '.github/workflows/ui-regression.yml';
+  const inventoryPath = 'specs/005-analysis-final-closure/contracts/integration-inventory.json';
+  try {
+    git(root, ['switch', '--quiet', '--detach', fixture.refreshMainSha]);
+    write(root, workflowPath, 'current-main exact replacement\n');
+    const replacementMainSha = commitAll(root, 'advance current main with exact owner replacement');
+    git(root, ['switch', '--quiet', '--detach', fixture.refreshIntegrationHeadSha]);
+    const merge = spawnSync(
+      'git', ['merge', '--no-ff', '--no-commit', replacementMainSha],
+      { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    );
+    assert.equal(merge.status, 0, `exact current-main replacement merge must be clean:\n${merge.stderr}`);
+    const replacementIntegrationSha = commitAll(root, 'merge exact current-main owner replacement');
+    const inventory = JSON.parse(readGitBlob(root, replacementIntegrationSha, inventoryPath));
+    const handoffResult = {
+      taskHandoffResult: {
+        handoffs: {
+          T046: inventory.taskHandoffs.T046,
+          T051: inventory.taskHandoffs.T051,
+        },
+        completedTaskIds: ['T046', 'T051'],
+        inventoryEntries: [{ path: workflowPath, ownerTaskId: 'T051' }],
+      },
+    };
+    assert.throws(
+      () => verifyTaskHandoffs(root, handoffResult, replacementIntegrationSha),
+      /task-handoff-owned-path-changed:T051:/,
+      'a sealed owner path remains rejected without the explicit current-main identity',
+    );
+    const accepted = verifyTaskHandoffs(root, handoffResult, replacementIntegrationSha, {
+      currentMainSha: replacementMainSha,
+    });
+    assert.deepEqual(accepted.currentMainReplacementPaths, [workflowPath]);
+
+    git(root, ['switch', '--quiet', '--detach', replacementIntegrationSha]);
+    write(root, workflowPath, 'arbitrary integration rewrite\n');
+    const mutatedIntegrationSha = commitAll(root, 'reject arbitrary sealed owner rewrite');
+    assert.throws(
+      () => verifyTaskHandoffs(root, handoffResult, mutatedIntegrationSha, {
+        currentMainSha: replacementMainSha,
+      }),
+      /task-handoff-owned-path-changed:T051:/,
+      'current-main identity cannot authorize an arbitrary replacement blob',
+    );
+  } finally {
+    fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+  }
+}
+
+verifyCurrentMainExactReplacementSeal();
+
 const widenedT058Revalidation = createT058RevalidationFixture({ widenOwnership: true });
 try {
   assert.throws(() => verifyT058Revalidation(widenedT058Revalidation.candidate,
