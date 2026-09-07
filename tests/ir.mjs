@@ -44,7 +44,7 @@ function asm(lines, base = BASE) {
   });
 }
 
-function build(lines, base = BASE) {
+function build(lines, base = BASE, options = {}) {
   const rowOfAddress = (addr) => {
     const rel = addr - base;
     if (rel < 0n || rel >= BigInt(lines.length) * 4n) return null;
@@ -53,7 +53,7 @@ function build(lines, base = BASE) {
   const model = buildSemanticModel(asm(lines, base), {
     startRow: 0, endRow: lines.length - 1, rowOfAddress,
   });
-  return { model, ir: buildIR(model, { rowOfAddress }) };
+  return { model, ir: buildIR(model, { rowOfAddress, ...options }) };
 }
 
 const insts = (ir, op) => ir.instructions.filter((i) => i.op === op);
@@ -152,7 +152,44 @@ test('MemSSA: 呼び出しをまたぐとフィールドは壊れる（古い値
   ok(!load.reachingStore, '呼び出し後は store が届かない');
 });
 
-test('MemSSA: スタック変数は呼び出しをまたいでも生き残る（番地を渡していないとき）', () => {
+test('MemSSA: a proven frame-backed slot forwards its constant in default v2', () => {
+  const { ir } = build([
+    'stp x29, x30, [sp, #-32]!',
+    'mov x29, sp',
+    'mov w8, #5',
+    'str w8, [sp, #0x18]',
+    'ldr w9, [sp, #0x18]',
+    'ldp x29, x30, [sp], #32',
+    'ret',
+  ]);
+  const load = insts(ir, OP.LOAD)[0];
+  eq(load.reachingStore?.row, 3, 'the proven slot reaches its own store');
+  eq(load.memoryForwarding?.status, 'exact', 'canonical same-slot proof remains exact');
+  eq(load.dst.const, 5n, 'a proven store/load pair still propagates its constant');
+});
+
+test('MemSSA: frame-backed private stack slot survives an opaque call (legacy compatibility proof)', () => {
+  const { ir } = build([
+    'stp x29, x30, [sp, #-32]!',
+    'mov x29, sp',
+    'mov w8, #5',
+    'str w8, [sp, #0x18]',
+    'bl #0x100001000',
+    'ldr w9, [sp, #0x18]',
+    'ldp x29, x30, [sp], #32',
+    'ret',
+  ], BASE, { semanticMigrationMode: 'legacy-v1' });
+  const load = insts(ir, OP.LOAD)[0];
+  const call = insts(ir, OP.CALL)[0];
+  ok(load.reachingStore, 'frame-backed private stack store survives: \n' + irText(ir));
+  eq(load.reachingStore.row, 3, 'the framed slot is the reaching store');
+  eq(load.reachingStore.args?.[0]?.value?.const ?? null, 5n,
+    'the store keeps the exact constant source');
+  ok(!(call?.memKills ?? []).some((loc) => loc?.kind === 'stack'),
+    'the proven private slot is not clobbered by compatibility repair');
+});
+
+test('MemSSA: an unframed sp slot remains unknown across an opaque call', () => {
   const { ir } = build([
     'mov w8, #5',
     'str w8, [sp, #0x8]',
@@ -161,8 +198,10 @@ test('MemSSA: スタック変数は呼び出しをまたいでも生き残る（
     'ret',
   ]);
   const load = insts(ir, OP.LOAD)[0];
-  ok(load.reachingStore, 'スタックの値は残る: \n' + irText(ir));
-  eq(load.dst.const, 5n, 'スタック経由で定数が届く');
+  ok(!load.reachingStore, 'an unframed caller stack slot has no private proof: \n' + irText(ir));
+  eq(load.memoryForwarding?.status, 'unknown', 'an unframed slot remains unknown');
+  eq(load.memUse?.kind, 'clobber', 'the opaque call remains a memory barrier');
+  eq(load.dst?.const ?? null, null, 'an unproven stack value is not propagated');
 });
 
 test('MemSSA: スタック番地を呼び出しへ渡すと exact forwarding を拒否する', () => {
