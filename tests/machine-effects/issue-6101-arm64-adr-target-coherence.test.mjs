@@ -99,7 +99,28 @@ import { liftArm64MachineEffects } from "../../js/targets/architecture/arm64/eff
   assert.equal(effects.operations[0].value.value, "4100");
 }
 
-// 6: ADRP numeric other.text / page target conflict -> fail-closed
+// 6: ADRP numeric other.text / matching page target -> exact maintained
+{
+  const insn = {
+    mnemonic: "adrp",
+    address: 0x1000n,
+    length: 4,
+    pcRelTarget: 0x2000n,
+    ops: [
+      { k: "reg", cls: "gp", num: 0, bits: 64 },
+      { k: "other", text: "0x2000" },
+    ],
+    origin: { instructionIds: ["adrp-other-match"] },
+  };
+  const effects = liftArm64MachineEffects(insn, { instructionId: "test:adrp:match" });
+  assert.ok(effects);
+  assert.equal(effects.completeness, "exact");
+  assert.equal(effects.operations[0].kind, "register-write");
+  assert.equal(effects.operations[0].register.registerId, "x0");
+  assert.equal(effects.operations[0].value.value, "8192");
+}
+
+// 7: ADRP numeric other.text / page target conflict -> fail-closed
 {
   const insn = {
     mnemonic: "adrp",
