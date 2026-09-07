@@ -159,7 +159,8 @@ function completenessOf(value, fallback = 'complete') {
 
   const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
   const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
-  if (recognized.length === 0) return hasInvalidString ? 'partial' : fallback;
+  if (hasInvalidString) recognized.push('partial');
+  if (recognized.length === 0) return fallback;
   return recognized.reduce((strongest, item) => (
     COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
   ));

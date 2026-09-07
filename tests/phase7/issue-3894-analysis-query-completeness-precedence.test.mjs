@@ -55,3 +55,11 @@ test('invalid completeness strings fail closed', async () => {
   const result = await searchStatus({ status:{ completeness:'future-status' } });
   assert.equal(result.status.completeness, 'partial');
 });
+
+test('invalid completeness evidence overrides contradictory complete status', async () => {
+  const result = await searchStatus({ status:{ completeness:'complete' }, completeness:'future-status' });
+  assert.equal(result.status.completeness, 'partial');
+
+  const stronger = await searchStatus({ status:{ completeness:'unsupported' }, completeness:'future-status' });
+  assert.equal(stronger.status.completeness, 'unsupported');
+});
