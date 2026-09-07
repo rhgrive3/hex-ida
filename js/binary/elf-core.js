@@ -440,20 +440,83 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
 }
 
 function parseDynamic(r, sec, sections, image, bits, budget) {
-  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;
-  const minEnt=BigInt(bits===64?16:8),rawEnt=sec.entsize||minEnt;
-  if(rawEnt<minEnt){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);return;}
-  const ent=safeOffset(rawEnt);if(ent==null||!ent){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);return;}
-  const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
-  const declaredBig=sec.size/rawEnt,fileCapacity=Math.floor((r.length-start)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
-  if(declaredBig>BigInt(fileCapacity))budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
-  for(let i=0;i<count;i++){
-    if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
-    const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
-    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=terminatedStringInTable(r,strStart,strSize,off,max);if(name==null&&off<strSize){budget.partial(`dynamic-section:${sec.index}:unterminated-string`,`ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`);continue;}if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
+  const minEnt = BigInt(bits === 64 ? 16 : 8);
+  const rawEnt = sec.entsize || minEnt;
+  if (rawEnt < minEnt) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);
+    return;
+  }
+  const ent = safeOffset(rawEnt);
+  if (ent == null || !ent) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);
+    return;
+  }
+
+  // Processor-specific tags are still authoritative evidence when a section
+  // has no usable string-table link. Decode the dynamic table before applying
+  // optional string lookups so section-backed DT_RISCV_VARIANT_CC cannot be
+  // lost behind an unrelated string-table validation failure.
+  const start = safeOffset(sec.offset);
+  if (start == null || start > r.length) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC ${sec.index} has an invalid file span`);
+    return;
+  }
+  const declaredBig = sec.size / rawEnt;
+  const fileCapacity = Math.floor((r.length - start) / ent);
+  const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
+  const count = Math.min(declared, fileCapacity);
+  if (declaredBig > BigInt(fileCapacity)) {
+    budget.partial(`dynamic-section:${sec.index}:truncated`, `ELF SHT_DYNAMIC exceeds its file-backed capacity`);
+  }
+
+  const str = sections[sec.link];
+  const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
+  const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
+  const stringTableValid = str?.type === SHT_STRTAB
+    && strStart != null
+    && strSize != null
+    && strStart <= r.length
+    && strSize <= r.length - strStart;
+  if (str?.type === SHT_STRTAB && !stringTableValid) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC/string table exceeds the file`);
+  }
+
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
+    const p = start + i * ent;
+    const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
+    const val = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
+
+    if (tag === DT_RISCV_VARIANT_CC && Number(image?.metadata?.machine) === EM_RISCV) {
+      image.metadata.riscvVariantCcTagPresent = true;
+    }
+    if (tag === 0n) break;
+
+    if (stringTableValid && (tag === 1n || tag === 14n) && val < BigInt(strSize)) {
+      const off = Number(val);
+      const max = Math.min(
+        strSize - off,
+        1 << 20,
+        Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
+      );
+      const name = terminatedStringInTable(r, strStart, strSize, off, max);
+      if (name == null && off < strSize) {
+        budget.partial(
+          `dynamic-section:${sec.index}:unterminated-string`,
+          `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+        );
+        continue;
+      }
+      if (name && !budget.take({
+        inputBytes: Math.min(max, name.length + 1),
+        stringBytes: name.length * 2,
+        estimatedHeapBytes: name.length * 2 + 32,
+      }, 'SHT_DYNAMIC-string')) break;
+      if (tag === 1n && name) image.libraries.push(name);
+      else if (tag === 14n && name) image.metadata.soname = name;
+    }
   }
 }
-
 function findImageBase(image) {
   const loads = image.segments.filter((s) => s.address != null);
   if (!loads.length) return 0n;

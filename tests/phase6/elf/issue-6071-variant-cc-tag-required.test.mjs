@@ -256,9 +256,12 @@ test('6071: full parseELF section-backed dynsym JUMP_SLOT without DT_RISCV_VARIA
   assert.equal(missing.relocations[0].symbolIndex, 1);
   assert.equal(missing.relocations[0].symbolTableIndex, 1);
   assert.ok(missing.metadata.programDynamicPartial);
+  assert.equal(missing.metadata.riscvVariantCcTagPresent ?? false, false);
   assert.ok(missing.warnings.some((warning) => warning.includes('section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC')));
 
   const tagged = parseELF(buildSectionBackedVariantCcElf({ withTag: true }));
+  assert.equal(tagged.relocations.length, 1);
+  assert.equal(tagged.metadata.riscvVariantCcTagPresent, true);
   assert.equal(tagged.metadata.programDynamicPartial ?? false, false);
   assert.equal(tagged.warnings.some((warning) => warning.includes('section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC')), false);
 });
