@@ -138,16 +138,30 @@ function escapeBigIntTag(value) {
   return out;
 }
 
-function unescapeBigIntTag(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const keys = Object.keys(value);
-  if (!keys.some((key) => ESCAPED_TAG.test(key))) return value;
-  const out = {};
-  for (const key of keys) {
-    const unescaped = ESCAPED_TAG.test(key) ? key.slice(1) : key;
-    Object.defineProperty(out, unescaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+/**
+ * Walks a parsed document and takes one `$` off every escaped tag key.
+ *
+ * Escape provenance is document-version-gated (#5912): only a writer that
+ * knew about the escaping scheme produces escaped keys, and every such writer
+ * stamps `version >= 2`. Older v1 documents carry literal `$$hexBigInt`-style
+ * keys as ordinary user data, and unescaping them would silently rename user
+ * data on every load. Mutates the freshly parsed tree in place.
+ */
+function unescapeBigIntTagTree(value) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) unescapeBigIntTagTree(item);
+    return;
   }
-  return out;
+  for (const child of Object.values(value)) unescapeBigIntTagTree(child);
+  const keys = Object.keys(value);
+  if (!keys.some((key) => ESCAPED_TAG.test(key))) return;
+  for (const key of keys) {
+    if (!ESCAPED_TAG.test(key)) continue;
+    const unescaped = key.slice(1);
+    Object.defineProperty(value, unescaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+    delete value[key];
+  }
 }
 
 export function serializeHexProject(project) {
@@ -176,12 +190,17 @@ export function parseHexProject(input) {
         const negative = encoded.startsWith('-'); const magnitude = negative ? encoded.slice(1) : encoded;
         const parsed = BigInt('0x' + magnitude); return negative ? -parsed : parsed;
       }
-      return unescapeBigIntTag(value);
+      return value;
     });
   } catch (error) {
     if (error instanceof ProjectFormatError) throw error;
     throw new ProjectFormatError(`project JSON is malformed: ${error.message}`);
   }
+  // Only documents written by an escape-aware serializer carry escaped tag
+  // keys; every such writer stamps version 2 or higher (#5912). A v1
+  // document's literal `$$hexBigInt`-style key is user data and must survive
+  // the round trip untouched.
+  if (Number.isInteger(raw?.version) && raw.version >= 2) unescapeBigIntTagTree(raw);
   let migrated;
   try {
     migrated = migrateHexProject(raw, { currentVersion: HEX_PROJECT_VERSION });
