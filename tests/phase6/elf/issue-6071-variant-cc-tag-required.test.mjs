@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { parseELF } from '../../../js/binary/elf-core.js';
 import { parseProgramDynamic } from '../../../js/binary/elf-dynamic.js';
 
 const BASE = 0x400000n;
@@ -157,4 +158,107 @@ test('6071: variant symbol without JUMP_SLOT is not rejected', () => {
 test('6071: non-RISC-V machine ignores the invariant', () => {
   const image = fixture({ withTag: false, machine: 62 });
   assert.equal(partialReasons(image).length, 0);
+});
+
+
+function buildSectionBackedVariantCcElf({ withTag = false } = {}) {
+  const dynstrOffset = 0x100;
+  const dynsymOffset = 0x120;
+  const relaOffset = 0x160;
+  const dynamicOffset = 0x180;
+  const shstrOffset = 0x1c0;
+  const shoff = 0x240;
+  const names = ['', '.dynsym', '.dynstr', '.rela.plt', '.dynamic', '.shstrtab'];
+  const shstrParts = [];
+  const nameOffsets = new Map();
+  for (const name of names) {
+    nameOffsets.set(name, shstrParts.length);
+    shstrParts.push(...Buffer.from(name, 'utf8'), 0);
+  }
+  const dynstr = Uint8Array.from([0, ...Buffer.from('vecfn', 'utf8'), 0]);
+  const shstr = Uint8Array.from(shstrParts);
+  const sectionCount = names.length;
+  const bytes = new Uint8Array(shoff + sectionCount * 64);
+  const view = new DataView(bytes.buffer);
+
+  bytes.set(dynstr, dynstrOffset);
+  bytes.set(shstr, shstrOffset);
+
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0);
+  view.setUint16(16, 3, true);  // ET_DYN
+  view.setUint16(18, 243, true); // EM_RISCV
+  view.setUint32(20, 1, true);
+  view.setBigUint64(24, 0n, true); // entry
+  view.setBigUint64(32, 0n, true); // phoff
+  view.setBigUint64(40, BigInt(shoff), true);
+  view.setUint32(48, 0, true);
+  view.setUint16(52, 64, true);
+  view.setUint16(54, 56, true);
+  view.setUint16(56, 0, true);
+  view.setUint16(58, 64, true);
+  view.setUint16(60, sectionCount, true);
+  view.setUint16(62, names.length - 1, true);
+
+  const putDynamic = (index, tag, value) => {
+    const off = dynamicOffset + index * 16;
+    view.setBigInt64(off, BigInt(tag), true);
+    view.setBigUint64(off + 8, BigInt(value), true);
+  };
+  let dynamicEntries = 0;
+  if (withTag) {
+    putDynamic(dynamicEntries++, 0x70000001n, 0n); // DT_RISCV_VARIANT_CC
+  }
+  putDynamic(dynamicEntries++, 0n, 0n); // DT_NULL
+
+  // Two 64-bit dynsym entries: the null entry and an undefined variant-CC function.
+  view.setUint32(dynsymOffset + 24, 1, true); // st_name -> vecfn
+  view.setUint8(dynsymOffset + 24 + 4, 0x12); // STB_GLOBAL | STT_FUNC
+  view.setUint8(dynsymOffset + 24 + 5, 0x80); // STO_RISCV_VARIANT_CC
+  view.setUint16(dynsymOffset + 24 + 6, 0, true); // SHN_UNDEF
+  view.setBigUint64(dynsymOffset + 24 + 8, 0n, true);
+  view.setBigUint64(dynsymOffset + 24 + 16, 16n, true);
+
+  // One R_RISCV_JUMP_SLOT relocation against dynsym[1].
+  view.setBigUint64(relaOffset, 0x500n, true);
+  view.setBigUint64(relaOffset + 8, (1n << 32n) | 5n, true);
+  view.setBigInt64(relaOffset + 16, 0n, true);
+
+  const writeSection = (index, {
+    name = '', type = 0, flags = 0n, address = 0n, offset = 0,
+    size = 0, link = 0, info = 0, alignment = 1n, entrySize = 0n,
+  } = {}) => {
+    const off = shoff + index * 64;
+    view.setUint32(off, nameOffsets.get(name) ?? 0, true);
+    view.setUint32(off + 4, type, true);
+    view.setBigUint64(off + 8, BigInt(flags), true);
+    view.setBigUint64(off + 16, BigInt(address), true);
+    view.setBigUint64(off + 24, BigInt(offset), true);
+    view.setBigUint64(off + 32, BigInt(size), true);
+    view.setUint32(off + 40, link, true);
+    view.setUint32(off + 44, info, true);
+    view.setBigUint64(off + 48, BigInt(alignment), true);
+    view.setBigUint64(off + 56, BigInt(entrySize), true);
+  };
+  writeSection(0);
+  writeSection(1, { name: '.dynsym', type: 11, offset: dynsymOffset, size: 48, link: 2, alignment: 8n, entrySize: 24n });
+  writeSection(2, { name: '.dynstr', type: 3, offset: dynstrOffset, size: dynstr.length });
+  writeSection(3, { name: '.rela.plt', type: 4, offset: relaOffset, size: 24, link: 1, alignment: 8n, entrySize: 24n });
+  writeSection(4, { name: '.dynamic', type: 6, offset: dynamicOffset, size: dynamicEntries * 16, link: 2, alignment: 8n, entrySize: 16n });
+  writeSection(5, { name: '.shstrtab', type: 3, offset: shstrOffset, size: shstr.length });
+  return bytes;
+}
+
+test('6071: full parseELF section-backed dynsym JUMP_SLOT without DT_RISCV_VARIANT_CC is partial', () => {
+  const missing = parseELF(buildSectionBackedVariantCcElf());
+  assert.equal(missing.relocations.length, 1);
+  assert.equal(missing.relocations[0].source, 'RELA');
+  assert.equal(missing.relocations[0].symbol, 'vecfn');
+  assert.equal(missing.relocations[0].symbolIndex, 1);
+  assert.equal(missing.relocations[0].symbolTableIndex, 1);
+  assert.ok(missing.metadata.programDynamicPartial);
+  assert.ok(missing.warnings.some((warning) => warning.includes('section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC')));
+
+  const tagged = parseELF(buildSectionBackedVariantCcElf({ withTag: true }));
+  assert.equal(tagged.metadata.programDynamicPartial ?? false, false);
+  assert.equal(tagged.warnings.some((warning) => warning.includes('section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC')), false);
 });

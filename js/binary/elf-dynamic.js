@@ -349,7 +349,11 @@ const DT_RISCV_VARIANT_CC = 0x70000001n;
 
 function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
   if (Number(image?.metadata?.machine) !== EM_RISCV) return;
-  if ((tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0) return;
+  const hasVariantCcTag = (tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0;
+  if (hasVariantCcTag) {
+    image.metadata.riscvVariantCcTagPresent = true;
+    return;
+  }
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const missing = (relocs || []).some((rel) =>
     Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);

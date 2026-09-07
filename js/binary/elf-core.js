@@ -29,6 +29,8 @@ const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -137,6 +139,7 @@ export function parseELF(input, options = {}) {
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
   });
+  validateSectionRiscvVariantCcTag(image, rawSections);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
@@ -380,6 +383,34 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   }
 }
 
+
+function validateSectionRiscvVariantCcTag(image, sections) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  if (image?.metadata?.riscvVariantCcTagPresent === true) return;
+  const dynamicSymbolTables = new Set(
+    (sections || []).filter((section) => section.type === SHT_DYNSYM).map((section) => section.index),
+  );
+  if (!dynamicSymbolTables.size) return;
+  const symbolsByKey = new Map(
+    (image.symbols || [])
+      .filter((symbol) => dynamicSymbolTables.has(symbol.tableIndex))
+      .map((symbol) => [`${symbol.tableIndex}:${symbol.index}`, symbol]),
+  );
+  const missing = (image.relocations || []).some((relocation) =>
+    (relocation.source === 'REL' || relocation.source === 'RELA') &&
+    Number(relocation.type) === R_RISCV_JUMP_SLOT &&
+    dynamicSymbolTables.has(relocation.symbolTableIndex) &&
+    symbolsByKey.get(`${relocation.symbolTableIndex}:${relocation.symbolIndex}`)?.riscvVariantCcFlag === true,
+  );
+  if (!missing) return;
+  const message = 'section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC';
+  image.metadata.programDynamicPartial = true;
+  const diagnostics = image.metadata.programDynamicDiagnostics ||= [];
+  if (!diagnostics.includes(message)) diagnostics.push(message);
+  const warning = `ELF: ${message}`;
+  if (!image.warnings.includes(warning)) image.warnings.push(warning);
+}
+
 function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(!sec.entsize)return;
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
@@ -403,7 +434,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
     const sym=byIndex.get(symIndex)||null;
-    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
+    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
     if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
