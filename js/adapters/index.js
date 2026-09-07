@@ -556,8 +556,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   attach(spec,requestOptions={}){return this.call('attach',spec,requestOptions)}
   launch(spec,requestOptions={}){return this.call('launch',spec,requestOptions)}
-  pause(options={}){const {signal,...params}=options||{};return this.call('pause',params,{signal})}
-  resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
+  pause(options={}){return this.call('pause',{}, { signal:options?.signal })}
+  resume(options={}){return this.call('resume',{}, { signal:options?.signal })}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
   removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
