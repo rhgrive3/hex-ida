@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
@@ -183,6 +184,16 @@ test('built-in containers with enumerable own properties fail closed instead of 
   assert.doesNotThrow(
     () => createPhase8ArtifactDescriptor({ ...BASE, options: { view: new Uint8Array([1, 2, 3, 4]) } }),
     'in-range index properties of typed-array views are intrinsic state and stay accepted',
+  );
+});
+
+test('cross-realm DataViews use the intrinsic DataView classification', () => {
+  const foreign = vm.runInNewContext('new DataView(new ArrayBuffer(8))');
+  Object.defineProperty(foreign, '0', { value: 'foreign-payload', enumerable: true });
+
+  assert.throws(
+    () => createPhase8ArtifactDescriptor({ ...BASE, options: { view: foreign } }),
+    /phase8-artifact-options-embedded-own-property:dataview/,
   );
 });
 
