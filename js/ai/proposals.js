@@ -258,7 +258,20 @@ function proposalSnapshot(proposal) {
 }
 
 function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
-function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function proposalBytes(value) {
+  // Patch bytes are mutation-authority input. Coercing each element (the old
+  // `Number` mapping) let string/boolean/null bytes reach the strict
+  // capability validator as canonical numbers, so the original type violation
+  // could never be detected and the approved identity was compared against a
+  // laundered view. Validate byte identity instead of laundering it (#6171).
+  const raw = value instanceof Uint8Array ? value : Array.from(value ?? []);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
