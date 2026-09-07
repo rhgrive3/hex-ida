@@ -25,10 +25,12 @@ import { EmulatorProvider } from '../js/runtime/emulator-provider.js';
 }
 
 {
+  let resumeCalls = 0;
   const engine = {
     deterministic: true,
     async launch() {},
     async resume(options) {
+      resumeCalls += 1;
       return { termination: 'return', events: [], value: options.mode ?? 'default' };
     },
   };
@@ -38,6 +40,31 @@ import { EmulatorProvider } from '../js/runtime/emulator-provider.js';
   assert.equal(first.raw.value, 'precise');
   const replayed = await session.facets.emulator.replay(first.recording);
   assert.equal(replayed.raw.value, 'precise');
+  const callsBeforeReject = resumeCalls;
+  await assert.rejects(
+    () => session.facets.emulator.run({}, { onProgress() {} }),
+    /replay options are not recordable|not replay-recordable/,
+  );
+  assert.equal(resumeCalls, callsBeforeReject, 'non-recordable callback must be rejected before resume');
+  await session.close();
+}
+
+{
+  let executeCalls = 0;
+  const engine = {
+    deterministic: true,
+    async execute() {
+      executeCalls += 1;
+      return { termination: 'return', events: [] };
+    },
+  };
+  const provider = new EmulatorProvider(engine);
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: '6125-callback-execute' }, { connect: false });
+  await assert.rejects(
+    () => session.facets.emulator.run({}, { onProgress() {} }),
+    /replay options are not recordable|not replay-recordable/,
+  );
+  assert.equal(executeCalls, 0, 'non-recordable callback must be rejected before execute');
   await session.close();
 }
 
