@@ -65,7 +65,11 @@ function address(value, code) {
 
 function producerId(value) {
   if (value == null) return 'unknown';
-  if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
+  // Producer identity is an independence token for corroboration: two
+  // whitespace-only strings are different JS values but name no source, and
+  // padded variants ('p' vs ' p ') must not count as distinct producers.
+  // Only a canonical trimmed non-empty token is accepted (#5792).
+  if (typeof value !== 'string' || value.trim() === '' || value.trim() !== value) fail('discovery-evidence-invalid-producer-id');
   return value;
 }
 

@@ -290,7 +290,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const signal = resumeSignal(options.signal);
     const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
+    if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     // Injectable per call or at construction time (tests, embedders) so the
@@ -556,8 +556,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   attach(spec,requestOptions={}){return this.call('attach',spec,requestOptions)}
   launch(spec,requestOptions={}){return this.call('launch',spec,requestOptions)}
-  pause(options={}){const {signal,...params}=options||{};return this.call('pause',params,{signal})}
-  resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
+  pause(options={}){return this.call('pause',{}, { signal:options?.signal })}
+  resume(options={}){return this.call('resume',{}, { signal:options?.signal })}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
   removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})

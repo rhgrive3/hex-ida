@@ -123,6 +123,7 @@ export function validateProviderPacket(input) {
     // a pending request (#5757).
     if (Object.hasOwn(packet, 'code')) packet.code = providerErrorIdentity(packet.code, 'provider error code');
     if (Object.hasOwn(packet, 'message')) packet.message = providerErrorIdentity(packet.message, 'provider error message');
+
   }
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
