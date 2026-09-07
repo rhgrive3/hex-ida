@@ -568,7 +568,7 @@
   "campaignStage": "STAGE_A",
   "integrationRef": "recovery/final-closure-v3-20260904",
   "baseRef": "origin/main",
-  "baseSha": "eef6223fc08d90ef3e86b5eb8e4a56c06f04af84",
+  "baseSha": "d8fcdce58dfe03b15cfddcf23415ae01b088b647",
   "candidateRef": "HEAD",
   "taskHandoffRevalidations": {
     "T058": {
@@ -698,8 +698,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
-    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -733,8 +731,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -755,8 +751,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
-    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -790,8 +784,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -812,8 +804,6 @@
     ".github/workflows/ui-regression.yml",
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
-    "js/collaboration/index.js",
-    "js/core/scheduler/analysis-scheduler.js",
     "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
@@ -847,8 +837,6 @@
     "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
     "tests/final-closure/t059/strict-artifact-id-authority.test.mjs",
     "tests/phase11/cil/cil-pipeline.test.mjs",
-    "tests/phase12/adversarial/trust-boundaries.test.mjs",
-    "tests/phase12/integration/facade.test.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "tests/stage1/verifier-self-tests.test.mjs",
     "tests/stage1/workflow-trigger-coverage.test.mjs",
@@ -886,14 +874,6 @@
     {
       "path": "js/ai/dev/ui/controls.js",
       "ownerTaskId": "T051"
-    },
-    {
-      "path": "js/collaboration/index.js",
-      "ownerTaskId": "T052"
-    },
-    {
-      "path": "js/core/scheduler/analysis-scheduler.js",
-      "ownerTaskId": "T059"
     },
     {
       "path": "package.json",
@@ -1026,14 +1006,6 @@
     {
       "path": "tests/phase11/cil/cil-pipeline.test.mjs",
       "ownerTaskId": "T057"
-    },
-    {
-      "path": "tests/phase12/adversarial/trust-boundaries.test.mjs",
-      "ownerTaskId": "T052"
-    },
-    {
-      "path": "tests/phase12/integration/facade.test.mjs",
-      "ownerTaskId": "T052"
     },
     {
       "path": "tests/phase4/ownership/integration-contract-repair.test.mjs",

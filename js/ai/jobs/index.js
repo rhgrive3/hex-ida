@@ -165,7 +165,7 @@ function mergeResult(job, result) {
   job.effectiveScope = result?.scope?.effective || job.effectiveScope;
   job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => identityString(item?.id)).filter(Boolean)]);
   job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => identityString(item?.id)).filter(Boolean)]);
-  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result' || item.type === 'tool-start').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
+  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
@@ -224,7 +224,7 @@ function randomId() {
 function safeRequest(input) {
   const out = {};
   for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
-  return out;
+  return checkpoint(out);
 }
 
 export function createAgentJobManager(options) { return new AgentJobManager(options); }
