@@ -123,3 +123,10 @@ function dbiFixture({ moduleSubstreamSize, fill, tailNulCount = 0 }) {
 }
 
 console.log('issue #5746/#5744 parseModuleInfo completeness regressions: PASS');
+
+// A nonempty declared substream cannot consist solely of initial padding.
+for (const moduleSubstreamSize of [1, 2, 3]) {
+  const result = parseModuleInfo(new Uint8Array(DBI_HEADER_SIZE + moduleSubstreamSize), { moduleSubstreamSize });
+  assert.equal(result.complete, false, 'short declared substream must be incomplete');
+  assert.deepEqual(result.modules, []);
+}

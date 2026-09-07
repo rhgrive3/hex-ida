@@ -297,7 +297,7 @@ export function parseModuleInfo(bytes, dbi) {
     });
     offset = cursor;
   }
-  if (end - offset >= 4) complete = false;
+  if (end - offset >= 4 || (offset === DBI_HEADER_SIZE && end > offset)) complete = false;
   return { modules, complete };
 }
 
