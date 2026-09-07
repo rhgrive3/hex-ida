@@ -32,7 +32,11 @@ function extractCommand(jobName) {
   }
   assert.match(body.join('\n'), /OWNERSHIP_BASE_SHA/);
   assert.match(body.join('\n'), /OWNERSHIP_HEAD_SHA/);
-  return body.join('\n');
+  const configured = body.join('\n');
+  // CircleCI compiles escaped literal tags before handing the script to bash.
+  // A raw heredoc tag works locally but makes config v2.1 fail before any job.
+  assert.doesNotMatch(configured, /(?<!\\)<</, 'CircleCI literal heredocs must escape the pipeline-expression tag');
+  return configured.replaceAll('\\<<', '<<');
 }
 
 function write(path, value) {

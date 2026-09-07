@@ -139,7 +139,7 @@ jobs:
             # component branch continues to use the whole-diff gate below.
             case "${CIRCLE_BRANCH:-}" in
               fix/unlinked-demand-analysis-2502-2518|fix/unlinked-top10-r3-20260830|fix/close-audit-2520-2545-20260830|fix/reopened-audit-final-20260830|fix/open-issues-final-20260830-r4|fix/unlinked-batch-20260901-r2|perf/development-gate-policy)
-                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" <<'NODE'
+                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" \<<'NODE'
                   import { inventoryDigest, inventoryFromGit, loadManifest, regexFor, validateFiles } from './tools/validation/phase7-ownership.mjs';
 
                   const [baseSha, headSha] = process.argv.slice(2);
@@ -206,7 +206,7 @@ jobs:
             # component branch continues to use the whole-diff gate below.
             case "${CIRCLE_BRANCH:-}" in
               perf/development-gate-policy)
-                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" <<'NODE'
+                node --input-type=module - "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" \<<'NODE'
                   import { inventoryDigest, inventoryFromGit, loadManifest, regexFor, validateFiles } from './tools/validation/phase8-ownership.mjs';
 
                   const [baseSha, headSha] = process.argv.slice(2);
