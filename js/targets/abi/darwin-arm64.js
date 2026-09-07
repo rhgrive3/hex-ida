@@ -42,6 +42,10 @@ function descriptorBoolean(parameter, key) {
 function parameterClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  // Apple arm64: `long double` is IEEE754 binary64, identical to `double`
+  // (developer.apple.com — Writing ARM64 Code for Apple Platforms).  It is a
+  // fundamental 64-bit FP argument/return, not an integer (issue #5603).
+  const appleLongDouble = /(?:^|\s)long double(?:\s|$)/.test(`${type} ${cls}`);
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${cls}`);
   const hfaMeta = descriptorBoolean(param, 'hfa');
   const hvaMeta = descriptorBoolean(param, 'hva');
@@ -54,8 +58,8 @@ function parameterClass(param) {
   const aggregateHint = param?.aggregate === true || param?.isAggregate === true
     || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
   const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
-  const aggregate = !pointer && !homogeneous && aggregateHint;
-  const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
+  const aggregate = !pointer && !homogeneous && !appleLongDouble && aggregateHint;
+  const fp = !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   // A nested layout descriptor is the canonical aggregate source.  Resolve it
   // before reading legacy aliases so a classifier cannot publish bits/member
   // lanes from one descriptor while the validated physical layout comes from
@@ -117,6 +121,8 @@ function parameterClass(param) {
     aggregate, aggregateLayoutProven, aggregateLayout:layoutEvidence,
     aggregateBytes:aggregate ? bytes : null,
     vector, fp, members, elementBits,
+    appleLongDouble,
+    appleLongDoubleWidthConflict:appleLongDouble && explicitTotalBitsProven && bits !== 64,
     elementBytes:homogeneousElementBytes
       ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
     bits, bytes, alignmentBytes, explicitAlignmentBytes, signed,
@@ -168,6 +174,13 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   for (let index = 0; index < params.length; index++) {
     const param = params[index];
     const c = parameterClass(param);
+    if (c.appleLongDoubleWidthConflict) {
+      aggregatePartial = true;
+      arguments_.push({ index, location:'unknown', abiClass:'darwin-long-double-width-conflict',
+        bits:c.bits, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' });
+      continue;
+    }
     if (c.aggregateMetadataInvalid) {
       aggregatePartial = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
@@ -355,6 +368,55 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
 const DARWIN_CALLER_SAVED = Object.freeze(AAPCS64_ABI.callerSaved().filter((reg) => reg !== 'x18'));
 const DARWIN_CALLEE_SAVED = Object.freeze(AAPCS64_ABI.calleeSaved().filter((reg) => reg !== 'x18'));
 
+function normalizeAppleReturnType(proto, opts = {}) {
+  const source = opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '';
+  const sourceClass = opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '';
+  // Apple arm64 narrows `long double` to binary64, so its returns classify in
+  // the FP lane (v0 low 64 bits) instead of the generic quad-precision/integer
+  // reading used by generic AAPCS64 (issue #5603).
+  if (!/(?:^|\s)long double(?:\s|$)/.test(`${String(source)} ${String(sourceClass)}`.toLowerCase())) return proto;
+  const normalized = { ...proto };
+  delete normalized.ret;
+  delete normalized.result;
+  normalized.returnType = 'double';
+  if (Object.hasOwn(normalized, 'returnClass') || Object.hasOwn(normalized, 'abiClass') || Object.hasOwn(normalized, 'resultClass')) {
+    normalized.returnClass = 'fp';
+  }
+  return normalized;
+}
+
+function appleLongDoubleReturnConflict(proto, opts = {}) {
+  const source = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '');
+  const sourceClass = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '');
+  if (!/(?:^|\s)long double(?:\s|$)/.test(`${source} ${sourceClass}`.toLowerCase())) return null;
+  if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true) return null;
+  const raw = opts?.returnBits ?? proto?.returnBits ?? proto?.bits;
+  const bits = Number(raw);
+  if (!Number.isSafeInteger(bits) || bits <= 0 || bits === 64) return null;
+  // Explicit contradictory width evidence must not be silently re-typed; the
+  // Apple contract fixes `long double` at exactly 64 bits.
+  return { reg:null, regs:[], bits, bytes:null, partial:true, unsupported:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+    reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' };
+}
+
+function classifyDarwinArm64CallReturn(insn, opts = {}) {
+  const proto = callPrototypeOf(insn, opts);
+  const conflict = appleLongDoubleReturnConflict(proto, opts);
+  if (conflict) return conflict;
+  const normalized = normalizeAppleReturnType(proto, opts);
+  if (!proto || normalized === proto) return classifyAAPCS64CallReturn(insn, opts);
+  // classifyAAPCS64CallReturn re-derives the prototype from the instruction,
+  // so hand it a normalized copy of the call prototype.
+  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, opts);
+}
+
+function classifyDarwinArm64FunctionReturn(opts = {}) {
+  const proto = opts?.functionPrototype || opts?.prototype || null;
+  const conflict = appleLongDoubleReturnConflict(proto, opts);
+  if (conflict) return conflict;
+  return classifyAAPCS64FunctionReturn({ ...opts, functionPrototype:normalizeAppleReturnType(proto, opts) });
+}
+
 export const DARWIN_ARM64_ABI = new ABIPlugin({
   id:'darwin-arm64',
   semanticVersion:'1',
@@ -363,8 +425,8 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   platformPredicate:({ platform }) => DARWIN_PLATFORMS.has(String(platform || '').toLowerCase()),
   callingConventions:()=>Object.freeze(['darwin-arm64','apple-arm64','aapcs64']),
   classifyArguments:classifyDarwinArm64Arguments,
-  classifyCallReturn:classifyAAPCS64CallReturn,
-  classifyFunctionReturn:classifyAAPCS64FunctionReturn,
+  classifyCallReturn:classifyDarwinArm64CallReturn,
+  classifyFunctionReturn:classifyDarwinArm64FunctionReturn,
   classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || ''))
     ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) }
     : { kind:'incoming-register-state', reg:String(reg || '') },
