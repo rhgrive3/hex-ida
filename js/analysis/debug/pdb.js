@@ -671,6 +671,19 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
     const symbols = parseSymbolRecords(symbolStream, budget);
+    // The DBI stream header repeats the PDB Info stream age (LLVM PDB docs,
+    // DbiStreamHeader::Age). An internally inconsistent PDB — info stream
+    // matching the binary while the DBI belongs to another generation — must
+    // not stay authoritative: the DBI picks the symbol/module/section-header
+    // streams the readers trust (#6042).
+    if (info && dbi && dbi.age !== info.age) {
+      diagnostics.push(`PDB DBI stream age ${dbi.age} does not match the info stream age ${info.age}`);
+      symbols.complete = false;
+      if (verdict === 'matched-authoritative') {
+        verdict = 'identity-mismatch';
+        detail = 'PDB DBI stream age is inconsistent with the info stream age';
+      }
+    }
 
     // Procedure symbols live in the per-module streams. Each module stream
     // begins with a 4-byte signature before its symbol records.
