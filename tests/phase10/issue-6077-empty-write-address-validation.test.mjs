@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { LocalFunctionSandboxAdapter } from '../../js/adapters/index.js';
+import { RuntimeMemoryMap } from '../../js/runtime/memory.js';
 
 function harness() {
   const calls = { assert: 0, store: 0 };
@@ -40,10 +41,15 @@ test('#6077 a negative address cannot pass as an empty write', async () => {
 
 test('#6077 a valid address keeps the 0-byte write success semantics', async () => {
   const { adapter, calls } = harness();
+  // The production map rejects size 0. Empty writes must validate the address
+  // grammar while retaining their no-op behavior without asking the map to
+  // validate a zero-byte range.
+  adapter.memoryMap = new RuntimeMemoryMap([
+    { start: 0x1000n, size: 0x100, permissions: 'rw' },
+  ]);
   const result = await adapter.writeMemory(0x1000n, []);
   assert.deepEqual(result, { written: 0 });
-  assert.equal(calls.assert, 1, 'address must be validated');
-  assert.equal(calls.last.length, 0);
+  assert.equal(calls.assert, 0, 'empty writes do not require a zero-byte mapping assertion');
   assert.equal(calls.store, 0, 'nothing is written for an empty list');
 });
 

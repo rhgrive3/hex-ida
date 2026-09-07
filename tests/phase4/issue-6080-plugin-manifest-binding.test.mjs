@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MessageChannel as NodeMessageChannel } from 'node:worker_threads';
 
-import { PluginHost } from '../js/plugins.js';
-import { stableDigest } from '../js/core/identity/index.js';
+import { PluginHost } from '../../js/plugins.js';
+import { stableDigest } from '../../js/core/identity/index.js';
 
 const STORE_KEY = 'hex.plugins';
 

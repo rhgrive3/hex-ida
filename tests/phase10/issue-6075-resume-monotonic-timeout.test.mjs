@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { LocalFunctionSandboxAdapter } from '../../js/adapters/index.js';
 
 function harness(monotonicNow) {
   const adapter = new LocalFunctionSandboxAdapter({}, { monotonicNow });

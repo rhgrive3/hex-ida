@@ -430,7 +430,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     // The address is validated before the empty-data shortcut: an empty write
     // must not succeed for a malformed/negative address (#6077).
     const start = asAddress(address);
-    if (!data.length) { memoryMap.assert(start,0,'write'); return { written:0 }; }
+    // RuntimeMemoryMap intentionally rejects a zero-byte size.  Empty writes
+    // retain their no-op semantics after address validation and therefore do
+    // not perform a mapping/permission assertion.
+    if (!data.length) return { written:0 };
     memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
