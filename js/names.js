@@ -507,7 +507,11 @@ export class NoteStore {
   fromJSON(text) {
     const o = JSON.parse(text);
     if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
-    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
+    // Import identity is a primitive string only (#5968): String() coercion
+    // would let a malformed backup (e.g. id:['binary-A']) launder foreign
+    // annotations into the current binary's namespace.
+    if (o.id != null && typeof o.id !== 'string') throw new Error('invalid-notes-import');
+    if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
