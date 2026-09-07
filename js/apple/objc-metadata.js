@@ -207,6 +207,17 @@ function collectCategoryBindImports(sections, opts) {
   return out;
 }
 
+function categoryBindImportsAreComplete(sections, opts) {
+  for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const chainedFixups = src?.metadata?.chainedFixups;
+    if (!chainedFixups || typeof chainedFixups !== 'object') continue;
+    if (chainedFixups.complete === false
+      || chainedFixups.importsComplete === false
+      || chainedFixups.bindingSitesComplete === false) return false;
+  }
+  return true;
+}
+
 function buildBindingAtFromImports(imports) {
   const byAddress = new Map();
   for (const imp of imports) {
@@ -311,7 +322,9 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   else if (typeof sections?.bindingAt === 'function') get.bindingAt = sections.bindingAt;
   else {
     const bindImports = collectCategoryBindImports(sections, opts);
-    if (bindImports.length) get.bindingAt = buildBindingAtFromImports(bindImports);
+    if (bindImports.length && categoryBindImportsAreComplete(sections, opts)) {
+      get.bindingAt = buildBindingAtFromImports(bindImports);
+    }
   }
   const classByAddress = new Map(
     (Array.isArray(opts.classes) ? opts.classes : [])
