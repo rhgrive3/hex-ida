@@ -46,7 +46,7 @@ const KIND_SET = new Set(PHASE7_ARTIFACT_KINDS);
  */
 export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
   'phase7.alias.region': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions'],
-  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions'],
+  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.escape': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.interprocedural': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries', 'libraryModel'],
