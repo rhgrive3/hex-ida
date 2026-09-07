@@ -89,8 +89,20 @@ export function decodeSchema(words, base) {
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     const written = writtenGpr(w);
-    if (written != null && written >= 0 && written < 31) baseGeneration[written]++;
     const mw = moveWide(w);
+    if (written != null && written >= 0 && written < 31) {
+      baseGeneration[written]++;
+      if (!mw) {
+        known[written] = 0;
+        konst[written] = 0n;
+      }
+    }
+    const mem = W.memoryAccess(w);
+    if (mem?.load && mem.pair && !mem.vector && mem.reg2 != null && mem.reg2 >= 0 && mem.reg2 < 31) {
+      baseGeneration[mem.reg2]++;
+      known[mem.reg2] = 0;
+      konst[mem.reg2] = 0n;
+    }
     if (mw) {
       if (mw.kind === 'movz') { konst[mw.d] = mw.value; known[mw.d] = 1; }
       else if (known[mw.d]) {

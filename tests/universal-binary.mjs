@@ -159,8 +159,12 @@ export function makeElf64Fixture() {
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
   b.set([0x7f,0x45,0x4c,0x46,2,1,1,0,0],0);
-  w16(16,3); w16(18,62); w32(20,1); w64(24,0x401000n); w64(32,0n); w64(40,0x280n);
-  w32(48,0); w16(52,64); w16(54,56); w16(56,0); w16(58,64); w16(60,6); w16(62,5);
+  w16(16,3); w16(18,62); w32(20,1); w64(24,0x401000n); w64(32,0x40n); w64(40,0x280n);
+  w32(48,0); w16(52,64); w16(54,56); w16(56,1); w16(58,64); w16(60,6); w16(62,5);
+
+  const ph=0x40;
+  w32(ph,1); w32(ph+4,0x5); w64(ph+8,0x100n); w64(ph+16,0x401000n); w64(ph+24,0x401000n);
+  w64(ph+32,0x10n); w64(ph+40,0x10n); w64(ph+48,0x100n);
 
   b.fill(0x90,0x100,0x110); b[0x10f]=0xc3;
   const dynstr = new TextEncoder().encode('\0puts\0myfunc\0libc.so.6\0'); b.set(dynstr,0x120);
