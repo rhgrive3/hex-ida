@@ -8,6 +8,9 @@ const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
 const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
+// Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
+// and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
+const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
 
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -39,6 +42,13 @@ function detailStatusOf(value, detailAvailable) {
     throw new TypeError('x86-decoded-instruction-invalid-detail-status');
   }
   return status;
+}
+
+function addressSizeBitsOf(value, mode) {
+  const allowed = ADDRESS_SIZE_BITS_BY_MODE[mode];
+  const size = integer(value, 'x86-decoded-instruction-invalid-address-size', { min:1, max:64 });
+  if (!allowed || !allowed.includes(size)) throw new TypeError('x86-decoded-instruction-invalid-address-size');
+  return size;
 }
 
 function bytesOf(input, length) {
@@ -97,7 +107,7 @@ function registerOf(value, code, { decoderRegisterCode = null, widthBits = null 
   });
 }
 
-function normalizeOperand(input, index) {
+function normalizeOperand(input, index, mode) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-decoded-instruction-invalid-operand');
   const type = String(input.type ?? input.kind ?? 'invalid').toLowerCase();
   if (!OPERAND_TYPES.has(type)) throw new TypeError('x86-decoded-instruction-invalid-operand-type');
@@ -134,7 +144,7 @@ function normalizeOperand(input, index) {
         scale,
         displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
         segment,
-        addressSizeBits:integer(raw.addressSizeBits ?? 64, 'x86-decoded-instruction-invalid-address-size', { min:16, max:64 }),
+        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? 64, mode),
       }),
     });
   }
@@ -187,7 +197,7 @@ export function createX86DecodedInstruction(input = {}) {
   if (!X86_DECODE_MODES.includes(mode)) throw new TypeError('x86-decoded-instruction-mode-unsupported');
   const rawDetail = input.detail && typeof input.detail === 'object' ? input.detail : {};
   const rawOperands = rawDetail.operands ?? input.structuredOperands ?? (Array.isArray(input.operands) ? input.operands : []);
-  const operands = rawOperands.map(normalizeOperand);
+  const operands = rawOperands.map((operand, index) => normalizeOperand(operand, index, mode));
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
   // `detailStatus` is the single authority for decoder-detail availability.
@@ -215,6 +225,11 @@ export function createX86DecodedInstruction(input = {}) {
     detailStatus,
     detail:Object.freeze({
       ...rawDetail,
+      // The provider leaves addressSizeBits 0 when Capstone does not populate
+      // `addr_size` (no memory operand); 0 is "not stated", not a width.
+      ...(rawDetail.addressSizeBits == null || rawDetail.addressSizeBits === 0
+        ? {}
+        : { addressSizeBits:addressSizeBitsOf(rawDetail.addressSizeBits, mode) }),
       prefixes:normalizePrefixState(rawDetail.prefixes ?? input.prefixes),
       operandCount,
       operands:Object.freeze(operands),
