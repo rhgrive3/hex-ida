@@ -48,6 +48,13 @@ export class KnowledgeDB {
     this.memory = options.memory || (!this.indexedDB ? new Map() : null);
     this.negativeMemory = options.negativeMemory || (!this.indexedDB ? new Map() : null);
     this._db = null;
+    /*
+     * Monotonic revision of semantic knowledge state. remember/reject/clear
+     * advance it so downstream artifact identities (recognition cache key,
+     * snapshot artifactVersions) can detect knowledge mutations that change
+     * recognition results (#5723). Pure reads never advance it.
+     */
+    this.revision = 0;
     const maxCandidates = Number(options.maxCandidates || 1000);
     this.maxCandidates = Number.isFinite(maxCandidates) ? Math.max(50, maxCandidates) : 1000;
   }
@@ -75,6 +82,7 @@ export class KnowledgeDB {
     };
     record.searchTerms = searchTermsOf(record);
     if (this.memory) this.memory.set(id, clone(record)); else await this.#put('functions', record);
+    this.revision++;
     return record;
   }
 
@@ -86,6 +94,7 @@ export class KnowledgeDB {
       targetHash:targetFingerprint?.hash || null, targetSemanticHash:targetFingerprint?.semanticHash || null, targetNormalizedBytesHash:targetFingerprint?.normalizedBytesHash || null,
       targetAddress:targetAddress == null ? null : addrText(targetAddress), targetSize:targetFingerprint?.size || null, reason:input.reason || 'rejected', updatedAt:Date.now() };
     if (this.negativeMemory) this.negativeMemory.set(key, clone(record)); else await this.#put('negative', record);
+    this.revision++;
     return record;
   }
 
@@ -210,9 +219,10 @@ export class KnowledgeDB {
   }
 
   async clear() {
-    if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); return; }
+    if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); this.revision++; return; }
     const db = await this.#dbOpen(); const tx = db.transaction(['functions','negative'],'readwrite');
     await Promise.all([requestPromise(tx.objectStore('functions').clear()), requestPromise(tx.objectStore('negative').clear())]);
+    this.revision++;
   }
 
   #memoryCandidates(fp) {
