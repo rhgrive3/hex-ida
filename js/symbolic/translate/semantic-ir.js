@@ -172,8 +172,15 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     switch (inst.op) {
-      case OP.CONST:
-        return createBv(width, inst.value != null ? inst.value : 0);
+      case OP.CONST: {
+        const value = inst.value;
+        if (value == null) {
+          semanticUnknowns++;
+          unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'missing-constant-value' });
+          return createUnknownSemantic(bvSort(width), 'missing-constant-value', { instructionId: inst.id });
+        }
+        return createBv(width, value);
+      }
 
       case OP.MOV:
       case OP.ADDR: {

@@ -58,6 +58,18 @@ function registerSelector(reg) {
   if (typeof reg !== 'string' || !isRegisterName(reg)) throw new DebugAdapterError('invalid-register', 'unsupported register selector');
   return reg;
 }
+function registerWriteValue(reg, value) {
+  let normalized;
+  if (typeof value === 'bigint') normalized = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) normalized = BigInt(value);
+  else if (typeof value === 'string' && (/^[0-9]+$/.test(value) || /^0x[0-9a-f]+$/i.test(value))) normalized = BigInt(value);
+  else throw new DebugAdapterError('invalid-register-value', 'register value must be a non-negative integer scalar');
+  const bits = reg.startsWith('w') ? 32n : 64n;
+  if (normalized < 0n || normalized >= (1n << bits)) {
+    throw new DebugAdapterError('invalid-register-value', `${reg} register value exceeds ${bits}-bit unsigned range`);
+  }
+  return normalized;
+}
 function memoryReadSize(size, fallback) {
   const value = size == null ? fallback : size;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
@@ -349,7 +361,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async writeRegister(reg,value) {
     this.require('writeRegister');
     const name = registerSelector(reg);
-    const sandbox = this.ensureSandbox(); const v = BigInt(value);
+    const sandbox = this.ensureSandbox(); const v = registerWriteValue(name, value);
     if (name === 'pc') sandbox.emulator.pc = asAddress(v,'pc'); else sandbox.setRegister(name,v);
     return { register:name, value:name === 'pc' ? sandbox.emulator.pc : sandbox.getRegister(name) };
   }
@@ -494,7 +506,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
-  writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
+  writeRegister(reg,value,threadId){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
   async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}

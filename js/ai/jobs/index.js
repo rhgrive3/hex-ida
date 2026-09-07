@@ -44,7 +44,11 @@ export class AgentJobManager {
         limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
         request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
       };
-      this.jobs.set(job.id, job); await this.save(job); return checkpoint(job);
+      // Keep the ID reserved, but do not publish a runnable job until its
+      // initial checkpoint is durable. Failed saves leave no in-memory ghost.
+      await this.save(job);
+      this.jobs.set(job.id, job);
+      return checkpoint(job);
     } finally {
       this.creatingIds.delete(id);
     }
