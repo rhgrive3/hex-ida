@@ -212,3 +212,25 @@ test('P10 traceAppFunction preserves the mismatch diagnostic for a throwing epoc
     await resetAppRuntime(app);
   }
 });
+
+test('P10 traceFunction rejects mixed valid/stale batches without retaining a prefix (#3926)', async () => {
+  const adapter = traceAdapterFixture(async () => ({
+    events:[
+      { type:'branch', epoch:2, address:0x7200n, next:0x7204n },
+      { type:'branch', epoch:1, address:0x7204n, next:0x7208n },
+    ],
+  }));
+  const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+  const session = await platform.startSession({ adapter, connect:false });
+
+  assert.equal(session.newEpoch(),2);
+  await assert.rejects(platform.traceFunction(0x7200n), (error) => {
+    assert.equal(error?.code,'session-epoch-event-mismatch');
+    assert.equal(error?.details?.traceEpoch,2);
+    assert.equal(error?.details?.eventEpoch,null);
+    return true;
+  });
+
+  assert.equal(session.traces.snapshot().events.length,0);
+  assert.equal(platform.evidence.length,0);
+});
