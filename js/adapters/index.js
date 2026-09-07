@@ -473,7 +473,20 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const text = String(expression || '').trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
-  async trace(options = {}) { if (options.run) await this.resume(options); return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 }); }
+  async trace(options = {}) {
+    if (options.run) await this.resume(options);
+    const snapshot = this.traceBuffer.snapshot({ limit:options.limit ?? 4096 });
+    // The base adapter multiplexes traceCall/traceReturn/traceBranch/
+    // traceMemoryWrite through this generic trace() as {capability,args}.
+    // Each advertised capability must return only its own event stream —
+    // handing back the whole ring buffer makes traceCall() return
+    // instructions, branches and memory events it never observed (#5842).
+    const capability = typeof options.capability === 'string' ? options.capability : null;
+    if (capability === 'traceFunction' || capability == null) return snapshot;
+    const eventType = { traceCall:'call', traceReturn:'return', traceBranch:'branch', traceMemoryWrite:'memory-write', traceMemoryRead:'memory-read' }[capability];
+    if (!eventType) throw new DebugAdapterError('not-implemented', `${capability} is advertised but not implemented`, { capability });
+    return { ...snapshot, events:snapshot.events.filter((event) => event?.type === eventType) };
+  }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
   _normalizeResult(result, memoryEvents = []) {
     const fullTrace = result.trace || [];
@@ -591,7 +604,19 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
   async evaluate(expression,context){const text=String(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
-  async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
+  async trace(options={}) {
+    const {signal,...params}=options||{};
+    // Specific trace capabilities multiplex onto the generic `trace` wire
+    // method. Authorization must follow the multiplexed capability, not
+    // `traceFunction`: a peer legitimately advertising `traceCall:true`
+    // alongside `traceFunction:false` would otherwise never send the request
+    // (#5804). Unknown/generic requests keep the strict traceFunction gate.
+    if (typeof params.capability === 'string' && params.capability.startsWith('trace') && params.capability !== 'traceFunction') {
+      this.require(params.capability);
+      return remoteTrace(await this.protocol.request('trace', params, { signal, epoch: this.epoch }));
+    }
+    return remoteTrace(await this.call('trace',params,{signal}));
+  }
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
   getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
