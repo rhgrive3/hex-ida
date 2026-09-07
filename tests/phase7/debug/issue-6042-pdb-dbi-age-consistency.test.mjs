@@ -11,7 +11,7 @@ import { isDebugRecordAuthoritative } from '../../../js/analysis/debug/provider.
 
 const GUID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
 
-function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64 } = {}) {
+function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64, dbiVersionSignature = -1, dbiVersionHeader = 19990903 } = {}) {
   const blockSize = 64;
   const blockCount = 6;
   const bytes = new Uint8Array(blockSize * blockCount);
@@ -54,7 +54,9 @@ function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64 } = {}) {
   view.setUint32(cursor + 4, 56, true);
   view.setUint32(cursor + 8, 0x1000, true);
 
-  // DBI header (stream 3 / block 5) with its own generation age.
+  // DBI header (stream 3 / block 5) with a native-compatible shape and its own generation age.
+  view.setInt32(blockSize * 5, dbiVersionSignature, true);
+  view.setUint32(blockSize * 5 + 4, dbiVersionHeader, true);
   view.setUint32(blockSize * 5 + 8, dbiAge, true);
   return bytes;
 }
@@ -104,6 +106,20 @@ test('#6042: matching CodeView/Info ages without a parsed DBI stay unavailable',
       evidenceIds: ['pdb:test'],
     };
     assert.equal(isDebugRecordAuthoritative(result, candidate), false);
+  }
+});
+
+test('#6042: a sized DBI with an invalid signature or version stays unavailable', () => {
+  for (const options of [
+    { dbiVersionSignature: 0 },
+    { dbiVersionHeader: 19990604 },
+  ]) {
+    const result = probe({ infoAge: 1, dbiAge: 1, ...options });
+    assert.equal(result.identity.verdict, 'identity-unavailable');
+    assert.equal(result.identity.detail, 'PDB DBI header is missing or truncated');
+    assert.equal(result.authoritative, false);
+    assert.equal(result.parsed.dbi, null);
+    assert.equal(result.status.completeness, 'partial');
   }
 });
 

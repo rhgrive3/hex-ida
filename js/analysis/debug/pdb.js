@@ -208,24 +208,51 @@ export function parsePdbInfoStream(bytes) {
  * getting one size wrong silently points at the wrong stream.
  */
 export const DBI_HEADER_SIZE = 64;
+const DBI_MIN_VERSION_HEADER = 19990903;
 
 export function parseDbiHeader(bytes) {
   if (!bytes || bytes.length < DBI_HEADER_SIZE) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const versionSignature = view.getInt32(0, true);
+  const versionHeader = view.getUint32(4, true);
+  // A length-only check can turn a corrupt stream 3 into authoritative DBI
+  // provenance. Match the native PDB reader's minimum structural gate before
+  // using its age or stream indices for symbol authority.
+  if (versionSignature !== -1 || versionHeader < DBI_MIN_VERSION_HEADER) return null;
+  const moduleSubstreamSize = view.getInt32(24, true);
+  const sectionContributionSize = view.getInt32(28, true);
+  const sectionMapSize = view.getInt32(32, true);
+  const sourceInfoSize = view.getInt32(36, true);
+  const typeServerMapSize = view.getInt32(40, true);
+  const optionalDbgHeaderSize = view.getInt32(48, true);
+  const ecSubstreamSize = view.getInt32(52, true);
+  const substreamSizes = [
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
+  ];
+  if (substreamSizes.some((size) => size < 0)) return null;
+  const declaredLength = DBI_HEADER_SIZE
+    + substreamSizes.reduce((total, size) => total + size, 0);
+  if (declaredLength !== bytes.length) return null;
   return {
-    versionSignature: view.getInt32(0, true),
-    versionHeader: view.getUint32(4, true),
+    versionSignature,
+    versionHeader,
     age: view.getUint32(8, true),
     globalStreamIndex: view.getUint16(12, true),
     publicStreamIndex: view.getUint16(16, true),
     symRecordStreamIndex: view.getUint16(20, true),
-    moduleSubstreamSize: view.getInt32(24, true),
-    sectionContributionSize: view.getInt32(28, true),
-    sectionMapSize: view.getInt32(32, true),
-    sourceInfoSize: view.getInt32(36, true),
-    typeServerMapSize: view.getInt32(40, true),
-    optionalDbgHeaderSize: view.getInt32(48, true),
-    ecSubstreamSize: view.getInt32(52, true),
+    moduleSubstreamSize,
+    sectionContributionSize,
+    sectionMapSize,
+    sourceInfoSize,
+    typeServerMapSize,
+    optionalDbgHeaderSize,
+    ecSubstreamSize,
   };
 }
 
