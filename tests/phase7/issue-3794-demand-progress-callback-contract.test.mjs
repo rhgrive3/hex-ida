@@ -85,6 +85,37 @@ test('#3794 legacy direct callback forms remain supported', async () => {
   assert.equal(functionEvents[0].phase, 'functions');
 });
 
+for (const [label, bad] of [
+  ['plain class', class ProgressSink {}],
+  ['bound class', (class ProgressSink {}).bind(null)],
+  ['proxy class', new Proxy(class ProgressSink {}, {})],
+]) {
+  test(`#3794 shapes ignore ${label} progress handlers`, async () => {
+    const app = makeShapesApp();
+    await assert.doesNotReject(app.ensureShapes({ onProgress:bad }));
+  });
+
+  test(`#3794 function discovery ignores ${label} progress handlers`, async () => {
+    const app = makeFunctionsApp();
+    await assert.doesNotReject(app.ensureFunctions(region, { onProgress:bad }));
+    assert.equal(app.symbols.functionStartsComplete, true);
+  });
+}
+
+test('#3794 callback exceptions still propagate for inspectable functions', async () => {
+  const shapes = makeShapesApp();
+  await assert.rejects(
+    shapes.ensureShapes({ onProgress:() => { throw new Error('shape-progress-failed'); } }),
+    /shape-progress-failed/,
+  );
+
+  const functions = makeFunctionsApp();
+  await assert.rejects(
+    functions.ensureFunctions(region, { onProgress:() => { throw new Error('function-progress-failed'); } }),
+    /function-progress-failed/,
+  );
+});
+
 test('#3794 nullish progress handlers remain no-ops', async () => {
   const shapes = makeShapesApp();
   await assert.doesNotReject(shapes.ensureShapes({ onProgress:null }));

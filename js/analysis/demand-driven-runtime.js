@@ -25,7 +25,18 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
-function optionalCallback(value) { return typeof value === 'function' ? value : null; }
+function optionalCallback(value) {
+  if (typeof value !== 'function') return null;
+  // JavaScript exposes no side-effect-free reflection for the [[Call]]
+  // capability of function-shaped values.  Accept source-visible callback
+  // forms, but fail closed for classes and source-hidden native/bound/proxy
+  // functions, which may be class constructors and would throw on call.
+  let source;
+  try { source = Function.prototype.toString.call(value).trim(); } catch { return null; }
+  if (/^class(?:\\s|\\{)/.test(source)) return null;
+  if (/^function\\s*\\([^)]*\\)\\s*\\{\\s*\\[native code\\]\\s*\\}$/.test(source)) return null;
+  return value;
+}
 function addressOf(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
