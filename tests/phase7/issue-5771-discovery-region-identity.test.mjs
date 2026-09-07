@@ -55,11 +55,18 @@ test('canonical and structured region requests never share one single-flight pro
 
   const malformedCall = app.ensureFunctions({ id:['text'], exec:true, size:4n });
   const canonicalCall = app.ensureFunctions({ id:'text', exec:true, size:4n });
-  assert.notEqual(malformedCall, canonicalCall, 'different region identities must not share one producer');
-  resolveGuess({ starts:[], complete:true, discoveryComplete:true });
-  await Promise.all([malformedCall, canonicalCall]);
-
+  // Keep the canonical producer pending, then prove that the malformed request
+  // settles independently instead of attaching to that pending producer. Promise
+  // wrapper identity cannot distinguish single-flight sharing.
+  assert.deepEqual(producerIds, ['text'], 'the canonical request must start the producer');
+  const malformedSettled = await Promise.race([
+    app.ensureFunctions({ id:['text'], exec:true, size:4n }).then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 25)),
+  ]);
+  assert.equal(malformedSettled, true, 'malformed request must not wait for canonical producer');
   assert.deepEqual(producerIds, ['text'], 'only the canonical request may run guessFunctions');
+  resolveGuess({ starts:[], complete:true, discoveryComplete:true });
+  await canonicalCall;
 });
 
 
