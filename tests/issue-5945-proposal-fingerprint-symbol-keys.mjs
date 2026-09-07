@@ -72,6 +72,29 @@ assert.equal(proposals.get(arrayProposal.id).status, 'failed', 'fingerprint fail
 assert.ok(proposals.audit.some((event) => event.type === 'proposal-failed' && event.proposalId === arrayProposal.id),
   'fingerprint failure must emit proposal-failed audit evidence');
 
+let bindingState = {};
+const bindingStore = new ProposalStore({ evidenceStore: evidence, binding: () => bindingState });
+const bindingProposal = bindingStore.create({
+  kind: 'comment', target: '0x1003', before: { name: 'target' }, after: { name: 'after' },
+  evidenceIds: [verified.id],
+});
+const bindingApproval = bindingStore.approve(bindingProposal.id).approvalToken;
+const bindingSymbol = Symbol('binding-current-state');
+bindingState = { [bindingSymbol]: 'changed' };
+await assert.rejects(
+  () => bindingStore.apply(bindingProposal.id, {
+    approvalToken: bindingApproval,
+    currentState: { name: 'target' },
+    apply: async () => { throw new Error('must not run'); },
+  }),
+  (error) => error.type === 'tool_failed' && /symbol-keyed own properties/.test(error.message),
+  'binding fingerprint failures must fail the proposal closed',
+);
+assert.equal(bindingStore.get(bindingProposal.id).status, 'failed',
+  'binding fingerprint failure must not leave the proposal applying');
+assert.ok(bindingStore.audit.some((event) => event.type === 'proposal-failed' && event.proposalId === bindingProposal.id),
+  'binding fingerprint failure must emit proposal-failed audit evidence');
+
 // Plain string-keyed states keep working end to end.
 const stable = proposals.create({ kind: 'comment', target: '0x2000', before: plainBefore, after: { name: 'after' }, evidenceIds: [verified.id] });
 const stableToken = proposals.approve(stable.id).approvalToken;

@@ -112,7 +112,15 @@ export class ProposalStore {
     this.approvals.delete(authority.id);
     this.audit.push({ type: 'proposal-applying', proposalId: authority.id, timestamp: new Date().toISOString() });
 
-    if (authority.bindingRevision !== fingerprint(this.binding?.() || null)) {
+    let bindingRevision;
+    try {
+      bindingRevision = fingerprint(this.binding?.() || null);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (authority.bindingRevision !== bindingRevision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-binding-mismatch', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
