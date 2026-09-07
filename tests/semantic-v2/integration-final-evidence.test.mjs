@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,19 +6,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
 import { verifyProvenance, verifyDeterminism } from '../../tools/validation/semantic-v2/provenance.mjs';
+import {
+  SEMANTIC_ASSERTION_FILES,
+  DECOMPILER_ASSERTION_FILES,
+  PHASE3_ASSERTION_COMMAND_COUNT,
+} from '../support/semantic-corpus-manifest.mjs';
+import { runPhase3Corpus } from '../support/phase3-corpus-runner.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const v2Corpus = globalThis.__HEX_PHASE3_CURRENT_CORPUS__;
 assert.ok(v2Corpus, 'explicit v2 current-corpus evidence must run before final evidence');
 assert.equal(v2Corpus.semantic.failed, 0);
 assert.equal(v2Corpus.decompiler.failed, 0);
-
-function commandsFor(scriptName) {
-  const script = packageJson.scripts?.[scriptName];
-  if (typeof script !== 'string' || !script.trim()) throw new Error(`missing npm script: ${scriptName}`);
-  return script.split(/\s*&&\s*/).map((command) => command.trim()).filter(Boolean);
-}
+assert.equal(v2Corpus.semantic.total + v2Corpus.decompiler.total, PHASE3_ASSERTION_COMMAND_COUNT,
+  'v2 unchanged-assertion denominator must stay locked at 25');
 
 const legacyPreloadFile = path.join(os.tmpdir(), `hex-phase3-legacy-preload-${process.pid}.mjs`);
 const irUrl = pathToFileURL(path.join(root, 'js/ir.js')).href;
@@ -35,25 +35,20 @@ const legacyEnv = {
 };
 delete legacyEnv.npm_config_prefix;
 
-function runLegacyCommand(suite, command) {
-  const child = spawnSync('bash', ['-lc', command], {
-    cwd: root,
-    env: legacyEnv,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 180_000,
-  });
-  const passed = child.status === 0;
-  if (!passed) {
-    const combined = `${child.stdout ?? ''}\n${child.stderr ?? ''}`;
-    process.stderr.write(`\n[phase3-legacy-differential ${suite}] ${command}\n${combined.slice(-5000)}\n`);
-  }
-  return { command, passed, status: child.status, signal: child.signal ?? null, timedOut: child.error?.code === 'ETIMEDOUT' };
-}
-
-const legacySemantic = commandsFor('semantic:test').map((command) => runLegacyCommand('semantic', command));
-const legacyDecompiler = commandsFor('decompiler:test').map((command) => runLegacyCommand('decompiler', command));
+const legacyFiles = [...SEMANTIC_ASSERTION_FILES, ...DECOMPILER_ASSERTION_FILES];
+const { results: legacyResults, concurrency: legacyConcurrency } = await runPhase3Corpus({
+  suite: 'legacy-differential',
+  files: legacyFiles,
+  root,
+  env: legacyEnv,
+  timeoutMs: 180_000,
+});
 try { fs.rmSync(legacyPreloadFile, { force: true }); } catch {}
+const legacySemantic = legacyResults.slice(0, SEMANTIC_ASSERTION_FILES.length);
+const legacyDecompiler = legacyResults.slice(SEMANTIC_ASSERTION_FILES.length);
+assert.equal(legacySemantic.length + legacyDecompiler.length, PHASE3_ASSERTION_COMMAND_COUNT,
+  'legacy unchanged-assertion denominator must stay locked at 25');
+
 const v2ByCommand = new Map([
   ...v2Corpus.semantic.results.map((item) => [`semantic\u0000${item.command}`, item]),
   ...v2Corpus.decompiler.results.map((item) => [`decompiler\u0000${item.command}`, item]),
@@ -67,6 +62,8 @@ const differentialResults = [
   return { suite: legacy.suite, command: legacy.command, legacyPassed: legacy.passed, v2Passed: v2?.passed === true, matched };
 });
 const mismatchResults = differentialResults.filter((item) => !item.matched);
+assert.equal(differentialResults.length, PHASE3_ASSERTION_COMMAND_COUNT,
+  'v1/v2 differential denominator must stay locked at 25');
 assert.equal(legacySemantic.filter((item) => item.passed).length, legacySemantic.length, 'legacy semantic corpus must remain green');
 assert.equal(legacyDecompiler.filter((item) => item.passed).length, legacyDecompiler.length, 'legacy decompiler corpus must remain green');
 assert.equal(mismatchResults.length, 0, `legacy/v2 unchanged-assertion differential mismatch: ${JSON.stringify(mismatchResults)}`);
@@ -174,6 +171,7 @@ const differential = Object.freeze({
   differentialMatchCount: differentialResults.length - mismatchResults.length,
   mismatchCount: mismatchResults.length,
   results: Object.freeze(differentialResults),
+  legacyConcurrency,
 });
 
 globalThis.__HEX_PHASE3_FINAL_EVIDENCE__ = Object.freeze({
