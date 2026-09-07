@@ -97,6 +97,28 @@ function assertTopology(value) {
     /analysis-artifact-payload-node-invalid/,
   );
 
+  // Reference IDs are canonical non-negative safe integers; -0 must fail closed.
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{ t:'object', i:-0, n:false, v:[] },
+    }),
+    /analysis-artifact-payload-node-invalid/,
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({
+      codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
+      root:{
+        t:'object', i:0, n:false,
+        v:[
+          ['completed', { t:'object', i:1, n:false, v:[] }],
+          ['noncanonical', { t:'ref', i:-0 }],
+        ],
+      },
+    }),
+    /analysis-artifact-payload-node-invalid/,
+  );
+
   const completedAlias = decodeWorkerAnalysisPayload({
     codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
     root:{

@@ -156,7 +156,7 @@ function canonicalTypedArrayValues(name, value) {
 }
 
 function canonicalReferenceId(value) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) invalidPayloadNode();
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) invalidPayloadNode();
   return value;
 }
 
