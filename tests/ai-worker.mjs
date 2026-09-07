@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import worker, { __test } from '../worker.js';
 import { WorkerAIProvider } from '../js/ai/provider/index.js';
+import { MAX_RESPONSE_BYTES } from '../js/ai/provider/worker-transport.js';
 
 const normalized = __test.normalizeAITurnRequest({
   mode: 'chat', style: 'analyst', scope: 'auto', messages: [{ role: 'user', content: 'general question' }],
@@ -198,6 +199,18 @@ try {
     assert.equal(oversizedSuccess.status, 502, 'oversized success response is rejected');
     assert.equal((await oversizedSuccess.json()).error.code, 'invalid_model_output');
     assert.ok(readBytes <= 4 * 1024 * 1024 + 262144, `oversized body must be cut off at the ceiling, read ${readBytes} bytes`);
+
+    // A Content-Length rejection happens before readLimitedText acquires a
+    // reader, so the worker must still cancel the untouched upstream body.
+    let oversizedBodyCancelled = 0;
+    globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { oversizedBodyCancelled++; } }), {
+      status: 200,
+      headers: { 'content-length': String(MAX_RESPONSE_BYTES + 1) },
+    });
+    const oversizedAnnounced = await worker.fetch(request(), env);
+    assert.equal(oversizedAnnounced.status, 502, 'announced oversized response is rejected');
+    assert.equal((await oversizedAnnounced.json()).error.code, 'invalid_model_output');
+    assert.equal(oversizedBodyCancelled, 1, 'announced oversized upstream body is cancelled before reader creation');
 
     globalThis.fetch = async () => trackedResponse(
       JSON.stringify({ error: { code: 'temporary', padding: 'x'.repeat(6 * 1024 * 1024) } }),

@@ -24,7 +24,7 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
   const errors = [];
 
   for (const cap of capabilities) {
-    if (cap.agentTool == null) continue;
+    if (cap.agentTool === undefined) continue;
     if (typeof cap.agentTool !== "string" || !cap.agentTool) {
       // Explicitly present malformed tool identities must fail the contract
       // audit instead of disappearing through truthiness or String() coercion

@@ -220,6 +220,7 @@ const baseRegistry = createHexToolRegistry({
 // 15. Audit rejects explicitly present falsy agentTool identities (#6160)
 {
   const cases = [
+    [null, "invalid-agent-tool-id:null"],
     [0, "invalid-agent-tool-id:number:0"],
     [false, "invalid-agent-tool-id:boolean:false"],
     ["", "invalid-agent-tool-id:string:"],
@@ -234,7 +235,13 @@ const baseRegistry = createHexToolRegistry({
     assert.equal(audit.rows.length, 1);
     assert.equal(audit.rows[0].toolPresent, false);
   }
-  console.log("  ok 15 audit rejects explicit falsy agentTool identities");
+  const omitted = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.omitted" }, { id: "cap.undefined", agentTool: undefined }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(omitted.ok, true);
+  assert.deepEqual(omitted.rows, [], "Omitted and undefined agentTool values remain optional");
+  console.log("  ok 15 audit rejects explicit falsy agentTool identities and skips only omitted/undefined values");
 }
 
 console.log("  ok all capability tool contract tests passed!");

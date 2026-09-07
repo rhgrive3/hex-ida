@@ -76,7 +76,14 @@ export async function handleAITurn(request, env) {
   // The provider response is untrusted transport input: materialize it under
   // the same class of byte ceiling the request path enforces (#6144).
   try { interaction = adapter.normalize(JSON.parse(await readLimitedText(upstream, responseByteLimit(adapter)))); }
-  catch { await cleanup(); return jsonError(502, 'invalid_model_output', 'The model returned malformed JSON.'); }
+  catch {
+    // readLimitedText can reject on Content-Length before it acquires a reader.
+    // Close that still-unconsumed upstream body before releasing the request
+    // quota so an oversized response cannot keep its transport alive (#6144).
+    try { await upstream.body?.cancel(); } catch {}
+    await cleanup();
+    return jsonError(502, 'invalid_model_output', 'The model returned malformed JSON.');
+  }
   await cleanup();
   try {
     const decision = normalizeAIInteraction(interaction, payload.tools.map((tool) => tool.name));
