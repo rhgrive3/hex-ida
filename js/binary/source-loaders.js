@@ -161,7 +161,7 @@ async function readPrefix(source, signal) {
 async function readChunked(source, offset, length, { signal } = {}) {
   const total = Number(length);
   if (!Number.isSafeInteger(total) || total < 0) throw new RangeError('chunked read length is invalid');
-  if (total === 0) return new Uint8Array(0);
+  if (total === 0) return source.readExactly(base, 0, { signal });
   const ceiling = Number(source?.maxReadLength ?? total);
   const limit = Number.isSafeInteger(ceiling) && ceiling > 0 ? ceiling : total;
   const out = new Uint8Array(total);
