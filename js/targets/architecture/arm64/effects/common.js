@@ -11,6 +11,8 @@ export const ARM64_ARCHITECTURE_ID = 'arm64';
 export const ARM64_MODE = 'a64';
 export const ARM64_INSTRUCTION_BYTES = 4n;
 
+const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
+
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
 }
@@ -119,6 +121,9 @@ function registerDescriptor(op) {
 
 export function createArm64EffectContext(instruction, options = {}) {
   const mnemonic = instructionMnemonic(instruction);
+  const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
+    && Array.isArray(instruction?.ops)
+    && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
   const instructionId = String(instruction?.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('arm64-effects-instruction-id-required');
   const mode = String(instruction?.mode || ARM64_MODE);
@@ -230,8 +235,8 @@ export function createArm64EffectContext(instruction, options = {}) {
   }
 
   function shiftImmediate(value, widthBits, kind, amount) {
-    const n = Number(amount);
-    if (!Number.isInteger(n) || n < 0 || n >= widthBits) return null;
+    const n = amount;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n >= widthBits) return null;
     return valueOp(kind, [value, constant(widthBits, BigInt(n))], widthBits, { widthBits, amount: n });
   }
 
@@ -240,8 +245,10 @@ export function createArm64EffectContext(instruction, options = {}) {
       if (sourceBits === targetBits) return value;
       return sourceBits < targetBits ? zeroExtend(value, sourceBits, targetBits) : truncate(value, sourceBits, targetBits);
     }
-    const kind = String(modifier.op || '').toLowerCase();
-    const amount = modifier.amount == null ? 0 : Number(modifier.amount);
+    if (typeof modifier.op !== 'string') return null;
+    const kind = modifier.op.toLowerCase();
+    const amount = modifier.amount == null ? 0 : modifier.amount;
+    if (typeof amount !== 'number' || !Number.isInteger(amount)) return null;
     const extendBits = {
       uxtb: 8, uxth: 16, uxtw: 32, uxtx: 64,
       sxtb: 8, sxth: 16, sxtw: 32, sxtx: 64,
@@ -258,6 +265,7 @@ export function createArm64EffectContext(instruction, options = {}) {
   }
 
   function readOperand(op, targetBits = instructionBits(op)) {
+    if (hasUnsupportedRegisterExtend) return null;
     if (!op) return null;
     if (op.k === 'imm') {
       const value = immediateOf(op);
@@ -266,7 +274,9 @@ export function createArm64EffectContext(instruction, options = {}) {
       return applyModifier(base, targetBits, op.shift || null, targetBits);
     }
     if (op.k === 'reg') {
-      const modifierKind = String(op.shift?.op || '').toLowerCase();
+      if (op.shift != null && op.extend != null) return null;
+      const modifier = op.shift || op.extend || null;
+      const modifierKind = typeof modifier?.op === 'string' ? modifier.op.toLowerCase() : '';
       const widenedXModifier = (modifierKind === 'uxtx' || modifierKind === 'sxtx') && instructionBits(op, targetBits) === 32;
       const sourceOperand = widenedXModifier
         ? { ...op, bits:64, text:op.cls === 'zr' ? 'xzr' : `x${op.num}` }
@@ -274,7 +284,7 @@ export function createArm64EffectContext(instruction, options = {}) {
       const sourceBits = instructionBits(sourceOperand, targetBits);
       const base = readRegister(sourceOperand);
       if (!base) return null;
-      return applyModifier(base, sourceBits, op.shift || null, targetBits);
+      return applyModifier(base, sourceBits, modifier, targetBits);
     }
     return null;
   }

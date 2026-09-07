@@ -179,4 +179,7 @@ console.log("  ok Case 2 control-flow projection parity");
   console.log("  ok Case 16 placement coercion fails closed");
 }
 
+// Keep the focused #3368 hook contract in the required platform:test path.
+await import("./architecture-plugin-v2-hook-validation.test.mjs");
+
 console.log("All architecture live view tests PASS!");

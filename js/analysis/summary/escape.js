@@ -19,6 +19,7 @@
 
 import { deepFreeze } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
+import { provenSeparationAuthority } from '../pointsto/lattice.js';
 
 export const ESCAPE_ANALYZER_ID = 'phase7.summary.escape';
 export const ESCAPE_ANALYZER_VERSION = '1.0.0';
@@ -58,17 +59,36 @@ const LOCALLY_CREATED = new Set(['local-frame', 'local-allocation']);
 function fail(code) { throw new TypeError(code); }
 
 export function createEscapeRecord(input = {}) {
-  const reason = String(input.reason ?? '');
-  const boundary = String(input.boundary ?? '');
+  const reason = typeof input.reason === 'string' ? input.reason : '';
+  const boundary = typeof input.boundary === 'string' ? input.boundary : '';
   if (!REASON_SET.has(reason)) fail('escape-invalid-reason');
   if (!BOUNDARY_SET.has(boundary)) fail('escape-invalid-boundary');
+
+  if (typeof input.rootKey !== 'string' || !input.rootKey.trim()) fail('escape-invalid-root-key');
+  const rootKey = input.rootKey.trim();
+
+  let siteId = null;
+  if (input.siteId != null) {
+    if (typeof input.siteId !== 'string' || !input.siteId.trim()) fail('escape-invalid-site-id');
+    siteId = input.siteId.trim();
+  }
+
+  const evidenceIds = [];
+  if (input.evidenceIds != null) {
+    if (!Array.isArray(input.evidenceIds)) fail('escape-invalid-evidence-ids');
+    for (const id of input.evidenceIds) {
+      if (typeof id !== 'string' || !id.trim()) fail('escape-invalid-evidence-ids');
+      evidenceIds.push(id.trim());
+    }
+  }
+
   return deepFreeze({
-    rootKey: String(input.rootKey ?? ''),
+    rootKey,
     rootOrigin: ROOT_ORIGINS.includes(input.rootOrigin) ? input.rootOrigin : 'unknown',
     reason,
     boundary,
-    siteId: input.siteId == null ? null : String(input.siteId),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
+    siteId,
+    evidenceIds: [...new Set(evidenceIds)].sort(),
   });
 }
 
@@ -83,6 +103,15 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
   if (allocationRootKeys.has(target.rootKey)) return 'local-allocation';
   if (target.rootKind === 'stack-like') return 'local-frame';
   if (target.rootKind === 'absolute') return 'global';
+  /* The canonical root descriptor's storage class is producer-held evidence
+   * (issue #5892): `global-like` normalizes to a `rooted` proof, but it is a
+   * global storage root, not an incoming argument. Only descriptor-backed
+   * authority counts — a `separationClass` without that authority must not
+   * mint a global, so an ordinary `rooted` target stays `incoming`. The
+   * authority is verified against the target's proof brand (#6066), not the
+   * stored string. */
+  if (provenSeparationAuthority(target) === 'root-descriptor'
+    && target.separationClass === 'global-like') return 'global';
   if (target.rootKind === 'rooted') return 'incoming';
   return 'unknown';
 }

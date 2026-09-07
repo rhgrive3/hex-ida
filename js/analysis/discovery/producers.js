@@ -20,13 +20,22 @@ function toAddress(value) {
   if (value == null) return null;
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
-  try { return BigInt(value).toString(); }
-  catch { return null; }
+  if (type === 'string' && value.trim().length === 0) return null;
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address.toString() : null;
+  } catch { return null; }
 }
 
 function evidence(kind, input) {
   if (!EVIDENCE_AUTHORITY[kind]) throw new TypeError(`discovery-producer-unknown-kind:${kind}`);
   return createDiscoveryEvidence({ kind, ...input });
+}
+
+function loaderStartArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(code);
+  return value;
 }
 
 /**
@@ -49,11 +58,11 @@ function loaderFunctionStarts(image) {
   // Canonical loader truth must win deduplication. The legacy projection is
   // compatibility-only and may omit provenance/extent fields carried by the
   // canonical BinaryImage.functions seed.
-  for (const start of image?.functions ?? []) {
+  for (const start of loaderStartArray(image?.functions, 'discovery-loader-invalid-functions')) {
     const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
     if (sources.has('function_starts')) add(start);
   }
-  for (const start of image?.functionStarts ?? []) add(start);
+  for (const start of loaderStartArray(image?.functionStarts, 'discovery-loader-invalid-function-starts')) add(start);
   return out;
 }
 
@@ -244,6 +253,27 @@ export function createDebugEvidenceProducer(debugEvidence) {
   });
 }
 
+function requiredPatternId(value, code) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError(code);
+  return value;
+}
+
+function patternBytes(value, code) {
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) throw new TypeError(code);
+    return new Uint8Array(value);
+  }
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const bytes = new Uint8Array(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) throw new TypeError(code);
+    const byte = value[index];
+    if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError(code);
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
 /**
  * A declarative byte-pattern producer.
  *
@@ -258,30 +288,35 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   if (!Number.isSafeInteger(alignment) || alignment <= 0) {
     throw new TypeError('discovery-pattern-invalid-alignment');
   }
+  const producerId = requiredPatternId(id, 'discovery-pattern-invalid-id');
+  const producerArchitectureId = architectureId == null
+    ? null
+    : requiredPatternId(architectureId, 'discovery-pattern-invalid-architecture-id');
   if (!Array.isArray(patterns)) {
     throw new TypeError('discovery-pattern-empty-patterns');
   }
-  const compiled = patterns.map((pattern) => {
-    if (!pattern || (!Array.isArray(pattern.bytes) && !(pattern.bytes instanceof Uint8Array)) || pattern.bytes.length === 0) {
-      throw new TypeError('discovery-pattern-invalid-bytes');
-    }
-    const bytes = Uint8Array.from(pattern.bytes);
+  const compiled = [];
+  for (let patternIndex = 0; patternIndex < patterns.length; patternIndex += 1) {
+    if (!Object.hasOwn(patterns, patternIndex)) throw new TypeError('discovery-pattern-invalid-bytes');
+    const pattern = patterns[patternIndex];
+    if (!pattern) throw new TypeError('discovery-pattern-invalid-bytes');
+    const bytes = patternBytes(pattern.bytes, 'discovery-pattern-invalid-bytes');
     let mask = null;
-    if (pattern.mask) {
-      if (pattern.mask.length !== bytes.length) {
+    if (pattern.mask != null) {
+      mask = patternBytes(pattern.mask, 'discovery-pattern-invalid-mask');
+      if (mask.length !== bytes.length) {
         throw new TypeError('discovery-pattern-mask-length-mismatch');
       }
-      mask = Uint8Array.from(pattern.mask);
     }
-    return {
-      id: String(pattern.id ?? 'pattern'),
+    compiled.push({
+      id: pattern.id == null ? 'pattern' : requiredPatternId(pattern.id, 'discovery-pattern-invalid-id'),
       bytes,
       mask,
-    };
-  });
+    });
+  }
   return Object.freeze({
-    id: String(id),
-    architectureId: architectureId == null ? null : String(architectureId),
+    id: producerId,
+    architectureId: producerArchitectureId,
     produce(input) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;

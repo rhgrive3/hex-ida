@@ -37,6 +37,7 @@ try {
   const support = {
     arm64: probe(M.ARCH_ARM64, M.MODE_ARM | M.MODE_LITTLE_ENDIAN),
     x86_64: probe(M.ARCH_X86, M.MODE_64 | M.MODE_LITTLE_ENDIAN),
+    riscv64: probe(M.ARCH_RISCV, M.MODE_RISCV64 | M.MODE_RISCVC | M.MODE_LITTLE_ENDIAN),
   };
 
   assert.deepEqual(support, DEPLOYED_CAPSTONE_SUPPORT, 'capability claims must exactly match the deployed Capstone build');
@@ -51,6 +52,15 @@ try {
   assert.equal(x86Descriptor.capability.canEmulate, false);
   assert.equal(x86Descriptor.capability.viewerCanDisassemble, false, 'fixed-width viewer must not claim x86 support');
   assert.equal(x86Descriptor.capability.engineVerified, true);
+
+  const riscvDescriptor = describeBinaryImage({
+    format: 'elf', arch: 'riscv64', bits: 64, endian: 'little',
+    sections: [], segments: [], imageBase: 0n, fileOffset: 0n, fileSize: 0n,
+    warnings: [], metadata: {}, summary: () => ({ format: 'elf', arch: 'riscv64', bits: 64 }),
+  });
+  assert.equal(riscvDescriptor.capability.canDisassemble, true, 'riscv64 must be disassemblable by default');
+  assert.equal(riscvDescriptor.capability.canAnalyzeDataflow, false);
+  assert.equal(riscvDescriptor.capability.viewerCanDisassemble, false);
 
   console.log('capstone-capability:', JSON.stringify(support));
 } finally {

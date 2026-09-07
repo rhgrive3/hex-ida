@@ -38,7 +38,9 @@ function required(value, code) {
 function optional(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new ArtifactError('artifact-optional-id-invalid');
-  return value;
+  const text = value.trim();
+  if (!text) throw new ArtifactError('artifact-optional-id-invalid');
+  return text;
 }
 function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
 function sortedStrings(values, code) {
@@ -53,9 +55,12 @@ function sortedStrings(values, code) {
   return [...new Set(normalized)].sort();
 }
 
-const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes']);
-
+const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint', '$date', '$bytes', '$typedBytes']);
 function escapeKey(key) { return key.startsWith('$') ? `$${key}` : key; }
+
+function compareCanonicalText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return { $bigint: value.toString() };
@@ -67,7 +72,14 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
     throw new ArtifactError('artifact-key-invalid-type', `Artifact key values must be JSON-serializable, received ${typeof value}`);
   }
-  if (ArrayBuffer.isView(value)) return { $bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+  if (ArrayBuffer.isView(value)) {
+    return {
+      $typedBytes: {
+        type: value.constructor.name,
+        bytes: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
+      },
+    };
+  }
   if (value instanceof ArrayBuffer) return { $bytes: Array.from(new Uint8Array(value)) };
   if (value instanceof Date) return { $date: value.toISOString() };
   if (typeof value !== 'object') return String(value);
@@ -76,15 +88,19 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   let out;
   if (value instanceof Map) {
     out = [...value.entries()].map(([key, entryValue]) => [canonicalArtifactKeyValue(key, seen), canonicalArtifactKeyValue(entryValue, seen)]);
-    out.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
+    out.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
     out = { $map: out };
   } else if (value instanceof Set) {
     const values = [...value].map((entry) => canonicalArtifactKeyValue(entry, seen));
-    values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
     out = { $set: values };
   } else if (Array.isArray(value)) {
     out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
   } else {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new ArtifactError('artifact-key-unsupported-object');
+    }
     out = {};
     for (const key of Object.keys(value).sort()) {
       Object.defineProperty(out, escapeKey(key), {
@@ -109,12 +125,14 @@ export function createArtifactDescriptor(input = {}) {
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
   const canonicalConfig = canonicalConfigHash(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
+  // Snapshot identity fields once so descriptor and artifactId material cannot diverge.
+  const artifactKind = required(input.artifactKind ?? input.kind, 'artifact-kind-required');
   const descriptor = {
     contractVersion: ARTIFACT_CONTRACT_VERSION,
     binaryId: required(input.binaryId, 'artifact-binary-id-required'),
     sliceId: optional(input.sliceId),
     entityId: optional(input.entityId),
-    artifactKind: required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
+    artifactKind,
     producerId: required(input.producerId ?? input.passId, 'artifact-producer-id-required'),
     producerVersion: required(input.producerVersion ?? input.passVersion ?? '1', 'artifact-producer-version-required'),
     versions: {
@@ -135,7 +153,7 @@ export function createArtifactDescriptor(input = {}) {
   };
   const optionsHash = stableDigest({
     artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
-    artifactKind:required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
+    artifactKind,
     configHash:canonicalConfig,
     keyExtrasHash:stableDigest(keyExtras),
     platformVersion:descriptor.versions.platform,
@@ -192,9 +210,6 @@ function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
 }
 
 export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
-  // Artifact records carry producer authority (#3324): only descriptors minted
-  // by createArtifactDescriptor may produce records. A lookalike object must
-  // not forge canonical artifact identity.
   assertCanonicalArtifactDescriptor(descriptor);
   const bytes = normalizeArtifactPayloadBytes(payloadBytes);
   const completeness = metadata.completeness ?? 'complete';

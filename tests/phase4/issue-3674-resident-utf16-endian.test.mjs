@@ -2,16 +2,16 @@ import assert from 'node:assert/strict';
 import { scanStrings } from '../../js/binary/strings.js';
 import { scanSourceStrings } from '../../js/bytesource/strings.js';
 
-function makeImage(bytes, endian) {
+function makeImage(bytes, endian, sections = null) {
   return {
     bytes,
     endian,
-    sections:[{
-      name:'.rodata',
-      fileOffset:0n,
-      fileSize:BigInt(bytes.length),
-      perms:{ execute:false },
-    }],
+    sections:sections ?? [{
+        name:'.rodata',
+        fileOffset:0n,
+        fileSize:BigInt(bytes.length),
+        perms:{ execute:false },
+      }],
     segments:[],
     offsetToAddress(offset) { return 0x1000n + offset; },
   };
@@ -33,10 +33,15 @@ function exact(results, text, encoding, fileOffset=0n) {
     && item.fileOffset === fileOffset);
 }
 
-async function assertResidentSourceEvidenceParity(bytes, endian, options, expected) {
-  const image=makeImage(bytes,endian);
+async function assertResidentSourceEvidenceParity(bytes, endian, options, expected, sections = null) {
+  const image=makeImage(bytes,endian,sections);
   const resident=scanStrings(image,options);
   const streamed=(await scanSourceStrings(image,bytes,options)).results;
+  const comparable=(results) => results.map(({ text, encoding, fileOffset, byteLength, section }) => ({
+    text, encoding, fileOffset, byteLength, section,
+  }));
+  assert.deepEqual(comparable(resident),comparable(streamed),
+    'resident and source-backed scans must preserve the same evidence ordering');
   for (const item of expected) {
     assert.ok(exact(resident,item.text,item.encoding,item.fileOffset), `resident missing ${item.encoding}:${item.text}`);
     assert.ok(exact(streamed,item.text,item.encoding,item.fileOffset), `source-backed missing ${item.encoding}:${item.text}`);
@@ -65,15 +70,21 @@ for (const option of ['le','utf16le','utf-16le']) {
 }
 
 {
+  // Keep the encodings in distinct section ranges. The source scanner accepts
+  // Unicode at either byte offset, so a mixed range can legitimately expose a
+  // shifted view of one encoding before the aligned run of the other.
   const bytes=Uint8Array.from([
-    ...encodeUtf16Ascii('ABCD','utf16be'),
-    0x00,0x00,
     ...encodeUtf16Ascii('WXYZ','utf16le'),
+    ...encodeUtf16Ascii('ABCD','utf16be'),
   ]);
+  const sections=[
+    { name:'.utf16le', fileOffset:0n, fileSize:8n, perms:{ execute:false } },
+    { name:'.utf16be', fileOffset:8n, fileSize:8n, perms:{ execute:false } },
+  ];
   await assertResidentSourceEvidenceParity(bytes,'big',{ minLength:4, utf16:'both' },[
-    { text:'ABCD', encoding:'utf16be', fileOffset:0n },
-    { text:'WXYZ', encoding:'utf16le', fileOffset:10n },
-  ]);
+    { text:'WXYZ', encoding:'utf16le', fileOffset:0n },
+    { text:'ABCD', encoding:'utf16be', fileOffset:8n },
+  ],sections);
 }
 
 {

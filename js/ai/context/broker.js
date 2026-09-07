@@ -1,3 +1,4 @@
+import { serializedByteLength } from '../budget/wire.js';
 import { AIError } from '../schema.js';
 import { addressText, jsonSafe } from '../validation.js';
 
@@ -14,7 +15,7 @@ export class ContextBroker {
 
   initialAutoScope(snapshot = null) {
     if (snapshot?.selection || this.local.selection) return 'selection';
-    if (snapshot?.currentFunction?.address || this.currentAddress()) return 'function';
+    if (this.currentAddress(snapshot) != null) return 'function';
     return snapshot?.binaryId || this.local.binaryId || this.local.program || this.local.functions ? 'binary' : 'function';
   }
 
@@ -211,6 +212,6 @@ function trimToBudget(context, maxBytes) {
     context.conversationSummary = context.conversationSummary.slice(0, 500);
   }
 }
-function byteLength(value) { return new TextEncoder().encode(JSON.stringify(jsonSafe(value))).byteLength; }
+function byteLength(value) { return serializedByteLength(value); }
 function removeUndefined(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function removeUndefinedInPlace(value) { for (const key of Object.keys(value)) if (value[key] === undefined) delete value[key]; }

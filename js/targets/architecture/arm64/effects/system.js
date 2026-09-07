@@ -6,13 +6,16 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
+import {
+  arm64BarrierOptionFromImmediate,
+  arm64BarrierOptionFromText,
+  arm64BarrierScope,
+} from './barrier-options.js';
 
 const ARCHITECTURE_ID = 'arm64';
 const MODE = 'a64';
 
 const BARRIERS = new Set(['dmb','dsb','isb']);
-const DATA_BARRIER_OPTIONS = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);
-const DSB_NXS_OPTIONS = new Set(['oshnxs','nshnxs','ishnxs','synxs']);
 const WAITS_AND_EVENTS = new Set(['yield','wfe','wfi','sev','sevl']);
 const TRAPS = new Set(['svc','hvc','smc','brk','hlt']);
 const MAINTENANCE = new Set(['dc','ic','tlbi']);
@@ -168,8 +171,8 @@ function hasNoOperandModifier(op) {
   return op?.shift == null && op?.extend == null;
 }
 function sysRegText(op) {
-  if (!hasNoOperandModifier(op)) return null;
-  const text = String(op?.text || '').trim().toLowerCase();
+  if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+  const text = op.text.trim().toLowerCase();
   return /^[a-z][a-z0-9_]*$/.test(text) ? text : null;
 }
 function sysRegId(name) {
@@ -261,11 +264,24 @@ function nop(instruction, context) {
 
 function barrier(instruction, context, mnemonic, ops) {
   const operand = ops[0];
+  const immediate = isPlainImmediate(operand) ? BigInt(operand.value) : null;
+  const fallbackOption = textOperand(operand)
+    ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() : null);
+  const selected = immediate != null
+    ? arm64BarrierOptionFromImmediate(mnemonic, immediate)
+    : arm64BarrierOptionFromText(mnemonic, fallbackOption || 'sy');
+  const option = selected?.option || fallbackOption || 'sy';
+  const canonicalScope = mnemonic === 'isb'
+    ? { domain:'instruction-stream', access:'instruction-fetch', option:'sy' }
+    : arm64BarrierScope(option);
   const scope = {
     architecture:'arm64',
     barrier:mnemonic,
-    domain:String(operand?.text || instruction?.operands || 'sy').toLowerCase(),
-    semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+    ...(canonicalScope || { domain:option }),
+    ...(selected?.crm == null ? {} : { crm:selected.crm }),
+    ...(selected?.reservedEncoding ? { reservedEncoding:true } : {}),
+    semantics:option === 'ssbb' || option === 'pssbb' ? 'speculation-store-bypass'
+      : mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
   };
   return bundle(instruction, context, {
     operations:[createMachineOperation({ kind:'barrier', scope })],
@@ -283,7 +299,14 @@ function waitOrEvent(instruction, context, mnemonic) {
     symbolicDetail:'summary-only',
     metadata:{ architecturalEffect:mnemonic === 'sev' || mnemonic === 'sevl' ? 'event-signal' : mnemonic === 'yield' ? 'scheduling-hint' : 'wait' },
   });
-  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+  const possibleFaults = (mnemonic === 'wfi' || mnemonic === 'wfe')
+    ? [{ kind:'system-instruction-trap', condition:{ kind:'architectural-access-check', operation:mnemonic } }]
+    : [];
+  return bundle(instruction, context, {
+    operations:[operation],
+    possibleFaults,
+    completeness:'exact-with-intrinsic',
+  });
 }
 
 const EXCLUSIVE_MONITOR_STATE = Object.freeze([
@@ -478,7 +501,8 @@ function maintenance(instruction, context, mnemonic, ops) {
     inputs,
     registersRead:registerOperands.map(gpId),
     memory:mnemonic === 'dc',
-    metadata:{ operation:String(ops[0]?.text || instruction?.operands || '').toLowerCase(), maintenance:true },
+    metadata:{ operation:textOperand(ops[0])
+      ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() : ''), maintenance:true },
   });
   operations.push(operation);
   return bundle(instruction, context, {
@@ -546,8 +570,8 @@ function genericHint(instruction, context, ops) {
 }
 
 function textOperand(op) {
-  if (!hasNoOperandModifier(op)) return null;
-  const text = String(op?.text || '').trim().toLowerCase();
+  if (!hasNoOperandModifier(op) || typeof op?.text !== 'string') return null;
+  const text = op.text.trim().toLowerCase();
   return text || null;
 }
 function immediateInRange(op, max) {
@@ -604,13 +628,12 @@ function operandShapeFailure(instruction, mnemonic, ops) {
     const op = ops[0];
     if (op?.k === 'imm') {
       if (!isPlainImmediate(op)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-      const value = BigInt(op.value);
-      return value >= 0n && value <= 15n ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      return arm64BarrierOptionFromImmediate(mnemonic, BigInt(op.value))
+        ? null
+        : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
     }
     const option = textOperand(op);
-    const valid = mnemonic === 'isb'
-      ? option === 'sy'
-      : DATA_BARRIER_OPTIONS.has(option) || (mnemonic === 'dsb' && DSB_NXS_OPTIONS.has(option));
+    const valid = arm64BarrierOptionFromText(mnemonic, option) != null;
     return valid ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
   }
   if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {

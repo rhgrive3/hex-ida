@@ -34,9 +34,8 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function array(value, code) {
   if (!Array.isArray(value)) fail(code);
@@ -115,7 +114,9 @@ export function createSemanticCfg(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-cfg-invalid-graph');
   assertAllowedKeys(input, new Set(['contractVersion', 'functionId', 'entryBlockId', 'blocks']), 'semantic-cfg-unexpected-graph-field');
-  if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_CFG_CONTRACT_VERSION) {
+  if (input.contractVersion != null
+    && (typeof input.contractVersion !== 'string'
+      || input.contractVersion !== SEMANTIC_CFG_CONTRACT_VERSION)) {
     fail('semantic-cfg-contract-version-mismatch');
   }
 

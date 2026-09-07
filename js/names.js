@@ -287,18 +287,24 @@ export class NoteStore {
         const storageKey = localStorage.key(index);
         if (storageKey?.startsWith(this._deltaPrefix)) keys.push(storageKey);
       }
-      keys.sort();
-      for (const storageKey of keys) {
-        const raw = localStorage.getItem(storageKey);
-        if (raw == null) continue;
+    } catch { return; }
+    keys.sort();
+    // One unreadable delta must not abandon the rest of the overlay: each
+    // record is decoded and applied independently, and a malformed record is
+    // skipped on its own so later valid deltas still restore (issue #6307).
+    for (const storageKey of keys) {
+      let raw = null;
+      try { raw = localStorage.getItem(storageKey); } catch { continue; }
+      if (raw == null) continue;
+      try {
         const bytes = new TextEncoder().encode(raw).byteLength;
         this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
         const delta = JSON.parse(raw);
         const map = this._mapForDelta(delta?.kind);
         if (!map || typeof delta?.key !== 'string') continue;
         if (delta.deleted) map.delete(delta.key); else map.set(delta.key, String(delta.value ?? ''));
-      }
-    } catch { /* base snapshot remains valid if a delta is unreadable */ }
+      } catch { /* base snapshot remains valid if a delta is unreadable */ }
+    }
   }
 
   _clearDeltas() {

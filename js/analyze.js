@@ -10,6 +10,7 @@ import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
 import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
+import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
 import { buildSemanticModel, attachTexts } from './blocks.js';
 import { LRU } from './lru.js';
@@ -296,7 +297,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     seen.add(k);
     return true;
   });
-
   const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
   res.model = buildSemanticModel(rawInsns, {
     startRow, endRow: end, name,
@@ -352,8 +352,25 @@ function makeShared(map, key, producer) {
   return entry;
 }
 
+function abortSharedWithoutWaiters(map, key, entry) {
+  if (entry.settled || entry.waiters !== 0) return;
+  if (map.get(key) === entry) map.delete(key);
+  void Promise.resolve(entry.promise).catch(() => {});
+  entry.controller.abort('analysis-no-waiters');
+}
+
 function waitShared(map, key, entry, signal) {
-  throwIfAborted(signal);
+  let subscription;
+  try {
+    subscription = analysisAbortSignalMethods(signal);
+  } catch (error) {
+    abortSharedWithoutWaiters(map, key, entry);
+    return Promise.reject(error);
+  }
+  if (subscription?.signal.aborted) {
+    abortSharedWithoutWaiters(map, key, entry);
+    return Promise.reject(abortError(subscription.signal));
+  }
   entry.waiters++;
   let done = false;
   let onAbort = null;
@@ -361,21 +378,32 @@ function waitShared(map, key, entry, signal) {
     const finish = (fn, value) => {
       if (done) return;
       done = true;
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-      entry.waiters = Math.max(0, entry.waiters - 1);
-      if (!entry.settled && entry.waiters === 0) {
-        if (map.get(key) === entry) map.delete(key);
-        entry.controller.abort('analysis-no-waiters');
+      if (subscription && onAbort) {
+        try { subscription.removeEventListener.call(subscription.signal, 'abort', onAbort); } catch { /* accounting is authoritative */ }
       }
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      abortSharedWithoutWaiters(map, key, entry);
       fn(value);
     };
-    onAbort = () => finish(reject, abortError(signal));
-    if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    if (signal?.aborted) onAbort();
+    onAbort = () => finish(reject, abortError(subscription?.signal));
+    if (subscription) {
+      try {
+        subscription.addEventListener.call(subscription.signal, 'abort', onAbort, { once: true });
+      } catch (error) {
+        finish(reject, error);
+        return;
+      }
+    }
     entry.promise.then(
       (value) => finish(resolve, value),
       (error) => finish(reject, error),
     );
+    if (subscription && !done) {
+      let aborted;
+      try { aborted = subscription.signal.aborted; }
+      catch (error) { finish(reject, error); return; }
+      if (aborted) onAbort();
+    }
   });
 }
 
@@ -407,6 +435,7 @@ async function ensureTextsForKey(key, backend, res, signal) {
 
 export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
   const signal = opts?.signal || null;
+  analysisAbortSignalMethods(signal);
   throwIfAborted(signal);
   const budget = rowBudget(opts);
   const key = cacheKey(region, startRow, endRow, symbols, budget);
