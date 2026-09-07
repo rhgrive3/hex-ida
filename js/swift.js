@@ -26,6 +26,18 @@ function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
   return 0;
 }
 
+// Pointer width is architectural ABI authority for symbolic reference payloads.
+// Only the canonical primitive integers 4 and 8 are accepted (#5871); a
+// structured value must never select a different ABI through Number()
+// coercion, and an explicit malformed width fails closed instead of falling
+// back to the 8-byte default.
+function canonicalPointerBytes(options) {
+  const raw = options.pointerBytes ?? options.pointerSize;
+  if (raw == null) return 8;
+  if (raw !== 4 && raw !== 8) throw new TypeError('swift-invalid-pointer-bytes');
+  return raw;
+}
+
 function swiftMangledFragment(bytes) {
   if (!bytes.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
@@ -34,7 +46,7 @@ function swiftMangledFragment(bytes) {
 export async function readSwiftMangledName(read, address, options = {}) {
   if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
-  const pointerBytes = Number(options.pointerBytes ?? options.pointerSize ?? 8) === 4 ? 4 : 8;
+  const pointerBytes = canonicalPointerBytes(options);
   let bytes;
   try { bytes = await read(BigInt(address), maxBytes, true); } catch { bytes = null; }
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
@@ -111,7 +123,16 @@ function sectionRange(sections, wanted) {
   for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
   return null;
 }
-function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) { const n = Number(value); return Number.isFinite(Number(n)) && n > 0 ? Math.max(1, Math.min(Math.floor(n), max)) : fallback; }
+/*
+ * Analysis budgets are coverage authorities. Only primitive finite positive
+ * numbers participate; Number() coercion would promote numeric strings,
+ * arrays and booleans into real resource limits and silently shrink or grow
+ * analysis coverage (#5879). Nullish/unset falls back as before.
+ */
+function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.min(Math.floor(value), max));
+}
 
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
@@ -175,14 +196,45 @@ export async function parseSwiftNominalDescriptor(read, address) {
   return out;
 }
 
-export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
+/*
+ * Field descriptor parsing must distinguish "the type has zero fields" from
+ * "the descriptor header was unreadable / the record size is invalid / the
+ * declared count exceeded the budget / a record read failed mid-way" — all of
+ * which previously collapsed into a bare [] with no completeness signal, so
+ * the metadata model kept claiming complete coverage (#5943).
+ */
+export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096, options = {}) {
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
-  if (address == null) return []; const addr=BigInt(address), h=await exact(read,addr,16); if(!h)return[];
-  const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000); if(recordSize<12||count>limit)return[];
+  const completeness = {
+    present: address != null, declared: null, scanned: 0, parsed: 0,
+    capped: false, unreadableEntries: 0, invalidHeader: false, complete: true, reason: null,
+  };
+  const finish = (fields) => ({ fields, completeness });
+  if (address == null) return finish([]);
+  const addr=BigInt(address);
+  let h;
+  try { h=await exact(read,addr,16); } catch { h=null; }
+  if (!h) { completeness.complete=false; completeness.reason='descriptor-header-unreadable'; return finish([]); }
+  const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000);
+  // The header count is known even when validation/capacity prevents scanning.
+  completeness.declared=count;
+  if (recordSize<12) { completeness.invalidHeader=true; completeness.complete=false; completeness.reason='descriptor-record-size-invalid'; return finish([]); }
+  if (count>limit) { completeness.capped=true; completeness.complete=false; completeness.reason='descriptor-count-exceeds-budget'; return finish([]); }
+  completeness.declared=count;
   const out=[];
   for(let i=0;i<count;i++){
-    const at=addr+16n+BigInt(i*recordSize),r=await exact(read,at,12);if(!r)break;
-    const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));
+    const at=addr+16n+BigInt(i*recordSize);
+    let r;
+    try { r=await exact(read,at,12); } catch { r=null; }
+    if(!r){completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;completeness.complete=false;completeness.reason='field-record-unreadable';return finish(out);}
+    const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4));
+    let name;
+    try {
+      name=await relativeString(read,at+8n,i32(r,8));
+    } catch {
+      completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;
+      completeness.complete=false;completeness.reason='field-name-unreadable';return finish(out);
+    }
     const typeInfo=typeTarget==null?null:await readSwiftMangledName(read,typeTarget,{...options,compilerMetadata:true});
     const symbolic=!!typeInfo?.symbolicReferences?.length;
     out.push({
@@ -196,7 +248,12 @@ export async function parseSwiftFieldDescriptor(read, address, budget = 4096, op
       indirect:!!(flags&1),var:!!(flags&2),
     });
   }
-  return out;
+  completeness.scanned=count;completeness.parsed=out.length;
+  return finish(out);
+}
+
+export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
+  return (await parseSwiftFieldDescriptorScan(read, address, budget, options)).fields;
 }
 
 export async function parseSwiftProtocolDescriptor(read,address){const addr=BigInt(address),b=await exact(read,addr,24);if(!b)return null;const flags=u32(b,0);if(contextKind(flags)!=='protocol')return null;const name=await relativeString(read,addr+8n,i32(b,8));if(!name)return null;return{runtime:'swift',kind:'protocol',address:addr,flags,name,parent:rel(addr+4n,i32(b,4)),numRequirementsInSignature:u32(b,12),numRequirements:u32(b,16),associatedTypeNames:rel(addr+20n,i32(b,20)),requirements:[]};}
@@ -308,7 +365,12 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   }
   for(const t of types)if(t.fieldDescriptor!=null){try{
     if(signal?.aborted)return null;
-    t.fields=await parseSwiftFieldDescriptor(get,t.fieldDescriptor,Math.min(budget,4096),opts);
+    const fieldScan=await parseSwiftFieldDescriptorScan(get,t.fieldDescriptor,Math.min(budget,4096),opts);
+    t.fields=fieldScan.fields;
+    if(!fieldScan.completeness.complete){
+      typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;
+      warnings.push(`Swift type ${t.name||t.address}: field metadata is incomplete (${fieldScan.completeness.reason||'unknown'}).`);
+    }
     for(const f of t.fields){
       if(f.mangledTypeEncoding?.complete===false)warnings.push(`Swift field ${t.name||t.address}.${f.name}: mangled type metadata is partial (${f.mangledTypeEncoding.reason||'unknown'}).`);
       else if(f.mangledTypeEncoding?.symbolicReferences?.length&&!f.mangledTypeEncoding.referencesResolved)warnings.push(`Swift field ${t.name||t.address}.${f.name}: symbolic mangled type reference remains unresolved.`);
@@ -352,8 +414,20 @@ function addNameCandidate(map,name,value){if(!name)return;let items=map.get(name
    裸の simple name を exact identity に昇格しない。qualified name（module 付き）
    と address identity は引き続き有効。universe が証明済みなら単独 simple name も可。 */
 function finalizeUniqueNames(candidates,out,namesProven){for(const [name,items] of candidates)if(items.length===1&&(namesProven||name!==items[0].name))out.set(name,items[0]);}
-function resolveTypeIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('type@')&&index.typesByAddress.has(raw.slice(5)))return raw;const byAddress=index.typesByAddress.get(raw);if(byAddress)return canonicalTypeKey(byAddress);const byName=index.typesByName.get(raw);return byName?canonicalTypeKey(byName):null;}
-function resolveProtocolIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('protocol@')&&index.protocolsByAddress.has(raw.slice(9)))return raw;const byAddress=index.protocolsByAddress.get(raw);if(byAddress)return canonicalProtocolKey(byAddress);const byName=index.protocolsByName.get(raw);return byName?canonicalProtocolKey(byName):null;}
+/* Dispatch identity/slot authorities accept only primitive canonical
+   representations: a structured value (array/object) must not launder into a
+   real type/protocol identity or slot index through String()/Number()
+   coercion (#5863). Addresses may be BigInt/safe-integer/string; names are
+   strings; slots are non-negative safe integers. */
+function canonicalIdentityText(value){
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
+function resolveTypeIdentity(index,value){if(value==null)return null;const raw=canonicalIdentityText(value);if(raw==null)return null;if(raw.startsWith('type@')&&index.typesByAddress.has(raw.slice(5)))return raw;const byAddress=index.typesByAddress.get(raw);if(byAddress)return canonicalTypeKey(byAddress);const byName=index.typesByName.get(raw);return byName?canonicalTypeKey(byName):null;}
+function resolveProtocolIdentity(index,value){if(value==null)return null;const raw=canonicalIdentityText(value);if(raw==null)return null;if(raw.startsWith('protocol@')&&index.protocolsByAddress.has(raw.slice(9)))return raw;const byAddress=index.protocolsByAddress.get(raw);if(byAddress)return canonicalProtocolKey(byAddress);const byName=index.protocolsByName.get(raw);return byName?canonicalProtocolKey(byName):null;}
+function canonicalDispatchSlot(value){return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;}
 
 export function buildSwiftRuntimeIndex(model={}){
   const typesByAddress=new Map(),typesByName=new Map(),typesBySimpleName=new Map(),protocolsByAddress=new Map(),protocolsByName=new Map(),protocolsBySimpleName=new Map();
@@ -373,8 +447,8 @@ export function resolveSwiftDispatch(index,call={}){
   if(call.target!=null)return{kind:'direct',resolved:{target:call.target,name:call.name||null},candidates:[],confidence:call.name?0.99:0.9,complete:true};
   if(!index)return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0,complete:false};
   const universeComplete=index.model?.complete===true;
-  if(call.kind==='vtable'&&(call.typeAddress!=null||call.typeName!=null)&&call.slot!=null){const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName);if(!typeKey)return{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};const methods=index.vtablesByType.get(typeKey)||[],m=methods.find((x)=>x.index===Number(call.slot));return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};}
-  if((call.kind==='witness'||call.kind==='existential')&&(call.typeAddress!=null||call.typeName)&&(call.protocolAddress!=null||call.protocolName)&&call.slot!=null){const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName),protoKey=resolveProtocolIdentity(index,call.protocolAddress??call.protocolName);if(!typeKey||!protoKey)return{kind:call.kind,resolved:null,candidates:[],confidence:0.2,conformance:null,complete:universeComplete};const conf=index.witnessesByPair.get(`${typeKey}:${protoKey}`),table=(index.model.witnessTables||[]).find((w)=>{if(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())return true;const wType=resolveTypeIdentity(index,w.typeAddress??w.typeName),wProto=resolveProtocolIdentity(index,w.protocolAddress??w.protocolName);return wType===typeKey&&wProto===protoKey;}),entry=table?.entries?.find((x)=>x.index===Number(call.slot));if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null,complete:universeComplete};}
+  if(call.kind==='vtable'&&(call.typeAddress!=null||call.typeName!=null)&&call.slot!=null){const slot=canonicalDispatchSlot(call.slot);const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName);if(!typeKey||slot==null)return{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};const methods=index.vtablesByType.get(typeKey)||[],m=methods.find((x)=>x.index===slot);return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};}
+  if((call.kind==='witness'||call.kind==='existential')&&(call.typeAddress!=null||call.typeName)&&(call.protocolAddress!=null||call.protocolName)&&call.slot!=null){const slot=canonicalDispatchSlot(call.slot),typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName),protoKey=resolveProtocolIdentity(index,call.protocolAddress??call.protocolName);if(!typeKey||!protoKey||slot==null)return{kind:call.kind,resolved:null,candidates:[],confidence:0.2,conformance:null,complete:universeComplete};const conf=index.witnessesByPair.get(`${typeKey}:${protoKey}`),table=(index.model.witnessTables||[]).find((w)=>{if(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())return true;const wType=resolveTypeIdentity(index,w.typeAddress??w.typeName),wProto=resolveProtocolIdentity(index,w.protocolAddress??w.protocolName);return wType===typeKey&&wProto===protoKey;}),entry=table?.entries?.find((x)=>x.index===slot);if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null,complete:universeComplete};}
   return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15,complete:universeComplete};
 }
 

@@ -353,6 +353,11 @@ export class BinaryImage {
   }
 }
 
+const EXACT_FUNCTION_START_SOURCES = new Set([
+  'entrypoint', 'export', 'exception', 'unwind', 'function_starts',
+  'tls-callback', 'guard-cf',
+]);
+
 export function functionSeed(address, opts = {}) {
   const source = opts.source || 'heuristic';
   const confidence = finiteConfidence(opts.confidence, 0.5);
@@ -363,6 +368,9 @@ export function functionSeed(address, opts = {}) {
     address: BigInt(address), size, end, name: opts.name || null,
     source, confidence, kind: opts.kind || 'function',
     exactFunctionStart: opts.exactFunctionStart === true,
+    exactFunctionStartConfidence: opts.exactFunctionStartConfidence == null
+      ? (opts.exactFunctionStart === true || EXACT_FUNCTION_START_SOURCES.has(source) ? confidence : null)
+      : finiteConfidence(opts.exactFunctionStartConfidence, 0),
     functionStartEvidence: opts.functionStartEvidence || null,
     extentSource: opts.extentSource || (hasExtent ? source : null),
     extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
@@ -378,7 +386,17 @@ export function mergeFunctionSeeds(input, context = {}) {
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
-    const f = { ...f0, address: BigInt(f0.address), confidence: finiteConfidence(f0.confidence, 0.5), extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5) };
+    const confidence = finiteConfidence(f0.confidence, 0.5);
+    const exactFunctionStartConfidence = f0.exactFunctionStartConfidence == null
+      ? (f0.exactFunctionStart === true || (!Array.isArray(f0.sources) && EXACT_FUNCTION_START_SOURCES.has(f0.source)) ? confidence : null)
+      : finiteConfidence(f0.exactFunctionStartConfidence, 0);
+    const f = {
+      ...f0,
+      address: BigInt(f0.address),
+      confidence,
+      exactFunctionStartConfidence,
+      extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5),
+    };
     if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
     if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
     const k = f.address.toString();
@@ -389,7 +407,6 @@ export function mergeFunctionSeeds(input, context = {}) {
     const best = curRank > prevRank || (curRank === prevRank && (f.confidence || 0) > (prev.confidence || 0)) ? f : prev;
     const other = best === f ? prev : f;
     if (!best.name && other.name) best.name = other.name;
-    best.exactFunctionStart = !!(prev.exactFunctionStart || f.exactFunctionStart);
     if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
     if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
     if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
@@ -410,7 +427,28 @@ export function mergeFunctionSeeds(input, context = {}) {
       best.extentConfidence = Number(best.confidence ?? 0);
     }
     best.sources = [...new Set([...(prev.sources || [prev.source]), ...(f.sources || [f.source])])];
-    best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
+    const exactConfidences = [prev.exactFunctionStartConfidence, f.exactFunctionStartConfidence]
+      .filter((value) => Number.isFinite(value));
+    best.exactFunctionStartConfidence = exactConfidences.length ? Math.max(...exactConfidences) : null;
+    // Exactness authority and its confidence must come from the SAME evidence
+    // record: adopting the exact marker of one seed while inflating the merged
+    // confidence with an unrelated seed's score would synthesize
+    // exactFunctionStart+high-confidence evidence that neither input carried
+    // (#5950).
+    const exactCarrier = prev.exactFunctionStart ? prev : (f.exactFunctionStart ? f : null);
+    if (prev.exactFunctionStart && f.exactFunctionStart) {
+      // Both records carry the exact marker: their confidences agree in kind.
+      best.exactFunctionStart = true;
+      best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
+    } else if (exactCarrier) {
+      // Only one record proved exactness: the merged confidence is that
+      // record's own score, never the unrelated seed's (#5950).
+      best.exactFunctionStart = true;
+      best.confidence = exactCarrier.confidence || 0;
+    } else {
+      best.exactFunctionStart = false;
+      best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
+    }
     m.set(k, best);
   }
   const out = [...m.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);

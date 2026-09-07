@@ -3,10 +3,13 @@ import { createRemoteCollaborationEnvelope } from './remote-authority.js';
 
 export const REMOTE_CANONICAL_TRANSPORT_SCHEMA = 'hex-remote-canonical-transport/v1';
 export const REMOTE_CANONICAL_RESPONSE_SCHEMA = 'hex-remote-canonical-transport-response/v1';
+export const REMOTE_CANONICAL_DELIVERY_SCHEMA = 'hex-remote-canonical-delivery/v1';
+export const REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA = 'hex-remote-canonical-delivery-ack/v1';
 export const REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY = 'oracle:S2-P12-COLLAB-REMOTE:webcrypto-ed25519-aes-gcm-v1';
 
 const textEncoder = new TextEncoder();
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
+const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_VERIFIED_BINDINGS = 256;
 const DEFAULT_MAX_VERIFIED_BINDING_BYTES = 4 * 1024 * 1024;
 
@@ -49,36 +52,96 @@ function declaredResponseLength(response) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
-async function readBoundedResponseText(response, maxBytes) {
+async function readBoundedResponseText(response, maxBytes, deadline = null) {
   const declared = declaredResponseLength(response);
   if (declared != null && declared > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
   if (typeof response.body?.getReader !== 'function') {
-    const text = await response.text();
-    if (textEncoder.encode(text).byteLength > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
-    return text;
+    try {
+      const pending = Promise.resolve(response.text());
+      const text = await (deadline ? Promise.race([pending, deadline.timeout]) : pending);
+      if (textEncoder.encode(text).byteLength > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
+      return text;
+    } catch (error) {
+      if (deadline?.expired) {
+        try {
+          const cancellation = response.body?.cancel?.(error);
+          cancellation?.catch?.(() => {});
+        } catch { }
+      }
+      throw error;
+    }
   }
   const reader = response.body.getReader();
   const received = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = value instanceof Uint8Array ? value : textEncoder.encode(String(value));
-    total += chunk.byteLength;
-    if (total > maxBytes) {
-      try { await reader.cancel(); } catch { }
-      throw new Error('remote-transport-response-budget-exceeded');
+  try {
+    for (;;) {
+      const pending = Promise.resolve(reader.read());
+      const result = await (deadline ? Promise.race([pending, deadline.timeout]) : pending);
+      const { done, value } = result;
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : textEncoder.encode(String(value));
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        try {
+          const cancellation = reader.cancel();
+          cancellation?.catch?.(() => {});
+        } catch { }
+        throw new Error('remote-transport-response-budget-exceeded');
+      }
+      received.push(chunk);
     }
-    received.push(chunk);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of received) { merged.set(chunk, offset); offset += chunk.byteLength; }
+    return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+  } catch (error) {
+    if (deadline?.expired) {
+      try {
+        const cancellation = reader.cancel(error);
+        cancellation?.catch?.(() => {});
+      } catch { }
+    }
+    throw error;
   }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of received) { merged.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder('utf-8', { fatal: false }).decode(merged);
 }
 
-async function readBoundedResponseJson(response, maxBytes) {
-  const text = await readBoundedResponseText(response, maxBytes);
+// The remote authorization boundary has no caller-side cancel path, so an
+// HTTP response (or a custom fetchImpl) that never settles must be bounded by
+// the transport's own timeout instead of pending forever.
+function createAuthorizationDeadline(timeoutMs) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer;
+  let expired = false;
+  let timeoutError = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      timeoutError = new Error('remote-transport-authorization-timeout:' + timeoutMs);
+      timeoutError.code = 'remote-transport-authorization-timeout';
+      try { controller?.abort(timeoutError); } catch { }
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  return {
+    signal: controller?.signal ?? null,
+    timeout,
+    get expired() { return expired; },
+    assertActive() { if (expired) throw timeoutError; },
+    cancel() { clearTimeout(timer); },
+  };
+}
+
+async function boundedFetch(transport, init, deadline) {
+  const requestInit = deadline?.signal ? { ...init, signal: deadline.signal } : init;
+  return await Promise.race([
+    Promise.resolve(transport.fetchImpl(transport.endpoint, requestInit)),
+    deadline.timeout,
+  ]);
+}
+
+async function readBoundedResponseJson(response, maxBytes, deadline = null) {
+  const text = await readBoundedResponseText(response, maxBytes, deadline);
   try { return JSON.parse(text); } catch { throw new Error('remote-transport-response-json-invalid'); }
 }
 
@@ -109,6 +172,17 @@ function signedResponsePayload(response) {
   };
 }
 
+function signedDeliveryAckPayload(response) {
+  return {
+    schemaVersion:REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA,
+    requestId:required(response.requestId, 'remote-transport-delivery-ack-request-id-required'),
+    envelopeId:required(response.envelopeId, 'remote-transport-delivery-ack-envelope-id-required'),
+    bindingDigest:required(response.bindingDigest, 'remote-transport-delivery-ack-binding-digest-required'),
+    status:required(response.status, 'remote-transport-delivery-ack-status-required'),
+    keyId:required(response.keyId, 'remote-transport-delivery-ack-key-id-required'),
+  };
+}
+
 export class RemoteCanonicalHttpTransport {
   #verifiedBindings = new Map();
   #verifiedBindingBytes = 0;
@@ -123,6 +197,7 @@ export class RemoteCanonicalHttpTransport {
     serverKeyId,
     fetchImpl = globalThis.fetch,
     maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    authorizationTimeoutMs = DEFAULT_AUTHORIZATION_TIMEOUT_MS,
     maxVerifiedBindings = DEFAULT_MAX_VERIFIED_BINDINGS,
     maxVerifiedBindingBytes = DEFAULT_MAX_VERIFIED_BINDING_BYTES,
   } = {}) {
@@ -131,6 +206,7 @@ export class RemoteCanonicalHttpTransport {
       throw new TypeError('remote-transport-confidential-endpoint-required');
     }
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new TypeError('remote-transport-response-budget-invalid');
+    if (!Number.isSafeInteger(authorizationTimeoutMs) || authorizationTimeoutMs < 1) throw new TypeError('remote-transport-authorization-timeout-invalid');
     if (!Number.isSafeInteger(maxVerifiedBindings) || maxVerifiedBindings < 1) throw new TypeError('remote-transport-proof-cache-count-invalid');
     if (!Number.isSafeInteger(maxVerifiedBindingBytes) || maxVerifiedBindingBytes < 1) throw new TypeError('remote-transport-proof-cache-bytes-invalid');
     if (!serverVerificationKey || serverVerificationKey.type !== 'public' || serverVerificationKey.algorithm?.name !== 'Ed25519') throw new TypeError('remote-transport-ed25519-key-required');
@@ -141,6 +217,7 @@ export class RemoteCanonicalHttpTransport {
     this.serverKeyId = required(serverKeyId, 'remote-transport-server-key-id-required');
     this.fetchImpl = fetchImpl;
     this.maxResponseBytes = maxResponseBytes;
+    this.authorizationTimeoutMs = authorizationTimeoutMs;
     this.#maxVerifiedBindings = maxVerifiedBindings;
     this.#maxVerifiedBindingBytes = maxVerifiedBindingBytes;
     this.verifierIdentity = REMOTE_CANONICAL_TRANSPORT_VERIFIER_IDENTITY;
@@ -196,12 +273,15 @@ export class RemoteCanonicalHttpTransport {
     const aad = textEncoder.encode(`${REMOTE_CANONICAL_TRANSPORT_SCHEMA}:${this.serverKeyId}`);
     const ciphertext = new Uint8Array(await subtle().encrypt({ name:'AES-GCM', iv, additionalData:aad, tagLength:128 }, this.sessionEncryptionKey, plaintext));
     const requestId = `remote-request:${await sha256(ciphertext)}`;
-    const response = await this.fetchImpl(this.endpoint, {
+    const deadline = createAuthorizationDeadline(this.authorizationTimeoutMs);
+    try {
+      const response = await boundedFetch(this, {
       method:'POST', headers:{ 'content-type':'application/json' },
       body:JSON.stringify({ schemaVersion:REMOTE_CANONICAL_TRANSPORT_SCHEMA, requestId, bindingDigest, keyId:this.serverKeyId, iv:base64(iv), ciphertext:base64(ciphertext) }),
-    });
+    }, deadline);
     if (!response || response.ok !== true) throw new Error(`remote-transport-http-rejected:${response?.status ?? 'unavailable'}`);
-    const result = await readBoundedResponseJson(response, this.maxResponseBytes);
+    const result = await readBoundedResponseJson(response, this.maxResponseBytes, deadline);
+    deadline.assertActive();
     if (result?.schemaVersion !== REMOTE_CANONICAL_RESPONSE_SCHEMA) throw new Error('remote-transport-response-schema-invalid');
     const signed = signedResponsePayload(result);
     if (signed.requestId !== requestId || signed.bindingDigest !== bindingDigest || signed.keyId !== this.serverKeyId) throw new Error('remote-transport-response-identity-mismatch');
@@ -215,11 +295,66 @@ export class RemoteCanonicalHttpTransport {
     return createRemoteCollaborationEnvelope({
       ...input,
       transportProof:{ authenticated:true, confidentiality:'verified', integrity:'verified', proofIdentity },
-    });
+    });    } finally { deadline.cancel(); }
   }
 
   async send(envelope) {
     if (!this.verifyTransportProof(envelope?.transportProof, envelope)) throw new Error('remote-transport-unverified-envelope');
-    return Object.freeze({ status:'verified-and-authorized-for-channel-send', envelopeId:envelope.envelopeId });
+    const envelopeId = required(envelope?.envelopeId, 'remote-transport-delivery-envelope-id-required');
+    const proofIdentity = required(envelope?.transportProof?.proofIdentity, 'remote-transport-delivery-proof-identity-required');
+    const bindingDigest = await sha256(textEncoder.encode(stableStringify(remoteCanonicalTransportBinding(envelope))));
+    const requestId = `remote-delivery:${await sha256(textEncoder.encode(stableStringify({
+      schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
+      envelopeId,
+      proofIdentity,
+      bindingDigest,
+    })))}`;
+    const deliveryPlaintext = textEncoder.encode(stableStringify(envelope));
+    const deliveryIv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const deliveryAad = textEncoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${this.serverKeyId}`);
+    const deliveryCiphertext = new Uint8Array(await subtle().encrypt(
+      { name:'AES-GCM', iv:deliveryIv, additionalData:deliveryAad, tagLength:128 },
+      this.sessionEncryptionKey,
+      deliveryPlaintext,
+    ));
+    const response = await this.fetchImpl(this.endpoint, {
+      method:'POST',
+      headers:{ 'content-type':'application/json' },
+      body:JSON.stringify({
+        schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
+        requestId,
+        envelopeId,
+        bindingDigest,
+        proofIdentity,
+        iv:base64(deliveryIv),
+        ciphertext:base64(deliveryCiphertext),
+      }),
+    });
+    if (!response || response.ok !== true) throw new Error(`remote-transport-delivery-http-rejected:${response?.status ?? 'unavailable'}`);
+    const result = await readBoundedResponseJson(response, this.maxResponseBytes);
+    if (result?.schemaVersion !== REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA) {
+      throw new Error('remote-transport-delivery-ack-schema-invalid');
+    }
+    let signed;
+    try { signed = signedDeliveryAckPayload(result); }
+    catch { throw new Error('remote-transport-delivery-ack-invalid'); }
+    if (signed.requestId !== requestId
+      || signed.envelopeId !== envelopeId
+      || signed.bindingDigest !== bindingDigest
+      || signed.keyId !== this.serverKeyId
+      || signed.status !== 'sent') {
+      throw new Error('remote-transport-delivery-ack-identity-mismatch');
+    }
+    let signature;
+    try { signature = fromBase64(result.signature, 'remote-transport-delivery-ack-signature-invalid'); }
+    catch { throw new Error('remote-transport-delivery-ack-signature-invalid'); }
+    const verified = await subtle().verify(
+      { name:'Ed25519' },
+      this.serverVerificationKey,
+      signature,
+      textEncoder.encode(stableStringify(signed)),
+    );
+    if (!verified) throw new Error('remote-transport-delivery-ack-signature-rejected');
+    return Object.freeze({ status:'sent', envelopeId });
   }
 }

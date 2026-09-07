@@ -207,6 +207,25 @@ export async function verifyBoundedEquivalence({
     });
   }
 
+  // Check target sort/width compatibility before symbol correspondence.
+  // Otherwise an incompatible after-state symbol can be reported as missing
+  // correspondence instead of the existing mismatch result.
+  if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width && beforeExpr.sort.width !== afterExpr.sort.width)) {
+    return Object.freeze({
+      verdict: VERDICT.REFUTED,
+      claimKind: CLAIM_KIND.EQUIVALENT,
+      reasonCode: 'sort-width-mismatch',
+      proofStatement: `Equivalence targets have incompatible sorts (before: ${beforeExpr.sort.kind}${beforeExpr.sort.width || ''}, after: ${afterExpr.sort.kind}${afterExpr.sort.width || ''})`,
+      solverStatus: SOLVER_STATUS.SAT,
+      assumptions: Object.freeze(combinedAssumptions),
+      completeness: createCompleteness(),
+      queryHash: null,
+      query: null,
+      solverResult: null,
+      evidence: null,
+    });
+  }
+
   const correspondenceResult = correspondAfterSymbols(beforeExpr, afterExpr, correspondence);
   if (!correspondenceResult.ok) {
     return Object.freeze({
@@ -248,24 +267,6 @@ export async function verifyBoundedEquivalence({
   }
   if (Array.isArray(pExpr)) pExpr = pExpr.map((expr) => replaceSymbols(expr, symbolReplacements));
   else if (pExpr) pExpr = replaceSymbols(pExpr, symbolReplacements);
-
-  // 3. Form difference condition: beforeExpr != afterExpr
-  // Sort match check
-  if (beforeExpr.sort.kind !== afterExpr.sort.kind || (beforeExpr.sort.width && beforeExpr.sort.width !== afterExpr.sort.width)) {
-    return Object.freeze({
-      verdict: VERDICT.REFUTED,
-      claimKind: CLAIM_KIND.EQUIVALENT,
-      reasonCode: 'sort-width-mismatch',
-      proofStatement: `Equivalence targets have incompatible sorts (before: ${beforeExpr.sort.kind}${beforeExpr.sort.width || ''}, after: ${afterExpr.sort.kind}${afterExpr.sort.width || ''})`,
-      solverStatus: SOLVER_STATUS.SAT,
-      assumptions: Object.freeze(combinedAssumptions),
-      completeness: createCompleteness(),
-      queryHash: null,
-      query: null,
-      solverResult: null,
-      evidence: null,
-    });
-  }
 
   const diffCond = beforeExpr.sort.kind === 'bool'
     ? createConnective(BOOL_CONNECTIVE_OP.NE, beforeExpr, afterExpr)
@@ -440,7 +441,7 @@ export async function verifyBoundedEquivalence({
       solverResult,
       validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend }),
       solverResultStatus: solverResult.status,
-      cancelled: activeSession.isCancelled(),
+      cancelled: activeSession.isCancelled?.() ?? false,
       timedOut: lifecycle.timedOut === true,
       stale: lifecycle.stale === true,
       disposed: lifecycle.disposed === true,

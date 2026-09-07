@@ -153,14 +153,104 @@ function evaluateExpression(expression, values) {
   if (expression.op === 'eq') return left === right; if (expression.op === 'ne') return left !== right; if (expression.op === 'lt') return left < right; if (expression.op === 'lte') return left <= right; if (expression.op === 'gt') return left > right; return left >= right;
 }
 
-function staticSize(type, ctx, values = {}) {
+function knownValueAt(values, path) {
+  let current = values;
+  for (const part of String(path || '').split('.').filter(Boolean)) {
+    if (current == null || (typeof current !== 'object' && typeof current !== 'function')
+      || !Object.prototype.hasOwnProperty.call(current, part)) return { known: false };
+    current = current[part];
+    if (current && typeof current === 'object' && Object.prototype.hasOwnProperty.call(current, 'value')) current = current.value;
+  }
+  return { known: true, value: current };
+}
+
+function knownExpression(expression, values) {
+  if (!expression) return { known: true, value: true };
+  if (expression.op === 'const') return { known: true, value: expression.value };
+  if (expression.op === 'ref') return knownValueAt(values, expression.path);
+  if (expression.op === 'not') {
+    const item = knownExpression(expression.arg, values);
+    return item.known ? { known: true, value: !item.value } : { known: false };
+  }
+  if (expression.op === 'and' || expression.op === 'or') {
+    let unknown = false;
+    for (const item of expression.args) {
+      const state = knownExpression(item, values);
+      if (state.known && expression.op === 'and' && !state.value) return { known: true, value: false };
+      if (state.known && expression.op === 'or' && state.value) return { known: true, value: true };
+      if (!state.known) unknown = true;
+    }
+    return unknown ? { known: false } : { known: true, value: expression.op === 'and' };
+  }
+  const left = knownExpression(expression.left, values), right = knownExpression(expression.right, values);
+  if (!left.known || !right.known) return { known: false };
+  if (expression.op === 'eq') return { known: true, value: left.value === right.value };
+  if (expression.op === 'ne') return { known: true, value: left.value !== right.value };
+  if (expression.op === 'lt') return { known: true, value: left.value < right.value };
+  if (expression.op === 'lte') return { known: true, value: left.value <= right.value };
+  if (expression.op === 'gt') return { known: true, value: left.value > right.value };
+  return { known: true, value: left.value >= right.value };
+}
+
+function staticSize(type, ctx, values = {}, resolving = new Set()) {
   if (type.kind === 'primitive') return PRIMITIVES.get(type.name).bytes;
   if (type.kind === 'pointer' || type.kind === 'offset') return 8;
-  if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values);
-  if (type.kind === 'array' && Number.isSafeInteger(type.count)) { const item = staticSize(type.element, ctx, values); return item == null ? null : item * type.count; }
-  if (type.kind === 'struct') { let total = 0; for (const field of type.fields) { const size = staticSize(field.type, ctx, values); if (size == null) return null; total += size; } return total; }
-  if (type.kind === 'conditional') return staticSize(type.then, ctx, values);
+  if (type.kind === 'named') {
+    if (resolving.has(type.name)) return null;
+    const target = ctx.types?.get(type.name);
+    if (!target) return null;
+    const next = new Set(resolving);
+    next.add(type.name);
+    return staticSize(target, ctx, values, next);
+  }
+  if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values, resolving);
+  if (type.kind === 'array' && Number.isSafeInteger(type.count)) {
+    if (type.count === 0) return 0;
+    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * type.count;
+  }
+  if (type.kind === 'struct') {
+    let total = 0;
+    for (const field of type.fields) {
+      if (field.when) {
+        const state = knownExpression(field.when, values);
+        if (!state.known) return null;
+        if (!state.value) continue;
+      }
+      const size = staticSize(field.type, ctx, values, resolving);
+      if (size == null) return null;
+      if (field.at == null) total += size;
+    }
+    return total;
+  }
+  if (type.kind === 'conditional') {
+    const state = knownExpression(type.when, values);
+    if (!state.known) return null;
+    if (state.value) return staticSize(type.then, ctx, values, resolving);
+    return type.else ? staticSize(type.else, ctx, values, resolving) : 0;
+  }
+  if (type.kind === 'union') {
+    // A fixed-alternative union occupies at least its largest alternative
+    // (#5913). Unknown (dynamic) alternative sizes keep the union
+    // unsizeable so callers fail closed instead of advancing 0 bytes.
+    let max = null;
+    for (const option of type.options) {
+      const size = staticSize(option, ctx, values, resolving);
+      if (size == null) return null;
+      if (max == null || size > max) max = size;
+    }
+    return max;
+  }
   return null;
+}
+
+const ARRAY_CONSUMED_SIZE = Symbol('pattern-array-consumed-size');
+
+function consumedSize(type, result, ctx, values) {
+  if (typeof result?.[ARRAY_CONSUMED_SIZE] === 'function') return result[ARRAY_CONSUMED_SIZE]();
+  const length = result?.provenance?.length;
+  if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
+  const size = staticSize(type, ctx, values);
+  return size == null ? null : { size: BigInt(size) };
 }
 
 function readType(type, offset, space, ctx, values, depth = 0) {
@@ -192,19 +282,60 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     const count = safeNumber(countValue, 'pattern-array-count-invalid');
     const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
     const elementSize = staticSize(type.element, ctx, values);
-    out.expand = (index) => { const i = safeNumber(index, 'pattern-array-index-invalid'); if (i >= count) throw new RangeError('pattern-array-index-out-of-range'); if (out.materialized[i]) return out.materialized[i]; if (!ctx.budget.consumeEntries()) return ctx.budget.partial(); const at = elementSize == null ? offset : offset + BigInt(i * elementSize); const item = readType(type.element, at, space, ctx, values, depth + 1); out.materialized[i] = item; return item; };
+    const elementOffsets = [];
+    const elementLengths = [];
+    const ensureElements = (through) => {
+      let next = BigInt(offset);
+      for (let j = 0; j <= through; j++) {
+        if (out.materialized[j]) {
+          if (elementSize == null) next = elementOffsets[j] + elementLengths[j];
+          continue;
+        }
+        if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * BigInt(elementSize);
+        const item = readType(type.element, at, space, ctx, values, depth + 1);
+        if (item.status) return item;
+        const measured = consumedSize(type.element, item, ctx, values);
+        if (measured?.status) return measured;
+        if (measured?.size == null) return { status: 'partial', reason: 'pattern-array-layout-unknown' };
+        out.materialized[j] = item;
+        elementOffsets[j] = at;
+        elementLengths[j] = measured.size;
+        if (elementSize == null) next = at + measured.size;
+      }
+      return out.materialized[through] || null;
+    };
+    out[ARRAY_CONSUMED_SIZE] = () => {
+      if (count === 0) return { size: 0n };
+      if (elementSize != null) return { size: BigInt(elementSize) * BigInt(count) };
+      const result = ensureElements(count - 1);
+      if (result?.status) return result;
+      return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };
+    };
+    out.expand = (index) => {
+      const i = safeNumber(index, 'pattern-array-index-invalid');
+      if (i >= count) throw new RangeError('pattern-array-index-out-of-range');
+      if (out.materialized[i]) return out.materialized[i];
+      return ensureElements(i);
+    };
     return out;
   }
   if (type.kind === 'union') {
     const options = type.options.map((item) => readType(item, offset, space, ctx, values, depth + 1));
-    return fieldValue(type, options[0]?.value ?? null, ctx, offset, staticSize(type.options[0], ctx, values) || 0, space, { alternatives: options });
+    // Provenance length covers the whole union layout (largest alternative),
+    // not just the first option's span (#5913). With no provable layout size
+    // (a dynamically sized alternative) the union must fail closed: returning
+    // a complete 0-byte-consumed field would misplace every following field.
+    const unionSize = staticSize(type, ctx, values);
+    if (unionSize == null) return { status: 'partial', reason: 'pattern-union-size-unproven' };
+    return fieldValue(type, options[0]?.value ?? null, ctx, offset, unionSize, space, { alternatives: options });
   }
   if (type.kind === 'struct') {
     const fields = {}; let cursor = BigInt(offset); const localValues = { ...values };
     for (const field of type.fields) {
       if (field.when && !evaluateExpression(field.when, localValues)) { fields[field.name] = fieldValue(field.type, null, ctx, cursor, 0, space, { absent: true }); continue; }
       const relative = field.at == null ? 0 : safeNumber(typeof field.at === 'number' ? field.at : valueAt(localValues, field.at), 'pattern-field-offset-invalid');
-      const fieldOffset = cursor + BigInt(relative); const result = readType(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; localValues[field.name] = result; const size = staticSize(field.type, ctx, localValues); if (field.at == null && size != null) cursor += BigInt(size);
+      const fieldOffset = cursor + BigInt(relative); const result = readType(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; const measured = field.at == null ? consumedSize(field.type, result, ctx, localValues) : null; if (measured?.status) return measured; localValues[field.name] = result; if (field.at == null && measured?.size != null) cursor += measured.size;
     }
     const size = cursor - BigInt(offset); return fieldValue(type, fields, ctx, offset, size, space, { fields });
   }
