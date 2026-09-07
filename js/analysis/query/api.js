@@ -54,19 +54,23 @@ function unavailable(method) {
 
 // A query result is an immutable consistent view: consumers must never be able
 // to reach back into adapter-owned analysis/cache state through the exposed
-// value (#5915). The value is detached with a structured clone (typed arrays,
-// Maps and Sets included) and the plain-data tree is then deep-frozen. When the
-// value cannot be cloned (functions/symbols inside), the original tree is
-// deep-frozen in place instead — consumer mutation stays blocked even though
-// the adapter then shares the frozen state.
+// value (#5915). Values are detached with structuredClone before publication.
+// If the adapter returns a non-cloneable value (for example functions/symbols),
+// fail closed instead of sharing or freezing the adapter-owned object in place.
 function frozenQueryValue(value) {
-  if (value == null || typeof value !== "object") return value;
+  if (value == null) return value;
+  if (typeof value !== "object") {
+    if (typeof value === "function" || typeof value === "symbol") {
+      throw new TypeError("analysis-query-value-unclonable");
+    }
+    return value;
+  }
+
   let clone;
   try {
     clone = structuredClone(value);
   } catch {
-    deepFreezeTree(value);
-    return value;
+    throw new TypeError("analysis-query-value-unclonable");
   }
   deepFreezeTree(clone);
   return clone;

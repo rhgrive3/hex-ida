@@ -9,7 +9,9 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 const shared = {
   blocks: [{ id: 'b0', instructions: [{ op: 'add' }] }],
   counts: new Map([['b0', 1]]),
+  ids: new Set(['b0']),
   offsets: new Uint8Array([1, 2, 3]),
+  raw: Uint8Array.from([4, 5, 6]).buffer,
 };
 
 function adapter() {
@@ -43,19 +45,29 @@ test('#5915 consumer mutation cannot reach adapter-owned state', async () => {
   assert.throws(() => { result.status.detail.nested = false; }, TypeError);
 });
 
-test('#5915 typed arrays and Maps are detached from internal state', async () => {
+test('#5915 mutable collection copies are detached from internal state', async () => {
   const api = new AnalysisQueryAPI(adapter());
   const snap = await api.snapshot();
   const result = await api.semanticIR(snap, 'fn:0');
-  // structuredClone detaches them: mutating the exposed copies must not flow back.
   result.value.offsets[0] = 99;
   result.value.counts.set('b0', 999);
+  result.value.ids.add('b1');
+  new Uint8Array(result.value.raw)[0] = 88;
   assert.deepEqual([...shared.offsets], [1, 2, 3]);
   assert.equal(shared.counts.get('b0'), 1);
+  assert.deepEqual([...shared.ids], ['b0']);
+  assert.deepEqual([...new Uint8Array(shared.raw)], [4, 5, 6]);
 });
 
-test('#5915 values that cannot be structured-cloned stay mutation-proof via in-place freezing', async () => {
-  const fnOwned = { handlers: [() => 1], note: 'adapter-owned' };
+test('#5915 unclonable mixed trees fail closed instead of sharing adapter state', async () => {
+  const fnOwned = {
+    handlers: [() => 1],
+    counts: new Map([['b0', 1]]),
+    ids: new Set(['b0']),
+    offsets: new Uint8Array([1, 2, 3]),
+    raw: Uint8Array.from([4, 5, 6]).buffer,
+    note: 'adapter-owned',
+  };
   const cloningAdapter = {
     async currentIdentity() {
       return { binaryId: 'bin-5915', projectRevision: 0, analysisEpoch: 1, artifactVersions: {} };
@@ -66,8 +78,27 @@ test('#5915 values that cannot be structured-cloned stay mutation-proof via in-p
   };
   const api = new AnalysisQueryAPI(cloningAdapter);
   const snap = await api.snapshot();
-  const result = await api.semanticIR(snap, 'fn:0');
-  assert.equal(Object.isFrozen(result.value), true);
-  assert.throws(() => { result.value.note = 'mutated'; }, TypeError);
+  await assert.rejects(api.semanticIR(snap, 'fn:0'), /analysis-query-value-unclonable/);
+  assert.equal(Object.isFrozen(fnOwned), false, 'rejection must not freeze adapter-owned state in place');
+  assert.equal(fnOwned.counts.get('b0'), 1);
+  assert.deepEqual([...fnOwned.ids], ['b0']);
+  assert.deepEqual([...fnOwned.offsets], [1, 2, 3]);
+  assert.deepEqual([...new Uint8Array(fnOwned.raw)], [4, 5, 6]);
   assert.equal(fnOwned.note, 'adapter-owned');
+});
+
+test('#5915 top-level functions and symbols are rejected as non-snapshot values', async () => {
+  for (const value of [() => 1, Symbol('owned')]) {
+    const unclonableAdapter = {
+      async currentIdentity() {
+        return { binaryId: 'bin-5915', projectRevision: 0, analysisEpoch: 1, artifactVersions: {} };
+      },
+      async semanticIR() {
+        return { value, status: { completeness: 'complete' } };
+      },
+    };
+    const api = new AnalysisQueryAPI(unclonableAdapter);
+    const snap = await api.snapshot();
+    await assert.rejects(api.semanticIR(snap, 'fn:0'), /analysis-query-value-unclonable/);
+  }
 });
