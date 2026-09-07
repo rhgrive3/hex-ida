@@ -107,7 +107,9 @@ console.log('Testing Rust Metadata Provider...');
       { name: '_ZN6my_app4main17haabbccddeeff0011E', address: '0x1000', size: 32 },
       { name: '_RNvNtC4core3fmt3num', address: '0x2000', size: 64 },
       // Exercise the documented symbol/addr aliases on the vtable path too.
-      { symbol: '_ZN6my_app13MyTraitvtable17h1122334455667788E', addr: '0x3000', size: 16 },
+      // `vtable:true` is the explicit structural evidence the provider now
+      // requires (issue #5881): a name substring must not mint vtable records.
+      { symbol: '_ZN6my_app13MyTraitvtable17h1122334455667788E', addr: '0x3000', size: 16, vtable: true },
     ],
     commentBuffer: new TextEncoder().encode('rustc version 1.78.0'),
     binaryIdentity: 'sha256:rust-app',
@@ -151,14 +153,14 @@ console.log('Testing Rust Metadata Provider...');
   const numeric = new RustMetadataProvider({
     symbols: [
       { name: mainName, address: 4096 },
-      { name: vtableName, address: 8192n },
+      { name: vtableName, address: 8192n, vtable: true },
     ],
     binaryIdentity: 'sha256:canonical-address-numeric',
   });
   const textual = new RustMetadataProvider({
     symbols: [
       { name: mainName, address: '0x1000' },
-      { name: vtableName, address: '8192' },
+      { name: vtableName, address: '8192', vtable: true },
     ],
     binaryIdentity: 'sha256:canonical-address-text',
   });
