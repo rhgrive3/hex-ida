@@ -25,6 +25,27 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function classConstructorCallError(error) {
+  return error instanceof TypeError
+    && /^Class constructor .* cannot be invoked without 'new'$/.test(String(error.message ?? ''));
+}
+function optionalCallback(value) {
+  if (typeof value !== 'function') return null;
+  let source;
+  try { source = Function.prototype.toString.call(value).trim(); } catch { return null; }
+  if (/^class(?:\s|\{)/.test(source)) return null;
+  if (!source.includes('[native code]')) return value;
+  // Bound/proxied functions are source-hidden just like bound/proxied classes.
+  // Preserve callable functions and contain only the engine's construct-only
+  // class invocation error at delivery time; callback-thrown errors propagate.
+  return (...args) => {
+    try { return Reflect.apply(value, undefined, args); }
+    catch (error) {
+      if (classConstructorCallError(error)) return undefined;
+      throw error;
+    }
+  };
+}
 function addressOf(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
@@ -54,7 +75,7 @@ function paged(values, page, completeness = 'complete', status = {}) {
     status: { ...status, completeness, paged: true },
   };
 }
-function unsupported(reason) { return { value: null, status: { completeness: 'unsupported', reason } }; }
+function unsupported(reason) { return { value: null, status: { completeness:'unsupported', reason } }; }
 function executableRegions(app) {
   try {
     const regions = typeof app?.programRegions === 'function' ? app.programRegions() : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
@@ -258,7 +279,7 @@ function installMultiRegionShapes(app) {
   if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;
   const regionCache = new Map(); let combinedKey = null;
   app.ensureShapes = async function demandShapes(progressOrOptions = {}) {
-    const onProgress = typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress;
+    const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
     const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
     abortIfNeeded(signal);
     const epoch = Number(app.backend.gen ?? app.analysisEpoch ?? 0); const regions = executableRegions(app);
@@ -315,6 +336,7 @@ function installCancellableFunctionDiscovery(app) {
   const producers = new Map();
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
+    const onProgress = optionalCallback(options.onProgress);
     abortIfNeeded(options.signal);
     const run = async () => {
       if (app.symbolsReady) {
@@ -354,7 +376,7 @@ function installCancellableFunctionDiscovery(app) {
               remainingBytes -= size;
               continue;
             }
-            const request = app.backend.guessFunctions(item.id, share, (progress) => options.onProgress?.({
+            const request = app.backend.guessFunctions(item.id, share, (progress) => onProgress?.({
               phase:'functions', region:item.id,
               done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:unique.length,
             }));
@@ -485,7 +507,8 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const queryLimited=refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');

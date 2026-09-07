@@ -137,7 +137,15 @@ export function liftEvex(instruction, context, family) {
 
   if (!trusted) {
     const ctx = createX86EffectContext(instruction, context);
-    return ctx.partial('x86-evex-trusted-decoder-provenance-required', ['registers', 'memory', 'other'], { metadata: { family: category, operation: family, evexPhysicalStateModeled: true } });
+    return ctx.partial('x86-evex-trusted-decoder-provenance-required', ['registers', 'memory', 'other'], {
+      metadata: {
+        family: category,
+        operation: family,
+        evexPhysicalStateModeled: true,
+        maskRegister: info.maskRegister,
+        maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
+      },
+    });
   }
 
   const ctx = createX86EffectContext(instruction, context);
