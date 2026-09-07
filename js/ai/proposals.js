@@ -43,7 +43,18 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const executionPayload = snapshotProposalPayload(input);
+    // Capture the caller-controlled property once. Besides closing the
+    // revision/payload TOCTOU, this preserves the explicit symbol-key fail
+    // closed check below because structuredClone intentionally omits symbols.
+    const before = input.before;
+    rejectUnstableProposalState(before);
+    const executionPayload = snapshotProposalPayload(input, before);
+    // The stale-state authority must fingerprint the same stable value that
+    // execution will receive. Reading caller-controlled `input.before` again
+    // after snapshotting would make an accessor-backed value a TOCTOU boundary:
+    // the payload could contain A while the revision records B (#5945).
+    // Structured cloning also rejects symbol-keyed state before this point, so
+    // the owned payload is the complete fail-closed identity view.
     const revision = fingerprint(executionPayload.before);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
@@ -107,13 +118,29 @@ export class ProposalStore {
     this.approvals.delete(authority.id);
     this.audit.push({ type: 'proposal-applying', proposalId: authority.id, timestamp: new Date().toISOString() });
 
-    if (authority.bindingRevision !== fingerprint(this.binding?.() || null)) {
+    let bindingRevision;
+    try {
+      bindingRevision = fingerprint(this.binding?.() || null);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (authority.bindingRevision !== bindingRevision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-binding-mismatch', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
     }
 
-    if (fingerprint(currentState) !== authority.revision) {
+    let currentRevision;
+    try {
+      currentRevision = fingerprint(currentState);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (currentRevision !== authority.revision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
@@ -277,7 +304,7 @@ function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
   }
 }
 
-function snapshotProposalPayload(value) {
+function snapshotProposalPayload(value, stableBefore = value.before) {
   const clone = globalThis.structuredClone;
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
@@ -286,11 +313,11 @@ function snapshotProposalPayload(value) {
   try {
     payload = {
       target: clone(value.target),
-      before: clone(value.before),
+      before: clone(stableBefore),
       after: clone(value.after),
     };
     restoreRegExpLastIndex(value.target, payload.target);
-    restoreRegExpLastIndex(value.before, payload.before);
+    restoreRegExpLastIndex(stableBefore, payload.before);
     restoreRegExpLastIndex(value.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
@@ -299,6 +326,33 @@ function snapshotProposalPayload(value) {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
   }
   return payload;
+}
+
+// `structuredClone` omits symbol-keyed properties and invokes accessors. The
+// proposal boundary must not silently lose identity-bearing state or read a
+// mutable accessor twice while preparing an approval. Capture the top-level
+// before value once in create(), then reject unsupported nested accessors and
+// symbol keys without invoking them.
+function rejectUnstableProposalState(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key === 'symbol')) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+      }
+      rejectUnstableProposalState(descriptor.value, seen);
+    }
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('tool_failed', 'Proposal state cannot be snapshotted safely.');
+  }
 }
 
 function containsSharedMemory(value, seen = new WeakSet()) {
@@ -387,6 +441,13 @@ function canonicalIdentity(value, stack = new Set()) {
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
   stack.add(value);
   try {
+    // Symbol-keyed own properties are own state too, but a canonical text
+    // cannot distinguish two distinct symbols sharing a description. The
+    // stale-state contract therefore refuses symbol-keyed state explicitly
+    // instead of silently omitting part of the value (#5945).
+    if (Object.getOwnPropertySymbols(value).length) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
       const bytes = value instanceof ArrayBuffer
