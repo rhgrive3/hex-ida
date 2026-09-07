@@ -1,14 +1,14 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011, T012, T014, T016, T028 and T053–T056: the ledger is now 26/61.
+implementation completed T011, T012, T014–T016, T028, T035–T036 and T053–T056: the ledger is now 29/61.
 Product implementation and final release acceptance are separate. No full
 release gate has been run for this development batch.
 
 | Area | Outstanding work | Next action / due |
 | --- | --- | --- |
 | T061 | Product fixture/denominator changes exist; prior full maintenance failed on LLVM resolution, then was interrupted. | Run the relevant collaboration and Phase 12 tests at the next affected batch. Historical receipt construction is retired. |
-| Stage A | T013, T015, T017 and combined recovery validation remain pending. T012 and T053–T056 focused checks pass. | Implement available code dependencies with focused tests. |
+| Stage A | T013, T017 and combined recovery validation remain pending. T012 and T053–T056 focused checks pass. | Implement available code dependencies with focused tests. |
 | Stage B | Reassess residual work against the current code; historical task statuses are not current product proof. | Start independent residuals when their actual code dependencies exist; no Stage A administrative wait. |
 | Environment | Oracle lookup previously selected system LLVM 14 ahead of pinned LLVM 18.1.3; login shell reset cwd. | Before native gates, probe the actual oracle selected by the verifier and use explicit cwd/non-login shell. |
 | Combined release | Generated output, full suites, applicable independent verifiers, target/runtime proof and main reconciliation remain outstanding. | Run once on the final combined candidate; fix actual product failures, do not reconstruct retired receipt history. |
@@ -33,8 +33,10 @@ Completed implementation evidence (2026-09-07): T012 reproduced three authority/
 
 T014 focused solver recovery and 24-case deployment matrix pass through the production registry/worker path. T032 adds exact bounded 32/64-bit routing but canonical profile migration and its full performance denominator are not yet complete; do not treat the two-sample metrics harness as P-SYM01 release evidence. Browser worker execution needs Playwright (currently unavailable).
 
-T016 dedicated 2/2, Phase 7 discovery 66/66, foundation/single-flight and Phase 12 ambiguity/handoff tests pass. T035 artifact/reparse helper passes but public rebuild transaction wiring is still in progress.
+T016 dedicated 2/2, Phase 7 discovery 66/66, foundation/single-flight and Phase 12 ambiguity/handoff tests pass. T035 public rebuild transaction now carries and validates the discovery binding; focused consumer tests pass.
 
 T011 combined focused run passes (including real C/extended/C++/Objective-C compiler denominators). The apply_damage regression now requires a pre-call field snapshot and a return of the saved local, preserving unknown-call semantics. Phase 8 broad batch regression was interrupted during its corpus comparison; it is not PASS and will run once on the combined implementation.
 
 T028 provenance graph is wired through public decompile, canonical snapshot publication and query cache consumers. Dedicated 5/5, Phase 8 provenance 5/5, projection 8/8, query cutover and decoded-order 9/9 checks pass. Full Phase 6 replay needs its exact clang/LLD toolchain; no claim that this replay passed.
+
+T015/T035/T036 implementation: discovery 87/87 and Apple/Mach-O/metadata/F6 29/29 focused regressions pass, plus f6-real-fixtures and universal-binary shadow. The broad real dyld/Apple corpus and target-device promotion evidence remain release work; synthetic fixture coverage is not a claim of real-device coverage.

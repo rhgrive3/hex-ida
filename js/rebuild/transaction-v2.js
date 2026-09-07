@@ -1,9 +1,15 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
+import {
+  isDiscoveryRebuildBinding,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  verifyDiscoveryReparse,
+} from '../analysis/discovery/artifact.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
 export const INDEPENDENT_ORACLE_RESULT_SCHEMA = 'hex-rebuild-independent-oracle-result-v1';
+export const DISCOVERY_REBUILD_VALIDATOR = 'discovery-reparse';
 const ATOMIC_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename', 'transactional-store']);
 const REBUILD_FORMATS = new Set(['macho', 'elf', 'pe']);
 const FORMAT_PROFILES = Object.freeze({
@@ -24,6 +30,7 @@ const F6_NATIVE_INVARIANT_UNITS = Object.freeze([
 const F6_PRESERVATION_ORACLE_IDENTITY = 'external:llvm-readobj';
 const F6_PRESERVATION_ORACLE_VERSION = 'Ubuntu LLVM version 18.1.3';
 const TRUSTED_INDEPENDENT_ORACLE_PROVIDERS = new WeakSet();
+const DISCOVERY_BINDING_BY_TRANSACTION = new WeakMap();
 
 // The preservation denominator accepts only the repository's registered
 // independent-provider adapter. A caller-supplied function cannot mint a
@@ -545,6 +552,29 @@ function requiredValidators(impact, additional = [], requireIndependentOracle = 
   return [...set].sort();
 }
 
+function discoveryBindingForTransaction(input) {
+  const binding = input?.discoveryRebuildBinding;
+  if (binding == null) return null;
+  // A detached copy can be inspected after this function returns, but the
+  // transaction must start from the live factory-issued binding. Otherwise a
+  // caller could manufacture a digest-shaped object at the rebuild boundary.
+  if (!isFactoryIssuedDiscoveryRebuildBinding(binding)) {
+    throw new TypeError('rebuild-v2-discovery-binding-untrusted');
+  }
+  return binding;
+}
+
+function discoveryBindingIdentityValid(transaction) {
+  const binding = transaction?.discoveryRebuildBinding;
+  if (binding == null) return !transaction?.requiredValidators?.includes(DISCOVERY_REBUILD_VALIDATOR);
+  if (!isDiscoveryRebuildBinding(binding)) return false;
+  const identity = binding.binding;
+  if (identity?.binaryId != null && String(identity.binaryId) !== transaction.binaryId) return false;
+  if (identity?.sourceHash != null && String(identity.sourceHash).toLowerCase() !== transaction.sourceHash) return false;
+  if (identity?.architectureId != null && String(identity.architectureId).toLowerCase() !== transaction.architecture) return false;
+  return transaction.requiredValidators?.includes(DISCOVERY_REBUILD_VALIDATOR) === true;
+}
+
 export function createRebuildTransaction(input = {}) {
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('rebuild-v2-operations-required');
   const operations = input.operations.map((operation, index) => {
@@ -588,6 +618,7 @@ export function createRebuildTransaction(input = {}) {
   const expectedOriginalState = optionalRecord(input.expectedOriginalState || { sourceHash }, 'rebuild-v2-original-state-invalid');
   if (expectedOriginalState.sourceHash != null && canonicalHash(expectedOriginalState.sourceHash) !== sourceHash) throw new TypeError('rebuild-v2-original-state-identity-mismatch');
   expectedOriginalState.sourceHash = sourceHash;
+  const discoveryRebuildBinding = discoveryBindingForTransaction(input);
   const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const impact = {
@@ -614,13 +645,20 @@ export function createRebuildTransaction(input = {}) {
     impact,
     relocationBindings: clone(relocationBindings),
     expectedOriginalState,
-    requiredValidators: requiredValidators(impact, input.additionalValidators || [], requireIndependentOracle),
+    requiredValidators: requiredValidators(
+      impact,
+      [...(input.additionalValidators || []), ...(discoveryRebuildBinding ? [DISCOVERY_REBUILD_VALIDATOR] : [])],
+      requireIndependentOracle,
+    ),
     requireIndependentOracle,
+    ...(discoveryRebuildBinding ? { discoveryRebuildBinding: clone(discoveryRebuildBinding) } : {}),
     unresolvedRisks: sorted(input.unresolvedRisks),
     authority: 'L3-explicit-rebuild-proposal',
   };
   transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;
-  return deepFreeze(transaction);
+  const issued = deepFreeze(transaction);
+  if (discoveryRebuildBinding) DISCOVERY_BINDING_BY_TRANSACTION.set(issued, discoveryRebuildBinding);
+  return issued;
 }
 
 async function sourceBytes(source) {
@@ -645,10 +683,17 @@ function transactionIdentityValid(transaction) {
     if (!Array.isArray(transaction.impact?.sections)) return false;
     if (typeof transaction.impact.layoutMoving !== 'boolean' || typeof transaction.impact.relocations !== 'boolean' || typeof transaction.impact.branchRanges !== 'boolean' || typeof transaction.impact.unwind !== 'boolean' || typeof transaction.impact.importsExports !== 'boolean' || typeof transaction.impact.signature !== 'boolean') return false;
     if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;
-    const expected = requiredValidators(transaction.impact, transaction.requiredValidators.filter((name) => ![
+    if (!discoveryBindingIdentityValid(transaction)) return false;
+    const additionalValidators = transaction.requiredValidators.filter((name) => ![
       'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
-      'layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence', 'independent-differential',
-    ].includes(name)), transaction.requireIndependentOracle === true);
+      'layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence',
+      'independent-differential', DISCOVERY_REBUILD_VALIDATOR,
+    ].includes(name));
+    const expected = requiredValidators(
+      transaction.impact,
+      [...additionalValidators, ...(transaction.discoveryRebuildBinding ? [DISCOVERY_REBUILD_VALIDATOR] : [])],
+      transaction.requireIndependentOracle === true,
+    );
     if (JSON.stringify(expected) !== JSON.stringify(transaction.requiredValidators)) return false;
     if (canonicalTransactionId(transaction) !== transaction.transactionId) return false;
     return true;
@@ -849,6 +894,51 @@ async function executeExternal(name, fn, context) {
   }
 }
 
+async function executeDiscoveryReparse(transaction, materialized, original, options) {
+  const sourceBinding = options.discoveryRebuildBinding
+    ?? DISCOVERY_BINDING_BY_TRANSACTION.get(transaction)
+    ?? null;
+  if (!isFactoryIssuedDiscoveryRebuildBinding(sourceBinding)) {
+    return validatorResult(DISCOVERY_REBUILD_VALIDATOR, false, false, 'discovery-source-binding-unavailable');
+  }
+  if (sourceBinding.digest !== transaction.discoveryRebuildBinding?.digest) {
+    return validatorResult(DISCOVERY_REBUILD_VALIDATOR, false, false, 'discovery-source-binding-mismatch');
+  }
+  let reparsed;
+  try {
+    if (typeof options.discoveryReparse === 'function') {
+      reparsed = await options.discoveryReparse({
+        transaction,
+        materialized,
+        original,
+        output: materialized.bytes,
+        expectedOutputHash: materialized.outputHash,
+        sourceBinding,
+      });
+    } else {
+      reparsed = options.discoveryArtifact;
+    }
+  } catch (error) {
+    return validatorResult(DISCOVERY_REBUILD_VALIDATOR, true, false, String(error?.message || error));
+  }
+  // Providers may return their normal `{ artifact, status }` analysis result;
+  // only the canonical artifact itself crosses the rebuild verifier.
+  if (reparsed?.artifact != null) reparsed = reparsed.artifact;
+  if (reparsed == null) {
+    return validatorResult(DISCOVERY_REBUILD_VALIDATOR, false, false, 'discovery-reparse-artifact-unavailable');
+  }
+  const verification = verifyDiscoveryReparse(sourceBinding, reparsed, {
+    expectedOutputHash: materialized.outputHash,
+  });
+  return validatorResult(
+    DISCOVERY_REBUILD_VALIDATOR,
+    true,
+    verification.ok,
+    verification.ok ? null : verification.reason,
+    verification,
+  );
+}
+
 export async function validateRebuildTransaction(transaction, materialized, options = {}) {
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'invalid', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'invalid', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
@@ -879,6 +969,10 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   for (const name of transaction.requiredValidators) {
     if (builtins.has(name)) {
       validators.push(builtins.get(name)());
+      continue;
+    }
+    if (name === DISCOVERY_REBUILD_VALIDATOR) {
+      validators.push(await executeDiscoveryReparse(transaction, materialized, original, options));
       continue;
     }
     const external = name === 'loader-reparse'
