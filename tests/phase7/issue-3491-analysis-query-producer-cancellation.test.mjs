@@ -165,6 +165,26 @@ function pendingRequest(onCancel) {
 }
 
 {
+  let cancelCalls = 0;
+  const reason = new Error('already normalized caller reason');
+  reason.name = 'AbortError';
+  reason.code = 'ABORT_ERR';
+  const signal = { aborted:true, reason };
+  await assert.rejects(
+    requestWithSignal(pendingRequest(() => { cancelCalls++; }), signal),
+    (error) => {
+      assert.notEqual(error, reason, 'already-normalized caller reasons must still be copied into a fresh error');
+      assert.equal(error?.name, 'AbortError');
+      assert.equal(error?.code, 'ABORT_ERR');
+      return true;
+    },
+  );
+  assert.equal(reason.name, 'AbortError');
+  assert.equal(reason.code, 'ABORT_ERR');
+  assert.equal(cancelCalls, 1, 'an already-created request must be cancelled exactly once');
+}
+
+{
   let backendCalls = 0;
   const controller = new AbortController();
   controller.abort('pre-aborted search');

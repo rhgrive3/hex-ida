@@ -57,7 +57,9 @@ test('invalid completeness strings fail closed', async () => {
 });
 
 test('invalid completeness evidence overrides contradictory complete status', async () => {
-  const result = await searchStatus({ status:{ completeness:'complete' }, completeness:'future-status' });
+  // Keep the invalid value in the normalizer's top-level evidence slot so this
+  // regression cannot pass merely because status.completeness masks it.
+  const result = await searchStatus({ completeness:'future-status' });
   assert.equal(result.status.completeness, 'partial');
 
   const stronger = await searchStatus({ status:{ completeness:'unsupported' }, completeness:'future-status' });
