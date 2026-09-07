@@ -40,3 +40,16 @@ test('#5820 out-of-taxonomy statuses fail both predicates (policy alignment)', (
     assert.equal(isSolverFailure({ status }), true);
   }
 });
+
+test('#5820 snapshots a hostile status getter once and remains fail-closed', () => {
+  let reads = 0;
+  const result = {
+    get status() {
+      reads += 1;
+      return reads === 1 ? 'garbage' : SOLVER_STATUS.SAT;
+    },
+  };
+
+  assert.equal(isSolverFailure(result), true);
+  assert.equal(reads, 1, 'failure classification must not re-read mutable caller input');
+});

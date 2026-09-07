@@ -33,7 +33,8 @@ export function isSolverFailure(result) {
    * result, provider-invented status, typo) must not pass as a success side;
    * that matches isValidSolverResult(), which rejects unknown statuses too.
    */
-  return result?.status !== SOLVER_STATUS.SAT && result?.status !== SOLVER_STATUS.UNSAT;
+  const status = result?.status;
+  return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
 export function createSolverResult({

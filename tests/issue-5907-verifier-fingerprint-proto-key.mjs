@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { computeVerifierFingerprint } from '../js/symbolic/evidence/cache-policy.js';
+import { computeProofCacheKey, computeVerifierFingerprint } from '../js/symbolic/evidence/cache-policy.js';
 import { PROOF_AUTHORITY } from '../js/symbolic/solver/backend.js';
 
 const base = {
@@ -53,4 +53,22 @@ test('#5907 different solver configurations still produce different fingerprints
   const a = computeVerifierFingerprint({ ...base, solverOptions: { maxSteps: 10 } });
   const b = computeVerifierFingerprint({ ...base, solverOptions: { maxSteps: 20 } });
   assert.notEqual(a, b);
+});
+
+test('#5907 a configuration change invalidates the exact proof cache key', () => {
+  const a = computeVerifierFingerprint({ ...base, solverOptions: { maxSteps: 10 } });
+  const b = computeVerifierFingerprint({ ...base, solverOptions: { maxSteps: 20 } });
+  const keyA = computeProofCacheKey({
+    queryHash: 'query-hash',
+    verifierFingerprint: a,
+    binaryIdentity: 'binary-id',
+    analysisRevision: 'revision-1',
+  });
+  const keyB = computeProofCacheKey({
+    queryHash: 'query-hash',
+    verifierFingerprint: b,
+    binaryIdentity: 'binary-id',
+    analysisRevision: 'revision-1',
+  });
+  assert.notEqual(keyA, keyB, 'changed solver configuration must not reuse a proof cache entry');
 });
