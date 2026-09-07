@@ -2,6 +2,17 @@
  * decompilers still preserve as raw __asm. This is deliberately mnemonic-
  * scoped: unknown instructions stay raw assembly rather than being hidden. */
 
+const A64_CONDITIONS = new Set([
+  'eq', 'ne', 'cs', 'hs', 'cc', 'lo', 'mi', 'pl', 'vs', 'vc',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv',
+]);
+
+function canonicalConditionToken(text) {
+  if (typeof text !== 'string') return null;
+  const normalized = text.trim().toLowerCase();
+  return A64_CONDITIONS.has(normalized) ? normalized : null;
+}
+
 function renderedText(lines) {
   return (lines || []).map((line) => `${'    '.repeat(Math.max(0, line.indent || 0))}${line.text || ''}`).join('\n');
 }
@@ -53,18 +64,25 @@ function lowerOne(payload) {
 
   // FCSEL <Sd|Dd>, <Sn|Dn>, <Sm|Dm>, <cond> chooses one FP source from the
   // current NZCV condition. The helper names the architectural predicate; it
-  // is not an opaque assembly escape hatch.
-  if (mnemonic === 'fcsel' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[sd]\d+$/i.test(operands[2]) && /^[a-z]{2}$/i.test(operands[3])) {
-    return `${operands[0]} = __a64_cond_${operands[3].toLowerCase()}() ? ${operands[1]} : ${operands[2]};`;
+  // is not an opaque assembly escape hatch. Unknown condition codes never
+  // lower: the raw __asm fallback is the fail-closed boundary.
+  if (mnemonic === 'fcsel' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[sd]\d+$/i.test(operands[2])) {
+    const cond = canonicalConditionToken(operands[3]);
+    if (cond !== null && cond !== 'al' && cond !== 'nv') {
+      return `${operands[0]} = __a64_cond_${cond}() ? ${operands[1]} : ${operands[2]};`;
+    }
   }
 
   // FCCMP conditionally performs an FP compare; when the predicate is false,
   // NZCV is replaced by the encoded immediate. Represent the flag effect
   // explicitly because dropping it would change subsequent FCSEL/branches.
-  if (mnemonic === 'fccmp' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[a-z]{2}$/i.test(operands[3])) {
-    const nzcv = parseImm(operands[2]);
-    if (nzcv != null && nzcv >= 0 && nzcv <= 15) {
-      return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${operands[3].toLowerCase()}");`;
+  if (mnemonic === 'fccmp' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1])) {
+    const cond = canonicalConditionToken(operands[3]);
+    if (cond !== null && cond !== 'al' && cond !== 'nv') {
+      const nzcv = parseImm(operands[2]);
+      if (nzcv != null && nzcv >= 0 && nzcv <= 15) {
+        return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${cond}");`;
+      }
     }
   }
 
