@@ -4,12 +4,19 @@ on:
   pull_request:
     paths:
       - 'js/userscript/dev/**'
+      # Direct production dependencies of the resilience suite: the
+      # coordinator imports the worker contracts and chatgpt-adapter outside
+      # js/userscript/dev, so changes to them must run the regressions (#5904).
+      - 'js/ai/dev/workers/contracts.js'
+      - 'js/userscript/chatgpt-adapter.js'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
   push:
     branches: [main]
     paths:
       - 'js/userscript/dev/**'
+      - 'js/ai/dev/workers/contracts.js'
+      - 'js/userscript/chatgpt-adapter.js'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
   workflow_dispatch:
