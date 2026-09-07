@@ -83,14 +83,17 @@ function sourceCache(source) {
 
 function waitForEntry(entry, signal, onProgress = null) {
   if (signal?.aborted) return Promise.reject(abortError(signal));
-  if (onProgress) entry.progressObservers.add(onProgress);
+  // Track each waiter separately. A shared callback function may be used by
+  // multiple consumers; removing one waiter must not detach the other.
+  const observer = typeof onProgress === 'function' ? { callback:onProgress } : null;
+  if (observer) entry.progressObservers.add(observer);
   entry.waiters++;
   return new Promise((resolve, reject) => {
     let done = false;
     const detach = () => {
       signal?.removeEventListener('abort', onAbort);
       entry.waiters = Math.max(0, entry.waiters - 1);
-      if (onProgress) entry.progressObservers.delete(onProgress);
+      if (observer) entry.progressObservers.delete(observer);
     };
     const finish = (fn, value) => {
       if (done) return;
@@ -117,9 +120,10 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   /* Cache only source-backed selected-slice requests.  Whole-container parsing
      is intentionally left to openBinarySource(), and non-object inputs cannot
      provide stable source identity. */
+  const effectiveRangeOptions = rangeOptions ?? options.ranges ?? {};
   const source = input && (typeof input === 'object' || typeof input === 'function') ? input : null;
   const selected = options.sliceIndex != null;
-  if (!source || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, rangeOptions);
+  if (!source || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
 
   const signal = options.signal ?? null;
   // An already-aborted caller must not mint a cache entry: the producer would
@@ -127,7 +131,7 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   if (signal?.aborted) return Promise.reject(abortError(signal));
 
   const cache = sourceCache(source);
-  const key = cacheKey({ ...options, ranges:rangeOptions || options.ranges || {} });
+  const key = cacheKey({ ...options, ranges:effectiveRangeOptions });
   let entry = cache.get(key);
   if (entry && (entry.retired || entry.controller.signal.aborted)) {
     if (cache.get(key) === entry) cache.delete(key);
@@ -143,10 +147,10 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
     };
     const dispatchProgress = (event) => {
       for (const observer of entry.progressObservers) {
-        try { observer(event); } catch { /* one broken observer must not fail the shared parse */ }
+        try { observer.callback(event); } catch { /* one broken observer must not fail the shared parse */ }
       }
     };
-    const producerRanges = producerRangeOptions(rangeOptions);
+    const producerRanges = producerRangeOptions(effectiveRangeOptions);
     const producerOptions = {
       ...options,
       signal:controller.signal,

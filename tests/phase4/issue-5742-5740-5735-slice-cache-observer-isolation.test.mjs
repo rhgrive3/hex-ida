@@ -6,8 +6,8 @@
 // regression: an already-aborted first caller must not mint a cache entry that
 // runs the whole parse with zero live waiters.
 import assert from 'node:assert/strict';
-import { MemoryByteSource } from '../js/binary/source.js';
-import { parseMachOSource, clearMachOSourceCache } from '../js/binary/macho-source-cache.js';
+import { MemoryByteSource } from '../../js/binary/source.js';
+import { parseMachOSource, clearMachOSourceCache } from '../../js/binary/macho-source-cache.js';
 
 function machoFatFixture() {
   const inner = new Uint8Array(128);
@@ -42,6 +42,32 @@ const bytes = machoFatFixture();
   await Promise.all([pa, pb]);
   assert.ok(a.length > 0, 'consumer A must receive progress');
   assert.deepEqual(b, a, 'consumer B must observe the same progress events, not lose them');
+}
+
+// #5742 — callback identity is not waiter identity. If two consumers share the
+// same function and A detaches during dispatch, B must keep receiving events.
+{
+  clearMachOSourceCache(bytes);
+  const source = new MemoryByteSource(bytes);
+  const ac = new AbortController();
+  let calls = 0;
+  const observer = () => {
+    calls++;
+    if (calls === 1) ac.abort('cancel-A');
+  };
+  const pa = parseMachOSource(source, {
+    sliceIndex: 0,
+    signal: ac.signal,
+    strings: { minLength: 4, onProgress: observer },
+  }).catch((error) => error);
+  const pb = parseMachOSource(source, {
+    sliceIndex: 0,
+    strings: { minLength: 4, onProgress: observer },
+  });
+  const [resultA, resultB] = await Promise.all([pa, pb]);
+  assert.equal(resultA?.name, 'AbortError', 'detached consumer A must reject with AbortError');
+  assert.ok(resultB, 'remaining consumer B must still receive the parse result');
+  assert.equal(calls, 2, 'shared callback must be dispatched once per active waiter');
 }
 
 // #5742 — a throwing observer fails only itself, not the shared parse.
@@ -112,6 +138,18 @@ const bytes = machoFatFixture();
   // And the poisoned caller must not have cached an entry that later callers inherit.
   const image = await parseMachOSource(source, { sliceIndex: 0 });
   assert.ok(image, 'a fresh caller after the aborted one must get a working parse');
+}
+
+// Passing null as the optional range argument must still use options.ranges;
+// this is a public compatibility call shape used by source-loader consumers.
+{
+  clearMachOSourceCache(bytes);
+  const source = new MemoryByteSource(bytes);
+  const image = await parseMachOSource(source, {
+    sliceIndex: 0,
+    ranges: { pageSize: 128 },
+  }, null, null);
+  assert.ok(image, 'explicit null range argument must not discard options.ranges');
 }
 
 console.log('issues #5742/#5740/#5735 slice-cache observer isolation regressions: PASS');
