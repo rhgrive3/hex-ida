@@ -62,11 +62,8 @@ export function typeBits(type, fallback = 64) {
 export function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  /* Integer typedefs that merely contain "ptr" (`uintptr_t`, `intptr_t`,
-   * `ptrdiff_t`) are scalar integers, not pointers: match class words only at
-   * token boundaries and let the `*` declarator branch cover pointer types. */
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|\b(?:pointer|ptr|object|class|block|closure)\b/.test(`${type} ${abiClass}`);
+    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
   const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter)
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
