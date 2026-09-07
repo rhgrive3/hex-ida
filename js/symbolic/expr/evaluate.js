@@ -101,8 +101,23 @@ export function evaluateExpr(expr, env = null) {
       }
       if (isBvSort(expr.sort)) {
         const raw = typeof bound === 'object' && bound !== null && 'value' in bound ? bound.value : bound;
-        const val = wrap(raw, expr.sort.width);
-        return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
+        // A BV model binding is a canonical witness only when it is a bigint,
+        // a safe integer, or an integer string. Reject malformed provider data
+        // before it reaches BigInt()/wrap(), preserving the structured
+        // non-value contract used by the BOOL branch (#6081).
+        const coercible
+          = typeof raw === 'bigint'
+          || (typeof raw === 'number' && Number.isSafeInteger(raw))
+          || (typeof raw === 'string' && /^([+-]?)(0x[0-9a-fA-F]+|\d+)$/.test(raw.trim()));
+        if (!coercible) {
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'malformed-bitvector-binding', sort: expr.sort, symbol: expr };
+        }
+        try {
+          const val = wrap(raw, expr.sort.width);
+          return { status: EVAL_STATUS.VALUE, sort: expr.sort, value: val };
+        } catch {
+          return { status: EVAL_STATUS.UNKNOWN, reason: 'malformed-bitvector-binding', sort: expr.sort, symbol: expr };
+        }
       }
       return { status: EVAL_STATUS.UNKNOWN, reason: 'unsupported-symbol-sort' };
     }

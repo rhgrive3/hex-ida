@@ -19,7 +19,14 @@ function registerDelta(before, after) {
   for (const key of Object.keys(after || {})) if (before[key] !== after[key]) out[key] = { before:before[key], after:after[key] };
   return out;
 }
+// Structured EmulatorFault/memory-access codes (js/emu.js, js/runtime/memory.js)
+// whose identity must decide the stop taxonomy instead of the human-readable
+// message (issue #5838).
+const FAULT_CODES = new Set(['unmapped-memory', 'memory-read-failed', 'oob', 'permission', 'mmio-unknown']);
 function classifyStop(result) {
+  const code = result && (result.faultCode != null ? result.faultCode : result.code);
+  const structured = code != null ? String(code) : null;
+  if (structured && FAULT_CODES.has(structured)) return { kind:'fault', code:structured, message:String(result.stopped || '') };
   const reason = String(result && result.stopped || '');
   if (!reason) return { kind:'paused', message:null };
   if (/命令ぶん進んだ|timeout/i.test(reason)) return { kind:'timeout', message:reason };
@@ -325,7 +332,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
       for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
       this.traceCursor = (sandbox.emulator.trace || []).length;
-      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
+      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop(raw) };
     } finally {
       if (this.activeRun === run) {
         this.activeRun = null;
@@ -377,14 +384,30 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async writeMemory(address,bytes) {
     this.require('writeMemory');
     const sandbox = this.ensureSandbox(); const epoch = this.epoch; const memoryMap = this.memoryMap; const traceState = this.traceState;
+    const WRITE_LIMIT = 256*1024;
     let data;
     if (bytes instanceof Uint8Array) data = bytes;
     else {
-      const source = Array.from(bytes || []);
-      for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
-      data = Uint8Array.from(source);
+      // Bound the input consumption to the limit before materializing (#5750):
+      // Array.from would enumerate an arbitrary Iterable to the end, letting
+      // huge/infinite iterators bypass the "bounded remote write" contract.
+      const iterator = bytes?.[Symbol.iterator];
+      if (typeof iterator === 'function' && typeof bytes !== 'string') {
+        data = new Uint8Array(WRITE_LIMIT + 1);
+        let n = 0;
+        for (const byte of bytes) {
+          if (n >= WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+          if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
+          data[n++] = byte;
+        }
+        data = data.subarray(0, n);
+      } else {
+        const source = Array.from(bytes || []);
+        for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
+        data = Uint8Array.from(source);
+      }
     }
-    if (data.length > 256*1024) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+    if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
     if (!data.length) return { written:0 };
     const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
@@ -508,7 +531,9 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
-  async writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
+  async writeMemory(address,bytes){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
+    data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
+    if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
