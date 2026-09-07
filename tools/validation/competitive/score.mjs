@@ -9,7 +9,7 @@ import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
 import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { validateTwinManifest } from './twin-manifest.mjs';
-import { competitiveTwinWorkloadFor } from './workload-twins.mjs';
+import { competitiveTwinWorkloadFor, validateCompetitiveTwinCapture } from './workload-twins.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -156,8 +156,18 @@ function atomicWriteJson(filePath, value) {
   }
 }
 
-export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile() } = {}) {
+export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile(), twinCapturesByMetric = {} } = {}) {
   const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
+
+  if (twinCapturesByMetric == null || typeof twinCapturesByMetric !== 'object' || Array.isArray(twinCapturesByMetric)) {
+    throw new TypeError('competitive-twin-captures-object-required');
+  }
+  for (const metricId of Object.keys(twinCapturesByMetric)) {
+    if (!Object.prototype.hasOwnProperty.call(profile.metrics || {}, metricId)) {
+      throw new TypeError(`competitive-twin-capture-metric-unknown:${metricId}`);
+    }
+    validateCompetitiveTwinCapture(twinCapturesByMetric[metricId], { replayArtifacts: false, expectedMetricId: metricId });
+  }
 
   // 1. Alias v2 candidate answerer
   const solverCache = new Map();
@@ -272,13 +282,18 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   for (const metricId of Object.keys(profile.metrics || {})) {
     if (known.has(metricId)) continue;
     const workload = competitiveTwinWorkloadFor(metricId);
+    const twinCapture = twinCapturesByMetric[metricId] ?? null;
     const evidenceRefs = [
       ...(profile.metrics[metricId].corpusWorkloadIds || []),
       ...(workload == null ? [] : [`${workload.producer}#${workload.workloadId}`]),
     ];
+    if (twinCapture != null) {
+      evidenceRefs.push(`capture:${twinCapture.captureDigest ?? twinCapture.status}`);
+      if (twinCapture.denominator?.artifactIdsDigest) evidenceRefs.push(`capture-denominator:${twinCapture.denominator.artifactIdsDigest}`);
+    }
     entries.push(makeEntry(profile, metricId, {
       corpusId: profile.metrics[metricId].corpusWorkloadIds?.[0] ?? metricId,
-      inputIdentity: `unmeasured:${metricId}`,
+      inputIdentity: twinCapture?.status === 'READY' ? `capture_${twinCapture.captureDigest}` : `unmeasured:${metricId}`,
       hexVersion: headCommit,
       referenceTool: 'unmeasured',
       referenceVersion: 'unmeasured',
