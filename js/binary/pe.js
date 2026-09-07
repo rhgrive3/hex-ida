@@ -231,6 +231,7 @@ export function parsePE(input, options = {}) {
 
   if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);
   const metadataBudget = createPEMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  if (directoryShortfall > 0) metadataBudget.partial('optional-header:data-directories-truncated');
   parseCoffSymbols(r, ptrSymbols, numberOfSymbols, image, metadataBudget);
   parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image, metadataBudget);
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image, metadataBudget);

@@ -113,7 +113,25 @@ export function translateSemanticIR(target, options = {}) {
       if (customVal !== null && typeof customVal === 'bigint') {
         res = createBv(width, customVal);
       } else if (customVal !== null && typeof customVal === 'number') {
-        res = createBv(width, BigInt(customVal));
+        // Fail-closed concrete binding: only finite safe integers may become
+        // exact BV constants. Fractional/NaN/Infinity/unsafe numbers are
+        // caller-supplied garbage that must not crash the translator with a
+        // raw BigInt conversion error nor mint as exact evidence.
+        if (!Number.isFinite(customVal) || !Number.isSafeInteger(customVal)) {
+          semanticUnknowns++;
+          unsupportedEntities.push({
+            id: valId,
+            op: `arg:${reg}`,
+            reason: `invalid-numeric-concrete-binding:${String(customVal)}`,
+          });
+          res = createUnknownSemantic(bvSort(width), 'invalid-numeric-concrete-binding', {
+            valueId: valId,
+            reg,
+            argIndex,
+          });
+        } else {
+          res = createBv(width, BigInt(customVal));
+        }
       } else if (typeof customVal === 'string') {
         name = customVal;
         res = createFreshSymbol(bvSort(width), name, { source: 'argument', reg, argIndex });
