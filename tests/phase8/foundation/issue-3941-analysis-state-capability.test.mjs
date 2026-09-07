@@ -131,7 +131,25 @@ test('commitAnalysisState refuses a forged working state without registered muta
     false,
     'a forged working state must not drive the genuine private mutators',
   );
-  assert.equal(target.get('cfg'), target.get('cfg'));
+  const trustedCfg = target.get('cfg');
+  assert.strictEqual(target.get('cfg'), trustedCfg);
   assert.equal(target.version('cfg'), before.cfg);
   assert.equal(commitAnalysisState(target, genuineWorking, before), true);
+});
+
+test('commitAnalysisState refuses a registered but independently-created working state', () => {
+  const target = createAnalysisState({ cfg: Object.freeze({ blocks: ['trusted'] }) });
+  const before = target.snapshot();
+  const forgedWorking = createAnalysisState(
+    { cfg: Object.freeze({ blocks: ['forged'] }) },
+    { ...before, cfg: before.cfg + 7 },
+  );
+
+  assert.equal(
+    commitAnalysisState(target, forgedWorking, before),
+    false,
+    'an independently-created registered state must not publish into target',
+  );
+  assert.deepEqual(target.get('cfg'), { blocks: ['trusted'] });
+  assert.equal(target.version('cfg'), before.cfg);
 });
