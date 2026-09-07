@@ -24,9 +24,16 @@ function finiteConfidence(value, fallback = 0.5) {
     : fallback;
 }
 
+// Permissions are a canonical R/W/X authority consumed by memory-region
+// derivation: only real booleans may become true. Truthiness would promote
+// schema-invalid values ('false', [], {}) to execute/write authority (#5886).
 function normalizePerms(p) {
-  if (!p) return { read: false, write: false, execute: false };
-  return { read: !!p.read, write: !!p.write, execute: !!p.execute };
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return { read: false, write: false, execute: false };
+  return {
+    read: p.read === true,
+    write: p.write === true,
+    execute: p.execute === true,
+  };
 }
 
 function minBigInt(a, b) { return a < b ? a : b; }
@@ -393,6 +400,10 @@ export function mergeFunctionSeeds(input, context = {}) {
     const f = {
       ...f0,
       address: BigInt(f0.address),
+      // Raw seeds may carry number/string extents; the canonicalization below
+      // mixes them with the BigInt address, so normalize up front (#5891).
+      size: f0.size == null ? null : BigInt(f0.size),
+      end: f0.end == null ? null : BigInt(f0.end),
       confidence,
       exactFunctionStartConfidence,
       extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5),
