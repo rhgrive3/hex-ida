@@ -297,7 +297,7 @@ function callPrototypeAuthorityFor(instructions, architecturePlugin, options = {
  * semantic pipeline. This is architecture-front-end work: generic CFG/SSA never
  * inspect register names or mnemonics.
  */
-export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
+export function canonicalDecodedInstructions(instructions) {
   if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
   const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
   const byAddress = new Map();
@@ -307,6 +307,11 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
     byAddress.set(address.toString(), instruction);
   }
+  return { instructions: ordered, byAddress };
+}
+
+export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
+  const { instructions: ordered, byAddress } = canonicalDecodedInstructions(instructions);
 
   const callPrototypeAuthority = callPrototypeAuthorityFor(ordered, architecturePlugin, options);
   const controlByAddress = new Map();
@@ -1140,7 +1145,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const decoderSemanticVersion = assertRequiredString(input.decoderSemanticVersion, 'decoder-semantic-version');
   const binaryId = assertRequiredString(input.binaryId, 'binary-id');
   const sliceId = assertRequiredString(input.sliceId, 'slice-id');
-  const orderedInstructions = input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
+  const orderedInstructions = canonicalDecodedInstructions(input.instructions).instructions;
   const callPrototypeAuthority = callPrototypeAuthorityFor(orderedInstructions, architecturePlugin, {
     callPrototype:input.callPrototype ?? null,
     callPrototypeFor:input.callPrototypeFor,

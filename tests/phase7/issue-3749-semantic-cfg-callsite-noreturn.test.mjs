@@ -6,12 +6,13 @@ import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/
 import { decompileSemantic } from '../../js/decompiler/semantic.js';
 import { ABIPlugin, registerABIPlugin } from '../../js/targets/abi/index.js';
 import {
+  analyzeDecodedSemanticFunction,
   createSemanticCallPrototypeAuthority,
   partitionDecodedFunction as partitionBase,
   semanticAbiAdapter,
   semanticControlUnknowns,
 } from '../../js/analysis/semantic-function-base.js';
-import { partitionDecodedFunction as partitionPublic } from '../../js/analysis/semantic-function.js';
+import { analyzeSemanticFunction, partitionDecodedFunction as partitionPublic } from '../../js/analysis/semantic-function.js';
 
 const partitions = [
   ['public', partitionPublic],
@@ -134,6 +135,64 @@ for (const [route, partition] of partitions) {
     assert.equal(blocks.length, 2);
   });
 }
+
+for (const [route, partition] of partitions) {
+  test(`${route}: missing/invalid decoded collections keep the canonical decoded-instructions contract`, () => {
+    for (const bad of [undefined, null, 'bl 0x1000', 7, {}, true]) {
+      assert.throws(() => partition(bad, plugin(), {}), /semantic-function-decoded-instructions-required/);
+    }
+    assert.throws(() => partition([], plugin(), {}), /semantic-function-decoded-instructions-required/);
+  });
+
+  test(`${route}: duplicate call addresses fail canonical validation before callsite authority construction`, () => {
+    let resolverCalls = 0;
+    assert.throws(
+      () => partition(decoded([
+        [0, 'call', 0x1000n],
+        [0, 'call', 0x2000n],
+      ]), plugin(), {
+        callPrototypeFor() {
+          resolverCalls += 1;
+          return { noreturn:true };
+        },
+      }),
+      /semantic-function-duplicate-instruction-address/,
+    );
+    assert.equal(resolverCalls, 0, 'prototype authority must not evaluate before canonical decoded-input validation');
+  });
+}
+
+test('issue 3749 validation order: analyze entrypoints validate decoded collections before authority construction', () => {
+  const envelope = {
+    architecture:'arm64',
+    abiId:'aapcs64',
+    platform:'linux',
+    decoderSemanticVersion:'issue-3749-decoder-1',
+    binaryId:'issue-3749-binary',
+    sliceId:'issue-3749-slice',
+  };
+  assert.throws(
+    () => analyzeSemanticFunction({ ...envelope }),
+    /semantic-function-decoded-instructions-required/,
+    'public route must not surface a raw non-iterable failure for missing instructions',
+  );
+  assert.throws(
+    () => analyzeSemanticFunction({ ...envelope, instructions:'bl 0x1000' }),
+    /semantic-function-decoded-instructions-required/,
+  );
+  assert.throws(
+    () => analyzeSemanticFunction({ ...envelope, instructions:[{ address:0n, length:4n }, { address:0n, length:4n }] }),
+    /semantic-function-duplicate-instruction-address/,
+  );
+  assert.throws(
+    () => analyzeDecodedSemanticFunction({ ...envelope, instructions:[{ address:0n, length:4n }, { address:0n, length:4n }] }),
+    /semantic-function-duplicate-instruction-address/,
+  );
+  assert.throws(
+    () => analyzeDecodedSemanticFunction({ ...envelope, instructions:[] }),
+    /semantic-function-decoded-instructions-required/,
+  );
+});
 
 const addressTarget = (value) => ({
   kind:'absolute-address',

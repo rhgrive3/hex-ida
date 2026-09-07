@@ -6,6 +6,7 @@ import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.
 import { decompileSemantic } from '../decompiler/semantic.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
+  canonicalDecodedInstructions,
   createSemanticCallPrototypeAuthority,
   isSemanticCallPrototypeAuthority,
   semanticAbiAdapter,
@@ -95,15 +96,7 @@ function callPrototypeAuthorityFor(instructions, architecturePlugin, options = {
 }
 
 export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
-  if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
-  const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
-  const byAddress = new Map();
-  for (const instruction of ordered) {
-    const address = addressOf(instruction);
-    instructionLengthOf(instruction);
-    if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
-    byAddress.set(address.toString(), instruction);
-  }
+  const { instructions: ordered, byAddress } = canonicalDecodedInstructions(instructions);
 
   const callPrototypeAuthority = callPrototypeAuthorityFor(ordered, architecturePlugin, options);
   const controlByAddress = new Map();
@@ -299,9 +292,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const decoderSemanticVersion = assertRequiredString(input.decoderSemanticVersion, 'decoder-semantic-version');
   const binaryId = assertRequiredString(input.binaryId, 'binary-id');
   const sliceId = assertRequiredString(input.sliceId, 'slice-id');
-  const orderedInstructions = Array.isArray(input.instructions)
-    ? input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)
-    : input.instructions;
+  const orderedInstructions = canonicalDecodedInstructions(input.instructions).instructions;
   const callPrototypeAuthority = callPrototypeAuthorityFor(orderedInstructions, architecturePlugin, {
     callPrototype:input.callPrototype ?? null,
     callPrototypeFor:input.callPrototypeFor,
