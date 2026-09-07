@@ -46,8 +46,14 @@ assert.equal(effectiveIndexOffset(1n, 'uxtw', 4), 16n);
 assert.equal(renderExtendedIndex('x0', 'uxtw'), '(uint64_t)(uint32_t)x0');
 assert.equal(renderExtendedIndex('x0', null), 'x0');
 assert.equal(renderExtendedIndex('x0', ['uxtw']), '__arm64_index_invalid(x0)');
-assert.equal(renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: ['2'] }), 'memory[x1 + (uint64_t)(uint32_t)x0]');
-assert.equal(renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: Number.MAX_SAFE_INTEGER }), 'memory[x1 + (uint64_t)(uint32_t)x0]');
+assert.equal(
+  renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: ['2'] }),
+  'memory[x1 + __arm64_index_invalid_scale((uint64_t)(uint32_t)x0)]',
+);
+assert.equal(
+  renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: Number.MAX_SAFE_INTEGER }),
+  'memory[x1 + __arm64_index_invalid_scale((uint64_t)(uint32_t)x0)]',
+);
 assert.equal(renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: 2, size: 4 }), 'x1[(uint64_t)(uint32_t)x0]');
 assert.equal(
   renderIndexedMemory('x1', 'x0', { extend: 'uxtw', scale: 2, size: 8 }),
