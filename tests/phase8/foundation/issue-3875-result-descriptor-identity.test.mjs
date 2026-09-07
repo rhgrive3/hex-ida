@@ -32,7 +32,10 @@ function canonicalResult() {
 }
 
 function runWithResult(result) {
-  const state = createAnalysisState({ cfg: Object.freeze({ blocks: [] }) });
+  const state = createAnalysisState({
+    cfg: Object.freeze({ blocks: [] }),
+    ssa: Object.freeze({ values: ['pre-existing'] }),
+  });
   const before = state.snapshot();
   const outcome = runPassTransaction(state, {
     descriptor,
@@ -53,6 +56,8 @@ function assertRefusedIdentity(overrides) {
   assert.deepEqual(outcome.invalidated, []);
   assert.deepEqual(outcome.staged, []);
   assert.deepEqual(state.snapshot(), before);
+  assert.deepEqual(state.get('ssa'), { values: ['pre-existing'] });
+  assert.equal(state.version('ssa'), before.ssa);
   assert.equal(state.get('ranges'), null);
 }
 
