@@ -20,6 +20,14 @@ export function normalizedSignedness(signed) {
   return signed === true ? true : signed === false ? false : null;
 }
 
+function rangeFitsDomain(min, max, bits, signed) {
+  const modulus = 1n << BigInt(bits);
+  const sign = modulus >> 1n;
+  const unsignedFits = min >= 0n && max < modulus;
+  const signedFits = min >= -sign && max < sign;
+  return signed === false ? unsignedFits : signed === true ? signedFits : unsignedFits || signedFits;
+}
+
 export function normalizeIntegerValue(value, bits = 64, signed = false) {
   const width = validBits(bits);
   const raw = BigInt.asUintN(width, strictBigInt(value));
@@ -27,11 +35,18 @@ export function normalizeIntegerValue(value, bits = 64, signed = false) {
 }
 
 export function rangeWithDomain(min, max, bits = 64, signed = null) {
+  const width = validBits(bits);
+  const domainSigned = normalizedSignedness(signed);
+  const normalizedMin = strictBigInt(min);
+  const normalizedMax = strictBigInt(max);
+  if (!rangeFitsDomain(normalizedMin, normalizedMax, width, domainSigned)) {
+    throw new RangeError('range exceeds declared integer domain');
+  }
   return {
-    min: strictBigInt(min),
-    max: strictBigInt(max),
-    bits: validBits(bits),
-    signed: normalizedSignedness(signed),
+    min: normalizedMin,
+    max: normalizedMax,
+    bits: width,
+    signed: domainSigned,
   };
 }
 
@@ -54,7 +69,7 @@ export function normalizeRangeDomain(range, bits, signed) {
   } catch {
     return null;
   }
-  if (min > max) return null;
+  if (min > max || !rangeFitsDomain(min, max, srcBits, srcSigned)) return null;
   if (srcSigned == null || dstSigned == null) {
     return srcSigned === dstSigned ? rangeWithDomain(min, max, width, dstSigned) : null;
   }
@@ -85,5 +100,12 @@ export function mergeRangeDomain(a, b, bits = null, signed = undefined) {
   const x = normalizeRangeDomain(a, width, targetSigned);
   const y = normalizeRangeDomain(b, width, targetSigned);
   if (!x || !y) return null;
-  return rangeWithDomain(x.min < y.min ? x.min : y.min, x.max > y.max ? x.max : y.max, width, targetSigned);
+  const min = x.min < y.min ? x.min : y.min;
+  const max = x.max > y.max ? x.max : y.max;
+  // Two individually coherent unknown-signedness ranges may require different
+  // interpretations. Their hull is publishable only if one coherent domain can
+  // represent the entire merged interval; otherwise the range lattice has no
+  // sound single-interval value for it.
+  if (!rangeFitsDomain(min, max, width, targetSigned)) return null;
+  return rangeWithDomain(min, max, width, targetSigned);
 }
