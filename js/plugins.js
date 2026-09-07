@@ -28,6 +28,27 @@ function newInstallId() {
   return `install_${Date.now().toString(36)}_${(fallbackInstallSeq++).toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
+function snapshotRegistryState(host) {
+  return {
+    plugins: host.plugins.slice(),
+    installations: new Map(host.installations),
+  };
+}
+
+function restoreRegistryState(host, snapshot) {
+  host.plugins = snapshot.plugins;
+  host.installations.clear();
+  for (const [id, installation] of snapshot.installations) {
+    host.installations.set(id, installation);
+  }
+}
+
+function saveRegistryOrRollback(host, snapshot) {
+  const saved = host.save();
+  if (!saved.ok) restoreRegistryState(host, snapshot);
+  return saved;
+}
+
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
   const rawLength = res.headers?.get?.('content-length');
   if (rawLength != null && rawLength !== '') {
@@ -194,6 +215,7 @@ export class PluginHost {
        a fresh installation may not. */
     if (!added.length && !enabled) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
 
+    const before = !opts.silent ? snapshotRegistryState(this) : null;
     this.installations.set(installationId, {
       v: 3,
       installationId,
@@ -203,12 +225,10 @@ export class PluginHost {
       enabledIndexes: added.map((p) => p.index),
     });
 
-    const before = this.plugins.slice();
     this.plugins.push(...added);
     if (!opts.silent) {
-      const saved = this.save();
+      const saved = saveRegistryOrRollback(this, before);
       if (!saved.ok) {
-        this.plugins = before;
         return { error: 'プラグインを保存できませんでした: ' + saved.error, persistenceError: true };
       }
     }
@@ -241,12 +261,11 @@ export class PluginHost {
   }
 
   clear() {
-    const before = this.plugins.slice();
+    const before = snapshotRegistryState(this);
     this.plugins = [];
     this.installations.clear();
-    const saved = this.save();
+    const saved = saveRegistryOrRollback(this, before);
     if (!saved.ok) {
-      this.plugins = before;
       return { ok: false, error: saved.error, persistenceError: true };
     }
     return { ok: true };

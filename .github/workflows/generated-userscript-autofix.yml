@@ -4,17 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
+      - 'js/userscript/**'
       - 'scripts/build-userscript.mjs'
       - 'scripts/userscript-release-version.mjs'
       - 'scripts/sync-generated-userscript.mjs'
       - 'tools/validation/generated-output-policy.mjs'
       - 'tests/dev-agent/sync-generated-userscript.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
+      - 'userscript/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/generated-sync.yml'
@@ -31,23 +27,28 @@ concurrency:
 jobs:
   autofix:
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref != github.event.pull_request.base.ref
+      github.event.pull_request.head.ref != github.event.pull_request.base.ref &&
+      (
+        github.event.pull_request.base.ref == 'release' ||
+        startsWith(github.event.pull_request.head.ref, 'dev-agent-hardening/integration/')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
       - name: Checkout exact PR head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm

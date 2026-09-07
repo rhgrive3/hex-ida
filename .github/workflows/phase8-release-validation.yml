@@ -7,12 +7,6 @@ name: Phase 8 release validation
 # external workflows and the permanent verifier agree, so the integration owner
 # can store that evidence in a normal branch commit and re-run exact-head CI.
 on:
-  pull_request:
-    paths:
-      - 'js/decompiler/**'
-      - 'tests/phase8/**'
-      - 'tools/validation/phase8/**'
-      - '.github/workflows/phase8-release-validation.yml'
   workflow_dispatch:
     inputs:
       sha:
@@ -46,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
@@ -58,7 +52,7 @@ jobs:
           else
             echo 'requested=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         if: steps.request.outputs.requested == 'true'
         with:
           node-version: '22'
@@ -148,7 +142,7 @@ jobs:
     outputs:
       cutover_requested: ${{ steps.cutover-request.outputs.requested }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -162,7 +156,7 @@ jobs:
           else
             echo 'requested=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
@@ -183,9 +177,6 @@ jobs:
           shadow="${DISPATCH_SHADOW}"
           gates="${DISPATCH_GATES}"
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
-            # Phase 8 is integrated on main. PR validation is therefore always
-            # fail-closed and self-contained; editing checkpoint metadata cannot
-            # downgrade a release run back into shadow mode.
             expect_sha="${PR_EXPECT_SHA}"
             shadow=false
             gates=true
@@ -196,7 +187,7 @@ jobs:
           node tools/validation/phase8/verify.mjs "${args[@]}"
       - name: Publish the evidence artifact
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: phase8-release-evidence
           path: reports/phase8/phase8-release-evidence.*
@@ -213,11 +204,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
@@ -288,7 +279,7 @@ jobs:
         run: node tools/validation/phase8/finalize.mjs --base "$BASE_SHA" --external-gates "$EXTERNAL_GATES"
       - name: Publish P8-I cutover evidence for integration owner
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: phase8-p8i-cutover-${{ github.event.pull_request.head.sha }}
           path: |

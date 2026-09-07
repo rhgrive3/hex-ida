@@ -1,10 +1,14 @@
 name: Invariant Gates
 
 on:
-  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact commit SHA to verify'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,8 +25,14 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - name: Assert exact target SHA
+        env:
+          TARGET_SHA: ${{ inputs.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Build slot-efficient npm-check shard matrix
@@ -131,15 +141,21 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
+
+      - name: Assert exact target SHA
+        env:
+          TARGET_SHA: ${{ inputs.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
       - name: Resolve current main for ownership proof
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm

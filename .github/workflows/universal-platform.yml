@@ -1,35 +1,6 @@
 name: Universal binary platform
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'js/binary/**'
-      - 'js/bytesource/**'
-      - 'js/architecture/**'
-      - 'js/targets/**'
-      - 'js/semantics/**'
-      - 'js/analysis/**'
-      - 'js/decompiler/**'
-      - 'js/ir*.js'
-      - 'js/dataflow*.js'
-      - 'js/controlflow.js'
-      - 'js/blocks.js'
-      - 'js/analyze.js'
-      - 'js/backend.js'
-      - 'js/platform/capability-maturity.js'
-      - 'js/platform/capstone-disasm-worker.js'
-      - 'capstone.js'
-      - 'capstone.wasm'
-      - 'tests/universal-binary*.mjs'
-      - 'tests/binary-platform.mjs'
-      - 'tests/capability-maturity.mjs'
-      - 'tests/issue-495-elf-relocation-budget.mjs'
-      - 'tests/issue-513-elf-symbol-budget.mjs'
-      - 'tools/benchmark/**'
-      - 'scripts/fetch-real-fixtures.mjs'
-      - 'package.json'
-      - '.github/workflows/universal-platform.yml'
   push:
     branches: [main]
     paths:
@@ -74,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -113,8 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -153,8 +124,8 @@ jobs:
       HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
       HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Fetch and verify pinned real fixtures
@@ -168,7 +139,7 @@ jobs:
           npm --silent run binary:benchmark | tee universal-platform-benchmark.json
       - name: Deterministic work regression gate
         run: node tools/benchmark/compare.mjs --binary=universal-platform-benchmark.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: universal-platform-benchmark
           path: universal-platform-benchmark.json

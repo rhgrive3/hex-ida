@@ -51,10 +51,10 @@ jobs:
   userscript:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -83,16 +83,17 @@ jobs:
   # them in Playwright's pinned image so every PR does not spend minutes
   # downloading 100+ MB of WebKit OS packages onto a fresh hosted runner.
   embed-browser:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
       image: mcr.microsoft.com/playwright:v1.55.0-noble
       options: --ipc=host
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm

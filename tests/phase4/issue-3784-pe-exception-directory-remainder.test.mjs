@@ -114,4 +114,36 @@ assert.equal(unmapped.metadata.peMetadata?.complete, false);
 assert.equal(reasons(unmapped).includes('exception:directory-span'), true);
 assert.equal(reasons(unmapped).includes(REMAINDER_REASON), false, 'existing unmapped-span reason remains authoritative');
 
+const bigintSize = validX64Fixture(13);
+assert.doesNotThrow(() => {
+  parseExceptionFunctions(
+    new ByteView(bigintSize.bytes),
+    { rva: 0x1000, size: 13n },
+    bigintSize.image,
+    0x8664,
+  );
+});
+assert.equal(bigintSize.image.metadata.peMetadata?.complete, false);
+assert.equal(reasons(bigintSize.image).includes('exception:directory-span'), true);
+assert.equal(reasons(bigintSize.image).includes(REMAINDER_REASON), false, 'non-number size must fail closed before remainder arithmetic');
+
+for (const size of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+  const invalidSize = validX64Fixture(13);
+  assert.doesNotThrow(() => {
+    parseExceptionFunctions(
+      new ByteView(invalidSize.bytes),
+      { rva: 0x1000, size },
+      invalidSize.image,
+      0x8664,
+    );
+  });
+  assert.equal(invalidSize.image.metadata.peMetadata?.complete, false);
+  assert.equal(reasons(invalidSize.image).includes('exception:directory-span'), true);
+  assert.equal(
+    reasons(invalidSize.image).includes(REMAINDER_REASON),
+    false,
+    `invalid directory size ${String(size)} must fail closed before remainder arithmetic`,
+  );
+}
+
 console.log('issue-3784 PE exception-directory remainder regression: PASS');

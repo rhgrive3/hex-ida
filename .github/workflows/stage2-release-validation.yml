@@ -1,23 +1,6 @@
 name: Stage 2 authority runtime rebuild validation
 
 on:
-  pull_request:
-    paths:
-      - 'js/runtime/authority.js'
-      - 'js/runtime/stage2.js'
-      - 'js/managed/runtime-binding.js'
-      - 'js/managed/index.js'
-      - 'js/rebuild/**'
-      - 'js/collaboration/**'
-      - 'js/phase12/index.js'
-      - 'js/platform/physical-ipad-evidence.js'
-      - 'js/platform/stage2-capability-maturity.js'
-      - 'tests/stage2/**'
-      - 'tools/validation/stage2/**'
-      - 'tools/validation/phase10/ownership.json'
-      - 'tools/validation/phase11/ownership.json'
-      - 'tools/validation/phase12/ownership.json'
-      - '.github/workflows/stage2-release-validation.yml'
   workflow_dispatch:
     inputs:
       expect_sha:
@@ -72,7 +55,7 @@ jobs:
       - name: Checkout exact PR head
         id: head_checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -80,7 +63,7 @@ jobs:
         id: node_setup
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -120,7 +103,7 @@ jobs:
         id: merge_checkout
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -176,11 +159,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.expect_sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm

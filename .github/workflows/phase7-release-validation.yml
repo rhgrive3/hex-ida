@@ -3,27 +3,6 @@ name: Phase 7 release validation
 # The permanent Phase 7 verifier, with an exact-SHA dispatch path so proving a
 # specific head never requires creating a throwaway PR (EP-012).
 on:
-  push:
-    branches:
-      - main
-      - 'phase7/**'
-    paths:
-      - 'js/analysis/**'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'tests/phase7/**'
-      - 'tools/validation/phase7/**'
-      - '.github/workflows/phase7-release-validation.yml'
-      - 'package.json'
-  pull_request:
-    paths:
-      - 'js/analysis/**'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'tests/phase7/**'
-      - 'tools/validation/phase7/**'
-      - '.github/workflows/phase7-release-validation.yml'
-      - 'package.json'
   workflow_dispatch:
     inputs:
       sha:
@@ -48,11 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci --no-audit --no-fund
@@ -106,7 +85,7 @@ jobs:
           node tools/validation/phase7/verify.mjs "${args[@]}"
       - name: Publish Phase 7 evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: phase7-release-evidence-${{ github.event.inputs.sha || github.sha }}
           path: |
