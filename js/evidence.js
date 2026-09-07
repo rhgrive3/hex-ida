@@ -419,6 +419,40 @@ export function evidenceKind(code) {
   return e ? e.kind : 'inference';
 }
 
+/* ── 動的アダプタの証拠契約 ──────────────────────────────────
+ *
+ * semantic/runtime のように実測から動的な code を生む証拠は、この表に
+ * code と authority（family/kind/id）を明示的に登録する。fuse() は
+ * EVIDENCE 表とこの表のどちらにも無い code を証拠として受理しない。
+ * 生の object が kind:'verified' や id:true を名乗っても、表に登録の
+ * ない限り何の効きも持たない（fail-closed）。
+ */
+export const ADAPTER_EVIDENCE = Object.freeze({
+  'semantic-ir-proof':       { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+  'semantic-ir-observation': { family: FAMILY.USAGE,    kind: 'semantic', id: false },
+  'runtime-field-verified':  { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+  'runtime-branch-verified': { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+});
+
+/**
+ * 動的アダプタ証拠の型付き契約。
+ * 登録されていない code は例外になる。family/kind/id は契約表が authority で、
+ * 呼び出し側が上書きすることはできない。id を付ける証拠は EVIDENCE 表だけ。
+ */
+export function adapterEvidence(code, strength, detail, lr) {
+  const info = Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null;
+  if (!info) throw new TypeError(`unregistered-adapter-evidence-code:${code}`);
+  return {
+    code,
+    strength: strength == null ? 1 : finiteStrength(strength, 0),
+    lr: finitePositiveLr(lr, 1),
+    family: info.family,
+    kind: info.kind,
+    id: info.id,
+    detail: detail || null,
+  };
+}
+
 function finiteStrength(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
@@ -594,11 +628,30 @@ export function fuse(items, opts) {
     const eb = Math.abs(LN(Math.max(1e-6, b.lr)) * b.strength);
     return eb - ea;
   };
-  const all = (items || []).filter((x) => x && x.code).map((x) => ({
-    ...x,
-    strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-    lr: finitePositiveLr(x.lr, 1),
-  }));
+  const all = (items || []).filter((x) => x && x.code).map((x) => {
+    /*
+     * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
+     * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
+     * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
+     * authority は code から再導出し、呼び出し側の主張は採用しない。
+     */
+    const adapter = Object.hasOwn(ADAPTER_EVIDENCE, x.code)
+      ? ADAPTER_EVIDENCE[x.code]
+      : null;
+    const info = adapter || EVIDENCE[x.code] || null;
+    if (!info) {
+      throw new TypeError(`unregistered-evidence-code:${x.code}`);
+    }
+    return {
+      code: x.code,
+      strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
+      lr: finitePositiveLr(x.lr, finitePositiveLr(info.lr, 1)),
+      family: info.family,
+      kind: info.kind,
+      id: !!info.id,
+      detail: x.detail || null,
+    };
+  });
   /*
    * 目的に結びつける証拠を先に処理する。そのあとで、裏打ちの証拠を
    * 「結びつきがどれだけ強いか」に応じて割り引く。順番に意味がある。
