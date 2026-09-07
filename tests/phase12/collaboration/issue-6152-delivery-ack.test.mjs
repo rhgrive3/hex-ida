@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Buffer } from 'node:buffer';
 import { createHash, generateKeyPairSync, sign, webcrypto } from 'node:crypto';
 
 import { ChangeLog } from '../../../js/collaboration/index.js';
@@ -35,6 +36,22 @@ const INPUT = Object.freeze({
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers:{ 'content-type':'application/json' } });
+}
+
+async function decryptDelivery(body) {
+  const iv = Uint8Array.from(Buffer.from(body.iv, 'base64'));
+  const ciphertext = Uint8Array.from(Buffer.from(body.ciphertext, 'base64'));
+  const plaintext = await webcrypto.subtle.decrypt(
+    {
+      name:'AES-GCM',
+      iv,
+      additionalData:encoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${serverKeyId}`),
+      tagLength:128,
+    },
+    sessionEncryptionKey,
+    ciphertext,
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
 function signedAuthorization(body) {
@@ -115,12 +132,17 @@ function fakeChannel(transportResult) {
 }
 
 test('#6152: authorization alone is not delivery, and send performs delivery I/O', async () => {
-  const { transport, calls } = harness(() => jsonResponse({ schemaVersion:REMOTE_CANONICAL_RESPONSE_SCHEMA }));
+  const { transport, calls } = harness(async (body) => {
+    assert.equal(body.envelope, undefined, 'delivery must not send the canonical envelope in cleartext');
+    const decrypted = await decryptDelivery(body);
+    assert.equal(decrypted.projectIdentity, INPUT.projectIdentity);
+    assert.deepEqual(decrypted.operations, INPUT.operations);
+    return jsonResponse({ schemaVersion:REMOTE_CANONICAL_RESPONSE_SCHEMA });
+  });
   const envelope = await transport.authorizeEnvelope(INPUT);
   assert.equal(calls.length, 1, 'authorization must be the only request before channel.send');
   const result = await channelFor(transport).send(envelope);
   assert.deepEqual(result, { status:'rejected', reason:'remote-transport-delivery-unconfirmed', envelopeId:envelope.envelopeId });
-  assert.equal(calls[1].schemaVersion, REMOTE_CANONICAL_DELIVERY_SCHEMA);
   assert.equal(calls.length, 2, 'channel.send must invoke a second delivery operation');
   assert.equal(calls[1].schemaVersion, REMOTE_CANONICAL_DELIVERY_SCHEMA);
 });
@@ -162,12 +184,17 @@ test('#6152: invalid delivery acknowledgement signature is normalized to rejecti
 });
 
 test('#6152: only a matching signed delivery acknowledgement reports sent', async () => {
-  const { transport, calls } = harness((body) => jsonResponse(signedDeliveryAck(body)));
+  const { transport, calls } = harness(async (body) => {
+    assert.equal(body.envelope, undefined, 'matching delivery must also keep the envelope encrypted');
+    const decrypted = await decryptDelivery(body);
+    assert.equal(decrypted.projectIdentity, INPUT.projectIdentity);
+    return jsonResponse(signedDeliveryAck(body));
+  });
   const envelope = await transport.authorizeEnvelope(INPUT);
   const result = await channelFor(transport).send(envelope);
   assert.deepEqual(result, { status:'sent', envelopeId:envelope.envelopeId });
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].envelope.envelopeId, envelope.envelopeId);
+  assert.equal(calls[1].envelope, undefined);
 });
 
 test('#6152: verification-only transport result is never promoted to sent', async () => {

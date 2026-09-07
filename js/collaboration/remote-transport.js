@@ -242,6 +242,14 @@ export class RemoteCanonicalHttpTransport {
       proofIdentity,
       bindingDigest,
     })))}`;
+    const deliveryPlaintext = textEncoder.encode(stableStringify(envelope));
+    const deliveryIv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const deliveryAad = textEncoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${this.serverKeyId}`);
+    const deliveryCiphertext = new Uint8Array(await subtle().encrypt(
+      { name:'AES-GCM', iv:deliveryIv, additionalData:deliveryAad, tagLength:128 },
+      this.sessionEncryptionKey,
+      deliveryPlaintext,
+    ));
     const response = await this.fetchImpl(this.endpoint, {
       method:'POST',
       headers:{ 'content-type':'application/json' },
@@ -251,7 +259,8 @@ export class RemoteCanonicalHttpTransport {
         envelopeId,
         bindingDigest,
         proofIdentity,
-        envelope,
+        iv:base64(deliveryIv),
+        ciphertext:base64(deliveryCiphertext),
       }),
     });
     if (!response || response.ok !== true) throw new Error(`remote-transport-delivery-http-rejected:${response?.status ?? 'unavailable'}`);
