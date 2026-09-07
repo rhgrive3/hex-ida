@@ -19,8 +19,17 @@ function fnv1a64State(bytes, seed = null) {
     hi = Number((seed >> 32n) & 0xffffffffn) >>> 0;
     lo = Number(seed & 0xffffffffn) >>> 0;
   } else if (typeof seed === 'object' && seed) {
-    hi = Number(seed.hi) >>> 0;
-    lo = Number(seed.lo) >>> 0;
+    // The {hi, lo} form is the resumable internal hash state: both limbs must
+    // be present, primitive, canonical uint32 numbers. Number()/>>>0 coercion
+    // would launder missing fields, arrays, booleans, fractions and negatives
+    // into a valid-looking seed (#5922).
+    const hiLimb = seed.hi, loLimb = seed.lo;
+    if (!Number.isSafeInteger(hiLimb) || hiLimb < 0 || hiLimb > 0xffffffff
+      || !Number.isSafeInteger(loLimb) || loLimb < 0 || loLimb > 0xffffffff) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    hi = hiLimb >>> 0;
+    lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
   for (let i = 0; i < bytes.length; i++) {
