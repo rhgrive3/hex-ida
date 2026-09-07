@@ -1,17 +1,23 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011–T018, T027–T029, T031–T032, T035–T036 and T053–T056: the ledger is now 36/61.
-Product implementation and final release acceptance are separate. No full
-release gate has been run for this development batch.
+implementation completed T011–T018, T027–T036 and T053–T056. T020 generation
+validation also passes; the ledger is 42/61.
+Product implementation and final release acceptance are separate. This check
+round is finished: all 18 canonical top-level commands were invoked; 16/18 have
+passing development evidence after focused repairs. Legacy semantic comparison
+and the normal regression chain remain failed. See `evidence/stage-a-candidate.md`
+for the full disposition, retained failures, source identities and rerun limits.
 
 | Area | Outstanding work | Next action / due |
 | --- | --- | --- |
-| T061 | Product fixture/denominator changes exist; prior full maintenance failed on LLVM resolution, then was interrupted. | Run the relevant collaboration and Phase 12 tests at the next affected batch. Historical receipt construction is retired. |
-| Stage A | All T011–T017 implementations are complete; combined recovery validation remains pending. T012 and T053–T056 focused checks pass. | Implement available code dependencies with focused tests. |
-| Stage B | Reassess residual work against the current code; historical task statuses are not current product proof. | Start independent residuals when their actual code dependencies exist; no Stage A administrative wait. |
+| Historical administration | T047/T049/T050/T061 receipts remain historical unchecked entries. | No receipt reconstruction is required under the amendment. Current product checks replace replay. |
+| Stage A | T011–T017 implementation is 7/7; bounded independent review of fourteen recovery rows passes focused implementation checks. | Resolve the recorded failing comparisons; retain separate release obligations. |
+| Stage B | T026–T036 implementation is 10/11. T026 has capture scaffolding but five workload metrics remain UNMEASURED. | Complete native workload truth and measurements; required Phase 8 compiler is 18.1.8. |
 | Environment | Actual extracted LLVM/clang/LLD 18.1.3 are available; versioned wrappers/symlinks were restored. Phase 6 exact toolchain probe and F6 oracle now pass. | Preserve explicit tool selection and cwd/non-login shell. Phase 8 competitive compiler 18.1.8 is a separate lock. |
-| Combined release | Combined build passes; full suites, applicable independent verifiers, target/runtime proof and main reconciliation remain outstanding. | Run once on the final release candidate; do not reconstruct retired receipt history. |
+| Combined release | The development check round finished with unresolved legacy and AI/integration regressions. Canonical generation passes; current full release acceptance remains unproven. | Repair the recorded failures before final release; do not replay retired history. |
+| Normal regression chain | Approval-fixture, custom-class fingerprint, scanProgram integration and observation-count failures remain; see the candidate evidence for exact files. | Repair each at its canonical boundary; keep positive coverage and rejection checks. |
+| Legacy semantic comparison | Correct-checkout legacy mode fails apply_damage and compiler-truth max/min: absent return ABI metadata and unresolved exact stack PHI. Default/v2 corpus passes. | Repair the legacy return binding and sound PHI spill recovery; retain current assertions. See candidate evidence. |
 | Cold performance | Source11873792c measured cold622.195 ms >250; optimizer127.139 ms <=150 and interactive0.362 ms <=5. A subsequent private-artifact digest cache is implemented. | The current cold threshold remains unproven; do not reuse the earlier source-bound measurements as current acceptance. Repeated mutable-IR hashing needs a separate sound ownership solution. |
 | Hosted settings | This local change does not modify remote branch-protection requirements or other workflows. | When publishing this branch, inspect required checks and remove retired checkpoint job names from development-branch protection. Preserve final release checks. |
 
@@ -28,7 +34,7 @@ node scripts/run-quiet-command.mjs --label check -- npm run check
 `check:dev` is development feedback, not automatic release signoff. A focused
 failure stops that command but does not prohibit unrelated implementation.
 
-Current-main batch baseline: `a85e2b3693e2cffca17e4fcc6f77ece89eb50a7c`. Generated artifacts currently retain that main snapshot and require canonical combined generation before a runnable release/demo; no generated identity is claimed for this development merge.
+Current-main batch baseline: `a85e2b3693e2cffca17e4fcc6f77ece89eb50a7c`. The combined runtime is now generated: build `dd8deed2e9f1d8262fa0554a`, serial `2322242153`. Canonical double generation on source `f61484b58e` passed with identical tracked output. This is local build identity, not deployed acceptance.
 
 Completed implementation evidence (2026-09-07): T012 reproduced three authority/publication failures before recovery; all 118 identity/GVN/adversarial tests pass after recovery and adapting old test seeding to the current private transaction API. T053–T056 dedicated and relevant original alias/debug/type/store tests pass. Type corpus structural truth changed intentionally; regenerate the Phase 7 manifest once at the affected batch boundary.
 
@@ -36,7 +42,7 @@ T014 focused solver recovery and 24-case deployment matrix pass through the prod
 
 T016 dedicated 2/2, Phase 7 discovery 66/66, foundation/single-flight and Phase 12 ambiguity/handoff tests pass. T035 public rebuild transaction now carries and validates the discovery binding; focused consumer tests pass.
 
-T011 combined focused run passes (including real C/extended/C++/Objective-C compiler denominators). The apply_damage regression now requires a pre-call field snapshot and a return of the saved local, preserving unknown-call semantics. Phase 8 broad batch regression was interrupted during its corpus comparison; it is not PASS and will run once on the combined implementation.
+T011 combined focused run passes (including real C/extended/C++/Objective-C compiler denominators). The apply_damage regression now requires a pre-call field snapshot and a return of the saved local, preserving unknown-call semantics. The earlier interrupted Phase 8 run is historical. The current broad run completed; its two timing-dependent fixture failures were repaired and the focused rerun passes. See the current candidate evidence.
 
 T028 provenance graph is wired through public decompile, canonical snapshot publication and query cache consumers. Dedicated 5/5, Phase 8 provenance 5/5, projection 8/8, query cutover and decoded-order 9/9 checks pass. Full Phase 6 replay needs its exact clang/LLD toolchain; no claim that this replay passed.
 
