@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../js/core/artifacts/index.js';
+import { ArtifactError, ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../js/core/artifacts/index.js';
 import { BudgetExceededError } from '../../js/core/budgets/index.js';
-import { AnalysisScheduler, SchedulerCycleError, SchedulerDependencyIdentityError } from '../../js/core/scheduler/index.js';
+import { AnalysisScheduler, SchedulerDependencyIdentityError } from '../../js/core/scheduler/index.js';
 
 function descriptor(name, upstreamArtifactIds = []) {
   return createArtifactDescriptor({
@@ -47,8 +47,8 @@ async function waitState(scheduler, artifactId, state) {
   );
 }
 
-// Explicit cycle error rather than recursion/deadlock. The scheduler contract is
-// tested directly with fixed artifact identities so the cycle is representable.
+// Hand-written identities cannot bypass the canonical descriptor contract.
+// A forged cyclic graph therefore fails closed before any producer or DAG walk.
 {
   const { scheduler }=schedulerWithStore();
   const a={ artifactId:'artifact_cycle_a', upstreamArtifactIds:['artifact_cycle_b'] };
@@ -58,11 +58,7 @@ async function waitState(scheduler, artifactId, state) {
   requestA.dependencies=[requestB];
   await assert.rejects(
     scheduler.request(requestA),
-    (error)=>error instanceof SchedulerCycleError
-      && error.code==='artifact-dependency-cycle'
-      && error.path[0]===error.path.at(-1)
-      && error.path.includes('artifact_cycle_a')
-      && error.path.includes('artifact_cycle_b'),
+    (error)=>error instanceof ArtifactError && error.code==='artifact-descriptor-noncanonical',
   );
   assert.equal(scheduler.stats().producerInvocations,0);
 }

@@ -14,10 +14,8 @@ function nonEmpty(value, code) {
 
 function nonNegativeInteger(value, fallback, code) {
   if (value == null) return fallback;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) fail(code);
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
 }
 
 function sortedStrings(value, code) {

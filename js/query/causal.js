@@ -95,7 +95,18 @@ export function functionPaths(program, from, to, opts) {
   const maxPaths = boundedOption(opts && opts.maxPaths, 8, 1, 32);
   const maxVisited = boundedOption(opts && opts.maxVisited, 10000, 16, 20000);
   const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
-  if (!program || from == null || to == null) return result;
+  if (!program) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['program-unavailable'];
+    return result;
+  }
+  if (from == null || to == null) {
+    result.complete = false;
+    result.truncated = true;
+    result.reasons = ['invalid-endpoint'];
+    return result;
+  }
 
   const reasons = new Set();
   const q = [[from]];

@@ -199,4 +199,28 @@ for (const malformed of ["x8, x8, #1, lsl #1", "x8, x8, #1, lsr #12"]) {
 }
 console.log("  ok 8 shifted ADD/SUB immediate analyzer regression (#2051)");
 
+// 9. ARM64 UI short expressions must preserve extended-register semantics (#5046).
+for (const [input, expected] of [
+  ["w1, sxtw", "sxtw(w1)"],
+  ["w1, sxtw #0", "sxtw(w1) << 0"],
+  ["w1, sxtw #2", "sxtw(w1) << 2"],
+  ["w1, uxtw #2", "uxtw(w1) << 2"],
+  ["w1, sxth #1", "sxth(w1) << 1"],
+  ["w1, uxth #1", "uxth(w1) << 1"],
+]) {
+  const direct = directOperands.parseOperands(input)[0];
+  const throughFacade = facade.parseOperands(input)[0];
+  assert.equal(directOperands.opShort(direct), expected, `${input} must preserve its extend modifier`);
+  assert.equal(facade.opShort(throughFacade), expected, `${input} facade must preserve its extend modifier`);
+}
+for (const [input, expected] of [
+  ["[x0, w1, sxtw #2]", "x0 + (sxtw(w1) << 2)"],
+  ["[x0, w1, uxtw #2]", "x0 + (uxtw(w1) << 2)"],
+]) {
+  const mem = directOperands.parseOperands(input)[0];
+  assert.equal(directOperands.memExpr(mem), expected, `${input} must preserve its extend modifier`);
+}
+assert.equal(directOperands.opShort(directOperands.parseOperands("w1, lsl #2")[0]), "w1 << 2", "ordinary LSL display must remain unchanged");
+console.log("  ok 9 ARM64 extended-register presentation (#5046)");
+
 console.log("All ARM64 presentation compatibility tests PASS!");

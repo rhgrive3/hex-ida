@@ -781,7 +781,9 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
         return topPointsTo('unresolved-call');
       }
 
-      const returnIndex = Math.max(0, (node.outputs ?? []).indexOf(id));
+      if (!Array.isArray(node.outputs)) return topPointsTo('unresolved-call');
+      const returnIndex = node.outputs.indexOf(id);
+      if (returnIndex < 0) return topPointsTo('unresolved-call');
       const alternatives = (calleeSummary.returnProvenance ?? []).filter(
         (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
       );

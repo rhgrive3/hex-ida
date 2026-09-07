@@ -146,6 +146,10 @@ function bundleTargets(bundle) {
   if (control.fallthrough != null) targets.push(control.fallthrough);
   return targets;
 }
+function conditionalFallthroughTarget(control, instructionId) {
+  if (control.fallthrough != null) return control.fallthrough;
+  return { kind: 'fallthrough-continuation', instructionId };
+}
 function semanticEdgeKind(node, index) {
   if (node.kind === 'branch') return 'branch';
   if (node.kind === 'conditional-branch') return index === 0 ? 'conditional-true' : 'conditional-false';
@@ -153,6 +157,49 @@ function semanticEdgeKind(node, index) {
   if (node.kind === 'unknown-control-effect'
       && node.attributes?.indirectControl?.targetState === 'candidate') return 'indirect-candidate';
   return 'unknown';
+}
+
+function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets, blockByAddress, context = {}) {
+  const control = bundle.controlEffect;
+  if (control.kind !== 'conditional-branch' || !Array.isArray(fragment.nodes)) return fragment;
+  const rawTargets = control.targets?.length
+    ? [...control.targets]
+    : control.target == null ? [] : [control.target];
+  rawTargets.push(conditionalFallthroughTarget(control, bundle.instructionId));
+  const fallthrough = rawTargets[rawTargets.length - 1];
+  const fallthroughAddress = targetAddress(fallthrough);
+  const resolved = fallthroughAddress != null
+    && blockByAddress.has(fallthroughAddress)
+    && controlTargets.some((entry) => stableStringify(entry?.target) === stableStringify(fallthrough));
+  if (resolved) return fragment;
+
+  const unknown = {
+    reason: 'semantic-cfg-missing-fallthrough',
+    categories: ['control'],
+    detail: {
+      ...(context.blockKey == null ? {} : { blockKey: String(context.blockKey) }),
+      ...(context.instructionAddress == null ? {} : { instructionAddress: String(context.instructionAddress) }),
+      expectedAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+    },
+  };
+  const unknowns = [...(fragment.unknowns ?? [])];
+  if (!unknowns.some((item) => item?.reason === unknown.reason && item?.detail?.blockKey === unknown.detail?.blockKey)) {
+    unknowns.push(unknown);
+  }
+  let changed = false;
+  const nodes = fragment.nodes.map((node) => {
+    if (node?.kind !== 'conditional-branch' || !Array.isArray(node.targets) || node.targets.length < 2) return node;
+    const targets = node.targets.slice(0, -1);
+    if (!targets.length) return node;
+    changed = true;
+    return { ...node, targets };
+  });
+  return {
+    ...fragment,
+    ...(changed ? { nodes } : {}),
+    completeness: fragment.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknowns,
+  };
 }
 function normalizeSuccessor(input) {
   if (typeof input === 'string') return { to: input, kind: 'fallthrough' };
@@ -300,11 +347,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   }]));
   const values = new Map();
   const nodes = new Map();
-  const issues = new Map();
+  const initialUnknowns = input.unknowns == null
+    ? []
+    : array(input.unknowns, 'semantic-v2-integration-invalid-function-unknowns');
+  const initialCompleteness = input.completeness
+    ?? (initialUnknowns.length ? 'partial' : 'complete');
+  if (!Object.hasOwn(COMPLETENESS_RANK, initialCompleteness)) {
+    fail('semantic-v2-integration-invalid-function-completeness');
+  }
+  const issues = new Map(initialUnknowns.map((unknown) => [stableStringify(unknown), unknown]));
   const bundles = [];
   const instructionTelemetry = [];
-  let completeness = 'complete';
+  let completeness = initialCompleteness;
   let unsupportedInstructionCount = 0;
+  const conditionalFalseTargetByBlock = new Map();
 
   function mergeBlock(fragmentBlock) {
     const prior = blocks.get(fragmentBlock.id);
@@ -355,6 +411,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         if (bundle.instructionId !== instructionId) fail('semantic-v2-integration-instruction-id-mismatch');
         if (bundle.architectureId !== architectureId) fail('semantic-v2-integration-architecture-id-mismatch');
       }
+      if (bundle.controlEffect.kind === 'conditional-branch') {
+        const fallthrough = conditionalFallthroughTarget(bundle.controlEffect, bundle.instructionId);
+        const fallthroughAddress = targetAddress(fallthrough);
+        const targetBlock = fallthroughAddress == null ? null : blockByAddress.get(fallthroughAddress);
+        conditionalFalseTargetByBlock.set(block.id, targetBlock?.id ?? null);
+      }
       bundles.push(bundle);
 
       const autoTargets = [];
@@ -370,13 +432,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         autoTargets.push({ target: target.target, blockId: targetBlock.id, ...(target.role == null ? {} : { role: target.role }) });
       }
 
-      const fragment = lowerMachineEffectBundleToSemanticIr(bundle, {
+      const loweredFragment = lowerMachineEffectBundleToSemanticIr(bundle, {
         functionId,
         blockId: block.id,
         entryBlockId: block.id,
         addressWidthBits: input.addressWidthBits,
         controlTargets: autoTargets,
       }, options.semanticIrOptions ?? {});
+      const fragment = filterUnresolvedConditionalFallthrough(
+        loweredFragment,
+        bundle,
+        autoTargets,
+        blockByAddress,
+        { blockKey: block.key, instructionAddress: address.toString() },
+      );
       completeness = promotedCompleteness(completeness, fragment.completeness);
       for (const issue of fragment.unknowns) issues.set(stableStringify(issue), issue);
       for (const value of fragment.values) mergeById(values, value, 'semantic-v2-integration-conflicting-value-id');
@@ -422,6 +491,11 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     for (const successor of block.successors) {
       const target = blockByKey.get(successor.to);
       if (!target) fail('semantic-v2-integration-successor-block-not-found');
+      if (successor.kind === 'conditional-false'
+        && (!conditionalFalseTargetByBlock.has(block.id)
+          || conditionalFalseTargetByBlock.get(block.id) !== target.id)) {
+        continue;
+      }
       addSuccessor(block.id, { to: target.id, kind: successor.kind, ...(successor.metadata == null ? {} : { metadata: successor.metadata }) });
     }
   }

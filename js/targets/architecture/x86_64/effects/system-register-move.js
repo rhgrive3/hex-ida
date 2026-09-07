@@ -3,6 +3,10 @@ import { createX86EffectContext } from './common.js';
 const EXECUTION_ENV = 'sys:x86.execution-environment';
 const CONTROL_DERIVED_STATE = 'sys:x86.control-register-derived-state';
 const DEBUG_DERIVED_STATE = 'sys:x86.debug-register-derived-state';
+const GENERAL_PURPOSE_REGISTER_IDS = Object.freeze([
+  'rax','rcx','rdx','rbx','rsp','rbp','rsi','rdi',
+  'r8','r9','r10','r11','r12','r13','r14','r15',
+]);
 
 function privilegedKind(operand) {
   if (operand?.type !== 'register') return null;
@@ -87,11 +91,49 @@ function debugGeneralDetectFault() {
   });
 }
 
+function debugAliasUndefinedFault(id) {
+  return Object.freeze({
+    kind:'undefined-opcode',
+    condition:Object.freeze({
+      kind:'x86-debug-register-alias-control',
+      instruction:'mov',
+      register:id,
+      controlRegister:'cr4',
+      field:'DE',
+      value:1,
+      rule:'CR4.DE=1 makes DR4/DR5 access undefined after any DR7.GD pre-access #DB',
+    }),
+    detail:Object.freeze({ fault:'#UD' }),
+  });
+}
+
 function expectedShape(encoded) {
   if (encoded.opcode === 0x20) return { kind:'control-register', privilegedIndex:1 };
   if (encoded.opcode === 0x22) return { kind:'control-register', privilegedIndex:0 };
   if (encoded.opcode === 0x21) return { kind:'debug-register', privilegedIndex:1 };
   return { kind:'debug-register', privilegedIndex:0 };
+}
+
+function encodedRegisterIdentities(encoded, shape) {
+  const reg = (encoded.modrm >>> 3) & 7;
+  const rm = encoded.modrm & 7;
+  const rex = encoded.rex ?? 0;
+  const rexR = (rex & 0x04) !== 0;
+  const rexB = (rex & 0x01) !== 0;
+  const ordinaryId = GENERAL_PURPOSE_REGISTER_IDS[rm | (rexB ? 8 : 0)];
+
+  if (shape.kind === 'control-register') {
+    if (rexR && reg !== 0) return null;
+    return Object.freeze({ privilegedId:`cr${reg | (rexR ? 8 : 0)}`, ordinaryId });
+  }
+  if (rexR) return null;
+  return Object.freeze({ privilegedId:`dr${reg}`, ordinaryId });
+}
+
+function physicalRegisterId(operand) {
+  return operand?.type === 'register' && typeof operand.register?.physicalId === 'string'
+    ? operand.register.physicalId
+    : null;
 }
 
 export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
@@ -122,6 +164,50 @@ export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
     });
   }
 
+  const encodedIdentities = encodedRegisterIdentities(encoded, shape);
+  const structuredPrivilegedId = physicalRegisterId(privileged);
+  const structuredOrdinaryId = physicalRegisterId(ordinary);
+  if (!encodedIdentities
+    || structuredPrivilegedId !== encodedIdentities.privilegedId
+    || structuredOrdinaryId !== encodedIdentities.ordinaryId) {
+    return ctx.partial('x86-mov-control-debug-encoding-operand-mismatch', ['registers','faults'], {
+      metadata:{
+        family:'system',
+        operation:'mov',
+        systemRegisterMove:true,
+        encodingValidated:false,
+        encodedPrivilegedRegister:encodedIdentities?.privilegedId ?? null,
+        encodedGeneralPurposeRegister:encodedIdentities?.ordinaryId ?? null,
+        structuredPrivilegedRegister:structuredPrivilegedId,
+        structuredGeneralPurposeRegister:structuredOrdinaryId,
+      },
+    });
+  }
+
+  const privilegedId = String(privileged.register.id).toLowerCase();
+  if (actualKind === 'debug-register' && (privilegedId === 'dr4' || privilegedId === 'dr5')) {
+    return ctx.partial('x86-debug-register-alias-state-unmodelled', ['registers','faults','other'], {
+      possibleFaults:[
+        privilegeFault(actualKind, privilegedId),
+        debugGeneralDetectFault(),
+        debugAliasUndefinedFault(privilegedId),
+      ],
+      metadata:{
+        family:'system',
+        operation:'mov',
+        systemRegisterMove:true,
+        registerClass:actualKind,
+        privilegedRegister:privilegedId,
+        encodingValidated:true,
+        controlRegister:'cr4',
+        controlField:'DE',
+        aliasWhenClear:privilegedId === 'dr4' ? 'dr6' : 'dr7',
+        faultWhenSet:'#UD',
+        debugGeneralDetectPrecedesAccess:true,
+      },
+    });
+  }
+
   const sourceValue = ctx.readRegister(source);
   if (!sourceValue) {
     return ctx.partial('x86-mov-control-debug-source-state-unmodelled', ['registers'], {
@@ -129,7 +215,6 @@ export function liftX86SystemRegisterMoveEffects(instruction, context = {}) {
     });
   }
 
-  const privilegedId = String(privileged.register.id).toLowerCase();
   const sourceId = String(source.register.physicalId).toLowerCase();
   const destinationId = String(destination.register.physicalId).toLowerCase();
   const writesPrivileged = shape.privilegedIndex === 0;

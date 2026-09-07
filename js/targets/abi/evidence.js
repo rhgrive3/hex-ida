@@ -1,3 +1,5 @@
+import { normalizeX86RegisterName, x86RegisterDescriptor } from '../architecture/x86_64/registers.js';
+
 /*
  * Shared ABI evidence contract.
  *
@@ -197,7 +199,7 @@ export function canonicalAbiHiddenResult(raw, hidden) {
   if (typeof input !== 'string' || !input.trim()
     || hidden.canonicalInput !== input
     || hidden.location !== 'register'
-    || !Number.isSafeInteger(Number(hidden.pointerBits)) || Number(hidden.pointerBits) <= 0
+    || positiveInteger(hidden.pointerBits) == null
     || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
     || !sameScalar(hidden.abiId, raw.abiId)
     || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)
@@ -326,6 +328,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
   const physicalStackRanges = [];
   let cursor = 0;
   let coveredBits = 0;
+  let previousRegisterLane = null;
 
   for (let index = 0; index < rawPieces.length; index++) {
     const piece = rawPieces[index];
@@ -335,11 +338,7 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     const hasRegister = typeof rawReg === 'string' && rawReg.trim().length > 0;
     const hasStack = rawStackOffset != null;
     if (hasRegister === hasStack) return null;
-    if (hasRegister) {
-      if (declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
-      if (pieceRegisters.has(String(rawReg))) return null;
-      pieceRegisters.add(String(rawReg));
-    }
+    if (hasRegister && declaredRegisterSet.size > 0 && !declaredRegisterSet.has(String(rawReg))) return null;
     const stackOffset = hasStack ? offsetValue(rawStackOffset) : null;
     if (hasStack && stackOffset == null) return null;
 
@@ -353,6 +352,19 @@ export function normalizeAbiPieces(container, rawPieces, { defaultAbiClass = nul
     if (!Object.hasOwn(piece, 'abiClass')) return null;
     const abiClass = piece.abiClass;
     if (typeof abiClass !== 'string' || !abiClass.trim()) return null;
+    const normalizedAbiClass = abiClass.trim().toUpperCase();
+    if (hasRegister) {
+      const register = String(rawReg);
+      if (normalizedAbiClass === 'SSEUP') {
+        if (!previousRegisterLane
+          || previousRegisterLane.register !== register
+          || !['SSE','SSEUP'].includes(previousRegisterLane.abiClass)) return null;
+      } else if (pieceRegisters.has(register)) return null;
+      pieceRegisters.add(register);
+      previousRegisterLane = { register, abiClass:normalizedAbiClass };
+    } else {
+      previousRegisterLane = null;
+    }
 
     if (hasStack) {
       // A stack destination is a physical byte range, not just a scalar
@@ -688,20 +700,107 @@ function sameCanonicalStackMirror(left, right) {
     && left?.canonicalStackMirror === true;
 }
 
-function entryRegisterNames(entry) {
-  if (!record(entry) || entry.possible === true || entry.mustUse === false
-    || entry.partial === true || entry.exact === false) return [];
-  const names = new Set();
-  const pieces = aggregatePieces(entry);
-  if (pieces) {
-    for (const piece of pieces) {
-      if (typeof piece?.reg === 'string' && piece.reg.trim()) names.add(piece.reg.trim());
+function decoderOnlyX86PhysicalDescriptor(register) {
+  const normalized = normalizeX86RegisterName(register);
+  const match = /^(xmm|ymm)(1[6-9]|2[0-9]|3[01])$/.exec(normalized);
+  if (!match) return null;
+  const index = Number(match[2]);
+  return Object.freeze({
+    physicalId:`ymm${index}`,
+    physicalBits:256,
+    lsb:0,
+    viewBits:match[1] === 'xmm' ? 128 : 256,
+  });
+}
+
+function registerPhysicalSpans(register, laneBits = null, laneOffsetBits = 0) {
+  if (typeof register !== 'string' || !register.trim()) return [];
+  const rawName = register.trim();
+  // XMM/YMM16-31 intentionally remain decoder-only in the ISA effect model,
+  // but ABI evidence still has to reject overlapping claims against their
+  // physical YMM/ZMM storage.  Keep that physical-only authority local to the
+  // trust-boundary validator instead of re-exposing those views as modeled
+  // architectural registers.
+  const descriptor = x86RegisterDescriptor(rawName) || decoderOnlyX86PhysicalDescriptor(rawName);
+  if (!descriptor || descriptor.dynamicView) {
+    return [{ physicalId:`raw:${rawName}`, start:0, end:1 }];
+  }
+  const viewBits = positiveInteger(descriptor.viewBits);
+  const offset = nonNegativeInteger(laneOffsetBits);
+  const requested = laneBits == null ? viewBits : positiveInteger(laneBits);
+  if (viewBits == null || offset == null || requested == null || offset >= viewBits) return null;
+  const end = offset + requested;
+  if (!Number.isSafeInteger(end) || end > viewBits) return null;
+
+  if (!Array.isArray(descriptor.compositeParts)) {
+    const physicalBits = positiveInteger(descriptor.physicalBits);
+    const lsb = nonNegativeInteger(descriptor.lsb);
+    if (typeof descriptor.physicalId !== 'string' || !descriptor.physicalId.trim()
+      || physicalBits == null || lsb == null || lsb + end > physicalBits) return null;
+    return [{ physicalId:descriptor.physicalId, start:lsb + offset, end:lsb + end }];
+  }
+
+  const spans = [];
+  let coveredBits = 0;
+  for (const part of descriptor.compositeParts) {
+    const partBits = positiveInteger(part?.bits);
+    const partLsb = nonNegativeInteger(part?.lsb);
+    if (typeof part?.physicalId !== 'string' || !part.physicalId.trim()
+      || partBits == null || partLsb == null) return null;
+    const partEnd = partLsb + partBits;
+    if (!Number.isSafeInteger(partEnd)) return null;
+    const overlapStart = Math.max(offset, partLsb);
+    const overlapEnd = Math.min(end, partEnd);
+    if (overlapStart < overlapEnd) {
+      spans.push({
+        physicalId:part.physicalId,
+        start:overlapStart - partLsb,
+        end:overlapEnd - partLsb,
+      });
+      coveredBits += overlapEnd - overlapStart;
     }
   }
-  if (Array.isArray(entry.regs)) {
-    for (const reg of entry.regs) if (typeof reg === 'string' && reg.trim()) names.add(reg.trim());
-  } else if (typeof entry.reg === 'string' && entry.reg.trim()) names.add(entry.reg.trim());
-  return [...names];
+  return coveredBits === requested ? spans : null;
+}
+
+function entryRegisterPhysicalSpans(entry) {
+  if (!record(entry) || entry.possible === true || entry.mustUse === false
+    || entry.partial === true || entry.exact === false) return [];
+  const pieces = aggregatePieces(entry);
+  if (pieces) {
+    const spans = [];
+    let previousLane = null;
+    for (const piece of pieces) {
+      if (typeof piece?.reg !== 'string' || !piece.reg.trim()) {
+        previousLane = null;
+        continue;
+      }
+      const register = piece.reg.trim();
+      const abiClass = typeof piece.abiClass === 'string' ? piece.abiClass.trim().toUpperCase() : '';
+      const bits = positiveInteger(piece.bits);
+      if (bits == null) return null;
+      const laneOffset = abiClass === 'SSEUP'
+        && previousLane?.register === register
+        && ['SSE','SSEUP'].includes(previousLane.abiClass)
+        ? previousLane.end : 0;
+      const current = registerPhysicalSpans(register, bits, laneOffset);
+      if (current == null) return null;
+      spans.push(...current);
+      previousLane = { register, abiClass, end:laneOffset + bits };
+    }
+    return spans;
+  }
+
+  const registers = Array.isArray(entry.regs)
+    ? entry.regs.filter((reg) => typeof reg === 'string' && reg.trim())
+    : typeof entry.reg === 'string' && entry.reg.trim() ? [entry.reg] : [];
+  const spans = [];
+  for (const register of registers) {
+    const current = registerPhysicalSpans(register);
+    if (current == null) return null;
+    spans.push(...current);
+  }
+  return spans;
 }
 
 function sameSpan(left, right) { return left.start === right.start && left.end === right.end; }
@@ -757,21 +856,24 @@ export function abiPhysicalIntervalsValid(result) {
         && !sameCanonicalStackMirror(previous.entry, entry)) return false;
       const spans = entryStackIntervals(entry);
       if (spans == null) return false;
-      for (const register of entryRegisterNames(entry)) {
-        const previousRegister = registerOwners.get(register);
-        if (!previousRegister) {
-          registerOwners.set(register, { entry, source });
-          continue;
+      const registerSpans = entryRegisterPhysicalSpans(entry);
+      if (registerSpans == null) return false;
+      for (const registerSpan of registerSpans) {
+        const owners = registerOwners.get(registerSpan.physicalId) || [];
+        const previousRegister = owners.find((candidate) => intervalsOverlap(candidate.span, registerSpan));
+        if (previousRegister) {
+          if (previousRegister.entry === entry
+            || (previousRegister.source !== source
+              && (canonicalSplitProof(previousRegister.entry, entry)
+                || sameCanonicalStackMirror(previousRegister.entry, entry)))) continue;
+          // Architectural register names are views over physical storage.  Two
+          // exact records may share a physical cell only when their bit ranges
+          // are disjoint (for example canonical SSE/SSEUP lanes) or a proven
+          // canonical projection explicitly identifies them as one fact.
+          return false;
         }
-        if (previousRegister.entry === entry
-          || (previousRegister.source !== source
-            && (canonicalSplitProof(previousRegister.entry, entry)
-              || sameCanonicalStackMirror(previousRegister.entry, entry)))) continue;
-        // A register is one physical location.  Two exact-looking records may
-        // share it only when the same canonical aggregate projection proves
-        // that relationship; otherwise this is duplicate/overlapping ABI
-        // evidence even if no stack interval is present to catch it.
-        return false;
+        owners.push({ span:registerSpan, entry, source });
+        registerOwners.set(registerSpan.physicalId, owners);
       }
       for (const span of spans) {
         const duplicate = intervals.find((candidate) => intervalsOverlap(candidate.span, span));

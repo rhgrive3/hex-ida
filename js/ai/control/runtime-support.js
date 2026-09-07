@@ -29,7 +29,13 @@ export function sessionMatchesSnapshot(session, snapshot) {
   const snapshotBindingId = canonicalBindingId(snapshotRawId);
   if (sessionRawId != null && sessionBindingId == null) return false;
   if (snapshotRawId != null && snapshotBindingId == null) return false;
-  let binaryMatches = sessionBindingId == null || sessionBindingId === snapshotBindingId;
+  // An unbound session carries no positive evidence that it belongs to the
+  // current binary. Treating that as a wildcard match would silently adopt
+  // another binary's investigation state, so both sides must be unbound (or
+  // the session must prove its binding via a verifiable legacy id) to match.
+  let binaryMatches = sessionBindingId == null
+    ? snapshotBindingId == null
+    : sessionBindingId === snapshotBindingId;
   if (!binaryMatches) {
     const sessionStrong = strongIdentity(sessionIdentity, sessionBindingId);
     const snapshotStrong = strongIdentity(snapshotIdentity, snapshotBindingId);

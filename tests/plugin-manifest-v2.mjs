@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { PlatformPluginRegistry, registerAnalyzer, PluginCompatibilityError } from "../js/platform/plugin-api.js";
-import { validatePluginManifest, checkManifestCompatibility, HOST_API_VERSION, ANALYZER_CONTRACT_VERSION } from "../js/platform/plugin-manifest.js";
+import { validatePluginManifest, checkManifestCompatibility, isSemverCompatible, HOST_API_VERSION, ANALYZER_CONTRACT_VERSION } from "../js/platform/plugin-manifest.js";
 
 console.log("Testing Plugin Manifest v2...");
 
@@ -86,14 +86,21 @@ console.log("Testing Plugin Manifest v2...");
 }
 
 // Compatibility
-// 9. host 2.0.x request compatible
+// 9. semver compatibility compares patch when major/minor are equal
 {
+  assert.equal(isSemverCompatible("2.0.0", "2.0.0"), true);
+  assert.equal(isSemverCompatible("2.0.1", "2.0.0"), false);
+  assert.equal(isSemverCompatible("2.0.0", "2.0.1"), true);
+  assert.equal(isSemverCompatible("2.1.0", "2.0.999"), false);
+  assert.equal(isSemverCompatible("2.0.999", "2.1.0"), true);
+  assert.equal(isSemverCompatible("3.0.0", "2.9.9"), false);
+
   const m = validatePluginManifest({
-    id: "p1", name: "a", version: "1.0.0", apiVersion: "2.0.5", supportedTargets: ["*"],
+    id: "p1", name: "a", version: "1.0.0", apiVersion: "2.0.1", supportedTargets: ["*"],
     contributions: [{ type: "analyzer", id: "c1", contractVersion: "1.0.0" }],
   });
-  checkManifestCompatibility(m);
-  console.log("  ok 9 host 2.0.x request compatible");
+  assert.throws(() => checkManifestCompatibility(m), (err) => err instanceof PluginCompatibilityError && err.code === "plugin-api-version-incompatible");
+  console.log("  ok 9 semver patch ordering enforced for host API");
 }
 
 // 10. host 1.x / 3.x incompatible
@@ -122,14 +129,14 @@ console.log("Testing Plugin Manifest v2...");
   console.log("  ok 11 host 2.1.0 incompatible");
 }
 
-// 12. analyzer 1.0.x compatible
+// 12. analyzer patch newer than supported contract is incompatible
 {
   const m = validatePluginManifest({
     id: "p1", name: "a", version: "1.0.0", apiVersion: "2.0.0", supportedTargets: ["*"],
-    contributions: [{ type: "analyzer", id: "c1", contractVersion: "1.0.8" }],
+    contributions: [{ type: "analyzer", id: "c1", contractVersion: "1.0.1" }],
   });
-  checkManifestCompatibility(m);
-  console.log("  ok 12 analyzer 1.0.x compatible");
+  assert.throws(() => checkManifestCompatibility(m), (err) => err instanceof PluginCompatibilityError && err.code === "plugin-contribution-version-incompatible");
+  console.log("  ok 12 analyzer newer patch incompatible");
 }
 
 // 13. analyzer 2.0.0 incompatible

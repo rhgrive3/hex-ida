@@ -202,10 +202,22 @@ function shiftExpr(sh) {
   }
 }
 
+const EXTEND_OPS = new Set(["uxtb", "uxth", "uxtw", "uxtx", "sxtb", "sxth", "sxtw", "sxtx"]);
+
+function modifiedValueExpr(text, sh) {
+  if (!sh) return text;
+  if (!EXTEND_OPS.has(sh.op)) return text + shiftExpr(sh);
+  const extended = sh.op + "(" + text + ")";
+  return sh.amount != null ? extended + " << " + sh.amount : extended;
+}
+
 export function memExpr(m) {
   let s = m.base.text;
-  if (m.index) s += " + " + m.index.text + (m.shift ? shiftExpr(m.shift) : "");
-  else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
+  if (m.index) {
+    const index = modifiedValueExpr(m.index.text, m.shift);
+    const needsGrouping = m.shift && EXTEND_OPS.has(m.shift.op) && m.shift.amount != null;
+    s += " + " + (needsGrouping ? "(" + index + ")" : index);
+  } else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
     s += (m.disp.value < 0n ? " - " : " + ") + immShort({ ...m.disp, value: m.disp.value < 0n ? -m.disp.value : m.disp.value });
   }
   return s;
@@ -215,7 +227,7 @@ export function memExpr(m) {
 export function opShort(op) {
   if (!op) return "";
   switch (op.k) {
-    case "reg": return op.text + (op.shift ? shiftExpr(op.shift) : "");
+    case "reg": return modifiedValueExpr(op.text, op.shift);
     case "imm": return immShort(op) + (op.shift ? shiftExpr(op.shift) : "");
     case "mem": return "[" + memExpr(op) + "]";
     case "cond": return op.text;

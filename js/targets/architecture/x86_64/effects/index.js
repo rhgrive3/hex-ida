@@ -105,7 +105,8 @@ function terminalize(instruction, ownerId, result, context) {
   // evidence (missing implicit state, malformed prefix/operand shape, etc.).
   const reason = String(result?.unknownEffects?.reason || '');
   if (result?.completeness === 'partial' && (
-    result?.metadata?.encodingValidated === false
+    reason === 'x86-feature-profile-mismatch'
+    || result?.metadata?.encodingValidated === false
     || result?.metadata?.exactWideAtomicClaim === false
     || result?.metadata?.structuredImplicitAccumulatorMissing === true
     || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))

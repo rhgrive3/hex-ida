@@ -170,5 +170,7 @@ await check('every intent has a label the user can read before pressing Enter', 
   assert.equal(intentLabel('empty', true), '');
 });
 
+await import('./issue-3801-ai-session-cancel-race.mjs');
+
 console.log(failures ? `\n${failures} failed` : '\nai-ui-mode: PASS');
 if (failures) process.exit(1);

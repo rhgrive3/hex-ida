@@ -32,12 +32,13 @@ export function productDescriptor(fileInfo, slice) {
   const info = active?.info || {};
   const formatId = String(embedded.formatId || fileInfo?.formatId || info.format || '').toLowerCase() || 'raw';
   const regions = Array.isArray(embedded.regions) ? embedded.regions : (active?.regions || []);
-  const imports = Array.isArray(embedded.imports) ? embedded.imports : (info.imports || []);
-  const exports = Array.isArray(embedded.exports) ? embedded.exports : (info.exports || []);
+  const imports = Array.isArray(embedded.imports) ? embedded.imports : (Array.isArray(info.imports) ? info.imports : []);
+  const exports = Array.isArray(embedded.exports) ? embedded.exports : (Array.isArray(info.exports) ? info.exports : []);
+  const asDependencyList = (value) => (Array.isArray(value) ? value : []);
   const dependencies = uniqueNames([
-    ...(embedded.dependencies || []),
-    ...(info.dependencies || []),
-    ...(info.dylibs || []),
+    ...asDependencyList(embedded.dependencies),
+    ...asDependencyList(info.dependencies),
+    ...asDependencyList(info.dylibs),
     ...imports.map((item) => item?.library).filter(Boolean),
   ]);
   const generic = compactMetadata({

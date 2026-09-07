@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { ByteView } from '../../js/binary/reader.js';
 import { parseProgramDynamic } from '../../js/binary/elf-dynamic.js';
 
-const DT_NEEDED = 1n;
+const DT_DEBUG = 21n;
 const DT_NULL = 0n;
 
 function image() {
@@ -39,7 +39,7 @@ function fixture(entries, bits, trailingBytes = 0) {
 
 for (const bits of [32, 64]) {
   const label = `ELF${bits}`;
-  const { bytes } = fixture([[DT_NEEDED, 0n], [DT_NULL, 0n]], bits);
+  const { bytes } = fixture([[DT_DEBUG, 0n], [DT_NULL, 0n]], bits);
   const parsed = image();
   const result = parseProgramDynamic(new ByteView(bytes), [{ type: 2, offset: 0n, filesz: BigInt(bytes.length) }], parsed, bits);
   assert.equal(result.parsed, true, `${label} terminated table remains parseable`);
@@ -50,7 +50,7 @@ for (const bits of [32, 64]) {
 
 for (const bits of [32, 64]) {
   const label = `ELF${bits}`;
-  const { bytes, entrySize } = fixture([[DT_NEEDED, 0n]], bits);
+  const { bytes, entrySize } = fixture([[DT_DEBUG, 0n]], bits);
   const parsed = image();
   const result = parseProgramDynamic(new ByteView(bytes), [{ type: 2, offset: 0n, filesz: BigInt(bytes.length) }], parsed, bits);
   assert.equal(result.parsed, true, `${label} best-effort entries remain available`);
@@ -63,7 +63,7 @@ for (const bits of [32, 64]) {
 
 for (const bits of [32, 64]) {
   const label = `ELF${bits}`;
-  const { bytes, entrySize } = fixture([[DT_NEEDED, 0n], [DT_NULL, 0n]], bits, 1);
+  const { bytes, entrySize } = fixture([[DT_DEBUG, 0n], [DT_NULL, 0n]], bits, 1);
   const parsed = image();
   const result = parseProgramDynamic(new ByteView(bytes), [{ type: 2, offset: 0n, filesz: BigInt(bytes.length) }], parsed, bits);
   assert.equal(result.parsed, true, `${label} valid entries remain available with a malformed tail`);

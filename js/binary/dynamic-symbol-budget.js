@@ -29,6 +29,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
   let estimatedBytes = 0;
   let stopped = false;
   let reason = null;
+  let nextTimeCheck = 4096;
 
   const stop = (message) => {
     if (!stopped) {
@@ -60,7 +61,9 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
       if (!Number.isSafeInteger(cost) || cost < 0) return stop(`${stage} operation cost is invalid`);
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`${stage} exceeds ${resolved.maxOperations} operations`);
-      return operations === 1 || (operations & 0xfff) === 0 ? wallOkay(stage) : true;
+      const shouldCheckWall = operations === 1 || operations >= nextTimeCheck;
+      if (operations >= nextTimeCheck) nextTimeCheck = operations + 4096;
+      return shouldCheckWall ? wallOkay(stage) : true;
     },
     claimOutput(count = 1, bytesPerObject = 128, source = 'dynamic symbol decode') {
       if (stopped) return false;

@@ -60,11 +60,11 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
   const binaryImage = runtimeSections?.binaryImage || null;
   const validateImplementation=createImplementationValidator(runtimeSections,binaryImage);
   const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, {
-    validateImplementation,
-    requireImplementationProof:true,
     signal: options?.signal || null,
     priority: options?.priority || 'idle',
     ...(options || {}),
+    validateImplementation,
+    requireImplementationProof:true,
   });
   let resolvePointer = typeof runtimeSections?.resolvePointer === 'function'
     ? runtimeSections.resolvePointer
@@ -88,10 +88,12 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
   const extra = await parseObjcExtendedMetadata(read, runtimeSections, {
     imageBase,
     classes: base.classes || [],
-    resolvePointer, validateImplementation, requireImplementationProof:true,
+    resolvePointer,
     signal: options?.signal || null,
     priority: options?.priority || 'idle',
     ...(options || {}),
+    validateImplementation,
+    requireImplementationProof:true,
   });
   const names = (base.names || []).filter((entry)=>entry?.implementationProven===true);
   const seen = new Set(names.map((entry) => `${entry.addr}:${entry.name}`));

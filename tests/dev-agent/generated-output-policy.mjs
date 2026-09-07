@@ -44,7 +44,7 @@ for (const workflow of [
     assert.match(source, /steps\.generated-policy\.outputs\.mode/, `${workflow} must honor the canonical policy result`);
     if (workflow.endsWith('/phase7-release-validation.yml')) {
       assert.match(source, /set -euo pipefail/, 'Phase 7 policy resolution must fail closed on command errors');
-      assert.match(source, /case \"\$mode\" in/, 'Phase 7 policy resolution must validate its output');
+      assert.match(source, /case "\$mode" in/, 'Phase 7 policy resolution must validate its output');
       assert.match(source, /enforce\|ephemeral/, 'Phase 7 policy resolution must whitelist only known modes');
       assert.match(source, /exit 1/, 'Phase 7 policy resolution must reject unknown modes');
     }
@@ -52,11 +52,13 @@ for (const workflow of [
 }
 
 const recoveryWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-exact-head-recovery.yml'), 'utf8');
-assert.match(recoveryWorkflow, /Generated userscript autofix/, 'generated autofix completion must trigger exact-head recovery');
-assert.match(recoveryWorkflow, /createWorkflowDispatch/, 'recovery must invoke the existing verifier workflows');
-assert.match(recoveryWorkflow, /generatedSyncCovered/, 'blocked runs may be removed only after generated-sync replacement coverage is queued or green');
-assert.match(recoveryWorkflow, /deleteWorkflowRun/, 'zero-job action_required runs must be removable after replacement validation is queued');
-assert.doesNotMatch(recoveryWorkflow, /createCommitStatus|checks\.create|checkRuns\.create/, 'recovery must never synthesize a green status/check');
+assert.doesNotMatch(recoveryWorkflow, /^  workflow_run:/m, 'exact-head recovery must not auto-redispatch after ordinary development workflows');
+assert.match(recoveryWorkflow, /^  workflow_dispatch:/m, 'exact-head recovery must remain available as a targeted manual repair tool');
+assert.match(recoveryWorkflow, /pr_number:/, 'manual recovery must target one explicit PR');
+assert.match(recoveryWorkflow, /createWorkflowDispatch/, 'recovery must invoke exact-head development checks');
+assert.match(recoveryWorkflow, /pr-fast-gate\.yml/, 'recovery must always dispatch the fast gate');
+assert.match(recoveryWorkflow, /invariant-gates\.yml/, 'recovery may explicitly request the full repository proof');
+assert.doesNotMatch(recoveryWorkflow, /deleteWorkflowRun|createCommitStatus|checks\.create|checkRuns\.create/, 'manual recovery must not delete evidence or synthesize green status');
 
 const userscriptHostWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/userscript-host.yml'), 'utf8');
 assert.match(userscriptHostWorkflow, /\bworkflow_dispatch\s*:/, 'userscript host must expose a permanent manual exact-head path');
@@ -73,10 +75,6 @@ const resolverScript = resolverMatch[1]
 function runResolver(fakeNodeBody = null) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-generated-policy-'));
   const outputFile = path.join(directory, 'github-output');
-  // The workflow resolver test exercises its fail-closed default context. A
-  // PR checkout inherits the host's GitHub event variables, which would make
-  // the same valid command resolve to the component-lane `ephemeral` mode and
-  // turn this context-independent contract test into an environment leak.
   const environment = {
     ...process.env,
     GITHUB_EVENT_NAME: '',

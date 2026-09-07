@@ -10,14 +10,14 @@ import { deferred, descriptor, scheduler, waitState } from './helpers.mjs';
   await waitState(s,blocker.artifactId,'running');
   const order=[];
   const cases=[
-    ['maintenance','priority-maintenance'],
-    ['background','priority-background'],
-    ['prefetch','priority-prefetch'],
-    ['current','priority-current'],
-    ['foreground','priority-foreground'],
+    ['maintenance',descriptor('priority-maintenance')],
+    ['background',descriptor('priority-background')],
+    ['prefetch',descriptor('priority-prefetch')],
+    ['current',descriptor('priority-current')],
+    ['foreground',descriptor('priority-foreground')],
   ];
-  const promises=cases.map(([priority,id])=>s.request({descriptor:descriptor(id),priority,produce:async()=>{order.push(priority);return {semantic:'same'};}}));
-  for (const [,id] of cases) await waitState(s,`artifact_${id}`,'ready');
+  const promises=cases.map(([priority,item])=>s.request({descriptor:item,priority,produce:async()=>{order.push(priority);return {semantic:'same'};}}));
+  for (const [,item] of cases) await waitState(s,item.artifactId,'ready');
   gate.resolve({ok:true});
   await Promise.all([blockerPromise,...promises]);
   assert.deepEqual(order,['foreground','current','prefetch','background','maintenance']);
@@ -31,11 +31,11 @@ import { deferred, descriptor, scheduler, waitState } from './helpers.mjs';
   const blockerPromise=s.request({descriptor:blocker,produce:()=>gate.promise});
   await waitState(s,blocker.artifactId,'running');
   const order=[];
-  const ids=['tie-z','tie-a','tie-m'];
-  const promises=ids.map((id)=>s.request({descriptor:descriptor(id),priority:'current',produce:async()=>{order.push(`artifact_${id}`);return {};}}));
-  for (const id of ids) await waitState(s,`artifact_${id}`,'ready');
+  const items=['tie-z','tie-a','tie-m'].map((id)=>descriptor(id));
+  const promises=items.map((item)=>s.request({descriptor:item,priority:'current',produce:async()=>{order.push(item.artifactId);return {};}}));
+  for (const item of items) await waitState(s,item.artifactId,'ready');
   gate.resolve({}); await Promise.all([blockerPromise,...promises]);
-  assert.deepEqual(order,[...ids].map((id)=>`artifact_${id}`).sort((a,b)=>a.localeCompare(b)));
+  assert.deepEqual(order,items.map((item)=>item.artifactId).sort((a,b)=>a.localeCompare(b)));
 }
 
 // Starvation policy is deterministic: an old maintenance job outranks sufficiently new foreground arrivals.

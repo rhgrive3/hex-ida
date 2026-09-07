@@ -22,7 +22,7 @@ import {
 } from './provider.js';
 
 import { GoMetadataProvider, GO_PROVIDER_ID, GO_PCLNTAB_MAGICS } from './go.js';
-import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable } from './rust.js';
+import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable, stripLegacyRustPrefix, isRustCandidateSymbol } from './rust.js';
 import { SwiftMetadataProvider, SWIFT_PROVIDER_ID } from './swift.js';
 import { ObjcMetadataProvider, OBJC_PROVIDER_ID } from './objc.js';
 
@@ -47,6 +47,8 @@ export {
   RUST_PROVIDER_ID,
   demangleRustSymbol,
   isRustLayoutStable,
+  stripLegacyRustPrefix,
+  isRustCandidateSymbol,
   SwiftMetadataProvider,
   SWIFT_PROVIDER_ID,
   ObjcMetadataProvider,
@@ -125,10 +127,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
     }));
   }
 
-  if (symbols.some((s) => {
-    const n = safeSymbolName(s);
-    return n.startsWith('_R') || n.startsWith('__R') || n.startsWith('_ZN') || n.startsWith('ZN');
-  }) || context.commentBuffer) {
+  if (symbols.some((s) => isRustCandidateSymbol(safeSymbolName(s))) || context.commentBuffer) {
     providers.push(new RustMetadataProvider({
       symbols,
       commentBuffer: context.commentBuffer,
