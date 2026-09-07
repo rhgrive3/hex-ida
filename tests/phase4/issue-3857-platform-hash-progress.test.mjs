@@ -50,6 +50,21 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
   );
   assert.deepEqual(boundEvents, expectedProgress, 'bound ordinary callbacks remain valid callbacks');
 
+  const lockedPrototypeEvents = [];
+  function lockedPrototypeProgress(value) {
+    lockedPrototypeEvents.push(value);
+  }
+  Object.defineProperty(lockedPrototypeProgress, 'prototype', { writable: false });
+  assert.equal(
+    await hash(source(), { chunkSize: 2, onProgress: lockedPrototypeProgress }),
+    hash === hashByteSource ? expectedFnv : expectedTree,
+  );
+  assert.deepEqual(
+    lockedPrototypeEvents,
+    expectedProgress,
+    'ordinary callbacks remain valid when their own prototype is non-writable',
+  );
+
   const boundCallbackError = new Error('bound progress callback failure');
   const throwingBoundProgress = function throwingProgress() {
     throw boundCallbackError;
