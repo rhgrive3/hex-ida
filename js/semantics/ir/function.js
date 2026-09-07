@@ -108,7 +108,28 @@ function countReferences(nodes, values, blocks) {
 // before nested collections are normalized, sorted, deduplicated, frozen, or
 // serialized. Invalid objects still fail through the normal validators; an
 // overflow sentinel rejects even when arithmetic cannot remain safe.
-function countRawReferences(input) {
+function countRawReferences(blocks, values, nodes) {
+  let count = 0;
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    count = addReferenceCount(count, arrayLength(block.nodeIds));
+  }
+  for (const value of values) {
+    if (value && typeof value === 'object' && value.definitionNodeId != null) {
+      count = addReferenceCount(count, 1);
+    }
+  }
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
+      count = addReferenceCount(count, arrayLength(node[key]));
+    }
+    if (node.memory != null) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(node.call));
+    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
+  }
+  return count;
+}
   let count = 0;
   for (const block of input.blocks ?? []) {
     if (!block || typeof block !== 'object') return REFERENCE_COUNT_OVERFLOW;
@@ -224,7 +245,7 @@ export function createSemanticIrFunction(input, options = {}) {
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
   // Preflight the complete reference denominator before nested normalization.
-  assertWithinBudget(countRawReferences(input), options, 'maxReferences');
+  assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes), options, 'maxReferences');
 
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,

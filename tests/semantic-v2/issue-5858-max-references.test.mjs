@@ -185,6 +185,31 @@ test('#5858 raw preflight rejects a large ordinary nested array before reading i
   assert.equal(normalized, false, 'preflight must reject before nested element normalization');
 });
 
+test('#5858 raw preflight uses captured top-level collections when accessors change', () => {
+  const input = makeFunction('call', { arguments: [] });
+  const capturedNodes = input.nodes;
+  // The duplicate raw inputs are intentionally above the budget but normalize
+  // to one unique id. This makes a reread-based preflight observably unsafe:
+  // a second accessor read can return [] and let normalization/post-check pass.
+  capturedNodes[0].inputs = ['address', 'address', 'address'];
+  let nodeReads = 0;
+  Object.defineProperty(input, 'nodes', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      nodeReads += 1;
+      return nodeReads === 1 ? capturedNodes : [];
+    },
+  });
+
+  assert.throws(
+    () => createSemanticIrFunction(input, { budget: { maxReferences: 2 } }),
+    /semantic-ir-budget-exceeded-maxReferences/
+  );
+  assert.equal(nodeReads, 1,
+    'the budget preflight must use the captured raw nodes, not reread an accessor');
+});
+
 test('#5858 raw preflight remains conservative for duplicate inputs', () => {
   const input = makeFunction('call', { targetEntityIds: ['callee', 'callee'] });
   assert.throws(
