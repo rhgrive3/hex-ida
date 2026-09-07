@@ -9,7 +9,8 @@ export const ANALYSIS_ORCHESTRATION_ROUTE = Object.freeze({
 });
 
 export const WORKER_CACHE_MIGRATION_VERSION = 'hex-worker-cache-migration-v1';
-export const WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v1';
+const LEGACY_WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v1';
+export const WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v2';
 export const CURRENT_WORKER_ANALYSIS_PRODUCER_ID = 'hex-current-worker-analysis';
 
 const CANONICAL_BINARY_ID = /^bin_sha256_[0-9a-f]{64}$/i;
@@ -62,7 +63,7 @@ function exactPayloadKeys(value, expected) {
   if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) invalidPayloadNode();
 }
 
-function wireArray(value, { dense = true } = {}) {
+function wireArray(value) {
   if (!Array.isArray(value)) invalidPayloadNode();
   let keys;
   try { keys = Reflect.ownKeys(value); }
@@ -73,10 +74,20 @@ function wireArray(value, { dense = true } = {}) {
     const index = Number(key);
     if (!Number.isSafeInteger(index) || index >= value.length || String(index) !== key) invalidPayloadNode();
   }
-  if (dense) {
-    for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) invalidPayloadNode();
-  }
+  for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) invalidPayloadNode();
   return value;
+}
+
+function holeMarker() {
+  return Object.freeze({ t:'hole' });
+}
+
+function isHoleMarker(value) {
+  if (typeof value !== 'object' || value === null) return false;
+  let keys;
+  try { keys = Reflect.ownKeys(value); }
+  catch { return false; }
+  return keys.length === 1 && value.t === 'hole';
 }
 
 const CANONICAL_BIGINT = /^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/;
@@ -154,6 +165,11 @@ function canonicalTypedArrayValues(name, value) {
   invalidPayloadNode();
 }
 
+function canonicalReferenceId(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) invalidPayloadNode();
+  return value;
+}
+
 /**
  * Lossless transport codec for existing worker results. ArtifactStore v1 uses
  * canonical JSON, while current workers legitimately return BigInt and typed
@@ -161,7 +177,9 @@ function canonicalTypedArrayValues(name, value) {
  * semantic producer or inventing another artifact identity.
  */
 export function encodeWorkerAnalysisPayload(value) {
-  const seen = new WeakSet();
+  const active = new WeakSet();
+  const references = new WeakMap();
+  let nextReferenceId = 0;
   const encode = (input) => {
     if (input === null) return { t:'null' };
     if (input === undefined) return { t:'undefined' };
@@ -177,33 +195,43 @@ export function encodeWorkerAnalysisPayload(value) {
       return { t:'number', v:input };
     }
     if (type !== 'object') throw new TypeError(`analysis-artifact-payload-type-unsupported:${type}`);
-    if (seen.has(input)) throw new TypeError('analysis-artifact-payload-cyclic');
-    seen.add(input);
+    if (active.has(input)) throw new TypeError('analysis-artifact-payload-cyclic');
+    if (references.has(input)) return { t:'ref', i:references.get(input) };
+    const i = nextReferenceId++;
+    references.set(input, i);
+    active.add(input);
     try {
-      if (input instanceof Date) return { t:'date', v:input.toISOString() };
-      if (input instanceof ArrayBuffer) return { t:'array-buffer', v:Array.from(new Uint8Array(input)) };
-      if (input instanceof DataView) return { t:'data-view', v:Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)) };
+      if (input instanceof Date) return { t:'date', i, v:input.toISOString() };
+      if (input instanceof ArrayBuffer) return { t:'array-buffer', i, v:Array.from(new Uint8Array(input)) };
+      if (input instanceof DataView) return { t:'data-view', i, v:Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength)) };
       if (ArrayBuffer.isView(input)) {
         const name = input.constructor?.name;
         if (!TYPED_ARRAYS.has(name)) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
         const bigint = name === 'BigInt64Array' || name === 'BigUint64Array';
         const float = name === 'Float32Array' || name === 'Float64Array';
-        return { t:'typed-array', c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
+        return { t:'typed-array', i, c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
       }
       if (input instanceof Map) {
-        return { t:'map', v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
+        return { t:'map', i, v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
       }
-      if (input instanceof Set) return { t:'set', v:[...input.values()].map(encode) };
-      if (Array.isArray(input)) return { t:'array', v:input.map(encode) };
+      if (input instanceof Set) return { t:'set', i, v:[...input.values()].map(encode) };
+      if (Array.isArray(input)) {
+        const values = new Array(input.length);
+        for (let index = 0; index < input.length; index++) {
+          values[index] = Object.hasOwn(input, index) ? encode(input[index]) : holeMarker();
+        }
+        return { t:'array', i, v:values };
+      }
       const proto = Object.getPrototypeOf(input);
       if (proto !== Object.prototype && proto !== null) throw new TypeError(`analysis-artifact-object-prototype-unsupported:${input.constructor?.name || 'unknown'}`);
       return {
         t:'object',
+        i,
         n:proto === null,
         v:Object.keys(input).sort().map((key) => [key, encode(input[key])]),
       };
     } finally {
-      seen.delete(input);
+      active.delete(input);
     }
   };
   return { codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:encode(value) };
@@ -215,9 +243,31 @@ export function decodeWorkerAnalysisPayload(payload) {
   }
   try { exactPayloadKeys(payload, ['codec', 'root']); }
   catch { throw new TypeError('analysis-artifact-payload-codec-mismatch'); }
-  if (payload.codec !== WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION || !payload.root) {
+  const referenceAware = payload.codec === WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION;
+  const legacy = payload.codec === LEGACY_WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION;
+  if ((!referenceAware && !legacy) || !payload.root) {
     throw new TypeError('analysis-artifact-payload-codec-mismatch');
   }
+  const references = new Map();
+  const activeReferences = new Set();
+  let nextReferenceId = 0;
+  const register = (node, out, keys) => {
+    if (legacy) {
+      exactPayloadKeys(node, keys);
+      return out;
+    }
+    exactPayloadKeys(node, [...keys, 'i']);
+    const i = canonicalReferenceId(node.i);
+    if (i !== nextReferenceId || references.has(i)) invalidPayloadNode();
+    nextReferenceId++;
+    references.set(i, out);
+    activeReferences.add(i);
+    return out;
+  };
+  const complete = (node, out) => {
+    if (!legacy) activeReferences.delete(node.i);
+    return out;
+  };
   const decode = (node) => {
     if (!node || typeof node !== 'object' || Array.isArray(node) || typeof node.t !== 'string') invalidPayloadNode();
     switch (node.t) {
@@ -249,34 +299,40 @@ export function decodeWorkerAnalysisPayload(payload) {
         }
         if (typeof node.v !== 'number' || !Number.isFinite(node.v) || Object.is(node.v, -0)) invalidPayloadNode();
         return node.v;
+      case 'ref': {
+        if (!referenceAware) invalidPayloadNode();
+        exactPayloadKeys(node, ['t', 'i']);
+        const i = canonicalReferenceId(node.i);
+        if (!references.has(i)) invalidPayloadNode();
+        if (activeReferences.has(i)) throw new TypeError('analysis-artifact-payload-cyclic');
+        return references.get(i);
+      }
       case 'date': {
-        exactPayloadKeys(node, ['t', 'v']);
         if (typeof node.v !== 'string') invalidPayloadNode();
         const date = new Date(node.v);
         let iso;
         try { iso = date.toISOString(); }
         catch { invalidPayloadNode(); }
         if (iso !== node.v) invalidPayloadNode();
-        return date;
+        return complete(node, register(node, date, ['t', 'v']));
       }
-      case 'array-buffer':
-        exactPayloadKeys(node, ['t', 'v']);
-        return canonicalBytes(node.v).buffer;
+      case 'array-buffer': {
+        const out = canonicalBytes(node.v).buffer;
+        return complete(node, register(node, out, ['t', 'v']));
+      }
       case 'data-view': {
-        exactPayloadKeys(node, ['t', 'v']);
         const bytes = canonicalBytes(node.v);
-        return new DataView(bytes.buffer);
+        return complete(node, register(node, new DataView(bytes.buffer), ['t', 'v']));
       }
       case 'typed-array': {
-        exactPayloadKeys(node, ['t', 'c', 'v']);
         if (typeof node.c !== 'string') invalidPayloadNode();
         const ctor = TYPED_ARRAYS.get(node.c);
         if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${node.c}`);
-        return new ctor(canonicalTypedArrayValues(node.c, node.v));
+        const out = new ctor(canonicalTypedArrayValues(node.c, node.v));
+        return complete(node, register(node, out, ['t', 'c', 'v']));
       }
       case 'map': {
-        exactPayloadKeys(node, ['t', 'v']);
-        const out = new Map();
+        const out = register(node, new Map(), ['t', 'v']);
         for (const pair of wireArray(node.v)) {
           const tuple = wireArray(pair);
           if (tuple.length !== 2) invalidPayloadNode();
@@ -284,25 +340,29 @@ export function decodeWorkerAnalysisPayload(payload) {
           if (out.has(key)) invalidPayloadNode();
           out.set(key, decode(tuple[1]));
         }
-        return out;
+        return complete(node, out);
       }
       case 'set': {
-        exactPayloadKeys(node, ['t', 'v']);
-        const out = new Set();
+        const out = register(node, new Set(), ['t', 'v']);
         for (const entry of wireArray(node.v)) {
           const value = decode(entry);
           if (out.has(value)) invalidPayloadNode();
           out.add(value);
         }
-        return out;
+        return complete(node, out);
       }
-      case 'array':
-        exactPayloadKeys(node, ['t', 'v']);
-        return wireArray(node.v, { dense:false }).map(decode);
+      case 'array': {
+        const entries = wireArray(node.v);
+        const out = register(node, new Array(entries.length), ['t', 'v']);
+        for (let i = 0; i < entries.length; i++) {
+          if (referenceAware && isHoleMarker(entries[i])) continue;
+          out[i] = decode(entries[i]);
+        }
+        return complete(node, out);
+      }
       case 'object': {
-        exactPayloadKeys(node, ['t', 'n', 'v']);
         if (typeof node.n !== 'boolean') invalidPayloadNode();
-        const out = node.n ? Object.create(null) : {};
+        const out = register(node, node.n ? Object.create(null) : {}, ['t', 'n', 'v']);
         let previous = null;
         let index = 0;
         for (const pair of wireArray(node.v)) {
@@ -314,7 +374,7 @@ export function decodeWorkerAnalysisPayload(payload) {
           index++;
           Object.defineProperty(out, key, { value:decode(entry), enumerable:true, configurable:true, writable:true });
         }
-        return out;
+        return complete(node, out);
       }
       default: throw new TypeError(`analysis-artifact-payload-node-unsupported:${node.t}`);
     }
