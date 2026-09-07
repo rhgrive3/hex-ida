@@ -277,8 +277,16 @@ function mergeEscapes(values) {
   const byKey = new Map();
   for (const escape of values) {
     const evidenceIds = [...new Set(escape.evidenceIds)].sort();
-    const key = [escape.kind, escape.target ?? '', evidenceIds.join('\u0001')].join('\u0000');
-    if (!byKey.has(key)) byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+    const key = JSON.stringify([escape.kind, escape.target ?? null]);
+    const prior = byKey.get(key);
+    if (!prior) {
+      byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+      continue;
+    }
+    byKey.set(key, Object.freeze({
+      ...prior,
+      evidenceIds: [...new Set([...prior.evidenceIds, ...evidenceIds])].sort(),
+    }));
   }
   return [...byKey.entries()]
     .sort(([left], [right]) => compareCodeUnitStrings(left, right))

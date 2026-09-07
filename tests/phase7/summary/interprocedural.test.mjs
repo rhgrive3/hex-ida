@@ -448,6 +448,57 @@ test('library-model escapes publish canonical fields and use locale-independent 
   }
 });
 
+test('same semantic escapes union evidence across propagated and model records (#6074)', () => {
+  const sharedStatus = createAnalysisStatus({
+    snapshotId: 'snapshot-unbound',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+  });
+  const propagated = createFunctionSummary({
+    functionId: 'escape-propagated',
+    escapes: [{ kind: 'return-escape', target: 'shared-target', evidenceIds: ['propagated-evidence'] }],
+    status: sharedStatus,
+  });
+  const caller = createFunctionSummary({
+    functionId: 'escape-caller',
+    directCalls: [
+      { callSiteId: 'escape-caller-propagated', targetEntityIds: ['escape-propagated'] },
+      { callSiteId: 'escape-caller-model', targetEntityIds: ['escape-model'] },
+    ],
+    status: sharedStatus,
+  });
+  const model = provenLibraryModel('escape-model', {
+    memoryReadRegions: [],
+    memoryWriteRegions: [],
+    escapes: [
+      { kind: 'return-escape', target: 'shared-target', evidenceIds: ['model-evidence'] },
+      { kind: 'kind\\u0000left', target: 'target', evidenceIds: ['separator-evidence'] },
+      { kind: 'kind', target: 'left\\u0000target', evidenceIds: ['separator-evidence'] },
+    ],
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['escape-caller'],
+    localSummaries: new Map([
+      ['escape-caller', caller],
+      ['escape-propagated', propagated],
+    ]),
+    libraryModels: new Map([['escape-model', model]]),
+  });
+  const escapes = solved.summaries.get('escape-caller').escapes;
+  const shared = escapes.find((escape) =>
+    escape.kind === 'return-escape' && escape.target === 'shared-target');
+  assert.deepEqual(shared, {
+    kind: 'return-escape',
+    target: 'shared-target',
+    evidenceIds: ['model-evidence', 'model:escape-model', 'propagated-evidence'],
+  });
+  assert.equal(escapes.length, 3, 'same semantic escapes merge, but separator-bearing identities remain distinct');
+  assert.equal(escapes.filter((escape) =>
+    escape.kind === 'kind\\u0000left' && escape.target === 'target').length, 1);
+  assert.equal(escapes.filter((escape) =>
+    escape.kind === 'kind' && escape.target === 'left\\u0000target').length, 1);
+});
 test('cancellation publishes nothing complete', () => {
   const controller = new AbortController();
   controller.abort();
