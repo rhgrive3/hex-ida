@@ -15,6 +15,10 @@ function createStore(binding = () => ({ binaryId: 'bin-a', projectId: 'project-a
   return new ProposalStore({ evidenceStore, binding });
 }
 
+function createProjectApp() {
+  return { projectAnnotations: [], workspace: { autosave: () => true } };
+}
+
 function createProjectProposal(store, id, after = 'approved') {
   return store.create({
     kind: 'project-annotation',
@@ -30,7 +34,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const executor = new CapabilityExecutor({ catalog, app });
   await expectApprovalFailure(executor.execute(
     'annotation.project',
@@ -41,7 +45,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const capabilityExecutor = new CapabilityExecutor({ catalog, app });
   const proposalExecutor = new ProposalExecutor({ store, capabilityExecutor, app });
@@ -166,7 +170,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'snapshot', 'safe');
@@ -193,7 +197,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-capability');
@@ -211,7 +215,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-args');
@@ -229,7 +233,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-id');
@@ -247,7 +251,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'single-use');
@@ -266,7 +270,7 @@ async function expectApprovalFailure(promise) {
 
 {
   let binding = { binaryId: 'bin-a', projectId: 'project-a', runtimeSessionId: null };
-  const app = { projectAnnotations: [] };
+  const app = createProjectApp();
   const store = createStore(() => binding);
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'binding-drift');

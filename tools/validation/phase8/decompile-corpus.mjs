@@ -193,7 +193,13 @@ function decodedFor(entry, baseAddress) {
   throw new TypeError(`phase8 corpus: unsupported machine-byte architecture ${entry.architectureId}`);
 }
 
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
+export function decompileEntry(entry, {
+  decompilerTimeBudgetMs = 20000,
+  phase8WorkBudget = undefined,
+  index = 0,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+} = {}) {
   const baseAddress = 0x100000n + BigInt(index) * 0x10000n;
   try {
     if (entry.architectureId === 'arm64') {
@@ -209,6 +215,7 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
         decompilerTimeBudgetMs,
         deterministicTransforms,
         phase8Optimize,
+        ...(phase8WorkBudget != null ? { phase8WorkBudget } : {}),
       });
       return { id:entry.id, result };
     }
@@ -225,7 +232,12 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
       sliceId:`${entry.architectureId}:${entry.optimization}`,
       dataEndianness:'little',
       instructionEndianness:'little',
-    }, { decompilerTimeBudgetMs, deterministicTransforms, phase8Optimize });
+    }, {
+      decompilerTimeBudgetMs,
+      deterministicTransforms,
+      phase8Optimize,
+      ...(phase8WorkBudget != null ? { phase8WorkBudget } : {}),
+    });
     return { id:entry.id, result };
   } catch (error) {
     return { id:entry.id, failure:error?.message || String(error) };
@@ -283,8 +295,20 @@ export function observationOf(entry, outcome) {
   };
 }
 
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000, deterministicTransforms = true, phase8Optimize = true } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize })));
+export function observeCorpus({
+  corpus = loadCorpus(),
+  decompilerTimeBudgetMs = 20000,
+  phase8WorkBudget = undefined,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+} = {}) {
+  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, {
+    decompilerTimeBudgetMs,
+    phase8WorkBudget,
+    index,
+    deterministicTransforms,
+    phase8Optimize,
+  })));
 }
 
 export { closeSessions };

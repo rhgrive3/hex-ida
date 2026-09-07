@@ -1055,7 +1055,7 @@
                   "AES-GCM",
                   "Ed25519",
                   "remoteCanonicalTransportBinding(envelope)",
-                  "this.#verifiedBindings.get(proofIdentity) === stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))",
                   "remote-transport-response-signature-rejected"
                 ]
               },
