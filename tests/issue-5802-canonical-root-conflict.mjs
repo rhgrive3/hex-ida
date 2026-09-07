@@ -54,3 +54,16 @@ test('#5802 slot placement cannot flip the outcome of contradictory evidence', (
   assert.equal(swapped.kind, 'unknown');
   assert.equal(swapped.reason, 'canonical-root-descriptor-conflict');
 });
+const malformedRoot = { kind: 'not-a-root-kind', address: '0x1000', addressSpace: 'memory' };
+
+for (const [valueMeta, nodeMeta] of [
+  [malformedRoot, rooted('0x1000')],
+  [rooted('0x1000'), malformedRoot],
+]) {
+  const proof = deriveCanonicalAddressProof(
+    descriptorIr(valueMeta, nodeMeta), 'v-root',
+  );
+  assert.equal(proof.kind, 'unknown');
+  assert.equal(proof.reason, 'canonical-root-descriptor-invalid');
+}
+

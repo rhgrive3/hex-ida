@@ -243,14 +243,7 @@ export function createHexAIContext(app) {
             query:String(query ?? ''),
             from:0,
           }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
-          if (queryCompleteness(result) === 'unsupported') {
-            // A region whose search producer is unavailable cannot contribute
-            // to a complete aggregate: skipping it silently would claim
-            // complete:true while an entire region was never searched (#5800).
-            complete = false;
-            reason ||= 'typed-search-producer-unavailable';
-            continue;
-          }
+          if (queryCompleteness(result) === 'unsupported') continue;
           anySupported = true;
           const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
           if (queryCompleteness(result) !== 'complete') {
