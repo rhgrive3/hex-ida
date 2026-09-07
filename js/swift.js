@@ -123,7 +123,16 @@ function sectionRange(sections, wanted) {
   for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
   return null;
 }
-function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) { const n = Number(value); return Number.isFinite(Number(n)) && n > 0 ? Math.max(1, Math.min(Math.floor(n), max)) : fallback; }
+/*
+ * Analysis budgets are coverage authorities. Only primitive finite positive
+ * numbers participate; Number() coercion would promote numeric strings,
+ * arrays and booleans into real resource limits and silently shrink or grow
+ * analysis coverage (#5879). Nullish/unset falls back as before.
+ */
+function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.min(Math.floor(value), max));
+}
 
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
