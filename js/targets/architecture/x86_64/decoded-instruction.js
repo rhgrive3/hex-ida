@@ -23,9 +23,18 @@ function bigint(value, code) {
 }
 
 function text(value, code, { empty = false } = {}) {
-  const out = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const out = value.trim();
   if (!empty && !out) throw new TypeError(code);
   return out;
+}
+
+// Semantic allow-list tokens at the decoder trust boundary must be primitive
+// strings: `String()` coercion would let arbitrary objects/arrays mint
+// canonical `register`/`write`/`long-64` authority from `toString()`.
+function token(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
 }
 
 function instructionIdOf(value) {
@@ -44,6 +53,12 @@ function detailStatusOf(value, detailAvailable) {
   return status;
 }
 
+function conditionCodeOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-condition-code');
+  return value.toLowerCase();
+}
+
 function addressSizeBitsOf(value, mode) {
   const allowed = ADDRESS_SIZE_BITS_BY_MODE[mode];
   const size = integer(value, 'x86-decoded-instruction-invalid-address-size', { min:1, max:64 });
@@ -58,7 +73,7 @@ function bytesOf(input, length) {
 }
 
 function accessOf(value) {
-  const access = String(value ?? 'unknown');
+  const access = token(value ?? 'unknown', 'x86-decoded-instruction-invalid-access');
   if (!ACCESS.has(access)) throw new TypeError('x86-decoded-instruction-invalid-access');
   return access;
 }
@@ -109,7 +124,7 @@ function registerOf(value, code, { decoderRegisterCode = null, widthBits = null 
 
 function normalizeOperand(input, index, mode) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-decoded-instruction-invalid-operand');
-  const type = String(input.type ?? input.kind ?? 'invalid').toLowerCase();
+  const type = token(input.type ?? input.kind ?? 'invalid', 'x86-decoded-instruction-invalid-operand-type').toLowerCase();
   if (!OPERAND_TYPES.has(type)) throw new TypeError('x86-decoded-instruction-invalid-operand-type');
   const widthBits = input.widthBits == null ? null : integer(input.widthBits, 'x86-decoded-instruction-invalid-operand-width', { min:1, max:4096 });
   const common = { index, type, access:accessOf(input.access), ...(widthBits == null ? {} : { widthBits }) };
@@ -235,7 +250,7 @@ export function createX86DecodedInstruction(input = {}) {
       operands:Object.freeze(operands),
       implicitReads:Object.freeze((rawDetail.implicitReads ?? input.implicitReads ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-read', { decoderRegisterCode:rawDetail.implicitReadCodes?.[index] }))),
       implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
-      conditionCode:(rawDetail.conditionCode ?? input.conditionCode) == null ? null : String(rawDetail.conditionCode ?? input.conditionCode).toLowerCase(),
+      conditionCode:conditionCodeOf(rawDetail.conditionCode ?? input.conditionCode),
     }),
     detailAvailable:detailStatus === 'complete',
     mnemonic:String(input.mnemonic ?? ''),
