@@ -110,6 +110,24 @@ function evidenceOf(node) {
   return [...(node.origin?.instructionIds ?? [])].map(String);
 }
 
+function callArgumentValueIds(node) {
+  const canonicalArguments = node.call?.arguments;
+  if (Array.isArray(canonicalArguments) && canonicalArguments.length) {
+    return canonicalArguments
+      .map((argument) => argument?.valueId ?? argument)
+      .filter((value) => value != null);
+  }
+
+  const targetValueIds = new Set(
+    (Array.isArray(node.call?.targetValueIds) ? node.call.targetValueIds : [])
+      .map((target) => target?.valueId ?? target)
+      .filter((value) => value != null),
+  );
+  return (node.inputs ?? [])
+    .map((input) => input?.valueId ?? input)
+    .filter((value) => value != null && !targetValueIds.has(value));
+}
+
 /**
  * Runs escape analysis over one function.
  *
@@ -227,11 +245,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       const complete = node.call?.completeness === 'complete';
       const reason = complete ? 'passed-to-known-call' : 'passed-to-unknown-call';
       const boundary = complete ? 'known-call' : 'unknown-call';
-      const argumentValueIds = [
-        ...(node.call?.arguments ?? []).map((argument) => argument?.valueId ?? argument),
-        ...(node.inputs ?? []),
-      ].filter((value) => value != null);
-      for (const valueId of argumentValueIds) {
+      for (const valueId of callArgumentValueIds(node)) {
         record(setsFor(valueId), { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       if (!complete) sawUnresolvedFlow = true;
