@@ -41,6 +41,17 @@ function vectorRegister(index, bits) {
   return `xmm${index}`;
 }
 
+// x64 __vectorcall stack layout is positional: argument position P occupies
+// the 8-byte slot at caller-RSP + 32 + (P - 4) * 8. Positions 4/5 hold 8-byte
+// shadow slots when a vector register argument uses them, so a stack argument
+// at position 6 is at +48 — not the first free slot after the 32-byte home
+// area. Positions below 4 have no positional stack slot; a stack fallback
+// there is the separate register-exhaustion defect and keeps the legacy
+// compressed placement rather than inventing a shadow-space offset.
+function stackOffsetForPosition(index, fallbackStackIndex) {
+  return index >= 4 ? 32 + (index - 4) * 8 : 32 + fallbackStackIndex * 8;
+}
+
 function unsupported(convention) {
   return {
     srcs:[], arguments:[], stackArguments:[], stackArgsUnknown:true,
@@ -193,7 +204,11 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
         });
         return;
       }
-      const offset = 32 + stackIndex++ * 8;
+      // Stack offsets follow the parameter position, not the compressed count
+      // of fallen arguments: positions 4/5 keep their shadow slots when a
+      // register argument occupies them, so a stack argument at position P
+      // always lands at 32 + (P - 4) * 8.
+      const offset = stackOffsetForPosition(index, stackIndex++);
       const entry = {
         index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
         bytes:8, abiClass:hva.hva?'hva-indirect':'vector-indirect', pointer:true,
@@ -223,7 +238,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
           pieces:[{ pieceIndex:0, order:0, reg, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true });
       } else {
-        const offset = 32 + stackIndex++ * 8;
+        const offset = stackOffsetForPosition(index, stackIndex++);
         const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:'aggregate-indirect', pointer:true, bits:64, pointeeBits:classified.bits, aggregate:true,
           pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true };
@@ -247,7 +262,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       return;
     }
 
-    const offset = 32 + stackIndex++ * 8;
+    const offset = stackOffsetForPosition(index, stackIndex++);
     const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:classified.floating?'fp':classified.pointer?'pointer':'integer', pointer:classified.pointer, bits:classified.bits, possible:false, mustUse:true };
     arguments_.push(entry); stackArguments.push(entry); stackArgsMayContainPointers ||= classified.pointer;
   });
