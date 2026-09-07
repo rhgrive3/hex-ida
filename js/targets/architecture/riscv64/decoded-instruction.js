@@ -5,6 +5,16 @@ export const RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION = 'riscv64-decoded-ins
 export const RISCV64_DECODER_SEMANTIC_VERSION = 'capstone-5-riscv64-word-exact-v1';
 export const RISCV64_DECODE_MODES = Object.freeze(['rv64im', 'rv64imc']);
 
+// Capture typed-array intrinsics before accepting caller-owned byte views.
+// Calling a subclass's visible `slice()` would let it forge the bytes used
+// for architectural decoding (or execute arbitrary user code).
+const UINT8_ARRAY_CONSTRUCTOR = Uint8Array;
+const UINT8_ARRAY_SET = UINT8_ARRAY_CONSTRUCTOR.prototype.set;
+const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(UINT8_ARRAY_CONSTRUCTOR.prototype),
+  'byteLength',
+)?.get;
+
 function text(value, code) {
   const out = String(value ?? '').trim();
   if (!out) throw new TypeError(code);
@@ -14,7 +24,16 @@ function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
 function canonicalRawBytes(value) {
-  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof UINT8_ARRAY_CONSTRUCTOR) {
+    try {
+      const length = UINT8_ARRAY_BYTE_LENGTH_GETTER.call(value);
+      const snapshot = new UINT8_ARRAY_CONSTRUCTOR(length);
+      UINT8_ARRAY_SET.call(snapshot, value);
+      return snapshot;
+    } catch {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+  }
   if (value == null) return new Uint8Array();
   if (!Array.isArray(value)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
 
