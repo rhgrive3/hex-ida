@@ -177,4 +177,44 @@ const baseRegistry = createHexToolRegistry({
   console.log("  ok 11 catalog immutability");
 }
 
+// 12. Audit rejects structured agentTool metadata instead of coercing it (#6160)
+{
+  const audit = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.structured", agentTool: ["get_function"] }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(audit.ok, false, "Structured agentTool must not resolve as a canonical tool");
+  assert.equal(audit.errors.length, 1);
+  assert.match(audit.errors[0], /^invalid-agent-tool-id:array:get_function$/);
+  assert.equal(audit.rows[0].toolPresent, false);
+  const objectAudit = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.object", agentTool: { name: "get_function" } }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(objectAudit.ok, false);
+  assert.match(objectAudit.errors[0], /^invalid-agent-tool-id:object:name$/);
+  console.log("  ok 12 audit rejects structured agentTool metadata");
+}
+
+// 13. analysisToolContract requires a primitive string tool identity (#6160)
+{
+  assert.throws(() => analysisToolContract(baseRegistry, ["get_function"]), /^Error: invalid-analysis-tool-id:array:get_function$/);
+  assert.throws(() => analysisToolContract(baseRegistry, { name: "get_function" }), /^Error: invalid-analysis-tool-id:object:name$/);
+  assert.throws(() => analysisToolContract(baseRegistry, 7), /^Error: invalid-analysis-tool-id:number:7$/);
+  const contract = analysisToolContract(baseRegistry, "get_function");
+  assert.equal(contract.name, "get_function", "String identities keep resolving normally");
+  console.log("  ok 13 analysisToolContract requires a string tool identity");
+}
+
+// 14. ToolRegistry lookup rejects non-string tool identities (#6160)
+{
+  assert.equal(baseRegistry.get(["get_function"]), null, "Array tool name must not launder into a canonical Map key");
+  assert.equal(baseRegistry.has(["get_function"]), false);
+  assert.equal(baseRegistry.get({ name: "get_function" }), null);
+  assert.equal(baseRegistry.get(0), null);
+  assert.equal(baseRegistry.has("get_function"), true);
+  assert.notEqual(baseRegistry.get("get_function"), null);
+  console.log("  ok 14 registry lookup requires string tool identities");
+}
+
 console.log("  ok all capability tool contract tests passed!");

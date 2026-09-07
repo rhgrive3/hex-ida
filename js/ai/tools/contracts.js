@@ -1,7 +1,10 @@
 const READ_SCOPES = Object.freeze(["auto", "selection", "function", "neighborhood", "binary", "project", "runtime"]);
 
 export function analysisToolContract(toolRegistry, toolName) {
-  const tool = toolRegistry?.get?.(String(toolName));
+  if (typeof toolName !== "string" || !toolName) {
+    throw new Error(`invalid-analysis-tool-id:${toolIdentityLabel(toolName)}`);
+  }
+  const tool = toolRegistry?.get?.(toolName);
   if (!tool) {
     throw new Error(`unknown-analysis-tool:${toolName}`);
   }
@@ -22,6 +25,23 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
 
   for (const cap of capabilities) {
     if (!cap.agentTool) continue;
+    if (typeof cap.agentTool !== "string") {
+      // Structured tool identities (arrays/objects/numbers) must fail the
+      // contract audit instead of being laundered into a canonical tool name
+      // through String() coercion (#6160).
+      const error = `invalid-agent-tool-id:${toolIdentityLabel(cap.agentTool)}`;
+      errors.push(error);
+      rows.push({
+        capabilityId: cap.id,
+        agentTool: cap.agentTool,
+        toolPresent: false,
+        scopeSupport: null,
+        mutability: null,
+        needsApproval: null,
+        errors: [error],
+      });
+      continue;
+    }
     const tool = toolRegistry?.get?.(cap.agentTool);
     const rowErrors = [];
     const toolPresent = Boolean(tool);
@@ -65,4 +85,11 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
     rows,
     errors,
   };
+}
+
+function toolIdentityLabel(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array:${value.map((item) => String(item)).join(",")}`;
+  if (typeof value === "object") return `object:${Object.keys(value).join(",")}`;
+  return `${typeof value}:${String(value)}`;
 }
