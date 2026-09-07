@@ -215,8 +215,16 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
+    // A caller may legitimately hold `debug:N` as an explicit id. The auto
+    // counter must skip live ids, or a create with free capacity fails once
+    // with duplicate-session-id and succeeds on blind retry (#5933). The
+    // counter stays monotonic so abandoned ids are not reused in-process.
+    const requested={...options};
+    if(requested.id==null){
+      do{ requested.id=`debug:${nextSession++}`; }while(this.sessions.has(requested.id));
+    }
     const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
+    const session=new DebugSession(adapter,{...requested,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }
