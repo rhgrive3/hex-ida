@@ -84,3 +84,42 @@ test('InstrumentationProvider correlates protocol-envelope probe handles with in
 
   await session.close();
 });
+
+
+test('InstrumentationProvider uses one owned envelope snapshot for filtering, correlation, and publication', async () => {
+  const reads = { type: 0, event: 0, data: 0 };
+  const raw = {};
+  Object.defineProperties(raw, {
+    type: { enumerable: true, get() { reads.type += 1; return 'event'; } },
+    event: { enumerable: true, get() { reads.event += 1; return 'instrumentation-observation'; } },
+    data: {
+      enumerable: true,
+      get() {
+        reads.data += 1;
+        return reads.data === 1
+          ? { sequence: 7, probeHandle: 7, payload: { value: 'stable' } }
+          : { sequence: 7, probeHandle: 999, payload: { value: 'drift' } };
+      },
+    },
+  });
+  let filtered = null;
+  const provider = new InstrumentationProvider(makeBackend(), {
+    eventFilter(event) { filtered = event; return true; },
+  });
+  const session = await provider.openSession({
+    processKey: 'envelope-snapshot-process',
+    binaryId: 'envelope-snapshot-binary',
+    sessionNonce: 'envelope-snapshot-session',
+  });
+  try {
+    const installed = await session.facets.instrumentation.installProbe({ address: 0x3000n });
+    const observed = session.facets.instrumentation.events.ingest(raw);
+    assert.deepEqual(reads, { type: 1, event: 1, data: 1 });
+    assert.equal(filtered.data.probeHandle, 7);
+    assert.deepEqual(observed.interventionIds, [installed.intervention.interventionId]);
+    assert.equal(observed.payload.probeHandle, 7);
+    assert.equal(observed.payload.payload.value, 'stable');
+  } finally {
+    await session.close();
+  }
+});
