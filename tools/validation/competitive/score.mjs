@@ -179,9 +179,16 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     if (!Object.prototype.hasOwnProperty.call(profile.metrics || {}, metricId)) {
       throw new TypeError(`competitive-measurement-metric-unknown:${metricId}`);
     }
-    validateCompetitiveMeasurement(measurementsByMetric[metricId], { expectedMetricId: metricId });
     const measurement = measurementsByMetric[metricId];
     const capture = twinCapturesByMetric[metricId];
+    validateCompetitiveMeasurement(measurement, {
+      expectedMetricId: metricId,
+      ...(measurement.status === 'MEASURED' ? {
+        capture,
+        expectedProducerIdentity: { gitSha: headCommit, treeSha },
+        replayArtifacts: true,
+      } : {}),
+    });
     if (measurement.status === 'MEASURED') {
       if (capture?.status !== 'READY') throw new TypeError(`competitive-measurement-capture-required:${metricId}`);
       if (measurement.captureDigest !== capture.captureDigest

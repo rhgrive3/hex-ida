@@ -186,7 +186,7 @@ test('measured nonbinary source truth is accepted without a twin', () => {
   assert.doesNotThrow(() => verifyCompetitiveProfile(mutated));
 });
 
-test('measured binary score requires replayed twin evidence and exact artifact identity', () => {
+test('measured binary score requires a numeric replayed measurement and exact artifact identity', () => {
   const fixture = buildTwinFixture();
   try {
     const outputPath = `${fixture.root}/scorecard-twin.stripped.elf`;
@@ -221,11 +221,11 @@ test('measured binary score requires replayed twin evidence and exact artifact i
         expected: fixture.context,
       },
     };
-    assert.doesNotThrow(() => verifyCompetitiveScorecard(measuredScorecard, measuredProfile, {
+    assert.throws(() => verifyCompetitiveScorecard(measuredScorecard, measuredProfile, {
       ...identity,
       twinEvidenceByMetric: evidence,
-    }));
-    assert.throws(() => verifyCompetitiveScorecard(measuredScorecard, measuredProfile, identity), /binary-twin-evidence-required/);
+    }), /binary-measurement-required/);
+    assert.throws(() => verifyCompetitiveScorecard(measuredScorecard, measuredProfile, identity), /binary-measurement-required/);
   } finally {
     removeTwinFixture(fixture);
   }

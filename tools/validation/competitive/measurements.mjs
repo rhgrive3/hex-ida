@@ -40,6 +40,15 @@ const BINARY_METRICS = Object.freeze([
   'decompiler-quality-gotos',
   'decompiler-quality-assembly-fallbacks',
 ]);
+const MEASUREMENT_CONFIG = Object.freeze({
+  'machine-effects-x86_64-coverage': Object.freeze({ direction: 'higher', kind: 'pipeline-tuples' }),
+  'machine-effects-riscv64-coverage': Object.freeze({ direction: 'higher', kind: 'pipeline-tuples' }),
+  'decompiler-quality-gotos': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'gotos' }),
+  'decompiler-quality-assembly-fallbacks': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'rawAssemblyFallbacks' }),
+});
+const HEX32_RE = /^[0-9a-f]{32}$/i;
+const HEX40_RE = /^[0-9a-f]{40}$/i;
+const HEX64_RE = /^[0-9a-f]{64}$/i;
 
 function runtimeIdentity() {
   return {
@@ -49,16 +58,35 @@ function runtimeIdentity() {
   };
 }
 
+function producerIdentity() {
+  const read = (args) => {
+    const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', shell: false });
+    const value = result.stdout?.trim() || '';
+    return result.error || result.status !== 0 ? null : value;
+  };
+  const gitSha = read(['rev-parse', 'HEAD']);
+  const treeSha = read(['rev-parse', 'HEAD^{tree}']);
+  if (!HEX40_RE.test(gitSha || '') || !HEX40_RE.test(treeSha || '')) return null;
+  return { gitSha: gitSha.toLowerCase(), treeSha: treeSha.toLowerCase() };
+}
+
 function measurementError(code, detail = '') {
   throw new TypeError(`competitive-measurement-${code}${detail ? `:${detail}` : ''}`);
 }
 
 /** Validate the value-bearing evidence envelope before it reaches a scorecard. */
-export function validateCompetitiveMeasurement(value, { expectedMetricId = null } = {}) {
+export function validateCompetitiveMeasurement(value, {
+  expectedMetricId = null,
+  capture = null,
+  expectedProducerIdentity = null,
+  replayArtifacts = false,
+} = {}) {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) measurementError('object-required');
   if (value.schemaVersion !== COMPETITIVE_MEASUREMENT_SCHEMA) measurementError('schema-version');
   if (expectedMetricId != null && value.metricId !== expectedMetricId) measurementError('metric-mismatch', value.metricId);
   if (typeof value.metricId !== 'string' || !value.metricId.trim()) measurementError('metric-id');
+  const metricConfig = MEASUREMENT_CONFIG[value.metricId];
+  if (metricConfig == null) measurementError('metric-unsupported', value.metricId);
   if (![MEASURED_STATUS, UNMEASURED_STATUS].includes(value.status)) measurementError('status', String(value.status));
   if (value.authority !== AUTHORITY) measurementError('authority', String(value.authority));
   if (!COMPARISONS.has(value.comparison)) measurementError('comparison', String(value.comparison));
@@ -67,12 +95,34 @@ export function validateCompetitiveMeasurement(value, { expectedMetricId = null 
   }
   if (value.status === MEASURED_STATUS) {
     if (!finiteNumber(value.candidateValue) || !finiteNumber(value.referenceValue)) measurementError('measured-values', value.metricId);
-    if (value.comparison === UNMEASURED_STATUS) measurementError('measured-comparison', value.metricId);
-    for (const key of ['corpusId', 'inputIdentity', 'referenceTool', 'referenceVersion', 'configuration', 'runPolicy', 'captureDigest', 'artifactIdsDigest']) {
+    if (value.comparison !== comparison(metricConfig.direction, value.candidateValue, value.referenceValue)) {
+      measurementError('comparison-forged', value.metricId);
+    }
+    for (const key of ['corpusId', 'inputIdentity', 'referenceTool', 'referenceVersion', 'configuration', 'runPolicy', 'captureDigest', 'artifactIdsDigest', 'producerGitSha', 'producerTreeSha']) {
       if (typeof value[key] !== 'string' || !value[key].trim()) measurementError('identity', `${value.metricId}:${key}`);
+    }
+    if (!HEX32_RE.test(value.captureDigest) || !HEX32_RE.test(value.artifactIdsDigest)) measurementError('identity-digest', value.metricId);
+    if (!HEX40_RE.test(value.producerGitSha) || !HEX40_RE.test(value.producerTreeSha)) measurementError('producer-identity', value.metricId);
+    if (!capture || typeof capture !== 'object' || Array.isArray(capture)) measurementError('capture-required', value.metricId);
+    if (replayArtifacts) {
+      try { validateCompetitiveTwinCapture(capture, { replayArtifacts: true, expectedMetricId: value.metricId }); }
+      catch (error) { measurementError('capture-replay', `${value.metricId}:${error.message}`); }
+    }
+    const captureIdentityValue = captureIdentity(capture, { expectedMetricId: value.metricId });
+    if (!captureIdentityValue.ok) measurementError('capture-invalid', `${value.metricId}:${captureIdentityValue.reason}`);
+    if (value.captureDigest !== captureIdentityValue.captureDigest
+        || value.artifactIdsDigest !== captureIdentityValue.artifactIdsDigest
+        || value.inputIdentity !== `capture_${captureIdentityValue.captureDigest}`) {
+      measurementError('capture-identity-mismatch', value.metricId);
+    }
+    if (expectedProducerIdentity != null
+        && (value.producerGitSha !== expectedProducerIdentity.gitSha || value.producerTreeSha !== expectedProducerIdentity.treeSha)) {
+      measurementError('producer-stale', value.metricId);
     }
     if (value.denominator == null || typeof value.denominator !== 'object' || Array.isArray(value.denominator)) measurementError('denominator', value.metricId);
     if (value.semanticOracle == null || typeof value.semanticOracle !== 'object' || Array.isArray(value.semanticOracle)) measurementError('oracle', value.metricId);
+    validateMeasuredDenominator(value, metricConfig, capture);
+    validateMeasuredOracle(value, metricConfig, capture);
   } else {
     if (value.candidateValue !== null || value.referenceValue !== null || value.comparison !== UNMEASURED_STATUS) {
       measurementError('unmeasured-values', value.metricId);
@@ -91,6 +141,7 @@ const P56_METRIC = Object.freeze({
     producer: 'independent-llvm-boundaries-capstone-5.0.1',
     categoryProfilePath: 'tests/phase5/corpus/manifest.json',
     categoryMapPath: 'tests/phase5/verification/manifests/p5-6-category-map.json',
+    producerProductSha: 'cede2af69e446fdf628903881eb698c0ccad91f9',
   }),
   'machine-effects-riscv64-coverage': Object.freeze({
     testPath: 'tests/phase6/verification/compiler-corpus-pipeline.test.mjs',
@@ -98,6 +149,8 @@ const P56_METRIC = Object.freeze({
     producer: 'independent-llvm-boundaries-capstone-5.0.1',
     categoryProfilePath: 'tools/validation/phase6/profile.json',
     categoryMapPath: 'tests/phase6/verification/manifests/p6-category-map.json',
+    producerProfileVersion: '1.1.0',
+    producerCorpusId: 'phase6-riscv64-mandatory/v1',
   }),
 });
 
@@ -107,6 +160,120 @@ function clone(value) {
 
 function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function safeCount(value, code, { positive = false } = {}) {
+  if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) measurementError(code);
+  return value;
+}
+
+function requiredDigest(value, regex, code) {
+  if (typeof value !== 'string' || !regex.test(value)) measurementError(code);
+  return value;
+}
+
+function validateMeasuredDenominator(value, metricConfig, capture) {
+  const denominator = value.denominator;
+  if (denominator.kind !== metricConfig.kind) measurementError('denominator-kind', value.metricId);
+  if (metricConfig.kind === 'pipeline-tuples') {
+    for (const key of ['artifactCount', 'categoryCount', 'tupleCount', 'candidatePasses', 'referenceOraclePasses']) {
+      safeCount(denominator[key], `denominator-${key}:${value.metricId}`);
+    }
+    if (denominator.artifactCount !== capture.artifacts.length
+        || denominator.artifactIdsDigest !== capture.denominator.artifactIdsDigest) {
+      measurementError('denominator-capture-mismatch', value.metricId);
+    }
+    if (denominator.tupleCount !== denominator.artifactCount * denominator.categoryCount
+        || denominator.tupleCount <= 0
+        || denominator.candidatePasses > denominator.tupleCount
+        || denominator.referenceOraclePasses > denominator.tupleCount) {
+      measurementError('denominator-counts', value.metricId);
+    }
+    const canonical = canonicalPipelineCategories(value.metricId);
+    if (!canonical.ok || denominator.categoryCount !== canonical.categories.length
+        || denominator.categoryIdsDigest !== canonical.categoryIdsDigest) {
+      measurementError('denominator-categories', value.metricId);
+    }
+    const expectedTuples = capture.artifacts
+      .flatMap((artifact) => canonical.categories.map((category) => `${artifact.id}\u0000${category}`))
+      .sort();
+    if (denominator.tupleIdsDigest !== stableDigest(expectedTuples)) measurementError('denominator-tuples', value.metricId);
+    if (!Array.isArray(denominator.artifactHashKinds) || denominator.artifactHashKinds.length === 0
+        || denominator.artifactHashKinds.some((kind) => !['debug', 'stripped'].includes(kind))) {
+      measurementError('denominator-artifact-hashes', value.metricId);
+    }
+    if (value.candidateValue !== denominator.candidatePasses / denominator.tupleCount
+        || value.referenceValue !== denominator.referenceOraclePasses / denominator.tupleCount) {
+      measurementError('denominator-values', value.metricId);
+    }
+    return;
+  }
+
+  if (metricConfig.kind !== 'phase8-frozen-function-corpus') measurementError('denominator-kind-unsupported', value.metricId);
+  for (const key of ['functionCount', 'machineFunctionCount']) safeCount(denominator[key], `denominator-${key}:${value.metricId}`, { positive: true });
+  for (const key of ['corpusDigest', 'sourceDigest', 'functionIdsDigest', 'machineFunctionBytesDigest', 'machineArtifactIdsDigest', 'nativeArtifactIdsDigest', 'candidateObservationsDigest', 'baselineObservationsDigest']) {
+    requiredDigest(denominator[key], HEX32_RE, `denominator-${key}:${value.metricId}`);
+  }
+  if (denominator.candidateObservationsDigest !== value.semanticOracle?.candidateObservationDigest
+      || denominator.baselineObservationsDigest !== value.semanticOracle?.baselineObservationDigest) {
+    measurementError('denominator-observation-digest', value.metricId);
+  }
+  const candidateQuality = value.candidateQuality;
+  const referenceQuality = value.referenceQuality;
+  const field = metricConfig.field;
+  if (candidateQuality == null || referenceQuality == null
+      || !Number.isSafeInteger(candidateQuality[field]) || candidateQuality[field] < 0
+      || !Number.isSafeInteger(referenceQuality[field]) || referenceQuality[field] < 0
+      || value.candidateValue !== candidateQuality[field]
+      || value.referenceValue !== referenceQuality[field]) {
+    measurementError('quality-values', value.metricId);
+  }
+}
+
+function validateMeasuredOracle(value, metricConfig, capture) {
+  const oracle = value.semanticOracle;
+  if (oracle.schemaVersion !== 'hex-competitive-semantic-oracle/v1') measurementError('oracle-schema', value.metricId);
+  if (metricConfig.kind === 'pipeline-tuples') {
+    if (oracle.kind !== 'llvm-boundary-and-capstone-differential') measurementError('oracle-kind', value.metricId);
+    if (oracle.testPath !== P56_METRIC[value.metricId].testPath) measurementError('oracle-test-path', value.metricId);
+    requiredDigest(oracle.sourceSha256, HEX64_RE, `oracle-source:${value.metricId}`);
+    if (!Array.isArray(oracle.compilerIdentity) || oracle.compilerIdentity.length === 0
+        || oracle.compilerIdentity.some((entry) => typeof entry !== 'string' || !entry.trim())) measurementError('oracle-compiler', value.metricId);
+    if (!Array.isArray(oracle.linkerIdentity) || oracle.linkerIdentity.length === 0
+        || oracle.linkerIdentity.some((entry) => typeof entry !== 'string' || !entry.trim())) measurementError('oracle-linker', value.metricId);
+    const captureCompilers = sortedUnique(capture.artifacts.map((artifact) => firstLine(artifact.manifest?.compiler?.version)).filter(Boolean));
+    const captureLinkers = sortedUnique(capture.artifacts.map((artifact) => firstLine(artifact.manifest?.linker?.version)).filter(Boolean));
+    const oracleCompilers = sortedUnique(oracle.compilerIdentity.map(firstLine));
+    const oracleLinkers = sortedUnique(oracle.linkerIdentity.map(firstLine));
+    if (stableDigest(oracleCompilers) !== stableDigest(captureCompilers)
+        || stableDigest(oracleLinkers) !== stableDigest(captureLinkers)) {
+      measurementError('oracle-toolchain-mismatch', value.metricId);
+    }
+    const captureSources = sortedUnique(capture.artifacts.map((artifact) => artifact.manifest?.sourceIdentity?.sha256).filter(Boolean));
+    if (captureSources.length !== 1 || oracle.sourceSha256 !== captureSources[0]) {
+      measurementError('oracle-source-mismatch', value.metricId);
+    }
+    requiredDigest(oracle.corpusDigest, HEX32_RE, `oracle-corpus:${value.metricId}`);
+    requiredDigest(oracle.ledgerDigest, HEX32_RE, `oracle-ledger:${value.metricId}`);
+    const spec = P56_METRIC[value.metricId];
+    if (spec.producerProductSha != null && oracle.producerHead !== spec.producerProductSha) measurementError('oracle-producer-head', value.metricId);
+    if (spec.producerProfileVersion != null && oracle.producerProfileVersion !== spec.producerProfileVersion) measurementError('oracle-producer-profile', value.metricId);
+    if (spec.producerCorpusId != null && oracle.producerCorpusId !== spec.producerCorpusId) measurementError('oracle-producer-corpus', value.metricId);
+    return;
+  }
+  if (oracle.kind !== 'frozen-source-corpus-observation' || oracle.metricField !== metricConfig.field) {
+    measurementError('oracle-kind', value.metricId);
+  }
+  if (oracle.corpusId !== capture.corpusId || oracle.corpusVersion !== capture.corpusVersion) {
+    measurementError('oracle-corpus-mismatch', value.metricId);
+  }
+  for (const key of ['corpusId', 'corpusDigest', 'sourceDigest', 'functionIdsDigest', 'machineFunctionBytesDigest', 'candidateObservationDigest', 'baselineObservationDigest', 'baselineLedgerDigest']) {
+    const regex = key === 'corpusId' ? null : HEX32_RE;
+    if (regex == null) {
+      if (typeof oracle[key] !== 'string' || !oracle[key].trim()) measurementError(`oracle-${key}`, value.metricId);
+    } else requiredDigest(oracle[key], regex, `oracle-${key}:${value.metricId}`);
+  }
+  if (!Number.isSafeInteger(oracle.corpusVersion) || oracle.corpusVersion < 0) measurementError('oracle-corpus-version', value.metricId);
 }
 
 function sortedUnique(values) {
@@ -121,10 +288,10 @@ function comparison(direction, candidateValue, referenceValue) {
   return UNMEASURED_STATUS;
 }
 
-function captureIdentity(capture) {
+function captureIdentity(capture, { expectedMetricId = null } = {}) {
   if (capture == null) return { ok: false, reason: 'twin-capture-missing' };
   try {
-    validateCompetitiveTwinCapture(capture, { replayArtifacts: false });
+    validateCompetitiveTwinCapture(capture, { replayArtifacts: false, expectedMetricId });
   } catch (error) {
     return { ok: false, reason: `twin-capture-invalid:${error.message}` };
   }
@@ -145,7 +312,7 @@ function captureIdentity(capture) {
 }
 
 function unmeasured(metricId, capture, reason, details = {}) {
-  const identity = captureIdentity(capture);
+  const identity = captureIdentity(capture, { expectedMetricId: metricId });
   return Object.freeze({
     schemaVersion: COMPETITIVE_MEASUREMENT_SCHEMA,
     metricId,
@@ -184,7 +351,7 @@ function measured({
   evidenceRefs = [],
   details = {},
 }) {
-  const identity = captureIdentity(capture);
+  const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
   if (!finiteNumber(candidateValue) || !finiteNumber(referenceValue)) {
     return unmeasured(metricId, capture, 'measurement-value-not-finite');
@@ -195,6 +362,8 @@ function measured({
   if (semanticOracle == null || typeof semanticOracle !== 'object' || Array.isArray(semanticOracle)) {
     return unmeasured(metricId, capture, 'semantic-oracle-identity-missing');
   }
+  const producer = producerIdentity();
+  if (producer == null) return unmeasured(metricId, capture, 'producer-git-identity-unavailable');
   const result = {
     schemaVersion: COMPETITIVE_MEASUREMENT_SCHEMA,
     metricId,
@@ -211,6 +380,8 @@ function measured({
     runPolicy: 'exact',
     captureDigest: identity.captureDigest,
     artifactIdsDigest: identity.artifactIdsDigest,
+    producerGitSha: producer.gitSha,
+    producerTreeSha: producer.treeSha,
     denominator,
     semanticOracle,
     evidenceRefs: sortedUnique([...identity.evidenceRefs, ...evidenceRefs]),
@@ -284,11 +455,128 @@ function canonicalPipelineCategories(metricId) {
     ok: true,
     categories: sortedUnique(profileCategories),
     categoryIdsDigest: stableDigest(sortedUnique(profileCategories)),
+    mappings: categoryMap.categories,
   };
 }
 
+function firstLine(value) {
+  return String(value || '').split(/\r?\n/, 1)[0].trim();
+}
+
+function validPipelineStatus(value) {
+  return value === 'executed' || value === 'NOT-PROVEN';
+}
+
+function validRowStatus(value) {
+  return value === 'PASS' || value === 'FAIL' || value === 'NOT-PROVEN' || String(value).startsWith('BLOCKING-');
+}
+
+function validateCompleteness(value, metricId, row) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'ledger-completeness-invalid', metricId, fixture: row.fixture, category: row.category };
+  for (const key of ['exact', 'exactWithIntrinsic', 'partial', 'unknown', 'unsupported']) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 0) return { ok: false, reason: 'ledger-completeness-invalid', metricId, fixture: row.fixture, category: row.category };
+  }
+  const total = value.exact + value.exactWithIntrinsic + value.partial + value.unknown + value.unsupported;
+  if (total <= 0) return { ok: false, reason: 'ledger-completeness-invalid', metricId, fixture: row.fixture, category: row.category };
+  return { ok: true, total };
+}
+
+function validatePipelineRows(metricId, ledger, capture, canonical, fixtureRows) {
+  const spec = P56_METRIC[metricId];
+  if (metricId === 'machine-effects-x86_64-coverage' && ledger.productSha !== spec.producerProductSha) {
+    return { ok: false, reason: 'ledger-producer-head-mismatch', expected: spec.producerProductSha, observed: ledger.productSha ?? null };
+  }
+  if (metricId === 'machine-effects-riscv64-coverage'
+      && (ledger.profileVersion !== spec.producerProfileVersion || ledger.corpusId !== spec.producerCorpusId)) {
+    return { ok: false, reason: 'ledger-producer-profile-mismatch', expectedProfileVersion: spec.producerProfileVersion, observedProfileVersion: ledger.profileVersion ?? null, expectedCorpusId: spec.producerCorpusId, observedCorpusId: ledger.corpusId ?? null };
+  }
+  if (!ledger.totals || typeof ledger.totals !== 'object' || Array.isArray(ledger.totals)) return { ok: false, reason: 'ledger-totals-missing' };
+  for (const key of ['mandatory', 'passed', 'blocked', 'notProven']) {
+    if (!Number.isSafeInteger(ledger.totals[key]) || ledger.totals[key] < 0) return { ok: false, reason: 'ledger-totals-invalid', field: key };
+  }
+  if (Object.prototype.hasOwnProperty.call(ledger.totals, 'failed')
+      && (!Number.isSafeInteger(ledger.totals.failed) || ledger.totals.failed < 0)) return { ok: false, reason: 'ledger-totals-invalid', field: 'failed' };
+
+  const observedCounts = {
+    passed: 0,
+    blocked: 0,
+    notProven: 0,
+    failed: 0,
+  };
+  const artifacts = new Map(capture.artifacts.map((artifact) => [artifact.id, artifact]));
+  const expectedCompilerVersions = sortedUnique(capture.artifacts.map((artifact) => firstLine(artifact.manifest?.compiler?.version)).filter(Boolean));
+  const expectedSourceHash = ledger.source?.sha256;
+  if (typeof expectedSourceHash !== 'string' || !HEX64_RE.test(expectedSourceHash)) return { ok: false, reason: 'ledger-source-identity-invalid' };
+  if (metricId === 'machine-effects-riscv64-coverage') {
+    const compiler = firstLine(ledger.toolchain?.compiler);
+    const linker = firstLine(ledger.toolchain?.linker);
+    const expectedLinkers = sortedUnique(capture.artifacts.map((artifact) => firstLine(artifact.manifest?.linker?.version)).filter(Boolean));
+    if (!compiler || !expectedCompilerVersions.includes(compiler) || !linker || !expectedLinkers.includes(linker)) {
+      return { ok: false, reason: 'ledger-toolchain-identity-mismatch', expectedCompilerVersions, observedCompiler: compiler || null, expectedLinkers, observedLinker: linker || null };
+    }
+  }
+  for (const row of ledger.ledger) {
+    if (!validRowStatus(row.status)) return { ok: false, reason: 'ledger-row-status-invalid', fixture: row.fixture, category: row.category, status: row.status };
+    if (!validPipelineStatus(row.pipelineStatus)) return { ok: false, reason: 'ledger-pipeline-status-invalid', fixture: row.fixture, category: row.category, pipelineStatus: row.pipelineStatus };
+    const fixture = fixtureRows.get(row.fixture);
+    const artifact = artifacts.get(row.fixture);
+    const mapping = canonical.mappings?.[row.category];
+    if (!fixture || !artifact || !mapping || typeof mapping.symbol !== 'string') return { ok: false, reason: 'ledger-row-identity-missing', fixture: row.fixture, category: row.category };
+    if (row.target !== fixture.target || row.optimization !== fixture.optimization
+        || row.binaryHash !== fixture.sha256
+        || row.function !== mapping.symbol) {
+      return { ok: false, reason: 'ledger-row-identity-mismatch', fixture: row.fixture, category: row.category };
+    }
+    if (fixture.elfType != null && row.elfType != null && row.elfType !== fixture.elfType) return { ok: false, reason: 'ledger-row-elf-type-mismatch', fixture: row.fixture, category: row.category };
+    if (fixture.abiId != null && row.abiId != null && row.abiId !== fixture.abiId) return { ok: false, reason: 'ledger-row-abi-mismatch', fixture: row.fixture, category: row.category };
+    if (metricId === 'machine-effects-x86_64-coverage'
+        && (typeof row.sourceHash !== 'string' || row.sourceHash !== expectedSourceHash)) {
+      return { ok: false, reason: 'ledger-row-source-mismatch', fixture: row.fixture, category: row.category };
+    }
+    if (row.sourceHash != null && row.sourceHash !== expectedSourceHash) return { ok: false, reason: 'ledger-row-source-mismatch', fixture: row.fixture, category: row.category };
+    const manifest = artifact.manifest;
+    if (manifest.compileOptions?.optimization !== row.optimization
+        || (fixture.targetTriple != null && manifest.targetTriple !== fixture.targetTriple)) {
+      return { ok: false, reason: 'ledger-capture-fixture-mismatch', fixture: row.fixture, category: row.category };
+    }
+    if (metricId === 'machine-effects-x86_64-coverage') {
+      if (firstLine(row.compilerIdentity) !== firstLine(manifest.compiler?.version)) return { ok: false, reason: 'ledger-row-compiler-mismatch', fixture: row.fixture, category: row.category };
+    }
+    if (!Number.isSafeInteger(row.instructionCount) || row.instructionCount < 0
+        || !Number.isSafeInteger(row.decodeMismatchCount) || row.decodeMismatchCount < 0) {
+      return { ok: false, reason: 'ledger-row-count-invalid', fixture: row.fixture, category: row.category };
+    }
+    const completeness = validateCompleteness(row.completeness, metricId, row);
+    if (!completeness.ok) return completeness;
+    if (completeness.total !== row.instructionCount) return { ok: false, reason: 'ledger-completeness-count-mismatch', fixture: row.fixture, category: row.category };
+    if (row.status === 'PASS') {
+      if (row.pipelineStatus !== 'executed' || row.instructionCount <= 0 || row.decodeMismatchCount !== 0
+          || completeness.total <= 0 || row.completeness.partial > 0 || row.completeness.unknown > 0 || row.completeness.unsupported > 0
+          || row.firstDivergence != null) {
+        return { ok: false, reason: 'ledger-pass-contract-invalid', fixture: row.fixture, category: row.category };
+      }
+      if (metricId === 'machine-effects-x86_64-coverage' && row.differentialResult !== 'LLVM-boundary-match') {
+        return { ok: false, reason: 'ledger-pass-oracle-status-invalid', fixture: row.fixture, category: row.category };
+      }
+      if (metricId === 'machine-effects-riscv64-coverage' && row.capstoneDifferentialMismatchCount !== 0) {
+        return { ok: false, reason: 'ledger-pass-differential-invalid', fixture: row.fixture, category: row.category };
+      }
+      observedCounts.passed += 1;
+    } else if (row.status === 'FAIL') observedCounts.failed += 1;
+    else if (row.status === 'NOT-PROVEN') observedCounts.notProven += 1;
+    else observedCounts.blocked += 1;
+  }
+  if (ledger.totals.passed !== observedCounts.passed || ledger.totals.blocked !== observedCounts.blocked || ledger.totals.notProven !== observedCounts.notProven
+      || (Object.prototype.hasOwnProperty.call(ledger.totals, 'failed')
+        ? ledger.totals.failed !== observedCounts.failed
+        : observedCounts.failed !== 0)) {
+    return { ok: false, reason: 'ledger-totals-mismatch', expected: observedCounts, observed: ledger.totals };
+  }
+  return { ok: true };
+}
+
 function validatePipelineLedger(metricId, ledger, capture) {
-  const identity = captureIdentity(capture);
+  const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return { ok: false, reason: identity.reason };
   if (ledger == null || typeof ledger !== 'object' || Array.isArray(ledger)) return { ok: false, reason: 'ledger-object-missing' };
   if (!Array.isArray(ledger.ledger) || ledger.ledger.length === 0) return { ok: false, reason: 'ledger-rows-missing' };
@@ -325,6 +613,8 @@ function validatePipelineLedger(metricId, ledger, capture) {
     tupleIds.add(tuple);
     if (!hashes.fixtureRows.has(row.fixture)) return { ok: false, reason: 'ledger-row-fixture-missing', fixture: row.fixture };
   }
+  const rows = validatePipelineRows(metricId, ledger, capture, canonical, hashes.fixtureRows);
+  if (!rows.ok) return rows;
   return {
     ok: true,
     identity,
@@ -390,6 +680,9 @@ export function measurePhase56Coverage({ metricId, ledger, capture, direction = 
       compilerIdentity: compilerVersions,
       linkerIdentity: sortedUnique(capture.artifacts.map((artifact) => artifact.manifest?.linker?.version).filter(Boolean)),
       runtime: runtimeIdentity(),
+      producerHead: P56_METRIC[metricId].producerProductSha ?? null,
+      producerProfileVersion: ledger.profileVersion ?? null,
+      producerCorpusId: ledger.corpusId ?? null,
       corpusDigest: stableDigest({ source: ledger.source, fixtures: ledger.fixtures }),
       ledgerDigest: stableDigest({ totals: ledger.totals, ledger: rows }),
     },
@@ -548,10 +841,36 @@ function phase8CaptureLineage(corpus, capture, { sourceDirectory = PHASE8_SOURCE
   };
 }
 
+function completePhase8CandidateObservations(observations, expectedFunctionIds) {
+  if (!Array.isArray(observations) || observations.length !== expectedFunctionIds.length) {
+    return { ok: false, reason: 'phase8-observation-denominator-mismatch' };
+  }
+  const seen = new Set();
+  for (const [index, observation] of observations.entries()) {
+    if (observation == null || typeof observation !== 'object' || Array.isArray(observation)) {
+      return { ok: false, reason: 'phase8-observation-incomplete', index };
+    }
+    if (observation.id !== expectedFunctionIds[index] || seen.has(observation.id)) {
+      return { ok: false, reason: 'phase8-observation-denominator-mismatch', index, observedId: observation.id ?? null };
+    }
+    seen.add(observation.id);
+    if (observation.failure != null || observation.semantic !== true) {
+      return { ok: false, reason: 'phase8-observation-incomplete', index, id: observation.id, kind: observation.failure != null ? 'failure' : 'nonsemantic' };
+    }
+    for (const field of ['gotos', 'rawAssemblyFallbacks']) {
+      const value = observation.readability?.[field];
+      if (!Number.isSafeInteger(value) || value < 0) {
+        return { ok: false, reason: 'phase8-observation-nonfinite', index, id: observation.id, field };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 /** Bind P8 candidate observations to the frozen source/corpus baseline. */
 export function measurePhase8Quality({ metricId, observations, baseline = loadFrozenBaseline(), corpus = loadCorpus(), capture, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
   const field = qualityMetric(metricId);
-  const identity = captureIdentity(capture);
+  const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
   if (identity.capture.corpusId !== corpus.corpusId || identity.capture.corpusVersion !== corpus.corpusVersion) {
     return unmeasured(metricId, capture, 'phase8-corpus-identity-mismatch', { captureCorpusId: identity.capture.corpusId, corpusId: corpus.corpusId });
@@ -585,6 +904,8 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       || stableDigest(baseline.observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)) {
     return unmeasured(metricId, capture, 'phase8-observation-denominator-mismatch');
   }
+  const completeness = completePhase8CandidateObservations(observations, expectedFunctionIds);
+  if (!completeness.ok) return unmeasured(metricId, capture, completeness.reason, { identityFailure: completeness });
   const candidate = qualityVector(observations);
   const reference = qualityVector(baseline.observations);
   const candidateValue = candidate[field];

@@ -130,7 +130,7 @@ export function verifyCompetitiveProfile(profile = loadCompetitiveProfile()) {
   return { verified: true, metricCount: metricIds.length, groundTruth };
 }
 
-function verifyEntryShape(entry, metricId) {
+function verifyEntryShape(entry, metricId, { measurementCapture = null, expectedProducerIdentity = null } = {}) {
   object(entry, `entry-object:${metricId}`);
   const expectedKeys = new Set([
     'metricId', 'corpusId', 'inputIdentity', 'functionIdentity', 'hexVersion',
@@ -166,10 +166,24 @@ function verifyEntryShape(entry, metricId) {
   }
   if (!Array.isArray(entry.evidenceRefs) || entry.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) fail(`entry-evidence-refs:${metricId}`);
   if (entry.measurement != null) {
-    try { validateCompetitiveMeasurement(entry.measurement, { expectedMetricId: metricId }); }
+    try {
+      validateCompetitiveMeasurement(entry.measurement, {
+        expectedMetricId: metricId,
+        ...(entry.measurement.status === 'MEASURED' ? {
+          capture: measurementCapture,
+          expectedProducerIdentity,
+          replayArtifacts: true,
+        } : {}),
+      });
+    }
     catch (error) { fail('entry-measurement-invalid', `${metricId}:${error.message}`); }
     if (entry.measurement.status === 'MEASURED' && entry.inputIdentity !== entry.measurement.inputIdentity) {
       fail('entry-measurement-input-mismatch', metricId);
+    }
+    if (entry.measurement.status === 'MEASURED') {
+      if (entry.hexValue != null && entry.hexValue !== entry.measurement.candidateValue) fail('entry-measurement-candidate-mismatch', metricId);
+      if (entry.referenceValue != null && entry.referenceValue !== entry.measurement.referenceValue) fail('entry-measurement-reference-mismatch', metricId);
+      if (entry.comparison !== 'UNMEASURED' && entry.comparison !== entry.measurement.comparison) fail('entry-measurement-comparison-mismatch', metricId);
     }
   }
 }
@@ -200,8 +214,12 @@ function verifyMeasuredBinaryEvidence(metricId, entry, manifest, twinEvidenceByM
   }
   if (replay.replayedStrip !== true || replay.manifestDigest !== manifest.manifestDigest) fail('binary-twin-evidence-replay-required', metricId);
   if (entry.corpusId !== manifest.corpusId) fail('binary-twin-entry-corpus-mismatch', metricId);
-  const expectedInputIdentity = `bin_sha256_${manifest.strippedArtifactSha256}`;
-  if (entry.inputIdentity !== expectedInputIdentity) fail('binary-twin-entry-input-mismatch', metricId);
+  if (entry.measurement?.status === 'MEASURED') {
+    if (entry.inputIdentity !== entry.measurement.inputIdentity) fail('binary-twin-entry-measurement-input-mismatch', metricId);
+  } else {
+    const expectedInputIdentity = `bin_sha256_${manifest.strippedArtifactSha256}`;
+    if (entry.inputIdentity !== expectedInputIdentity) fail('binary-twin-entry-input-mismatch', metricId);
+  }
 }
 
 export function verifyCompetitiveScorecard(scorecard, profile = loadCompetitiveProfile(), options = {}) {
@@ -224,11 +242,15 @@ export function verifyCompetitiveScorecard(scorecard, profile = loadCompetitiveP
   const metricIds = Object.keys(profile.metrics);
   if (scorecard.entries.length !== metricIds.length) fail('scorecard-denominator-shrunk', `${scorecard.entries.length}!=${metricIds.length}`);
   const entries = new Map();
+  const measurementCapturesByMetric = options.measurementCapturesByMetric || options.measuredCapturesByMetric || {};
   for (const entry of scorecard.entries) {
     if (entries.has(entry?.metricId)) fail('scorecard-duplicate-metric', String(entry?.metricId));
     const metricId = requiredText(entry?.metricId, 'scorecard-entry-metric-id');
     if (!Object.prototype.hasOwnProperty.call(profile.metrics, metricId)) fail('scorecard-unknown-metric', metricId);
-    verifyEntryShape(entry, metricId);
+    verifyEntryShape(entry, metricId, {
+      measurementCapture: measurementCapturesByMetric[metricId] ?? null,
+      expectedProducerIdentity: { gitSha: scorecard.gitSha, treeSha: scorecard.treeSha },
+    });
     entries.set(metricId, entry);
   }
   for (const metricId of metricIds) if (!entries.has(metricId)) fail('scorecard-metric-missing', metricId);
@@ -244,6 +266,12 @@ export function verifyCompetitiveScorecard(scorecard, profile = loadCompetitiveP
     if (entry.runtimeClass !== profile.runtimeHardwareClass) fail('scorecard-entry-runtime-mismatch', metricId);
     if (!profile.metrics[metricId].corpusWorkloadIds.includes(entry.corpusId)) fail('scorecard-entry-corpus-undeclared', metricId);
     if (actualGroundTruth.binaryScored === true && actualGroundTruth.status === 'measured') {
+      if (entry.measurement?.status !== 'MEASURED') fail('binary-measurement-required', metricId);
+      if (entry.hexValue !== entry.measurement.candidateValue
+          || entry.referenceValue !== entry.measurement.referenceValue
+          || entry.comparison !== entry.measurement.comparison) {
+        fail('binary-measurement-values-required', metricId);
+      }
       verifyMeasuredBinaryEvidence(metricId, entry, actualGroundTruth.twinManifest, options.twinEvidenceByMetric);
     }
 
