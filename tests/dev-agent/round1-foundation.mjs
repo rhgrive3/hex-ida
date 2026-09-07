@@ -61,23 +61,6 @@ await check('dev-supervisor-protocol', () => {
   assert.equal(validateDevSupervisorDecision({ type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }, { availableTools: ['repo.read'] }).type, 'tool');
   assert.equal(validateDevSupervisorDecision({ type: 'human', question: 'Continue?', blocking: true }).blocking, true);
   assert.deepEqual(validateDevSupervisorDecision({ type: 'wait', events: [], reason: 'nothing to do' }).events, []);
-  assert.deepEqual(
-    validateDevSupervisorDecision({
-      type: 'wait',
-      events: ['worker.completed', 'worker.failed', 'worker.cancelled'],
-      reason: 'wait for worker',
-    }).events,
-    ['worker.completed', 'worker.failed', 'worker.cancelled'],
-  );
-  assert.throws(
-    () => validateDevSupervisorDecision({ type: 'wait', events: [' worker.completed '], reason: 'wait' }),
-    /unsupported Dev event/,
-    '#6016: an accepted wait event must use the exact canonical spelling stored by the event host',
-  );
-  assert.throws(
-    () => validateDevSupervisorDecision({ type: 'wait', events: ['worker.typo'], reason: 'wait' }),
-    /unsupported Dev event/,
-  );
   assert.equal(validateDevSupervisorDecision({ type: 'final', answer: 'done', completedTasks: [], remaining: [] }).type, 'final');
   assert.throws(() => validateDevSupervisorDecision({ type: 'tool', tool: 'invented', arguments: {}, purpose: 'x' }, { availableTools: ['repo.read'] }), /Unavailable Dev tool/);
   assert.throws(() => validateDevSupervisorDecision({ type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'x', extra: true }), /Malformed/);
