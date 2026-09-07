@@ -185,6 +185,18 @@ function validateLibraryModelEffect(effect) {
   }
 }
 
+function validateLibraryModelEscape(escape, provenanceEvidenceIds) {
+  if (!isPlainRecord(escape)
+    || !nonEmptyModelString(escape.kind)
+    || (escape.target != null && !nonEmptyModelString(escape.target))) return null;
+  const evidenceIds = canonicalModelEvidenceIds(escape.evidenceIds);
+  if (!evidenceIds) return null;
+  return Object.freeze({
+    ...escape,
+    evidenceIds: [...new Set([...evidenceIds, ...provenanceEvidenceIds])].sort(),
+  });
+}
+
 /**
  * Validates and normalizes the canonical library-model contract for one call
  * target. Returning null is deliberate: malformed, stale, incomplete, or
@@ -215,6 +227,7 @@ export function validateLibraryModel(model, { targetEntityId, snapshotId } = {})
     if (!provenanceEvidenceIds
       || !Array.isArray(model.memoryReadRegions)
       || !Array.isArray(model.memoryWriteRegions)
+      || !Array.isArray(model.escapes)
       || ![true, false, 'unknown'].includes(model.noreturn)
       || ![true, false, 'unknown'].includes(model.mayThrow)) {
       return null;
@@ -229,12 +242,16 @@ export function validateLibraryModel(model, { targetEntityId, snapshotId } = {})
     });
     const memoryReadRegions = normalizeEffects(model.memoryReadRegions);
     const memoryWriteRegions = normalizeEffects(model.memoryWriteRegions);
+    const escapes = Array.from(model.escapes, (escape) =>
+      validateLibraryModelEscape(escape, provenanceEvidenceIds));
     if (memoryReadRegions.some((effect) => effect == null)
-      || memoryWriteRegions.some((effect) => effect == null)) return null;
+      || memoryWriteRegions.some((effect) => effect == null)
+      || escapes.some((escape) => escape == null)) return null;
 
     return Object.freeze({
       memoryReadRegions: Object.freeze(memoryReadRegions),
       memoryWriteRegions: Object.freeze(memoryWriteRegions),
+      escapes: Object.freeze(escapes),
       noreturn: model.noreturn,
       mayThrow: model.mayThrow,
     });
@@ -249,6 +266,18 @@ function strongestSource(left, right) {
   const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
   const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
   return leftRank <= rightRank ? left : right;
+}
+
+function mergeEscapes(values) {
+  const byKey = new Map();
+  for (const escape of values) {
+    const evidenceIds = [...new Set(escape.evidenceIds)].sort();
+    const key = [escape.kind, escape.target ?? '', evidenceIds.join('\u0001')].join('\u0000');
+    if (!byKey.has(key)) byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+  }
+  return [...byKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, escape]) => escape);
 }
 
 function mergeEffects(lists, cap) {
@@ -484,6 +513,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         // callee, so it can never override contradictory binary evidence.
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
+        escapes.push(...validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
@@ -514,6 +544,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       if (validatedModel) {
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
+        escapes.push(...validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
@@ -578,7 +609,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     registerEffects: local.registerEffects,
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
-    escapes,
+    escapes: mergeEscapes(escapes),
     allocations: local.allocations,
     frees: local.frees,
     directCalls: local.directCalls,

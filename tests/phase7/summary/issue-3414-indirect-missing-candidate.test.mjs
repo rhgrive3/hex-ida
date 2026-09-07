@@ -60,6 +60,7 @@ test('#3414 exhaustive indirect external candidate uses a library model', () => 
         regionId:'model-write', regionKind:'global-absolute', broad:false,
         addressSpaces:['memory'], source:'library-model', evidenceIds:['issue-3414-write'],
       }],
+      escapes: [],
       noreturn:false,
       mayThrow:true,
     }]]),

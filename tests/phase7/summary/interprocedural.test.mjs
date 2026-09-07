@@ -41,6 +41,7 @@ function provenLibraryModel(targetEntityId, overrides = {}) {
       source: 'library-model',
       evidenceIds: [`effect:${targetEntityId}:write`],
     }],
+    escapes: [],
     noreturn: false,
     mayThrow: false,
     ...overrides,
@@ -289,6 +290,7 @@ test('an unproven library model cannot bypass the unknown-call fallback (#6074)'
   const locals = buildSummaryGraph('missing-callee-summary');
   const valid = provenLibraryModel('fn_absent');
   const impostors = [
+    ['empty object', {}],
     ['null', null],
     ['undefined', undefined],
     ['array', []],
@@ -310,6 +312,11 @@ test('an unproven library model cannot bypass the unknown-call fallback (#6074)'
     ['invalid provenance evidence', {
       ...valid,
       provenance: { ...valid.provenance, evidenceIds: 'not-an-array' },
+    }],
+    ['non-array escapes', { ...valid, escapes: {} }],
+    ['malformed escape', {
+      ...valid,
+      escapes: [{ kind: 'return-escape', target: 'fn_absent', evidenceIds: [] }],
     }],
   ];
   for (const [label, impostor] of impostors) {
@@ -346,6 +353,60 @@ test('a proven library model propagates through a recursive component (#6074)', 
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_self'));
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
   assert.equal(summary.unknownCallEffects.length, 0);
+});
+
+test('a proven escape-only library model converges through recursive and indirect callers (#6074)', () => {
+  const complete = createAnalysisStatus({
+    snapshotId: 'snapshot-unbound',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+  });
+  const recursiveA = createFunctionSummary({
+    functionId: 'escape-a',
+    directCalls: [{ callSiteId: 'escape-a-to-b', targetEntityIds: ['escape-b'] }],
+    status: complete,
+  });
+  const recursiveB = createFunctionSummary({
+    functionId: 'escape-b',
+    directCalls: [
+      { callSiteId: 'escape-b-to-a', targetEntityIds: ['escape-a'] },
+      { callSiteId: 'escape-b-to-ext', targetEntityIds: ['escape-ext'] },
+    ],
+    status: complete,
+  });
+  const indirect = createFunctionSummary({
+    functionId: 'escape-indirect',
+    indirectCallSets: [{
+      callSiteId: 'escape-indirect-to-ext',
+      candidateEntityIds: ['escape-ext'],
+      exhaustive: true,
+    }],
+    status: complete,
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['escape-a', 'escape-indirect'],
+    localSummaries: new Map([
+      ['escape-a', recursiveA],
+      ['escape-b', recursiveB],
+      ['escape-indirect', indirect],
+    ]),
+    libraryModels: new Map([['escape-ext', provenLibraryModel('escape-ext', {
+      memoryReadRegions: [],
+      memoryWriteRegions: [],
+      escapes: [{ kind: 'return-escape', target: 'escape-ext:return', evidenceIds: ['escape-model'] }],
+    })]]),
+    budget: { maxIterationsPerComponent: 4 },
+  });
+
+  assert.equal(solved.status.completeness, 'complete');
+  assert.equal(solved.status.stopReason, null);
+  for (const functionId of ['escape-a', 'escape-b', 'escape-indirect']) {
+    const summary = solved.summaries.get(functionId);
+    assert.equal(summary.status.completeness, 'complete', `${functionId} must converge`);
+    assert.equal(summary.unknownCallEffects.length, 0);
+    assert.deepEqual(summary.escapes.map((escape) => escape.target), ['escape-ext:return']);
+  }
 });
 
 test('cancellation publishes nothing complete', () => {
