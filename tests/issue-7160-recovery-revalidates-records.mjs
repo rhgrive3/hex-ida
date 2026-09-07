@@ -95,3 +95,92 @@ test('#7160 genuinely malformed records are still quarantined by recovery', asyn
     assert.ok([...globalThis.localStorage.map.keys()].some((key) => key.startsWith('hex.notes.' + id + '.quarantine.')));
   });
 });
+
+test('#7160 malformed generationless records are quarantined on a legacy base', async () => {
+  await withStorage((() => {
+    const map = new Map();
+    return {
+      get length() { return map.size; },
+      key(i) { return [...map.keys()][i] ?? null; },
+      getItem(k) { return map.get(k) ?? null; },
+      setItem(k, v) { map.set(k, String(v)); },
+      removeItem(k) { map.delete(k); },
+      map,
+    };
+  })(), () => {
+    const id = 'recovery-7160-legacy-malformed';
+    const primaryKey = 'hex.notes.' + id;
+    const brokenKey = primaryKey + '.delta.types.empty';
+    globalThis.localStorage.setItem(primaryKey, JSON.stringify({ v: 2, names: {} }));
+    globalThis.localStorage.setItem(brokenKey, '{}');
+
+    const probe = new NoteStore(id);
+    assert.equal(probe._unreadableDeltaKeys.has(brokenKey), true);
+    assert.equal(probe.recoverUnreadableDeltas(), true,
+      'an empty generationless record is malformed and may be quarantined');
+    assert.equal(globalThis.localStorage.getItem(brokenKey), null);
+    assert.ok([...globalThis.localStorage.map.keys()].some((key) =>
+      key.startsWith(primaryKey + '.quarantine.')));
+  });
+});
+
+test('#7160 stale generation records remain safely ignorable after a read retry', async () => {
+  const deltaKey = 'hex.notes.recovery-7160-stale.delta.names.8192';
+  const harness = storageWithTransientFailure(deltaKey);
+  await withStorage(harness.storage, () => {
+    const id = 'recovery-7160-stale';
+    {
+      const seed = new NoteStore(id);
+      seed.setName(0x1000n, 'base');
+    }
+    const current = JSON.parse(globalThis.localStorage.getItem('hex.notes.' + id));
+    globalThis.localStorage.setItem(deltaKey, JSON.stringify({
+      kind: 'names', key: '8192', deleted: false,
+      generation: 'superseded-generation', value: 'stale',
+    }));
+
+    const probe = new NoteStore(id);
+    assert.equal(probe._unreadableDeltaKeys.has(deltaKey), true);
+    assert.equal(probe.recoverUnreadableDeltas(), true,
+      'a well-formed delta superseded by the committed generation is ignorable');
+    assert.equal(globalThis.localStorage.getItem(deltaKey), null);
+    assert.ok([...harness.map.keys()].some((key) =>
+      key.startsWith('hex.notes.' + id + '.quarantine.')));
+    assert.equal(new NoteStore(id).nameOf(0x1000n), 'base');
+    assert.equal(new NoteStore(id).nameOf(0x2000n), null);
+    assert.notEqual(current.generation, 'superseded-generation');
+  });
+});
+
+test('#7160 repaired records are not replayed over a newer ordered delta', async () => {
+  const olderKey = 'hex.notes.recovery-7160-order.delta.comments.000-old';
+  const newerKey = 'hex.notes.recovery-7160-order.delta.comments.999-new';
+  const harness = storageWithTransientFailure(olderKey);
+  await withStorage(harness.storage, () => {
+    const id = 'recovery-7160-order';
+    {
+      const seed = new NoteStore(id);
+      seed.setName(0x1000n, 'base');
+    }
+    const primaryKey = 'hex.notes.' + id;
+    const generation = JSON.parse(globalThis.localStorage.getItem(primaryKey)).generation;
+    globalThis.localStorage.setItem(olderKey, '{temporarily unreadable');
+    globalThis.localStorage.setItem(newerKey, JSON.stringify({
+      kind: 'comments', key: '8192', deleted: false,
+      generation, value: 'newer',
+    }));
+
+    const probe = new NoteStore(id);
+    assert.equal(probe.comment(0x2000n), 'newer');
+    globalThis.localStorage.setItem(olderKey, JSON.stringify({
+      kind: 'comments', key: '8192', deleted: false,
+      generation, value: 'older',
+    }));
+    assert.equal(probe.recoverUnreadableDeltas(), false);
+    assert.equal(probe.comment(0x2000n), 'newer',
+      'recovery must not overwrite a newer delta already applied in order');
+    assert.equal(globalThis.localStorage.getItem(olderKey).includes('older'), true);
+    assert.equal(new NoteStore(id).comment(0x2000n), 'newer',
+      'a fresh ordered reload must retain the newer delta');
+  });
+});
