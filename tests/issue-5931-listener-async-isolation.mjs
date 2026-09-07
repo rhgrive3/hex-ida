@@ -35,36 +35,38 @@ test('#5931 an async remote-protocol listener that rejects stays isolated', asyn
   }
 });
 
-test('#5931 async adapter event listeners stay isolated too', async () => {
+test('#5931 async adapter event listeners stay isolated on the production transport path', async () => {
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
+  let adapter = null;
+  let receiver = null;
+  const transport = {
+    async send() {},
+    onMessage(fn) {
+      receiver = fn;
+      return () => { if (receiver === fn) receiver = null; };
+    },
+    deliver(packet) {
+      assert.equal(typeof receiver, 'function', 'adapter constructor must install the protocol transport callback');
+      return receiver(packet);
+    },
+  };
   process.on('unhandledRejection', onUnhandled);
   try {
-    const adapter = Object.assign(Object.create(RemoteDebugAdapter.prototype), {
-      id: 'remote-debug',
-      epoch: 0,
-      eventListeners: new Set(),
-      protocol: {
-        onEvent(fn) { fn({ version: DEBUG_PROTOCOL_VERSION, type: 'event', epoch: 0, event: 'halted', data: {} }); },
-      },
-    });
+    adapter = new RemoteDebugAdapter(transport, { protocol: { timeoutMs: 100 } });
     adapter.onEvent(async () => { throw new Error('adapter async boom'); });
-    // The constructor-registered dispatcher runs synchronously inside onEvent;
-    // drive it through the same path.
-    adapter.protocol.onEvent = (fn) => fn({ version: DEBUG_PROTOCOL_VERSION, type: 'event', epoch: 0, event: 'halted', data: {} });
-    const register = RemoteDebugAdapter.prototype.constructor;
-    void register;
-    // Simulate the dispatch the adapter performs (same code path shape).
-    const eventListeners = adapter.eventListeners;
-    for (const fn of eventListeners) {
-      try {
-        const result = fn({ event: 'halted' });
-        if (result && typeof result.catch === 'function') result.catch(() => {});
-      } catch { /* listener isolation */ }
-    }
+    const accepted = transport.deliver({
+      version: DEBUG_PROTOCOL_VERSION,
+      type: 'event',
+      epoch: 0,
+      event: 'halted',
+      data: {},
+    });
+    assert.equal(accepted, true);
     await settle();
-    assert.deepEqual(unhandled, []);
+    assert.deepEqual(unhandled, [], 'production adapter dispatch must isolate async listener rejections');
   } finally {
+    adapter?.protocol.close();
     process.off('unhandledRejection', onUnhandled);
   }
 });

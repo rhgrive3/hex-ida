@@ -113,6 +113,33 @@ function cloneCoverage(value) {
   return value;
 }
 
+const COVERAGE_LIST_SELECTORS = new Set(['entityIds', 'recordKinds', 'addresses', 'buildIdentities', 'modules']);
+const COVERAGE_STRING_SELECTORS = new Set(['module', 'ecosystem']);
+
+function canonicalCoverageList(value) {
+  if (value == null || !Array.isArray(value)) return null;
+  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
+  return [...new Set(value.map((item) => item.trim()))].sort();
+}
+
+function canonicalCoverage(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return cloneCoverage(value);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (COVERAGE_LIST_SELECTORS.has(key)) {
+      const list = canonicalCoverageList(item);
+      out[key] = list == null ? cloneCoverage(item) : list;
+      continue;
+    }
+    if (COVERAGE_STRING_SELECTORS.has(key) && typeof item === 'string' && item.trim()) {
+      out[key] = item.trim();
+      continue;
+    }
+    out[key] = cloneCoverage(item);
+  }
+  return out;
+}
+
 function nonNegativeSafeInteger(value, code) {
   if (value == null) return 0;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
@@ -139,7 +166,7 @@ export function createLanguageMetadataIdentity(input = {}) {
     observed: input.observed == null ? null : strictNonEmptyString(input.observed, 'metadata-identity-invalid-observed'),
     method: nonEmpty(input.method ?? 'runtime-metadata', 'metadata-identity-method-required'),
     detail: input.detail == null ? null : String(input.detail),
-    coverage: input.coverage == null ? null : cloneCoverage(input.coverage),
+    coverage: input.coverage == null ? null : canonicalCoverage(input.coverage),
   };
 
   if (identity.method === 'filename') fail('metadata-identity-filename-is-not-authority');
@@ -181,10 +208,8 @@ export function isAuthoritative(identity) {
 }
 
 function coverageList(value) {
-  if (value == null) return null;
-  if (!Array.isArray(value)) return null;
-  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
-  return new Set(value.map((item) => item.trim()));
+  const list = canonicalCoverageList(value);
+  return list == null ? null : new Set(list);
 }
 
 function languageRecordMatchesIdentitySource(identity, record) {

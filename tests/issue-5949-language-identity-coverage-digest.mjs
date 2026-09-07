@@ -26,6 +26,40 @@ test('#5949 different coverage sets produce different identity digests', () => {
   assert.notEqual(identityA.digest, identityB.digest);
 });
 
+test('#5949 set-equivalent coverage selectors canonicalize before digesting', () => {
+  const listCases = [
+    ['entityIds', ['A', 'B']],
+    ['recordKinds', ['method', 'type']],
+    ['addresses', ['0x1000', '0x2000']],
+    ['buildIdentities', ['build-A', 'build-B']],
+    ['modules', ['ModuleA', 'ModuleB']],
+  ];
+  for (const [selector, values] of listCases) {
+    const [firstValue, secondValue] = values;
+    const first = createLanguageMetadataIdentity({
+      ...base,
+      coverage: { [selector]: [` ${secondValue} `, firstValue, secondValue] },
+    });
+    const second = createLanguageMetadataIdentity({
+      ...base,
+      coverage: { [selector]: [firstValue, ` ${secondValue} `] },
+    });
+    assert.equal(first.digest, second.digest, `${selector} order/trim/duplicates are set-equivalent`);
+    assert.deepEqual(first.coverage[selector], [...values].sort(), `${selector} is stored canonically`);
+  }
+
+  const scalarA = createLanguageMetadataIdentity({
+    ...base,
+    coverage: { module: ' ModuleA ', ecosystem: ' swift ' },
+  });
+  const scalarB = createLanguageMetadataIdentity({
+    ...base,
+    coverage: { module: 'ModuleA', ecosystem: 'swift' },
+  });
+  assert.equal(scalarA.digest, scalarB.digest, 'trim-equivalent scalar selectors share identity');
+  assert.deepEqual(scalarA.coverage, { module: 'ModuleA', ecosystem: 'swift' });
+});
+
 test('#5949 identical inputs keep identical digests', () => {
   const first = createLanguageMetadataIdentity({ ...base, coverage: { entityIds: ['class_A'], recordKinds: ['type'] } });
   const second = createLanguageMetadataIdentity({ ...base, coverage: { entityIds: ['class_A'], recordKinds: ['type'] } });
