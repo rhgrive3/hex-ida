@@ -81,7 +81,7 @@ function normalizedEventFromRecord(record, context, index) {
     : (record && record.type === 'event' && record.event ? record.event : record);
   const rawKind = protocolEnvelope ? record.event : (source?.kind ?? source?.type ?? 'trace-marker');
   const rawType = typeof rawKind === 'string' ? rawKind : 'trace-marker';
-  const kindMap = { branch: 'basic-block', trace: 'trace-marker', 'stream-truncated': 'gap' };
+  const kindMap = { branch: 'basic-block', trace: 'trace-marker', warning: 'provider-warning', error: 'provider-error', 'stream-truncated': 'gap' };
   const known = new Set(['session-open','session-close','process-start','process-exit','thread-start','thread-exit','module-load','module-unload','paused','resumed','breakpoint-hit','watchpoint-hit','exception','signal','call','return','basic-block','memory-read','memory-write','register-snapshot','instrumentation-observation','instrumentation-intervention','emulator-checkpoint','trace-marker','gap','dropped-events','provider-warning','provider-error']);
   const kind = known.has(rawType) ? rawType : (kindMap[rawType] || 'trace-marker');
   const payload = protocolEnvelope ? (record.data ?? {}) : (source?.payload ?? source ?? {});

@@ -153,3 +153,39 @@ test('issue #4396: TraceProvider envelope fields agree with the shared legacy no
   assert.deepEqual(traceEvent.predecessorIds, sharedEvent.predecessorIds);
   assert.deepEqual(traceEvent.interventionIds, sharedEvent.interventionIds);
 });
+
+test('issue #4396: warning and error protocol aliases match the shared legacy normalizer', async () => {
+  const envelopes = [
+    {
+      type: 'event',
+      event: 'warning',
+      data: { message: 'warning' },
+      streamId: 'alias-stream',
+      sequence: 10,
+      completeness: 'complete',
+    },
+    {
+      type: 'event',
+      event: 'error',
+      data: { message: 'error' },
+      streamId: 'alias-stream',
+      sequence: 11,
+      completeness: 'complete',
+    },
+  ];
+
+  const traceEvents = await replay(envelopes);
+  assert.deepEqual(traceEvents.map((event) => event.kind), ['provider-warning', 'provider-error']);
+
+  for (const [index, envelope] of envelopes.entries()) {
+    const traceEvent = traceEvents[index];
+    const sharedEvent = normalizeLegacyRuntimeEvent(envelope, {
+      runtimeSessionId: traceEvent.runtimeSessionId,
+      providerId: traceEvent.providerId,
+      providerVersion: traceEvent.providerVersion,
+      sessionEpoch: traceEvent.sessionEpoch,
+      completeness: 'complete',
+    });
+    assert.deepEqual(traceEvent, sharedEvent);
+  }
+});
