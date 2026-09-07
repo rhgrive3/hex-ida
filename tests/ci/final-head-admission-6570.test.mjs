@@ -3,14 +3,18 @@ import {
   FINAL_HEAD_ADMISSION_CONTEXT,
   FINAL_HEAD_ADMISSION_CHECK_NAME,
   evaluateFinalHeadAdmission,
+  latestReviewsByAuthor,
   latestStatuses,
 } from '../../tools/validation/final-head-admission.mjs';
 
 const HEAD = '1340a18dd3f13b9a54f3e75b763cfbd8743202e7';
 const OLD = '8ee3431a41c3c836b1979eeac6a033c67e4c1eb1';
-const auto = (sha, verdict = 'APPROVED') => ({
+const TRUSTED = 'rhgrive3';
+const auto = (sha, verdict = 'APPROVED', author = TRUSTED, at = '2026-09-07T00:00:00Z') => ({
   state: 'COMMENTED',
   commit_id: sha,
+  submitted_at: at,
+  author: { login: author },
   body: `[AUTO-REVIEW:R0][HEAD:${sha}][VERDICT:${verdict}]`,
 });
 const status = (context, state, at = '2026-09-07T00:00:00Z') => ({ context, state, updated_at: at });
@@ -23,11 +27,12 @@ const greenEvidence = () => ({
   ],
   checkRuns: [check('PR fast gate')],
 });
+const evaluate = (input) => evaluateFinalHeadAdmission({ trustedAutoReviewers: [TRUSTED], ...input });
 
 // Reproduces the #6570 landing class: approval was for an older head and the
 // final head carried a red ownership status. Both facts must be visible.
 {
-  const result = evaluateFinalHeadAdmission({
+  const result = evaluate({
     headSha: HEAD,
     reviews: [auto(OLD)],
     statuses: [
@@ -45,14 +50,38 @@ const greenEvidence = () => ({
 // A completely green final head is still not admissible until AUTO approval is
 // explicitly bound to that exact SHA.
 {
-  const result = evaluateFinalHeadAdmission({ headSha: HEAD, reviews: [auto(OLD)], ...greenEvidence() });
+  const result = evaluate({ headSha: HEAD, reviews: [auto(OLD)], ...greenEvidence() });
   assert.equal(result.state, 'pending');
   assert.ok(result.pending.includes('missing exact-head AUTO approval'));
 }
 
-// Exact-head approval + CodeRabbit + CI + resolved review threads is admitted.
+// A forged marker from an untrusted PR participant must never satisfy AUTO
+// admission, even when every external check is green.
+{
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD, 'APPROVED', 'untrusted-contributor')],
+    ...greenEvidence(),
+  });
+  assert.equal(result.state, 'pending');
+  assert.equal(result.evidence.exactAutoApprovalCount, 0);
+  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+}
+
+// With no trusted-reviewer configuration the evaluator fails safe as pending.
 {
   const result = evaluateFinalHeadAdmission({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    ...greenEvidence(),
+  });
+  assert.equal(result.state, 'pending');
+  assert.ok(result.pending.includes('no trusted AUTO reviewer configured'));
+}
+
+// Exact-head trusted approval + CodeRabbit + CI + resolved review threads is admitted.
+{
+  const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
     unresolvedReviewThreads: 0,
@@ -60,11 +89,40 @@ const greenEvidence = () => ({
   });
   assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoApprovalCount, 1);
+  assert.equal(result.evidence.trustedAutoReviewerCount, 1);
+}
+
+// Only the latest review from a reviewer is active. An older changes-requested
+// review must not permanently poison a later approval; likewise, an old AUTO
+// CHANGES_REQUESTED on this head is superseded by a newer exact-head approval.
+{
+  const reviews = [
+    { state: 'CHANGES_REQUESTED', submitted_at: '2026-09-07T00:00:00Z', author: { login: 'reviewer-a' }, body: 'blocking review' },
+    { state: 'APPROVED', submitted_at: '2026-09-07T00:01:00Z', author: { login: 'reviewer-a' }, body: 'fixed' },
+    auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, '2026-09-07T00:00:00Z'),
+    auto(HEAD, 'APPROVED', TRUSTED, '2026-09-07T00:02:00Z'),
+  ];
+  assert.equal(latestReviewsByAuthor(reviews).length, 2);
+  const result = evaluate({ headSha: HEAD, reviews, ...greenEvidence() });
+  assert.equal(result.state, 'success');
+  assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
+}
+
+// The inverse ordering is blocking: a newer changes-requested review overrides
+// an older approval from the same reviewer.
+{
+  const reviews = [
+    auto(HEAD, 'APPROVED', TRUSTED, '2026-09-07T00:00:00Z'),
+    auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, '2026-09-07T00:01:00Z'),
+  ];
+  const result = evaluate({ headSha: HEAD, reviews, ...greenEvidence() });
+  assert.equal(result.state, 'failure');
+  assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
 }
 
 // Review blockers remain blockers even if every check is green.
 {
-  const unresolved = evaluateFinalHeadAdmission({
+  const unresolved = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
     unresolvedReviewThreads: 2,
@@ -73,9 +131,12 @@ const greenEvidence = () => ({
   assert.equal(unresolved.state, 'failure');
   assert.ok(unresolved.blockers.some((reason) => reason.includes('unresolved review thread')));
 
-  const requested = evaluateFinalHeadAdmission({
+  const requested = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD), { state: 'CHANGES_REQUESTED', commit_id: OLD, body: 'blocking review' }],
+    reviews: [
+      auto(HEAD),
+      { state: 'CHANGES_REQUESTED', submitted_at: '2026-09-07T00:01:00Z', author: { login: 'reviewer-b' }, body: 'blocking review' },
+    ],
     ...greenEvidence(),
   });
   assert.equal(requested.state, 'failure');
@@ -84,7 +145,7 @@ const greenEvidence = () => ({
 
 // In-flight CI stays pending rather than being misclassified as a pass/fail.
 {
-  const result = evaluateFinalHeadAdmission({
+  const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
     statuses: [status('CodeRabbit', 'success'), status('ci/circleci: phase7-ownership', 'pending')],
@@ -103,7 +164,7 @@ const greenEvidence = () => ({
   assert.equal(latest.length, 1);
   assert.equal(latest[0].state, 'success');
 
-  const result = evaluateFinalHeadAdmission({
+  const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
     statuses: [
@@ -117,7 +178,7 @@ const greenEvidence = () => ({
 }
 
 assert.throws(
-  () => evaluateFinalHeadAdmission({ headSha: 'not-a-sha' }),
+  () => evaluate({ headSha: 'not-a-sha' }),
   /final-head-admission-invalid-head-sha/,
 );
 
