@@ -228,8 +228,9 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
-    const riscvVariantCc = Number(image?.metadata?.machine) === 243 && type === 2 && (other & 0x80) !== 0;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
+    const riscvVariantCc = riscvVariantCcFlag && type === 2;
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -351,7 +352,7 @@ function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
   if ((tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0) return;
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const missing = (relocs || []).some((rel) =>
-    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCc === true);
+    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);
   if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
 }
 

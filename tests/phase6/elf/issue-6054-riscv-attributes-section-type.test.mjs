@@ -22,6 +22,7 @@ function buildAttrPayload() {
 }
 
 function buildElf(sectionType) {
+  const sectionTypes = Array.isArray(sectionType) ? sectionType : [sectionType];
   const attr = buildAttrPayload();
   const shstr = Uint8Array.from([0, ...Buffer.from('.riscv.attributes'), 0, ...Buffer.from('.shstrtab'), 0]);
   const nameAttr = 1;
@@ -31,7 +32,7 @@ function buildElf(sectionType) {
   const shstrOff = attrOff + attr.length;
   const shOff = (shstrOff + shstr.length + 7) & ~7;
   const shentsize = 64;
-  const total = shOff + 3 * shentsize;
+  const total = shOff + (sectionTypes.length + 2) * shentsize;
   const buf = new Uint8Array(total);
   const dv = new DataView(buf.buffer);
   buf.set(attr, attrOff);
@@ -40,7 +41,7 @@ function buildElf(sectionType) {
   dv.setUint16(16, 2, true); dv.setUint16(18, 243, true); dv.setUint32(20, 1, true);
   dv.setBigUint64(24, 0n, true); dv.setBigUint64(32, 0n, true); dv.setBigUint64(40, BigInt(shOff), true);
   dv.setUint32(48, 0, true); dv.setUint16(52, 64, true); dv.setUint16(54, 0, true); dv.setUint16(56, 0, true);
-  dv.setUint16(58, 64, true); dv.setUint16(60, 3, true); dv.setUint16(62, 2, true);
+  dv.setUint16(58, 64, true); dv.setUint16(60, sectionTypes.length + 2, true); dv.setUint16(62, sectionTypes.length + 1, true);
   const writeSh = (i, name, type, off, size) => {
     const o = shOff + i * shentsize;
     dv.setUint32(o, name, true); dv.setUint32(o + 4, type, true);
@@ -50,8 +51,8 @@ function buildElf(sectionType) {
     dv.setBigUint64(o + 48, 1n, true); dv.setBigUint64(o + 56, 0n, true);
   };
   writeSh(0, 0, 0, 0, 0);
-  writeSh(1, nameAttr, sectionType, attrOff, attr.length);
-  writeSh(2, nameShstr, 3, shstrOff, shstr.length);
+  sectionTypes.forEach((type, index) => writeSh(index + 1, nameAttr, type, attrOff, attr.length));
+  writeSh(sectionTypes.length + 1, nameShstr, 3, shstrOff, shstr.length);
   return buf;
 }
 
@@ -70,4 +71,11 @@ test('6054: SHT_PROGBITS masquerading as .riscv.attributes is not authoritative'
 test('6054: other processor-specific type is not authoritative', () => {
   const forged = parseELF(buildElf(0x70000004));
   assert.notEqual(forged.metadata.riscvIsa?.evidence, 'elf-attribute');
+});
+
+test('6054: later correctly typed section wins over an earlier same-name wrong type', () => {
+  const recovered = parseELF(buildElf([1, 0x70000003]));
+  assert.equal(recovered.metadata.riscvIsa?.evidence, 'elf-attribute');
+  assert.ok(recovered.metadata.riscvIsa?.file?.canonical?.includes('rv64'));
+  assert.ok(recovered.warnings.some((warning) => warning.includes('not authoritative')));
 });

@@ -36,8 +36,8 @@ function putDynamic(view, index, tag, value) {
   view.setBigUint64(off + 8, BigInt(value), true);
 }
 
-// options: { stOther, withTag, machine }
-function fixture({ stOther = 0x80, withTag = false, machine = 243 } = {}) {
+// options: { stOther, withTag, machine, type }
+function fixture({ stOther = 0x80, withTag = false, machine = 243, type = 2 } = {}) {
   const bytes = new Uint8Array(0x800);
   const view = new DataView(bytes.buffer);
   const strtabVa = BASE + BigInt(STRTAB_OFFSET);
@@ -61,7 +61,7 @@ function fixture({ stOther = 0x80, withTag = false, machine = 243 } = {}) {
   bytes.set(stringBytes, STRTAB_OFFSET);
 
   view.setUint32(SYMTAB_OFFSET + 24, 1, true); // st_name -> 'vecfn'
-  view.setUint8(SYMTAB_OFFSET + 28, 0x12);    // STB_GLOBAL | STT_FUNC
+  view.setUint8(SYMTAB_OFFSET + 28, 0x10 | type); // STB_GLOBAL | symbol type
   view.setUint8(SYMTAB_OFFSET + 29, stOther);
   view.setUint16(SYMTAB_OFFSET + 30, 0, true); // SHN_UNDEF: import-like, no function-seed partial
   view.setBigUint64(SYMTAB_OFFSET + 32, BASE + 0x1000n, true);
@@ -113,6 +113,16 @@ test('6071: variant-cc JUMP_SLOT without tag is partial, not complete', () => {
 test('6071: ordinary JUMP_SLOT without tag stays valid', () => {
   const image = fixture({ stOther: 0, withTag: false });
   assert.equal(partialReasons(image).length, 0);
+});
+
+test('6071: non-function variant flag still requires tag without function calling convention', () => {
+  const image = fixture({ type: 1, withTag: false });
+  const sym = image.symbols.find((s) => s.name === 'vecfn');
+  assert.ok(sym, 'vecfn must be decoded');
+  assert.equal(sym.riscvVariantCcFlag, true);
+  assert.equal(sym.riscvVariantCc, false, 'non-function symbols must not gain function calling convention');
+  assert.equal(sym.callingConvention, null);
+  assert.ok(partialReasons(image).length > 0, 'variant flag on a JUMP_SLOT still requires DT_RISCV_VARIANT_CC');
 });
 
 test('6071: variant symbol without JUMP_SLOT is not rejected', () => {

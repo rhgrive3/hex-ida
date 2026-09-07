@@ -56,9 +56,9 @@ export function parseELF(input, options = {}) {
   nameSections(r, rawSections, h);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
-    const namedAttributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
-    const attributes = namedAttributes?.type === SHT_RISCV_ATTRIBUTES ? namedAttributes : null;
-    if (namedAttributes && !attributes) {
+    const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
+    const attributes = namedAttributeSections.find((section) => section.type === SHT_RISCV_ATTRIBUTES) || null;
+    if (namedAttributeSections.some((section) => section.type !== SHT_RISCV_ATTRIBUTES)) {
       image.warnings.push('RISC-V .riscv.attributes section name without SHT_RISCV_ATTRIBUTES is not authoritative');
     }
     if (attributes) {
@@ -365,8 +365,9 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
     const ifunc=type===STT_GNU_IFUNC&&defined===true;
-    const riscvVariantCc=image.metadata.machine===EM_RISCV&&type===2&&(other&STO_RISCV_VARIANT_CC)!==0;
-    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
+    const riscvVariantCc=riscvVariantCcFlag&&type===2;
+    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     if(defined===false&&(bind===1||bind===2)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
