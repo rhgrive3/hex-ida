@@ -122,6 +122,7 @@ function validAddSubRegister31Encoding(mnemonic, ops) {
   const dst = ops[0], lhs = ops[1], rhs = ops[2];
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
+  if (dst.shift != null || dst.extend != null || lhs.shift != null || lhs.extend != null) return false;
   if (regBits(lhs) !== bits) return false;
 
   if (rhs?.k === 'imm') {

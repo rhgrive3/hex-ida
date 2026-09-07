@@ -13,15 +13,19 @@ function gp(num, bits = 64, modifiers = {}) {
   };
 }
 
-function lift(mnemonic, rhs, id = mnemonic) {
+function liftWithOperands(mnemonic, ops, id = mnemonic) {
   return liftArm64MachineEffects({
     instructionId:`issue-6024:${id}`,
     architectureId:'arm64',
     mode:'a64',
     mnemonic,
-    ops:[gp(0,64), gp(1,64), rhs],
+    ops,
     origin:{ instructionIds:[`issue-6024:${id}`] },
   });
+}
+
+function lift(mnemonic, rhs, id = mnemonic) {
+  return liftWithOperands(mnemonic, [gp(0,64), gp(1,64), rhs], id);
 }
 
 function valueOps(bundle, opcode) {
@@ -88,6 +92,15 @@ assert.equal(invalidMulExtend.operations.length, 0, 'non-ADD/SUB extend must fai
 const plainMul = lift('mul', gp(2,64), 'plain-mul');
 assert.equal(plainMul.completeness, 'exact', plainMul.unknownEffects?.reason);
 assert.equal(valueOps(plainMul, 'mul').length, 1);
+
+
+for (const [label, index] of [['destination', 0], ['left-hand source', 1]]) {
+  const ops = [gp(0,64), gp(1,64), gp(2,64)];
+  ops[index] = gp(index,64,{ extend:{ op:'sxtx', amount:1 } });
+  const bundle = liftWithOperands('add', ops, `invalid-${label.toLowerCase().replaceAll(' ', '-')}-extend`);
+  assert.equal(bundle.completeness, 'partial', `${label} extend must fail closed`);
+  assert.equal(bundle.operations.length, 0, `${label} extend must not emit definite operations`);
+}
 
 const plain = lift('add', gp(2,64), 'plain-x-register');
 assert.equal(plain.completeness, 'exact', plain.unknownEffects?.reason);
