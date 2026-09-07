@@ -28,7 +28,7 @@ import { validateSatModel } from '../../../js/symbolic/verify/validate-model.js'
 import { verifyConditionalEdgeFeasibility } from '../../../js/symbolic/verify/edge-feasibility.js';
 import { CLAIM_KIND, VERIFICATION_QUERY_KIND, VERDICT, createVerificationQuery } from '../../../js/symbolic/verify/query.js';
 import { runPhase9Tests, discoverPhase9Tests } from '../../../tests/phase9/run.mjs';
-import { runBrowserRuntime } from '../../../tests/phase9/browser/worker-runtime.mjs';
+import { measureTieredSolver, tieredPerformanceFailures, PROFILE_DIGEST } from './tiered-solver-metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/phase9/profile.json');
@@ -40,8 +40,8 @@ const CHECKPOINT_RELATIVE_PATH = 'reports/phase9/checkpoints.json';
 const VERIFIER_OWNED_PATHS = Object.freeze(new Set([REPORT_RELATIVE_PATH, CHECKPOINT_RELATIVE_PATH]));
 
 export const VERIFIER_ID = 'phase9.verifier';
-export const VERIFIER_VERSION = '2.0.0';
-export const SCHEMA_VERSION = 'phase9-release-evidence/v2';
+export const VERIFIER_VERSION = '3.0.0';
+export const SCHEMA_VERSION = 'phase9-release-evidence/v3';
 
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -215,6 +215,7 @@ export function buildDeterministicPayload({
   return {
     schemaVersion: SCHEMA_VERSION,
     phase: 9,
+    profileDigest:PROFILE_DIGEST,
     verifier: { id: VERIFIER_ID, version: VERIFIER_VERSION },
     product: {
       commitSha: product.commitSha,
@@ -248,6 +249,8 @@ export function buildDeterministicPayload({
 export function validateEvidence(report) {
   const errors = [];
   for (const key of SCHEMA.required || []) if (!(key in report)) errors.push(`missing field: ${key}`);
+  if (report.profileDigest !== PROFILE_DIGEST) errors.push('profile identity mismatch: remeasurement required');
+  if (report.verdict === 'READY' && tieredPerformanceFailures(report.performance).length) errors.push('wide performance evidence is not green');
   if (report.schemaVersion !== SCHEMA_VERSION) errors.push('schemaVersion mismatch');
   if (!['READY', 'BLOCKING', 'NOT-INTEGRATED'].includes(report.verdict)) errors.push('invalid verdict');
   if (typeof report.deterministicDigest !== 'string' || !report.deterministicDigest) errors.push('missing deterministicDigest');
@@ -286,18 +289,23 @@ export async function verifyPhase9() {
   const implementationGate = await runLiveImplementationGates(backendGate);
   let browserExecution = { selected: 2, total: 2, allPassed: false, engines: [], error: null };
   try {
+    const { runBrowserRuntime } = await import('../../../tests/phase9/browser/worker-runtime.mjs');
     const engines = await runBrowserRuntime();
     browserExecution = { selected: engines.length, total: 2, allPassed: engines.length === 2, engines, error: null };
   } catch (error) {
     browserExecution.error = String(error?.message || error);
     console.error('[phase9-verifier] Browser runtime FAILED:', browserExecution.error);
   }
+  let performance=null;let performanceFailures=[];
+  try { performance=await measureTieredSolver({productIdentity:product});performanceFailures=tieredPerformanceFailures(performance); }
+  catch(error) { performanceFailures=[String(error?.message??error)]; }
   const testsOk = testExecution.allPassed === true;
   const gates = PROFILE.gates.map((profileGate) => {
     const baseOk = testsOk && implementationGate.ok && backendGate.ok;
-    const ok = profileGate.id === 'GATE-P9-BROWSER' ? baseOk && browserExecution.allPassed : baseOk;
+    const ok = profileGate.id === 'GATE-P9-BROWSER' ? baseOk && browserExecution.allPassed
+      : profileGate.id === 'GATE-P9-WIDE-PERFORMANCE' ? baseOk && performanceFailures.length===0 : baseOk;
     return gate(profileGate.id, profileGate.description, ok, {
-      reason: ok ? null : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : (!implementationGate.ok ? 'live-implementation-gate-failed' : 'browser-runtime-failed'))),
+      reason: ok ? null : (profileGate.id==='GATE-P9-WIDE-PERFORMANCE' && performanceFailures.length ? performanceFailures.join('; ') : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : (!implementationGate.ok ? 'live-implementation-gate-failed' : 'browser-runtime-failed')))),
     });
   });
   const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk, { ok: browserExecution.allPassed });
@@ -318,7 +326,7 @@ export async function verifyPhase9() {
     ...payload,
     verdict,
     deterministicDigest,
-    evidenceDigest: stableDigest({ ...payload, verdict, deterministicDigest }),
+    evidenceDigest: stableDigest({ ...payload, verdict, deterministicDigest, performance }),
     backendGate: {
       ok: backendGate.ok,
       checks: backendGate.checks || null,
@@ -330,6 +338,7 @@ export async function verifyPhase9() {
       error: browserExecution.error,
     },
     implementationGate,
+    performance, performanceFailures,
   };
   const errors = validateEvidence(finalReport);
   if (errors.length) throw new Error(`Phase 9 evidence failed its own schema: ${errors.join('; ')}`);

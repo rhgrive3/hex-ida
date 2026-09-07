@@ -14,10 +14,12 @@
     "gates",
     "deterministicDigest",
     "capabilities",
-    "evidenceDigest"
+    "evidenceDigest",
+    "profileDigest",
+    "performance"
   ],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "phase9-release-evidence/v2" },
+    "schemaVersion": { "type": "string", "const": "phase9-release-evidence/v3" },
     "phase": { "type": "integer", "const": 9 },
     "verdict": { "type": "string", "enum": ["READY", "BLOCKING", "NOT-INTEGRATED"] },
     "verifier": {
@@ -69,7 +71,9 @@
     "gates": { "type": "array", "items": { "type": "object", "required": ["id", "status", "ok"] } },
     "deterministicDigest": { "type": "string" },
     "capabilities": { "type": "object" },
-    "evidenceDigest": { "type": "string" }
+    "evidenceDigest": { "type": "string" },
+    "profileDigest": { "type": "string" },
+    "performance": { "type": ["object", "null"] }
   },
   "additionalProperties": true
 }

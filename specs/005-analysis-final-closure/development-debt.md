@@ -1,7 +1,7 @@
 # Development debt and next actions
 
 The policy amendment itself completed no feature tasks. Subsequent focused
-implementation completed T011–T016, T028, T035–T036 and T053–T056: the ledger is now 30/61.
+implementation completed T011–T016, T028, T032, T035–T036 and T053–T056: the ledger is now 31/61.
 Product implementation and final release acceptance are separate. No full
 release gate has been run for this development batch.
 
@@ -31,7 +31,7 @@ Current-main batch baseline: `a85e2b3693e2cffca17e4fcc6f77ece89eb50a7c`. Generat
 
 Completed implementation evidence (2026-09-07): T012 reproduced three authority/publication failures before recovery; all 118 identity/GVN/adversarial tests pass after recovery and adapting old test seeding to the current private transaction API. T053–T056 dedicated and relevant original alias/debug/type/store tests pass. Type corpus structural truth changed intentionally; regenerate the Phase 7 manifest once at the affected batch boundary.
 
-T014 focused solver recovery and 24-case deployment matrix pass through the production registry/worker path. T032 adds exact bounded 32/64-bit routing but canonical profile migration and its full performance denominator are not yet complete; do not treat the two-sample metrics harness as P-SYM01 release evidence. Browser worker execution needs Playwright (currently unavailable).
+T014 focused solver recovery and 24-case deployment matrix pass through the production registry/worker path. T032 canonical profile migration and the unchanged-source full differential now pass; wide observations include all four bounded resource counters and query/provider/profile identities. Full browser/device release acceptance remains outstanding. Browser worker execution needs Playwright (currently unavailable).
 
 T016 dedicated 2/2, Phase 7 discovery 66/66, foundation/single-flight and Phase 12 ambiguity/handoff tests pass. T035 public rebuild transaction now carries and validates the discovery binding; focused consumer tests pass.
 
@@ -43,3 +43,6 @@ T015/T035/T036 implementation: discovery 87/87 and Apple/Mach-O/metadata/F6 29/2
 
 T013 implementation: focused Phase 8 budget suite 5/5 passes; new actual interactive/optimizer timing and 150 ms boundary tests pass, together with the T011 spill snapshot follow-up. Phase 8 profile v3 → v4 and measurement procedure v1 → v2 invalidate old candidate performance evidence. Frozen pre-Phase-8 corpus/provenance identities are retained. Full three-repetition frozen-corpus measurements remain outstanding; no numeric release PASS is claimed.
 Profile SHA-256 before: `c996dcc5dfe2e5e2e9c10089c583e03d87cb34c1284cd62cf8f94d835201b274`; after: `8c39894e0d0a6be10c21c3ed7cdf2b9fbcec802714a3f6cd067746496d256e83`.
+
+T032 profile migration (2026-09-07): current HEX-SYM-01 remains PARTIAL in deployment/measurement acceptance despite T014 code recovery, so canonical profile v1 → v2 is applicable. The immutable differential source SHA-256 is unchanged (`d6a1f97c04904714c7f7881b5e5c73a0886a9d31094779e73b12f04567d46348`). Its actual widths 1–4 enumerate 2/4/8/16 values; the old contract incorrectly transcribed 2/4/6/7. Corrected denominator: 25,284 deterministic + 192 seeded = 25,476 queries / 50,952 backend results. Both full differential tests PASS (139.8 s), plus actual wide metrics and profile migration/release payload regressions. This expands recorded coverage to match existing source; no test was removed. Old evidence is rejected by the new profile identity and release schema v3. Browser dependencies load only when the browser gate runs, retaining BLOCKING if absent.
+Phase 9 profile digest before: 392d2c5831f977c358befc22fcffb152; after: 89142b4a7bb381f541402f2221b26ec6.

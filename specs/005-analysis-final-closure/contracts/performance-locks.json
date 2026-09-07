@@ -90,7 +90,7 @@
           "sourceGitBlobSha1": "60eebc653e0a1899daf78ec29364bcc9d4703571",
           "sourceSha256": "d6a1f97c04904714c7f7881b5e5c73a0886a9d31094779e73b12f04567d46348",
           "widths": [1, 2, 3, 4, 5, 6, 7, 8],
-          "corpusCardinalityByWidth": [2, 4, 6, 7, 7, 7, 7, 7],
+          "corpusCardinalityByWidth": [2, 4, 8, 16, 7, 7, 7, 7],
           "operatorCounts": {
             "bitvectorBinary": 13,
             "bitvectorCompare": 10,
@@ -104,16 +104,17 @@
             "contradictionCount": 96,
             "maxDepth": 4
           },
-          "deterministicQueryCount": 14430,
+          "deterministicQueryCount": 25284,
           "seededQueryCount": 192,
-          "totalQueryCount": 14622,
-          "backendResultCount": 29244,
+          "totalQueryCount": 25476,
+          "backendResultCount": 50952,
           "oracleBackends": [
             "BitBlastBvBackend",
             "ExhaustiveBvBackend"
           ]
         },
-        "stableDigest": "c3c9fa9d9632c42bdcb15d4d352e5732"
+        "stableDigest": "23d8e4887392b1452a7084f6756bb74e",
+        "correction": {"date": "2026-09-07", "reason": "The immutable source enumerates all values at widths 1\u20134, not the cardinalities previously transcribed. Preserve its full source and expand the recorded denominator to match; no test cases removed.", "previousStableDigest": "c3c9fa9d9632c42bdcb15d4d352e5732", "previousTotalQueryCount": 14622, "previousBackendResultCount": 29244}
       },
       "recoveryEvidenceSources": [
         {
