@@ -130,27 +130,6 @@ function countRawReferences(blocks, values, nodes) {
   }
   return count;
 }
-  let count = 0;
-  for (const block of input.blocks ?? []) {
-    if (!block || typeof block !== 'object') return REFERENCE_COUNT_OVERFLOW;
-    count = addReferenceCount(count, arrayLength(block.nodeIds));
-  }
-  for (const value of input.values ?? []) {
-    if (value && typeof value === 'object' && value.definitionNodeId != null) {
-      count = addReferenceCount(count, 1);
-    }
-  }
-  for (const node of input.nodes ?? []) {
-    if (!node || typeof node !== 'object') return REFERENCE_COUNT_OVERFLOW;
-    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
-      count = addReferenceCount(count, arrayLength(node[key]));
-    }
-    if (node.memory != null) count = addReferenceCount(count, 1);
-    count = addReferenceCount(count, summaryReferenceCount(node.call));
-    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
-  }
-  return count;
-}
 
 function validateNormalizedFunction(out, options) {
   assertNotAborted(options);
