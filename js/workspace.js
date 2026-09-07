@@ -176,13 +176,20 @@ export function applyWorkspaceProject(app, project){
       : app.navigation.entries.length - 1;
     app.navigation.onChange?.(app.navigation.snapshot());
   }
-  // Restore currentFunction if present and within valid range
+  // Restore currentFunction if present and within valid range. App-level
+  // goToAddress resolves the owning region (selectRegion included), so a saved
+  // cursor in a non-primary region restores too (#5944). Embedder apps without
+  // that API keep the legacy primary-region restore.
   if(project.navigation?.currentFunction != null){
     const curAddr = BigInt(project.navigation.currentFunction);
-    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
-    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
-      app.store?.set?.({ currentAddress: curAddr });
-      app.viewer?.goToAddress?.(curAddr);
+    if(typeof app.goToAddress === 'function'){
+      app.goToAddress(curAddr, { history:false });
+    } else {
+      const region = (typeof app.regionForAddress === 'function' ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+      if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+        app.store?.set?.({ currentAddress: curAddr });
+        app.viewer?.goToAddress?.(curAddr);
+      }
     }
   }
   // Restore bookmarks
