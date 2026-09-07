@@ -324,23 +324,51 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
     const before = byId.get(observation.id);
     if (!before) { details.push({ id: observation.id, kind: 'unbaselined' }); continue; }
 
-    // HEX-C4-03: a semantic render without any provenance map is both lost and
-    // unbound. It must fail the hard-zero gate instead of disappearing behind a
-    // truthy check. Present maps retain the existing loss/snapshot accounting.
+    // HEX-C4-03: render provenance is release evidence, not telemetry. Keep the
+    // dedicated counters for diagnosis, but also trip an existing frozen
+    // hard-zero counter for any incomplete, unbound, malformed, or missing map;
+    // the acceptance profile must not be mutated just to make a new counter
+    // authoritative.
+    let renderProvenanceUnsafe = false;
     if (observation.semantic && !observation.renderProvenance) {
       renderProvenanceLossCount += 1;
       renderProvenanceUnboundCount += 1;
+      renderProvenanceUnsafe = true;
       details.push({ id: observation.id, kind: 'render-provenance-missing' });
     } else if (observation.renderProvenance) {
-      if (Number(observation.renderProvenance.provenanceLoss ?? 0) > 0) {
-        renderProvenanceLossCount += Number(observation.renderProvenance.provenanceLoss);
+      const provenance = observation.renderProvenance;
+      const loss = provenance.provenanceLoss;
+      if (!Number.isSafeInteger(loss) || loss < 0) {
+        renderProvenanceLossCount += 1;
+        renderProvenanceUnsafe = true;
+        details.push({ id: observation.id, kind: 'render-provenance-loss-count-invalid' });
+      } else if (loss > 0) {
+        renderProvenanceLossCount += loss;
+        renderProvenanceUnsafe = true;
         details.push({ id: observation.id, kind: 'render-provenance-loss' });
       }
-      if (observation.renderProvenance.snapshotId == null) {
+      if (typeof provenance.snapshotId !== 'string' || provenance.snapshotId.length === 0) {
         renderProvenanceUnboundCount += 1;
+        renderProvenanceUnsafe = true;
         details.push({ id: observation.id, kind: 'render-provenance-missing-snapshot' });
       }
+      const reasons = provenance.reasons;
+      const reasonsValid = Array.isArray(reasons)
+        && reasons.every((reason) => typeof reason === 'string' && reason.length > 0);
+      if (provenance.version !== 1
+          || !Number.isSafeInteger(provenance.entities) || provenance.entities < 0
+          || provenance.completeness !== 'complete'
+          || provenance.truncated !== false
+          || !reasonsValid || reasons.length > 0) {
+        renderProvenanceUnsafe = true;
+        details.push({
+          id: observation.id,
+          kind: 'render-provenance-incomplete',
+          detail: reasonsValid && reasons.length > 0 ? reasons.join(',') : provenance.completeness,
+        });
+      }
     }
+    if (renderProvenanceUnsafe) unknownSafetyRegressionCount += 1;
 
     if (observation.failure && !before.failure) {
       semanticMismatchCount += 1;
