@@ -17,7 +17,7 @@ import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
 export const FUNCTION_SUMMARY_SCHEMA_VERSION = 2;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.0';
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.1';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -44,13 +44,69 @@ export const UNKNOWN_CALL_REASONS = Object.freeze([
 
 const SOURCE_SET = new Set(EFFECT_SOURCES);
 const REASON_SET = new Set(UNKNOWN_CALL_REASONS);
+const RETURN_PROVENANCE_KINDS = new Set(['arg', 'root', 'allocation', 'unknown']);
+const RETURN_PROVENANCE_FIELDS = Object.freeze([
+  'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+]);
+// Only immutable objects built here may bypass repeat schema validation.
+// A copied or deserialized envelope never inherits this producer binding.
+const CANONICAL_SUMMARIES = new WeakSet();
 
 function fail(code) { throw new TypeError(code); }
 
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
+}
+
+function record(value, code) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail(code);
+  return value;
+}
+
+function optionalIndex(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
+}
+
+function optionalInteger(value, code) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(text)) return BigInt(text);
+  }
+  fail(code);
+  return null;
+}
+
+function optionalBoolean(value, code) {
+  if (value == null) return false;
+  if (typeof value !== 'boolean') fail(code);
+  return value;
+}
+
+// Compare schema-normalized fields without JSON/String/Number coercion. This
+// also detects missing/defaulted fields and extension fields that a consumer
+// might otherwise interpret as additional authority (#4314, #4320).
+function sameCanonicalValue(raw, canonical) {
+  if (raw === canonical) return true;
+  if (!raw || !canonical || typeof raw !== 'object' || typeof canonical !== 'object') return false;
+  if (Array.isArray(raw) !== Array.isArray(canonical)) return false;
+  if (Array.isArray(raw)) {
+    if (raw.length !== canonical.length) return false;
+  } else {
+    record(raw, 'function-summary-invalid-record');
+  }
+  const keys = Object.keys(canonical);
+  return Object.keys(raw).length === keys.length
+    && keys.every((key) => Object.hasOwn(raw, key) && sameCanonicalValue(raw[key], canonical[key]));
 }
 
 function canonicalEffectSource(value, fallback) {
@@ -72,6 +128,9 @@ function optionalReturnIdentity(value) {
 function list(values, code) {
   if (values == null) return [];
   if (!Array.isArray(values)) fail(code);
+  for (let index = 0; index < values.length; index++) {
+    if (!Object.hasOwn(values, index)) fail(code);
+  }
   return values;
 }
 
@@ -125,7 +184,7 @@ export function classifyCallTargetProof(call = {}) {
   const kind = indirect ? 'indirect' : candidateEntityIds.length ? 'direct' : 'unknown';
   const exhaustive = !malformedIdentity && (kind === 'direct'
     ? candidateEntityIds.length === 1
-    : kind === 'indirect' && call.completeness === 'complete');
+    : kind === 'indirect' && candidateEntityIds.length > 0 && call.completeness === 'complete');
   return deepFreeze({
     kind,
     candidateEntityIds,
@@ -136,6 +195,7 @@ export function classifyCallTargetProof(call = {}) {
 
 /** One memory region a function reads or writes, with why we believe it. */
 export function createMemoryEffect(input = {}) {
+  record(input, 'function-summary-invalid-memory-effect');
   const source = canonicalEffectSource(input.source, 'proven-summary');
   return deepFreeze({
     regionId: input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id'),
@@ -143,7 +203,7 @@ export function createMemoryEffect(input = {}) {
     // A `broad` effect covers every region in its address spaces. It is what an
     // unresolved call contributes, and it is deliberately not expressible as a
     // list of specific regions.
-    broad: input.broad === true,
+    broad: optionalBoolean(input.broad, 'function-summary-invalid-broad-effect'),
     addressSpaces: sortedIds(input.addressSpaces, 'function-summary-invalid-address-spaces'),
     source,
     evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
@@ -152,6 +212,7 @@ export function createMemoryEffect(input = {}) {
 
 /** A call whose effects could not be resolved. Never silently dropped. */
 export function createUnknownCallEffect(input = {}) {
+  record(input, 'function-summary-invalid-unknown-call');
   const reason = nonEmpty(input.reason, 'function-summary-unknown-call-reason-required');
   if (!REASON_SET.has(reason)) fail('function-summary-invalid-unknown-call-reason');
   return deepFreeze({
@@ -163,6 +224,7 @@ export function createUnknownCallEffect(input = {}) {
 }
 
 export function createDirectCall(input = {}) {
+  record(input, 'function-summary-invalid-direct-call');
   return deepFreeze({
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
     targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
@@ -172,30 +234,30 @@ export function createDirectCall(input = {}) {
 }
 
 export function createIndirectCallSet(input = {}) {
+  record(input, 'function-summary-invalid-indirect-call');
   return deepFreeze({
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
     candidateEntityIds: sortedIds(input.candidateEntityIds, 'function-summary-invalid-target-ids'),
     // A candidate set that is not proven exhaustive contributes unknown-call
     // effects on top of its candidates. Averaging the candidates and calling it
     // the answer is exactly the mistake §9.4 names.
-    exhaustive: input.exhaustive === true,
+    exhaustive: optionalBoolean(input.exhaustive, 'function-summary-invalid-exhaustive'),
     evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
   });
 }
 
 function createReturnProvenance(input = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid-return-provenance');
+  record(input, 'function-summary-invalid-return-provenance');
   const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
-  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
-  const returnIndex = input.returnIndex == null ? null : Number(input.returnIndex);
-  const offset = input.offset == null ? null : BigInt(input.offset);
+  if (!RETURN_PROVENANCE_KINDS.has(kind)) fail('function-summary-invalid-return-provenance-kind');
+  const argIndex = optionalIndex(input.argIndex, 'function-summary-invalid-return-provenance-arg-index');
+  const returnIndex = optionalIndex(input.returnIndex, 'function-summary-invalid-return-provenance-return-index');
+  const offset = optionalInteger(input.offset, 'function-summary-invalid-return-provenance-offset');
   const rootEntityId = optionalReturnIdentity(input.rootEntityId);
   const allocationSiteId = optionalReturnIdentity(input.allocationSiteId);
-  if (input.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
-    fail('function-summary-invalid-return-provenance-arg-index');
-  }
-  if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
-    fail('function-summary-invalid-return-provenance-return-index');
+  if (kind === 'arg' && argIndex == null) fail('function-summary-invalid-return-provenance-arg-index');
+  if ((kind === 'root' || kind === 'allocation') && rootEntityId == null && allocationSiteId == null) {
+    fail('function-summary-invalid-return-provenance-identity');
   }
   const out = {
     kind,
@@ -232,41 +294,20 @@ function canonicalReturnProvenance(values) {
 }
 
 /**
- * Canonical return provenance shape, shared by the producer and the consumer
- * identity gate (#5956).
- *
- * `createReturnProvenance()` stores exactly these fields with exactly these
- * types; anything else on the wire is not part of the FunctionSummary
- * contract. A serialized lookalike must not smuggle extra fields (in
- * particular `addressSpace`/`separationClass`/`separationAuthority`) past the
- * consumer boundary, where a points-to consumer would otherwise read them as
- * proof authority the canonical producer never emits.
+ * Canonical return provenance shape, shared by the producer and consumer
+ * identity gate. This preserves the public #5956 validator while the stricter
+ * full-summary normalizer below also checks every nested authority field.
  */
-const RETURN_PROVENANCE_KINDS = Object.freeze(['unknown', 'arg', 'root', 'allocation']);
-const RETURN_PROVENANCE_FIELDS = Object.freeze([
-  'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
-]);
-
 export function isCanonicalReturnProvenance(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (!RETURN_PROVENANCE_KINDS.includes(value.kind)) return false;
-  for (const key of Object.keys(value)) {
-    if (!RETURN_PROVENANCE_FIELDS.includes(key)) return false;
+  try {
+    record(value, 'function-summary-invalid-return-provenance');
+    if (!RETURN_PROVENANCE_KINDS.has(value.kind)) return false;
+    if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.includes(key))) return false;
+    const canonical = createReturnProvenance(value);
+    return sameCanonicalValue(value, canonical);
+  } catch {
+    return false;
   }
-  for (const field of ['argIndex', 'returnIndex']) {
-    const index = value[field];
-    if (index != null && (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0)) return false;
-  }
-  if (value.offset != null && (typeof value.offset !== 'string' || !/^-?\d+$/.test(value.offset))) return false;
-  for (const field of ['rootEntityId', 'allocationSiteId']) {
-    const identity = value[field];
-    if (identity != null && (typeof identity !== 'string' || !identity.trim())) return false;
-  }
-  if (value.kind === 'root' || value.kind === 'allocation') {
-    const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
-    if (typeof identity !== 'string' || !identity.trim()) return false;
-  }
-  return true;
 }
 
 /**
@@ -281,39 +322,27 @@ export function summaryIdentityMatches(summary, {
   analyzerId = null,
   analyzerVersion = null,
 } = {}) {
-  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false;
-  if (summary.schemaVersion !== FUNCTION_SUMMARY_SCHEMA_VERSION
-    || summary.contractVersion !== FUNCTION_SUMMARY_CONTRACT_VERSION) return false;
-  // Identity alone is not enough to consume an untrusted serialized summary:
-  // a forged envelope with a non-array returnProvenance would otherwise pass
-  // this gate and make call-result transfer throw while inspecting it. Keep the
-  // consumer boundary fail-closed for malformed/future-shaped artifacts.
-  if (typeof summary.functionId !== 'string' || !summary.functionId.trim()) return false;
-  for (const field of [
-    'inputs', 'returnValues', 'returnProvenance', 'registerEffects',
-    'memoryReadRegions', 'memoryWriteRegions', 'escapes', 'allocations',
-    'frees', 'directCalls', 'indirectCallSets', 'unknownCallEffects',
-    'semanticFacts',
-  ]) {
-    if (!Array.isArray(summary[field])) return false;
+  try {
+    record(summary, 'function-summary-invalid');
+    if (summary.schemaVersion !== FUNCTION_SUMMARY_SCHEMA_VERSION
+      || summary.contractVersion !== FUNCTION_SUMMARY_CONTRACT_VERSION) return false;
+    if (!CANONICAL_SUMMARIES.has(summary)) {
+      // Normalize using the same constructors and consistency rules as the
+      // producer, but never freeze/mutate a caller's serialized artifact.
+      const normalized = normalizeFunctionSummary(summary);
+      for (const field of Object.keys(normalized)) {
+        if (!Object.hasOwn(summary, field) || !sameCanonicalValue(summary[field], normalized[field])) return false;
+      }
+    }
+    if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
+    const status = summary.status;
+    if (snapshotId != null && (typeof snapshotId !== 'string' || status.snapshotId !== snapshotId)) return false;
+    if (analyzerId != null && (typeof analyzerId !== 'string' || status.analyzerId !== analyzerId)) return false;
+    if (analyzerVersion != null && (typeof analyzerVersion !== 'string' || status.analyzerVersion !== analyzerVersion)) return false;
+    return true;
+  } catch {
+    return false;
   }
-  if (!summary.returnProvenance.every((value) => {
-    // The return provenance must match the canonical wire contract exactly:
-    // no extra fields (an unproven `addressSpace`/`separation*` on a
-    // serialized summary is not authority), canonical kinds only, and the
-    // kind-specific identity shape the producer emits (#5956).
-    return isCanonicalReturnProvenance(value);
-  })) return false;
-  if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
-  const status = summary.status;
-  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
-  if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()
-    || typeof status.analyzerId !== 'string' || !status.analyzerId.trim()
-    || typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
-  if (snapshotId != null && (typeof snapshotId !== 'string' || status.snapshotId !== snapshotId)) return false;
-  if (analyzerId != null && (typeof analyzerId !== 'string' || status.analyzerId !== analyzerId)) return false;
-  if (analyzerVersion != null && (typeof analyzerVersion !== 'string' || status.analyzerVersion !== analyzerVersion)) return false;
-  return true;
 }
 
 /**
@@ -322,8 +351,8 @@ export function summaryIdentityMatches(summary, {
  * The consistency checks at the end are the contract's whole point: they make
  * "we did not look" structurally distinguishable from "there is nothing there".
  */
-export function createFunctionSummary(input = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid');
+function normalizeFunctionSummary(input) {
+  record(input, 'function-summary-invalid');
   // A schema marker is not proof that the envelope came through the canonical
   // constructor. Rebuild it here so forged/future-shaped objects cannot bypass
   // completeness and stop-reason consistency checks at the summary boundary.
@@ -346,7 +375,7 @@ export function createFunctionSummary(input = {}) {
     registerEffects: sortedIds(input.registerEffects, 'function-summary-invalid-register-effects'),
     memoryReadRegions: deepFreeze(memoryReadRegions),
     memoryWriteRegions: deepFreeze(memoryWriteRegions),
-    escapes: deepFreeze(list(input.escapes, 'function-summary-invalid-escapes')),
+    escapes: list(input.escapes, 'function-summary-invalid-escapes').slice(),
     allocations: sortedIds(input.allocations, 'function-summary-invalid-allocations'),
     frees: sortedIds(input.frees, 'function-summary-invalid-frees'),
     directCalls: deepFreeze(list(input.directCalls, 'function-summary-invalid-direct-calls').map(createDirectCall)),
@@ -354,10 +383,14 @@ export function createFunctionSummary(input = {}) {
     unknownCallEffects: deepFreeze(unknownCallEffects),
     noreturn: booleanKnowledge(input.noreturn ?? 'unknown', 'function-summary-invalid-noreturn'),
     mayThrow: booleanKnowledge(input.mayThrow ?? 'unknown', 'function-summary-invalid-may-throw'),
-    stackDelta: input.stackDelta == null ? null : String(input.stackDelta),
-    semanticFacts: deepFreeze(list(input.semanticFacts, 'function-summary-invalid-semantic-facts')),
+    stackDelta: optionalInteger(input.stackDelta, 'function-summary-invalid-stack-delta')?.toString() ?? null,
+    semanticFacts: list(input.semanticFacts, 'function-summary-invalid-semantic-facts').slice(),
     status,
   };
+
+  for (const effect of [...memoryReadRegions, ...memoryWriteRegions]) {
+    if (!effect.broad && effect.regionId == null) fail('function-summary-unresolved-memory-region');
+  }
 
   // An unresolved call is not purity. A summary that carries one may not also
   // claim it looked at everything.
@@ -380,7 +413,13 @@ export function createFunctionSummary(input = {}) {
     fail('function-summary-nonexhaustive-indirect-requires-unknown-effect');
   }
 
-  return deepFreeze(summary);
+  return summary;
+}
+
+export function createFunctionSummary(input = {}) {
+  const summary = deepFreeze(normalizeFunctionSummary(input));
+  CANONICAL_SUMMARIES.add(summary);
+  return summary;
 }
 
 /** Stable identity for dependency edges between caller and callee summaries. */
@@ -421,7 +460,7 @@ export function functionSummaryDigest(summary) {
  * which is what keeps an incomplete summary from reading as pure.
  */
 export function summaryMayWriteRegion(summary, regionId) {
-  if (!summary) return true;
+  if (!summaryIdentityMatches(summary)) return true;
   if (!isCompleteStatus(summary.status)) return true;
   if (summary.unknownCallEffects.length > 0) return true;
   if (summary.memoryWriteRegions.some((effect) => effect.broad)) return true;
@@ -430,7 +469,7 @@ export function summaryMayWriteRegion(summary, regionId) {
 }
 
 export function summaryIsPure(summary) {
-  return isCompleteStatus(summary?.status)
+  return summaryIdentityMatches(summary) && isCompleteStatus(summary.status)
     && summary.unknownCallEffects.length === 0
     && summary.memoryWriteRegions.length === 0
     && summary.memoryReadRegions.length === 0

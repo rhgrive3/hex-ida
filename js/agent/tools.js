@@ -92,25 +92,37 @@ export function pageRows(value, limit, offset = 0) {
   const explicitTotal = hasExplicitTotal && Number.isSafeInteger(totalRaw) && totalRaw >= 0 ? totalRaw : null;
   const invalidTotal = hasExplicitTotal && explicitTotal == null;
   const returned = results.length;
-  let complete = meta.complete ?? meta.completeness?.complete;
-  const upstreamTruncated = Boolean(meta.truncated) || complete === false;
-  if (invalidTotal) {
+  const completeFlags = [meta.complete, meta.completeness?.complete];
+  const invalidCompleteness = [...completeFlags, meta.truncated]
+    .some((flag) => flag != null && typeof flag !== 'boolean');
+  let complete = completeFlags[0] ?? completeFlags[1];
+  const upstreamTruncated = meta.truncated === true || completeFlags.includes(false);
+  if (invalidTotal || invalidCompleteness || upstreamTruncated) {
     complete = false;
   } else if (complete == null) {
     if (explicitTotal != null) complete = start + returned >= explicitTotal && !upstreamTruncated;
     else complete = rows.length < limit && !upstreamTruncated;
   }
-  const total = invalidTotal ? null : (explicitTotal ?? (complete ? start + returned : (rows.length > limit ? rows.length : null)));
+  const sourceComplete = complete === true;
+  const localTruncated = sourceStart + returned < rows.length
+    || (explicitTotal != null && start + returned < explicitTotal);
+  if (localTruncated) complete = false;
+  const sourceOffset = reported ?? (rows.length > limit ? 0 : start);
+  const total = invalidTotal || invalidCompleteness ? null
+    : (explicitTotal ?? (sourceComplete ? sourceOffset + rows.length : (rows.length > limit ? rows.length : null)));
   const coverageRaw = meta.coverage ?? meta.completeness?.coverage;
-  let coverage = typeof coverageRaw === 'number' && Number.isFinite(coverageRaw) ? coverageRaw : NaN;
+  let coverage = !invalidCompleteness && typeof coverageRaw === 'number' && Number.isFinite(coverageRaw) ? coverageRaw : NaN;
   if (!Number.isFinite(coverage)) coverage = total ? Math.min(1, (start + returned) / total) : (complete ? 1 : null);
-  const reason = meta.reason ?? meta.completeness?.reason ?? (invalidTotal ? 'invalid-total' : (complete ? null : 'result-limit'));
+  if (localTruncated && total > 0 && Number.isFinite(coverage)) {
+    coverage = Math.min(coverage, (start + returned) / total);
+  }
+  const reason = invalidCompleteness ? 'invalid-completeness' : (meta.reason ?? meta.completeness?.reason ?? (invalidTotal ? 'invalid-total' : (complete ? null : 'result-limit')));
   return {
-    results, total, returned, offset: start, complete: Boolean(complete), truncated: !complete,
+    results, total, returned, offset: start, complete: complete === true, truncated: !complete,
     coverage: Number.isFinite(coverage) ? Math.max(0, Math.min(1, coverage)) : null, reason,
     ...(meta.scanned != null ? { scanned: meta.scanned } : {}),
     ...(meta.scanTotal != null ? { scanTotal: meta.scanTotal } : {}),
-    completeness: { complete: Boolean(complete), returned, total, coverage: Number.isFinite(coverage) ? Math.max(0, Math.min(1, coverage)) : null, reason },
+    completeness: { complete: complete === true, returned, total, coverage: Number.isFinite(coverage) ? Math.max(0, Math.min(1, coverage)) : null, reason },
   };
 }
 
@@ -217,20 +229,42 @@ function matchesLocation(f, normalized) {
   if (normalized.address != null && loc.address !== normalized.address) return false;
   return true;
 }
-function functionCandidateAddresses(ctx, requested, limit) {
-  const out = [];
-  const seen = new Set();
-  const add = (v) => {
-    const a = asAddress(v && v.addr != null ? v.addr : v);
-    if (a == null) return;
-    const key = a.toString();
-    if (seen.has(key) || out.length >= limit) return;
-    seen.add(key); out.push(a);
-  };
-  for (const v of requested || []) add(v);
-  for (const v of ctx.candidateFunctions || []) add(v);
-  return out;
+function semanticSourceReason(ir) {
+  if (!ir) return 'semantic-ir-unavailable';
+  return ir.truncated === true ? 'semantic-ir-truncated' : null;
 }
+function semanticPageStatus(ir, observedTotal, returned, offset = 0) {
+  const sourceReason = semanticSourceReason(ir);
+  const complete = sourceReason == null && offset + returned >= observedTotal;
+  return {
+    total: sourceReason == null ? observedTotal : null,
+    observedTotal,
+    complete,
+    truncated: !complete,
+    reason: sourceReason ?? (complete ? null : 'result-limit'),
+    coverage: sourceReason != null ? null : (observedTotal ? Math.min(1, (offset + returned) / observedTotal) : 1),
+  };
+}
+
+function functionCandidateAddresses(ctx, requested, limit) {
+  const addresses = [];
+  const seen = new Set();
+  for (const source of [requested ?? [], ctx.candidateFunctions ?? []]) {
+    for (const value of source) {
+      const address = asAddress(value?.addr ?? value);
+      if (address == null) continue;
+      const key = address.toString();
+      if (seen.has(key)) continue;
+      // Stop before allocating an omitted candidate. The iterator is closed
+      // by for-of, and the consumer keeps this loss distinct from row paging.
+      if (addresses.length >= limit) return { addresses, scopeTruncated: true };
+      seen.add(key);
+      addresses.push(address);
+    }
+  }
+  return { addresses, scopeTruncated: false };
+}
+
 function seedInstruction(ir, spec) {
   if (!ir || !ir.instructions) return null;
   if (spec && spec.instructionId != null) {
@@ -352,7 +386,12 @@ export function createAgentTools(context, opts) {
       let range = null;
       if (ctx.program && typeof ctx.program.functionRange === 'function') { const rq = programQuery(ctx, 'functionRange', [addr]); range = rq.results; }
       const request = Math.min(1000000, offset + limit + 1);
-      const q = programQuery(ctx, 'calleesOf', [addr, range && range.end, request]);
+      const end = asAddress(range?.end);
+      const start = range?.start == null ? null : asAddress(range.start);
+      if (end == null || end <= addr || (range?.start != null && (start == null || start > addr))) {
+        return { tool: 'get_callees', address: addr, supported: false, results: [], offset, returned: 0, total: null, complete: false, truncated: true, reason: 'function-range-unavailable', cost: { functions: 0, disassembly: 0 } };
+      }
+      const q = programQuery(ctx, 'calleesOf', [addr, end, request]);
       const raw = Array.isArray(q.results) ? q.results : [];
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
@@ -402,24 +441,27 @@ export function createAgentTools(context, opts) {
       const { addr, ir } = await modelAndIr(functionAddress);
       const facts = ir ? semanticFacts(ir).filter((f) => (f.kind === FACT.WRITE || f.kind === FACT.RMW) && matchesLocation(f, normalized)) : [];
       const limit = bounded(options && options.limit, 100, 1, 1000); const offset = nonNegativeOffset(options && options.offset);
-      const page = facts.slice(offset, offset + limit); const complete = offset + page.length >= facts.length;
-      return { tool: 'find_field_writers', address: addr, results: page.map(compactFact), total:facts.length, returned:page.length, offset, complete, truncated:!complete, reason:complete ? null : 'result-limit', coverage:facts.length ? Math.min(1, (offset + page.length) / facts.length) : 1, evidence: semanticEvidenceIds(page) };
+      const page = facts.slice(offset, offset + limit);
+      return { tool: 'find_field_writers', address: addr, results: page.map(compactFact), returned:page.length, offset, ...semanticPageStatus(ir, facts.length, page.length, offset), evidence: semanticEvidenceIds(page) };
     },
     async find_field_readers(functionAddress, field, options) {
       const normalized = normalizeLocationSpec(field);
       const { addr, ir } = await modelAndIr(functionAddress);
       const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.READ && matchesLocation(f, normalized)) : [];
       const limit = bounded(options && options.limit, 100, 1, 1000); const offset = nonNegativeOffset(options && options.offset);
-      const page = facts.slice(offset, offset + limit); const complete = offset + page.length >= facts.length;
-      return { tool: 'find_field_readers', address: addr, results: page.map(compactFact), total:facts.length, returned:page.length, offset, complete, truncated:!complete, reason:complete ? null : 'result-limit', coverage:facts.length ? Math.min(1, (offset + page.length) / facts.length) : 1, evidence: semanticEvidenceIds(page) };
+      const page = facts.slice(offset, offset + limit);
+      return { tool: 'find_field_readers', address: addr, results: page.map(compactFact), returned:page.length, offset, ...semanticPageStatus(ir, facts.length, page.length, offset), evidence: semanticEvidenceIds(page) };
     },
     async find_constant(value, options) {
       const want = parseInteger(value, 'constant');
-      const addresses = functionCandidateAddresses(ctx, options && options.functions, maxFunctions);
+      const { addresses, scopeTruncated } = functionCandidateAddresses(ctx, options && options.functions, maxFunctions);
       const resultLimit = bounded(options && options.limit, 100, 1, 1000);
       const results = [];
+      let sourceReason = scopeTruncated ? 'function-budget' : (addresses.length ? null : 'function-scope-unavailable');
       for (const addr of addresses) {
-        const { ir } = await modelAndIr(addr); if (!ir) continue;
+        const { ir } = await modelAndIr(addr);
+        sourceReason ??= semanticSourceReason(ir);
+        if (!ir) continue;
         for (const v of ir.values || []) {
           if (v.const !== want || !v.def) continue;
           results.push({ function: addr, address: v.def.address, row: v.def.row, value: want, instructionId: v.def.id, evidence: ['ir:' + v.def.id] });
@@ -427,16 +469,15 @@ export function createAgentTools(context, opts) {
         }
         if (results.length >= resultLimit) break;
       }
-      const truncated = results.length >= resultLimit;
-      return { tool: 'find_constant', value: want, results, returned:results.length, total:truncated ? null : results.length, complete:!truncated, truncated, reason:truncated ? 'result-limit' : null, scopedFunctions: addresses.length, requiresScope: addresses.length === 0 };
+      const truncated = sourceReason != null || results.length >= resultLimit;
+      return { tool: 'find_constant', value: want, results, returned:results.length, total:truncated ? null : results.length, complete:!truncated, truncated, reason:sourceReason ?? (truncated ? 'result-limit' : null), scopeTruncated, scopedFunctions: addresses.length, requiresScope: addresses.length === 0 };
     },
     async find_thresholds(functionAddress, options) {
       const { addr, ir } = await modelAndIr(functionAddress);
       let facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.THRESHOLD) : [];
       if (options && options.value != null) { const want = parseInteger(options.value, 'threshold'); facts = facts.filter((f) => f.threshold === want); }
       const total = facts.length; const limit = bounded(options && options.limit, 300, 1, 1000); const offset = nonNegativeOffset(options && options.offset); const page = facts.slice(offset, offset + limit);
-      const complete = offset + page.length >= total;
-      return { tool: 'find_thresholds', address: addr, results: page.map(compactFact), total, returned:page.length, offset, complete, truncated:!complete, reason:complete ? null : 'result-limit', coverage:total ? Math.min(1, (offset + page.length) / total) : 1, evidence: semanticEvidenceIds(page) };
+      return { tool: 'find_thresholds', address: addr, results: page.map(compactFact), returned:page.length, offset, ...semanticPageStatus(ir, total, page.length, offset), evidence: semanticEvidenceIds(page) };
     },
     async find_paths(from, to, options) {
       const fromAddress = requiredAddress(from, 'from'); const toAddress = requiredAddress(to, 'to');
@@ -454,8 +495,7 @@ export function createAgentTools(context, opts) {
       if (options && options.kinds && options.kinds.length) { const kinds = new Set(options.kinds); facts = facts.filter((f) => kinds.has(f.kind)); }
       const total = facts.length; const limit = bounded(options && options.limit, 300, 1, 1000); const offset = nonNegativeOffset(options && options.offset);
       const page = facts.slice(offset, offset + limit);
-      const complete = offset + page.length >= total;
-      return { tool: 'get_semantic_facts', address: addr, results: page.map(compactFact), total, returned:page.length, offset, complete, truncated:!complete, reason:complete ? null : 'result-limit', coverage:total ? Math.min(1, (offset + page.length) / total) : 1, evidence: semanticEvidenceIds(page), engine: ir ? 'semantic-ir' : null };
+      return { tool: 'get_semantic_facts', address: addr, results: page.map(compactFact), returned:page.length, offset, ...semanticPageStatus(ir, total, page.length, offset), evidence: semanticEvidenceIds(page), engine: ir ? 'semantic-ir' : null };
     },
     async verify_field_update(functionAddress, field, options) {
       const normalized = normalizeLocationSpec(field);
@@ -469,16 +509,19 @@ export function createAgentTools(context, opts) {
         paths.push(minimalCausalPath(ir, seed, { function: addr, limit: pathLimit }));
       }
       const page = facts.slice(0, limit);
-      return { tool: 'verify_field_update', address: addr, verified: facts.length > 0, updates: page.map(compactFact), causalPaths: paths, total:facts.length, returned:page.length, complete:page.length >= facts.length, truncated:page.length < facts.length, reason:page.length < facts.length ? 'result-limit' : null, evidence: semanticEvidenceIds(page), engine: 'semantic-ir' };
+      return { tool: 'verify_field_update', address: addr, verified: facts.length > 0, updates: page.map(compactFact), causalPaths: paths, returned:page.length, ...semanticPageStatus(ir, facts.length, page.length), evidence: semanticEvidenceIds(page), engine: 'semantic-ir' };
     },
     async explain_evidence(evidenceIds, options) {
       if (typeof ctx.explainEvidence === 'function') return ctx.explainEvidence(evidenceIds, options);
       const ids = new Set(Array.isArray(evidenceIds) ? evidenceIds : [evidenceIds]);
-      const addresses = functionCandidateAddresses(ctx, options && options.functions, maxFunctions);
+      const { addresses, scopeTruncated } = functionCandidateAddresses(ctx, options && options.functions, maxFunctions);
       const resultLimit = bounded(options && options.limit, 200, 1, 1000);
       const results = [];
+      let sourceReason = scopeTruncated ? 'function-budget' : (addresses.length ? null : 'function-scope-unavailable');
       for (const addr of addresses) {
-        const { ir } = await modelAndIr(addr); if (!ir) continue;
+        const { ir } = await modelAndIr(addr);
+        sourceReason ??= semanticSourceReason(ir);
+        if (!ir) continue;
         for (const f of semanticFacts(ir)) {
           const hits = (f.evidence || []).filter((e) => ids.has(e.id));
           if (hits.length) results.push({ function: addr, fact: compactFact(f), evidence: hits });
@@ -486,8 +529,8 @@ export function createAgentTools(context, opts) {
         }
         if (results.length >= resultLimit) break;
       }
-      const truncated = results.length >= resultLimit;
-      return { tool: 'explain_evidence', results, returned:results.length, total:truncated ? null : results.length, complete:!truncated, truncated, reason:truncated ? 'result-limit' : null, unresolved: Array.from(ids).filter((id) => !results.some((r) => r.evidence.some((e) => e.id === id))) };
+      const truncated = sourceReason != null || results.length >= resultLimit;
+      return { tool: 'explain_evidence', scopeTruncated, scopedFunctions: addresses.length, results, returned:results.length, total:truncated ? null : results.length, complete:!truncated, truncated, reason:sourceReason ?? (truncated ? 'result-limit' : null), unresolved: Array.from(ids).filter((id) => !results.some((r) => r.evidence.some((e) => e.id === id))) };
     },
     async symbolic_execute(functionAddress, options) {
       const { addr, ir } = await modelAndIr(functionAddress);

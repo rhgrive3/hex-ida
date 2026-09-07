@@ -24,7 +24,8 @@ function stringArray(value, code) {
     throw new ArtifactCorruptionError(code);
   }
   for (let i = 1; i < value.length; i++) {
-    if (value[i - 1].localeCompare(value[i]) >= 0) throw new ArtifactCorruptionError(code);
+    // Match descriptor sortedStrings(): UTF-16 code-unit order, never locale collation.
+    if (value[i - 1] >= value[i]) throw new ArtifactCorruptionError(code);
   }
 }
 
