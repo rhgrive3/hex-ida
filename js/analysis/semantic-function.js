@@ -4,7 +4,14 @@ import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
-import { SEMANTIC_FUNCTION_ROUTE, semanticAbiAdapter } from './semantic-function-base.js';
+import {
+  SEMANTIC_FUNCTION_ROUTE,
+  canonicalDecodedInstructions,
+  createSemanticCallPrototypeAuthority,
+  isSemanticCallPrototypeAuthority,
+  semanticAbiAdapter,
+  semanticControlUnknowns,
+} from './semantic-function-base.js';
 
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
@@ -28,53 +35,94 @@ function canonicalInstructionAddress(value, code) {
 function addressOf(instruction) {
   return canonicalInstructionAddress(instruction.address, 'semantic-function-instruction-address-invalid');
 }
+function instructionLengthOf(instruction) {
+  const length = canonicalInstructionAddress(
+    instruction.length ?? instruction.size,
+    'semantic-function-instruction-length-invalid',
+  );
+  if (length === 0n) throw new TypeError('semantic-function-instruction-length-invalid');
+  return length;
+}
 function endOf(instruction) {
-  return addressOf(instruction)
-    + canonicalInstructionAddress(instruction.length ?? instruction.size, 'semantic-function-instruction-length-invalid');
+  return addressOf(instruction) + instructionLengthOf(instruction);
 }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
+const CONTROL_FLOW_KINDS = new Set([
+  'fallthrough',
+  'call',
+  'branch',
+  'conditional-branch',
+  'return',
+  'unknown',
+]);
+
 function controlKind(plugin, instruction) {
-  try { return String(plugin.classifyControlFlow?.(instruction) || 'fallthrough'); }
-  catch { return 'unknown'; }
+  try {
+    const kind = plugin.classifyControlFlow?.(instruction);
+    if (kind == null || kind === '') return 'fallthrough';
+    return typeof kind === 'string' && CONTROL_FLOW_KINDS.has(kind) ? kind : 'unknown';
+  } catch { return 'unknown'; }
 }
 
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null ? null : BigInt(target);
+    if (target == null) return null;
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 
-function callNoreturnState(options = {}) {
-  const prototype = options?.callPrototype;
+function prototypeNoreturnState(prototype) {
   if (!prototype || typeof prototype !== 'object') return 'unknown';
   if (prototype.noreturn === true || prototype.returns === false) return true;
   if (prototype.noreturn === false || prototype.returns === true) return false;
   return 'unknown';
 }
 
-function isAuthoritativeNoreturnCall(kind, options = {}) {
-  return kind === 'call' && callNoreturnState(options) === true;
+function callPrototypeAuthorityFor(instructions, architecturePlugin, options = {}) {
+  if (isSemanticCallPrototypeAuthority(options?.callPrototypeAuthority)) return options.callPrototypeAuthority;
+  const callsites = [];
+  for (const instruction of instructions) {
+    if (controlKind(architecturePlugin, instruction) !== 'call') continue;
+    callsites.push({
+      instruction,
+      address:addressOf(instruction),
+      target:directTarget(architecturePlugin, instruction),
+    });
+  }
+  return createSemanticCallPrototypeAuthority(callsites, options);
 }
 
 export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
-  if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
-  const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
-  const byAddress = new Map();
+  const { instructions: ordered, byAddress } = canonicalDecodedInstructions(instructions);
+
+  const callPrototypeAuthority = callPrototypeAuthorityFor(ordered, architecturePlugin, options);
+  const controlByAddress = new Map();
   for (const instruction of ordered) {
     const address = addressOf(instruction);
-    if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
-    byAddress.set(address.toString(), instruction);
+    const kind = controlKind(architecturePlugin, instruction);
+    const target = directTarget(architecturePlugin, instruction);
+    const callPrototype = kind === 'call' ? callPrototypeAuthority.prototypeForInstruction(instruction) : null;
+    controlByAddress.set(address.toString(), {
+      kind,
+      target,
+      callPrototype,
+      noreturn: kind === 'call' && prototypeNoreturnState(callPrototype) === true,
+    });
   }
 
   const starts = new Set([addressOf(ordered[0]).toString()]);
   for (let index = 0; index < ordered.length; index++) {
     const instruction = ordered[index];
-    const kind = controlKind(architecturePlugin, instruction);
-    const target = directTarget(architecturePlugin, instruction);
+    const control = controlByAddress.get(addressOf(instruction).toString());
+    const { kind, target } = control;
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
-    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) {
+    if (ordered[index + 1] && addressOf(ordered[index + 1]) !== endOf(instruction)) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
+    if ((['branch','conditional-branch','return','unknown'].includes(kind) || control.noreturn) && ordered[index + 1]) {
       starts.add(addressOf(ordered[index + 1]).toString());
     }
   }
@@ -93,8 +141,8 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
   const byStart = new Map(blocks.map((block) => [block.startAddress.toString(), block]));
   for (const block of blocks) {
     const instruction = block.instructions.at(-1).decoded;
-    const kind = controlKind(architecturePlugin, instruction);
-    const target = directTarget(architecturePlugin, instruction);
+    const control = controlByAddress.get(addressOf(instruction).toString());
+    const { kind, target } = control;
     const targetBlock = target == null ? null : byStart.get(target.toString());
     const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
@@ -104,7 +152,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       }
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
-    } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
+    } else if (!['return','unknown'].includes(kind) && !control.noreturn && fallthroughBlock) {
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
@@ -244,11 +292,15 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const decoderSemanticVersion = assertRequiredString(input.decoderSemanticVersion, 'decoder-semantic-version');
   const binaryId = assertRequiredString(input.binaryId, 'binary-id');
   const sliceId = assertRequiredString(input.sliceId, 'slice-id');
-  const orderedInstructions = Array.isArray(input.instructions)
-    ? input.instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)
-    : input.instructions;
-  const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
-  const abiAdapter = semanticAbiAdapter(abiPlugin, input);
+  const orderedInstructions = canonicalDecodedInstructions(input.instructions).instructions;
+  const callPrototypeAuthority = callPrototypeAuthorityFor(orderedInstructions, architecturePlugin, {
+    callPrototype:input.callPrototype ?? null,
+    callPrototypeFor:input.callPrototypeFor,
+  });
+  const cfgOptions = { callPrototypeAuthority };
+  const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, cfgOptions);
+  const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, cfgOptions);
+  const abiAdapter = semanticAbiAdapter(abiPlugin, input, { callPrototypeAuthority });
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
   const pipeline = buildSemanticV2CompatibilityPipeline({
@@ -260,6 +312,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     mode:input.mode ?? defaultMode ?? 'default',
     entryBlockKey:blocks[0].key,
     blocks,
+    completeness: controlUnknowns.length ? 'partial' : 'complete',
+    unknowns: controlUnknowns,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,

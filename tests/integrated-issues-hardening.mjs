@@ -435,6 +435,8 @@ console.log('Testing integrated PRs and issue fixes...');
     binaryId: 'binary_1',
     functionId: 'function_1',
     architectureId: 'arm64',
+    architectureSemanticVersion: '1.0.0',
+    abiSemanticVersion: '1.0.0',
     snapshotId: 'snapshot_1',
     analyzerId: 'phase7.types.constraints',
     analyzerVersion: '1.0.0',
@@ -663,18 +665,22 @@ console.log('\nAll integrated issue tests PASS!');
   const { scanSourceStrings } = await import('../js/bytesource/strings.js');
   const image = { sections: [], offsetToAddress: (o) => o };
 
-  // UTF-16LE: "A"(too short) + malformed pair + "BC" starting at odd offset 3.
-  const le = Uint8Array.from([0x41, 0x00, 0xff, 0x42, 0x00, 0x43, 0x00]);
+  // UTF-16LE: "A" (too short), then an unmatched high surrogate at offset 2.
+  // Shifted by one byte, the same bytes form U+4ED8 + "C" at offset 3.
+  // The old 0xff,0x42 pair was printable U+42FF, not a malformed delimiter.
+  const le = Uint8Array.from([0x41, 0x00, 0x00, 0xd8, 0x4e, 0x43, 0x00]);
+  assert.throws(() => new TextDecoder("utf-16le", { fatal: true }).decode(le.subarray(2, 6)), TypeError);
   const resLe = await scanSourceStrings(image, le, { minLength: 2, utf16: 'le' });
-  assert.ok(resLe.results.some((s) => s.fileOffset === 3n && s.text === 'BC' && s.encoding === 'utf16le'),
-    `expected "BC" at offset 3, got ${resLe.results.map((x) => `${x.encoding}@${x.fileOffset}`).join(" | ")}`);
+  assert.ok(resLe.results.some((s) => s.fileOffset === 3n && s.text === '\u4ed8C' && s.encoding === 'utf16le'),
+    `expected U+4ED8 + "C" at offset 3, got ${resLe.results.map((x) => `${x.encoding}@${x.fileOffset}`).join(" | ")}`);
 
-  // Symmetric UTF-16BE case: "A" (1 char, below minLength) then a malformed
-  // pair, then "BC" at the odd offset 3 (00 42 00 43).
-  const be = Uint8Array.from([0x00, 0x41, 0xff, 0x00, 0x42, 0x00, 0x43]);
+  // Symmetric UTF-16BE case: the unmatched surrogate at offset 2 must
+  // not hide the valid U+4ED8 + "C" run at odd offset 3.
+  const be = Uint8Array.from([0x00, 0x41, 0xd8, 0x4e, 0xd8, 0x00, 0x43]);
+  assert.throws(() => new TextDecoder("utf-16be", { fatal: true }).decode(be.subarray(2, 6)), TypeError);
   const resBe = await scanSourceStrings(image, be, { minLength: 2, utf16: 'be' });
-  assert.ok(resBe.results.some((s) => s.fileOffset === 3n && s.text === 'BC' && s.encoding === 'utf16be'),
-    `expected "BC" at offset 3 (BE), got ${resBe.results.map((x) => `${x.encoding}@${x.fileOffset} "${x.text}"`).join(' | ')}`);
+  assert.ok(resBe.results.some((s) => s.fileOffset === 3n && s.text === '\u4ed8C' && s.encoding === 'utf16be'),
+    `expected U+4ED8 + "C" at offset 3 (BE), got ${resBe.results.map((x) => `${x.encoding}@${x.fileOffset} "${x.text}"`).join(' | ')}`);
   // No duplicate emits for normal contiguous strings.
   const pad = Buffer.concat([Buffer.from([0xff]), Buffer.from('HELLO', 'utf16le'), Buffer.from([1, 2]), Buffer.from('WORLD', 'utf16le')]);
   const dupes = await scanSourceStrings(image, pad, { minLength: 2, utf16: 'both' });
