@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { buildObjcModel, pagedReader } from '../../../js/objc-legacy.js';
 import { parseObjcExtendedMetadata } from '../../../js/apple/objc-metadata.js';
+import { ObjcMetadataProvider } from '../../../js/metadata/objc.js';
 import { FieldIndex, EMPTY_FIELDS } from '../../../js/fields.js';
 import { buildObjcRuntimeIndex } from '../../../js/objc.js';
 import { appProducerAbortError, waitForAppProducer } from '../../../js/analysis/producer-wait.js';
@@ -172,6 +173,27 @@ function extendedFixture() {
   assert.equal(app.objcModel ?? null, null, 'partial model must not be published after in-flight abort');
   assert.equal(app.objcRuntime ?? null, null, 'partial runtime index must not be published after in-flight abort');
   assert.equal(app.fields, fields, 'aborted publication must leave the existing field index intact');
+}
+
+{
+  const { baseRead, classList } = legacyFixture();
+  const controller = new AbortController();
+  let reads = 0;
+  const provider = new ObjcMetadataProvider({
+    sections: [{ name: '__objc_classlist', section: '__objc_classlist', vmAddr: classList.vmAddr, size: classList.size }],
+    readAt: async (addr, len) => {
+      reads++;
+      const result = await baseRead(addr, len);
+      controller.abort('objc-provider-aborted');
+      return result;
+    },
+    options: { signal: controller.signal },
+  });
+  const result = await provider.probe();
+  assert.equal(result.identity.verdict, 'malformed', 'an aborted provider probe must not publish partial metadata');
+  assert.equal(provider.cachedModel, null, 'aborted provider probe must leave the model cache empty');
+  assert.equal(provider.cachedIndex, null, 'aborted provider probe must leave the index cache empty');
+  assert.equal(reads, 1, 'the provider must stop after the in-flight read is aborted');
 }
 
 console.log('issue-6192: PASS');
