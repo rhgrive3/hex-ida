@@ -19,7 +19,14 @@ function registerDelta(before, after) {
   for (const key of Object.keys(after || {})) if (before[key] !== after[key]) out[key] = { before:before[key], after:after[key] };
   return out;
 }
+// Structured EmulatorFault/memory-access codes (js/emu.js, js/runtime/memory.js)
+// whose identity must decide the stop taxonomy instead of the human-readable
+// message (issue #5838).
+const FAULT_CODES = new Set(['unmapped-memory', 'memory-read-failed', 'oob', 'permission', 'mmio-unknown']);
 function classifyStop(result) {
+  const code = result && (result.faultCode != null ? result.faultCode : result.code);
+  const structured = code != null ? String(code) : null;
+  if (structured && FAULT_CODES.has(structured)) return { kind:'fault', code:structured, message:String(result.stopped || '') };
   const reason = String(result && result.stopped || '');
   if (!reason) return { kind:'paused', message:null };
   if (/命令ぶん進んだ|timeout/i.test(reason)) return { kind:'timeout', message:reason };
@@ -325,7 +332,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
       for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
       this.traceCursor = (sandbox.emulator.trace || []).length;
-      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
+      return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop(raw) };
     } finally {
       if (this.activeRun === run) {
         this.activeRun = null;
