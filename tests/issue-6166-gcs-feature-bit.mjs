@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseAarch64GnuProperty, GNU_PROPERTY_AARCH64_FEATURE_1_GCS } from '../js/binary/elf-gnu-property.js';
 
-function fixture(featureBits) {
+function fixture(featureBits, { propertyType = 0xc0000000 } = {}) {
   const noteOffset = 0x100;
   const descOffset = (noteOffset + 12 + 4 + 3) & ~3;
   const descSize = 16;
@@ -24,7 +24,7 @@ function fixture(featureBits) {
   dv.setUint32(noteOffset + 4, descSize, true);
   dv.setUint32(noteOffset + 8, 5, true);
   bytes.set([0x47, 0x4e, 0x55, 0x00], noteOffset + 12);
-  dv.setUint32(descOffset, 0xc0000000, true);
+  dv.setUint32(descOffset, propertyType, true);
   dv.setUint32(descOffset + 4, 4, true);
   dv.setUint32(descOffset + 8, featureBits, true);
   return bytes;
@@ -62,7 +62,7 @@ test('issue #6166 - unknown path keeps GCS null like BTI/PAC', () => {
 });
 
 test('issue #6166 - absent path keeps GCS false', () => {
-  const r = parseAarch64GnuProperty(fixture(0x0));
-  // fully scanned absent -> false (not null)
+  const r = parseAarch64GnuProperty(fixture(0x0, { propertyType: 0 }));
+  assert.equal(r.loaderPolicy, 'feature-bit-absent');
   assert.equal(r.gcsRequested, false);
 });
