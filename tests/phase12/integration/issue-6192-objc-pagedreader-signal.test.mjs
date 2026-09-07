@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { buildObjcModel, pagedReader } from '../../../js/objc-legacy.js';
 import { parseObjcExtendedMetadata } from '../../../js/apple/objc-metadata.js';
+import { FieldIndex, EMPTY_FIELDS } from '../../../js/fields.js';
+import { buildObjcRuntimeIndex } from '../../../js/objc.js';
+import { appProducerAbortError, waitForAppProducer } from '../../../js/analysis/producer-wait.js';
 
 function legacyFixture() {
   const mem = new Uint8Array(0x4000);
@@ -118,6 +122,56 @@ function extendedFixture() {
   await parseObjcExtendedMetadata(read, sections, { pageBytes: 32, signal: controller.signal });
   assert.equal(postAbort, 0, `no new reads after abort, got ${postAbort} post-abort reads of ${reads}`);
   assert.ok(reads < 10, `nested scan must stop early, got ${reads} reads`);
+}
+
+{
+  const appSource = await readFile(new URL('../../../js/app.js', import.meta.url), 'utf8');
+  const methodStart = appSource.indexOf('  async ensureObjc(sliceIndex, options = {}) {');
+  const methodEnd = appSource.indexOf('\n  async ensureSwift(options = {}) {', methodStart);
+  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'ensureObjc source must remain discoverable');
+  const methodSource = appSource.slice(methodStart, methodEnd);
+  let buildStarted;
+  const buildStartedPromise = new Promise((resolve) => { buildStarted = resolve; });
+  const Harness = new Function(
+    'FieldIndex', 'EMPTY_FIELDS', 'buildObjcRuntimeModel', 'buildObjcRuntimeIndex',
+    'appProducerAbortError', 'waitForAppProducer',
+    `return class Harness {\n${methodSource}\n}`,
+  )(FieldIndex, EMPTY_FIELDS, async (_read, _list, _sections, _progress, _imageBase, _pointerFormat, options) => {
+    buildStarted();
+    await options.release;
+    return { classes: [], names: [{ addr: 0x2100n, name: '-[Partial run]' }], count: 1, runtimeIndex: null };
+  }, buildObjcRuntimeIndex, appProducerAbortError, waitForAppProducer);
+
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  const fields = { sentinel: true };
+  const app = new Harness();
+  app.backend = { gen: 1 };
+  app.store = { get(key) {
+    if (key === 'regions') return [{ section: '__objc_classlist', vmAddr: 0x200n, size: 8n }];
+    if (key === 'sliceIndex') return 0;
+    if (key === 'fileInfo') return { slices: [{ info: { textVM: 0n } }] };
+    return null;
+  } };
+  app.fields = fields;
+  app.symbols = {
+    addNames() { throw new Error('aborted model was published'); },
+    addFunctions() { throw new Error('aborted model was published'); },
+  };
+  app.viewer = { setSymbols() { throw new Error('aborted model was published'); } };
+  app.updateChrome = () => { throw new Error('aborted model was published'); };
+
+  const caller = new AbortController();
+  const pending = app.ensureObjc(0, { signal: caller.signal, release: released });
+  await buildStartedPromise;
+  const reason = new Error('objc-publication-aborted');
+  caller.abort(reason);
+  release();
+  await assert.rejects(pending, (error) => error === reason, 'caller cancellation should preserve its reason');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(app.objcModel ?? null, null, 'partial model must not be published after in-flight abort');
+  assert.equal(app.objcRuntime ?? null, null, 'partial runtime index must not be published after in-flight abort');
+  assert.equal(app.fields, fields, 'aborted publication must leave the existing field index intact');
 }
 
 console.log('issue-6192: PASS');
