@@ -58,9 +58,21 @@ export function snapshotArm64ImmediateOperands(instruction, ops) {
 
     const kindDescriptor = descriptors.k;
     if (!kindDescriptor) {
-      let kind;
-      try { kind = op.k; } catch { return null; }
-      if (kind === 'imm') return null;
+      // An immediate must carry its kind as an own data property. Inspect the
+      // prototype chain without invoking inherited accessors; an inherited
+      // accessor is untrusted authority and fails closed.
+      let prototype;
+      try { prototype = Object.getPrototypeOf(op); } catch { return null; }
+      while (prototype !== null) {
+        let inherited;
+        try { inherited = Object.getOwnPropertyDescriptor(prototype, 'k'); } catch { return null; }
+        if (inherited) {
+          if (!hasOwnValue(inherited)) return null;
+          if (inherited.value === 'imm') return null;
+          break;
+        }
+        try { prototype = Object.getPrototypeOf(prototype); } catch { return null; }
+      }
       stableOps.push(op);
       continue;
     }
