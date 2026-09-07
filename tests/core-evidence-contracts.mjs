@@ -4,7 +4,7 @@ import {
   EVIDENCE_NODE_FAMILIES, EVIDENCE_EDGE_FAMILIES,
 } from '../js/core/evidence/index.js';
 import {
-  legacyAiEvidenceToCanonical, runtimeEvidenceToCanonical, legacyEvidenceToCanonicalGraph,
+  canonicalEvidenceToLegacyAi, legacyAiEvidenceToCanonical, runtimeEvidenceToCanonical, legacyEvidenceToCanonicalGraph,
 } from '../js/core/evidence/compat.js';
 
 for (const family of ['BinaryEvidence','DecodeEvidence','SemanticEvidence','DataflowEvidence','TypeEvidence','ControlFlowEvidence','SignatureEvidence','KnowledgeEvidence','SymbolicEvidence','RuntimeEvidence','UserEvidence','Claim']) {
@@ -143,3 +143,30 @@ assert.equal(compatGraph.allNodes().length, 2);
 }
 
 console.log('core evidence contracts: ok');
+
+
+// #5782: canonical top-level binary identity is authoritative on legacy projection.
+{
+  const canonical = createEvidenceNode({
+    id:'ev-5782-canonical', family:'SemanticEvidence', binaryId:'bin-A',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true, payload:{ summary:'demo' },
+  });
+  const legacy = canonicalEvidenceToLegacyAi(canonical);
+  assert.equal(legacy.binaryId, 'bin-A');
+  assert.equal(legacyAiEvidenceToCanonical(legacy).binaryId, 'bin-A');
+
+  const legacyOrigin = legacyAiEvidenceToCanonical({
+    id:'ev-5782-legacy', kind:'observation', status:'supported',
+    binaryId:'bin-B', title:'t',
+  });
+  assert.equal(canonicalEvidenceToLegacyAi(legacyOrigin).binaryId, 'bin-B');
+
+  const unbound = createEvidenceNode({
+    id:'ev-5782-unbound', family:'SemanticEvidence',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true, payload:{},
+  });
+  assert.equal(canonicalEvidenceToLegacyAi(unbound).binaryId, undefined);
+  assert.equal(legacyAiEvidenceToCanonical(canonicalEvidenceToLegacyAi(unbound)).binaryId, null);
+}
