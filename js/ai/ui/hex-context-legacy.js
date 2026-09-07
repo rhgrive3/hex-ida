@@ -161,9 +161,11 @@ export function createHexAIContext(app) {
         if (q && !String(row.text || '').toLowerCase().includes(q)) continue;
         matches++;
         if (matches <= offset) continue;
-        out.push({ text: row.text, stringAddress: row.addr });
-        if (out.length >= limit) break;
+        if (out.length < limit) out.push({ text: row.text, stringAddress: row.addr });
       }
+      out.offset = offset;
+      out.matchCount = matches;
+      out.total = matches;
       return out;
     },
     async searchFunctions(query, options = {}) {
@@ -184,8 +186,11 @@ export function createHexAIContext(app) {
           if(out.length<limit)out.push({addr:item.address,name:name||null,score:item.score||0,classification:item.classification,confidence:item.confidence,knowledge:item.knowledge||null});
         }
         const pageEnd=offset+out.length;
+        out.offset=offset;
+        out.matchCount=matches;
+        if (app.recognition.complete===true) out.total=matches; else out.truncated=true;
         out.complete=app.recognition.complete===true && pageEnd>=matches;
-        out.scannedCount=app.recognition.scannedCount;out.total=app.recognition.total;out.matchCount=matches;
+        out.scannedCount=app.recognition.scannedCount;
         out.truncationReason=app.recognition.complete!==true?(app.recognition.truncationReason||'recognition-incomplete'):pageEnd<matches?'result-limit':null;
         out.coverage=app.recognition.total?app.recognition.scannedCount/app.recognition.total:1;
         return out;
@@ -201,8 +206,13 @@ export function createHexAIContext(app) {
         if(out.length<limit) out.push({ addr: sym.addrs[i], name });
       }
       const pageEnd=offset+out.length;
-      out.complete=maxScan===sym.names.length && pageEnd>=matches; out.scannedCount=maxScan;out.total=sym.names.length;out.matchCount=matches;
-      out.truncationReason=maxScan<sym.names.length?'scan-budget':pageEnd<matches?'result-limit':null;out.coverage=sym.names.length?maxScan/sym.names.length:1;
+      out.offset=offset;
+      out.matchCount=matches;
+      if (maxScan===sym.names.length) out.total=matches; else out.truncated=true;
+      out.complete=maxScan===sym.names.length && pageEnd>=matches;
+      out.scannedCount=maxScan;
+      out.truncationReason=maxScan<sym.names.length?'scan-budget':pageEnd<matches?'result-limit':null;
+      out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
     async decompile(address) {
