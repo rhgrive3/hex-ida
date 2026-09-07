@@ -10,7 +10,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runnableTest = p => /^tests\/.+\.(?:test\.)?m?js$/.test(p)
   && !/(?:^|\/)(?:fixtures?|corpus|support)(?:\/|\.)/.test(p)
   && !/(?:^|\/)run\.[cm]?js$/.test(p);
-const codePath = p => /\.(?:[cm]?js|ts|tsx|jsx|wasm|css|html)$/.test(p)
+const codePath = p => /\.(?:[cm]?js|ts|tsx|jsx|wasm|css|html|ya?ml|jsonc?)$/.test(p)
   || /(?:^|\/)(?:package(?:-lock)?\.json)$/.test(p);
 
 export function parseArgs(argv) {

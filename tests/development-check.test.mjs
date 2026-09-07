@@ -105,3 +105,18 @@ test('focused CLI propagates child failure and executes in its declared root', a
     assert.equal(await main(['--test', 'tests/cwd.test.mjs'], root), 0);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('CI requires explicit test selection for workflow/config-only edits', () => {
+  for (const p of ['.github/workflows/another.yml', 'wrangler.jsonc', 'tools/profile.json']) {
+    assert.equal(plan({ paths: [p] }).needsSelection, true);
+  }
+});
+test('workflow preserves repository trust and manual batch rejects meta-script shortcuts', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/final-closure-preflight.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /head.repo.full_name == github.repository/);
+  assert.match(workflow, /base.repo.full_name == github.repository/);
+  assert.match(workflow, /run-development-check.mjs --script "\$SUBSYSTEM"/);
+  for (const name of ['check:dev', 'check:one', 'check:parallel']) {
+    assert.throws(() => plan({ paths: [], scripts: [name], packageScripts: { [name]: 'node whatever' } }), /recursive/);
+  }
+});

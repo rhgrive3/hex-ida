@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   development:
-    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'component/final-closure-') || startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-') || github.head_ref == 'perf/development-gate-policy' || startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.repo.full_name == github.repository && (startsWith(github.head_ref, 'component/final-closure-') || startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-') || github.head_ref == 'perf/development-gate-policy' || startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -62,7 +62,7 @@ jobs:
         if: inputs.mode == 'integration'
         env:
           SUBSYSTEM: ${{ inputs.script }}
-        run: node scripts/run-one-check.mjs "$SUBSYSTEM"
+        run: node scripts/run-development-check.mjs --script "$SUBSYSTEM"
       - name: Run canonical final product checks once
         if: inputs.mode == 'release'
         run: node scripts/run-quiet-command.mjs --label release-check -- npm run check
