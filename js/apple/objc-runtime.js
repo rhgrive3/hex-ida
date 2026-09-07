@@ -517,10 +517,19 @@ const ARC_NOISE = [
   /^_?_Block_(copy|release)\b/,
 ];
 
+// Real Objective-C dispatch entry points only. A bare substring match pulls
+// ordinary C/C++ symbols that merely CONTAIN 'objc_msgSend' (wrappers, mangled
+// helpers) into the dispatch path and drops their direct call targets (#5936).
+const OBJC_MSG_SEND_SYMBOL = /^_?objc_msgSend(?:Super2_stret|Super_stret|Super2|Super|_stret|_fpret|_fp2ret)?(?:_debug)?(?:_fixup)?(?:\$.+)?$/;
+
+export function isObjcMsgSendSymbol(name) {
+  return OBJC_MSG_SEND_SYMBOL.test(String(name || ''));
+}
+
 export function classifyObjcRuntimeCall(name) {
   const n = String(name || '');
   if (ARC_NOISE.some((r) => r.test(n))) return { runtime: 'objc', noise: true, category: 'ownership', name: n };
-  if (/objc_msgSend/.test(n)) return { runtime: 'objc', noise: false, category: 'dispatch', name: n };
+  if (isObjcMsgSendSymbol(n)) return { runtime: 'objc', noise: false, category: 'dispatch', name: n };
   if (/objc_(get|set)Property/.test(n)) return { runtime: 'objc', noise: false, category: 'property', name: n };
   return null;
 }
