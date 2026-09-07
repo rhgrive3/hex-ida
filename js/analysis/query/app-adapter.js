@@ -50,9 +50,24 @@ function positiveSafeIntegerScalar(value) {
 }
 
 function abortError(signal, fallback = 'Analysis query aborted') {
-  const error = signal?.reason instanceof Error ? signal.reason : new Error(String(signal?.reason || fallback));
-  if (!error.name || error.name === 'Error') error.name = 'AbortError';
-  if (!error.code) error.code = 'ABORT_ERR';
+  const reason = signal?.reason;
+  let message = fallback;
+  let reasonName = null;
+  let reasonCode = null;
+  if (reason instanceof Error) {
+    try { message = reason.message || String(reason) || fallback; } catch { /* use fallback */ }
+    try { reasonName = reason.name || null; } catch { /* use normalized name */ }
+    try { reasonCode = reason.code || null; } catch { /* use normalized code */ }
+    if (reasonName === 'AbortError' && reasonCode === 'ABORT_ERR') return reason;
+  } else if (reason != null) {
+    try { message = String(reason) || fallback; } catch { /* use fallback */ }
+  }
+  // Never mutate signal.reason: it can be frozen, shared, or otherwise
+  // caller-owned. A fresh normalized error also prevents one consumer's
+  // cancellation metadata from leaking into another consumer.
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
   return error;
 }
 
