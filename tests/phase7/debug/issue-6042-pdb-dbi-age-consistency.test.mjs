@@ -11,7 +11,7 @@ import { isDebugRecordAuthoritative } from '../../../js/analysis/debug/provider.
 
 const GUID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
 
-function buildPdb({ infoAge = 1, dbiAge = 1 } = {}) {
+function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64 } = {}) {
   const blockSize = 64;
   const blockCount = 6;
   const bytes = new Uint8Array(blockSize * blockCount);
@@ -26,7 +26,7 @@ function buildPdb({ infoAge = 1, dbiAge = 1 } = {}) {
   view.setUint32(blockSize, 2, true);
   let cursor = blockSize * 2;
   view.setUint32(cursor, 4, true); cursor += 4;
-  for (const size of [0, 28, 56, 64]) {
+  for (const size of [0, 28, 56, dbiSize]) {
     view.setUint32(cursor, size, true);
     cursor += 4;
   }
@@ -79,6 +79,32 @@ test('#6042: a DBI age that contradicts the info stream downgrades authority', (
   assert.equal(result.identity.verdict, 'identity-mismatch', 'a mixed-generation PDB is not authoritative');
   assert.ok(result.diagnostics.some((d) => d.includes('DBI stream age')), JSON.stringify(result.diagnostics));
   assert.equal(result.authoritative, false);
+});
+
+test('#6042: matching CodeView/Info ages without a parsed DBI stay unavailable', () => {
+  for (const dbiSize of [0, 63]) {
+    const result = probe({ infoAge: 1, dbiAge: 1, dbiSize });
+    assert.equal(result.identity.verdict, 'identity-unavailable');
+    assert.equal(result.identity.detail, 'PDB DBI header is missing or truncated');
+    assert.equal(result.authoritative, false);
+    assert.equal(result.status.completeness, 'partial');
+    assert.equal(result.status.stopReason, 'evidence-missing');
+    assert.ok(result.diagnostics.includes('PDB DBI header is missing or truncated'));
+
+    const candidate = {
+      kind: 'symbol',
+      entityId: 'probe',
+      name: 'probe',
+      address: null,
+      sizeBytes: null,
+      descriptor: null,
+      providerId: result.providerId,
+      providerVersion: result.providerVersion,
+      buildIdentity: result.identity.observed,
+      evidenceIds: ['pdb:test'],
+    };
+    assert.equal(isDebugRecordAuthoritative(result, candidate), false);
+  }
 });
 
 test('#6042: the authoritative record filter drops symbols from a mismatched DBI', () => {
