@@ -40,6 +40,26 @@ assert.equal(
 assert.deepEqual(treeProgress, expectedProgress);
 
 for (const hash of [hashByteSource, sha256TreeByteSource]) {
+  const boundEvents = [];
+  function progress(value) {
+    boundEvents.push(value);
+  }
+  const boundProgress = progress.bind({ ignored: true });
+  assert.equal(
+    await hash(source(), { chunkSize: 2, onProgress: boundProgress }),
+    hash === hashByteSource ? expectedFnv : expectedTree,
+  );
+  assert.deepEqual(boundEvents, expectedProgress, 'bound ordinary callbacks remain valid callbacks');
+
+  const boundCallbackError = new Error('bound progress callback failure');
+  const throwingBoundProgress = function throwingProgress() {
+    throw boundCallbackError;
+  }.bind(null);
+  await assert.rejects(
+    hash(source(), { chunkSize: 2, onProgress: throwingBoundProgress }),
+    (error) => error === boundCallbackError,
+  );
+
   await assert.rejects(
     hash(source(), { chunkSize: 0 }),
     /chunkSize must be a positive safe integer/,

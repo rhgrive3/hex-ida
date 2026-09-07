@@ -4,6 +4,11 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
+function isClassConstructorInvocationError(error) {
+  return error instanceof TypeError
+    && /constructor\b.*cannot be invoked without\s+["']new["']/i.test(error.message);
+}
+
 function optionalProgressCallback(value) {
   if (typeof value !== 'function') return null;
   try {
@@ -18,7 +23,22 @@ function optionalProgressCallback(value) {
     // either run user code early or force us to swallow real callback exceptions.
     // Ordinary functions have a writable own prototype; non-constructible
     // functions (arrows/methods) are safe to invoke directly.
-    if (constructible && (!prototype || prototype.writable !== true)) return null;
+    if (constructible && !prototype) {
+      // A bound ordinary function and a bound class have the same observable
+      // shape: neither exposes its target or an own prototype. Preserve the
+      // callable form and defer the class-only check until normal progress
+      // delivery. The engine error is the only failure swallowed here; errors
+      // raised by an ordinary bound callback still propagate unchanged.
+      return function safeBoundProgressCallback(...args) {
+        try {
+          return Reflect.apply(value, this, args);
+        } catch (error) {
+          if (isClassConstructorInvocationError(error)) return undefined;
+          throw error;
+        }
+      };
+    }
+    if (constructible && prototype.writable !== true) return null;
     return value;
   } catch {
     return null;
@@ -59,6 +79,9 @@ export async function hashByteSource(input, options = {}) {
 export function hashBytes(bytes) {
   let hash = FNV_OFFSET;
   for (const b of bytes || []) {
+    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
+      throw new TypeError('hashBytes byte must be an integer 0..255');
+    }
     hash ^= BigInt(b);
     hash = (hash * FNV_PRIME) & MASK64;
   }
