@@ -139,6 +139,12 @@ export class InstrumentationProvider {
       observationMode: 'observed',
     }, this.options.events || {});
     const interventions = new InterventionLedger();
+    let interventionSequence = 0;
+    const interventionDraft = (input) => {
+      const draft = validateInterventionDraft(interventions, { ...input, sequence: interventionSequence });
+      interventionSequence += 1;
+      return draft;
+    };
     const probes = new Map();
 
     const ingest = (raw) => {
