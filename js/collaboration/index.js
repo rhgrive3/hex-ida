@@ -34,6 +34,20 @@ function list(value) {
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
 function payloadDigest(value) { return stableDigest(value); }
 function checkpointDigest(state, operationIds) { return payloadDigest({ state, operationIds: [...operationIds].sort() }); }
+function snapshotCheckpoint(checkpoint) {
+  // Read the untrusted checkpoint payload once. In particular, do not verify
+  // one read of a stateful accessor and restore a later read of that accessor.
+  // The owned clone is the sole input to identity checks and ChangeLog.
+  return {
+    schemaVersion: checkpoint?.schemaVersion,
+    projectIdentity: checkpoint?.projectIdentity,
+    binaryIdentity: checkpoint?.binaryIdentity,
+    state: cloneState(checkpoint?.state),
+    operationIds: Array.isArray(checkpoint?.operationIds) ? [...checkpoint.operationIds] : checkpoint?.operationIds,
+    digest: checkpoint?.digest,
+  };
+}
+
 function validatedCheckpointOperationIds(checkpoint) {
   if (!Array.isArray(checkpoint?.operationIds)) throw new TypeError('checkpoint-operation-ids-invalid');
   const operationIds = checkpoint.operationIds.map((operationId) => {
@@ -382,12 +396,13 @@ export class ChangeLog {
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
   let checkpointOperationIds = [];
-  if (checkpoint) {
-    if (checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
-    checkpointOperationIds = validatedCheckpointOperationIds(checkpoint);
+  const ownedCheckpoint = checkpoint ? snapshotCheckpoint(checkpoint) : null;
+  if (ownedCheckpoint) {
+    if (ownedCheckpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
+    checkpointOperationIds = validatedCheckpointOperationIds(ownedCheckpoint);
   }
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpointOperationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
-  const filtered = checkpoint ? operations.filter((operation) => !checkpointOperationIds.includes(operation.operationId)) : operations;
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: ownedCheckpoint?.state, operations: ownedCheckpoint ? checkpointOperationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
+  const filtered = ownedCheckpoint ? operations.filter((operation) => !checkpointOperationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
 }
@@ -395,16 +410,17 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
 export function createCheckpoint(log) { if (!(log instanceof ChangeLog)) throw new TypeError('ChangeLog required'); return log.checkpoint(); }
 
 export function restoreCheckpoint(checkpoint, options = {}) {
-  if (!checkpoint || checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
-  assertIdentityMatch(checkpoint.projectIdentity, options.projectIdentity, 'checkpoint-project-identity-mismatch');
-  assertIdentityMatch(checkpoint.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
+  const ownedCheckpoint = checkpoint ? snapshotCheckpoint(checkpoint) : null;
+  if (!ownedCheckpoint || ownedCheckpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
+  assertIdentityMatch(ownedCheckpoint.projectIdentity, options.projectIdentity, 'checkpoint-project-identity-mismatch');
+  assertIdentityMatch(ownedCheckpoint.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
   // The restored state itself must carry the same identity: a digest over a
   // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
-  assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
-  assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperationIds = validatedCheckpointOperationIds(checkpoint);
+  assertIdentityMatch(ownedCheckpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
+  assertIdentityMatch(ownedCheckpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
+  const checkpointOperationIds = validatedCheckpointOperationIds(ownedCheckpoint);
   const checkpointOperations = checkpointOperationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
-  const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
+  const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: ownedCheckpoint.state, operations: checkpointOperations });
   const restoreResults = [];
   for (const operation of options.operations || []) {
     if (checkpointOperationIds.includes(operation.operationId)) continue;
