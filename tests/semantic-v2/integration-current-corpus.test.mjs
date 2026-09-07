@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,10 +11,15 @@ import {
   setSemanticMigrationMode,
 } from '../../js/ir.js';
 import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
+import {
+  SEMANTIC_ASSERTION_FILES,
+  DECOMPILER_ASSERTION_FILES,
+  PHASE3_ASSERTION_COMMAND_COUNT,
+} from '../support/semantic-corpus-manifest.mjs';
+import { runPhase3Corpus } from '../support/phase3-corpus-runner.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '../..');
-const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const proofPath = ['machine-effects','semantic-ir-v2','scalar-ssa','region-resolver','memoryssa','v1-compat'];
 
 const BASE = 0x100000000n;
@@ -42,17 +46,15 @@ assert.equal(proof?.v2Executed, true, 'public facade must expose proof that v2 e
 assert.deepEqual(proof?.path, proofPath);
 setSemanticMigrationMode(initialMigrationMode);
 
-function commandsFor(scriptName) {
-  const script = packageJson.scripts?.[scriptName];
-  if (typeof script !== 'string' || !script.trim()) throw new Error(`missing npm script: ${scriptName}`);
-  return script.split(/\s*&&\s*/).map((command) => command.trim()).filter(Boolean);
-}
-
 const cacheKey = String(process.env.GITHUB_SHA ?? `pid-${process.pid}`).replace(/[^A-Za-z0-9_.-]/g, '_');
 const cacheFile = path.join(os.tmpdir(), `hex-phase3-current-corpus-${cacheKey}.json`);
 let report = null;
 if (process.env.GITHUB_SHA && fs.existsSync(cacheFile)) {
-  try { report = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { report = null; }
+  try {
+    const candidate = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    const count = Number(candidate?.semantic?.total || 0) + Number(candidate?.decompiler?.total || 0);
+    if (count === PHASE3_ASSERTION_COMMAND_COUNT) report = candidate;
+  } catch { report = null; }
 }
 
 if (!report) {
@@ -70,40 +72,26 @@ if (!report) {
   };
   delete env.npm_config_prefix;
 
-  const runCommand = (suite, index, command) => {
-    const child = spawnSync('bash', ['-lc', command], {
-      cwd: root,
-      env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 600_000,
-    });
-    process.stdout.write(`\n[phase3-v2-${suite} ${index + 1}] ${command}\n`);
-    if (child.stdout) process.stdout.write(child.stdout);
-    if (child.stderr) process.stderr.write(child.stderr);
-    const passed = child.status === 0;
-    const combined = `${child.stdout ?? ''}\n${child.stderr ?? ''}`;
-    return {
-      command,
-      status: child.status,
-      signal: child.signal ?? null,
-      timedOut: child.error?.code === 'ETIMEDOUT',
-      passed,
-      ...(passed ? {} : { failureTail:combined.slice(-3500) }),
-    };
-  };
-
-  const semanticResults = commandsFor('semantic:test').map((command, index) => runCommand('semantic', index, command));
-  const decompilerResults = commandsFor('decompiler:test').map((command, index) => runCommand('decompiler', index, command));
-  const summarize = (results) => ({
-    total: results.length,
-    passed: results.filter((result) => result.passed).length,
-    failed: results.filter((result) => !result.passed).length,
-    results,
+  const files = [...SEMANTIC_ASSERTION_FILES, ...DECOMPILER_ASSERTION_FILES];
+  const { results, concurrency } = await runPhase3Corpus({
+    suite: 'v2-corpus',
+    files,
+    root,
+    env,
+    timeoutMs: 600_000,
+  });
+  const semanticResults = results.slice(0, SEMANTIC_ASSERTION_FILES.length);
+  const decompilerResults = results.slice(SEMANTIC_ASSERTION_FILES.length);
+  const summarize = (items) => ({
+    total: items.length,
+    passed: items.filter((result) => result.passed).length,
+    failed: items.filter((result) => !result.passed).length,
+    results: items,
   });
   report = {
     migrationMode: SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT,
     path: proofPath,
+    concurrency,
     semantic: summarize(semanticResults),
     decompiler: summarize(decompilerResults),
   };
@@ -111,6 +99,8 @@ if (!report) {
   fs.rmSync(preloadFile, { force:true });
 }
 
+assert.equal(report.semantic.total + report.decompiler.total, PHASE3_ASSERTION_COMMAND_COUNT,
+  'Phase 3 unchanged-assertion command denominator must stay locked at 25');
 globalThis.__HEX_PHASE3_CURRENT_CORPUS__ = report;
 const corpusSummary = {
   semantic: { total:report.semantic.total, passed:report.semantic.passed, failed:report.semantic.failed },
