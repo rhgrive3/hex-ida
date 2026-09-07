@@ -48,7 +48,7 @@ function debugAddrSection(entries, {
 }
 
 /** One CU whose subprogram DIE uses `form` for DW_AT_low_pc with raw value `rawIndex`. */
-function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, version = 5, dwarf64 = false, addressSize = 4 }) {
+function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, version = 5, dwarf64 = false, addressSize = 4, trailingRaw = null, trailingName = 'later' }) {
   const cuName = 't.c';
   const fnName = 'fn';
   const hasAddrBase = addrBase != null;
@@ -92,6 +92,9 @@ function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, v
   }
   payload.push(...die, ...(Array.isArray(raw) ? raw : [raw]));
   if (highForm != null) payload.push(...(Array.isArray(highRaw) ? highRaw : [highRaw]));
+  if (trailingRaw != null) {
+    payload.push(0x02, ...Buffer.from(trailingName), 0, ...(Array.isArray(trailingRaw) ? trailingRaw : [trailingRaw]));
+  }
 
   const info = [];
   const bodyLength = payload.length;
@@ -155,6 +158,21 @@ for (const [form, encoded] of [
   const subprogram = [...parsed.dies.values()].find((die) => die.tag === DW_TAG_subprogram);
   assert.equal(subprogram.attributes.get(DW_AT_low_pc).value, null);
   assert.equal(subprogram.complete, false);
+}
+
+// 4a. An unresolved addrx DIE must not discard later DIEs in the same unit.
+{
+  const parsed = parseDebugInfo({
+    ...buildUnit({ form: 0x29, raw: 7, trailingRaw: 0 }),
+    debug_addr: debugAddrSection([ADDRESS]),
+  });
+  const subprograms = [...parsed.dies.values()].filter((die) => die.tag === DW_TAG_subprogram);
+  assert.equal(subprograms.length, 2);
+  assert.equal(subprograms[0].complete, false);
+  assert.equal(subprograms[0].attributes.get(DW_AT_low_pc).value, null);
+  assert.equal(subprograms[1].complete, true);
+  assert.equal(subprograms[1].attributes.get(DW_AT_low_pc).value, ADDRESS);
+  assert.equal(parsed.complete, false);
 }
 
 // 5. Truncated table (entry crosses the section end) fails closed the same way.

@@ -622,7 +622,6 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
             // evidence partial, not only the DIE: a raw index must never be
             // published as a PC (#6184).
             dieComplete = false;
-            unitComplete = false;
             complete = false;
             diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
           }
