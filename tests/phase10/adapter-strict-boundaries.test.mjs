@@ -38,5 +38,22 @@ assert.throws(() => remote.removeBreakpoint({ id:['bp:a'] }), (error) => expectC
 assert.throws(() => remote.removeBreakpoint(1), (error) => expectCode(error, 'invalid-breakpoint'));
 assert.throws(() => remote.writeRegister(['x0'], 1n), (error) => expectCode(error, 'invalid-register'));
 assert.equal(sent.length, 0, 'malformed selectors/sizes must not reach remote transport');
+
+// #5807: no remote request may bypass the connect handshake. Before connect(),
+// this.capabilities is only the caller's local allow-list — the remote
+// advertisement is unverified, so every method fails closed without sending.
+{
+  const handshake = new RemoteDebugAdapter({ send: (packet) => { sent.push(packet); }, setHandler: () => {} }, {
+    capabilities: { attach: true, readRegisters: true, breakpointAddress: true, objcRuntime: true },
+    protocol: { timeoutMs: 10000 },
+  });
+  await assert.rejects(async () => handshake.attach({ target: 'pid:1' }), (error) => expectCode(error, 'not-connected'));
+  await assert.rejects(async () => handshake.readMemory(0n, 8), (error) => expectCode(error, 'not-connected'));
+  await assert.rejects(async () => handshake.readRegisters(), (error) => expectCode(error, 'not-connected'));
+  assert.throws(() => handshake.setBreakpoint({ kind: 'address', address: 0n }), (error) => expectCode(error, 'not-connected'));
+  assert.throws(() => handshake.getObjCRuntimeInfo(), (error) => expectCode(error, 'not-connected'));
+  assert.equal(sent.length, 0, 'no remote method request may leave before the connect handshake completed');
+  handshake.protocol.close();
+}
 remote.protocol.close();
 console.log('adapter strict boundaries: ok');
