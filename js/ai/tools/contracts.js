@@ -89,7 +89,15 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
 
 function toolIdentityLabel(value) {
   if (value === null) return "null";
-  if (Array.isArray(value)) return `array:${value.map((item) => String(item)).join(",")}`;
-  if (typeof value === "object") return `object:${Object.keys(value).join(",")}`;
-  return `${typeof value}:${String(value)}`;
+  const type = typeof value;
+  if (type === "object") {
+    // Never inspect caller-owned objects while formatting a machine-boundary
+    // error. Array.isArray does not enumerate or coerce values; a revoked
+    // proxy is treated as an opaque object rather than escaping its TypeError.
+    try { return Array.isArray(value) ? "array" : "object"; } catch { return "object"; }
+  }
+  if (type === "function") return "function";
+  // Primitive conversion cannot dispatch caller-owned hooks, and preserves
+  // the useful existing labels for primitive invalid identities.
+  return `${type}:${String(value)}`;
 }
