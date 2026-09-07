@@ -55,6 +55,7 @@ const immediateModule = {
   imports:[],
   functions:[0],
   types:[{ params:[], results:[] }],
+  memories:[{ min:1, max:null, shared:false, flags:0 }],
   codeBodies:[{
     ...parsed.codeBodies[0],
     bodyOffset:100,
