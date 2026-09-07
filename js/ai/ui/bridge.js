@@ -6,6 +6,7 @@ import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
+import { AIError } from '../schema.js';
 
 async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
@@ -53,7 +54,17 @@ export function createAiEngine(app, options = {}) {
     capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
     capabilityExecutor,
     proposalExecutor: (store = null) => {
-      const target = store || core?.proposalStore || null;
+      const currentStore = core?.proposalStore || null;
+      // A proposal store carries the evidence, binding and single-use
+      // approval authority for one runtime namespace. The UI bridge must not
+      // let an executor for app B consume a store from app A (or a stale
+      // conversation namespace), even when the binary bytes happen to match.
+      // Raw ProposalExecutor callers keep their lower-level API; this is the
+      // production ingress where the engine owner is known.
+      if (store != null && store !== currentStore) {
+        throw new AIError('scope_violation', 'The proposal store belongs to a different AI engine or conversation namespace.');
+      }
+      const target = currentStore;
       return target ? createProposalExecutor({ store: target, capabilityExecutor, app }) : null;
     },
     async run(input) {
