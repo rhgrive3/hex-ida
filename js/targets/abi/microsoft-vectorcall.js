@@ -345,6 +345,12 @@ function vectorcallReturn(prototype, options = {}) {
   if (/float|double|\bfp\b/.test(`${type} ${abiClass}`)) {
     const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, 64));
     if (!Number.isSafeInteger(bits) || bits <= 0) return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-invalid' };
+    // XMM0 is a 128-bit register: no scalar FP exact result can exceed it (#6064).
+    if (bits > 128) return { reg:null, partial:true, reason:'microsoft-vectorcall-scalar-fp-return-width-unsupported' };
+    // A known scalar FP type fixes its canonical width; explicit width metadata
+    // contradicting the type is malformed ABI evidence, not an exact result (#6064).
+    const canonicalBits = typeBits(type, 0);
+    if (canonicalBits > 0 && canonicalBits !== bits) return { reg:null, partial:true, reason:'microsoft-vectorcall-scalar-fp-return-width-mismatch' };
     return { reg:'xmm0', bits, abiClass:'fp' };
   }
   const aggregate = prototype.aggregate === true
