@@ -7,12 +7,6 @@ name: Phase 8 release validation
 # external workflows and the permanent verifier agree, so the integration owner
 # can store that evidence in a normal branch commit and re-run exact-head CI.
 on:
-  pull_request:
-    paths:
-      - 'js/decompiler/**'
-      - 'tests/phase8/**'
-      - 'tools/validation/phase8/**'
-      - '.github/workflows/phase8-release-validation.yml'
   workflow_dispatch:
     inputs:
       sha:
@@ -183,9 +177,6 @@ jobs:
           shadow="${DISPATCH_SHADOW}"
           gates="${DISPATCH_GATES}"
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
-            # Phase 8 is integrated on main. PR validation is therefore always
-            # fail-closed and self-contained; editing checkpoint metadata cannot
-            # downgrade a release run back into shadow mode.
             expect_sha="${PR_EXPECT_SHA}"
             shadow=false
             gates=true

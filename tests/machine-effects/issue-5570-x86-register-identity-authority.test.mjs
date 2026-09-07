@@ -12,7 +12,9 @@ assert.equal(x86RegisterDescriptor('%RAX')?.id, 'rax');
 assert.equal(x86RegisterDescriptor({ registerId:'rax' })?.id, 'rax');
 assert.equal(x86RegisterDescriptor({ name:'RAX' })?.id, 'rax');
 assert.equal(x86RegisterDescriptor({ registerId:'cr0' })?.id, 'cr0');
-assert.equal(x86RegisterDescriptor({ registerId:'xmm16' })?.id, 'xmm16');
+// High XMM/YMM views are decoder-supplementary evidence, not core physical
+// state, and therefore must not be promoted by the public descriptor lookup.
+assert.equal(x86RegisterDescriptor({ registerId:'xmm16' }), null);
 assert.equal(x86RegisterDescriptor({ registerId:'definitely-not-a-register' }), null);
 assert.equal(x86RegisterDescriptor(null), null);
 assert.equal(x86RegisterDescriptor(undefined), null);

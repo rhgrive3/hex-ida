@@ -51,6 +51,7 @@ function exactJson(value) {
   return jsonSafe(value);
 }
 
+/** Normalize a half-open file range; a present binary reference must be a nonempty identity. */
 function byteRange(range) {
   if (!range || typeof range !== 'object') fail('origin-invalid-byte-range');
   const start = bigintValue(range.start ?? range.offset, 'origin-invalid-byte-range');
@@ -58,12 +59,13 @@ function byteRange(range) {
     : range.length != null ? start + bigintValue(range.length, 'origin-invalid-byte-range') : null;
   if (end == null || start < 0n || end < start) fail('origin-invalid-byte-range');
   return {
-    ...(range.binaryId == null ? {} : { binaryId: stringValue(range.binaryId, 'origin-invalid-byte-range') }),
+    ...(range.binaryId == null ? {} : { binaryId: requiredString(range.binaryId, 'origin-invalid-byte-range') }),
     start: start.toString(),
     end: end.toString(),
   };
 }
 
+/** Normalize a half-open virtual range without inventing absent image or slice identities. */
 function virtualRange(range) {
   if (!range || typeof range !== 'object') fail('origin-invalid-virtual-range');
   const start = canonicalAddress(range.start ?? range.address);
@@ -73,8 +75,8 @@ function virtualRange(range) {
   else fail('origin-invalid-virtual-range');
   if (BigInt(end) < BigInt(start)) fail('origin-invalid-virtual-range');
   return {
-    ...(range.imageId == null ? {} : { imageId: stringValue(range.imageId, 'origin-invalid-virtual-range') }),
-    ...(range.sliceId == null ? {} : { sliceId: stringValue(range.sliceId, 'origin-invalid-virtual-range') }),
+    ...(range.imageId == null ? {} : { imageId: requiredString(range.imageId, 'origin-invalid-virtual-range') }),
+    ...(range.sliceId == null ? {} : { sliceId: requiredString(range.sliceId, 'origin-invalid-virtual-range') }),
     start,
     end,
   };

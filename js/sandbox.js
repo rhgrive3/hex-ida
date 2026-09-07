@@ -350,7 +350,7 @@ const WORKER_POSTLUDE = String.raw`
 
 function workerProgram(source, mode, index) {
   const user = JSON.stringify(String(source || ''));
-  const safeIndex = Math.max(0, Math.trunc(Number(index) || 0));
+  const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
   let body;
   if (mode === 'discover' || mode === 'plugin') {
     body = `
@@ -629,9 +629,29 @@ function isAbortSignalLike(signal) {
   }
 }
 
+function normalizeSandboxIndex(mode, index) {
+  if (mode !== 'plugin') return 0;
+  return typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+function normalizeSandboxTimeout(timeout) {
+  if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0) return null;
+  return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
+}
+
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+  const safeIndex = normalizeSandboxIndex(mode, index);
+  if (safeIndex == null) {
+    return Promise.resolve({ error: 'プラグイン定義番号が無効です。' });
+  }
+  const safeTimeout = normalizeSandboxTimeout(timeout);
+  if (safeTimeout == null) {
+    return Promise.resolve({ error: '実行時間制限が無効です。' });
   }
 
   return new Promise((resolve) => {
@@ -714,7 +734,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
 
     timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
-      Math.max(50, Number(timeout) || 30000)
+      safeTimeout
     );
 
     channel.port1.onmessage = async (e) => {
@@ -725,7 +745,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         return;
       }
       if (m.t === 'ready') {
-        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index });
+        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index: safeIndex });
       } else if (m.t === 'print') {
         if (!Array.isArray(m.args)) return failBudget('不正なsandbox出力を受信したため停止しました。');
         const now = Date.now();

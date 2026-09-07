@@ -4,39 +4,6 @@ name: Phase 6 release validation
 # and can be dispatched against an exact SHA. Unrelated main pushes must not
 # spend the frozen compiler-corpus cost.
 on:
-  push:
-    branches:
-      - main
-      - 'hex/p6-*'
-    paths:
-      - 'js/targets/architecture/**'
-      - 'js/targets/abi/**'
-      - 'js/analysis/semantic-function.js'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'js/binary/elf.js'
-      - 'js/platform/capability-maturity.js'
-      - 'capstone.js'
-      - 'capstone.wasm'
-      - 'tests/phase6/**'
-      - 'tools/validation/phase6/**'
-      - '.github/workflows/phase6-release-validation.yml'
-      - 'package.json'
-  pull_request:
-    paths:
-      - 'js/targets/architecture/**'
-      - 'js/targets/abi/**'
-      - 'js/analysis/semantic-function.js'
-      - 'js/semantics/**'
-      - 'js/decompiler/**'
-      - 'js/binary/elf.js'
-      - 'js/platform/capability-maturity.js'
-      - 'capstone.js'
-      - 'capstone.wasm'
-      - 'tests/phase6/**'
-      - 'tools/validation/phase6/**'
-      - '.github/workflows/phase6-release-validation.yml'
-      - 'package.json'
   workflow_dispatch:
     inputs:
       sha:

@@ -8,21 +8,46 @@
  * truncations, extensions, and bit slices.
  */
 
-export function mask(width) {
-  const w = width;
-  if (!Number.isSafeInteger(w) || w <= 0) {
-    throw new RangeError(`mask: width must be a positive safe integer >= 1, got ${width}`);
+import { MAX_BV_WIDTH } from './kinds.js';
+
+export { MAX_BV_WIDTH };
+
+function assertValidWidth(width, fnName = 'bitvector') {
+  if (typeof width !== 'number' || !Number.isSafeInteger(width) || width <= 0) {
+    throw new RangeError(`${fnName}: width must be a positive safe integer >= 1, got ${width}`);
   }
-  return (1n << BigInt(w)) - 1n;
+  if (width > MAX_BV_WIDTH) {
+    throw new RangeError(`${fnName}: width exceeds maximum supported width (${MAX_BV_WIDTH}), got ${width}`);
+  }
+}
+
+function toValidBigInt(val, name = 'value') {
+  if (typeof val === 'bigint') return val;
+  if (typeof val === 'number') {
+    if (Number.isSafeInteger(val)) return BigInt(val);
+    throw new TypeError(`${name} must be a safe integer or bigint, got ${val}`);
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    const match = /^([+-]?)(0x[0-9a-fA-F]+|\d+)$/.exec(trimmed);
+    if (match) {
+      const magnitude = BigInt(match[2]);
+      return match[1] === '-' ? -magnitude : magnitude;
+    }
+    throw new TypeError(`${name} must be a valid integer string, got "${val}"`);
+  }
+  throw new TypeError(`${name} must be a bigint, integer number, or integer string, got ${typeof val === 'object' && val !== null ? (Array.isArray(val) ? 'Array' : val.constructor?.name || 'object') : typeof val}`);
+}
+
+export function mask(width) {
+  assertValidWidth(width, 'mask');
+  return (1n << BigInt(width)) - 1n;
 }
 
 export function wrap(val, width) {
-  const w = width;
-  if (!Number.isSafeInteger(w) || w <= 0) {
-    throw new RangeError(`wrap: width must be a positive safe integer >= 1, got ${width}`);
-  }
-  const big = typeof val === 'bigint' ? val : BigInt(val);
-  return BigInt.asUintN(w, big);
+  assertValidWidth(width, 'wrap');
+  const big = toValidBigInt(val, 'wrap value');
+  return BigInt.asUintN(width, big);
 }
 
 export function toUnsigned(val, width) {
@@ -30,11 +55,8 @@ export function toUnsigned(val, width) {
 }
 
 export function toSigned(val, width) {
-  const w = width;
-  if (!Number.isSafeInteger(w) || w <= 0) {
-    throw new RangeError(`toSigned: width must be a positive safe integer >= 1, got ${width}`);
-  }
-  return BigInt.asIntN(w, wrap(val, w));
+  assertValidWidth(width, 'toSigned');
+  return BigInt.asIntN(width, wrap(val, width));
 }
 
 export function bvAdd(a, b, width) {
@@ -189,64 +211,51 @@ export function bvSge(a, b, width) {
 }
 
 export function bvTrunc(val, fromWidth, toWidth) {
-  const fw = fromWidth;
-  const tw = toWidth;
-  if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
-    throw new RangeError(`bvTrunc: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
+  assertValidWidth(fromWidth, 'bvTrunc fromWidth');
+  assertValidWidth(toWidth, 'bvTrunc toWidth');
+  if (toWidth >= fromWidth) {
+    throw new RangeError(`bvTrunc: toWidth (${toWidth}) must be strictly less than fromWidth (${fromWidth})`);
   }
-  if (tw >= fw) {
-    throw new RangeError(`bvTrunc: toWidth (${tw}) must be strictly less than fromWidth (${fw})`);
-  }
-  return wrap(val, tw);
+  return wrap(val, toWidth);
 }
 
 export function bvZext(val, fromWidth, toWidth) {
-  const fw = fromWidth;
-  const tw = toWidth;
-  if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
-    throw new RangeError(`bvZext: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
+  assertValidWidth(fromWidth, 'bvZext fromWidth');
+  assertValidWidth(toWidth, 'bvZext toWidth');
+  if (toWidth <= fromWidth) {
+    throw new RangeError(`bvZext: toWidth (${toWidth}) must be strictly greater than fromWidth (${fromWidth})`);
   }
-  if (tw <= fw) {
-    throw new RangeError(`bvZext: toWidth (${tw}) must be strictly greater than fromWidth (${fw})`);
-  }
-  return wrap(toUnsigned(val, fw), tw);
+  return wrap(toUnsigned(val, fromWidth), toWidth);
 }
 
 export function bvSext(val, fromWidth, toWidth) {
-  const fw = fromWidth;
-  const tw = toWidth;
-  if (!Number.isSafeInteger(fw) || fw <= 0 || !Number.isSafeInteger(tw) || tw <= 0) {
-    throw new RangeError(`bvSext: widths must be positive safe integers (from=${fromWidth}, to=${toWidth})`);
+  assertValidWidth(fromWidth, 'bvSext fromWidth');
+  assertValidWidth(toWidth, 'bvSext toWidth');
+  if (toWidth <= fromWidth) {
+    throw new RangeError(`bvSext: toWidth (${toWidth}) must be strictly greater than fromWidth (${fromWidth})`);
   }
-  if (tw <= fw) {
-    throw new RangeError(`bvSext: toWidth (${tw}) must be strictly greater than fromWidth (${fw})`);
-  }
-  return wrap(toSigned(val, fw), tw);
+  return wrap(toSigned(val, fromWidth), toWidth);
 }
 
 export function bvExtract(val, width, high, low) {
-  const w = width;
+  assertValidWidth(width, 'bvExtract');
   const h = high;
   const l = low;
-  if (!Number.isSafeInteger(w) || w <= 0) {
-    throw new RangeError(`bvExtract: width must be positive safe integer >= 1, got ${width}`);
-  }
-  if (!Number.isSafeInteger(h) || !Number.isSafeInteger(l) || l < 0 || h < l || h >= w) {
+  if (!Number.isSafeInteger(h) || !Number.isSafeInteger(l) || l < 0 || h < l || h >= width) {
     throw new RangeError(`bvExtract: invalid bit indices [high=${high}, low=${low}] for width ${width}`);
   }
   const extractedWidth = h - l + 1;
-  const shifted = toUnsigned(val, w) >> BigInt(l);
+  assertValidWidth(extractedWidth, 'bvExtract extractedWidth');
+  const shifted = toUnsigned(val, width) >> BigInt(l);
   return wrap(shifted, extractedWidth);
 }
 
 export function bvConcat(a, widthA, b, widthB) {
-  const wa = widthA;
-  const wb = widthB;
-  if (!Number.isSafeInteger(wa) || wa <= 0 || !Number.isSafeInteger(wb) || wb <= 0) {
-    throw new RangeError(`bvConcat: widths must be positive safe integers (wa=${wa}, wb=${wb})`);
-  }
-  const totalWidth = wa + wb;
-  const highPart = wrap(a, wa) << BigInt(wb);
-  const lowPart = wrap(b, wb);
+  assertValidWidth(widthA, 'bvConcat widthA');
+  assertValidWidth(widthB, 'bvConcat widthB');
+  const totalWidth = widthA + widthB;
+  assertValidWidth(totalWidth, 'bvConcat totalWidth');
+  const highPart = wrap(a, widthA) << BigInt(widthB);
+  const lowPart = wrap(b, widthB);
   return wrap(highPart | lowPart, totalWidth);
 }

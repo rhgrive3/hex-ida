@@ -45,15 +45,29 @@ function endOf(instruction) {
 }
 function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
 
+const CONTROL_FLOW_KINDS = new Set([
+  'fallthrough',
+  'call',
+  'branch',
+  'conditional-branch',
+  'return',
+  'unknown',
+]);
+
 function controlKind(plugin, instruction) {
-  try { return String(plugin.classifyControlFlow?.(instruction) || 'fallthrough'); }
-  catch { return 'unknown'; }
+  try {
+    const kind = plugin.classifyControlFlow?.(instruction);
+    if (kind == null || kind === '') return 'fallthrough';
+    return typeof kind === 'string' && CONTROL_FLOW_KINDS.has(kind) ? kind : 'unknown';
+  } catch { return 'unknown'; }
 }
 
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null ? null : BigInt(target);
+    if (target == null) return null;
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 

@@ -1,4 +1,5 @@
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
+import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -64,6 +65,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
     ...wasmModule.imports.filter((entry) => entry.desc.kind === 1).map((entry) => entry.desc),
     ...wasmModule.tables,
   ];
+  const memoryContext = createWasmMemoryValidationContext(wasmModule);
   const stack = [];
   const frames = [{ kind: 'function', height: 0, params: [], results: funcType.results.slice(), polymorphic: false, elseSeen: false }];
   let pos = 0;
@@ -239,21 +241,19 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         break;
       }
       case 0x28: case 0x29: case 0x2a: case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: {
-        const align = decodeUleb128(bytecode, pos); pos = align.nextOffset;
-        const offset = decodeUleb128(bytecode, pos); pos = offset.nextOffset;
-        void align; void offset;
-        pop(I32, 'wasm-stack-underflow-load');
+        const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
+        const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
+        pop(memory.addressType, 'wasm-stack-underflow-load');
         const resultType = opcode === 0x29 ? I64 : opcode === 0x2a ? F32 : opcode === 0x2b ? F64 : I32;
         stack.push(resultType);
         break;
       }
       case 0x36: case 0x37: case 0x38: case 0x39: case 0x3a: case 0x3b: {
-        const align = decodeUleb128(bytecode, pos); pos = align.nextOffset;
-        const offset = decodeUleb128(bytecode, pos); pos = offset.nextOffset;
-        void align; void offset;
+        const memarg = decodeWasmMemarg(bytecode, pos); pos = memarg.nextOffset;
+        const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const valueType = opcode === 0x37 ? I64 : opcode === 0x38 ? F32 : opcode === 0x39 ? F64 : I32;
         pop(valueType, 'wasm-stack-underflow-store');
-        pop(I32, 'wasm-stack-underflow-store');
+        pop(memory.addressType, 'wasm-stack-underflow-store');
         break;
       }
       case 0x41: {
