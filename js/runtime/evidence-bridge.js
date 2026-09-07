@@ -224,6 +224,15 @@ export class RuntimeEvidenceBridge {
     const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
+    for (const interventionId of event.interventionIds) {
+      if (!this.interventions.get(interventionId)) {
+        throw new DebugAdapterError(
+          'runtime-intervention-not-found',
+          `runtime event intervention not found: ${interventionId}`,
+          { interventionId },
+        );
+      }
+    }
     const interventionRecords = this.interventions.ancestry(event.interventionIds);
     const evidenceId = createEvidenceId({
       binaryId,
