@@ -3407,6 +3407,33 @@ test('EXPR: 条件つき代入の条件を、比べた式として書く', async
   ok(!/flag_/.test(text), '比較を復元できていない: ' + text);
 });
 
+test('EXPR: AArch64 の NV は常に真として条件つき代入を選ぶ', async () => {
+  const { buildValues, constOf } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'mov w0, #0',
+    'cmp w0, #0',
+    'csel w8, w1, w2, nv',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(4, 'x8');
+  eq(constOf(v), 11n, 'NV は常に真なので真側を選ぶ');
+});
+
+test('EXPR: NZCV が不明な条件つき代入は条件を保ったままにする', async () => {
+  const { buildValues, constOf, render } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'csel w8, w1, w2, eq',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(2, 'x8');
+  eq(constOf(v), null, 'NZCV 不明時に定数へ畳み込まない');
+  has(render(v, {}), 'flag_eq', 'NZCV 不明時の条件を保持する');
+});
+
 test('EXPR: 比べたものが分からなければ、min とは言わない', async () => {
   const { buildValues, render } = await import('../js/expr.js');
   /* 直前に比較が無い（別の道から来た）ので、大小の定型だと決めつけてはいけない。 */
