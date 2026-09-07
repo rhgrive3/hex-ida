@@ -51,6 +51,37 @@ export function immediateOf(op) {
   try { return BigInt(op.value); } catch { return null; }
 }
 
+// Structured A64 address evidence — the current-PC `address` and the ADR/ADRP
+// `pcRelTarget` — is a canonical architectural integer. Values that merely
+// survive `BigInt()` coercion (arrays, booleans, objects, malformed text) are
+// schema-invalid and must fail closed instead of becoming exact addresses.
+const ADDRESS_EVIDENCE_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
+export function canonicalAddressValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && Number.isSafeInteger(value) ? BigInt(value) : null;
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!ADDRESS_EVIDENCE_TEXT.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
+  return null;
+}
+
+// Canonical target evidence carried by an ADR/ADRP target operand: a typed
+// immediate value or a numeric `other` text spelling. Operand text is already
+// grammar-strict; the immediate value must pass the same canonical address
+// contract instead of relying on `BigInt()` coercion.
+export function adrTargetOperandValue(op) {
+  if (op?.k === 'imm') return canonicalAddressValue(op.value);
+  if (op?.k !== 'other' || typeof op.text !== 'string') return null;
+  const text = op.text.trim();
+  if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
+}
+
 function decodedAbsoluteTargetOf(op) {
   const immediate = immediateOf(op);
   if (immediate != null) return immediate;

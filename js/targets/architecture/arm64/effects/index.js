@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { canonicalAddressValue, createArm64EffectContext, adrTargetOperandValue, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -114,8 +114,7 @@ function movImmediateEncodable(op, widthBits) {
 }
 
 function asBigIntOrNull(value) {
-  try { return value == null ? null : BigInt(value); }
-  catch { return null; }
+  return canonicalAddressValue(value);
 }
 
 function isGpOrZrRegister(operand) {
@@ -392,7 +391,7 @@ function addressImmediateEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+  if (targetOperand?.k === 'imm' && canonicalAddressValue(targetOperand.value) !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
   if (mnemonic === 'adr') {
@@ -429,7 +428,7 @@ function normalizedInstruction(decoded, context) {
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
-  const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
+  const adrImmediate = operands.length > 1 ? adrTargetOperandValue(operands[1]) : null;
   const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
     ? (adrImmediate ?? directTargetOf(decoded))
     : decoded.pcRelTarget;
