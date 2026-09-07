@@ -1,4 +1,4 @@
-import { Sheet, el, list, groupRow, tapRow, noteBox } from '../../ui.js';
+import { Sheet, el, list, groupRow, tapRow, noteBox, disclosure } from '../../ui.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
 import { recoverSchemasForUi } from '../../analysis/schema-recovery-task.js';
@@ -22,6 +22,19 @@ function schemaRow(app, sheet, schema) {
   });
 }
 
+const SCHEMA_PAGE_SIZE = 60;
+
+export function schemaRestPages(schemas, pageSize = SCHEMA_PAGE_SIZE) {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new TypeError('schema-page-size-invalid');
+  const rest = (Array.isArray(schemas) ? schemas : [])
+    .filter((schema) => schema?.best?.consistent !== true);
+  const pages = [];
+  for (let offset = 0; offset < rest.length; offset += pageSize) {
+    pages.push(rest.slice(offset, offset + pageSize));
+  }
+  return pages;
+}
+
 function renderSchemas(app, sheet, host, schemas) {
   host.replaceChildren();
   if (!schemas?.length) {
@@ -41,7 +54,24 @@ function renderSchemas(app, sheet, host, schemas) {
   if (rest.length) {
     const rows = list();
     rows.append(groupRow(pick(`追加確認が必要な表（${rest.length}）`, `Tables needing more evidence (${rest.length})`)));
-    for (const schema of rest.slice(0, 60)) rows.append(schemaRow(app, sheet, schema));
+    const pages = schemaRestPages(schemas);
+    for (const schema of pages[0] || []) rows.append(schemaRow(app, sheet, schema));
+    const remaining = pages.slice(1);
+    if (remaining.length) {
+      const restCount = rest.length - pages[0].length;
+      rows.append(disclosure(
+        pick(`残り ${restCount} 件を表示`, `Show ${restCount} more tables`),
+        {
+          build: (into) => {
+            for (const page of remaining) {
+              const pageRows = list();
+              for (const schema of page) pageRows.append(schemaRow(app, sheet, schema));
+              into.append(pageRows);
+            }
+          },
+        },
+      ));
+    }
     host.append(rows);
   }
   const complete = schemas.complete !== false && schemas.unsupported !== true;
