@@ -10,6 +10,34 @@ function validateExplicitPositiveInteger(value, name) {
   }
 }
 
+function snapshotRecord(value, overrides = {}) {
+  if (!value || typeof value !== 'object') return value;
+  const out = Object.create(null);
+  for (const key of Reflect.ownKeys(value)) {
+    if (Object.prototype.hasOwnProperty.call(overrides, key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    let item;
+    try {
+      item = Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? descriptor.value
+        : value[key];
+    } catch {
+      throw new TypeError('plugin option snapshot invalid');
+    }
+    Object.defineProperty(out, key, {
+      value: item,
+      enumerable: descriptor.enumerable,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const [key, item] of Reflect.ownKeys(overrides).map((key) => [key, overrides[key]])) {
+    Object.defineProperty(out, key, { value: item, enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
+
 function invocationFailure(registry, type, id, method, error) {
   const failure = {
     type,
@@ -25,21 +53,52 @@ function invocationFailure(registry, type, id, method, error) {
 
 export class PlatformPluginRegistry extends CorePlatformPluginRegistry {
   constructor(options = {}) {
-    validateExplicitPositiveInteger(options?.timeoutMs, 'plugin timeoutMs');
-    super(options);
+    // Snapshot the explicit authority once before delegating. The core
+    // constructor must not get a second chance to read a stateful getter and
+    // silently replace a validated value with its fallback.
+    const timeoutMs = options?.timeoutMs;
+    validateExplicitPositiveInteger(timeoutMs, 'plugin timeoutMs');
+    super({ timeoutMs });
   }
 
   async invoke(type, id, method, context = {}, ...args) {
+    const policySource = context?.pluginPolicy || context?.pluginPermissions || {};
+    const policy = snapshotRecord(policySource, {
+      binaryRead: policySource?.binaryRead,
+      readBinary: policySource?.readBinary,
+      readRanges: policySource?.readRanges,
+      ranges: policySource?.ranges,
+      maxReadBytes: policySource?.maxReadBytes,
+      maxTotalReadBytes: policySource?.maxTotalReadBytes,
+    });
+    const hasRawOptions = args.length > 0 && args.at(-1) && typeof args.at(-1) === 'object';
+    const rawOptions = hasRawOptions ? args.at(-1) : {};
+    const optionSnapshot = hasRawOptions
+      ? snapshotRecord(rawOptions, { timeoutMs: rawOptions.timeoutMs })
+      : {};
     try {
-      const policy = context?.pluginPolicy || context?.pluginPermissions || {};
       validateExplicitPositiveInteger(policy.maxReadBytes, 'plugin maxReadBytes');
       validateExplicitPositiveInteger(policy.maxTotalReadBytes, 'plugin maxTotalReadBytes');
-      const rawOptions = args.at(-1) && typeof args.at(-1) === 'object' ? args.at(-1) : {};
-      validateExplicitPositiveInteger(rawOptions.timeoutMs, 'plugin timeoutMs');
+      validateExplicitPositiveInteger(optionSnapshot.timeoutMs, 'plugin timeoutMs');
     } catch (error) {
       return invocationFailure(this, type, id, method, error);
     }
-    return super.invoke(type, id, method, context, ...args);
+
+    // Pass only the owned snapshots to the core. This keeps its existing
+    // permission, budget and timeout semantics while preventing a second read
+    // from caller-owned policy/options objects.
+    const contextSnapshot = {
+      binary: context?.binary,
+      capability: context?.capability,
+      project: context?.project,
+      read: context?.read,
+      pluginPolicy: policy,
+      resourceBudget: context?.resourceBudget,
+      reportProgress: context?.reportProgress,
+    };
+    const normalizedArgs = args.slice();
+    if (hasRawOptions) normalizedArgs[normalizedArgs.length - 1] = optionSnapshot;
+    return super.invoke(type, id, method, contextSnapshot, ...normalizedArgs);
   }
 }
 
