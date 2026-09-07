@@ -4,6 +4,7 @@ import test from 'node:test';
 import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { classifyRootOrigin, analyzeEscape } from '../../../js/analysis/summary/escape.js';
 import { createPointsToTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
+import { fixture } from '../helpers/fixtures.mjs';
 import { buildFixture } from '../corpus/fixtures.mjs';
 
 /* A canonical root descriptor's storage class is producer-held evidence
@@ -80,3 +81,34 @@ test('full pipeline: global-identical fixture keeps the descriptor storage class
       || escape.rootOrigins.get(key) === 'global';
   }), 'every descriptor-backed global-like root must be classified global');
 });
+
+test('full pipeline: storing through a descriptor-backed global emits global provenance', () => {
+  const descriptor = {
+    kind:'global-like', rootEntityId:'global:G', baseOffset:0, addressSpace:'memory', linearOffsets:true,
+  };
+  const f = fixture('issue_5892_stored_to_global');
+  f.block('entry', []);
+  const globalAddress = f.stateRead('globalAddress', 'state:g_root');
+  const storedValue = f.stateRead('storedValue', 'state:x0');
+  f.store('publish', globalAddress, storedValue, { widthBits:64 });
+  const built = f.build({ rootDescriptors:{ 'variable:state:g_root': descriptor } });
+  const pointsTo = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    canonicalOptions:{ rootDescriptors:built.rootDescriptors },
+  });
+  assert.equal(pointsTo.status.completeness, 'complete');
+  const globalTarget = pointsTo.pointsTo.get('globalAddress')?.targets?.[0];
+  assert.equal(globalTarget?.separationClass, 'global-like');
+  assert.equal(globalTarget?.separationAuthority, 'root-descriptor');
+
+  const escape = analyzeEscape(built.ir, built.cfg, built.ssa, pointsTo, {});
+  const records = escape.escapes.filter((record) => record.siteId === 'node_publish');
+  assert.ok(records.some((record) => record.reason === 'stored-to-global' && record.boundary === 'global'),
+    'the externally visible store result must identify global publication');
+  assert.equal(records.some((record) => record.reason === 'stored-through-argument' && record.boundary === 'argument'), false,
+    'a descriptor-backed global destination must not be reported as argument publication');
+});
+
+/* `rootDescriptorProvider` authority attachment is a separate producer-side
+ * contract tracked by #5323. This p7 consumer slice must not silently broaden
+ * into that alias-wrapper fix; the table path above is the available
+ * descriptor-backed producer proof for #5892. */
