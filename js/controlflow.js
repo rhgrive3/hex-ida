@@ -4,9 +4,13 @@
  * optimized binaries routinely place cleanup/cold blocks before their callers.
  */
 
+function validNodeIndex(value, length) {
+  return Number.isInteger(value) && value >= 0 && value < length;
+}
+
 function normalizedSuccessors(successors) {
   const n = successors.length;
-  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => Number.isInteger(x) && x >= 0 && x < n))));
+  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => validNodeIndex(x, n)))));
 }
 
 function predecessorsOf(succ) {
@@ -17,7 +21,7 @@ function predecessorsOf(succ) {
 
 function reachableFrom(succ, entry) {
   const out = new Set();
-  if (!(entry >= 0 && entry < succ.length)) return out;
+  if (!validNodeIndex(entry, succ.length)) return out;
   const stack = [entry];
   while (stack.length) {
     const i = stack.pop();
@@ -29,7 +33,7 @@ function reachableFrom(succ, entry) {
 }
 
 function reversePostOrder(succ, entry, allowed = null) {
-  if (!(entry >= 0 && entry < succ.length) || (allowed && !allowed.has(entry))) return [];
+  if (!validNodeIndex(entry, succ.length) || (allowed && !allowed.has(entry))) return [];
   const seen = new Set([entry]);
   const post = [];
   const stack = [{ node: entry, next: 0 }];
@@ -195,11 +199,16 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
       if (ci !== cj) compOut[ci].add(cj);
     }
   }
+  const nonTerminatingSinks = new Set();
   const bad = new Set();
   const stack = [];
   for (let c = 0; c < components.length; c++) {
     if (compOut[c].size || compHasExit[c]) continue;
-    for (const i of components[c]) if (reachable.has(i)) { bad.add(i); stack.push(i); }
+    for (const i of components[c]) if (reachable.has(i)) {
+      nonTerminatingSinks.add(i);
+      bad.add(i);
+      stack.push(i);
+    }
   }
   while (stack.length) {
     const i = stack.pop();
@@ -209,11 +218,16 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
     }
   }
 
-  const eligible = new Set(Array.from(reachable).filter((i) => !bad.has(i)));
+  // Keep predecessors that can reach both a normal exit and a closed
+  // non-terminating SCC in the post-dominator problem.  Every node in such a
+  // bottom SCC receives a conservative synthetic edge to EXIT while its real
+  // cycle edges remain intact.  This represents every finite prefix of an
+  // infinite execution: it preserves common prefixes before the divergence,
+  // but cannot invent another SCC member as a mandatory post-dominator.
   const reverse = Array.from({ length: n + 1 }, () => []);
-  for (const i of eligible) {
-    const xs = succ[i].filter((j) => eligible.has(j));
-    if (!xs.length) reverse[EXIT].push(i);
+  for (const i of reachable) {
+    const xs = internal(i);
+    if (!xs.length || nonTerminatingSinks.has(i)) reverse[EXIT].push(i);
     for (const j of xs) reverse[j].push(i);
   }
   const reversePred = predecessorsOf(reverse);
@@ -221,7 +235,7 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   const { idom: reverseIdom } = immediateDominatorsOf(reverse, reversePred, reverseReachable, EXIT);
   const views = dominanceViews(reverseIdom, reverseReachable, EXIT);
   const ipdom = new Array(n).fill(null);
-  for (const i of eligible) {
+  for (const i of reachable) {
     const d = reverseIdom[i];
     ipdom[i] = d >= 0 && d !== EXIT ? d : null;
   }
@@ -238,9 +252,10 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
  */
 export function analyzeGraph(successors, entry = 0) {
   const succ = normalizedSuccessors(successors || []);
+  const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
-  const reachable = reachableFrom(succ, entry);
-  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, entry);
+  const reachable = reachableFrom(succ, canonicalEntry);
+  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, canonicalEntry);
   const dominators = dominanceViews(immediateDominators, reachable);
   const { components, componentOf } = strongComponents(succ, predecessors, reachable);
   const backEdges = [];

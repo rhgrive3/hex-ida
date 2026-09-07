@@ -36,6 +36,16 @@ import {
 } from './tool-error-recovery.js';
 
 const MAX_DECISIONS = 16;
+const HARD_MAX_DECISIONS = 256;
+const HARD_MAX_TOOL_ERROR_RECOVERIES = 64;
+
+function assertValidBudget(value, { name, min = 1, max, defaultValue }) {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(`${name} must be a safe integer between ${min} and ${max}, got ${value}`);
+  }
+  return value;
+}
 
 export class DevSupervisorEngineV0 {
   constructor({
@@ -57,10 +67,20 @@ export class DevSupervisorEngineV0 {
     this.supervisor = supervisor;
     this.settings = settings;
     this.bridge = bridge || null;
-    this.maxDecisions = maxDecisions;
+    this.maxDecisions = assertValidBudget(maxDecisions, {
+      name: 'maxDecisions',
+      min: 1,
+      max: HARD_MAX_DECISIONS,
+      defaultValue: MAX_DECISIONS,
+    });
     this.extensionLoader = extensionLoader;
     this.selfUpdateGate = selfUpdateGate;
-    this.maxToolErrorRecoveries = Math.max(0, Number(maxToolErrorRecoveries) || 0);
+    this.maxToolErrorRecoveries = assertValidBudget(maxToolErrorRecoveries, {
+      name: 'maxToolErrorRecoveries',
+      min: 0,
+      max: HARD_MAX_TOOL_ERROR_RECOVERIES,
+      defaultValue: DEV_TOOL_ERROR_RECOVERY_BUDGET,
+    });
     this.runtimeIdentityProvider = typeof runtimeIdentityProvider === 'function' ? runtimeIdentityProvider : null;
     /* The Supervisor has a bounded default budget. Callers may explicitly pass
        null for characterization runs that must preserve every optional item;

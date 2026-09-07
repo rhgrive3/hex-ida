@@ -56,13 +56,20 @@ function u32be(dv, off) { return dv.getUint32(off, false); }
 
 /** Return the bounded active architecture slice. */
 async function sliceOffset(file, sliceIndex) {
+  if (sliceIndex != null) {
+    if (typeof sliceIndex !== 'number' || !Number.isSafeInteger(sliceIndex) || sliceIndex < 0) {
+      return null;
+    }
+  }
   const head = await bytes(file, 0, 8);
   if (head.length < 4) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-  if (dv.getUint32(0, true) === MH_MAGIC_64) return { base:0n, size:BigInt(file.size) };
+  if (dv.getUint32(0, true) === MH_MAGIC_64) {
+    return sliceIndex == null || sliceIndex === 0 ? { base:0n, size:BigInt(file.size) } : null;
+  }
   const be = dv.getUint32(0, false);
   if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
-  const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
+  const n = u32be(dv, 4), idx = sliceIndex ?? 0;
   if (idx >= n || n > 64) return null;
   const wide = be === FAT_MAGIC_64, entry = wide ? 32 : 20;
   const table = await bytes(file, 0, 8 + n * entry);
@@ -118,8 +125,11 @@ async function parseImage(file, sliceIndex) {
         const offset = BigInt(dv.getUint32(q + 48, true));
         const flags = dv.getUint32(q + 64, true);
         const reserved2 = dv.getUint32(q + 72, true);
-        if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n) {
-          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2 || 12, segIndex });
+        const stubSize = BigInt(reserved2);
+        if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n &&
+            reserved2 >= 8 && reserved2 % 4 === 0 &&
+            stubSize <= secSize && secSize % stubSize === 0n) {
+          stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2, segIndex });
         }
       }
     } else if (cmd === LC_DYLD_CHAINED_FIXUPS && size >= 16) {
@@ -139,7 +149,8 @@ function parseImportNames(raw) {
   const symbolsOffset = dv.getUint32(12, true);
   const count = dv.getUint32(16, true);
   const format = dv.getUint32(20, true);
-  if (version !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length ||
+  const symbolsFormat = dv.getUint32(24, true);
+  if (version !== 0 || symbolsFormat !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length ||
       importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
 
   const stride = format === 1 ? 4 : format === 2 ? 8 : format === 3 ? 16 : 0;
@@ -179,6 +190,14 @@ function parseImportNames(raw) {
 
 function sign21(v) { return (v & 0x100000) ? v - 0x200000 : v; }
 
+function stubInterveningPreservesBase(w, baseReg) {
+  if (w === 0xd503201f) return true; // NOP.
+  if (((w & 0xffe0ffe0) >>> 0) === 0xaa0003e0) {
+    return (w & 31) !== baseReg; // MOV Xd, Xm (ORR alias).
+  }
+  return false;
+}
+
 /** Decode the GOT slot loaded by a conventional arm64 Mach-O stub. */
 function stubSlot(code, off, pc, stubSize) {
   const dv = new DataView(code.buffer, code.byteOffset, code.byteLength);
@@ -196,9 +215,19 @@ function stubSlot(code, off, pc, stubSize) {
     }
     if (page != null && ((w & 0xffc00000) >>> 0) === 0xf9400000) {
       const rn = (w >>> 5) & 31;
-      if (rn !== baseReg) continue;
-      const imm12 = (w >>> 10) & 0xfff;
-      return page + BigInt(imm12 * 8);
+      if (rn === baseReg) {
+        const imm12 = (w >>> 10) & 0xfff;
+        return page + BigInt(imm12 * 8);
+      }
+      if ((w & 31) === baseReg) {
+        page = null;
+        baseReg = -1;
+      }
+      continue;
+    }
+    if (page != null && !stubInterveningPreservesBase(w, baseReg)) {
+      page = null;
+      baseReg = -1;
     }
   }
   return null;

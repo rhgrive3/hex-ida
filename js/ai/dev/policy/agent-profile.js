@@ -2,7 +2,10 @@ export const AGENT_PROFILE = Object.freeze({ STANDARD: 'standard', DEV: 'dev' })
 export const AGENT_PROFILES = Object.freeze(Object.values(AGENT_PROFILE));
 
 export function assertAgentProfile(value) {
-  const profile = String(value || '').toLowerCase();
+  if (typeof value !== 'string') {
+    throw new TypeError(`Agent profile must be a string, got ${value === null ? 'null' : typeof value}`);
+  }
+  const profile = value.trim().toLowerCase();
   if (!AGENT_PROFILES.includes(profile)) throw new TypeError(`Unsupported agent profile: ${value}`);
   return profile;
 }

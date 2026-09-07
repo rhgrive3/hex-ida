@@ -60,9 +60,9 @@ function binOp(name, a, b, bits = 64) {
       else if (name === 'and') value = av & bv;
       else if (name === 'or' || name === 'orr') value = av | bv;
       else if (name === 'xor' || name === 'eor') value = av ^ bv;
-      else if (name === 'shl') value = av << (bv % BigInt(width));
-      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv % BigInt(width));
-      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv % BigInt(width));
+      else if (name === 'shl') value = av << (bv & BigInt(width - 1));
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv & BigInt(width - 1));
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv & BigInt(width - 1));
       else return op(name, a, b);
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
@@ -338,13 +338,14 @@ function executionBudget(value, fallback, min, max, name) {
 
 /** Explore bounded Semantic IR paths. */
 export function symbolicExecute(ir, opts) {
+  const cancelledFn = opts?.isCancelled ?? (() => false);
+  if (typeof cancelledFn !== 'function') throw new TypeError('isCancelled must be a function');
   if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
   const maxPaths = executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
   const maxSteps = executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
   const maxBranches = executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
   const maxBlockVisits = executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
   const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
-  const cancelledFn = opts && opts.isCancelled || (() => false);
   const signal = opts && opts.signal || null;
   const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
   const deadline = Date.now() + timeoutMs;

@@ -520,6 +520,19 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const definition = value.def;
     const bits = widthOf(value);
     if (bits == null) return { cell: overdefined(`unsupported width: ${value?.bits}`), range: null };
+    const undefinedResult = definition?.extra?.attributes?.machineEffects?.undefinedResult ?? null;
+    if (undefinedResult != null) {
+      return {
+        cell: overdefined(`architecturally undefined result bits: ${undefinedResult.reason ?? 'unspecified'}`),
+        range: fullRange(bits),
+        fact: fullFact(bits, {
+          valueId: value.id,
+          status: 'unknown',
+          reason: `undefined-result:${undefinedResult.class ?? 'unknown'}:${undefinedResult.mask ?? 'unknown-mask'}`,
+          provenance: valueProvenance(value),
+        }),
+      };
+    }
     if (value.kind === 'phi' || definition?.op === 'phi') return evaluatePhi(value);
     if (value.kind === 'arg' || value.kind === 'undef' || definition == null) {
       return { cell: overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'), range: fullRange(bits) };

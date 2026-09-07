@@ -22,31 +22,32 @@
       const start = Date.now();
       const used = { read:0, resident:0, regions:0, names:0, strings:0, operations:0 };
       const take = (key, amount, limit) => {
-        const n = Number(amount);
+        if (typeof amount !== 'number') return false;
+        const n = amount;
         if (!Number.isFinite(n) || n < 0 || Date.now() - start > 3000 || used[key] + n > limit) return false;
         used[key] += n; return true;
       };
       return {
         takeRead:(n)=>take('read',n,32*MiB), takeResident:(n)=>take('resident',n,8*MiB),
         /*
-         * Release must be as strict as take. `Number(Infinity)` is finite-free
-         * and drove resident usage straight to 0, so releaseResident(Infinity)
-         * reset the accounting regardless of what was ever reserved and let a
-         * caller past the hard resident ceiling (#1337). NaN had the same shape
-         * through `|| 0`. Only a finite non-negative amount may be returned.
+         * Release must be as strict as take. Only a finite positive primitive
+         * number may be returned to resident accounting (#1337, #3291).
          */
-        releaseResident(n){ const amount=Number(n); if(!Number.isFinite(amount)||amount<=0) return; used.resident=Math.max(0,used.resident-amount); },
+        releaseResident(n){ if(typeof n!=='number'||!Number.isFinite(n)||n<=0) return; used.resident=Math.max(0,used.resident-n); },
         takeRegion:(n=1)=>take('regions',n,128), takeName:(n=1)=>take('names',n,80_000),
         takeString:(n)=>take('strings',n,8*MiB), takeOperation:(n=1)=>take('operations',n,2_000_000),
         expired:()=>Date.now()-start>3000, snapshot:()=>({...used,elapsedMs:Date.now()-start}),
       };
     },
     functionAuxLimit(requested) {
-      const n = Number.isFinite(Number(requested)) ? Math.max(0, Math.floor(Number(requested))) : 0;
+      const n = typeof requested === 'number' && Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 0;
       return Math.min(800_000, Math.max(32_768, n * 2));
     },
     withinProgramBudget(currentBytes, temporaryBytes) {
-      return currentBytes >= 0 && temporaryBytes >= 0 && currentBytes + temporaryBytes <= 96 * MiB;
+      return typeof currentBytes === 'number' && Number.isFinite(currentBytes)
+        && typeof temporaryBytes === 'number' && Number.isFinite(temporaryBytes)
+        && currentBytes >= 0 && temporaryBytes >= 0
+        && currentBytes + temporaryBytes <= 96 * MiB;
     },
   });
 })(globalThis);

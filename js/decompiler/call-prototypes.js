@@ -22,7 +22,8 @@ const VARIADIC_MIN = new Map([
 ]);
 
 export function normalizeExternalSymbol(name) {
-  let s = String(name || '').trim();
+  if (typeof name !== 'string') return '';
+  let s = name.trim();
   s = s.replace(/^_+/, '').replace(/^(?:imp_|j_)/, '');
   const suffix = s.search(/(?:\$|@@?)/);
   if (suffix >= 0) s = s.slice(0, suffix);
@@ -37,8 +38,12 @@ export function knownCallPrototype(name) {
 }
 
 function validArity(value) {
-  const n = Number(value);
-  return Number.isInteger(n) && n >= 0 && n <= 8 ? n : null;
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 8
+      ? value
+      : null;
 }
 
 function range(n) {

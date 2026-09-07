@@ -10,7 +10,7 @@ export class StringCollectionBudget {
     const resultLimit = typeof config.resultLimit === 'number' ? config.resultLimit : NaN;
     const estimatedHeapBytes = typeof config.estimatedHeapBytes === 'number' ? config.estimatedHeapBytes : NaN;
     this.inputRemaining = Number.isFinite(inputBytes) ? Math.max(0, inputBytes) : 0;
-    this.resultLimit = Number.isFinite(resultLimit) ? Math.max(1, Math.floor(resultLimit)) : 1;
+    this.resultLimit = Number.isFinite(resultLimit) ? Math.max(0, Math.floor(resultLimit)) : 1;
     this.heapLimit = Number.isFinite(estimatedHeapBytes) ? Math.max(1, estimatedHeapBytes) : 1;
     this.results = 0;
     this.estimatedHeap = 0;

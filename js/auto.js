@@ -151,7 +151,12 @@ export async function autoAnalyze(opts) {
   // mid-analysis (#3308).
   const progress = typeof o.onProgress === 'function' ? o.onProgress : () => {};
   const cancelled = typeof o.isCancelled === 'function' ? o.isCancelled : () => false;
-  const deepLimit = o.deepLimit != null ? o.deepLimit : 12;
+  // deepLimit is an analysis-coverage authority like the pinpoint budgets:
+  // only a primitive non-negative safe integer may define it. Malformed
+  // values fall back to the default instead of coercing through relational
+  // comparisons, where Infinity would uncap and strings/booleans would set
+  // arbitrary counts (#5285, #5288). Explicit 0 disables deep analysis.
+  const deepLimit = typeof o.deepLimit === 'number' && Number.isSafeInteger(o.deepLimit) && o.deepLimit >= 0 ? o.deepLimit : 12;
 
   const report = {
     map: null, engine: null, features: [], goals: [], pinned: [], confirmed: [],

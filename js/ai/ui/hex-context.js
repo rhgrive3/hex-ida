@@ -107,6 +107,8 @@ export function createHexAIContext(app) {
       let neededOffset = offset;
       let anySupported = false;
       let complete = completenessOf(info) === 'complete';
+      let exactTotal = 0;
+      let exactTotalKnown = complete;
       let reason = complete ? null : (reasonOf(info) || 'binary-info-incomplete');
       for (const region of info.value.regions || []) {
         abortIfNeeded(options.signal);
@@ -119,13 +121,29 @@ export function createHexAIContext(app) {
           query:String(query ?? ''),
           from:0,
         }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
-        if (completenessOf(result) === 'unsupported') {
+        const regionCompleteness = completenessOf(result);
+        if (regionCompleteness === 'unsupported') {
+          exactTotalKnown = false;
+          complete = false;
           reason ||= reasonOf(result) || 'typed-search-producer-unavailable';
           continue;
         }
         anySupported = true;
-        const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
-        if (completenessOf(result) !== 'complete') {
+        const rawRegionTotal = result?.page?.total;
+        const regionTotal = Number.isFinite(Number(rawRegionTotal)) ? Number(rawRegionTotal) : null;
+        const exactRegionTotal = typeof rawRegionTotal === 'number'
+          && Number.isSafeInteger(rawRegionTotal)
+          && rawRegionTotal >= 0
+          ? rawRegionTotal
+          : null;
+        if (regionCompleteness === 'complete' && exactRegionTotal != null) {
+          const nextExactTotal = exactTotal + exactRegionTotal;
+          if (Number.isSafeInteger(nextExactTotal)) exactTotal = nextExactTotal;
+          else exactTotalKnown = false;
+        } else {
+          exactTotalKnown = false;
+        }
+        if (regionCompleteness !== 'complete') {
           complete = false;
           reason ||= reasonOf(result) || 'search-incomplete';
         }
@@ -153,7 +171,7 @@ export function createHexAIContext(app) {
         results:rows,
         offset,
         returned:rows.length,
-        total:pageComplete ? offset + rows.length : null,
+        total:pageComplete && exactTotalKnown ? exactTotal : null,
         complete:pageComplete,
         truncated:!pageComplete,
         reason:pageComplete ? null : (reason || (hasNext ? 'result-limit' : 'typed-search-producer-unavailable')),
