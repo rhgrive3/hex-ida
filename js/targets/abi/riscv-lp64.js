@@ -181,7 +181,9 @@ function parameterList(prototype) {
 function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
+  /* Token-boundary class words: `uintptr_t`/`intptr_t` stay XLEN-wide
+   * integers (see `riscvTypeBits`), not pointers. */
+  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|\b(?:pointer|ptr|object)\b/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;

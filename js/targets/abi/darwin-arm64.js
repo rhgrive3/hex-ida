@@ -40,7 +40,9 @@ function descriptorBoolean(parameter, key) {
 function parameterClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
-  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${cls}`);
+  /* Token-boundary class words: `uintptr_t`/`intptr_t`/`ptrdiff_t` are
+   * integers, not pointers. */
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|\b(?:pointer|ptr|object|class|block|closure)\b/.test(`${type} ${cls}`);
   const hfaMeta = descriptorBoolean(param, 'hfa');
   const hvaMeta = descriptorBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)

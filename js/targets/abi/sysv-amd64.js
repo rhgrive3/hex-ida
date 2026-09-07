@@ -66,8 +66,10 @@ function parameterClass(parameter) {
   const abiClass = normalizedType(parameter?.abiClass || parameter?.class || parameter?.kind || '');
   const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
   const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
+  /* Token-boundary class words: `uintptr_t`/`intptr_t`/`ptrdiff_t` are
+   * integers, not pointers. */
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
+    || /\*|\b(?:pointer|ptr|object|class|block|closure)\b/.test(`${type} ${abiClass}`);
   const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
