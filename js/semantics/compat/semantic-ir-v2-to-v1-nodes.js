@@ -20,6 +20,66 @@ function finiteFloatValue(value) {
   return number;
 }
 
+function bitPatternBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value !== 'string' || !/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) return null;
+  try { return BigInt(value); } catch { return null; }
+}
+
+function supportedFloatFormat(format, widthBits) {
+  if (![16, 32, 64].includes(widthBits) || typeof format !== 'string') return false;
+  return format === 'ieee754' || format === `ieee754-binary${widthBits}`;
+}
+
+function decodeFloatBitPattern(bitPattern, widthBits, format) {
+  if (!supportedFloatFormat(format, widthBits)) return null;
+  const bits = bitPatternBigInt(bitPattern);
+  if (bits == null || bits < 0n || bits >= (1n << BigInt(widthBits))) return null;
+  if (widthBits === 64 || widthBits === 32) {
+    const buffer = new ArrayBuffer(widthBits / 8);
+    const view = new DataView(buffer);
+    if (widthBits === 64) {
+      view.setBigUint64(0, bits, true);
+      return finiteFloatValue(view.getFloat64(0, true));
+    }
+    view.setUint32(0, Number(bits), true);
+    return finiteFloatValue(view.getFloat32(0, true));
+  }
+
+  const sign = (bits & 0x8000n) === 0n ? 1 : -1;
+  const exponent = Number((bits >> 10n) & 0x1fn);
+  const fraction = Number(bits & 0x3ffn);
+  if (exponent === 0x1f) return null;
+  if (exponent === 0) return finiteFloatValue(sign < 0 ? (fraction === 0 ? -0 : -fraction * 2 ** -24) : fraction * 2 ** -24);
+  return finiteFloatValue(sign * (1 + fraction / 2 ** 10) * 2 ** (exponent - 15));
+}
+
+function canonicalFloatPayload(raw, constKind) {
+  const widthBits = raw.widthBits;
+  const format = raw.format;
+  if (!Number.isSafeInteger(widthBits) || !supportedFloatFormat(format, widthBits)) {
+    return { value: null, float: null, constKind: null };
+  }
+
+  const hasSemanticValue = raw.semanticValue != null;
+  const hasBitPattern = raw.bitPattern != null;
+  const semanticValue = hasSemanticValue ? finiteFloatValue(raw.semanticValue) : null;
+  const bitPatternValue = hasBitPattern ? decodeFloatBitPattern(raw.bitPattern, widthBits, format) : null;
+  if (hasSemanticValue && hasBitPattern) {
+    if (semanticValue == null || bitPatternValue == null || !Object.is(semanticValue, bitPatternValue)) {
+      return { value: null, float: null, constKind: null };
+    }
+    return { value: null, float: semanticValue, constKind: constKind ?? 'float' };
+  }
+  if (hasSemanticValue && semanticValue != null) {
+    return { value: null, float: semanticValue, constKind: constKind ?? 'float' };
+  }
+  if (hasBitPattern && bitPatternValue != null) {
+    return { value: null, float: bitPatternValue, constKind: constKind ?? 'float' };
+  }
+  return { value: null, float: null, constKind: null };
+}
+
 function constantPayload(node, machineType = null) {
   const attrs = node?.attributes || {};
   const metadata = node?.metadata || {};
@@ -30,6 +90,9 @@ function constantPayload(node, machineType = null) {
     ?? operation.value ?? operation.constant ?? operation.address
     ?? metadata.value ?? metadata.constant ?? metadata.address;
   if (raw == null) return { value: null, float: null, constKind: null };
+  if (raw?.kind === 'float' && typeof raw === 'object' && !Array.isArray(raw)) {
+    return canonicalFloatPayload(raw, constKind);
+  }
   const integer = safeBigInt(raw);
   if (integer != null && !isFloat) return { value: integer, float: null, constKind };
   const number = finiteFloatValue(raw);
