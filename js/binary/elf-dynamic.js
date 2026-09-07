@@ -227,7 +227,11 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
+    // virtual address (ELF gABI). Keep it out of the VA domain and
+    // image.exports as a canonical address (#5843).
+    const tls = type === 6;
+    const sym = { name, address: tls ? null : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -236,8 +240,11 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
     if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+      // TLS exports keep their name/visibility fact but never mint a VA.
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
-      image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+      image.exports.push(tls
+        ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
+        : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
     if (defined === true && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
