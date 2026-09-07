@@ -687,6 +687,11 @@
       "headSha": "8cca5b359a434fa11d18c60684fb4906288c2a15",
       "treeSha": "d7c473e0740c6b273d211e338819d2c709e31194",
       "evidencePath": "tests/final-closure/t057/cil-return-shape-authority.test.mjs"
+    },
+    "T061": {
+      "headSha": "44416c0f24f28059482c5b72e0c40bae620978cb",
+      "treeSha": "98a08df7ebcde46038e83db81c21341eeba0e6a5",
+      "evidencePath": "tests/final-closure/fixture-maintenance.test.mjs"
     }
   },
   "pathPatternPolicy": "repo-relative exact paths; task allowedPaths may additionally use a terminal /** subtree glob",
@@ -697,6 +702,7 @@
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
     "js/core/scheduler/analysis-scheduler.js",
+    "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
     "specs/005-analysis-final-closure/contracts/closure-ledger.md",
@@ -713,6 +719,7 @@
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
     "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+    "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
@@ -720,6 +727,7 @@
     "specs/005-analysis-final-closure/tasks.md",
     "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/fixture-maintenance.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/moving-main-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
@@ -737,7 +745,10 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/denominator-inventory.json",
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "actualChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -745,6 +756,7 @@
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
     "js/core/scheduler/analysis-scheduler.js",
+    "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
     "specs/005-analysis-final-closure/contracts/closure-ledger.md",
@@ -761,6 +773,7 @@
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
     "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+    "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
@@ -768,6 +781,7 @@
     "specs/005-analysis-final-closure/tasks.md",
     "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/fixture-maintenance.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/moving-main-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
@@ -785,7 +799,10 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/denominator-inventory.json",
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "unionChangedPaths": [
     ".github/workflows/final-closure-preflight.yml",
@@ -793,6 +810,7 @@
     "js/ai/control/snapshot.js",
     "js/ai/dev/ui/controls.js",
     "js/core/scheduler/analysis-scheduler.js",
+    "package.json",
     "specs/005-analysis-final-closure/checklists/release-evidence.md",
     "specs/005-analysis-final-closure/checklists/requirements.md",
     "specs/005-analysis-final-closure/contracts/closure-ledger.md",
@@ -809,6 +827,7 @@
     "specs/005-analysis-final-closure/evidence/roadmap-matrix.md",
     "specs/005-analysis-final-closure/evidence/speckit-analysis.md",
     "specs/005-analysis-final-closure/evidence/stage-a-checkpoints.md",
+    "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md",
     "specs/005-analysis-final-closure/plan.md",
     "specs/005-analysis-final-closure/quickstart.md",
     "specs/005-analysis-final-closure/research.md",
@@ -816,6 +835,7 @@
     "specs/005-analysis-final-closure/tasks.md",
     "tests/ai-ui-dev-profile.mjs",
     "tests/final-closure/cross-lane-ownership.test.mjs",
+    "tests/final-closure/fixture-maintenance.test.mjs",
     "tests/final-closure/foundation-amendment.test.mjs",
     "tests/final-closure/moving-main-amendment.test.mjs",
     "tests/final-closure/preflight.test.mjs",
@@ -833,7 +853,10 @@
     "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
     "tools/validation/final-closure/shadow/foundation/registry.json",
     "tools/validation/phase11/ownership-check.mjs",
-    "tools/validation/phase12/ownership.mjs"
+    "tools/validation/phase12/denominator-inventory.json",
+    "tools/validation/phase12/ownership.mjs",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "entries": [
     {
@@ -855,6 +878,10 @@
     {
       "path": "js/core/scheduler/analysis-scheduler.js",
       "ownerTaskId": "T059"
+    },
+    {
+      "path": "package.json",
+      "ownerTaskId": "T061"
     },
     {
       "path": "specs/005-analysis-final-closure/checklists/release-evidence.md",
@@ -921,6 +948,10 @@
       "ownerTaskId": "T049"
     },
     {
+      "path": "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md",
+      "ownerTaskId": "T061"
+    },
+    {
       "path": "specs/005-analysis-final-closure/plan.md",
       "ownerTaskId": "T058"
     },
@@ -949,6 +980,10 @@
       "ownerTaskId": "T046"
     },
     {
+      "path": "tests/final-closure/fixture-maintenance.test.mjs",
+      "ownerTaskId": "T061"
+    },
+    {
       "path": "tests/final-closure/foundation-amendment.test.mjs",
       "ownerTaskId": "T058"
     },
@@ -970,7 +1005,7 @@
     },
     {
       "path": "tests/final-closure/t052/canonical-operation-registry.test.mjs",
-      "ownerTaskId": "T052"
+      "ownerTaskId": "T061"
     },
     {
       "path": "tests/final-closure/t057/cil-return-shape-authority.test.mjs",
@@ -1017,8 +1052,20 @@
       "ownerTaskId": "T046"
     },
     {
+      "path": "tools/validation/phase12/denominator-inventory.json",
+      "ownerTaskId": "T061"
+    },
+    {
       "path": "tools/validation/phase12/ownership.mjs",
       "ownerTaskId": "T046"
+    },
+    {
+      "path": "userscript/hex.user.template.js",
+      "ownerTaskId": "T049"
+    },
+    {
+      "path": "userscript/release-version.json",
+      "ownerTaskId": "T049"
     }
   ],
   "movingMainAmendment": {
@@ -1676,6 +1723,1243 @@
         "identity": "68ba2349e16fb0dc260114657c84a0c3b443afc9d5105088dba1f7f92246eadb"
       },
       "initialCandidateGateDigest": "63fb512b688c281f862740411f20df72"
+    }
+  },
+  "stageAMaintenanceTransfer": {
+    "schemaVersion": "hex-final-closure-t061-maintenance-transfer/v1",
+    "predecessor": {
+      "taskId": "T052",
+      "integration": {
+        "headSha": "fbd4b7c96901ae32c23a2e8b477c0e3e7cd0c713",
+        "treeSha": "b82a6f648a387ee3025d6759bee3d939701e32d5"
+      },
+      "originalHandoff": {
+        "headSha": "0a521b282c6aa93afc94e0dfbfe701e705ccdf2a",
+        "treeSha": "deea1e4be6a26f69b669e9c15b6d15d49ad8586b",
+        "evidencePath": "tests/final-closure/t052/canonical-operation-registry.test.mjs"
+      }
+    },
+    "successorTaskId": "T061",
+    "component": {
+      "headSha": "44416c0f24f28059482c5b72e0c40bae620978cb",
+      "treeSha": "98a08df7ebcde46038e83db81c21341eeba0e6a5",
+      "paths": [
+        "package.json",
+        "specs/005-analysis-final-closure/contracts/task-ownership.json",
+        "specs/005-analysis-final-closure/data-model.md",
+        "specs/005-analysis-final-closure/tasks.md",
+        "tests/final-closure/fixture-maintenance.test.mjs",
+        "tests/final-closure/preflight.test.mjs",
+        "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+        "tools/validation/final-closure/preflight.mjs",
+        "tools/validation/phase12/denominator-inventory.json"
+      ]
+    },
+    "product": {
+      "schemaVersion": "hex-final-closure-t061-maintenance-product/v1",
+      "acceptedTaskIds": [
+        "T051",
+        "T059",
+        "T052",
+        "T057"
+      ],
+      "acceptedMerge": {
+        "commitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+        "treeSha": "98a08df7ebcde46038e83db81c21341eeba0e6a5"
+      },
+      "checkpointProduct": {
+        "commitSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+        "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+      },
+      "integrationReconciliation": {
+        "schemaVersion": "hex-final-closure-product-reconciliation/v1",
+        "ownerTaskId": "T049",
+        "mergeCommitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+        "productCommitSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+        "paths": [],
+        "pathCount": 0,
+        "stableDigest": "09612b07b5ecb5a5359f19cb0456e970"
+      },
+      "generation": {
+        "schemaVersion": "hex-final-closure-checkpoint-generation-evidence/v1",
+        "command": "node scripts/build-userscript.mjs",
+        "firstRunDiffEmpty": true,
+        "secondRunDiffEmpty": true,
+        "candidateIdentity": {
+          "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+          "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+        },
+        "generator": {
+          "path": "scripts/build-userscript.mjs",
+          "gitBlobSha1": "4a0babc9a05b68259ac1796b12e4e255e297bf0f",
+          "sha256": "710c1d19d1c6fe5c0e10fabdfb5439d1e3ec5d6236c424bac2609ebd5256b663"
+        },
+        "generatedBlobs": [
+          {
+            "path": "js/userscript/deployment-identity.generated.js",
+            "gitBlobSha1": "a9f51f223052c0ae67b174d52344afa773666a0a",
+            "sha256": "3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252"
+          },
+          {
+            "path": "userscript/hex.user.template.js",
+            "gitBlobSha1": "54686b4beca38f3bd9b88e9d77129c300f208058",
+            "sha256": "ba2e2ec5b67c46dbcab5ec50c253855382e0a8b666534c5efd63c69cf212c72f"
+          },
+          {
+            "path": "userscript/release-version.json",
+            "gitBlobSha1": "f864b943f12913c74fe41656170cf85d9701f5e7",
+            "sha256": "ad01a5e829b5f7e1603560eca3c722a05e6f458fcb59c3c3fb7404cafea1e62c"
+          }
+        ],
+        "sourceIdentity": "5ce22e0282a542f8852197f9dd83fa5f7d340e0d271e38c6712e6bf229ea487e",
+        "buildIdentity": "458738d4ae60abc80701d47bb172f877aa27725ca75568669f3dfc9981943da5",
+        "artifactIdentity": "43d014f2953ce31da07887511ce5cf16095a22357077feb893ca4c1e0c6580ee",
+        "releaseIdentity": "f8630b8145e40d62c0758428233d912396cc1aea43b770626b0dfb3c6c4131e2",
+        "buildId": "a0aaea94942f34caa19101e0",
+        "releaseSerial": 2322242145
+      },
+      "rollingProductGates": {
+        "schemaVersion": "hex-final-closure-checkpoint-rolling-evidence/v2",
+        "taskIds": [
+          "T051",
+          "T059",
+          "T052",
+          "T057"
+        ],
+        "status": "PASS",
+        "candidateIdentity": {
+          "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+          "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+        },
+        "registry": {
+          "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+          "sourceCommitSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+          "sourceTreeSha": "593d39ff8d7569399a25ede761de9743a4d28be0",
+          "gitBlobSha1": "e801e55c017ec275f3de65397a3a915e908d98b2",
+          "sha256": "6015c8d43d5b34bc0facac437a787cd63c68cc3e0c7b3795cf52c19052ec87aa",
+          "initialCandidateGateDigest": "63fb512b688c281f862740411f20df72",
+          "rollingSetDigest": "7ec895078a1698449f7529c4b0bf8ca5"
+        },
+        "results": [
+          {
+            "taskId": "T051",
+            "gateId": "t051-ai-release-session",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs"
+            ],
+            "registeredArgvDigest": "8a1737fec2e21babad13e736f8e1faa4",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-3664-ai-runtime-release-session.test.mjs"
+            ],
+            "executedArgvDigest": "8a1737fec2e21babad13e736f8e1faa4",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 72,
+              "sha256": "06700e4d61092e39c75ed601ef3210358c3b6a97a26ed5da3ebe1543785b1a98"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "d9a812a93355aab6ab2d713ebc0d4c52b29ea699436a6177de3114152d47364c"
+          },
+          {
+            "taskId": "T051",
+            "gateId": "t051-ai-binary-identity",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs"
+            ],
+            "registeredArgvDigest": "00f934e13d986dbb5aa0e7f4f52858d2",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/issue-6241-ai-snapshot-binary-identity.test.mjs"
+            ],
+            "executedArgvDigest": "00f934e13d986dbb5aa0e7f4f52858d2",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 43,
+              "sha256": "21405ece7b7ae267b0e6bd85c395a3b016eb30dd6c3feca7355c0f02b94f3c6d"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "b591c7d3c33d98e4fcd166690c15a27854c7a5278b72c163ffad00dc3e169849"
+          },
+          {
+            "taskId": "T059",
+            "gateId": "t059-scheduler-dag",
+            "registeredArgv": [
+              "node",
+              "tests/phase4/scheduler/dag.test.mjs"
+            ],
+            "registeredArgvDigest": "0c5163143f7dc9c77fdd9ffbe8fd0766",
+            "executedArgv": [
+              "node",
+              "tests/phase4/scheduler/dag.test.mjs"
+            ],
+            "executedArgvDigest": "0c5163143f7dc9c77fdd9ffbe8fd0766",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 27,
+              "sha256": "9444c500097baa475306ac92b07ae25a13397157307fcd30a6f29cdf766873c7"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "2e2f072880a521cd717adc3578118c4dddbcc66580041a78dbf1b3e6a699430c"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-remote-authority",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs"
+            ],
+            "registeredArgvDigest": "c2df6272b3793eb58623de807bb0c9f8",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-authority-identity-3619.test.mjs"
+            ],
+            "executedArgvDigest": "c2df6272b3793eb58623de807bb0c9f8",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 69,
+              "sha256": "3887e3b173004cc7d01fa931a8ebe69f24848b070cc1ecceef889224ae6f5d93"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "56759463f12d327900d0adc6b956d45344b261eb9286ae526f49baa664cefa3e"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-remote-integrity",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-integrity.test.mjs"
+            ],
+            "registeredArgvDigest": "3e6ffa211964817256b6a78f98bf81e7",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/remote-integrity.test.mjs"
+            ],
+            "executedArgvDigest": "3e6ffa211964817256b6a78f98bf81e7",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 58,
+              "sha256": "4a295d8789cd9ab854bb191ccdb2bcbf19276e1f1a2769c8b29a525fb2036165"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "1fa25c226c94c92eefe01e921a195ea6091e090d25a4f6f0432f6be45d7da963"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-action-canonical",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/action-canonical-3546.test.mjs"
+            ],
+            "registeredArgvDigest": "f7aa1b0896aab33af5fd5072e093acb5",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/action-canonical-3546.test.mjs"
+            ],
+            "executedArgvDigest": "f7aa1b0896aab33af5fd5072e093acb5",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 52,
+              "sha256": "41763e7a9d10003b5eaa82c55ab24e721efdfd9d94a337d0969ce089c6a55bc0"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "94949694d6e9c26b31ebf7b76df9325a4be796d08939c0886bba868da9a9a6e3"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-pending-drain",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"
+            ],
+            "registeredArgvDigest": "08a9dc17c58b27bd1cfdb3b9c5813830",
+            "executedArgv": [
+              "node",
+              "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs"
+            ],
+            "executedArgvDigest": "08a9dc17c58b27bd1cfdb3b9c5813830",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 725,
+              "sha256": "8f28a27f494d207a365c3ad2625be1364852fbc5cc036d4dbd0c7049787d0f6b"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "c7a469dde458166c67758e969b75eacd9cdedb64daad815c10f4f0f7ef74b527"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-trust-boundary",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/adversarial/trust-boundaries.test.mjs"
+            ],
+            "registeredArgvDigest": "b81b3098444b1e00516b15b1a158059d",
+            "executedArgv": [
+              "node",
+              "tests/phase12/adversarial/trust-boundaries.test.mjs"
+            ],
+            "executedArgvDigest": "b81b3098444b1e00516b15b1a158059d",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 60,
+              "sha256": "597f6729a054df1813e18ad41cca8202c826cb548d61ba8886f3a9f39e7b266b"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "c8bd42f262d5b70dead33126dd2ed827e37cfb333e3a57b1079020432f7b78a5"
+          },
+          {
+            "taskId": "T052",
+            "gateId": "t052-facade",
+            "registeredArgv": [
+              "node",
+              "tests/phase12/integration/facade.test.mjs"
+            ],
+            "registeredArgvDigest": "de6e7413b5112a7f0d6b1d00166c103e",
+            "executedArgv": [
+              "node",
+              "tests/phase12/integration/facade.test.mjs"
+            ],
+            "executedArgvDigest": "de6e7413b5112a7f0d6b1d00166c103e",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 60,
+              "sha256": "c91c651e0512b51ac3c571b705a9958ed7b14abf0df021858d83259b9f6cf158"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "43edbbcc785f497133c79787c5d50359f939ce6593db0c355aa0c2d02a21fe87"
+          },
+          {
+            "taskId": "T057",
+            "gateId": "t057-phase11-suite",
+            "registeredArgv": [
+              "npm",
+              "run",
+              "phase11:test"
+            ],
+            "registeredArgvDigest": "281f8a0c682a81f8f0451fe7ae5230c1",
+            "executedArgv": [
+              "npm",
+              "run",
+              "phase11:test"
+            ],
+            "executedArgvDigest": "281f8a0c682a81f8f0451fe7ae5230c1",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "process": {
+              "exitCode": 0,
+              "signal": null,
+              "spawnErrorCode": null,
+              "outputLimitExceeded": false
+            },
+            "stdout": {
+              "byteLength": 6968,
+              "sha256": "02e3addf456453497e0b7fb6763d0908d3f5894a9ba65fb1dcd8cb1af1d0ac67"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "status": "PASS",
+            "identity": "e65cc882e0846ea19a0aeb94d5f35c28cca2bdb4e9d8783e0838183e248c77e4"
+          }
+        ],
+        "identity": "1698c7492184f5bfc92cbeaa2a6cd380c6370e7c62195b7bd73be5ac0cff0622"
+      },
+      "independentShadowVerifier": {
+        "schemaVersion": "hex-final-closure-checkpoint-shadow-evidence/v2",
+        "status": "PASS",
+        "candidateIdentity": {
+          "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+          "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+        },
+        "reports": [
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T051",
+            "gateId": "t051-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "authorityCommitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "e801e55c017ec275f3de65397a3a915e908d98b2",
+              "sha256": "6015c8d43d5b34bc0facac437a787cd63c68cc3e0c7b3795cf52c19052ec87aa"
+            },
+            "registryEntryDigest": "f120c169be6ae3d781e7a2c0c33b3d28",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "c121db65b8f0eaab5858d65d2329a9a7b62b2544",
+              "sha256": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597"
+            },
+            "verifierIdentity": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "ai-snapshot-binary-identity",
+                "path": "tests/ai-scope-hardening.mjs",
+                "gitBlobSha1": "4e6912d4e94b259f01b3367c7df8d359e2c08724",
+                "sha256": "1ec4b027893b217058eda1505183e9d70e58035a32050643a1fcd6aaae10c49f"
+              }
+            ],
+            "judgeIdentity": "5ef6c46abb516de3d8df77b5f1c020082b0091ecfee72f482fe7f885c0465cff",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T051",
+                "gateId": "t051-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "ai-snapshot-binary-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T051",
+                "gateId": "t051-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "ai-snapshot-binary-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "8ed019f13666f1913ae77d906a840016b38d50afe5ee9a301eb4355dfbe573f1",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "ai-snapshot-binary-identity",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "d6afc80f95c68f389ce9a6dbcf5379503c547c299008dd093b767fb33cf628b2",
+                  "productObservationSha256": "d6afc80f95c68f389ce9a6dbcf5379503c547c299008dd093b767fb33cf628b2"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "556dd43b70fbdf696aa25b94ce468545b37b3aee5329fd30ab9a8040fc4eb6a8"
+          },
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T059",
+            "gateId": "t059-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "authorityCommitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "e801e55c017ec275f3de65397a3a915e908d98b2",
+              "sha256": "6015c8d43d5b34bc0facac437a787cd63c68cc3e0c7b3795cf52c19052ec87aa"
+            },
+            "registryEntryDigest": "c809c95cf5c0dc4f1d2aa4d4340b4830",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "c121db65b8f0eaab5858d65d2329a9a7b62b2544",
+              "sha256": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597"
+            },
+            "verifierIdentity": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "scheduler-id-authority",
+                "path": "tests/phase4/scheduler/strict-authority-boundaries.test.mjs",
+                "gitBlobSha1": "4044c8b2ef73ba92b4276ceb37ec5c4ff8e2c173",
+                "sha256": "313dbc0b3c1bf2d3f1dff92f1cce2340c388bfb5041464f6c32ab5c552600625"
+              }
+            ],
+            "judgeIdentity": "44f9ca53b68df0ea5af149a4e4797c157d23eacefad7a49146906aa3c73a1eea",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T059",
+                "gateId": "t059-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "scheduler-id-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T059",
+                "gateId": "t059-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "scheduler-id-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "ed970160e0a0e32a1efa4cc0eec22392b2fdda86693e142327bb0fdafd601a26",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "scheduler-id-authority",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "544b6f8c3645429cd9f23c0c6660d6f516bd16db21f1f4f0f4ee45d2a981a5e6",
+                  "productObservationSha256": "544b6f8c3645429cd9f23c0c6660d6f516bd16db21f1f4f0f4ee45d2a981a5e6"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "8c68e54c038be29ff3bc23b6c9d26de396f4cd7f3203e373d65ebedb57f2ab5d"
+          },
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T052",
+            "gateId": "t052-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "authorityCommitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "e801e55c017ec275f3de65397a3a915e908d98b2",
+              "sha256": "6015c8d43d5b34bc0facac437a787cd63c68cc3e0c7b3795cf52c19052ec87aa"
+            },
+            "registryEntryDigest": "870aa3ec026061dcc12c1ce2f5e041bb",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "c121db65b8f0eaab5858d65d2329a9a7b62b2544",
+              "sha256": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597"
+            },
+            "verifierIdentity": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "collaboration-remote-authority-identity",
+                "path": "tests/phase12/collaboration/issues-5397-5399-5467-5497.test.mjs",
+                "gitBlobSha1": "55112274bf27b93e376390258e0b4bf934fb6db2",
+                "sha256": "3258d724db529650fa1b31b0e765353e39485a48ce8ba64cf2b32c90b8a93ac6"
+              }
+            ],
+            "judgeIdentity": "175a307b54cb82d037cd8ed40838f8ba6ac185812597797fbbbad763c59befa2",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T052",
+                "gateId": "t052-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "collaboration-remote-authority-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T052",
+                "gateId": "t052-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "collaboration-remote-authority-identity",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "085f65f4ee1c493efb736ec8680fef8b8cb3b80dfc1a34d37eacf97828d14c76",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "collaboration-remote-authority-identity",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "10c9b3a5de90d5cf7d01b78c5a627375cbdbce6dacfbc76cddc48e8c26c187b6",
+                  "productObservationSha256": "10c9b3a5de90d5cf7d01b78c5a627375cbdbce6dacfbc76cddc48e8c26c187b6"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "a74c2187787818d016c4c06ac6fbf073e803c54f48e8069880ae08f1df13ce61"
+          },
+          {
+            "schemaVersion": "hex-final-closure-shadow-gate-evidence/v1",
+            "status": "PASS",
+            "taskId": "T057",
+            "gateId": "t057-independent-verifier",
+            "candidateIdentity": {
+              "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+              "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+            },
+            "authorityCommitSha": "d1c31fafb9703be57a00b522c453bbd0ffbee610",
+            "authorityOwnershipArtifact": {
+              "path": "specs/005-analysis-final-closure/contracts/task-ownership.json",
+              "gitBlobSha1": "e801e55c017ec275f3de65397a3a915e908d98b2",
+              "sha256": "6015c8d43d5b34bc0facac437a787cd63c68cc3e0c7b3795cf52c19052ec87aa"
+            },
+            "registryEntryDigest": "9e9d49a52dba579d0205c4644d5f1ad2",
+            "verifierArtifact": {
+              "path": "tools/validation/final-closure/preflight.mjs",
+              "gitBlobSha1": "c121db65b8f0eaab5858d65d2329a9a7b62b2544",
+              "sha256": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597"
+            },
+            "verifierIdentity": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597",
+            "authorityArtifacts": [
+              {
+                "role": "registry",
+                "path": "tools/validation/final-closure/shadow/foundation/registry.json",
+                "gitBlobSha1": "495099bd5db7a977abcf91fac0f045db419f09e1",
+                "sha256": "5ef70a1159d7fe8e0768cb3cd16958c8d96238c89ee9f0463d78e1555ef21b0e"
+              },
+              {
+                "role": "contracts",
+                "path": "tools/validation/final-closure/shadow/foundation/contracts.json",
+                "gitBlobSha1": "50e9f04bfd9af11d8288e5d8e0d8e61e346652a3",
+                "sha256": "ddff1dda2831e24aba7706699af20463752eafc0318378fdb1776e55a0bc451b"
+              },
+              {
+                "role": "oracleProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/oracle-observer.mjs",
+                "gitBlobSha1": "9136f0a32790f1679e1ef9e5e5f972a5393c4d74",
+                "sha256": "2ea797c3947459e21466827239034d53ce25620c5d70f4609e188e5db083991a"
+              },
+              {
+                "role": "productProvider",
+                "path": "tools/validation/final-closure/shadow/foundation/product-observer.mjs",
+                "gitBlobSha1": "bd688116273a9235d7f63e49a8ff4ee6e7964392",
+                "sha256": "04d70f70b3db14d1eda1ba469429af35befd674fcd0a2255112f69931c8d48e2"
+              }
+            ],
+            "authorityIdentity": "11bfa71b9343ba71b4fc4b9121a4207339c593fcc1045701c407ef73330b3ef0",
+            "judgeArtifacts": [
+              {
+                "caseId": "cil-return-shape-authority",
+                "path": "tests/issue-1142-cil-stack-validation.mjs",
+                "gitBlobSha1": "7d0310e0643a42c9c83ce375cd7bdbddd9ec6b62",
+                "sha256": "b0ca9229506db235f7c4f7bb3ecba8d264c4659da2a01dee90d079d40862b0ca"
+              }
+            ],
+            "judgeIdentity": "98cebb9468e2391cc5aac1b9d124e4f7f48c5b131c04d64a85a1a107cb6ab9b5",
+            "observations": {
+              "oracle": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T057",
+                "gateId": "t057-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "cil-return-shape-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "errorCode": null,
+                      "exitCode": 0,
+                      "signal": null
+                    }
+                  }
+                ]
+              },
+              "product": {
+                "schemaVersion": "hex-final-closure-shadow-raw-observation/v1",
+                "taskId": "T057",
+                "gateId": "t057-independent-verifier",
+                "observations": [
+                  {
+                    "caseId": "cil-return-shape-authority",
+                    "state": "OBSERVED",
+                    "value": {
+                      "exitCode": 0,
+                      "signal": null,
+                      "errorCode": null
+                    }
+                  }
+                ]
+              }
+            },
+            "proof": {
+              "schemaVersion": "hex-final-closure-shadow-proof/v2",
+              "verdict": "PASS",
+              "comparisonAlgorithm": "canonical-observation-equality-safe-unknown/v1",
+              "contractIdentity": "493d7220d371610b1a60b384c153e281fe46959497e77232706a1e7444f34a7b",
+              "caseCount": 1,
+              "results": [
+                {
+                  "caseId": "cil-return-shape-authority",
+                  "disposition": "MATCH",
+                  "oracleObservationSha256": "f8aa561ec158c25ececcb652c4b5dac9ee06ac95766bb49894a0eff822fd1a95",
+                  "productObservationSha256": "f8aa561ec158c25ececcb652c4b5dac9ee06ac95766bb49894a0eff822fd1a95"
+                }
+              ],
+              "counters": [
+                {
+                  "id": "falseExactNoAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactMustAlias",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactIndirectTarget",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "falseExactType",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "semanticMismatch",
+                  "observed": 0,
+                  "denominator": 1
+                },
+                {
+                  "id": "stalePublicationAfterCancel",
+                  "observed": 0,
+                  "denominator": 0
+                },
+                {
+                  "id": "invalidWriterOutputAccepted",
+                  "observed": 0,
+                  "denominator": 0
+                }
+              ]
+            },
+            "evidenceIdentity": "27996c284d6024857595140e20b5e02d97a1e3bf3c4d300da8d8104324a275f9"
+          }
+        ],
+        "aggregate": {
+          "schemaVersion": "hex-final-closure-checkpoint-shadow-aggregate/v1",
+          "status": "PARTIAL_ZERO",
+          "candidateIdentity": {
+            "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+            "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+          },
+          "reportEvidenceIdentities": [
+            {
+              "taskId": "T051",
+              "gateId": "t051-independent-verifier",
+              "evidenceIdentity": "556dd43b70fbdf696aa25b94ce468545b37b3aee5329fd30ab9a8040fc4eb6a8",
+              "proofIdentity": "978a37ce9e7d6ea98d09248c8212b2d4f1b590b69e0ad8085d6936e06a762b7a"
+            },
+            {
+              "taskId": "T052",
+              "gateId": "t052-independent-verifier",
+              "evidenceIdentity": "a74c2187787818d016c4c06ac6fbf073e803c54f48e8069880ae08f1df13ce61",
+              "proofIdentity": "49e9099d3a1ee867b6da983b77352450ecbea67155a40f855b3fda530e6ddd02"
+            },
+            {
+              "taskId": "T057",
+              "gateId": "t057-independent-verifier",
+              "evidenceIdentity": "27996c284d6024857595140e20b5e02d97a1e3bf3c4d300da8d8104324a275f9",
+              "proofIdentity": "fed5274e7d6f3003ce64d7bc33200f859090c6de1f049cbe637bf376e2258f4c"
+            },
+            {
+              "taskId": "T059",
+              "gateId": "t059-independent-verifier",
+              "evidenceIdentity": "8c68e54c038be29ff3bc23b6c9d26de396f4cd7f3203e373d65ebedb57f2ab5d",
+              "proofIdentity": "67bf8115ada1c236bb74c458e25ffd387cd240ab98c85fa954567d9c30269da4"
+            }
+          ],
+          "reportSetIdentity": "92411300bdbaf7be6fb63937539248574e5fdd63a3262d0448041e83628452a9",
+          "counters": [
+            {
+              "id": "falseExactNoAlias",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactMustAlias",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactIndirectTarget",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "falseExactType",
+              "observed": 0,
+              "denominator": 0
+            },
+            {
+              "id": "semanticMismatch",
+              "observed": 0,
+              "denominator": 4
+            },
+            {
+              "id": "stalePublicationAfterCancel",
+              "observed": 0,
+              "denominator": 1
+            },
+            {
+              "id": "invalidWriterOutputAccepted",
+              "observed": 0,
+              "denominator": 0
+            }
+          ],
+          "identity": "ef04337e679482e47bc386f0ee29c123064627f2652f666f4a954ca18a073a9a"
+        },
+        "identity": "7d47f4fd9dd3395aa1c50e602ae4f7b3d09d4c48114891478304f4f32276475e"
+      },
+      "initialCandidateGateDigest": "63fb512b688c281f862740411f20df72",
+      "maintenanceGates": {
+        "schemaVersion": "hex-final-closure-t061-maintenance-gates/v1",
+        "candidateIdentity": {
+          "headSha": "6dd9c614d2eb638156ca5984619790ff25733435",
+          "treeSha": "593d39ff8d7569399a25ede761de9743a4d28be0"
+        },
+        "verifier": {
+          "path": "tools/validation/final-closure/preflight.mjs",
+          "gitBlobSha1": "c121db65b8f0eaab5858d65d2329a9a7b62b2544",
+          "sha256": "4e36669c2238a6607db0cf2b60501fab3bd141a7d7a556bdaf28b216e06f9597"
+        },
+        "results": [
+          {
+            "id": "t052-owned-regressions",
+            "argv": [
+              "node",
+              "tests/final-closure/run.mjs",
+              "--group",
+              "t052"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "spawnErrorCode": null,
+            "stdout": {
+              "byteLength": 60,
+              "sha256": "0ec29eaa47691b3fc53d21a341662d5c750b153177c01ff8e734f1d433b3c9fa"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          },
+          {
+            "id": "t061-final-closure",
+            "argv": [
+              "node",
+              "scripts/run-quiet-command.mjs",
+              "--label",
+              "t061-final-closure",
+              "--",
+              "node",
+              "tests/final-closure/run.mjs"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "spawnErrorCode": null,
+            "stdout": {
+              "byteLength": 34,
+              "sha256": "4dca42485b2fa6fa3dc8a614e2efa9994d4d54bacf94ace2a0d18599991dc11d"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          },
+          {
+            "id": "t061-phase12",
+            "argv": [
+              "node",
+              "scripts/run-quiet-command.mjs",
+              "--label",
+              "t061-phase12",
+              "--",
+              "npm",
+              "run",
+              "phase12:test"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "spawnErrorCode": null,
+            "stdout": {
+              "byteLength": 26,
+              "sha256": "723740cbcc56c5ad3d24bf7169fd643f17d9d5942935f816a8093c429c1e6102"
+            },
+            "stderr": {
+              "byteLength": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          }
+        ],
+        "identity": "a74c3bf25a3945695c50e3aa770e5ed0c3a6300db5a9410d0aa211a8ac1f6ee1"
+      }
+    },
+    "evidence": {
+      "headSha": "948a7d50ae2f8f31078d7c9a845fc5b542ba16b0",
+      "treeSha": "31110827ab059c702a80e3c5e10118cc190880a6"
+    },
+    "paths": [
+      "package.json",
+      "specs/005-analysis-final-closure/contracts/task-ownership.json",
+      "specs/005-analysis-final-closure/data-model.md",
+      "specs/005-analysis-final-closure/evidence/t061-maintenance-transfer.md",
+      "specs/005-analysis-final-closure/tasks.md",
+      "tests/final-closure/fixture-maintenance.test.mjs",
+      "tests/final-closure/preflight.test.mjs",
+      "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+      "tools/validation/final-closure/preflight.mjs",
+      "tools/validation/phase12/denominator-inventory.json"
+    ],
+    "transfer": {
+      "path": "tests/final-closure/t052/canonical-operation-registry.test.mjs",
+      "oldOwnerTaskId": "T052",
+      "newOwnerTaskId": "T061",
+      "preimageBlobSha1": "e808eb0ba83611ea3c147645f6070fcc3cd48823",
+      "postimageBlobSha1": "09a715039737d98ddef107ad477055b37bdde465"
     }
   }
 }
