@@ -66,6 +66,19 @@ function dbiFixture({ moduleSubstreamSize, fill, tailNulCount = 0 }) {
   assert.equal(result.modules[0].objectName, 'obj');
 }
 
+// 3b. A valid entry may consume the final 1-3 bytes as alignment padding.
+{
+  const bytes = new Uint8Array(DBI_HEADER_SIZE + 72);
+  const view = new DataView(bytes.buffer);
+  view.setInt16(DBI_HEADER_SIZE + 34, 5, true);
+  view.setUint32(DBI_HEADER_SIZE + 36, 0, true);
+  bytes.set(new TextEncoder().encode('m\0oo\0'), DBI_HEADER_SIZE + 64);
+  const result = parseModuleInfo(bytes, { moduleSubstreamSize: 72 });
+  assert.equal(result.complete, true, 'alignment padding inside the declared end is valid');
+  assert.equal(result.modules.length, 1);
+  assert.equal(result.modules[0].objectName, 'oo');
+}
+
 // 4. A declared substream with residue that cannot form a module prefix
 //    (>= 4 unconsumed bytes) is incomplete, not a valid empty list.
 {
@@ -79,7 +92,7 @@ function dbiFixture({ moduleSubstreamSize, fill, tailNulCount = 0 }) {
 // incomplete and must not publish a module.
 {
   const { bytes, dbi } = dbiFixture({ moduleSubstreamSize: 67, fill: 'clean' });
-  bytes.set(new TextEncoder().encode('m\\0\\0'), DBI_HEADER_SIZE + 64);
+  bytes.set(new TextEncoder().encode('m\0\0'), DBI_HEADER_SIZE + 64);
   const result = parseModuleInfo(bytes, dbi);
   assert.equal(result.complete, false, 'alignment beyond the declared end is incomplete');
   assert.deepEqual(result.modules, []);

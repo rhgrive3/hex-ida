@@ -288,13 +288,13 @@ export function parseModuleInfo(bytes, dbi) {
     let cursor = objectNameEntry.next;
     // Entries are aligned to 4 bytes.
     cursor = (cursor + 3) & ~3;
+    if (cursor <= offset || cursor > end) { complete = false; break; }
     modules.push({
       streamIndex,
       symbolByteSize,
       moduleName: moduleNameEntry.value,
       objectName: objectNameEntry.value,
     });
-    if (cursor <= offset || cursor > end) { complete = false; break; }
     offset = cursor;
   }
   if (end - offset >= 4) complete = false;
