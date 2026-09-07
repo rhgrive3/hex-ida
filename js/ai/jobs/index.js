@@ -173,8 +173,13 @@ function mergeResult(job, result) {
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
-  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += Number(usage.modelCalls || 0); job.budgetUsage.toolCalls += Number(usage.toolCalls || 0);
-  job.budgetUsage.elapsedMs += Number(usage.elapsedMs || 0); job.budgetUsage.contextBytes += Number(usage.contextBytes || 0);
+  // Usage counters feed the job hard-limit authority (`maxElapsedMs` etc.).
+  // `Number()` coercion admitted NaN (silently disabling the elapsed ceiling
+  // forever after) and negative values (rewinding monotonic accounting);
+  // adopt only primitive finite non-negative numbers (#5689).
+  const usageDelta = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
+  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
+  job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
 }
 function collectRefs(result) {

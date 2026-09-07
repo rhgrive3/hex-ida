@@ -29,14 +29,19 @@ export function createInvestigationSession(input = {}) {
     scope: AI_SCOPES.includes(input.scope) ? input.scope : 'auto',
     effectiveScope: AI_SCOPES.includes(input.effectiveScope) ? input.effectiveScope : null,
     goal: String(input.goal || ''),
-    messages: Array.isArray(input.messages) ? input.messages.slice(-100) : [],
+    // Store-owned session state must not share array/object references with
+    // the caller's input: a post-create mutation of the caller object would
+    // silently rewrite the registered session without update()/persist()
+    // (#5705). Copy the owned arrays (message elements included) and their
+    // element objects.
+    messages: Array.isArray(input.messages) ? input.messages.slice(-100).map(cloneRecord) : [],
     summary: String(input.summary || ''), // legacy persistence only; no longer accumulates transcript data
     investigationMemory: createInvestigationMemory(input.investigationMemory || { goal: input.goal }),
     pinnedEvidence: Array.isArray(input.pinnedEvidence) ? Array.from(new Set(input.pinnedEvidence.map(String))) : [],
-    hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses : [],
-    confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings : [],
-    rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses : [],
-    proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions : [],
+    hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses.map(cloneRecord) : [],
+    confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : [],
+    rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses.map(cloneRecord) : [],
+    proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions.map(cloneRecord) : [],
     lastActivity: input.lastActivity || null,
     createdAt: input.createdAt || now,
     updatedAt: now,
@@ -178,6 +183,14 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
 }
 
 function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit) : []; }
+
+// A shallow element copy is enough to detach store-owned session arrays from
+// the caller's objects: the session contract treats these records as plain
+// JSON-safe data (see normalize/persist paths), never as live class instances.
+function cloneRecord(value) {
+  return value && typeof value === 'object' ? { ...value } : value;
+}
+
 function mergeUnique(current, incoming) {
   const values = [...bounded(current, 100), ...bounded(incoming, 100)];
   const latest = new Map();
