@@ -132,6 +132,7 @@ function fixture(stream, source = 'bind') {
 // Lazy-bind DONE resets symbol state; a later DO_BIND without SET_SYMBOL must fail closed.
 {
   const { status, image } = fixture(Uint8Array.from([
+    0x11,                   // SET_DYLIB_ORDINAL_IMM 1 (survives the DONE reset for the first entry)
     0x40, 0x5f, 0x66, 0x6f, 0x6f, 0x00,
     0x70, 0x00,
     0x90,
