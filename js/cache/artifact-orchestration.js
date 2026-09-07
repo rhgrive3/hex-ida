@@ -63,6 +63,11 @@ function exactPayloadKeys(value, expected) {
   if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) invalidPayloadNode();
 }
 
+// Sparse arrays have no JSON-stable representation in this codec. Keep the
+// pre-existing direct in-memory round-trip contract, but never treat an
+// unbranded (for example, JSON-reloaded) sparse wire array as canonical.
+const IN_MEMORY_SPARSE_ARRAYS = new WeakSet();
+
 function wireArray(value, { dense = true } = {}) {
   if (!Array.isArray(value)) invalidPayloadNode();
   let keys;
@@ -166,7 +171,7 @@ function canonicalReferenceId(value) {
  * arrays. The codec preserves those public result types without changing the
  * semantic producer or inventing another artifact identity.
  */
-export function encodeWorkerAnalysisPayload(value) {
+export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false } = {}) {
   const active = new WeakSet();
   const references = new WeakMap();
   let nextReferenceId = 0;
@@ -206,10 +211,16 @@ export function encodeWorkerAnalysisPayload(value) {
       }
       if (input instanceof Set) return { t:'set', i, v:[...input.values()].map(encode) };
       if (Array.isArray(input)) {
+        let sparse = false;
         for (let index = 0; index < input.length; index++) {
-          if (!Object.hasOwn(input, index)) throw new TypeError('analysis-artifact-payload-sparse-array-unsupported');
+          if (!Object.hasOwn(input, index)) {
+            sparse = true;
+            if (rejectSparseArrays) throw new TypeError('analysis-artifact-payload-sparse-array-unsupported');
+          }
         }
-        return { t:'array', i, v:input.map(encode) };
+        const entries = input.map(encode);
+        if (sparse) IN_MEMORY_SPARSE_ARRAYS.add(entries);
+        return { t:'array', i, v:entries };
       }
       const proto = Object.getPrototypeOf(input);
       if (proto !== Object.prototype && proto !== null) throw new TypeError(`analysis-artifact-object-prototype-unsupported:${input.constructor?.name || 'unknown'}`);
@@ -226,7 +237,7 @@ export function encodeWorkerAnalysisPayload(value) {
   return { codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:encode(value) };
 }
 
-export function decodeWorkerAnalysisPayload(payload) {
+export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = false } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new TypeError('analysis-artifact-payload-codec-mismatch');
   }
@@ -341,7 +352,8 @@ export function decodeWorkerAnalysisPayload(payload) {
         return complete(node, out);
       }
       case 'array': {
-        const entries = wireArray(node.v, { dense:referenceAware });
+        const allowInMemorySparse = referenceAware && !rejectSparseArrays && IN_MEMORY_SPARSE_ARRAYS.has(node.v);
+        const entries = wireArray(node.v, { dense:referenceAware && !allowInMemorySparse });
         const out = register(node, new Array(entries.length), ['t', 'v']);
         for (let i = 0; i < entries.length; i++) {
           if (Object.hasOwn(entries, i)) out[i] = decode(entries[i]);
@@ -489,7 +501,7 @@ export class ArtifactAnalysisOrchestrator {
       priority,
       completeness,
       validate:typeof validate === 'function'
-        ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload), record, context)
+        ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
         : null,
       creation:{
         migrationContract:WORKER_CACHE_MIGRATION_VERSION,
@@ -499,14 +511,14 @@ export class ArtifactAnalysisOrchestrator {
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;
-        return encodeWorkerAnalysisPayload(await produce(context));
+        return encodeWorkerAnalysisPayload(await produce(context), { rejectSparseArrays:true });
       },
     });
 
     return request.then((result) => {
       if (result.reused) this.metrics.warmReuses++;
       else this.metrics.coldPublishes++;
-      return { ...result, payload:decodeWorkerAnalysisPayload(result.payload) };
+      return { ...result, payload:decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true }) };
     }, (error) => {
       this.metrics.failures++;
       if (error?.name === 'AbortError') this.metrics.cancellations++;

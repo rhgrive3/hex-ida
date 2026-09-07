@@ -57,13 +57,21 @@ function assertTopology(value) {
   assertTopology(decodeWorkerAnalysisPayload(persisted));
 }
 
-// Sparse arrays are outside #4587 scope; reject them before producing a wire payload that canonical JSON would mutate.
+// Sparse arrays remain compatible for direct in-memory callers, but they are
+// rejected before the ArtifactStore persistence path can produce a lossy wire payload.
 {
   const sparse = [];
   sparse[1] = 'x';
+  const encodedSparse = encodeWorkerAnalysisPayload(sparse);
+  const directSparse = decodeWorkerAnalysisPayload(encodedSparse);
+  assert.equal(directSparse.length, 2);
+  assert.equal(0 in directSparse, false);
+  assert.equal(directSparse[1], 'x');
+
+  const persistedSparse = JSON.parse(JSON.stringify(encodedSparse));
   assert.throws(
-    () => encodeWorkerAnalysisPayload(sparse),
-    /analysis-artifact-payload-sparse-array-unsupported/,
+    () => decodeWorkerAnalysisPayload(persistedSparse),
+    /analysis-artifact-payload-node-invalid/,
   );
 
   const sparseWire = [];
@@ -75,6 +83,14 @@ function assertTopology(value) {
     }),
     /analysis-artifact-payload-node-invalid/,
   );
+
+  const sparseStore = new ArtifactStore({ backend:new MemoryArtifactBackend({ reason:'issue-4587-sparse-reject-test' }) });
+  const sparseRuntime = new ArtifactAnalysisOrchestrator({ store:sparseStore });
+  await assert.rejects(
+    sparseRuntime.request({ descriptor:descriptor(), produce:async () => sparse }),
+    /analysis-artifact-payload-sparse-array-unsupported/,
+  );
+  await sparseRuntime.close();
 }
 
 // The old v1 wire format remains readable while v2 gets a new artifact identity.
