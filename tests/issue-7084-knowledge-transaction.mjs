@@ -14,7 +14,7 @@ function backend() {
         const request = (change) => {
           const req = {};
           queueMicrotask(() => {
-            if (outcome === 'request-error') {
+            if (outcome === 'request-error' || outcome === 'sync-second') {
               req.error = new Error('request failed');
               req.onerror?.();
             } else {
@@ -26,7 +26,10 @@ function backend() {
         };
         return {
           put: (record) => request(() => durable[name].set(record.id, record)),
-          clear: () => request(() => durable[name].clear()),
+          clear: () => {
+            if (outcome === 'sync-second' && name === 'negative') throw new Error('clear threw synchronously');
+            return request(() => durable[name].clear());
+          },
         };
       } };
       finish = () => {
@@ -36,7 +39,7 @@ function backend() {
         } else {
           tx.error = new Error('transaction failed');
           if (outcome === 'error') tx.onerror?.();
-          tx.onabort?.();
+          else tx.onabort?.();
         }
       };
       setImmediate(() => requestsDone());
@@ -54,7 +57,7 @@ function backend() {
     let settled = false;
     const result = operation().then((value) => { settled = true; return { value }; }, (error) => { settled = true; return { error }; });
     await ready;
-    if (outcome !== 'request-error') assert.equal(settled, false, 'must wait for transaction completion');
+    if (!['request-error', 'sync-second'].includes(outcome)) assert.equal(settled, false, 'must wait for transaction completion');
     finish();
     return result;
   } };
@@ -64,7 +67,7 @@ for (const operation of ['remember', 'reject', 'clear']) {
   const fixture = backend();
   const input = { id: 'confirmed', fingerprint, name: 'saved', candidateName: 'saved', confirmation: 'user-confirmed' };
   const invoke = () => fixture.knowledge[operation](input);
-  for (const outcome of ['abort', 'error', 'request-error', 'complete']) {
+  for (const outcome of ['abort', 'error', 'request-error', ...(operation === 'clear' ? ['sync-second'] : []), 'complete']) {
     fixture.durable.functions.set('old', {});
     fixture.durable.negative.set('old', {});
     const result = await fixture.run(invoke, outcome);

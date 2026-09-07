@@ -223,7 +223,8 @@ export class KnowledgeDB {
     if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); return; }
     const db = await this.#dbOpen(); const tx = db.transaction(['functions','negative'],'readwrite');
     const done = transactionPromise(tx);
-    await Promise.all([done, requestPromise(tx.objectStore('functions').clear()), requestPromise(tx.objectStore('negative').clear())]);
+    await Promise.all([done, ...['functions', 'negative'].map(async (name) =>
+      requestPromise(tx.objectStore(name).clear()))]);
   }
 
   #memoryCandidates(fp) {
