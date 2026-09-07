@@ -9,7 +9,9 @@ const DT_VERNEEDNUM = 0x6fffffffn;
 
 class Reader {
   constructor() { this.length = 0x100; }
-  u16() { return 2; }
+  // Record bases (0x20 Verdef, 0x40 Verneed) carry a spec-compliant structure
+  // version of 1 (#6181); other u16 reads return 2 (ndex/cnt fixtures).
+  u16(offset) { return offset === 0x20 || offset === 0x40 ? 1 : 2; }
   u32(offset) {
     if (offset === 0x2c) return 20; // DT_VERDEF vd_aux
     if (offset === 0x48) return 16; // DT_VERNEED vn_aux
