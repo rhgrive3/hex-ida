@@ -43,9 +43,9 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const revision = fingerprint(input.before);
-    const bindingRevision = fingerprint(binding);
     const executionPayload = snapshotProposalPayload(input);
+    const revision = fingerprint(executionPayload.before);
+    const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
       kind,

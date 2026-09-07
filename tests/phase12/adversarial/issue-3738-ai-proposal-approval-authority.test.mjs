@@ -133,6 +133,39 @@ async function expectApprovalFailure(promise) {
 }
 
 {
+  const store = createStore();
+  const firstBefore = Uint8Array.from([0x90]);
+  const driftedBefore = Uint8Array.from([0xcc]);
+  let beforeReads = 0;
+  const proposal = store.create({
+    kind: 'patch',
+    target: { address: '4096' },
+    get before() {
+      beforeReads += 1;
+      return beforeReads === 1 ? firstBefore : driftedBefore;
+    },
+    after: Uint8Array.from([0x91]),
+    evidenceIds: ['evidence'],
+  });
+  const { approvalToken } = store.approve(proposal.id);
+  let executionBefore = null;
+  await store.apply(proposal.id, {
+    approvalToken,
+    currentState: firstBefore,
+    apply: (item, authorization) => {
+      executionBefore = Array.from(item.before);
+      assert.equal(
+        consumeProposalAuthorization(authorization, 'patch.create', proposalArguments(item)),
+        true,
+        'authorization must bind the same snapshotted patch arguments that execute',
+      );
+    },
+  });
+  assert.deepEqual(executionBefore, [0x90], 'stale-state revision and execution payload must come from one snapshot');
+  assert.equal(beforeReads, 2, 'create() must not fingerprint caller-owned before separately from payload snapshotting');
+}
+
+{
   const app = { projectAnnotations: [] };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
