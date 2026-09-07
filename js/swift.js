@@ -227,7 +227,14 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
     let r;
     try { r=await exact(read,at,12); } catch { r=null; }
     if(!r){completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;completeness.complete=false;completeness.reason='field-record-unreadable';return finish(out);}
-    const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4)),name=await relativeString(read,at+8n,i32(r,8));
+    const flags=u32(r,0),typeTarget=rel(at+4n,i32(r,4));
+    let name;
+    try {
+      name=await relativeString(read,at+8n,i32(r,8));
+    } catch {
+      completeness.unreadableEntries=count-i;completeness.scanned=i;completeness.parsed=out.length;
+      completeness.complete=false;completeness.reason='field-name-unreadable';return finish(out);
+    }
     const typeInfo=typeTarget==null?null:await readSwiftMangledName(read,typeTarget,{...options,compilerMetadata:true});
     const symbolic=!!typeInfo?.symbolicReferences?.length;
     out.push({

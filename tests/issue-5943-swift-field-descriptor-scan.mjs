@@ -140,6 +140,27 @@ test('#5943 rejected record read retains parsed fields and marks incomplete', as
   assert.equal(scan.completeness.unreadableEntries, 1);
 });
 
+test('#5943 rejected field-name read retains prior fields and marks incomplete', async () => {
+  const record = (i) => u8(...new Array(12).fill(0).map((_, k) => i * 12 + k));
+  const { image, read } = descriptorImage({
+    recordSize: 12, count: 2, records: [record(0), record(1)],
+  });
+  writeI32(image, 36, 164); // second record name pointer targets address 200.
+  const rejectingRead = async (addr, len, allowPartial = false) => {
+    if (BigInt(addr) === 200n) throw new Error('synthetic-field-name-read-rejection');
+    return read(addr, len, allowPartial);
+  };
+  const scan = await parseSwiftFieldDescriptorScan(rejectingRead, 0n, 4096);
+  assert.equal(scan.fields.length, 1, 'fields parsed before a rejected name read are retained');
+  assert.equal(scan.fields[0].name, 'field_0');
+  assert.equal(scan.completeness.complete, false);
+  assert.equal(scan.completeness.reason, 'field-name-unreadable');
+  assert.equal(scan.completeness.declared, 2);
+  assert.equal(scan.completeness.scanned, 1);
+  assert.equal(scan.completeness.parsed, 1);
+  assert.equal(scan.completeness.unreadableEntries, 1);
+});
+
 test('#5943 metadata model retains fields parsed before a rejected record read', async () => {
   const { read } = rejectingModelImage();
   const model = await buildSwiftMetadataModel(read, [{ section: '__swift5_types', vmAddr: 0n, size: 4n }], {
