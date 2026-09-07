@@ -433,3 +433,4 @@ console.log('\nAll metadata-apple consolidated regression tests PASSED!');
 await import('./issue-6270-objc-methodlist-cancellation.mjs');
 await import('./objc-provider-cancellation-3808.test.mjs');
 await import('./test-objc-metadata-demand-cancellation.mjs');
+await import('./issue-6199-std-symbol-runtime-classification.mjs');
