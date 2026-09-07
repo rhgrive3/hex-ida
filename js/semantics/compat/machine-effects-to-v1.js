@@ -334,7 +334,12 @@ function addressIndexTerm(value) {
   if (value.kind === 'shift-left') {
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
-    return { ...nested, scale:Number(value.amount || 0) || 0 };
+    // (x << a) << b == x << (a + b): nested shifts compose their exponents.
+    // Overwriting the recursive scale dropped the inner shift and projected a
+    // different effective address (#5827, sibling of #5398).
+    const amount = Number(value.amount ?? 0);
+    if (!Number.isSafeInteger(amount) || amount < 0) return null;
+    return { ...nested, scale:nested.scale + amount };
   }
   return null;
 }
