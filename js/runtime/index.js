@@ -212,7 +212,7 @@ export class RuntimeAnalysisPlatform {
     }
     for (const event of trace.events || []) {
       if (!session.acceptEvent(event,traceEpoch)) {
-        throw new DebugAdapterError('session-epoch-event-mismatch','runtime trace contains an event outside the captured session epoch',{traceEpoch,eventEpoch:event?.epoch ?? null});
+        throw new DebugAdapterError('session-epoch-event-mismatch','runtime trace contains an event outside the captured session epoch',{traceEpoch,eventEpoch:null});
       }
     }
     const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
