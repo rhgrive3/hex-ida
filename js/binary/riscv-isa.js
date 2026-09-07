@@ -9,7 +9,24 @@ function bytesOf(input) {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  return Uint8Array.from(input || []);
+  if (input == null) return new Uint8Array();
+
+  let iterator;
+  try { iterator = input[Symbol.iterator]; } catch { return null; }
+  if (typeof iterator !== 'function') return null;
+
+  const values = [];
+  try {
+    for (const value of input) {
+      if (values.length >= MAX_ATTRIBUTE_BYTES
+        || typeof value !== 'number'
+        || !Number.isInteger(value)
+        || value < 0
+        || value > 0xff) return null;
+      values.push(value);
+    }
+  } catch { return null; }
+  return Uint8Array.from(values);
 }
 
 function readU32(bytes, offset, littleEndian) {
@@ -81,7 +98,7 @@ export function normalizeRiscvIsaString(input) {
 
 export function parseRiscvAttributes(input, options = {}) {
   const bytes = bytesOf(input);
-  if (!bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
+  if (!bytes || !bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
   const littleEndian = options.littleEndian !== false;
   let cursor = 1;
   let found = null;
