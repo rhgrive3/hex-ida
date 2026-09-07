@@ -192,7 +192,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     memorySsa,
     ir,
     binding,
-    snapshotId: options.snapshotId,
+    snapshotId: options.snapshotId ?? binding.snapshotId,
   });
   if (!bindingCheck.valid) return failBoundary(bindingCheck.state, bindingCheck.reason);
 

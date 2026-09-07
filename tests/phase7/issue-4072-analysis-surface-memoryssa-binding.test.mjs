@@ -93,6 +93,17 @@ test('issue-4072: explicit stale binding identity is not laundered by the curren
   assertBothBoundariesReject(built, { memorySsaBinding: { completeness: 'partial' } });
 });
 
+test('issue-4072: memorySsaSnapshotId-only callers preserve the resolved current binding', () => {
+  const built = fixture();
+  const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    memorySsa: built.memorySsa,
+    memorySsaSnapshotId: SNAPSHOT_ID,
+  });
+
+  assert.equal(result.recovery.bindingState, 'current');
+  assert.equal(result.recovery.publicationAllowed, true);
+});
+
 test('issue-4072: current canonical MemorySSA keeps complete public answers', () => {
   const built = fixture();
   const use = loadUse(built);
