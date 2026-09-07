@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
 import { verifyProvenance, verifyDeterminism } from '../../tools/validation/semantic-v2/provenance.mjs';
+import { spawnSemanticRunnerCommand } from './runner-shell.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -36,10 +36,9 @@ const legacyEnv = {
 delete legacyEnv.npm_config_prefix;
 
 function runLegacyCommand(suite, command) {
-  const child = spawnSync('bash', ['-lc', command], {
+  const child = spawnSemanticRunnerCommand(command, {
     cwd: root,
     env: legacyEnv,
-    encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: 180_000,
   });

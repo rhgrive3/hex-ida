@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +11,7 @@ import {
   setSemanticMigrationMode,
 } from '../../js/ir.js';
 import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
+import { spawnSemanticRunnerCommand } from './runner-shell.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '../..');
@@ -71,10 +71,9 @@ if (!report) {
   delete env.npm_config_prefix;
 
   const runCommand = (suite, index, command) => {
-    const child = spawnSync('bash', ['-lc', command], {
+    const child = spawnSemanticRunnerCommand(command, {
       cwd: root,
       env,
-      encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       timeout: 600_000,
     });

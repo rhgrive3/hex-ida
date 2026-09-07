@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
 import { reachingConcreteStore } from '../../js/semantics/memoryssa/index.js';
+import { spawnSemanticRunnerCommand } from './runner-shell.mjs';
 
 const stackRegisterId = 'frame-anchor';
 const plugin = Object.freeze({
@@ -96,5 +100,19 @@ assert.deepEqual(result.legacyV1.blocks[0].succ, [1],
   'v1 projection must preserve a canonical successor that was supplied by the integration route');
 assert.equal(result.legacyV1.blocks[1].pred.includes(0), true,
   'v1 projection must preserve the matching predecessor relationship');
+
+const runnerCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-semantic-runner-cwd-'));
+try {
+  const child = spawnSemanticRunnerCommand('pwd', {
+    cwd: runnerCwd,
+    env: { ...process.env, PATH: process.env.PATH ?? '' },
+    timeout: 10_000,
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout.trim(), fs.realpathSync(runnerCwd),
+    'semantic-v2 command runner must preserve the explicit checkout cwd');
+} finally {
+  fs.rmSync(runnerCwd, { recursive: true, force: true });
+}
 
 console.log('Phase 3 exit integration wiring: PASS');
