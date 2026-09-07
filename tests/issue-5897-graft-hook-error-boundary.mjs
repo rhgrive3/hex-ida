@@ -33,7 +33,7 @@ const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', impor
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export async function main() { throw new Error("post-edit verification failed"); }\n');
   const result = spawnSync(process.execPath, [helper, 'post-edit'], {
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, NODE_PATH: '' },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, GRAFT_TEST_NO_FALLBACK: '1', NODE_PATH: '' },
   });
   assert.equal(result.status, 1, 'a failing hook main() must not convert to success');
   assert.match(result.stderr, /post-edit verification failed/, 'failure evidence must reach stderr');
@@ -45,7 +45,7 @@ const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', impor
   const dist = path.join(dir, 'dist', 'claude');
   fs.mkdirSync(dist, { recursive: true });
   fs.writeFileSync(path.join(dist, 'hooks.js'), 'export const notMain = () => {};\n');
-  const result = spawnSync(process.execPath, [helper, 'post-edit'], { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  const result = spawnSync(process.execPath, [helper, 'post-edit'], { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir, GRAFT_TEST_NO_FALLBACK: '1' } });
   assert.equal(result.status, 1, 'incompatible export shape is a hook failure, not "unavailable"');
   assert.match(result.stderr, /no main\(\) export/);
 }

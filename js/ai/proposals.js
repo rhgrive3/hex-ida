@@ -118,7 +118,15 @@ export class ProposalStore {
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
     }
 
-    if (fingerprint(currentState) !== authority.revision) {
+    let currentRevision;
+    try {
+      currentRevision = fingerprint(currentState);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (currentRevision !== authority.revision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
@@ -392,6 +400,13 @@ function canonicalIdentity(value, stack = new Set()) {
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
   stack.add(value);
   try {
+    // Symbol-keyed own properties are own state too, but a canonical text
+    // cannot distinguish two distinct symbols sharing a description. The
+    // stale-state contract therefore refuses symbol-keyed state explicitly
+    // instead of silently omitting part of the value (#5945).
+    if (Object.getOwnPropertySymbols(value).length) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
       const bytes = value instanceof ArrayBuffer
@@ -442,13 +457,6 @@ function canonicalIdentity(value, stack = new Set()) {
     // Own keys only, and `__proto__` among them is data here, not a mutation:
     // it is read with Object.keys/direct access and never assigned onto a
     // result object, so it cannot reach a prototype.
-    // Symbol-keyed own properties are own state too, but a canonical text
-    // cannot distinguish two distinct symbols sharing a description. The
-    // stale-state contract therefore refuses symbol-keyed state explicitly
-    // instead of silently omitting part of the value (#5945).
-    if (Object.getOwnPropertySymbols(value).length) {
-      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
-    }
     const keys = Object.keys(value).sort();
     return `o{${keys.map((key) => `${JSON.stringify(key)}:${canonicalIdentity(value[key], stack)}`).join(',')}}`;
   } finally {

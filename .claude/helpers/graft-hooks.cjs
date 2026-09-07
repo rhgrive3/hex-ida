@@ -32,6 +32,11 @@ function candidates() {
 }
 
 function entry(name) {
+  // Tests may provide an isolated project-local fixture. Do not let a baked or
+  // globally installed graft satisfy that fixture by accident.
+  if (process.env.GRAFT_TEST_NO_FALLBACK === '1') {
+    return path.join(dir, 'dist', 'claude', name);
+  }
   for (const d of candidates()) {
     const f = path.join(d, name);
     if (fs.existsSync(f)) return f;
