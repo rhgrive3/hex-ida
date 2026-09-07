@@ -30,6 +30,6 @@ ELF GNU symbol-version record revision validation.
 ## Resume procedure
 
 Fetch `origin/main`, verify the exact candidate base, read the shared board after
-#295, then continue from the first unchecked stage. Repository-wide red gates
+issue `#295`, then continue from the first unchecked stage. Repository-wide red gates
 must be compared with a pristine `origin/main` baseline before being treated as
 a lane regression.
