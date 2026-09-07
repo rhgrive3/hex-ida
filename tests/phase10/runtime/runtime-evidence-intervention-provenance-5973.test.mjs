@@ -101,6 +101,27 @@ test('runtime evidence rejects a known intervention from another session (#5973)
   );
 });
 
+test('runtime evidence rejects cross-session intervention ancestry (#5973)', () => {
+  const bridge = new RuntimeEvidenceBridge();
+  addIntervention(bridge, {
+    interventionId: 'foreign-parent',
+    runtimeSessionId: 'session-B',
+  });
+  addIntervention(bridge, {
+    interventionId: 'session-a-child',
+    runtimeSessionId: 'session-A',
+    parentInterventionIds: ['foreign-parent'],
+  });
+
+  assert.throws(
+    () => bridge.eventToEvidence({
+      ...baseEvent,
+      interventionIds: ['session-a-child'],
+    }, exactResolution),
+    (error) => error?.code === 'runtime-intervention-session-mismatch',
+  );
+});
+
 test('events without interventions preserve existing evidence behavior (#5973)', () => {
   const bridge = new RuntimeEvidenceBridge();
   const evidence = bridge.eventToEvidence(baseEvent, exactResolution);
