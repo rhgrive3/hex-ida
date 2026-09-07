@@ -739,13 +739,34 @@ export function createTypeGraphResult(input = {}) {
   const status = input.status;
   if (!status) fail('type-graph-result-status-required');
   const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
-  const readOnlyMap = new Map();
+  // Overwriting instance mutators cannot actually seal a Map: the real data
+  // lives in an internal slot, so `Map.prototype.set.call(...)` would mutate a
+  // published result (#6070). The only honest read-only view is a frozen proxy
+  // that exposes the read API and rejects every mutator outright — the
+  // internal Map is never reachable from the returned object.
+  const internal = new Map();
   for (const [key, value] of rawMap) {
-    readOnlyMap.set(key, value);
+    internal.set(key, value);
   }
-  readOnlyMap.set = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.delete = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.clear = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  const readOnlyMap = new Proxy(internal, {
+    get(target, property, receiver) {
+      if (property === 'forEach') {
+        return (callback, thisArg) => {
+          if (typeof callback !== 'function') return Map.prototype.forEach.call(target, callback, thisArg);
+          return Map.prototype.forEach.call(target, (value, key) => Reflect.apply(callback, thisArg, [value, key, receiver]));
+        };
+      }
+      if (property === 'set' || property === 'delete' || property === 'clear') {
+        return () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    defineProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    deleteProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    set() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    setPrototypeOf() { throw new TypeError('TypeGraphResult.results is read-only'); },
+  });
 
   return Object.freeze({
     schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,
