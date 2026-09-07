@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../../../js/ai/capabilities/executor.js';
 import { ProposalExecutor } from '../../../js/ai/interaction/proposal-executor.js';
-import { ProposalStore, proposalArguments } from '../../../js/ai/proposals.js';
+import { ProposalStore, consumeProposalAuthorization, proposalArguments } from '../../../js/ai/proposals.js';
 
 const entries = new Map([
   ['annotation.project', { id: 'annotation.project', agentExposed: true, requiresApproval: true, inputSchema: { type: 'object' } }],
@@ -51,6 +51,85 @@ async function expectApprovalFailure(promise) {
   assert.equal(app.projectAnnotations.length, 1);
   assert.equal(app.projectAnnotations[0].id, 'approved');
   assert.equal(app.projectAnnotations[0].value, 'approved');
+}
+
+{
+  const store = createStore();
+  const proposal = store.create({
+    kind: 'comment',
+    target: { address: '4096' },
+    before: null,
+    after: 'approved comment',
+    evidenceIds: ['evidence'],
+  });
+  const proposalId = proposal.id;
+  const originalBindingRevision = proposal.bindingRevision;
+
+  proposal.kind = 'rename';
+  proposal.bindingRevision = 'forged-create-view';
+  const fetched = store.get(proposalId);
+  assert.equal(fetched.kind, 'comment', 'mutating the create() view must not change the stored proposal kind');
+  assert.equal(fetched.bindingRevision, originalBindingRevision, 'mutating the create() view must not change binding authority');
+  fetched.kind = 'rename';
+  fetched.bindingRevision = 'forged-get-view';
+  const listed = store.all()[0];
+  listed.kind = 'rename';
+  listed.bindingRevision = 'forged-all-view';
+
+  const { proposal: approvedView, approvalToken } = store.approve(proposalId);
+  approvedView.kind = 'rename';
+  approvedView.bindingRevision = 'forged-approve-view';
+  let wrongCapabilityAuthorized = null;
+  const applied = await store.apply(proposalId, {
+    approvalToken,
+    currentState: null,
+    apply: (item, authorization) => {
+      assert.equal(item.kind, 'comment', 'execution must use the creation-time proposal kind');
+      wrongCapabilityAuthorized = consumeProposalAuthorization(
+        authorization,
+        'annotation.rename',
+        proposalArguments(item),
+      );
+    },
+  });
+  assert.equal(wrongCapabilityAuthorized, false, 'mutating returned proposal views must not mint another capability');
+  assert.equal(applied.kind, 'comment');
+  assert.equal(applied.bindingRevision, originalBindingRevision);
+}
+
+{
+  let binding = { binaryId: 'bin-a', projectId: 'project-a', runtimeSessionId: null };
+  const store = createStore(() => binding);
+  const oldProposal = store.create({
+    kind: 'comment',
+    target: { address: '4096' },
+    before: null,
+    after: 'old binding',
+    evidenceIds: ['evidence'],
+  });
+  const oldProposalId = oldProposal.id;
+
+  binding = { binaryId: 'bin-b', projectId: 'project-a', runtimeSessionId: null };
+  const currentProposal = store.create({
+    kind: 'comment',
+    target: { address: '8192' },
+    before: null,
+    after: 'current binding',
+    evidenceIds: ['evidence'],
+  });
+  oldProposal.bindingRevision = currentProposal.bindingRevision;
+  const fetchedOld = store.get(oldProposalId);
+  fetchedOld.bindingRevision = currentProposal.bindingRevision;
+  const { proposal: approvedView, approvalToken } = store.approve(oldProposalId);
+  approvedView.bindingRevision = currentProposal.bindingRevision;
+  let invoked = false;
+  await assert.rejects(store.apply(oldProposalId, {
+    approvalToken,
+    currentState: null,
+    apply: () => { invoked = true; },
+  }), (error) => error?.type === 'scope_violation');
+  assert.equal(invoked, false, 'binding mismatch must fail before the mutation adapter runs');
+  assert.equal(store.get(oldProposalId).status, 'failed');
 }
 
 {
