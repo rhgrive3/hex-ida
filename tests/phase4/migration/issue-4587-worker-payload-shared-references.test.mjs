@@ -135,4 +135,84 @@ function assertTopology(value) {
   await runtime.close();
 }
 
+// Sparse-array holes must survive canonical-JSON persistence as holes, not nulls.
+{
+  const shared = { id:7 };
+  const sparse = [shared, , shared];
+  sparse[5] = undefined;
+  const encoded = encodeWorkerAnalysisPayload(sparse);
+  const persisted = JSON.parse(JSON.stringify(encoded));
+  const decoded = decodeWorkerAnalysisPayload(persisted);
+  assert.equal(decoded.length, 6);
+  assert.equal(decoded[0], decoded[2], 'alias sharing across sparse positions must survive');
+  assert.ok(!Object.hasOwn(decoded, 1), 'hole must not materialize as an own index');
+  assert.ok(Object.hasOwn(decoded, 5), 'explicit undefined must stay an own dense index');
+  assert.equal(decoded[5], undefined);
+  assert.deepEqual(Object.keys(decoded).map(Number).sort((a, b) => a - b), [0, 2, 5]);
+}
+
+// ArtifactStore cold and warm persistence must preserve hole identity/length/own-index shape.
+{
+  const store = new ArtifactStore({ backend:new MemoryArtifactBackend({ reason:'issue-4587-sparse-holes-test' }) });
+  const runtime = new ArtifactAnalysisOrchestrator({ store });
+  const d = descriptor();
+  let calls = 0;
+  const produceSparse = () => {
+    const shared = { id:9 };
+    const arr = [shared, , shared];
+    arr[4] = 3n;
+    return arr;
+  };
+
+  const cold = await runtime.request({ descriptor:d, produce:async () => { calls++; return produceSparse(); } });
+  assert.equal(cold.reused, false);
+  assert.equal(cold.payload.length, 5);
+  assert.ok(!(1 in cold.payload) && !(3 in cold.payload));
+  assert.equal(cold.payload[0], cold.payload[2]);
+
+  const raw = await store.get(d);
+  assert.equal(raw.status, 'hit');
+  assert.deepEqual(
+    raw.payload.root.v.map((node) => node.t),
+    ['object', 'hole', 'ref', 'hole', 'bigint'],
+    'persisted wire must carry explicit JSON-stable hole markers (alias deduped as ref)',
+  );
+  const restoredCold = decodeWorkerAnalysisPayload(raw.payload);
+  assert.equal(restoredCold.length, 5);
+  assert.ok(!Object.hasOwn(restoredCold, 1) && !Object.hasOwn(restoredCold, 3));
+  assert.equal(restoredCold[0], restoredCold[2]);
+  assert.equal(restoredCold[4], 3n);
+
+  const warm = await runtime.request({ descriptor:d, produce:async () => { calls++; return produceSparse(); } });
+  assert.equal(warm.reused, true);
+  assert.equal(calls, 1, 'warm reuse must not rerun the producer');
+  assert.equal(warm.payload.length, 5);
+  assert.ok(!Object.hasOwn(warm.payload, 1) && !Object.hasOwn(warm.payload, 3));
+  assert.equal(warm.payload[0], warm.payload[2]);
+  assert.equal(warm.payload[4], 3n);
+  await runtime.close();
+}
+
+// Hole markers fail closed outside v2 array positions and in the legacy codec.
+{
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({ codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:{ t:'hole' } }),
+    /analysis-artifact-payload-node-unsupported:hole/,
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({ codec:'hex-worker-analysis-payload-v1', root:{ t:'array', v:[{ t:'hole' }] } }),
+    /analysis-artifact-payload-node-unsupported:hole/,
+    'legacy v1 arrays must keep rejecting hole markers',
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({ codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:{ t:'array', i:0, v:[{ t:'hole', i:1 }] } }),
+    /analysis-artifact-payload-node-unsupported:hole/,
+    'malformed hole markers must not decode as holes',
+  );
+  assert.throws(
+    () => decodeWorkerAnalysisPayload({ codec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION, root:{ t:'array', i:0, v:[{ t:'null' }], x:1 } }),
+    /analysis-artifact-payload-node-invalid/,
+  );
+}
+
 console.log('issue 4587 worker payload shared references: PASS');

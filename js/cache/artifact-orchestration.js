@@ -63,7 +63,7 @@ function exactPayloadKeys(value, expected) {
   if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) invalidPayloadNode();
 }
 
-function wireArray(value, { dense = true } = {}) {
+function wireArray(value) {
   if (!Array.isArray(value)) invalidPayloadNode();
   let keys;
   try { keys = Reflect.ownKeys(value); }
@@ -74,10 +74,20 @@ function wireArray(value, { dense = true } = {}) {
     const index = Number(key);
     if (!Number.isSafeInteger(index) || index >= value.length || String(index) !== key) invalidPayloadNode();
   }
-  if (dense) {
-    for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) invalidPayloadNode();
-  }
+  for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) invalidPayloadNode();
   return value;
+}
+
+function holeMarker() {
+  return Object.freeze({ t:'hole' });
+}
+
+function isHoleMarker(value) {
+  if (typeof value !== 'object' || value === null) return false;
+  let keys;
+  try { keys = Reflect.ownKeys(value); }
+  catch { return false; }
+  return keys.length === 1 && value.t === 'hole';
 }
 
 const CANONICAL_BIGINT = /^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/;
@@ -205,7 +215,13 @@ export function encodeWorkerAnalysisPayload(value) {
         return { t:'map', i, v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
       }
       if (input instanceof Set) return { t:'set', i, v:[...input.values()].map(encode) };
-      if (Array.isArray(input)) return { t:'array', i, v:input.map(encode) };
+      if (Array.isArray(input)) {
+        const values = new Array(input.length);
+        for (let index = 0; index < input.length; index++) {
+          values[index] = Object.hasOwn(input, index) ? encode(input[index]) : holeMarker();
+        }
+        return { t:'array', i, v:values };
+      }
       const proto = Object.getPrototypeOf(input);
       if (proto !== Object.prototype && proto !== null) throw new TypeError(`analysis-artifact-object-prototype-unsupported:${input.constructor?.name || 'unknown'}`);
       return {
@@ -336,10 +352,11 @@ export function decodeWorkerAnalysisPayload(payload) {
         return complete(node, out);
       }
       case 'array': {
-        const entries = wireArray(node.v, { dense:false });
+        const entries = wireArray(node.v);
         const out = register(node, new Array(entries.length), ['t', 'v']);
         for (let i = 0; i < entries.length; i++) {
-          if (Object.hasOwn(entries, i)) out[i] = decode(entries[i]);
+          if (referenceAware && isHoleMarker(entries[i])) continue;
+          out[i] = decode(entries[i]);
         }
         return complete(node, out);
       }
