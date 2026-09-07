@@ -178,4 +178,96 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
   assert.ok(!fixture.image.metadata.peMetadata.reasons.includes('delay-imports:unterminated-descriptor'));
 }
 
+// Directory capacity declared beyond the file-backed section span: the core
+// parser fail-closes on the mapped span (mappedFileSpanForRva returns null)
+// before reading any descriptor, so exhaustion must be classified as a
+// mapped-boundary/directory-span partial, never as hard-guard exhaustion.
+function clippedSpanFixture(kind) {
+  const descriptorSize = kind === 'normal' ? 20 : 32;
+  const records = 65536;
+  const dirBytes = records * descriptorSize;
+  const supportLength = 0x80;
+  const bytes = new Uint8Array(supportLength + dirBytes + 0x40);
+  const sectionRva = DIRECTORY_RVA - supportLength;
+  const nameRva = sectionRva;
+  const thunkRva = sectionRva + 0x10;
+  const iatRva = sectionRva + 0x18;
+  bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], 0); // x.dll\0
+  writeU32(bytes, 0x10, 0); // terminated thunk table
+  writeU32(bytes, 0x18, 0); // terminated iat
+  const descriptorBase = supportLength;
+  for (let i = 0; i < records; i++) {
+    const off = descriptorBase + i * descriptorSize;
+    if (kind === 'normal') {
+      writeU32(bytes, off, thunkRva);
+      writeU32(bytes, off + 12, nameRva);
+      writeU32(bytes, off + 16, iatRva);
+    } else {
+      writeU32(bytes, off, 1); // dlattrRva: descriptor pointer fields are RVAs
+      writeU32(bytes, off + 4, nameRva);
+      writeU32(bytes, off + 12, iatRva);
+      writeU32(bytes, off + 16, thunkRva);
+    }
+  }
+  const imageBase = 0x400000n;
+  const section = {
+    index: 1,
+    address: imageBase + BigInt(sectionRva),
+    size: BigInt(bytes.length),
+    fileOffset: 0,
+    fileSize: supportLength + dirBytes,
+    perms: { read: true, write: false, execute: false },
+  };
+  const image = {
+    bits: 32,
+    imageBase,
+    sections: [section],
+    segments: [],
+    metadata: {},
+    libraries: [],
+    imports: [],
+    functions: [],
+    warnings: [],
+  };
+  return {
+    reader: new Reader(bytes),
+    image,
+    directory: { rva: DIRECTORY_RVA, size: (records + 1) * descriptorSize },
+  };
+}
+
+{
+  const fixture = normalFixture(65536, false);
+  parseImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
+  assert.equal(fixture.image.metadata.peImports.complete, false);
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('imports-partial'));
+  assert.ok(!fixture.image.warnings.some((warning) => warning.includes('65536-record safety guard')));
+}
+
+{
+  const fixture = delayFixture(65536, false);
+  parseDelayImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
+  assert.equal(fixture.image.metadata.peMetadata.complete, false);
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:unterminated-descriptor'));
+  assert.ok(!fixture.image.warnings.some((warning) => warning.includes('65536-record safety guard')));
+}
+
+{
+  const fixture = clippedSpanFixture('normal');
+  parseImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
+  assert.equal(fixture.image.metadata.peMetadata.complete, false);
+  assert.equal(fixture.image.metadata.peImports.complete, false);
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('imports-partial'));
+  assert.ok(!fixture.image.warnings.some((warning) => warning.includes('65536-record safety guard')));
+}
+
+{
+  const fixture = clippedSpanFixture('delay');
+  parseDelayImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
+  assert.equal(fixture.image.metadata.peMetadata.complete, false);
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:directory-span'));
+  assert.ok(!fixture.image.metadata.peMetadata.reasons.includes('delay-imports:unterminated-descriptor'));
+  assert.ok(!fixture.image.warnings.some((warning) => warning.includes('65536-record safety guard')));
+}
+
 console.log('issue-3695-pe-import-descriptor-termination: PASS');

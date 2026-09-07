@@ -1,5 +1,6 @@
 import {
   createPEMetadataBudget,
+  mappedFileSpanForRva,
   parseCoffSymbols as parseCoffSymbolsCore,
   parseDelayImports as parseDelayImportsCore,
   parseImports as parseImportsCore,
@@ -101,20 +102,35 @@ function delegatedContext(reader, image, sharedBudget) {
   return exactCStringAccounting(reader, budget);
 }
 
+// The core parser walks the *mapped* file-backed span for the directory
+// (mappedFileSpanForRva), never the raw declared directory.size: capacity
+// beyond the mapped span is not reachable and must not drive exhaustion
+// classification. Mirrors parseImportsCore's loop conditions exactly.
+function mappedDescriptorCapacity(directory, image, descriptorSize) {
+  const dirRange = mappedFileSpanForRva(image, directory.rva, directory.size);
+  if (!dirRange) return null;
+  const mappedBytes = Math.min(directory.size, dirRange.spanEnd - dirRange.start);
+  return Math.floor(mappedBytes / descriptorSize);
+}
+
 function markImportDescriptorGuard(context, directory, image) {
   const state = context.descriptorState.import;
-  const hasTrailingDescriptor = directory.size >= (state.seen + 1) * 20;
-  if (state.terminated || state.budgetStopped || state.seen !== 65536 || !hasTrailingDescriptor) return;
+  const capacity = mappedDescriptorCapacity(directory, image, 20);
+  if (!capacity || state.terminated || state.budgetStopped || state.seen !== 65536) return;
+  const hasTrailingDescriptor = capacity > state.seen;
+  if (!hasTrailingDescriptor) return;
   image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
   image.metadata.peImports.complete = false;
   image.metadata.peImports.truncatedTables++;
   context.budget.partial('imports-partial', 'PE import descriptor table exceeded its 65536-record safety guard without a zero descriptor');
 }
 
-function markDelayImportDescriptorTermination(context, directory) {
+function markDelayImportDescriptorTermination(context, directory, image) {
   const state = context.descriptorState.delayImport;
-  if (state.terminated || state.budgetStopped || state.seen === 0) return;
-  const hitGuardWithTrailingCapacity = state.seen === 65536 && directory.size >= (state.seen + 1) * 32;
+  if (state.seen === 0) return;
+  const capacity = mappedDescriptorCapacity(directory, image, 32);
+  if (state.terminated || state.budgetStopped) return;
+  const hitGuardWithTrailingCapacity = state.seen === 65536 && capacity !== null && capacity > state.seen;
   context.budget.partial(
     'delay-imports:unterminated-descriptor',
     hitGuardWithTrailingCapacity
@@ -233,6 +249,6 @@ export function parseDelayImports(reader, directory, image, sharedBudget = null)
   }
   const context = delegatedContext(reader, image, sharedBudget);
   const result = parseDelayImportsCore(context.reader, directory, image, context.budget);
-  markDelayImportDescriptorTermination(context, directory);
+  markDelayImportDescriptorTermination(context, directory, image);
   return result;
 }
