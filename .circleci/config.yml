@@ -9,7 +9,9 @@ jobs:
       - checkout
       - run:
           name: Validate CircleCI impact router
-          command: node tests/ci/circleci-impact.test.mjs
+          command: |
+            node tests/ci/circleci-impact.test.mjs
+            node tests/ci/circleci-ownership-aggregate.test.mjs
       - run:
           name: Detect migration-guardrail impact
           command: |
