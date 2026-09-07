@@ -161,6 +161,13 @@ const FAMILY_CAP = {
   [FAMILY.NAMING]: 1e9,
 };
 
+function deepFreeze(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) deepFreeze(value[key], seen);
+  return Object.freeze(value);
+}
+
 /* ── 証拠の表 ────────────────────────────────────────────────
  *
  *   lr     … 尤度比。1 より大きければ「本物らしい」、小さければ「本物らしくない」。
@@ -187,7 +194,7 @@ const FAMILY_CAP = {
  *
  * 数字はここに集めてある。画面に出るのはこの数字そのもの。
  */
-export const EVIDENCE = {
+export const EVIDENCE = deepFreeze({
   /* 値（フィールド）を特定するための証拠 */
   /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
   'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -401,7 +408,7 @@ export const EVIDENCE = {
   'role-topic-agree':   { lr: 3,    family: FAMILY.USAGE,    kind: 'inference' },
   // 手がかりが別々の機能を指している。名指しの邪魔になるので、下げる。
   'role-topic-conflict':{ lr: 0.35, family: FAMILY.CONTEXT,  kind: 'inference' },
-};
+});
 
 /** その証拠は「目的に結びつける」ものか。裏打ちするだけのものか。 */
 export function isIdentifying(code) {
@@ -427,7 +434,7 @@ export function evidenceKind(code) {
  * 生の object が kind:'verified' や id:true を名乗っても、表に登録の
  * ない限り何の効きも持たない（fail-closed）。
  */
-export const ADAPTER_EVIDENCE = Object.freeze({
+export const ADAPTER_EVIDENCE = deepFreeze({
   'semantic-ir-proof':       { family: FAMILY.VERIFIED, kind: 'verified', id: false },
   'semantic-ir-observation': { family: FAMILY.USAGE,    kind: 'semantic', id: false },
   'runtime-field-verified':  { family: FAMILY.VERIFIED, kind: 'verified', id: false },
@@ -452,16 +459,17 @@ const ADAPTER_EVIDENCE_FACTORY = Symbol('hex-adapter-evidence-factory');
 export function adapterEvidence(code, strength, detail, lr) {
   const info = Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null;
   if (!info) throw new TypeError(`unregistered-adapter-evidence-code:${code}`);
+  const normalizedLr = finitePositiveLr(lr, 1);
   const item = {
     code,
     strength: strength == null ? 1 : finiteStrength(strength, 0),
-    lr: finitePositiveLr(lr, 1),
+    lr: normalizedLr,
     family: info.family,
     kind: info.kind,
     id: info.id,
     detail: detail || null,
   };
-  FACTORY_PROVENANCE.set(item, { producer: ADAPTER_EVIDENCE_FACTORY, code });
+  FACTORY_PROVENANCE.set(item, { producer: ADAPTER_EVIDENCE_FACTORY, code, lr: normalizedLr });
   return item;
 }
 
@@ -484,17 +492,18 @@ export function evidence(code, strength, detail, lr) {
   const info = EVIDENCE[code];
   const s = strength == null ? 1 : finiteStrength(strength, 0);
   const fallbackLr = finitePositiveLr(info?.lr, 1);
+  const normalizedLr = finitePositiveLr(lr, fallbackLr);
   const item = {
     code,
     strength: s,
     // 実測から作った尤度比があれば、表の既定値より優先する
-    lr: finitePositiveLr(lr, fallbackLr),
+    lr: normalizedLr,
     family: info ? info.family : FAMILY.CONTEXT,
     kind: info ? info.kind : 'inference',
     id: !!(info && info.id),
     detail: detail || null,
   };
-  FACTORY_PROVENANCE.set(item, { producer: STATIC_EVIDENCE_FACTORY, code });
+  FACTORY_PROVENANCE.set(item, { producer: STATIC_EVIDENCE_FACTORY, code, lr: normalizedLr });
   return item;
 }
 
@@ -670,7 +679,7 @@ export function fuse(items, opts) {
     return {
       code: provenance.code,
       strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-      lr: finitePositiveLr(x.lr, info ? finitePositiveLr(info.lr, 1) : 1),
+      lr: provenance.lr,
       family: info ? info.family : FAMILY.CONTEXT,
       kind: info ? info.kind : 'inference',
       id: !!(info && info.id),

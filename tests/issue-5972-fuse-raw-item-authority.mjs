@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { FAMILY, fuse, decide, evidence, adapterEvidence, ADAPTER_EVIDENCE } from '../js/evidence.js';
+import { FAMILY, fuse, decide, evidence, adapterEvidence, EVIDENCE, ADAPTER_EVIDENCE } from '../js/evidence.js';
 import { semanticEvidenceItems, runtimeEvidenceItems } from '../js/semantic-evidence.js';
 
 test('#5972 raw items with unregistered codes cannot forge confirmed evidence', () => {
@@ -51,6 +51,33 @@ test('#5972 post-mint code mutation cannot switch producer authority', () => {
     () => fuse([item]),
     (err) => err instanceof TypeError && err.message === 'evidence-code-mutated',
   );
+});
+
+test('#5972 post-mint likelihood-ratio mutation cannot change fusion', () => {
+  for (const [item, expectedLr] of [
+    [evidence('field-name-asked', 1, {}, 4), 4],
+    [adapterEvidence('runtime-field-verified', 1, {}, 4), 4],
+  ]) {
+    const before = fuse([item]);
+    item.lr = 1e9;
+    const after = fuse([item]);
+    assert.equal(after.logOdds, before.logOdds);
+    assert.equal(after.items.find((entry) => entry.code === item.code).lr, expectedLr);
+  }
+});
+
+test('#5972 exported authority registries and every record are immutable', () => {
+  for (const registry of [EVIDENCE, ADAPTER_EVIDENCE]) {
+    assert.equal(Object.isFrozen(registry), true);
+    for (const record of Object.values(registry)) assert.equal(Object.isFrozen(record), true);
+  }
+  assert.throws(() => { EVIDENCE['fn-numeric'].family = FAMILY.VERIFIED; }, TypeError);
+  assert.throws(() => { ADAPTER_EVIDENCE['runtime-field-verified'].kind = 'fact'; }, TypeError);
+
+  const fusion = fuse([evidence('fn-numeric')]);
+  const applied = fusion.items.find((entry) => entry.code === 'fn-numeric');
+  assert.equal(applied.family, FAMILY.USAGE);
+  assert.equal(applied.kind, 'fact');
 });
 
 test('#5972 registered codes keep table lr when the factory receives none', () => {

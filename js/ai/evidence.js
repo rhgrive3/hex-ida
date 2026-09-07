@@ -149,6 +149,9 @@ export class EvidenceStore {
 
   add(input, authority = null) {
     if (!input || typeof input !== 'object') return null;
+    // Validate before either source-data persistence path can create durable state.
+    // The same normalized value is reused for the canonical record (#5946).
+    const timestamp = evidenceTimestamp(input.timestamp);
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 
@@ -200,7 +203,7 @@ export class EvidenceStore {
      * number など string 以外をそのまま保存すると、add() は成功したのに
      * canonicalSnapshot() だけが必ず失敗する record になってしまう（#5946）。
      */
-    record.timestamp = evidenceTimestamp(input.timestamp);
+    record.timestamp = timestamp;
     if (input.navigation) record.navigation = jsonSafe(input.navigation);
 
     const previous = this.records.get(id);

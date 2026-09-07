@@ -13,6 +13,31 @@ test('#5946 numeric timestamp is rejected at the add() boundary', () => {
   assert.equal(store.has('ev-numeric-ts'), false, 'invalid record must not enter the store');
 });
 
+test('#5946 invalid timestamps do not persist source data through either storage path', () => {
+  const puts = [];
+  const observationStore = {
+    put(value) {
+      puts.push(value);
+      return { id: 'detail-should-not-exist', binding: { key: 'binding-should-not-exist' } };
+    },
+  };
+  const observed = new EvidenceStore([], { observationStore });
+  assert.throws(
+    () => observed.add({ id: 'ev-observation-store', sourceData: { secret: 'payload' }, timestamp: 1 }),
+    (err) => err instanceof TypeError && err.message === 'evidence-invalid-timestamp',
+  );
+  assert.deepEqual(puts, [], 'observationStore.put must not run before timestamp validation');
+  assert.deepEqual(observed.all(), []);
+
+  const local = new EvidenceStore();
+  assert.throws(
+    () => local.add({ id: 'ev-source-payloads', sourceData: { secret: 'payload' }, timestamp: 1 }),
+    (err) => err instanceof TypeError && err.message === 'evidence-invalid-timestamp',
+  );
+  assert.equal(local.sourcePayloads.size, 0, 'sourcePayloads must stay empty after rejection');
+  assert.deepEqual(local.all(), []);
+});
+
 test('#5946 store with a rejected timestamp still snapshots (no poisoned records)', () => {
   const store = new EvidenceStore();
   try {
