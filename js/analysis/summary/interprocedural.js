@@ -192,7 +192,8 @@ function validateLibraryModelEscape(escape, provenanceEvidenceIds) {
   const evidenceIds = canonicalModelEvidenceIds(escape.evidenceIds);
   if (!evidenceIds) return null;
   return Object.freeze({
-    ...escape,
+    kind: escape.kind.trim(),
+    target: escape.target == null ? null : escape.target.trim(),
     evidenceIds: [...new Set([...evidenceIds, ...provenanceEvidenceIds])].sort(),
   });
 }
@@ -268,6 +269,10 @@ function strongestSource(left, right) {
   return leftRank <= rightRank ? left : right;
 }
 
+function compareCodeUnitStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function mergeEscapes(values) {
   const byKey = new Map();
   for (const escape of values) {
@@ -276,7 +281,7 @@ function mergeEscapes(values) {
     if (!byKey.has(key)) byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
   }
   return [...byKey.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareCodeUnitStrings(left, right))
     .map(([, escape]) => escape);
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
-import { createFunctionSummary, summaryIsPure } from '../../../js/analysis/summary/contract.js';
+import { createFunctionSummary, functionSummaryDigest, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import {
   condenseCallGraph,
   LIBRARY_MODEL_PROVENANCE_SCHEMA,
@@ -407,6 +407,44 @@ test('a proven escape-only library model converges through recursive and indirec
     assert.equal(summary.status.completeness, 'complete', `${functionId} must converge`);
     assert.equal(summary.unknownCallEffects.length, 0);
     assert.deepEqual(summary.escapes.map((escape) => escape.target), ['escape-ext:return']);
+  }
+});
+
+test('library-model escapes publish canonical fields and use locale-independent digest ordering (#6074)', () => {
+  const locals = buildSummaryGraph('missing-callee-summary');
+  const modelFor = (escapes) => provenLibraryModel('fn_absent', {
+    memoryReadRegions: [],
+    memoryWriteRegions: [],
+    escapes,
+  });
+  const modelEscapes = [
+    { kind: ' a-kind ', target: ' target-a ', evidenceIds: [' z ', 'a'], ignored: 'drop-me' },
+    { kind: 'Z-kind', target: null, evidenceIds: ['b'], ignored: { future: true } },
+  ];
+  const previousLocaleCompare = String.prototype.localeCompare;
+  String.prototype.localeCompare = () => {
+    throw new Error('summary identity must not depend on localeCompare');
+  };
+  try {
+    const first = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', modelFor(modelEscapes)]]),
+    }).summaries.get('fn_caller');
+    const second = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', modelFor(modelEscapes.slice().reverse())]]),
+    }).summaries.get('fn_caller');
+
+    assert.deepEqual(first.escapes, [
+      { kind: 'Z-kind', target: null, evidenceIds: ['b', 'model:fn_absent'] },
+      { kind: 'a-kind', target: 'target-a', evidenceIds: ['a', 'model:fn_absent', 'z'] },
+    ]);
+    assert.ok(!Object.hasOwn(first.escapes[0], 'ignored'));
+    assert.ok(!Object.hasOwn(first.escapes[1], 'ignored'));
+    assert.deepEqual(first.escapes, second.escapes);
+    assert.equal(functionSummaryDigest(first), functionSummaryDigest(second));
+  } finally {
+    String.prototype.localeCompare = previousLocaleCompare;
   }
 });
 
