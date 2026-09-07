@@ -59,7 +59,6 @@ function imageReader(image) {
 
 function fieldDescriptorReader(count = 2) {
   const image = new Uint8Array(16 + count * 12);
-  putU32(image, 10, 12); // setUint32 is overwritten below for the 16-bit record size.
   new DataView(image.buffer).setUint16(10, 12, true);
   putU32(image, 12, count);
   return imageReader(image);
@@ -79,8 +78,8 @@ function twoTypeModelFixture() {
   putI32(image, 216, 0);
   putU32(image, 220, 0);
   putU32(image, 224, 0);
-  image.set(new TextEncoder().encode('First\\0'), 300);
-  image.set(new TextEncoder().encode('Second\\0'), 320);
+  image.set(new TextEncoder().encode('First\0'), 300);
+  image.set(new TextEncoder().encode('Second\0'), 320);
   return {
     read: imageReader(image),
     sections: [{ section: '__swift5_types', vmAddr: 0n, size: 8n }],
@@ -99,7 +98,7 @@ function twoRequirementProtocolFixture() {
   putI32(image, 128, 0);
   putU32(image, 132, 1);
   putI32(image, 136, 0);
-  image.set(new TextEncoder().encode('Proto\\0'), 300);
+  image.set(new TextEncoder().encode('Proto\0'), 300);
   return {
     read: imageReader(image),
     sections: [{ section: '__swift5_protos', vmAddr: 0n, size: 4n }],
