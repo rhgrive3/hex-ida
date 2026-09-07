@@ -83,6 +83,66 @@ function run(fields, bytes, options = {}) {
 }
 
 {
+  const element = {
+    kind: 'struct',
+    fields: [
+      { name: 'flag', type: u8 },
+      { name: 'payload', when: eq(ref('flag'), constant(1)), type: u16 },
+    ],
+  };
+  const result = run([
+    { name: 'items', type: { kind: 'array', count: 2, element } },
+    { name: 'next', type: u8 },
+  ], [1, 0x34, 0x12, 0, 0xaa, 0xee]);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.value.fields.items.lazy, true, 'array declaration remains lazy');
+  assert.equal(result.value.fields.items.expand(0).fields.payload.value, 0x1234);
+  assert.equal(result.value.fields.items.expand(0).provenance.offset, '0');
+  assert.equal(result.value.fields.items.expand(0).provenance.length, '3');
+  assert.equal(result.value.fields.items.expand(1).fields.payload.absent, true);
+  assert.equal(result.value.fields.items.expand(1).provenance.offset, '3');
+  assert.equal(result.value.fields.items.expand(1).provenance.length, '1');
+  assert.equal(result.value.fields.next.value, 0xaa,
+    'outer layout must use each lazy element\'s parsed conditional footprint');
+  assert.equal(result.value.fields.next.provenance.offset, '4');
+  assert.equal(result.value.provenance.length, '5');
+}
+
+{
+  const element = {
+    kind: 'struct',
+    fields: [
+      { name: 'flag', type: u8 },
+      { name: 'payload', when: eq(ref('flag'), constant(1)), type: u16 },
+    ],
+  };
+  const result = run([
+    { name: 'items', at: 2, type: { kind: 'array', count: 2, element } },
+    { name: 'next', type: u8 },
+  ], [0xaa, 0xbb, 1, 0x34, 0x12, 0xee]);
+  assert.equal(result.value.fields.next.value, 0xaa, 'explicit at keeps the outer cursor unchanged');
+  assert.equal(result.value.fields.items.expand(0).fields.payload.value, 0x1234);
+  assert.equal(result.value.fields.items.expand(0).provenance.offset, '2');
+}
+
+{
+  const element = {
+    kind: 'struct',
+    fields: [
+      { name: 'flag', type: u8 },
+      { name: 'payload', when: eq(ref('flag'), constant(1)), type: u16 },
+    ],
+  };
+  const bounded = run([
+    { name: 'items', type: { kind: 'array', count: 2, element } },
+    { name: 'next', type: u8 },
+  ], [1, 0x34, 0x12, 0, 0xaa], { maxEntries: 1 });
+  assert.equal(bounded.status, 'partial');
+  assert.equal(bounded.reason, 'resource-limit-entries',
+    'dynamic lazy layout must fail closed when its prefix scan exceeds the entry budget');
+}
+
+{
   const nested = {
     kind: 'struct',
     fields: [
