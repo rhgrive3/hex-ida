@@ -200,7 +200,22 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   let aggregateProven = false;
   let vectorPartial = false;
   let stackArgsMayContainPointers = false;
-  const indirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+  // The argument allocator must share the return classifier's canonical
+  // decision: a proven MEMORY-class aggregate return consumes RDI as the
+  // hidden result pointer and shifts every user argument, without requiring
+  // the provider to duplicate `indirectResult` (#6010). When the aggregate
+  // return classification is genuinely unproven, the hidden-RDI presence —
+  // and therefore every user argument slot — is undecided, so user arguments
+  // must fail closed to unknown instead of publishing false-exact slots.
+  const explicitIndirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+  let indirectResult = explicitIndirectResult;
+  let derivedReturnDecision = null;
+  if (!indirectResult) {
+    derivedReturnDecision = classifyReturn(prototype, options);
+    if (derivedReturnDecision?.indirect === true) indirectResult = true;
+  }
+  const returnClassificationUnproven = !indirectResult
+    && derivedReturnDecision?.partial === true && derivedReturnDecision?.aggregate === true;
   if (indirectResult) {
     appendRegisterSource(srcs, seenSources, INTEGER_ARGUMENT_REGISTERS[0], 64, { purpose:'indirect-result' });
     arguments_.push({ index:-1, role:'indirect-result', location:'register', reg:INTEGER_ARGUMENT_REGISTERS[0], abiClass:'pointer', pointer:true, bits:64, hidden:true });
@@ -209,6 +224,26 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
 
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
+    if (returnClassificationUnproven) {
+      aggregatePartial = true;
+      allocationUnknown = true;
+      const candidateRegisters = [
+        ...INTEGER_ARGUMENT_REGISTERS.slice(integerIndex),
+        ...VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex),
+      ];
+      for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) appendRegisterSource(srcs, seenSources, reg, 64, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown', purpose:'unproven-return-hidden-result-candidate',
+      });
+      for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) appendRegisterSource(srcs, seenSources, reg, 128, {
+        possible:true, mustUse:false, exact:false, certainty:'unknown', purpose:'unproven-return-hidden-result-candidate',
+      });
+      arguments_.push({ index, location:'unknown', candidateRegisters, stackPossible:true,
+        abiClass:'return-classification-unproven', bits:classified.bits,
+        possible:true, mustUse:false, exact:false, certainty:'unknown', partial:true,
+        reason:'sysv-amd64-aggregate-return-classification-not-proven' });
+      stackArgsMayContainPointers = true;
+      return;
+    }
     // An explicit aggregate descriptor is a proof input regardless of whether
     // the eventual ABI path is an invisible reference, register class, or
     // memory.  Do not let a malformed nested layout bypass validation through
@@ -575,7 +610,19 @@ function classifyReturn(prototype, options = {}) {
       ?? prototype.eightbyteClasses;
     if (requestedClasses != null) classPrototype.eightbyteClasses = requestedClasses;
     const classes = explicitEightbyteClasses(classPrototype);
-    if (!classes || classes[0] === 'MEMORY') return { reg:null, partial:true, reason:'sysv-amd64-aggregate-return-classification-not-proven' };
+    if (!classes) return { reg:null, partial:true, aggregate:true, reason:'sysv-amd64-aggregate-return-classification-not-proven' };
+    if (classes[0] === 'MEMORY') {
+      // A proven MEMORY class return is a mandatory ABI fact, not an unproven
+      // classification: the psABI returns the aggregate in caller-provided
+      // storage whose pointer arrives in RDI and is returned in RAX. That
+      // hidden pointer also shifts every user argument (#6010). The storage
+      // extent must be proven, or the caller cannot size the result buffer.
+      const storageBytes = descriptor.layout?.bytes ?? null;
+      if (!Number.isSafeInteger(storageBytes) || storageBytes <= 0) {
+        return { reg:null, partial:true, aggregate:true, reason:'sysv-amd64-aggregate-return-memory-storage-size-unproven' };
+      }
+      return { reg:'rax', bits:64, indirect:true, aggregate:true, bytes:storageBytes, resultLocation:'memory', hiddenResultPointer:{ input:'rdi', returned:'rax' } };
+    }
     const canonicalBits = descriptor.bits ?? (Number.isSafeInteger(returnBitsNumber) && returnBitsNumber > 0 ? returnBitsNumber : null);
     const returnBits = Number(canonicalBits ?? classes.length * 64);
     const physicalBytes = descriptor.layout?.bytes ?? classes.length * 8;
