@@ -99,4 +99,22 @@ function phiContract(incoming) {
     'memory-phi canonical form must not depend on incoming insertion order');
 }
 
+// Preserve the rooted-offset storage-domain field while changing ordering code.
+{
+  const contract = createMemorySsaContract({
+    functionId: 'f',
+    regions: [{
+      id: 'rooted',
+      kind: 'rooted-offset',
+      functionId: 'f',
+      rootEntityId: 'root',
+      offset: 0n,
+      addressSpace: 'tls',
+    }],
+    definitions: [],
+    uses: [],
+  });
+  assert.equal(contract.regions[0].addressSpace, 'tls');
+}
+
 console.log('issue-5756 memory-ssa canonical ordering is locale-invariant: ok');
