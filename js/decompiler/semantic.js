@@ -4,6 +4,7 @@ import { irFor, getSemanticMigrationMode, OP, MK } from '../ir.js';
 import {
   decompileSemantic as decompileSemanticCore,
   recoverInductionVariables as recoverInductionVariablesCore,
+  isExactOperandForwardMove,
 } from './semantic-core.js';
 
 function irOptionsFromDecompilerOptions(opts = {}) {
@@ -88,7 +89,8 @@ function exactViewTrace(value, active = new Set()) {
     const def = current.def;
     const sub = def.sub ?? null;
     const exactIdentity = sub == null || sub === 'copy' || sub === 'bitcast'
-      || def.extra?.stateRead || def.extra?.stateWrite;
+      || def.extra?.stateRead || def.extra?.stateWrite
+      || isExactOperandForwardMove(def);
     if (!exactIdentity && !EXACT_VIEW_MOV_SUBS.has(sub)) break;
     const source = def.args[0]?.value ?? null;
     if (!source || active.has(source.id)) break;
@@ -129,6 +131,10 @@ function canonicalLocationBase(value, active = new Set()) {
   const def = root?.def;
   if (def?.op === OP.LOAD && def.reachingStore?.args?.[0]?.value) {
     root = canonicalLocationBase(def.reachingStore.args[0].value, active) ?? root;
+  } else if (isExactOperandForwardMove(def)) {
+    // The forwarded operand is the exact stored identity of the load it
+    // replaced; its location base is the stored value's base.
+    root = canonicalLocationBase(def.args[0]?.value, active) ?? root;
   } else if (def?.op === OP.PHI && Array.isArray(def.incoming) && def.incoming.length) {
     const roots = def.incoming.map((item) => canonicalLocationBase(item.value, new Set(active))).filter(Boolean);
     const first = roots[0] ?? null;
@@ -236,6 +242,8 @@ function projectCommittedSnapshotViews(ir) {
       compatOriginalSub: 'trunc',
       committedSnapshotView: true,
       committedViewBits: viewBits,
+      committedStoreRows: [...(snapshot.extra?.committedStoreRows ?? [])],
+      committedLocationKey: snapshot.extra?.committedLocationKey ?? snapshot.loc?.key ?? null,
     };
   }
   return ir;

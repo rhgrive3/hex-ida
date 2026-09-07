@@ -9,6 +9,10 @@ import { symbolicExecute } from './executor.js';
 export const DEFAULT_OBJECT_BASE = 0x0000600000001000n;
 export const DEFAULT_SANDBOX_STEPS = 20000;
 export const MAX_SANDBOX_STEPS = 1000000;
+// Synthetic object memory is pre-mapped at setup, before any step budget or
+// timeout applies, so it needs its own hard cap. 16 MiB is the documented
+// backing limit (see setup below) and the adapter-layer maximum.
+export const MAX_SANDBOX_OBJECT_SIZE = 16 * 1024 * 1024;
 
 function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
 
@@ -26,7 +30,7 @@ function boundedObjectSize(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
     return 0x10000;
   }
-  return Math.max(0x100, value);
+  return Math.min(Math.max(0x100, value), MAX_SANDBOX_OBJECT_SIZE);
 }
 
 function normalizeWatch(watch, objectBase) {
@@ -96,16 +100,20 @@ function modifiedRanges(emu, objectBase, maxObjectSize, beforeBytes) {
   return ranges;
 }
 
-function branchTrace(trace) {
+function isConditionalBranchText(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
+
+function branchTrace(trace, finalPc = null) {
   const out = [];
-  for (let i = 0; i < (trace || []).length - 1; i++) {
-    const cur = trace[i], next = trace[i + 1];
-    if (!cur || !/^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(cur.text || '')) continue;
+  for (let i = 0; i < (trace || []).length; i++) {
+    const cur = trace[i];
+    if (!cur || !isConditionalBranchText(cur.text)) continue;
+    const next = i + 1 < trace.length ? trace[i + 1].addr : finalPc;
+    if (next == null) continue;
     out.push({
       address: cur.addr,
       text: cur.text,
-      next: next.addr,
-      taken: next.addr !== cur.addr + 4n,
+      next,
+      taken: next !== cur.addr + 4n,
     });
   }
   return out;
@@ -138,7 +146,7 @@ export class FunctionSandbox {
     }
     this._setupCount++;
     // Synthetic object memory is explicit. Chunk into 1 MiB mappings so
-    // maxObjectSize up to 16 MiB can be backed without exceeding single-mapping limit.
+    // maxObjectSize up to MAX_SANDBOX_OBJECT_SIZE can be backed without exceeding single-mapping limit.
     const CHUNK_SIZE = 1024 * 1024;
     let remaining = this.maxObjectSize;
     let currentBase = objectBase;
@@ -207,6 +215,7 @@ export class FunctionSandbox {
       });
     }
     const traceMeta = this.emulator.traceSnapshot();
+    const branchFinalPc = result.hitBreakpoint === true ? result.finalPc : (result.steps > 0 && (traceMeta.events?.length || 0) > 0 ? this.emulator.pc : null);
     return {
       ...result,
       stopped: this.emulator.stopped,
@@ -215,7 +224,7 @@ export class FunctionSandbox {
       after,
       touchedFields,
       modifiedObjectRanges: modifiedRanges(this.emulator, this.objectBase, this.maxObjectSize, this.beforeObjectBytes),
-      takenBranches: branchTrace(traceMeta.events),
+      takenBranches: branchTrace(traceMeta.events, branchFinalPc),
       trace: traceMeta.events,
       traceMeta:{ truncated:traceMeta.truncated, dropped:traceMeta.dropped, limit:traceMeta.limit },
       log: (this.emulator.log || []).slice(),

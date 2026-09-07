@@ -1,7 +1,7 @@
 import { createRiscv64EffectContext } from './common.js';
 
 /**
- * RVC HINTs and C.NOP are architecturally state-preserving instructions.
+ * RISC-V HINTs and C.NOP are architecturally state-preserving instructions.
  *
  * They still advance control normally, but must not manufacture register reads
  * or writes merely because their encoding reuses a computational instruction.
@@ -16,7 +16,9 @@ export function liftRiscv64HintEffects(decoded, context = {}) {
     family: 'hint',
     statePreservation: {
       proven: true,
-      reason: 'riscv64-rvc-architectural-noop',
+      reason: fields.compressed === true
+        ? 'riscv64-rvc-architectural-noop'
+        : 'riscv64-base-architectural-hint',
     },
     metadata: {
       operation: fields.op,

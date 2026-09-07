@@ -416,6 +416,8 @@ export class Backend {
       legacy.platform = {
         compatibility:'hybrid-macho', sourceBackedDetection:true, detected:detection,
         normalizedDyldTruth:!!normalized, duplicateUniversalParseAvoided:false,
+        platformSelectedSliceReparseAvoided:normalized?.platform?.selectedSliceParseReused === true,
+        legacyCompatibilityParseRequired:true,
         ...(platformError ? { normalizedDyldError: platformError.message } : {}),
       };
       nextLegacy = legacy;

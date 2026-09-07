@@ -10,8 +10,14 @@ export const ANALYSIS_SCOPE_EXPANSION_POLICY = Object.freeze({
 export const ANALYSIS_SCOPE_EXPANSION_POLICIES = Object.freeze(Object.values(ANALYSIS_SCOPE_EXPANSION_POLICY));
 
 export function createAnalysisScopeRequest({ initial, expansionPolicy } = {}) {
-  const normalizedInitial = String(initial || '').toLowerCase();
-  const normalizedPolicy = String(expansionPolicy || '').toLowerCase();
+  if (typeof initial !== 'string') {
+    throw new TypeError(`Analysis scope initial must be a string, got ${initial === null ? 'null' : typeof initial}`);
+  }
+  if (typeof expansionPolicy !== 'string') {
+    throw new TypeError(`Analysis scope expansion policy must be a string, got ${expansionPolicy === null ? 'null' : typeof expansionPolicy}`);
+  }
+  const normalizedInitial = initial.trim().toLowerCase();
+  const normalizedPolicy = expansionPolicy.trim().toLowerCase();
   if (!ANALYSIS_SCOPE_INITIALS.includes(normalizedInitial)) {
     throw new TypeError(`Unsupported analysis scope: ${initial}`);
   }

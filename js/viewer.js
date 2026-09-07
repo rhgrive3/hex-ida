@@ -117,7 +117,6 @@ export class CodeViewer {
     this.rowH = h;
     this._recomputeWindow(true);
   }
-
   _recomputeWindow(keepPosition) {
     const maxWindowRows = Math.max(1, Math.floor(WINDOW_PX / this.rowH));
     const anchorAddress = keepPosition ? this.topAddress() : null;
@@ -152,10 +151,10 @@ export class CodeViewer {
       return this.variableRows.length === 0 && this.variableError?.address === address ? 0 : null;
     }
     const fixed = this.fixedInstructionSize();
-    const width = this.mode === 'hex' && fixed == null ? HEX_ROW_BYTES : fixed;
+    const width = this.mode === 'hex' ? HEX_ROW_BYTES : fixed;
     if (!width) return null;
     const w = BigInt(width);
-    if (fixed != null && rel % w !== 0n) return null;
+    if (this.mode !== 'hex' && fixed != null && rel % w !== 0n) return null;
     return Number(rel / w);
   }
 

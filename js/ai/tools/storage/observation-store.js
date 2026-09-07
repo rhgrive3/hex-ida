@@ -24,7 +24,10 @@ export function analysisBinding(context = {}, extra = {}) {
     extra.analysisRevision ?? context.analysisRevision ?? context.analysis?.revision ?? context.binary?.analysisRevision ?? context.binary?.revision ?? context.program?.analysisRevision ?? context.program?.revision ?? context.revision ?? context.project?.analysisRevision ?? 'analysis:0'
   ) || 'analysis:0';
   const sliceIdentity = textIdentity(extra.sliceIdentity ?? context.sliceIdentity ?? context.binary?.sliceIdentity ?? context.binary?.slice ?? 'slice:default') || 'slice:default';
-  const projectRevision = textIdentity(extra.projectRevision ?? context.projectRevision ?? context.project?.revision ?? context.project?.updatedAt ?? context.project?.modifiedAt ?? 'project:0') || 'project:0';
+  const projectRevision = textIdentity(
+    extra.projectRevision ?? context.projectRevision ?? context.project?.revision ?? context.project?.analysisRevision ??
+    context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
+  ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
   const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
   return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
@@ -55,6 +58,14 @@ function boundedLimit(value, fallback = 100, max = 500) {
   return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
 }
 
+const DEFAULT_MAX_ENTRIES = 256;
+const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
+
+function finiteConfiguredNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number !== 0 ? number : fallback;
+}
+
 function pageValue(value, offset, limit) {
   if (Array.isArray(value)) {
     const total = value.length;
@@ -82,10 +93,10 @@ function pageValue(value, offset, limit) {
 }
 
 export class ObservationStore {
-  constructor({ context = {}, maxEntries = 256, maxAgeMs = 30 * 60 * 1000, cursorCodec = null } = {}) {
+  constructor({ context = {}, maxEntries = DEFAULT_MAX_ENTRIES, maxAgeMs = DEFAULT_MAX_AGE_MS, cursorCodec = null } = {}) {
     this.context = context;
-    this.maxEntries = Math.max(16, Number(maxEntries) || 256);
-    this.maxAgeMs = Math.max(10_000, Number(maxAgeMs) || 30 * 60 * 1000);
+    this.maxEntries = Math.min(Number.MAX_SAFE_INTEGER, Math.max(16, Math.floor(finiteConfiguredNumber(maxEntries, DEFAULT_MAX_ENTRIES))));
+    this.maxAgeMs = Math.min(Number.MAX_SAFE_INTEGER, Math.max(10_000, Math.floor(finiteConfiguredNumber(maxAgeMs, DEFAULT_MAX_AGE_MS))));
     this.cursorCodec = cursorCodec || new CursorCodec({ maxAgeMs: this.maxAgeMs });
     this.records = new Map();
     this.cache = new Map();

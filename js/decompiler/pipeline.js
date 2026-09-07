@@ -1,7 +1,8 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
+import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
-import { expr, sourceOf } from './ast/nodes.js';
-import { printProgram } from './pretty/c.js';
+import { expr, mapChildren, sourceOf } from './ast/nodes.js';
+import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
 import {
@@ -155,6 +156,102 @@ function reanchorExactStackReturn(result, opts = {}) {
   return result;
 }
 
+export function exactLegacySameBlockStackStore(load, ir) {
+  if (!load?.reachingStore || load.loc?.kind !== 'stack' || !load.loc?.key) return null;
+  const store = load.reachingStore;
+  const loadSize = Number(load.loc?.size);
+  const storeSize = Number(store?.loc?.size);
+  if (!Number.isSafeInteger(loadSize) || loadSize <= 0
+      || !Number.isSafeInteger(storeSize) || storeSize !== loadSize) return null;
+  if (store.op !== 'store' || store.block !== load.block || store.loc?.kind !== 'stack'
+      || store.loc.key !== load.loc.key || store.row == null || load.row == null
+      || Number(store.row) >= Number(load.row)) return null;
+  const block = ir?.blocks?.[load.block];
+  if (!block) return null;
+  for (const inst of block.insts || []) {
+    if (inst === store || inst === load || inst?.row == null) continue;
+    if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
+    if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
+    if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) return null;
+  }
+  return store;
+}
+
+/* Legacy-v1 keeps its historical MemorySSA `reachingStore` pointer. Use that
+ * existing proof only for a trivially ordered same-block fixed-stack spill.
+ * No CFG/path inference is added here, and any call/unknown barrier keeps the
+ * load explicit. This is intentionally narrower than canonical v2 forwarding. */
+function recoverLegacySameBlockStackSpills(result, opts = {}) {
+  if (!result?.semanticAst || !result?.ir || result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
+  const instructionById = new Map((result.ir.instructions || []).map((inst) => [String(inst.id), inst]));
+  const expressions = new Map((result.semanticAst.values || []).map((item) => [String(item.valueId), item.expression]));
+  const active = new Set();
+
+  const rewrite = (node, depth = 0) => {
+    if (!node || depth > 64) return node;
+    if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
+      const ids = [...new Set((node.source?.ir || []).map(String))];
+      if (ids.length !== 1) return node;
+      const load = instructionById.get(ids[0]);
+      if (!load || load.op !== 'load' || load.loc?.key !== node.location.key) return node;
+      const store = exactLegacySameBlockStackStore(load, result.ir);
+      const storedValue = store?.args?.[0]?.value;
+      if (!storedValue) return node;
+      const key = String(storedValue.id);
+      if (active.has(key)) return node;
+      const replacement = expressions.get(key);
+      if (!replacement) return node;
+      active.add(key);
+      let resolved = rewrite(replacement, depth + 1);
+      active.delete(key);
+      const bytes = Number(store.size || store.loc?.size || store.addr?.size || 0);
+      const storeBits = bytes > 0 ? bytes * 8 : 0;
+      if (storeBits > 0 && Number(resolved?.bits || storeBits) > storeBits) {
+        resolved = expr.unary('trunc', resolved, storeBits, resolved.signed ?? null, {
+          address:store.address,
+          row:store.row,
+          ir:store.id,
+          evidence:[{ reason:`exact ${storeBits}-bit legacy stack store width` }],
+        }, { fromBits:Number(resolved.bits || storeBits) });
+      }
+      return resolved;
+    }
+    return mapChildren(node, (child) => rewrite(child, depth + 1));
+  };
+
+  for (const item of result.semanticAst.values || []) {
+    const resolved = rewrite(item.expression);
+    item.expression = resolved;
+    expressions.set(String(item.valueId), resolved);
+  }
+  for (const output of result.semanticAst.outputs || []) {
+    if (output?.expression) output.expression = rewrite(output.expression);
+  }
+
+  let printedChanged = false;
+  for (const node of result.cAst?.body || []) {
+    if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
+    const expression = node.semantic?.expression;
+    if (!expression) continue;
+    const resolved = rewrite(expression);
+    if (resolved === expression) continue;
+    if (node.semantic) node.semantic.expression = resolved;
+    node.text = `return ${printExpression(resolved)};`;
+    printedChanged = true;
+  }
+  if (!printedChanged) return result;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:printed.mapping.length };
+  return result;
+}
+
 /* When a return stack LOAD has a proven same-slot reaching STORE, the spill
  * STORE remains proof provenance but does not own the reconstructed C return
  * statement after the stack temporary has been eliminated. Drop only that one
@@ -279,6 +376,9 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     // twice and does not borrow the PassManager rewrite deadline.
     core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
   } finally { restore(); }
-  const recovered = recoverExactStackReturn(reanchorExactStackReturn(core, opts), opts);
+  const reanchored = reanchorExactStackReturn(core, opts);
+  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
+  const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
 }

@@ -8,15 +8,19 @@ const AI_SCOPES = new Set(['auto', 'selection', 'function', 'neighborhood', 'bin
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/;
 const RESERVED_TOOL_NAMES = new Set(['submit_hex_result']);
 
+function optionalEnum(value, fallback, allowed, status, code, message) {
+  const selected = value == null ? fallback : value;
+  if (typeof selected !== 'string' || !allowed.has(selected)) throw new HttpError(status, code, message);
+  return selected;
+}
+
 export function normalizeAITurnRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
-  const mode = String(value.mode || 'chat'), style = String(value.style || 'analyst');
-  const legacyScope = String(value.scope || 'auto');
-  const requestedScope = String(value.requestedScope || legacyScope);
-  const effectiveScope = String(value.effectiveScope || (legacyScope === 'auto' ? 'auto' : legacyScope));
-  if (!AI_MODES.has(mode)) throw new HttpError(422, 'invalid_mode', 'mode must be chat or agent.');
-  if (!AI_STYLES.has(style)) throw new HttpError(422, 'invalid_style', 'style must be beginner or analyst.');
-  if (!AI_SCOPES.has(requestedScope) || !AI_SCOPES.has(effectiveScope)) throw new HttpError(422, 'invalid_scope', 'scope is unsupported.');
+  const mode = optionalEnum(value.mode, 'chat', AI_MODES, 422, 'invalid_mode', 'mode must be chat or agent.');
+  const style = optionalEnum(value.style, 'analyst', AI_STYLES, 422, 'invalid_style', 'style must be beginner or analyst.');
+  const legacyScope = optionalEnum(value.scope, 'auto', AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
+  const requestedScope = optionalEnum(value.requestedScope, legacyScope, AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
+  const effectiveScope = optionalEnum(value.effectiveScope, legacyScope === 'auto' ? 'auto' : legacyScope, AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
   if (!isObject(value.context)) throw new HttpError(422, 'missing_context', 'A bounded model context object is required.');
   rejectBinaryPayload(value.context);
   const messages = Array.isArray(value.messages) ? value.messages.slice(-12).map((message) => ({ role: message?.role === 'assistant' ? 'assistant' : 'user', content: boundedText(message?.content, 12000) })) : [];
@@ -35,23 +39,12 @@ export function normalizeAITools(value) {
   for (const raw of value.slice(0, 40)) {
     if (!isObject(raw)) continue;
     const name = boundedText(raw.name, 64);
-    // The browser ToolRegistry is the authority for which read-only tools are
-    // visible in this turn. The Worker validates the transport surface rather
-    // than duplicating a static tool-name list that would make future Registry
-    // additions unreachable. The Worker-owned final-result tool is reserved.
     if (!TOOL_NAME.test(name) || RESERVED_TOOL_NAMES.has(name) || seen.has(name)) continue;
     seen.add(name); out.push({ name, description: boundedText(raw.description, 2000), inputSchema: sanitizeToolSchema(raw.inputSchema) });
   }
   return out;
 }
 
-/*
- * `target[key] = value` with key '__proto__' runs the inherited
- * Object.prototype.__proto__ setter rather than creating an own property: the
- * input's own '__proto__' entry is dropped and the sanitized object's
- * prototype is replaced by attacker-supplied data (#1304). Every key that
- * comes from outside is therefore defined, never assigned.
- */
 function defineOwn(target, key, value) {
   Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
   return target;

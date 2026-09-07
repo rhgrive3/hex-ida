@@ -182,6 +182,23 @@ export function selectionForProvider(capabilities, providerId, previous = {}) {
 }
 
 /**
+ * The selection after picking a model in the current provider.
+ *
+ * Reasoning is part of the model contract. Keep it only when the newly picked
+ * model (or its provider-level fallback) advertises that exact level.
+ */
+export function selectionForModel(capabilities, providerId, modelId, previous = {}) {
+  const normalizedProvider = normalizeProviderId(providerId);
+  const provider = findProvider(capabilities, normalizedProvider);
+  if (!provider) return { provider: normalizedProvider || null, model: null, reasoning: null };
+  const model = findModel(provider, modelId);
+  if (!model) return { provider: provider.id, model: null, reasoning: null };
+  const sameProvider = normalizeProviderId(previous.provider) === provider.id;
+  const keptReasoning = sameProvider ? findReasoning(provider, model, previous.reasoning) : null;
+  return { provider: provider.id, model: model.id, reasoning: keptReasoning ? keptReasoning.id : null };
+}
+
+/**
  * Feature detection for the engine-side API.
  *
  * Everything is optional and may be sync or async; nothing here throws into
@@ -209,4 +226,4 @@ export async function callSafely(fn, ...args) {
   try { return await fn(...args); } catch { return null; }
 }
 
-export default { normalizeCapabilities, selectionLabel, selectionForProvider, capabilityApi };
+export default { normalizeCapabilities, selectionLabel, selectionForProvider, selectionForModel, capabilityApi };

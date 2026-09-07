@@ -34,8 +34,9 @@ function invalidStructuredRegisterWidth(op) {
 }
 
 function invalidStructuredFpImmediate(op) {
-  return op?.k === 'imm' && op.float != null
-    && (typeof op.float !== 'number' || !Number.isFinite(op.float));
+  if (op?.k !== 'imm') return false;
+  if (op.float != null && (typeof op.float !== 'number' || !Number.isFinite(op.float))) return true;
+  return op.bitPattern != null && typeof op.bitPattern !== 'bigint';
 }
 
 function invalidConditionalEvidence(mnemonic, ops) {
@@ -44,6 +45,13 @@ function invalidConditionalEvidence(mnemonic, ops) {
   return conditions.length !== 1
     || typeof conditions[0].text !== 'string'
     || !FP_CONDITIONS.has(conditions[0].text.trim().toLowerCase());
+}
+
+function normalizeConditionalEvidence(mnemonic, ops) {
+  if (!['fcsel','fccmp','fccmpe'].includes(mnemonic)) return ops;
+  return ops.map((op) => op?.k === 'cond' && typeof op.text === 'string'
+    ? { ...op, text: op.text.trim().toLowerCase() }
+    : op);
 }
 
 function fixedPointScaleWidth(mnemonic, ops) {
@@ -104,7 +112,8 @@ export function liftArm64FpEffects(instruction, context = {}) {
   if (invalidFiniteShape(mnemonic, ops)) {
     return liftArm64FpEffectsCore({ ...instruction, ops: [] }, context);
   }
-  return liftArm64FpEffectsCore(instruction, context);
+  const normalizedOps = normalizeConditionalEvidence(mnemonic, ops);
+  return liftArm64FpEffectsCore(normalizedOps === ops ? instruction : { ...instruction, ops: normalizedOps }, context);
 }
 
 export const arm64FpMachineEffects = liftArm64FpEffects;

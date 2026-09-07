@@ -21,6 +21,7 @@ import { solveInterproceduralSummaries } from './summary/interprocedural.js';
 import { analyzeEscape } from './summary/escape.js';
 import { summaryMayWriteRegion } from './summary/contract.js';
 import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType } from './types/graph.js';
+import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
 import {
@@ -61,10 +62,14 @@ export function createAnalysisSurface({
       memorySsaBinding: {
         ...(options.memorySsaBinding ?? {}),
         memorySsa,
-        snapshotId,
-        functionId: ir?.functionId ?? null,
-        semanticIrVersion: ir?.contractVersion ?? null,
-        memorySsaBuildVersion: memorySsa.buildVersion ?? null,
+        // Binding-declared identity is the authority; the current surface
+        // values are fallbacks only (same principle as `completeness` above).
+        // Overwriting a supplied stale identity here would launder it past
+        // `prepareMemoryBoundary()`'s fail-closed checks.
+        snapshotId: options.memorySsaBinding?.snapshotId ?? snapshotId,
+        functionId: options.memorySsaBinding?.functionId ?? (ir?.functionId ?? null),
+        semanticIrVersion: options.memorySsaBinding?.semanticIrVersion ?? (ir?.contractVersion ?? null),
+        memorySsaBuildVersion: options.memorySsaBinding?.memorySsaBuildVersion ?? (memorySsa.buildVersion ?? null),
         completeness: memorySsaCompleteness,
       },
     }),
@@ -157,8 +162,34 @@ export function createAnalysisSurface({
 
   /** The type constraint graph for this scope, created on first use. */
   function types() {
-    if (typeGraph == null) typeGraph = new TypeConstraintGraph({ snapshotId });
+    if (typeGraph == null) {
+      typeGraph = new TypeConstraintGraph({ snapshotId });
+      ingestCanonicalTypeEvidence(typeGraph);
+    }
     return typeGraph;
+  }
+
+  /**
+   * Feeds the canonical evidence this surface was constructed with into the
+   * type graph. Only identity-verified debug facts may become hard
+   * constraints; everything else stays soft evidence, and presentation-side
+   * data never reaches this path at all.
+   */
+  function ingestCanonicalTypeEvidence(graph) {
+    const canonical = options.canonicalTypeEvidence;
+    if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) return;
+    const direct = Array.isArray(canonical.hardConstraints) ? canonical.hardConstraints : [];
+    for (const constraint of direct) graph.addHardConstraint(constraint);
+    const soft = Array.isArray(canonical.softEvidence) ? canonical.softEvidence : [];
+    for (const evidence of soft) graph.addSoftEvidence(evidence);
+    const debug = Array.isArray(canonical.debug) ? canonical.debug : [];
+    for (const entry of debug) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const result = entry.result ?? entry.providerResult ?? null;
+      const page = entry.page ?? entry.typesPage ?? null;
+      if (!result || !page) continue;
+      applyDebugTypesToGraph(graph, result, page);
+    }
   }
 
   /** The full type answer for one entity, contradictions included. */
@@ -219,6 +250,7 @@ export {
   satisfiesRequirement,
   selectedTypeIfCertain,
   reconstructStructuralType,
+  applyDebugTypesToGraph,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
 };

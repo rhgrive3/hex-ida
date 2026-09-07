@@ -1,3 +1,5 @@
+import { DEV_EVENT_TYPES } from '../events/dev-events.js';
+
 export const DEV_SUPERVISOR_PROTOCOL = 'hex-dev-supervisor-v1';
 export const DEV_SUPERVISOR_DECISION_TYPES = Object.freeze(['tool', 'human', 'wait', 'final']);
 
@@ -17,12 +19,15 @@ export function parseDevSupervisorDecision(text, options) {
 
 export function validateDevSupervisorDecision(value, { availableTools = null } = {}) {
   if (!isPlainObject(value)) throw new TypeError('Dev Supervisor decision must be an object.');
-  const type = String(value.type || '');
+  if (typeof value.type !== 'string') throw new TypeError('Dev Supervisor decision type must be a string.');
+  const type = value.type;
   if (!DEV_SUPERVISOR_DECISION_TYPES.includes(type)) throw new TypeError(`Unsupported Dev Supervisor decision type: ${type}`);
   assertExactKeys(value, SHAPES[type]);
 
   if (type === 'tool') {
-    const tool = nonEmpty(value.tool, 'tool');
+    if (typeof value.tool !== 'string') throw new TypeError('tool must be a string.');
+    const tool = value.tool.trim();
+    if (!tool || tool !== value.tool) throw new TypeError('tool must be a non-empty string without untrimmed whitespace.');
     if (!isPlainObject(value.arguments)) throw new TypeError('tool.arguments must be an object.');
     if (availableTools != null && !new Set(availableTools).has(tool)) throw new TypeError(`Unavailable Dev tool: ${tool}`);
     return freezeDecision({ type, tool, arguments: cloneJson(value.arguments), purpose: nonEmpty(value.purpose, 'purpose') });
@@ -34,6 +39,9 @@ export function validateDevSupervisorDecision(value, { availableTools = null } =
   if (type === 'wait') {
     if (!Array.isArray(value.events) || value.events.some((event) => typeof event !== 'string' || !event.trim())) {
       throw new TypeError('wait.events must be an array of non-empty strings.');
+    }
+    if (value.events.some((event) => !DEV_EVENT_TYPES.includes(event))) {
+      throw new TypeError('wait.events contains an unsupported Dev event.');
     }
     return freezeDecision({ type, events: [...value.events], reason: nonEmpty(value.reason, 'reason') });
   }
