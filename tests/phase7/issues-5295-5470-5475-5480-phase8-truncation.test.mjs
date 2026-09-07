@@ -135,7 +135,7 @@ test('#5480 maxLoops truncation publishes partial induction', () => {
 });
 
 test('#5480 maxPhisPerLoop truncation publishes partial induction', () => {
-  const phis = [1, 2, 3].map((id) => ({ dst: { id, bits: 64 }, incoming: [{ from: 0 }, { from: 0 }] }));
+  const phis = [1, 2, 3].map((id) => ({ id: `phi:${id}`, op: 'phi', dst: { id, bits: 64 }, incoming: [{ from: 0, value: { id: `init:${id}`, bits: 64, const: 0 } }, { from: 0, value: { id, bits: 64 } }] }));
   const cfg = { blocks: [
     { index: 0, succ: [0, 1], successorEdges: [{ to: 0, kind: 'branch' }, { to: 1, kind: 'branch' }], insts: [], phis },
     { index: 1, succ: [], successorEdges: [], insts: [], phis: [] },

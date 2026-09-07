@@ -301,7 +301,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
     // Preserve the fusion boundary's long-standing numeric error authority:
     // malformed addresses are rejected before any other evidence field can
     // obscure the cause (issue #3101).
-    if (item?.start != null) primitiveInteger(item.start, 'discovery-fusion-invalid-start');
+    if (item?.start != null) primitiveInteger(item.start, 'discovery-evidence-invalid-start');
     return createDiscoveryEvidence(item);
   });
   const finish = (candidates, finalStatus, artifactEvidence = canonicalEvidence) => {
