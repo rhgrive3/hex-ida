@@ -108,10 +108,13 @@ test('#6042: matching CodeView/Info ages without a parsed DBI stay unavailable',
 });
 
 test('#6042: the authoritative record filter drops symbols from a mismatched DBI', () => {
-  const result = probe({ infoAge: 1, dbiAge: 2 });
+  const provider = new PdbDebugInfoProvider();
+  const result = provider.probe({
+    snapshotId: 'snapshot-6042',
+    identity: { codeView: { guid: GUID.toLowerCase(), age: 1, path: 'app.pdb' } },
+    pdbBytes: buildPdb({ infoAge: 1, dbiAge: 2 }),
+  });
   assert.ok(result.parsed, 'the parse still travels with the result for inspection');
-  // The provider-level filter must treat every record of this result as
-  // non-authoritative while the identity verdict is downgraded.
   // Use a canonical provider record so this assertion reaches the identity
   // verdict check instead of failing early on record shape (#6042).
   const page = { records: [{
@@ -127,4 +130,10 @@ test('#6042: the authoritative record filter drops symbols from a mismatched DBI
     evidenceIds: ['pdb:test'],
   }] };
   assert.equal(isDebugRecordAuthoritative(result, page.records[0]), false);
+  const filtered = provider.authoritativeRecords(
+    result,
+    () => ({ records: page.records, nextCursor: null, truncated: false }),
+    {},
+  );
+  assert.deepEqual(filtered.records, []);
 });
