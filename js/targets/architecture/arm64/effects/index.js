@@ -480,7 +480,10 @@ function resolveFpAdvSimdAccess(context) {
         : fpAdvSimdAccessUnknown();
     }
   }
-  if (currentEL === 3) return { state:'allowed' };
+  if (currentEL === 3) {
+    if (access.el3Implemented !== true) return fpAdvSimdAccessUnknown();
+    return { state:'allowed' };
+  }
 
   if (!validFpAdvSimdBoolean(access.el2Enabled)) return fpAdvSimdAccessUnknown();
   if (currentEL === 2 && !access.el2Enabled) return fpAdvSimdAccessUnknown();
