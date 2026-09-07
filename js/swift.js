@@ -216,6 +216,8 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
   try { h=await exact(read,addr,16); } catch { h=null; }
   if (!h) { completeness.complete=false; completeness.reason='descriptor-header-unreadable'; return finish([]); }
   const recordSize=u16(h,10), count=u32(h,12), limit=normalizeBudget(budget,4096,100000);
+  // The header count is known even when validation/capacity prevents scanning.
+  completeness.declared=count;
   if (recordSize<12) { completeness.invalidHeader=true; completeness.complete=false; completeness.reason='descriptor-record-size-invalid'; return finish([]); }
   if (count>limit) { completeness.capped=true; completeness.complete=false; completeness.reason='descriptor-count-exceeds-budget'; return finish([]); }
   completeness.declared=count;
