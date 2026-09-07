@@ -105,7 +105,13 @@ function strictSerializable(value, code, seen = new WeakSet()) {
     return;
   }
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') fail(code);
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return;
+  // A Date is serializable only when its time value is finite; an invalid
+  // Date would otherwise pass validation and then throw inside jsonSafe (#5853).
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) fail(code);
+    return;
+  }
   if (typeof value !== 'object' || seen.has(value)) fail(code);
   seen.add(value);
   if (Array.isArray(value)) for (const item of value) strictSerializable(item, code, seen);

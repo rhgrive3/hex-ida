@@ -42,7 +42,13 @@ export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
   if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) {
+    // An invalid Date would throw a bare RangeError from toISOString() after
+    // upstream strict-serializable validation had already accepted it. Fail
+    // closed with the canonical identity error instead (#5853).
+    if (Number.isNaN(value.getTime())) fail('identity-invalid-date');
+    return value.toISOString();
+  }
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) fail('identity-cyclic-value');
   seen.add(value);

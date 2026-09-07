@@ -218,9 +218,16 @@ function foldInstruction(inst) {
     if (inst.sub === 'and') return uint(a & b, bits);
     if (inst.sub === 'or') return uint(a | b, bits);
     if (inst.sub === 'xor') return uint(a ^ b, bits);
-    if (inst.sub === 'shl') return uint(a << BigInt(Number(b)), bits);
-    if (inst.sub === 'lshr') return uint(uint(a, bits) >> BigInt(Number(b)), bits);
-    if (inst.sub === 'ashr') return uint(sint(a, bits) >> BigInt(Number(b)), bits);
+    if (inst.sub === 'shl' || inst.sub === 'lshr' || inst.sub === 'ashr') {
+      // A shift amount wider than the type is either 0 (shl) or sign-driven
+      // (shr); folding it with BigInt's unbounded shift throws RangeError for
+      // huge counts. Leave oversized/unknown amounts unfolded (#5852).
+      const shift = BigInt(Number(b));
+      if (shift < 0n || shift > BigInt(bits)) return null;
+      if (inst.sub === 'shl') return uint(a << shift, bits);
+      if (inst.sub === 'lshr') return uint(uint(a, bits) >> shift, bits);
+      return uint(sint(a, bits) >> shift, bits);
+    }
     if (inst.sub === 'ror') return ror(a, b, bits);
     if (inst.sub === 'eq') return a === b ? 1n : 0n;
   }
