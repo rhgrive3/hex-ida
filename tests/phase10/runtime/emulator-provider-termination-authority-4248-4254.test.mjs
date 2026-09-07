@@ -70,6 +70,70 @@ test('P10 #4248 external cancellation dominates a late success without becoming 
   await session.close();
 });
 
+test('P10 #4248 pre-aborted hostile reasons cannot escape cancellation handling', async () => {
+  let coercions = 0;
+  const reason = {
+    source: 'structured-external-cancel',
+    metadata: { request: 'pre-aborted' },
+    toString() {
+      coercions += 1;
+      throw new Error('abort reason must not be coerced');
+    },
+  };
+  const external = new AbortController();
+  external.abort(reason);
+  let executeCalls = 0;
+  const provider = providerFor(async () => {
+    executeCalls += 1;
+    return { status: 'success' };
+  });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 'hostile-pre-abort' });
+
+  const result = await session.facets.emulator.run({}, { signal: external.signal });
+
+  assert.equal(executeCalls, 0);
+  assert.equal(coercions, 0);
+  assert.equal(result.termination, 'cancelled');
+  assert.equal(result.completeness, 'truncated');
+  assert.equal(result.batch.completeness, 'truncated');
+  await session.close();
+});
+
+test('P10 #4248 in-flight hostile reasons cannot override external cancellation', async () => {
+  let coercions = 0;
+  const reason = {
+    source: 'structured-external-cancel',
+    metadata: { request: 'in-flight' },
+    toString() {
+      coercions += 1;
+      throw new Error('abort reason must not be coerced');
+    },
+  };
+  const external = new AbortController();
+  let markStarted;
+  let releaseExecution;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const execution = new Promise((resolve) => { releaseExecution = resolve; });
+  const provider = providerFor(async () => {
+    markStarted();
+    await execution;
+    return { status: 'success' };
+  });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 'hostile-in-flight-abort' });
+
+  const pending = session.facets.emulator.run({}, { signal: external.signal, timeoutMs: 1000 });
+  await started;
+  external.abort(reason);
+  releaseExecution();
+  const result = await pending;
+
+  assert.equal(coercions, 0);
+  assert.equal(result.termination, 'cancelled');
+  assert.equal(result.completeness, 'truncated');
+  assert.equal(result.batch.completeness, 'truncated');
+  await session.close();
+});
+
 test('P10 #4248 success before the deadline remains return/bounded', async () => {
   const result = await runStatus('success', 'success-before-deadline');
   assert.equal(result.termination, 'return');

@@ -119,8 +119,12 @@ export class EmulatorProvider {
       const timeoutMs = boundedInteger(runOptions.timeoutMs, 2000, 10, 60000, 'timeoutMs');
       const controller = session.controller();
       let externalAbort = null;
+      let externalCancelled = false;
       if (runOptions.signal) {
-        externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
+        externalAbort = () => {
+          externalCancelled = true;
+          if (!controller.signal.aborted) controller.abort('cancelled');
+        };
         if (runOptions.signal.aborted) externalAbort();
         else {
           runOptions.signal.addEventListener('abort', externalAbort, { once: true });
@@ -140,17 +144,18 @@ export class EmulatorProvider {
       let raw;
       let abortTermination = null;
       try {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') } };
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
         else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
         else {
           await this.engine.launch(input, { signal: controller.signal });
           raw = await this.engine.resume({ ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
         }
       } catch (error) {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') }, error: String(error?.message || error) };
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
         else raw = { stop: { kind: 'exception' }, error: String(error?.message || error) };
       } finally {
-        if (controller.signal.aborted) abortTermination = timeoutTriggered ? 'timeout' : 'cancelled';
+        if (timeoutTriggered) abortTermination = 'timeout';
+        else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
         if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
         session.releaseController(controller);
