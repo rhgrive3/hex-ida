@@ -147,6 +147,10 @@ export function createMemoryRegionRef(input) {
   } else if (kind === 'rooted-offset') {
     out.rootEntityId = nonEmpty(input.rootEntityId, 'memory-ssa-region-root-required');
     out.offset = signedIntegerString(input.offset ?? 0, 'memory-ssa-invalid-region-offset');
+    // A rooted-offset region may carry the storage domain its canonical proof
+    // proved (tls/io-rooted descriptors, #5901). Flat-memory rooted-offsets
+    // omit the field, matching the historical shape.
+    if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
     if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
