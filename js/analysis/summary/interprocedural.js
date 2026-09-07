@@ -138,8 +138,10 @@ function strongestSource(left, right) {
 }
 
 function mergedRegionProof(left, right) {
-  if (!left) return right ?? null;
-  if (!right) return left;
+  // A missing proof is uncertainty, not permission to retain the other side's
+  // geometry. Keeping one-sided geometry would launder a legacy effect into a
+  // positive NoAlias proof after deduplication.
+  if (!left || !right) return null;
   if (left.id !== right.id || left.kind !== right.kind) return null;
   try { return { ...left, origin: mergeOriginSets(left.origin, right.origin) }; }
   catch { return null; }
