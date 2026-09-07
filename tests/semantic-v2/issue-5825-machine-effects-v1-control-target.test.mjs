@@ -29,7 +29,6 @@ function lower(controlEffect) {
     possibleFaults: [],
     origin,
     completeness: 'exact',
-    statePreservation: { proven: true, reason: 'target-validation regression' },
   });
   return lowerMachineEffectsToLegacyV1(bundle);
 }
