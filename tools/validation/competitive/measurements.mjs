@@ -9,6 +9,7 @@
  * as UNMEASURED rather than being repaired with a guessed number.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -21,11 +22,12 @@ import {
   capturePhase8TwinWorkload,
   validateCompetitiveTwinCapture,
 } from './workload-twins.mjs';
-import { loadCorpus } from '../phase8/build-corpus.mjs';
+import { extractElfFunctionBytes, loadCorpus } from '../phase8/build-corpus.mjs';
 import { observeCorpus } from '../phase8/decompile-corpus.mjs';
 import { loadFrozenBaseline, qualityVector } from '../phase8/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'tests/phase8/corpus/sources');
 
 export const COMPETITIVE_MEASUREMENT_SCHEMA = 'hex-competitive-measurement/v1';
 export const MEASURED_STATUS = 'MEASURED';
@@ -87,11 +89,15 @@ const P56_METRIC = Object.freeze({
     testPath: 'tests/phase5/verification/compiler-corpus-pipeline.test.mjs',
     marker: 'P5_6_PIPELINE_LEDGER=',
     producer: 'independent-llvm-boundaries-capstone-5.0.1',
+    categoryProfilePath: 'tests/phase5/corpus/manifest.json',
+    categoryMapPath: 'tests/phase5/verification/manifests/p5-6-category-map.json',
   }),
   'machine-effects-riscv64-coverage': Object.freeze({
     testPath: 'tests/phase6/verification/compiler-corpus-pipeline.test.mjs',
     marker: 'P6_PIPELINE_LEDGER=',
     producer: 'independent-llvm-boundaries-capstone-5.0.1',
+    categoryProfilePath: 'tools/validation/phase6/profile.json',
+    categoryMapPath: 'tests/phase6/verification/manifests/p6-category-map.json',
   }),
 });
 
@@ -262,6 +268,25 @@ function sameFixtureHashes(capture, ledger) {
   return { ok: true, fixtureRows, artifactHashKinds };
 }
 
+function canonicalPipelineCategories(metricId) {
+  const spec = P56_METRIC[metricId];
+  const profile = JSON.parse(fs.readFileSync(path.join(ROOT, spec.categoryProfilePath), 'utf8'));
+  const categoryMap = JSON.parse(fs.readFileSync(path.join(ROOT, spec.categoryMapPath), 'utf8'));
+  const profileCategories = metricId === 'machine-effects-riscv64-coverage'
+    ? profile.corpus?.mandatoryCategories
+    : profile.mandatoryCategories;
+  const mappedCategories = Object.keys(categoryMap.categories || {});
+  if (!Array.isArray(profileCategories) || profileCategories.length === 0
+      || stableDigest(sortedUnique(profileCategories)) !== stableDigest(sortedUnique(mappedCategories))) {
+    return { ok: false, reason: 'canonical-category-contract-invalid' };
+  }
+  return {
+    ok: true,
+    categories: sortedUnique(profileCategories),
+    categoryIdsDigest: stableDigest(sortedUnique(profileCategories)),
+  };
+}
+
 function validatePipelineLedger(metricId, ledger, capture) {
   const identity = captureIdentity(capture);
   if (!identity.ok) return { ok: false, reason: identity.reason };
@@ -273,9 +298,25 @@ function validatePipelineLedger(metricId, ledger, capture) {
   if (!hashes.ok) return hashes;
   const mandatory = ledger.totals?.mandatory;
   if (!Number.isSafeInteger(mandatory) || mandatory !== ledger.ledger.length) return { ok: false, reason: 'ledger-denominator-invalid' };
-  const categories = sortedUnique(ledger.ledger.map((row) => row.category).filter((value) => typeof value === 'string'));
-  if (categories.length === 0 || mandatory !== capture.artifacts.length * categories.length) {
-    return { ok: false, reason: 'ledger-category-denominator-mismatch', artifactCount: capture.artifacts.length, categoryCount: categories.length, mandatory };
+  if (ledger.ledger.some((row) => row == null || typeof row !== 'object' || typeof row.fixture !== 'string' || typeof row.category !== 'string')) {
+    return { ok: false, reason: 'ledger-row-invalid' };
+  }
+  const canonical = canonicalPipelineCategories(metricId);
+  if (!canonical.ok) return canonical;
+  const categories = canonical.categories;
+  const expectedTuples = capture.artifacts.flatMap((artifact) => categories.map((category) => `${artifact.id}\u0000${category}`)).sort();
+  const actualTuples = ledger.ledger.map((row) => `${row.fixture}\u0000${row.category}`).sort();
+  if (mandatory !== expectedTuples.length || stableDigest(actualTuples) !== stableDigest(expectedTuples)) {
+    return {
+      ok: false,
+      reason: 'ledger-canonical-tuple-denominator-mismatch',
+      artifactCount: capture.artifacts.length,
+      categoryIdsDigest: canonical.categoryIdsDigest,
+      expectedTupleCount: expectedTuples.length,
+      actualTupleCount: actualTuples.length,
+      missingTuples: expectedTuples.filter((tuple) => !actualTuples.includes(tuple)).slice(0, 8),
+      extraTuples: actualTuples.filter((tuple) => !expectedTuples.includes(tuple)).slice(0, 8),
+    };
   }
   const tupleIds = new Set();
   for (const row of ledger.ledger) {
@@ -288,6 +329,7 @@ function validatePipelineLedger(metricId, ledger, capture) {
     ok: true,
     identity,
     categories,
+    categoryIdsDigest: canonical.categoryIdsDigest,
     fixtureRows: hashes.fixtureRows,
     artifactHashKinds: sortedUnique([...hashes.artifactHashKinds.values()]),
   };
@@ -330,6 +372,7 @@ export function measurePhase56Coverage({ metricId, ledger, capture, direction = 
       kind: 'pipeline-tuples',
       artifactCount: capture.artifacts.length,
       categoryCount: valid.categories.length,
+      categoryIdsDigest: valid.categoryIdsDigest,
       tupleCount: mandatory,
       artifactIdsDigest: capture.denominator.artifactIdsDigest,
       artifactHashKinds: valid.artifactHashKinds,
@@ -372,8 +415,141 @@ function compilerVersionToken(value) {
   return String(value || '').match(/\b\d+\.\d+\.\d+\b/)?.[0] ?? null;
 }
 
+function sha256Bytes(value) {
+  return crypto.createHash('sha256').update(Buffer.from(value)).digest('hex');
+}
+
+function phase8ArtifactIdFor(entry) {
+  if (typeof entry?.artifactId === 'string' && entry.artifactId.trim()) return entry.artifactId;
+  if (entry?.architectureId == null || entry?.source == null || entry?.optimization == null) return null;
+  return `${entry.architectureId}-${entry.source}-${String(entry.optimization).replace(/^-/, '')}`;
+}
+
+function phase8SourceRecords(corpus, sourceDirectory) {
+  const names = sortedUnique((corpus.functions || []).map((entry) => entry?.source).filter((value) => typeof value === 'string' && value));
+  const records = [];
+  for (const name of names) {
+    const sourcePath = path.resolve(sourceDirectory, name);
+    const root = path.resolve(sourceDirectory);
+    if (sourcePath !== root && !sourcePath.startsWith(`${root}${path.sep}`)) {
+      return { ok: false, reason: 'phase8-corpus-source-path-invalid', source: name };
+    }
+    let text;
+    try { text = fs.readFileSync(sourcePath, 'utf8'); } catch (error) {
+      return { ok: false, reason: 'phase8-corpus-source-unavailable', source: name, detail: String(error?.message || error) };
+    }
+    const bytes = Buffer.from(text);
+    records.push({ name, text, sha256: sha256Bytes(bytes) });
+  }
+  if (stableDigest(records.map(({ name, text }) => ({ name, text }))) !== corpus.sourceDigest) {
+    return { ok: false, reason: 'phase8-corpus-source-digest-mismatch', observed: stableDigest(records.map(({ name, text }) => ({ name, text }))), expected: corpus.sourceDigest };
+  }
+  return { ok: true, records };
+}
+
+function phase8CaptureLineage(corpus, capture, { sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+  if (!Array.isArray(corpus?.functions) || corpus.functions.length === 0 || typeof corpus.sourceDigest !== 'string') {
+    return { ok: false, reason: 'phase8-corpus-byte-identity-missing' };
+  }
+  const sources = phase8SourceRecords(corpus, sourceDirectory);
+  if (!sources.ok) return sources;
+  const sourceByName = new Map(sources.records.map((record) => [record.name, record]));
+  const sourceByIdentity = new Map(sources.records.map((record) => [path.relative(ROOT, path.resolve(sourceDirectory, record.name)).replaceAll('\\', '/'), record]));
+  const manifestArtifacts = capture.artifacts || [];
+  for (const artifact of manifestArtifacts) {
+    const sourceIdentity = artifact.manifest?.sourceIdentity;
+    const source = sourceByIdentity.get(sourceIdentity?.id) || sourceByName.get(sourceIdentity?.id);
+    if (!source || sourceIdentity?.sha256 !== source.sha256) {
+      return {
+        ok: false,
+        reason: 'phase8-capture-source-identity-mismatch',
+        artifactId: artifact.id,
+        observed: sourceIdentity || null,
+        expected: source == null ? null : { id: path.relative(ROOT, path.resolve(sourceDirectory, source.name)).replaceAll('\\', '/'), sha256: source.sha256 },
+      };
+    }
+  }
+
+  const machineFunctions = corpus.functions.filter((entry) => entry?.representation === 'machine-bytes');
+  if (machineFunctions.length === 0 || machineFunctions.some((entry) => typeof entry.bytes !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(entry.bytes))) {
+    return { ok: false, reason: 'phase8-corpus-machine-function-bytes-missing' };
+  }
+  const expectedMachineArtifacts = sortedUnique(machineFunctions.map(phase8ArtifactIdFor).filter(Boolean));
+  const machineArtifacts = manifestArtifacts
+    .filter((artifact) => artifact.manifest?.compileOptions?.captureOnly !== true)
+    .map((artifact) => artifact.id)
+    .sort();
+  if (stableDigest(machineArtifacts) !== stableDigest(expectedMachineArtifacts)) {
+    return {
+      ok: false,
+      reason: 'phase8-capture-machine-denominator-mismatch',
+      expectedArtifactIds: expectedMachineArtifacts,
+      observedArtifactIds: machineArtifacts,
+    };
+  }
+
+  // ARM64 remains assembly in the frozen public corpus.  A native ARM64 twin
+  // is capture-only evidence and must cover exactly those source/optimization
+  // pairs; it cannot silently replace the frozen assembly denominator.
+  const expectedNativeArtifacts = sortedUnique(corpus.functions
+    .filter((entry) => entry?.architectureId === 'arm64')
+    .map((entry) => `arm64-native-${entry.source}-${String(entry.optimization).replace(/^-/, '')}`));
+  const nativeArtifacts = manifestArtifacts
+    .filter((artifact) => artifact.manifest?.compileOptions?.captureOnly === true)
+    .map((artifact) => artifact.id)
+    .sort();
+  if (stableDigest(nativeArtifacts) !== stableDigest(expectedNativeArtifacts)) {
+    return {
+      ok: false,
+      reason: 'phase8-capture-native-denominator-mismatch',
+      expectedArtifactIds: expectedNativeArtifacts,
+      observedArtifactIds: nativeArtifacts,
+    };
+  }
+
+  const artifactById = new Map(manifestArtifacts.map((artifact) => [artifact.id, artifact]));
+  const functionHashes = [];
+  for (const entry of machineFunctions) {
+    const artifactId = phase8ArtifactIdFor(entry);
+    const artifact = artifactById.get(artifactId);
+    if (!artifact || typeof artifact.debugArtifactPath !== 'string' || !fs.existsSync(artifact.debugArtifactPath)) {
+      return { ok: false, reason: 'phase8-capture-artifact-unavailable', artifactId, functionId: entry.id };
+    }
+    let observed;
+    try {
+      observed = extractElfFunctionBytes(fs.readFileSync(artifact.debugArtifactPath), entry.function);
+    } catch (error) {
+      return { ok: false, reason: 'phase8-capture-function-bytes-unreadable', artifactId, functionId: entry.id, detail: String(error?.message || error) };
+    }
+    const expected = Buffer.from(entry.bytes, 'hex');
+    if (!(observed instanceof Uint8Array) || !Buffer.from(observed).equals(expected)) {
+      return {
+        ok: false,
+        reason: 'phase8-capture-function-bytes-mismatch',
+        artifactId,
+        functionId: entry.id,
+        observedSha256: observed == null ? null : sha256Bytes(observed),
+        expectedSha256: sha256Bytes(expected),
+      };
+    }
+    functionHashes.push({ id: entry.id, sha256: sha256Bytes(expected) });
+  }
+  const functionIds = corpus.functions.map((entry) => entry?.id);
+  if (functionIds.some((id) => typeof id !== 'string' || !id.trim())) return { ok: false, reason: 'phase8-corpus-function-id-invalid' };
+  return {
+    ok: true,
+    sourceDigest: corpus.sourceDigest,
+    functionCount: corpus.functions.length,
+    functionIdsDigest: stableDigest(functionIds),
+    machineFunctionCount: machineFunctions.length,
+    machineFunctionBytesDigest: stableDigest(functionHashes),
+    machineArtifactIdsDigest: stableDigest(expectedMachineArtifacts),
+    nativeArtifactIdsDigest: stableDigest(expectedNativeArtifacts),
+  };
+}
+
 /** Bind P8 candidate observations to the frozen source/corpus baseline. */
-export function measurePhase8Quality({ metricId, observations, baseline = loadFrozenBaseline(), corpus = loadCorpus(), capture, direction = 'lower' } = {}) {
+export function measurePhase8Quality({ metricId, observations, baseline = loadFrozenBaseline(), corpus = loadCorpus(), capture, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
   const field = qualityMetric(metricId);
   const identity = captureIdentity(capture);
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
@@ -393,10 +569,20 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       capturedCompilers,
     });
   }
+  const lineage = phase8CaptureLineage(corpus, capture, { sourceDirectory });
+  if (!lineage.ok) return unmeasured(metricId, capture, lineage.reason, { identityFailure: lineage });
+  const recomputedBaselineDigest = Array.isArray(baseline?.observations) ? stableDigest(baseline.observations) : null;
+  if (typeof baseline?.observationsDigest !== 'string' || recomputedBaselineDigest == null || baseline.observationsDigest !== recomputedBaselineDigest) {
+    return unmeasured(metricId, capture, 'phase8-frozen-baseline-digest-mismatch', {
+      expected: recomputedBaselineDigest,
+      observed: baseline?.observationsDigest ?? null,
+    });
+  }
+  const expectedFunctionIds = corpus.functions.map((row) => row?.id);
   if (!Array.isArray(observations) || !Array.isArray(baseline.observations) || observations.length !== corpus.functions.length
       || baseline.observations.length !== corpus.functions.length
-      || stableDigest(observations.map((row) => row?.id)) !== stableDigest(corpus.functions.map((row) => row?.id))
-      || stableDigest(baseline.observations.map((row) => row?.id)) !== stableDigest(corpus.functions.map((row) => row?.id))) {
+      || stableDigest(observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)
+      || stableDigest(baseline.observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)) {
     return unmeasured(metricId, capture, 'phase8-observation-denominator-mismatch');
   }
   const candidate = qualityVector(observations);
@@ -417,6 +603,12 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       kind: 'phase8-frozen-function-corpus',
       functionCount: corpus.functions.length,
       corpusDigest: corpus.corpusDigest,
+      sourceDigest: lineage.sourceDigest,
+      functionIdsDigest: lineage.functionIdsDigest,
+      machineFunctionCount: lineage.machineFunctionCount,
+      machineFunctionBytesDigest: lineage.machineFunctionBytesDigest,
+      machineArtifactIdsDigest: lineage.machineArtifactIdsDigest,
+      nativeArtifactIdsDigest: lineage.nativeArtifactIdsDigest,
       candidateObservationsDigest: candidateIdentity.digest,
       baselineObservationsDigest: baseline.observationsDigest,
     },
@@ -432,6 +624,9 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       corpusId: corpus.corpusId,
       corpusVersion: corpus.corpusVersion,
       corpusDigest: corpus.corpusDigest,
+      sourceDigest: lineage.sourceDigest,
+      functionIdsDigest: lineage.functionIdsDigest,
+      machineFunctionBytesDigest: lineage.machineFunctionBytesDigest,
       candidateObservationDigest: candidateIdentity.digest,
       baselineObservationDigest: baselineIdentity.digest,
       baselineLedgerDigest: baseline.observationsDigest,

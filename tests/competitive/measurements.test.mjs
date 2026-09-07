@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -13,9 +15,16 @@ import {
 import { buildTwinFixture, removeTwinFixture } from './twin-fixture.mjs';
 import { generateCompetitiveScorecard } from '../../tools/validation/competitive/score.mjs';
 import { verifyCompetitiveScorecard } from '../../tools/validation/competitive/verify.mjs';
+import { extractElfFunctionBytes } from '../../tools/validation/phase8/build-corpus.mjs';
+import { stableDigest } from '../../js/core/identity/index.js';
 
-function tinyCapture(fixture, { metricId = 'machine-effects-x86_64-coverage', corpusId = fixture.context.corpusId, corpusVersion = fixture.context.corpusVersion } = {}) {
-  const metadata = { ...fixture.context, corpusId, corpusVersion };
+function tinyCapture(fixture, { metricId = 'machine-effects-x86_64-coverage', corpusId = fixture.context.corpusId, corpusVersion = fixture.context.corpusVersion, sourceIdentityId = null } = {}) {
+  const metadata = {
+    ...fixture.context,
+    corpusId,
+    corpusVersion,
+    ...(sourceIdentityId == null ? {} : { sourceIdentity: { ...fixture.context.sourceIdentity, id: sourceIdentityId } }),
+  };
   return captureTwinArtifacts({
     metricId,
     workloadId: 'test-p56-tiny-corpus',
@@ -36,11 +45,12 @@ test('P5/P6 value binding requires the exact captured artifact bytes', async () 
     const capture = tinyCapture(fixture);
     assert.doesNotThrow(() => validateCompetitiveTwinCapture(capture, { replayArtifacts: true }));
     const artifact = capture.artifacts[0];
+    const categories = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'tests/phase5/corpus/manifest.json'), 'utf8')).mandatoryCategories;
     const ledger = {
       source: { sha256: fixture.context.sourceIdentity.sha256 },
       fixtures: [{ id: 'tiny-O0', sha256: artifact.manifest.debugArtifactSha256 }],
-      totals: { mandatory: 1, passed: 1, blocked: 0, notProven: 0 },
-      ledger: [{ fixture: 'tiny-O0', category: 'tiny', status: 'PASS', instructionCount: 1, decodeMismatchCount: 0 }],
+      totals: { mandatory: categories.length, passed: categories.length, blocked: 0, notProven: 0 },
+      ledger: categories.map((category) => ({ fixture: 'tiny-O0', category, status: 'PASS', instructionCount: 1, decodeMismatchCount: 0 })),
     };
     const measured = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger });
     assert.equal(measured.status, 'MEASURED');
@@ -65,6 +75,20 @@ test('P5/P6 value binding requires the exact captured artifact bytes', async () 
     assert.equal(blocked.status, 'UNMEASURED');
     assert.equal(blocked.candidateValue, null);
     assert.match(blocked.reason, /artifact-hash-mismatch/);
+
+    const omittedCategory = structuredClone(ledger);
+    omittedCategory.ledger.pop();
+    omittedCategory.totals.mandatory -= 1;
+    const denominatorBlocked = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger: omittedCategory });
+    assert.equal(denominatorBlocked.status, 'UNMEASURED');
+    assert.match(denominatorBlocked.reason, /canonical-tuple-denominator-mismatch/);
+
+    const candidateOnly = structuredClone(ledger);
+    candidateOnly.ledger[0].status = 'FAIL';
+    const oracleIndependent = measurePhase56Coverage({ metricId: 'machine-effects-x86_64-coverage', capture, ledger: candidateOnly });
+    assert.equal(oracleIndependent.status, 'MEASURED');
+    assert.equal(oracleIndependent.candidateValue, (categories.length - 1) / categories.length);
+    assert.equal(oracleIndependent.referenceValue, 1, 'reference value must come from LLVM/Capstone fields, not candidate status');
   } finally {
     removeTwinFixture(fixture);
   }
@@ -73,38 +97,54 @@ test('P5/P6 value binding requires the exact captured artifact bytes', async () 
 test('P8 value binding compares the frozen function denominator and keeps metric fields separate', () => {
   const fixture = buildTwinFixture();
   try {
+    const functionBytes = Buffer.from(extractElfFunctionBytes(fs.readFileSync(fixture.debug.path), 'twin_add')).toString('hex');
     const corpus = {
       corpusId: 'phase8-decompiler-quality-corpus',
       corpusVersion: 2,
       corpusDigest: 'phase8-test-corpus',
-      functions: [{ id: 'f1' }, { id: 'f2' }],
+      sourceDigest: stableDigest([{ name: 'fixture.c', text: fixture.sourceText }]),
+      functions: [{ id: 'f1', source: 'fixture.c', function: 'twin_add', optimization: '-O0', architectureId: 'x86_64', representation: 'machine-bytes', bytes: functionBytes, artifactId: 'tiny-O0' }],
     };
     const baseline = {
       corpusId: corpus.corpusId,
       corpusVersion: corpus.corpusVersion,
       corpusDigest: corpus.corpusDigest,
       baseCommit: 'b'.repeat(40),
-      observationsDigest: 'baseline-observations',
+      observationsDigest: stableDigest([{ id: 'f1', semantic: true, readability: { gotos: 3, rawAssemblyFallbacks: 4 } }]),
       observations: [
         { id: 'f1', semantic: true, readability: { gotos: 3, rawAssemblyFallbacks: 4 } },
-        { id: 'f2', semantic: true, readability: { gotos: 1, rawAssemblyFallbacks: 2 } },
       ],
     };
     const candidate = [
       { id: 'f1', semantic: true, readability: { gotos: 2, rawAssemblyFallbacks: 3 } },
-      { id: 'f2', semantic: true, readability: { gotos: 1, rawAssemblyFallbacks: 1 } },
     ];
-    const capture = tinyCapture(fixture, { metricId: 'decompiler-quality-gotos', corpusId: corpus.corpusId, corpusVersion: corpus.corpusVersion });
-    const gotos = measurePhase8Quality({ metricId: 'decompiler-quality-gotos', observations: candidate, baseline, corpus, capture });
+    const capture = tinyCapture(fixture, { metricId: 'decompiler-quality-gotos', corpusId: corpus.corpusId, corpusVersion: corpus.corpusVersion, sourceIdentityId: 'fixture.c' });
+    const gotos = measurePhase8Quality({ metricId: 'decompiler-quality-gotos', observations: candidate, baseline, corpus, capture, sourceDirectory: fixture.root });
     assert.equal(gotos.status, 'MEASURED');
-    assert.equal(gotos.candidateValue, 3);
-    assert.equal(gotos.referenceValue, 4);
+    assert.equal(gotos.candidateValue, 2);
+    assert.equal(gotos.referenceValue, 3);
     assert.equal(gotos.comparison, 'WIN');
-    const fallbacks = measurePhase8Quality({ metricId: 'decompiler-quality-assembly-fallbacks', observations: candidate, baseline, corpus, capture: { ...capture, metricId: 'decompiler-quality-assembly-fallbacks' } });
+    const fallbacks = measurePhase8Quality({ metricId: 'decompiler-quality-assembly-fallbacks', observations: candidate, baseline, corpus, capture: { ...capture, metricId: 'decompiler-quality-assembly-fallbacks' }, sourceDirectory: fixture.root });
     // Mutating the capture metric without recomputing its digest is rejected;
     // a second metric-specific capture is required for the second score row.
     assert.equal(fallbacks.status, 'UNMEASURED');
     assert.match(fallbacks.reason, /capture-invalid|identity/);
+
+    const mutatedCorpus = structuredClone(corpus);
+    mutatedCorpus.functions[0].bytes = `${mutatedCorpus.functions[0].bytes.slice(0, -2)}00`;
+    const stale = measurePhase8Quality({ metricId: 'decompiler-quality-gotos', observations: candidate, baseline, corpus: mutatedCorpus, capture, sourceDirectory: fixture.root });
+    assert.equal(stale.status, 'UNMEASURED');
+    assert.match(stale.reason, /function-bytes-mismatch/);
+
+    const mutatedBaseline = { ...baseline, observationsDigest: '0'.repeat(32) };
+    const baselineBlocked = measurePhase8Quality({ metricId: 'decompiler-quality-gotos', observations: candidate, baseline: mutatedBaseline, corpus, capture, sourceDirectory: fixture.root });
+    assert.equal(baselineBlocked.status, 'UNMEASURED');
+    assert.match(baselineBlocked.reason, /baseline-digest-mismatch/);
+
+    fs.writeFileSync(fixture.source, `${fixture.sourceText}\n/* source drift */\n`);
+    const sourceBlocked = measurePhase8Quality({ metricId: 'decompiler-quality-gotos', observations: candidate, baseline, corpus, capture, sourceDirectory: fixture.root });
+    assert.equal(sourceBlocked.status, 'UNMEASURED');
+    assert.match(sourceBlocked.reason, /source-digest-mismatch/);
   } finally {
     removeTwinFixture(fixture);
   }
