@@ -16,6 +16,15 @@ assert.deepEqual(normalized.tools.map((tool) => tool.name), ['search_functions',
 assert.equal(normalized.context.current != null, true, 'current function is optional');
 assert.throws(() => __test.normalizeAITurnRequest({ mode: 'chat', context: { binary: { bytes: [1, 2] } } }), /Binary content/);
 assert.throws(() => __test.normalizeAITurnRequest({ mode: 'chat', context: {}, messages: [] }), /non-empty AI goal/);
+// The messages fallback is not a way around MAX_QUESTION_CHARS (#5987).
+{
+  const fallbackGoal = __test.normalizeAITurnRequest({ mode: 'chat', context: {}, messages: [{ role: 'user', content: 'A'.repeat(12000) }] });
+  assert.equal(fallbackGoal.goal.length, 6000, 'messages fallback goal is bounded to MAX_QUESTION_CHARS');
+  const directGoal = __test.normalizeAITurnRequest({ mode: 'chat', context: { request: { goal: 'A'.repeat(12000) } }, messages: [] });
+  assert.equal(directGoal.goal.length, 6000, 'both goal paths share the same boundary');
+  const preserved = __test.normalizeAITurnRequest({ mode: 'chat', context: {}, messages: [{ role: 'user', content: `${'B'.repeat(5999)}!` }] });
+  assert.equal(preserved.goal.length, 6000, 'fallback goals up to the limit stay intact');
+}
 
 assert.deepEqual(__test.normalizeAIInteraction({ steps: [{ type: 'function_call', name: 'search_functions', arguments: { query: 'coin' } }] }, ['search_functions']), { type: 'tool', tool: 'search_functions', arguments: { query: 'coin' }, purpose: '' });
 assert.equal(__test.normalizeAIInteraction({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'done', evidenceIds: ['ev1'] } }] }, []).type, 'final');
