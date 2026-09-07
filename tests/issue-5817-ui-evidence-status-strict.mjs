@@ -19,6 +19,9 @@ assert.equal(summaryEvidenceStatus({ summaryConfidence: '0.8' }), 'unverified', 
 assert.equal(provenanceStatus({ confidence: true }), 'unverified', 'boolean provenance confidence must not become likely');
 assert.equal(provenanceStatus({ confidence: [0.6] }), 'unverified', 'array provenance confidence must not become likely');
 assert.equal(provenanceStatus({ confidence: '0.6' }), 'unverified', 'numeric-string provenance confidence must not become likely');
+assert.equal(provenanceStatus({ manual: 'false' }), 'unverified', 'string manual flag must not become manual');
+assert.equal(provenanceStatus({ manual: [] }), 'unverified', 'array manual flag must not become manual');
+
 assert.equal(genericEvidenceStatus({ verdict: ['contradicted'] }), 'unverified', 'array verdict must not become contradicted');
 
 // Canonical primitive inputs keep their existing display semantics.

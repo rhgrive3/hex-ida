@@ -108,7 +108,8 @@ function normalizeEntry(value) {
 // and the create path must accept the same schema the fail-closed validator
 // enforces on import.
 function normalizedStringList(value, code) {
-  if (value == null || !Array.isArray(value)) return [];
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(code);
   for (const item of value) {
     if (typeof item !== 'string') throw new TypeError(code);
   }

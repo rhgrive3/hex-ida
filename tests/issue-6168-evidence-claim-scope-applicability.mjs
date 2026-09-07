@@ -61,6 +61,58 @@ assert.equal(
   '#6168 edge path must apply the same scope applicability policy (verified-by)',
 );
 assert.equal(canConfirmClaim(evidenceForA, claimForB), false, '#6168 confirmation policy must include scope applicability');
+assert.equal(
+  isEvidenceApplicableToClaim(
+    { ...evidenceForA, targetEntityIds: [] },
+    { ...claimForB, targetEntityIds: ['entity-A'] },
+  ),
+  false,
+  '#6168 a target-bound claim cannot use evidence with empty targetEntityIds',
+);
+assert.equal(
+  canConfirmClaim(
+    { ...evidenceForA, targetEntityIds: [] },
+    { ...claimForB, targetEntityIds: ['entity-A'] },
+  ),
+  false,
+  '#6168 confirmation must reject empty evidence targetIds',
+);
+assert.equal(
+  isEvidenceApplicableToClaim(
+    evidenceForA,
+    { ...claimForB, targetEntityIds: ['entity-A'], binaryId: 'bin-B' },
+  ),
+  false,
+  '#6168 a binary-bound claim requires an evidence binary binding',
+);
+assert.equal(
+  isEvidenceApplicableToClaim(
+    evidenceForA,
+    { ...claimForB, targetEntityIds: [] },
+  ),
+  false,
+  '#6168 a claim without target/binary/structured scope has no authority',
+);
+
+const structuredScope = { kind: 'function', functionId: 'entity-B' };
+const scopeClaim = {
+  ...claimForB,
+  targetEntityIds: [],
+  scope: structuredScope,
+};
+const scopeEvidence = {
+  ...evidenceForA,
+  targetEntityIds: [],
+  payload: { scope: structuredScope },
+};
+assert.equal(isEvidenceApplicableToClaim(scopeEvidence, scopeClaim), true, '#6154 exact structured scope proves applicability');
+assert.equal(canConfirmClaim({ ...scopeEvidence, deterministic: true, completeness: 'complete' }, scopeClaim), true, '#6154 exact structured scope permits confirmation');
+assert.equal(
+  isEvidenceApplicableToClaim(scopeEvidence, { ...scopeClaim, scope: { ...structuredScope, functionId: 'entity-A' } }),
+  false,
+  '#6154 mismatched structured scope fails closed',
+);
+
 
 assert.equal(
   graphWith({ targetEntityIds: ['entity-A'] }).evaluateClaim('claim-for-B').verdict,

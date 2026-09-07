@@ -7,6 +7,17 @@ import {
   importKnowledgePack,
 } from '../js/signature/index.js';
 
+test('#5975 create path rejects non-array list containers', () => {
+  assert.throws(
+    () => createKnowledgePack({ signatures: [{ architecture: 'arm64', symbols: 'malloc' }] }),
+    /signature symbols must contain only primitive strings/,
+  );
+  assert.throws(
+    () => createKnowledgePack({ mappings: [{ identity: 'fn-1', roles: 'allocator' }] }),
+    /mapping roles must contain only primitive strings/,
+  );
+});
+
 test('#5975 create path keeps primitive string symbols', () => {
   const pack = createKnowledgePack({
     signatures: [{ architecture: 'arm64', symbols: ['malloc', 'malloc', 'free'], confidence: 1, provenance: { source: 'test' }, license: 'test' }],

@@ -161,20 +161,74 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
-// Shared claim-scope applicability policy. An evidence node may only act as
-// authoritative support/contradiction/confirmation for a claim when their
-// declared scopes do not conflict: matching binaryId when both declare one,
-// and intersecting targetEntityIds when both declare targets. Undeclared
-// scope (null binaryId / empty targetEntityIds) imposes no constraint so
-// graph data that does not carry scope keeps its existing semantics.
+// Shared claim-scope applicability policy. Evidence may become
+// authoritative only when every scope authority declared by the Claim is
+// independently proven by the evidence. Missing or malformed scope fails
+// closed; existence of a node is never enough.
+function normalizedTargetIds(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return null;
+  const ids = [];
+  for (const id of value) {
+    if (typeof id !== 'string') return null;
+    const text = id.trim();
+    if (!text) return null;
+    ids.push(text);
+  }
+  return [...new Set(ids)];
+}
+function structuredScope(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    const normalized = jsonSafe(value);
+    return normalized && typeof normalized === 'object' && !Array.isArray(normalized) && Object.keys(normalized).length
+      ? normalized
+      : null;
+  } catch {
+    return null;
+  }
+}
+function evidenceScope(evidence) {
+  return structuredScope(evidence.scope ?? evidence.payload?.scope);
+}
 export function isEvidenceApplicableToClaim(evidence, claim) {
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return false;
   if (!claim || typeof claim !== 'object' || Array.isArray(claim)) return false;
-  if (evidence.binaryId != null && claim.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
-  if (claim.targetEntityIds.length && evidence.targetEntityIds.length) {
-    const claimTargets = new Set(claim.targetEntityIds);
-    if (!evidence.targetEntityIds.some((entityId) => claimTargets.has(entityId))) return false;
+
+  const claimTargets = normalizedTargetIds(claim.targetEntityIds);
+  const evidenceTargets = normalizedTargetIds(evidence.targetEntityIds);
+  if (claimTargets == null || evidenceTargets == null) return false;
+
+  const claimBinary = claim.binaryId;
+  const evidenceBinary = evidence.binaryId;
+  if (claimBinary != null && (typeof claimBinary !== 'string' || !claimBinary.trim())) return false;
+  if (evidenceBinary != null && (typeof evidenceBinary !== 'string' || !evidenceBinary.trim())) return false;
+
+  const claimScope = structuredScope(claim.scope);
+  if (claim.scope != null && !claimScope) return false;
+
+  // A Claim with declared target IDs requires non-empty evidence target IDs
+  // and an intersection. An empty evidence target list cannot prove the
+  // target authority, even when the node itself is deterministic.
+  if (claimTargets.length) {
+    if (!evidenceTargets.length || !evidenceTargets.some((id) => claimTargets.includes(id))) return false;
   }
+
+  // A binary-bound Claim requires the evidence to carry the same binary
+  // binding; an unbound/malformed evidence binding cannot prove it.
+  if (claimBinary != null && (evidenceBinary == null || evidenceBinary !== claimBinary)) return false;
+
+  // A structured Claim scope requires an exact structured scope on the
+  // evidence (top-level or provenance payload). This is also used for
+  // scope-only Claims, which have no target ID fallback.
+  if (claimScope) {
+    const matchingEvidenceScope = evidenceScope(evidence);
+    if (!matchingEvidenceScope || stableStringify(matchingEvidenceScope) !== stableStringify(claimScope)) return false;
+  }
+
+  // A raw Claim with no usable target, binary, or structured scope has no
+  // authoritative identity and must not accept evidence by existence alone.
+  if (!claimTargets.length && claimBinary == null && !claimScope) return false;
   return true;
 }
 

@@ -52,7 +52,7 @@ export function summaryEvidenceStatus(result) {
 
 export function provenanceStatus(provenance) {
   if (!provenance) return 'unverified';
-  if (provenance.manual || provenance.status === 'manual') return 'manual';
+  if (provenance.manual === true || provenance.status === 'manual') return 'manual';
   if (provenance.confirmed === true) return 'confirmed';
   const confidence = canonicalConfidence(provenance.confidence);
   return Number.isFinite(confidence) && confidence >= 0.5 ? 'likely' : 'unverified';
