@@ -220,7 +220,12 @@ test('#5858 raw preflight reuses nested summary and scope snapshots', () => {
   let argumentReads = 0;
   let memoryReads = 0;
   let unknownReads = 0;
-  const input = makeFunction('call', { completeness: 'partial' }, { completeness: 'partial' });
+  const input = makeFunction('call', { completeness: 'partial' }, {
+    completeness: 'partial',
+    unknown: { reason: 'nested-summary', categories: ['call'] },
+  });
+  input.completeness = 'partial';
+  input.unknowns = [{ reason: 'nested-summary', categories: ['call'] }];
   const summary = input.nodes[0].call;
   Object.defineProperty(summary, 'arguments', {
     configurable: true,
@@ -250,13 +255,29 @@ test('#5858 raw preflight reuses nested summary and scope snapshots', () => {
         : { reason: 'late', categories: ['state', 'control', 'memory', 'unknown'] };
     },
   });
-  const result = createSemanticIrFunction(input, { budget: { maxReferences: 3 } });
+  const result = createSemanticIrFunction(input, { budget: { maxReferences: 4 } });
   assert.deepEqual(result.nodes[0].call.arguments, []);
   assert.equal(result.nodes[0].call.memoryRead.accesses.length, 1);
   assert.deepEqual(result.nodes[0].call.unknownEffects.categories, ['state']);
   assert.equal(argumentReads, 1, 'summary arguments accessor must be captured once');
   assert.equal(memoryReads, 1, 'memory scope accessor must be captured once');
   assert.equal(unknownReads, 1, 'unknown-effect accessor must be captured once');
+});
+
+test('#5858 raw preflight preserves shape validation for invalid blocks and nodes', () => {
+  const invalidBlock = makeFunction('call');
+  invalidBlock.blocks = [null];
+  assert.throws(
+    () => createSemanticIrFunction(invalidBlock, { budget: { maxReferences: 1 } }),
+    /semantic-ir-invalid-block/
+  );
+
+  const invalidNode = makeFunction('call');
+  invalidNode.nodes = [null];
+  assert.throws(
+    () => createSemanticIrFunction(invalidNode, { budget: { maxReferences: 1 } }),
+    /semantic-ir-invalid-node/
+  );
 });
 
 test('#5858 raw preflight remains conservative for duplicate inputs', () => {

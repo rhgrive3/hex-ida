@@ -78,6 +78,11 @@ function cacheReferenceReads(value, seen = new WeakMap()) {
     get(target, property, receiver) {
       if (reads.has(property)) return reads.get(property);
       const result = Reflect.get(target, property, receiver);
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+      if (descriptor && 'value' in descriptor && descriptor.configurable === false && descriptor.writable === false) {
+        reads.set(property, result);
+        return result;
+      }
       const captured = cacheReferenceReads(result, seen);
       reads.set(property, captured);
       return captured;
@@ -134,7 +139,7 @@ function countReferences(nodes, values, blocks) {
 function countRawReferences(blocks, values, nodes) {
   let count = 0;
   for (const block of blocks) {
-    if (!block || typeof block !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    if (!block || typeof block !== 'object') continue;
     count = addReferenceCount(count, arrayLength(block.nodeIds));
   }
   for (const value of values) {
@@ -143,7 +148,7 @@ function countRawReferences(blocks, values, nodes) {
     }
   }
   for (const node of nodes) {
-    if (!node || typeof node !== 'object') return REFERENCE_COUNT_OVERFLOW;
+    if (!node || typeof node !== 'object') continue;
     for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
       count = addReferenceCount(count, arrayLength(node[key]));
     }
