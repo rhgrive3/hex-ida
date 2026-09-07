@@ -5,6 +5,10 @@ const PASSING_CHECK_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
 const FAILING_CHECK_CONCLUSIONS = new Set([
   'failure', 'cancelled', 'timed_out', 'action_required', 'stale', 'startup_failure',
 ]);
+const CODERABBIT_STATUS_CONTEXT = 'coderabbit';
+const CODERABBIT_BOT_LOGIN = 'coderabbitai[bot]';
+const CODERABBIT_CHECK_APP_SLUG = 'coderabbitai';
+const CODERABBIT_COMPLETED_DESCRIPTION = 'review completed';
 
 function string(value) {
   return typeof value === 'string' ? value : '';
@@ -73,7 +77,7 @@ function isAdmissionStatus(status) {
 }
 
 function isCodeRabbitStatus(status) {
-  return /coderabbit/i.test(string(status?.context));
+  return string(status?.context).trim().toLowerCase() === CODERABBIT_STATUS_CONTEXT;
 }
 
 function isAdmissionCheck(check) {
@@ -82,7 +86,8 @@ function isAdmissionCheck(check) {
 }
 
 function isCodeRabbitCheck(check) {
-  return /coderabbit/i.test(`${string(check?.name)} ${string(check?.app?.slug)} ${string(check?.app?.name)}`);
+  return string(check?.name).trim().toLowerCase() === CODERABBIT_STATUS_CONTEXT
+    || string(check?.app?.slug).trim().toLowerCase() === CODERABBIT_CHECK_APP_SLUG;
 }
 
 function checkState(check) {
@@ -97,6 +102,27 @@ function statusState(status) {
   const state = string(status?.state).toLowerCase();
   if (state === 'success') return 'success';
   if (state === 'failure' || state === 'error') return 'failure';
+  return 'pending';
+}
+
+function codeRabbitStatusState(status) {
+  const creator = string(status?.creator?.login).trim().toLowerCase();
+  if (creator !== CODERABBIT_BOT_LOGIN) return 'pending';
+  const state = statusState(status);
+  if (state !== 'success') return state;
+  return string(status?.description).trim().toLowerCase() === CODERABBIT_COMPLETED_DESCRIPTION
+    ? 'success'
+    : 'pending';
+}
+
+function codeRabbitCheckState(check) {
+  const name = string(check?.name).trim().toLowerCase();
+  const appSlug = string(check?.app?.slug).trim().toLowerCase();
+  if (name !== CODERABBIT_STATUS_CONTEXT || appSlug !== CODERABBIT_CHECK_APP_SLUG) return 'pending';
+  if (string(check?.status).toLowerCase() !== 'completed') return 'pending';
+  const conclusion = string(check?.conclusion).toLowerCase();
+  if (conclusion === 'success') return 'success';
+  if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) return 'failure';
   return 'pending';
 }
 
@@ -207,7 +233,9 @@ export function evaluateFinalHeadAdmission({
     pending.push('missing CodeRabbit exact-head result');
   } else {
     for (const evidence of reviewEvidence) {
-      const state = evidence.kind === 'status' ? statusState(evidence.item) : checkState(evidence.item);
+      const state = evidence.kind === 'status'
+        ? codeRabbitStatusState(evidence.item)
+        : codeRabbitCheckState(evidence.item);
       if (state === 'failure') blockers.push('CodeRabbit exact-head result is not green');
       else if (state === 'pending') pending.push('CodeRabbit exact-head result is pending');
     }
@@ -236,7 +264,7 @@ export function evaluateFinalHeadAdmission({
   }
 
   // Required contexts prevent early success while late CI contexts have not
-  // appeared yet. Once present, any additional observed CI failure also blocks.
+  // appeared yet. Once present, any additional observed CI failur also blocks.
   for (const status of ciStatuses) {
     const state = statusState(status);
     const context = string(status?.context) || 'unnamed-status';

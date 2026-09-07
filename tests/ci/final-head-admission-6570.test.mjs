@@ -29,12 +29,30 @@ const formal = (state, author = 'reviewer-a', at = '2026-09-07T00:00:00Z') => ({
   body: `formal ${state}`,
 });
 const status = (context, state, at = '2026-09-07T00:00:00Z') => ({ context, state, updated_at: at });
+const codeRabbitStatus = (
+  description = 'Review completed',
+  state = 'success',
+  at = '2026-09-07T00:00:00Z',
+  creator = 'coderabbitai[bot]',
+) => ({
+  context: 'CodeRabbit',
+  state,
+  description,
+  updated_at: at,
+  creator: { login: creator },
+});
 const check = (name, conclusion = 'success') => ({ name, status: 'completed', conclusion, app: { slug: 'github-actions' } });
+const codeRabbitCheck = (conclusion = 'success', checkStatus = 'completed', appSlug = 'coderabbitai') => ({
+  name: 'CodeRabbit',
+  status: checkStatus,
+  conclusion,
+  app: { slug: appSlug },
+});
 const greenEvidence = () => ({
   statuses: [
     status('ci/circleci: phase7-ownership', 'success'),
     status('ci/circleci: migration-guardrails', 'success'),
-    status('CodeRabbit', 'success'),
+    codeRabbitStatus(),
   ],
   checkRuns: [check('PR fast gate')],
 });
@@ -68,7 +86,7 @@ assert.doesNotMatch(
     statuses: [
       status('ci/circleci: phase7-ownership', 'failure'),
       status('ci/circleci: migration-guardrails', 'success'),
-      status('CodeRabbit', 'success'),
+      codeRabbitStatus(),
     ],
     checkRuns: [check('PR fast gate')],
   });
@@ -141,6 +159,107 @@ assert.doesNotMatch(
   assert.equal(result.evidence.missingRequiredStatusCount, 0);
 }
 
+// CodeRabbit authority requires a positive terminal receipt from the trusted
+// provider. A success status that says no review completed must fail closed.
+{
+  for (const description of ['Review rate limited', 'Review skipped', 'Review paused', '']) {
+    const result = evaluate({
+      headSha: HEAD,
+      reviews: [auto(HEAD)],
+      statuses: [
+        status('ci/circleci: phase7-ownership', 'success'),
+        status('ci/circleci: migration-guardrails', 'success'),
+        codeRabbitStatus(description),
+      ],
+      checkRuns: [check('PR fast gate')],
+    });
+    assert.equal(result.state, 'pending');
+    assert.ok(result.pending.includes('CodeRabbit exact-head result is pending'));
+  }
+
+  const forgedProvider = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+      codeRabbitStatus('Review completed', 'success', '2026-09-07T00:00:00Z', 'untrusted-bot'),
+    ],
+    checkRuns: [check('PR fast gate')],
+  });
+  assert.equal(forgedProvider.state, 'pending');
+  assert.ok(forgedProvider.pending.includes('CodeRabbit exact-head result is pending'));
+}
+
+// CodeRabbit check-runs use a stricter policy than generic CI: only a trusted
+// app's completed success is review authority; neutral/skipped are not passes.
+{
+  for (const conclusion of ['neutral', 'skipped']) {
+    const result = evaluate({
+      headSha: HEAD,
+      reviews: [auto(HEAD)],
+      statuses: [
+        status('ci/circleci: phase7-ownership', 'success'),
+        status('ci/circleci: migration-guardrails', 'success'),
+      ],
+      checkRuns: [check('PR fast gate'), codeRabbitCheck(conclusion)],
+    });
+    assert.equal(result.state, 'pending');
+    assert.ok(result.pending.includes('CodeRabbit exact-head result is pending'));
+  }
+
+  const completed = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+    ],
+    checkRuns: [check('PR fast gate'), codeRabbitCheck('success')],
+  });
+  assert.equal(completed.state, 'success');
+
+  const genericNeutral = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    ...greenEvidence(),
+    checkRuns: [check('PR fast gate'), check('optional-neutral', 'neutral')],
+  });
+  assert.equal(genericNeutral.state, 'success');
+}
+
+// Conflicting/ambiguous CodeRabbit receipts are never laundered by a positive
+// sibling receipt, whether the ambiguity is another status or a check-run.
+{
+  const at = '2026-09-07T00:05:00Z';
+  const duplicateStatus = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+      codeRabbitStatus('Review completed', 'success', at),
+      codeRabbitStatus('Review rate limited', 'success', at),
+    ],
+    checkRuns: [check('PR fast gate')],
+  });
+  assert.equal(duplicateStatus.state, 'pending');
+  assert.ok(duplicateStatus.pending.includes('CodeRabbit exact-head result is pending'));
+
+  const mixedEvidence = evaluate({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+      codeRabbitStatus(),
+    ],
+    checkRuns: [check('PR fast gate'), codeRabbitCheck('neutral')],
+  });
+  assert.equal(mixedEvidence.state, 'pending');
+  assert.ok(mixedEvidence.pending.includes('CodeRabbit exact-head result is pending'));
+}
+
 // Do not transiently succeed just because one required CI context appeared
 // before the others were created for the final head.
 {
@@ -149,7 +268,7 @@ assert.doesNotMatch(
     reviews: [auto(HEAD)],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
-      status('CodeRabbit', 'success'),
+      codeRabbitStatus(),
     ],
   });
   assert.equal(result.state, 'pending');
@@ -277,7 +396,7 @@ assert.doesNotMatch(
       statuses: [
         ...conflict,
         status('ci/circleci: migration-guardrails', 'success', at),
-        status('CodeRabbit', 'success', at),
+        codeRabbitStatus('Review completed', 'success', at),
       ],
       checkRuns: [check('PR fast gate')],
     });
@@ -358,7 +477,7 @@ assert.doesNotMatch(
     headSha: HEAD,
     reviews: [auto(HEAD)],
     statuses: [
-      status('CodeRabbit', 'success'),
+      codeRabbitStatus(),
       status('ci/circleci: phase7-ownership', 'pending'),
       status('ci/circleci: migration-guardrails', 'success'),
     ],
@@ -382,7 +501,7 @@ assert.doesNotMatch(
     reviews: [auto(HEAD)],
     statuses: [
       status(FINAL_HEAD_ADMISSION_CONTEXT, 'pending'),
-      status('CodeRabbit', 'success'),
+      codeRabbitStatus(),
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
     ],
