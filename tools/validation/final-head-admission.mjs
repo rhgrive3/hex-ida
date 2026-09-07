@@ -11,8 +11,8 @@ function string(value) {
 }
 
 function newestFirst(left, right) {
-  const l = Date.parse(left?.updated_at || left?.created_at || '') || 0;
-  const r = Date.parse(right?.updated_at || right?.created_at || '') || 0;
+  const l = Date.parse(left?.updated_at || left?.submitted_at || left?.created_at || '') || 0;
+  const r = Date.parse(right?.updated_at || right?.submitted_at || right?.created_at || '') || 0;
   return r - l;
 }
 
@@ -24,6 +24,25 @@ export function latestStatuses(statuses = []) {
     result.set(context, status);
   }
   return [...result.values()];
+}
+
+function reviewAuthor(review) {
+  return string(review?.author?.login || review?.user?.login).trim().toLowerCase();
+}
+
+export function latestReviewsByAuthor(reviews = []) {
+  const result = new Map();
+  let anonymous = 0;
+  for (const review of [...reviews].sort(newestFirst)) {
+    const author = reviewAuthor(review) || `__anonymous_${anonymous++}`;
+    if (result.has(author)) continue;
+    result.set(author, review);
+  }
+  return [...result.values()];
+}
+
+function trustedReviewerSet(values = []) {
+  return new Set(values.map((value) => string(value).trim().toLowerCase()).filter(Boolean));
 }
 
 function isAdmissionStatus(status) {
@@ -62,17 +81,29 @@ function exactHeadMarker(body, headSha) {
   return string(body).includes(`[HEAD:${headSha}]`);
 }
 
-function exactHeadAutoVerdict(review, headSha, verdict) {
+function isExactHeadAutoReview(review, headSha, trustedReviewers) {
   const body = string(review?.body);
   if (!/\[AUTO-REVIEW:[^\]]+\]/.test(body)) return false;
   if (!exactHeadMarker(body, headSha)) return false;
-  if (!body.includes(`[VERDICT:${verdict}]`)) return false;
   const commitId = string(review?.commit_id);
-  return !commitId || commitId === headSha;
+  if (commitId && commitId !== headSha) return false;
+  return trustedReviewers.has(reviewAuthor(review));
+}
+
+function autoVerdict(review) {
+  const match = string(review?.body).match(/\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/);
+  return match?.[1] ?? null;
+}
+
+function latestExactAutoReviews(reviews, headSha, trustedReviewers) {
+  return latestReviewsByAuthor(
+    reviews.filter((review) => isExactHeadAutoReview(review, headSha, trustedReviewers)),
+  );
 }
 
 function activeFormalChangesRequested(reviews = []) {
-  return reviews.some((review) => string(review?.state).toUpperCase() === 'CHANGES_REQUESTED');
+  return latestReviewsByAuthor(reviews)
+    .some((review) => string(review?.state).toUpperCase() === 'CHANGES_REQUESTED');
 }
 
 function reasonList(values) {
@@ -86,6 +117,7 @@ export function evaluateFinalHeadAdmission({
   statuses = [],
   checkRuns = [],
   unresolvedReviewThreads = 0,
+  trustedAutoReviewers = [],
 } = {}) {
   if (!/^[0-9a-f]{40}$/i.test(string(headSha))) {
     throw new TypeError('final-head-admission-invalid-head-sha');
@@ -94,10 +126,13 @@ export function evaluateFinalHeadAdmission({
   const blockers = [];
   const pending = [];
   const latest = latestStatuses(statuses);
+  const trustedReviewers = trustedReviewerSet(trustedAutoReviewers);
+  const exactAutoReviews = latestExactAutoReviews(reviews, headSha, trustedReviewers);
+  const exactAutoApprovals = exactAutoReviews.filter((review) => autoVerdict(review) === 'APPROVED');
+  const exactAutoChanges = exactAutoReviews.filter((review) => autoVerdict(review) === 'CHANGES_REQUESTED');
 
-  const exactAutoApprovals = reviews.filter((review) => exactHeadAutoVerdict(review, headSha, 'APPROVED'));
-  const exactAutoChanges = reviews.filter((review) => exactHeadAutoVerdict(review, headSha, 'CHANGES_REQUESTED'));
   if (draft) pending.push('pull request is draft');
+  if (trustedReviewers.size === 0) pending.push('no trusted AUTO reviewer configured');
   if (exactAutoApprovals.length === 0) pending.push('missing exact-head AUTO approval');
   if (exactAutoChanges.length > 0) blockers.push('exact-head AUTO review requests changes');
   if (activeFormalChangesRequested(reviews)) blockers.push('active GitHub changes-requested review');
@@ -105,7 +140,10 @@ export function evaluateFinalHeadAdmission({
 
   const reviewStatuses = latest.filter(isCodeRabbitStatus);
   const reviewChecks = checkRuns.filter(isCodeRabbitCheck);
-  const reviewEvidence = [...reviewStatuses.map((item) => ({ kind: 'status', item })), ...reviewChecks.map((item) => ({ kind: 'check', item }))];
+  const reviewEvidence = [
+    ...reviewStatuses.map((item) => ({ kind: 'status', item })),
+    ...reviewChecks.map((item) => ({ kind: 'check', item })),
+  ];
   if (reviewEvidence.length === 0) {
     pending.push('missing CodeRabbit exact-head result');
   } else {
@@ -153,6 +191,7 @@ export function evaluateFinalHeadAdmission({
     evidence: Object.freeze({
       exactAutoApprovalCount: exactAutoApprovals.length,
       exactAutoChangesRequestedCount: exactAutoChanges.length,
+      trustedAutoReviewerCount: trustedReviewers.size,
       unresolvedReviewThreads: Number(unresolvedReviewThreads) || 0,
       codeRabbitEvidenceCount: reviewEvidence.length,
       ciStatusCount: ciStatuses.length,
