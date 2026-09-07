@@ -143,15 +143,26 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #3608 Swift legacy prefix normalization passed');
 }
 
-// --- Test 6: #3632 canonical Itanium prefix survives Darwin normalization ---
+// --- Test 6: #3632/#4046 canonical Itanium prefix survives Darwin normalization ---
 {
   assert.equal(isMangled('_Z3foov'), true);
   assert.equal(demangleCxx('_Z3foov'), 'foo()');
   assert.equal(demangleCxx('__Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_Z1fv'), 'f()');
   assert.equal(readableName('_Z3foov'), 'foo()');
   assert.equal(demangleCxx('_foo'), null);
   assert.equal(demangleCxx('___Z3foov'), null);
-  console.log('✔ #3632 canonical Itanium prefix normalization passed');
+  console.log('✔ #3632/#4046 canonical Itanium prefix normalization passed');
+}
+
+// --- Regression: #4040 nested-name volatile/restrict qualifiers ---
+{
+  // These encodings are accepted by the Itanium ABI demangler (c++filt).
+  assert.equal(demangleCxx('_ZNV1A1fEv'), 'A::f() volatile');
+  assert.equal(demangleCxx('_ZNVK1A1fEv'), 'A::f() const volatile');
+  assert.equal(demangleCxx('_ZNr1A1fEv'), 'A::f() restrict');
+  assert.equal(demangleCxx('_ZNK1A1fEv'), 'A::f() const');
+  console.log('✔ #4040 Itanium nested-name CV qualifiers passed');
 }
 
 // --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
