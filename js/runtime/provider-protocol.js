@@ -121,12 +121,9 @@ export function validateProviderPacket(input) {
     // Error identity fields are optional, but when present they are schema
     // strings. Reject malformed remote packets before receive() can consume
     // a pending request (#5757).
-    packet.code = Object.hasOwn(packet, 'code')
-      ? providerErrorIdentity(packet.code, 'provider error code')
-      : null;
-    packet.message = Object.hasOwn(packet, 'message')
-      ? providerErrorIdentity(packet.message, 'provider error message')
-      : null;
+    if (Object.hasOwn(packet, 'code')) packet.code = providerErrorIdentity(packet.code, 'provider error code');
+    if (Object.hasOwn(packet, 'message')) packet.message = providerErrorIdentity(packet.message, 'provider error message');
+
   }
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
