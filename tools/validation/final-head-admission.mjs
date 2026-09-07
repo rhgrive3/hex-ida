@@ -264,7 +264,7 @@ export function evaluateFinalHeadAdmission({
   }
 
   // Required contexts prevent early success while late CI contexts have not
-  // appeared yet. Once present, any additional observed CI failur also blocks.
+  // appeared yet. Once present, any additional observed CI failure also blocks.
   for (const status of ciStatuses) {
     const state = statusState(status);
     const context = string(status?.context) || 'unnamed-status';
