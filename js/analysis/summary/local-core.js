@@ -41,10 +41,12 @@ function regionsFor(node, resolveRegion) {
 
 function effectsForAccesses(node, scope, resolveRegion, source) {
   const effects = [];
+  let complete = true;
   for (const access of scope.accesses ?? []) {
     const pseudoNode = { ...node, memory: access };
     const regions = regionsFor(pseudoNode, resolveRegion);
     if (!regions.length) {
+      complete = false;
       effects.push(createMemoryEffect({
         regionKind: 'unknown', broad: true, addressSpaces: [access.addressSpace ?? 'memory'],
         source, evidenceIds: evidenceOf(node),
@@ -60,7 +62,7 @@ function effectsForAccesses(node, scope, resolveRegion, source) {
       }));
     }
   }
-  return effects;
+  return { effects, complete: true };
 }
 
 function broadEffect(node, addressSpaces, source) {
@@ -84,7 +86,11 @@ function broadEffect(node, addressSpaces, source) {
 function applyScope({ node, scope, resolveRegion, into, source }) {
   if (scope == null) { into.push(broadEffect(node, null, source)); return false; }
   if (scope.scope === 'none') return true;
-  if (scope.scope === 'accesses') { into.push(...effectsForAccesses(node, scope, resolveRegion, source)); return true; }
+  if (scope.scope === 'accesses') {
+    const resolved = effectsForAccesses(node, scope, resolveRegion, source);
+    into.push(...resolved.effects);
+    return resolved.complete;
+  }
   if (scope.scope === 'all') { into.push(broadEffect(node, scope.addressSpaces, source)); return true; }
   into.push(broadEffect(node, null, source));
   return false;
