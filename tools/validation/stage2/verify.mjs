@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence, validatePhysicalIPadScenarioOutput } from '../../../js/platform/physical-ipad-evidence.js';
+import { FINAL_PLATFORM_EVIDENCE_SCHEMA, validateFinalPlatformEvidence } from '../final-platform/index.mjs';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2DenominatorLock, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 import { a2DenominatorReport } from '../machine-effects/a2-denominator.mjs';
@@ -197,6 +198,30 @@ export function stage2CanonicalBuildIdentity(releaseInput = null) {
   return `userscript-release:${release.releaseIdentity}:build:${release.buildId}:serial:${release.serial}`;
 }
 
+export function validateStage2PhysicalEvidenceRecord(record, { finalMode = false, headSha, treeSha, buildIdentity } = {}) {
+  if (record?.schemaVersion === FINAL_PLATFORM_EVIDENCE_SCHEMA) {
+    const checked = validateFinalPlatformEvidence(record, {
+      candidateCommitSha: headSha,
+      candidateTreeSha: treeSha,
+      buildIdentity,
+    });
+    return {
+      ok: checked.ok,
+      reason: checked.reason || null,
+      evidenceId: checked.evidenceId || record.evidenceId || null,
+      rawSampleDigest: checked.rawSampleDigest || record.rawSampleDigest || null,
+    };
+  }
+  const checked = validatePhysicalIPadEvidence(record, {
+    commitSha: headSha,
+    treeSha,
+    buildIdentity,
+    requireNumericEvidence: finalMode,
+    resolveEvidenceIdentity: (identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha),
+  });
+  return { ok: checked.ok, reason: checked.reason || null, evidenceId: checked.evidenceId || record.evidenceId || null };
+}
+
 function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, requestedBuildIdentity }) {
   const buildIdentity = stage2CanonicalBuildIdentity();
   if (requestedBuildIdentity != null && String(requestedBuildIdentity) !== buildIdentity) return {
@@ -207,12 +232,7 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, req
   };
   const loaded = readEvidenceJson(finalMode, evidencePath, 'physical-ipad-evidence-required', 'physical-ipad-evidence-file-missing', 'physical-ipad-evidence-json-invalid');
   if (loaded.status !== 'loaded') return loaded;
-  const checked = validatePhysicalIPadEvidence(loaded.record, {
-    commitSha: headSha,
-    treeSha,
-    buildIdentity,
-    resolveEvidenceIdentity: (identity, context) => physicalEvidenceIdentityAtHead(identity, context, headSha, treeSha),
-  });
+  const checked = validateStage2PhysicalEvidenceRecord(loaded.record, { finalMode, headSha, treeSha, buildIdentity });
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
 }
 
