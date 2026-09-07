@@ -23,9 +23,10 @@ export function renderExtendedIndex(indexText, extend = null) {
 }
 
 export function renderIndexedMemory(baseText, indexText, { extend = null, scale = 0, size = 0 } = {}) {
-  const shift = typeof scale === 'number' && Number.isSafeInteger(scale) && scale >= 0 && scale <= MAX_ADDRESS_SCALE_SHIFT ? scale : 0;
+  const shift = canonicalScale(scale);
   const bytes = typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 ? size : 0;
   const index = renderExtendedIndex(indexText, extend);
+  if (shift === null) return `memory[${baseText} + __arm64_index_invalid_scale(${index})]`;
   const scaleBytes = 2 ** shift;
   if (bytes > 0 && Number.isSafeInteger(scaleBytes) && scaleBytes === bytes) {
     return `${wrapped(baseText)}[${index}]`;
