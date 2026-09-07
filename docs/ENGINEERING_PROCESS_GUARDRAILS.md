@@ -2,6 +2,17 @@
 
 Status: **normative**
 
+## Physical-device deferral — 2026-09-08 (user-authorized)
+
+The repository owner explicitly deferred physical-device verification until all
+development is finished. For the current final-closure development task, actual
+iPad/device execution and collection of physical traces are not completion gates.
+Implement the numeric evidence contract and run applicable local/browser checks;
+record physical measurements as DEFERRED, never as measured or passing. Retain
+the real-device criteria for the post-development verification listed in
+`specs/005-analysis-final-closure/evidence/post-development-device-checks.md`.
+This exception does not change numeric thresholds or certify a physical device.
+
 ## Development-speed amendment — 2026-09-07 (user-authorized)
 
 The repository owner explicitly prioritizes development throughput and permits

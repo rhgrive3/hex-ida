@@ -4,6 +4,12 @@ description: "Dependency-ordered execution ledger for recovery and analysis fina
 
 ## Current execution policy — 2026-09-07
 
+**2026-09-08 owner update:** actual physical-device confirmation is deferred until
+all development finishes. T040 and other physical-execution clauses record
+`DEFERRED_BY_OWNER` and do not block current development completion. T045 still
+implements the numeric evidence contract. See `evidence/post-development-device-checks.md`;
+no physical measurement or PASS may be fabricated.
+
 The user-authorized development-speed amendment in
 `docs/ENGINEERING_PROCESS_GUARDRAILS.md` supersedes the historical process below.
 Development requires focused tests; integration checks run per batch and full
