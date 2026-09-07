@@ -22,6 +22,29 @@ function optionalIdentity(value, fallback, label) {
   return value;
 }
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
+function normalizeABIHook(value, name, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  if (isClassConstructorSource(value) || isBoundClassConstructor(value)) {
+    throw new TypeError(`${name} must be an invocable callback, not a class constructor`);
+  }
+  return value;
+}
+
+function isClassConstructorSource(value) {
+  try { return /^class[\s{;]/.test(Function.prototype.toString.call(value)); }
+  catch { return false; }
+}
+
+function isBoundClassConstructor(value) {
+  if (typeof value.name !== 'string' || !value.name.startsWith('bound ')) return false;
+  try {
+    Reflect.apply(value, undefined, []);
+    return false;
+  } catch (error) {
+    return error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message);
+  }
+}
 
 function canonicalCallingConvention(value) {
   return canonicalId(value).replace(/^__/, '');
@@ -50,24 +73,22 @@ export class ABIPlugin {
       `ABI ${id} semanticIdentity`,
     );
     this.architectureId = architectureId;
-    this.platformPredicate = typeof definition.platformPredicate === 'function'
-      ? definition.platformPredicate
-      : (() => true);
-    this.callingConventions = definition.callingConventions || (() => frozenArray([]));
-    this.classifyArguments = definition.classifyArguments || (() => ({
+    this.platformPredicate = normalizeABIHook(definition.platformPredicate, 'platformPredicate', () => true);
+    this.callingConventions = normalizeABIHook(definition.callingConventions, 'callingConventions', () => frozenArray([]));
+    this.classifyArguments = normalizeABIHook(definition.classifyArguments, 'classifyArguments', () => ({
       srcs: [], arguments: [], stackArguments: [], stackArgsUnknown: true,
       stackArgsMayContainPointers: true, evidence: 'unsupported-abi', unsupported: true,
     }));
-    this.classifyCallReturn = definition.classifyCallReturn || (() => null);
-    this.classifyFunctionReturn = definition.classifyFunctionReturn || (() => null);
-    this.classifyEntryRegister = definition.classifyEntryRegister || (() => ({ kind:'incoming-register-state' }));
-    this.callerSaved = definition.callerSaved || (() => frozenArray([]));
-    this.calleeSaved = definition.calleeSaved || (() => frozenArray([]));
-    this.stackRules = definition.stackRules || (() => Object.freeze({ unknown:true }));
-    this.redZone = definition.redZone || (() => null);
+    this.classifyCallReturn = normalizeABIHook(definition.classifyCallReturn, 'classifyCallReturn', () => null);
+    this.classifyFunctionReturn = normalizeABIHook(definition.classifyFunctionReturn, 'classifyFunctionReturn', () => null);
+    this.classifyEntryRegister = normalizeABIHook(definition.classifyEntryRegister, 'classifyEntryRegister', () => ({ kind:'incoming-register-state' }));
+    this.callerSaved = normalizeABIHook(definition.callerSaved, 'callerSaved', () => frozenArray([]));
+    this.calleeSaved = normalizeABIHook(definition.calleeSaved, 'calleeSaved', () => frozenArray([]));
+    this.stackRules = normalizeABIHook(definition.stackRules, 'stackRules', () => Object.freeze({ unknown:true }));
+    this.redZone = normalizeABIHook(definition.redZone, 'redZone', () => null);
     this.syscallABI = definition.syscallABI || null;
-    this.unwindRules = definition.unwindRules || (() => Object.freeze({ unknown:true }));
-    this.defaultUnknownCallEffects = definition.defaultUnknownCallEffects || (() => Object.freeze({
+    this.unwindRules = normalizeABIHook(definition.unwindRules, 'unwindRules', () => Object.freeze({ unknown:true }));
+    this.defaultUnknownCallEffects = normalizeABIHook(definition.defaultUnknownCallEffects, 'defaultUnknownCallEffects', () => Object.freeze({
       registerEffects:'unknown', memoryEffects:'unknown', mayThrow:true,
     }));
     this.supported = definition.supported !== false;
