@@ -220,6 +220,18 @@ function staticSize(type, ctx, values = {}) {
     if (state.value) return staticSize(type.then, ctx, values);
     return type.else ? staticSize(type.else, ctx, values) : 0;
   }
+  if (type.kind === 'union') {
+    // A fixed-alternative union occupies at least its largest alternative
+    // (#5913). Unknown (dynamic) alternative sizes keep the union
+    // unsizeable so callers fail closed instead of advancing 0 bytes.
+    let max = null;
+    for (const option of type.options) {
+      const size = staticSize(option, ctx, values);
+      if (size == null) return null;
+      if (max == null || size > max) max = size;
+    }
+    return max;
+  }
   return null;
 }
 
@@ -302,7 +314,13 @@ function readType(type, offset, space, ctx, values, depth = 0) {
   }
   if (type.kind === 'union') {
     const options = type.options.map((item) => readType(item, offset, space, ctx, values, depth + 1));
-    return fieldValue(type, options[0]?.value ?? null, ctx, offset, staticSize(type.options[0], ctx, values) || 0, space, { alternatives: options });
+    // Provenance length covers the whole union layout (largest alternative),
+    // not just the first option's span (#5913). With no provable layout size
+    // (a dynamically sized alternative) the union must fail closed: returning
+    // a complete 0-byte-consumed field would misplace every following field.
+    const unionSize = staticSize(type, ctx, values);
+    if (unionSize == null) return { status: 'partial', reason: 'pattern-union-size-unproven' };
+    return fieldValue(type, options[0]?.value ?? null, ctx, offset, unionSize, space, { alternatives: options });
   }
   if (type.kind === 'struct') {
     const fields = {}; let cursor = BigInt(offset); const localValues = { ...values };
