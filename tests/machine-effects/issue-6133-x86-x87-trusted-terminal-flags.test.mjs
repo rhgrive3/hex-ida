@@ -21,6 +21,7 @@ try {
     const summary = effects.operations[0].effectSummary;
     assert.ok(summary.registersRead.includes('x86.x87.environment'));
     assert.ok(summary.registersWritten.includes('x86.x87.environment'));
+    assert.ok(!hasRflags(summary.registersRead), `${mnemonic} must not mint RFLAGS reads`);
     assert.ok(!hasRflags(summary.registersWritten), `${mnemonic} must not mint RFLAGS writes`);
     if (mnemonic === 'fsqrt') {
       for (const flag of ['c0', 'c1', 'c2', 'c3']) {
