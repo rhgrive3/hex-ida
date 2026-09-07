@@ -165,6 +165,16 @@ export function canConfirmClaim(evidence, claim) {
   if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
     return false;
   }
+  // Confirmation authority is target-scoped (#6154): a proof that explicitly
+  // binds itself to entities must bind to one of the claim's entities (an
+  // untargeted proof keeps its historical contract), and a proof bound to a
+  // different binary can never confirm a claim from another binary.
+  const evidenceTargets = Array.isArray(evidence.targetEntityIds) ? evidence.targetEntityIds : [];
+  if (evidenceTargets.length) {
+    const claimTargets = Array.isArray(claim?.targetEntityIds) ? claim.targetEntityIds : [];
+    if (!claimTargets.some((entity) => evidenceTargets.includes(entity))) return false;
+  }
+  if (evidence.binaryId != null && claim?.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
   return true;
 }
 
