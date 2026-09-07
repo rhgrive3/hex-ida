@@ -125,6 +125,30 @@ const validProviderResult = SYSV_AMD64_ABI.classifyArguments(
 assert.equal(exactRegister(validProviderResult, 'xmm0'), true,
   'valid provider-supplied prototype must preserve exact FP placement');
 
+let throwingProviderCalls = 0;
+const throwingProviderOptions = {
+  callPrototypeFor() {
+    throwingProviderCalls += 1;
+    throw new Error('prototype provider failed');
+  },
+};
+assertConservative(SYSV_AMD64_ABI.classifyArguments(
+  { callTarget:0x1234n },
+  throwingProviderOptions,
+), 'xmm0', 'throwing provider argument classification');
+const throwingProviderReturn = SYSV_AMD64_ABI.classifyCallReturn(
+  { callTarget:0x1234n },
+  throwingProviderOptions,
+);
+assert.equal(throwingProviderReturn?.partial, true,
+  'throwing provider call-return must be partial');
+assert.equal(throwingProviderReturn?.reg ?? null, null,
+  'throwing provider call-return must not mint a return register');
+assert.equal(throwingProviderReturn?.reason, 'abi-prototype-metadata-invalid',
+  'throwing provider call-return must report invalid metadata');
+assert.equal(throwingProviderCalls, 2,
+  'a throwing provider may be observed once per independently guarded classification');
+
 let providerGetReads = 0;
 const throwingProviderGetOptions = new Proxy({}, {
   get(target, key, receiver) {
