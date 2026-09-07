@@ -104,6 +104,7 @@ test('#5943 declared count beyond the budget is capped, not silently empty', asy
   const scan = await parseSwiftFieldDescriptorScan(read, 0n, 4096);
   assert.deepEqual(scan.fields, []);
   assert.equal(scan.completeness.capped, true);
+  assert.equal(scan.completeness.declared, 4097);
   assert.equal(scan.completeness.complete, false);
   assert.equal(scan.completeness.reason, 'descriptor-count-exceeds-budget');
 });
