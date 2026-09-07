@@ -133,7 +133,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   if (MOVES.has(family)) {
     if (destination?.type !== 'register' || !source || !registerOrImmediate(source)
       || !registerSourceWidthMatches(destination, source)) {
-      return ctx.partial('x86-mov-operand-shape-unmodelled', ['registers']);
+      return ctx.partial('x86-mov-operand-shape-unmodelled', ['registers'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const value = ctx.readOperand(source, destination.widthBits);
     if (!value || !ctx.writeRegister(destination, value)) return ctx.partial('x86-mov-register-view-unmodelled', ['registers']);
@@ -173,7 +175,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   if (ARITHMETIC.has(family)) {
     if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
       || !registerSourceWidthMatches(destination, source)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const left = ctx.readRegister(destination);
     const right = ctx.readOperand(source, destination.widthBits);
@@ -218,7 +222,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   if (LOGICAL.has(family)) {
     if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
       || !registerSourceWidthMatches(destination, source)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const left = ctx.readRegister(destination);
     const right = ctx.readOperand(source, destination.widthBits);
@@ -241,11 +247,15 @@ export function liftX86IntegerEffects(instruction, context = {}) {
   if (family === 'cmp' || family === 'test') {
     if (destination?.type !== 'register' || !source || !registerOrImmediate(source) || !supportedWidth(destination.widthBits)
       || !registerSourceWidthMatches(destination, source)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const left = ctx.readOperand(destination, destination.widthBits);
     const right = ctx.readOperand(source, destination.widthBits);
-    if (!left || !right) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
+    if (!left || !right) return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags'], {
+      metadata:{ encodingValidated:false },
+    });
     const result = ctx.valueOp(family === 'cmp' ? 'sub' : 'and', [left,right], destination.widthBits, {
       compareOnly:true,
       widthBits:destination.widthBits,
@@ -307,7 +317,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
       const operand = destination;
       const widthBits = Number(operand?.widthBits);
       if (!x86ImplicitMultiplyRegisters(widthBits) || operand?.type !== 'register') {
-        return ctx.partial(`x86-${family}-implicit-form-unmodelled`, ['registers','flags']);
+        return ctx.partial(`x86-${family}-implicit-form-unmodelled`, ['registers','flags'], {
+          metadata:{ encodingValidated:false },
+        });
       }
       const multiplier = ctx.readOperand(operand, widthBits);
       if (!multiplier) return ctx.partial(`x86-${family}-implicit-source-unmodelled`, ['registers','flags']);
@@ -317,22 +329,32 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     }
 
     if (family !== 'imul' || (ctx.operands.length !== 2 && ctx.operands.length !== 3)) {
-      return ctx.partial(`x86-${family}-operand-count-unmodelled`, ['registers','flags']);
+      return ctx.partial(`x86-${family}-operand-count-unmodelled`, ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
     }
-    if (destination?.type !== 'register' || ![16,32,64].includes(destination.widthBits)) return ctx.partial('x86-imul-destination-unmodelled', ['registers','flags']);
+    if (destination?.type !== 'register' || ![16,32,64].includes(destination.widthBits)) {
+      return ctx.partial('x86-imul-destination-unmodelled', ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
+    }
     let left;
     let right;
     let form;
     if (ctx.operands.length === 2) {
       if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source)) {
-        return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags']);
+        return ctx.partial('x86-imul-two-operand-source-unmodelled', ['registers','flags'], {
+          metadata:{ encodingValidated:false },
+        });
       }
       left = ctx.readRegister(destination);
       right = ctx.readOperand(source, destination.widthBits, { signed:true });
       form = 'two-operand';
     } else {
       if (source?.type !== 'register' || !registerSourceWidthMatches(destination, source) || third?.type !== 'immediate') {
-        return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags']);
+        return ctx.partial('x86-imul-three-operand-source-unmodelled', ['registers','flags'], {
+          metadata:{ encodingValidated:false },
+        });
       }
       left = ctx.readOperand(source, destination.widthBits, { signed:true });
       right = ctx.readOperand(third, destination.widthBits, { signed:true });
@@ -377,7 +399,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     const code = ctx.instruction.detail.conditionCode ?? family.slice(4);
     if (destination?.type !== 'register' || source?.type !== 'register' || ctx.operands.length !== 2
       || ![16,32,64].includes(destination.widthBits) || !registerSourceWidthMatches(destination, source)) {
-      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
+      return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags'], {
+        metadata:{ encodingValidated:false },
+      });
     }
     const condition = emitX86Condition(ctx, code);
     const sourceValue = ctx.readOperand(source, destination.widthBits);
@@ -396,7 +420,11 @@ export function liftX86LeaEffects(instruction, context = {}) {
   if (String(instruction?.instructionFamily || '').toLowerCase() !== 'lea') return null;
   const ctx = createX86EffectContext(instruction, context);
   const [destination, source] = ctx.operands;
-  if (!validLeaDestination(destination) || source?.type !== 'memory') return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other']);
+  if (!validLeaDestination(destination) || source?.type !== 'memory') {
+    return ctx.partial('x86-lea-operand-shape-unmodelled', ['registers','other'], {
+      metadata:{ encodingValidated:false },
+    });
+  }
   const address = materializeX86Address(ctx, source);
   if (!address || !ctx.writeRegister(destination, address)) return ctx.partial('x86-lea-address-unmodelled', ['registers','other']);
   return ctx.finish({ family:'integer', metadata:{ operation:'lea', semanticMemoryAccess:false, address:source.memory } });

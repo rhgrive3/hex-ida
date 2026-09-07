@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { liftX86LeaEffects } from '../../js/targets/architecture/x86_64/effects/integer.js';
+import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 
 let instructionCode = 0x601900;
 
@@ -37,6 +38,7 @@ function lea(destination, rawBytes = Uint8Array.of(0x48, 0x8d, 0x00)) {
     detailAvailable:true,
     detailStatus:'complete',
     detail:{
+      abiContractVersion:'capstone-5-wasm32-x86-detail/v1',
       operandCount:2,
       operands:[destination, memory()],
       implicitReads:[],
@@ -60,6 +62,13 @@ function assertRejected(destination) {
   assert.equal(result.operations.length, 0, 'invalid LEA destinations must fail before materializing an address');
 }
 
+function assertRejectedRouted(destination) {
+  const result = liftX86MachineEffects(lea(destination));
+  assert.equal(result.completeness, 'partial', 'invalid LEA destinations must stay partial through the public dispatcher');
+  assert.equal(result.unknownEffects?.reason, 'x86-lea-operand-shape-unmodelled');
+  assert.equal(result.operations.length, 0, 'invalid LEA destinations must not be terminalized into a definite operation');
+}
+
 // Canonical GPR-family destinations remain exact for every LEA operand size.
 assertExact(register('rax', 64));
 assertExact(register('eax', 32), Uint8Array.of(0x8d, 0x00));
@@ -73,5 +82,11 @@ assertRejected(register('zmm0', 512));
 assertRejected(register('k0', 64));
 assertRejected(register('rip', 64));
 assertRejected(register('rflags', 64));
+
+// The public dispatcher must preserve the same fail-closed boundary when a
+// trusted structured record reaches its terminal fallback.
+for (const destination of [register('al', 8), register('ymm0', 256), register('k0', 64), register('rip', 64), register('rflags', 64)]) {
+  assertRejectedRouted(destination);
+}
 
 console.log('issue-6019 x86 LEA destination class/width authority: ok');

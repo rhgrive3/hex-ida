@@ -96,3 +96,26 @@ test('legacy compatibility projections preserve uncertainty instead of materiali
   assert.equal(masked?.op, OP.UNKNOWN);
   assert.deepEqual(masked.extra.undefinedResult, operation.undefinedResult);
 });
+
+
+test('compatibility validates nested undefined descriptors without invoking accessors', () => {
+  const operation=createMachineOperation({
+    kind:'value',id:'nested-undefined',opcode:'add',
+    inputs:[createBitVectorValue(8,1n),createBitVectorValue(8,2n)],
+    outputs:[createTemporaryValue('nested-out',{kind:'bitvector',widthBits:8})],
+    undefinedResult:{widthBits:8,mask:'0xff',class:'fully',reason:'source'},
+  });
+  const bundle=createMachineEffectBundle({
+    instructionId:'nested',architectureId:'arm64',mode:'a64',operations:[operation],
+    controlEffect:{kind:'fallthrough'},possibleFaults:[],
+    origin:createOriginSet({source:'test',instructionIds:['nested']}),completeness:'exact',
+  });
+  const semantic=structuredClone(lowerMachineEffectBundleToSemanticIr(bundle,{
+    functionId:'nested-fn',blockId:'nested-block',addressWidthBits:64,
+  }));
+  const descriptor=semantic.nodes.find(node=>node.attributes?.machineEffects?.undefinedResult).attributes.machineEffects.undefinedResult;
+  let reads=0;
+  Object.defineProperty(descriptor,'reason',{enumerable:true,get(){reads++;return 'invalid';}});
+  assert.throws(()=>projectSemanticIrV2ToLegacyV1(semantic),/semantic-undefined-result-malformed/);
+  assert.equal(reads,0);
+});

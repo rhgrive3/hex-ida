@@ -11,11 +11,53 @@ import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/risc
 import { liftArm64MemoryEffects } from '../../../js/targets/architecture/arm64/effects/memory.js';
 import { liftArm64AtomicEffects } from '../../../js/targets/architecture/arm64/effects/atomic.js';
 
+function encodeU32(value) {
+  return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function encodeBranch(rs1, rs2, immediate) {
+  const imm = Number(immediate);
+  const word = ((imm & 0x1000) << 19)
+    | ((imm & 0x0800) >> 4)
+    | ((imm & 0x07e0) << 20)
+    | ((imm & 0x001e) << 7)
+    | (Number(rs2.slice(1)) << 20)
+    | (Number(rs1.slice(1)) << 15)
+    | 0x63;
+  return encodeU32(word);
+}
+
+function encodeJal(rd, immediate) {
+  const imm = Number(immediate);
+  const word = ((imm & 0x100000) << 11)
+    | ((imm & 0x000ff000))
+    | ((imm & 0x00000800) << 9)
+    | ((imm & 0x000007fe) << 20)
+    | (Number(rd.slice(1)) << 7)
+    | 0x6f;
+  return encodeU32(word);
+}
+
+function encodeJalr(rd, rs1, immediate) {
+  const word = ((Number(immediate) & 0xfff) << 20)
+    | (Number(rs1.slice(1)) << 15)
+    | (Number(rd.slice(1)) << 7)
+    | 0x67;
+  return encodeU32(word);
+}
+
 function rvControl(op, fields = {}, instructionAlignment = 2) {
+  const allFields = { rd:'x0', rs1:'x10', rs2:'x11', imm:4, ...fields };
+  const rawBytes = op === 'beq'
+    ? encodeBranch(allFields.rs1, allFields.rs2, allFields.imm)
+    : op === 'jal'
+      ? encodeJal(allFields.rd, allFields.imm)
+      : encodeJalr(allFields.rd, allFields.rs1, allFields.imm);
   return {
     contractVersion:'riscv64-decoded-instruction/v1', instructionId:`rv-${op}`, origin:{instructionIds:[`rv-${op}`]},
     mode:instructionAlignment === 4 ? 'rv64im' : 'rv64imc', instructionAlignment, address:0x1000n, size:4,
-    fields:{ supported:true, op, compressed:false, rd:'x0', rs1:'x10', rs2:'x11', imm:4, ...fields },
+    rawBytes,
+    fields:{ supported:true, op, compressed:false, ...allFields },
   };
 }
 

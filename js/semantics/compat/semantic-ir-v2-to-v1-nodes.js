@@ -3,7 +3,48 @@ import {
   V1_OP, sourceInstructionIds, bytesForBits, classifyCallWithAbi, safeBigInt, unique,
   legacyPublicStateIdentity, addUse, attachArgs, defaultUnknownInstruction, baseInstruction, targetAddress,
 } from './semantic-ir-v2-to-v1-core.js';
+import { createUndefinedResultDescriptor } from '../effects/index.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
+
+const MALFORMED_UNDEFINED_RESULT = Object.freeze({
+  class:'malformed', mask:'unknown-mask', reason:'malformed-descriptor',
+});
+
+function undefinedResultAttribute(attributes) {
+  if (attributes == null || typeof attributes !== 'object') return null;
+  let machineEffectsProperty;
+  try { machineEffectsProperty = Object.getOwnPropertyDescriptor(attributes, 'machineEffects'); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+  if (machineEffectsProperty == null) return null;
+  if (!Object.hasOwn(machineEffectsProperty, 'value')) return MALFORMED_UNDEFINED_RESULT;
+  const machineEffects = machineEffectsProperty.value;
+  if (machineEffects == null || typeof machineEffects !== 'object') return null;
+  let descriptor;
+  try { descriptor = Object.getOwnPropertyDescriptor(machineEffects, 'undefinedResult'); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+  if (descriptor == null) return null;
+  if (!Object.hasOwn(descriptor, 'value') || descriptor.value == null) return MALFORMED_UNDEFINED_RESULT;
+  try { return createUndefinedResultDescriptor(descriptor.value); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+}
+
+// Validate the uncertainty record before generic IR normalization copies attributes.
+export function assertUndefinedResultAttributes(input) {
+  const data=(object,key)=>{
+    if(object==null || typeof object!=='object') return undefined;
+    const descriptor=Object.getOwnPropertyDescriptor(object,key);
+    if(descriptor && !Object.hasOwn(descriptor,'value')) throw new TypeError('semantic-undefined-result-accessor');
+    return descriptor?.value;
+  };
+  const nodes=data(input,'nodes');
+  if(!Array.isArray(nodes)) return;
+  for(let i=0;i<nodes.length;i++) {
+    const attrs=data(data(nodes,String(i)),'attributes');
+    if(undefinedResultAttribute(attrs)===MALFORMED_UNDEFINED_RESULT) {
+      throw new TypeError('semantic-undefined-result-malformed');
+    }
+  }
+}
 
 function constantPayload(node) {
   const attrs = node?.attributes || {};
@@ -250,11 +291,18 @@ export function projectNode(node, context) {
     inst.extra = { semanticNodeId: node.id, widthBits, attributes: attrs, completeness: node.completeness };
   };
 
-  const undefinedResult = attrs.machineEffects?.undefinedResult ?? null;
-  if (undefinedResult != null && node.kind !== 'intrinsic') {
+  const undefinedResult = undefinedResultAttribute(attrs);
+  // A malformed descriptor must never reach the intrinsic projection path:
+  // preserving a hostile record as an otherwise exact clobber would let a
+  // compatibility consumer treat an untrusted undefined-result annotation as
+  // architectural proof. Valid intrinsic descriptors still use the normal
+  // projection so their clobber shape and uncertainty metadata are retained.
+  if (undefinedResult != null
+    && (node.kind !== 'intrinsic' || undefinedResult === MALFORMED_UNDEFINED_RESULT)) {
+    const isMemoryRead = node.kind === 'load';
     const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
-      reason: `architecturally-undefined-result:${undefinedResult.reason}`,
-      unknownCategories: ['value'],
+      reason: `architecturally-undefined-result:${undefinedResult.reason ?? 'unspecified'}`,
+      unknownCategories: isMemoryRead ? ['memory', 'value'] : ['value'],
       undefinedResult,
     });
     Object.assign(inst, unknown, {
@@ -267,6 +315,10 @@ export function projectNode(node, context) {
     });
     inst.dst = primaryOutput;
     attachArgs(inst, inputValues);
+    if (isMemoryRead) {
+      inst.memoryAccess = node.memory;
+      inst.memoryBarrier = true;
+    }
     if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
     return [inst];
   }

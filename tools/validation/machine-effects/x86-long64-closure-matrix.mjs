@@ -84,7 +84,7 @@ export function evaluateX86Long64ClosureMatrix(decodedWitnessRows, dispatchFunct
     const instruction = item.instruction;
     const prefixKind = classifyX86Long64WitnessPrefix(instruction.rawBytes);
 
-    const outcome = dispatchFunction(instruction, { closureMatrixTerminal: true });
+    const outcome = dispatchFunction(instruction);
     const isDispatch = outcome != null && typeof outcome === "object" && "ownerId" in outcome && "result" in outcome;
     const effect = isDispatch ? outcome.result : outcome;
     const ownerId = isDispatch ? outcome.ownerId : (effect ? String(effect.metadata?.family || "unowned").toLowerCase() : "unowned");

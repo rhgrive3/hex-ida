@@ -4,7 +4,33 @@ import { architecturePluginV2 } from '../../../js/targets/architecture/index.js'
 import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/riscv64/effects/control.js';
 import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 
+function u32le(value) {
+  return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function encodeJal(rd, immediate) {
+  const imm = Number(immediate);
+  const word = ((imm & 0x100000) << 11)
+    | ((imm & 0x000ff000))
+    | ((imm & 0x00000800) << 9)
+    | ((imm & 0x000007fe) << 20)
+    | (Number(rd.slice(1)) << 7)
+    | 0x6f;
+  return u32le(word);
+}
+
+function encodeJalr(rd, rs1, immediate) {
+  const word = ((Number(immediate) & 0xfff) << 20)
+    | (Number(rs1.slice(1)) << 15)
+    | (Number(rd.slice(1)) << 7)
+    | 0x67;
+  return u32le(word);
+}
+
 function rv(op, fields = {}, address = 0x1000n) {
+  const rawBytes = op === 'jal'
+    ? encodeJal(fields.rd, fields.imm)
+    : encodeJalr(fields.rd, fields.rs1, fields.imm);
   return {
     instructionId:`${op}-${address.toString(16)}`,
     contractVersion:'riscv64-decoded-instruction/v1',
@@ -13,6 +39,7 @@ function rv(op, fields = {}, address = 0x1000n) {
     length:4,
     mode:'rv64imc',
     instructionAlignment:2,
+    rawBytes,
     origin:{ instructionIds:[`${op}-${address.toString(16)}`] },
     fields:{ supported:true, compressed:false, op, ...fields },
   };

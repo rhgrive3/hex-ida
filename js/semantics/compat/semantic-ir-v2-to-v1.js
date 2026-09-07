@@ -5,7 +5,7 @@ import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
   graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
 } from './semantic-ir-v2-to-v1-core.js';
-import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
+import { projectNode, assertUndefinedResultAttributes } from './semantic-ir-v2-to-v1-nodes.js';
 import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';
 import {
   attachMemorySsa, attachFallbackMemory, addScalarSsaPhis, appendFunctionUnknowns,
@@ -299,6 +299,7 @@ function addComparisonCarriers(ir, values, valuesById) {
  * architecture lifter. The v1 vocabulary is only the compatibility target.
  */
 export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
+  assertUndefinedResultAttributes(input);
   const ir = validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
   const ssa = ssaInput == null ? null : createSemanticSsaContract(

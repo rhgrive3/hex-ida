@@ -99,6 +99,99 @@ function fail(code) { throw new TypeError(code); }
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
 }
+
+function snapshotOwnEnumerableData(input, allowed, label, unexpectedCode) {
+  if (input == null || typeof input !== 'object') fail(`machine-effects-${label}-required`);
+  let isArray;
+  let prototype;
+  let keys;
+  try {
+    isArray = Array.isArray(input);
+    prototype = Object.getPrototypeOf(input);
+    keys = Reflect.ownKeys(input);
+  } catch {
+    fail(`machine-effects-${label}-snapshot-failed`);
+  }
+  if (isArray) fail(`machine-effects-${label}-required`);
+  if (prototype !== Object.prototype && prototype !== null) {
+    fail(`machine-effects-${label}-invalid-prototype`);
+  }
+  const snapshot = Object.create(null);
+  for (const key of keys) {
+    if (typeof key !== 'string' || !allowed.has(key)) {
+      fail(`${unexpectedCode}:${typeof key === 'string' ? key : 'symbol'}`);
+    }
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(input, key); }
+    catch { fail(`machine-effects-${label}-snapshot-failed`); }
+    if (descriptor == null || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+      fail(`machine-effects-${label}-requires-enumerable-data-property:${key}`);
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function ownDataProperty(input, key, code) {
+  let descriptor;
+  try { descriptor = Object.getOwnPropertyDescriptor(input, key); }
+  catch { fail(code); }
+  if (descriptor == null) return { present:false, value:undefined };
+  if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) fail(code);
+  return { present:true, value:descriptor.value };
+}
+
+function snapshotSerializableData(value, code, seen = new WeakSet()) {
+  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return jsonSafe(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) fail(code);
+    return value;
+  }
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') fail(code);
+  if (typeof value !== 'object' || seen.has(value)) fail(code);
+  let prototype;
+  let keys;
+  let isArray;
+  try {
+    prototype = Object.getPrototypeOf(value);
+    keys = Reflect.ownKeys(value);
+    isArray = Array.isArray(value);
+  } catch { fail(code); }
+  if ((!isArray && prototype !== Object.prototype && prototype !== null)
+    || (isArray && prototype !== Array.prototype)) fail(code);
+  let arrayLength;
+  if (isArray) {
+    let lengthDescriptor;
+    try { lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length'); }
+    catch { fail(code); }
+    if (lengthDescriptor == null || !Object.hasOwn(lengthDescriptor, 'value')
+      || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) fail(code);
+    arrayLength = lengthDescriptor.value;
+    // Sparse arrays are not exact serializable conditions. Copying only their
+    // enumerable indices would silently discard trailing holes and change the
+    // published condition. Check shape before allocating or visiting elements.
+    if (keys.length !== arrayLength + 1) fail(code);
+  }
+  seen.add(value);
+  const out = isArray ? [] : {};
+  for (const key of keys) {
+    if (typeof key !== 'string') fail(code);
+    if (isArray && key === 'length') continue;
+    if (isArray && (!/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= arrayLength)) fail(code);
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
+    catch { fail(code); }
+    if (descriptor == null || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) fail(code);
+    Object.defineProperty(out, key, {
+      value: snapshotSerializableData(descriptor.value, code, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  seen.delete(value);
+  return out;
+}
 // Pre-built field whitelists. Same members as the per-call literal sets they
 // replace; hoisted so millions of normalize calls allocate no Set objects.
 const ALLOWED_FIELDS = Object.freeze({
@@ -459,10 +552,12 @@ function intrinsicSummaryIsComplete(summary) {
 }
 
 export function createUndefinedResultDescriptor(input) {
-  input = object(input, 'machine-effects-undefined-result-required');
-  if (input.schemaVersion == null) input = { schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION, ...input };
-  assertAllowedKeys(input, ALLOWED_FIELDS.undefinedResult, 'machine-effects-unexpected-undefined-result-field');
-  if (input.schemaVersion !== UNDEFINED_RESULT_SCHEMA_VERSION) fail('machine-effects-unsupported-undefined-result-schema');
+  input = snapshotOwnEnumerableData(input, ALLOWED_FIELDS.undefinedResult,
+    'undefined-result', 'machine-effects-unexpected-undefined-result-field');
+  const schemaVersion = Object.hasOwn(input, 'schemaVersion')
+    ? input.schemaVersion : UNDEFINED_RESULT_SCHEMA_VERSION;
+  if (schemaVersion !== UNDEFINED_RESULT_SCHEMA_VERSION) fail('machine-effects-unsupported-undefined-result-schema');
+  if (typeof input.widthBits !== 'number') fail('machine-effects-invalid-undefined-result-width');
   const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-undefined-result-width');
   if (widthBits > MAX_UNDEFINED_RESULT_WIDTH_BITS) fail('machine-effects-invalid-undefined-result-width');
   const resultClass = enumValue(input.class, SETS.undefinedResultClasses, 'machine-effects-invalid-undefined-result-class');
@@ -471,6 +566,13 @@ export function createUndefinedResultDescriptor(input) {
   if (mask <= 0n || mask > fullMask) fail('machine-effects-invalid-undefined-result-mask');
   if (resultClass === 'fully' && mask !== fullMask) fail('machine-effects-fully-undefined-result-mask-incomplete');
   if (resultClass === 'partial' && mask === fullMask) fail('machine-effects-partial-undefined-result-mask-full');
+  const conditionRequired = resultClass === 'conditional' || resultClass === 'operand-dependent';
+  const conditionPresent = Object.hasOwn(input, 'condition');
+  if (conditionRequired !== conditionPresent || (conditionPresent && input.condition == null)) {
+    fail(conditionRequired
+      ? 'machine-effects-undefined-result-condition-required'
+      : 'machine-effects-undefined-result-condition-not-allowed');
+  }
   const out = {
     schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION,
     widthBits,
@@ -478,10 +580,7 @@ export function createUndefinedResultDescriptor(input) {
     class: resultClass,
     reason: nonEmpty(input.reason, 'machine-effects-undefined-result-reason-required'),
   };
-  if (input.condition != null) out.condition = serializable(input.condition, 'machine-effects-invalid-undefined-result-condition');
-  if ((resultClass === 'conditional' || resultClass === 'operand-dependent') && out.condition == null) {
-    fail('machine-effects-undefined-result-condition-required');
-  }
+  if (conditionRequired) out.condition = snapshotSerializableData(input.condition, 'machine-effects-invalid-undefined-result-condition');
   return deepFreeze(out);
 }
 
@@ -502,6 +601,8 @@ export function createMachineOperation(input, options = {}) {
   const allowedFields = OPERATION_FIELDS_BY_KIND[kind];
   if (!allowedFields) fail('machine-effects-invalid-operation-kind');
   assertAllowedKeys(input, allowedFields, 'machine-effects-unexpected-operation-field');
+  const undefinedResultProperty = ownDataProperty(input, 'undefinedResult',
+    'machine-effects-undefined-result-requires-enumerable-data-property');
   const out = { kind };
   if (input.id != null) out.id = nonEmpty(input.id, 'machine-effects-invalid-operation-id');
 
@@ -534,13 +635,22 @@ export function createMachineOperation(input, options = {}) {
     }
   }
 
-  if (input.undefinedResult != null) {
-    const descriptor = createUndefinedResultDescriptor(input.undefinedResult);
+  if (undefinedResultProperty.present) {
+    const descriptor = createUndefinedResultDescriptor(undefinedResultProperty.value);
     const results = kind === 'value' ? out.outputs
       : kind === 'intrinsic' ? out.effectSummary.outputs
         : kind === 'memory-read' ? [out.value] : [];
+    const inputs = kind === 'value' ? out.inputs
+      : kind === 'intrinsic' ? out.effectSummary.inputs : [];
     if (results.length !== 1 || resultWidthBits(results[0]) !== descriptor.widthBits) {
       fail('machine-effects-undefined-result-output-width-mismatch');
+    }
+    if (descriptor.condition != null && Object.hasOwn(descriptor.condition, 'operandIndex')) {
+      const operandIndex = descriptor.condition.operandIndex;
+      if (!Number.isSafeInteger(operandIndex) || operandIndex < 0) {
+        fail('machine-effects-invalid-undefined-result-condition-operand');
+      }
+      if (operandIndex >= inputs.length) fail('machine-effects-undefined-result-condition-operand-out-of-range');
     }
     out.undefinedResult = descriptor;
   }

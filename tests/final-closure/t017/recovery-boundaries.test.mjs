@@ -1,0 +1,178 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { apiInfo } from '../../../js/blocks.js';
+import {
+  createBitVectorValue,
+  createMachineOperation,
+  createTemporaryValue,
+  createUndefinedResultDescriptor,
+} from '../../../js/semantics/effects/index.js';
+
+test('BattleCats unknown-call labels are exact names, not allocator or logging regex authority', () => {
+  const expected = new Map([
+    ['malloc_size', { id:'libc_malloc_size', cat:'memory', args:['ptr'], ret:'length', effect:'read' }],
+    ['os_log_type_enabled', { id:'os_log_type_enabled', cat:'log', args:['log','type'], ret:'status', effect:'read' }],
+    ['os_log_create', { id:'os_log_create', cat:'log', args:['subsystem','category'], ret:'handle', effect:'runtime' }],
+  ]);
+  for (const [name, meaning] of expected) {
+    for (const spelling of [name, `_${name}`]) {
+      const actual = apiInfo(spelling);
+      assert.ok(actual, spelling);
+      for (const [key, value] of Object.entries(meaning)) assert.deepEqual(actual[key], value, `${spelling}:${key}`);
+    }
+  }
+
+  for (const name of [
+    'malloc_size_extra', 'my_malloc_size', '__malloc_size',
+    'os_log_type_enabled_extra', 'my_os_log_type_enabled', '__os_log_type_enabled',
+    'os_log_create_extra', 'my_os_log_create', '__os_log_create',
+  ]) {
+    const actual = apiInfo(name);
+    assert.notEqual(actual?.id, 'libc_malloc_size', name);
+    assert.notEqual(actual?.id, 'os_log_type_enabled', name);
+    assert.notEqual(actual?.id, 'os_log_create', name);
+  }
+});
+
+test('BattleCats 59-call residual denominator is fully classified by the bounded table', () => {
+  const calls = [
+    ...Array.from({ length: 51 }, () => '_malloc_size'),
+    ...Array.from({ length: 5 }, () => '_os_log_type_enabled'),
+    ...Array.from({ length: 3 }, () => '_os_log_create'),
+  ];
+  assert.equal(calls.length, 59);
+
+  const expected = new Map([
+    ['_malloc_size', { id:'libc_malloc_size', cat:'memory', args:['ptr'], ret:'length', effect:'read' }],
+    ['_os_log_type_enabled', { id:'os_log_type_enabled', cat:'log', args:['log','type'], ret:'status', effect:'read' }],
+    ['_os_log_create', { id:'os_log_create', cat:'log', args:['subsystem','category'], ret:'handle', effect:'runtime' }],
+  ]);
+  const counts = new Map();
+  for (const name of calls) {
+    const actual = apiInfo(name);
+    assert.ok(actual, name);
+    for (const [key, value] of Object.entries(expected.get(name))) assert.deepEqual(actual[key], value, `${name}:${key}`);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  assert.deepEqual(counts, new Map([
+    ['_malloc_size', 51],
+    ['_os_log_type_enabled', 5],
+    ['_os_log_create', 3],
+  ]));
+
+  for (const name of [
+    '_malloc_size_extra', '__malloc_size',
+    '_os_log_type_enabled_extra', '__os_log_type_enabled',
+    '_os_log_create_extra', '__os_log_create',
+  ]) assert.equal(apiInfo(name), null, `${name} must not overmatch`);
+});
+
+function valueOperation(undefinedResult) {
+  return createMachineOperation({
+    kind:'value', opcode:'architectural-boundary',
+    inputs:[createBitVectorValue(32, 1n)],
+    outputs:[createTemporaryValue('t017-undefined-result', createBitVectorValue(32))],
+    undefinedResult,
+  });
+}
+
+test('undefined-result condition arrays never silently lose sparse trailing entries', () => {
+  const descriptor = (condition) => createUndefinedResultDescriptor({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'array-shape', condition,
+  });
+  const dense = ['source-zero', { operandIndex:0 }, null];
+  assert.deepEqual(descriptor(dense).condition, dense);
+
+  const trailingHole = ['source-zero'];
+  trailingHole.length = 2;
+  const interiorHole = ['source-zero', , 'fallback'];
+  for (const condition of [trailingHole, interiorHole, new Array(2)]) {
+    assert.throws(() => descriptor(condition), /invalid-undefined-result-condition/);
+  }
+
+  let lengthReads = 0;
+  const trappedLength = new Proxy(dense, {
+    get(target, key, receiver) {
+      if (key === 'length') { lengthReads += 1; throw new Error('unexpected-length-read'); }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  assert.deepEqual(descriptor(trappedLength).condition, dense);
+  assert.equal(lengthReads, 0, 'array shape must use its own data descriptor');
+});
+
+test('undefined-result descriptors snapshot own data without coercion or getter execution', () => {
+  const valid = { widthBits:32, mask:'0xffffffff', class:'fully', reason:'strict-snapshot' };
+  let coercions = 0;
+  assert.throws(() => createUndefinedResultDescriptor({
+    ...valid, widthBits:{ valueOf() { coercions += 1; return 32; } },
+  }), /invalid-undefined-result-width/);
+  assert.throws(() => createUndefinedResultDescriptor({
+    ...valid, mask:{ toString() { coercions += 1; return '0xffffffff'; } },
+  }), /invalid-undefined-result-mask/);
+  assert.equal(coercions, 0);
+
+  let getterCalls = 0;
+  const accessor = { ...valid };
+  Object.defineProperty(accessor, 'widthBits', { enumerable:true, get() { getterCalls += 1; return 32; } });
+  assert.throws(() => createUndefinedResultDescriptor(accessor), /requires-enumerable-data-property/);
+  assert.equal(getterCalls, 0);
+  assert.throws(() => createUndefinedResultDescriptor(Object.assign(Object.create({ inherited:true }), valid)), /invalid-prototype/);
+
+  const protoCondition = {};
+  Object.defineProperty(protoCondition, '__proto__', {
+    enumerable: true, configurable: true, writable: true, value: { kind:'source-zero' },
+  });
+  const preservedProtoCondition = createUndefinedResultDescriptor({
+    ...valid, class:'conditional', condition:protoCondition,
+  }).condition;
+  assert.equal(Object.hasOwn(preservedProtoCondition, '__proto__'), true);
+  assert.deepEqual(preservedProtoCondition.__proto__, { kind:'source-zero' });
+  assert.equal(Object.getPrototypeOf(preservedProtoCondition), Object.prototype);
+
+  const hidden = { ...valid };
+  Object.defineProperty(hidden, 'unreviewed', { enumerable:false, value:true });
+  assert.throws(() => createUndefinedResultDescriptor(hidden), /unexpected-undefined-result-field/);
+
+  for (const hostile of [
+    new Proxy({ ...valid }, { getPrototypeOf() { throw new Error('hostile'); } }),
+    new Proxy({ ...valid }, { ownKeys() { throw new Error('hostile'); } }),
+    new Proxy({ ...valid }, { getOwnPropertyDescriptor() { throw new Error('hostile'); } }),
+  ]) assert.throws(() => createUndefinedResultDescriptor(hostile), /snapshot-failed/);
+});
+
+test('undefined-result conditions retain existing vocabulary but bind explicit operand indices', () => {
+  const legacyCondition = { kind:'divide-by-zero', operand:'divisor' };
+  const operation = valueOperation({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'legacy-condition', condition:legacyCondition,
+  });
+  assert.deepEqual(operation.undefinedResult.condition, legacyCondition);
+
+  assert.throws(() => valueOperation({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'out-of-range',
+    condition:{ kind:'source-zero', operandIndex:1 },
+  }), /condition-operand-out-of-range/);
+  assert.throws(() => valueOperation({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'invalid-index',
+    condition:{ kind:'source-zero', operandIndex:'0' },
+  }), /invalid-undefined-result-condition-operand/);
+
+  let conditionGetterCalls = 0;
+  const hostileCondition = { kind:'source-zero', operandIndex:0 };
+  Object.defineProperty(hostileCondition, 'kind', {
+    enumerable:true, get() { conditionGetterCalls += 1; return 'source-zero'; },
+  });
+  assert.throws(() => valueOperation({
+    widthBits:32, mask:'0xffffffff', class:'conditional', reason:'hostile-condition', condition:hostileCondition,
+  }), /invalid-undefined-result-condition/);
+  assert.equal(conditionGetterCalls, 0);
+
+  const base = {
+    kind:'value', opcode:'add', inputs:[createBitVectorValue(8, 1n)],
+    outputs:[createTemporaryValue('t017-malformed', createBitVectorValue(8))],
+  };
+  assert.throws(() => createMachineOperation({ ...base, undefinedResult:null }), /undefined-result-required/);
+  assert.throws(() => createMachineOperation({ ...base, undefinedResult:undefined }), /undefined-result-required/);
+  assert.doesNotThrow(() => createMachineOperation(base));
+});
