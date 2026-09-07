@@ -69,9 +69,12 @@ test('6127: a capped source preserves continuation after an empty page', async (
   const first = await api.callers({}, 0x1000n, { offset:5000, limit:100 });
   assert.equal(first.page.returned, 0);
   assert.ok(first.page.next > 5000, 'a capped producer must advance beyond the empty-page offset');
+  assert.equal(first.status.completeness, 'partial', 'query-limited empty pages must remain fail-closed');
+  assert.equal(first.status.reason, 'query-limit');
   const second = await api.callers({}, 0x1000n, { offset:first.page.next, limit:100 });
   assert.equal(second.page.returned, 0);
   assert.notEqual(second.page.offset, first.page.offset, 'the next request must not repeat the capped offset');
+  assert.equal(second.page.next, null, 'a prefix already below the next offset must terminate');
   assert.deepEqual(requestedLimits, [5100, 5200], 'each request must ask the producer for a strictly later prefix');
 });
 test('6127: an overflowing cumulative offset fails closed before producer access', async () => {

@@ -616,13 +616,28 @@ export function createAppAnalysisQueryAdapter(app) {
       const cumulativeLimit = cumulativePageLimit(offset, limit);
       if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
       const source = program.callersOf(address, cumulativeLimit);
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      const sourceRows = Array.from(source || []);
+      const queryLimited = source?.queryLimited === true;
+      const result = paged(
+        sourceRows,
+        page,
+        source?.complete === false || queryLimited ? 'partial' : 'complete',
+        { reason:source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) },
+      );
       if (source?.queryLimited === true && result.page.next == null) {
-        const next = nextPageOffset(
-          result.page.offset,
-          result.page.returned > 0 ? result.page.returned : result.page.limit,
-        );
-        if (next != null) result.page.next = next;
+        // A capped producer may expose one empty boundary page at exactly its
+        // current prefix length. Advance once so offset=5000 does not repeat
+        // itself, but stop when the producer's entire prefix is already below
+        // the requested offset: there is no evidence for another page and an
+        // unconditional cursor would create an infinite empty continuation.
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
       }
       return result;
     },
