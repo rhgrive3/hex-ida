@@ -60,6 +60,38 @@ for (const [label, factory, base] of [
   );
 }
 
+// Map payloads are canonicalized by key/value, so the witness must follow the
+// same entry order. Otherwise different special-number assignments can collide,
+// or an insertion-order-only change can move an otherwise stable ID.
+const mapNaNThenInfinity = new Map([
+  ['a', NaN],
+  ['b', Infinity],
+]);
+const mapInfinityThenNaN = new Map([
+  ['b', NaN],
+  ['a', Infinity],
+]);
+const mapReordered = new Map([
+  ['b', Infinity],
+  ['a', NaN],
+]);
+for (const [label, factory, base] of [
+  ['entity', createEntityId, entityBase],
+  ['evidence', createEvidenceId, evidenceBase],
+]) {
+  const first = idFor(factory, base, mapNaNThenInfinity);
+  assert.notEqual(
+    first,
+    idFor(factory, base, mapInfinityThenNaN),
+    `${label} Map key/value special-number assignments must stay distinct`,
+  );
+  assert.equal(
+    first,
+    idFor(factory, base, mapReordered),
+    `${label} Map identity must not depend on insertion order`,
+  );
+}
+
 // Ordinary JSON-safe numeric identities do not gain a witness and therefore
 // retain their exact persisted IDs.
 const ordinaryIdentity = { value: 42, nested: ['x', 1] };

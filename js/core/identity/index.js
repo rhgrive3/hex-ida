@@ -92,6 +92,18 @@ export function stableDigest(value) {
   return fnv64(text, 0xcbf29ce484222325n) + fnv64(text, 0x84222325cbf29ce4n);
 }
 
+function canonicalWitnessParts(value) {
+  return {
+    normalized: jsonSafe(value),
+    witness: lossyTypeWitness(value),
+  };
+}
+
+function compareCanonicalWitnessParts(left, right) {
+  return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
+    || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
+}
+
 function typedId(prefix, payload) {
   return `${prefix}_${stableDigest({ schema: ID_SCHEMA_VERSION, payload })}`;
 }
@@ -185,15 +197,28 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     seen.add(value);
     if (value instanceof Map) {
       out.push([path, 'map']);
-      for (const [k, v] of value.entries()) {
-        lossyTypeWitness(k, `${path}.<key>`, seen, out);
-        lossyTypeWitness(v, `${path}.<val>`, seen, out);
-      }
+      const entries = [...value.entries()].map(([key, entryValue]) => ({
+        key,
+        value: entryValue,
+        keyParts: canonicalWitnessParts(key),
+        valueParts: canonicalWitnessParts(entryValue),
+      }));
+      entries.sort((left, right) => compareCanonicalWitnessParts(left.keyParts, right.keyParts)
+        || compareCanonicalWitnessParts(left.valueParts, right.valueParts));
+      entries.forEach((entry, index) => {
+        lossyTypeWitness(entry.key, `${path}.$map[${index}].<key>`, seen, out);
+        lossyTypeWitness(entry.value, `${path}.$map[${index}].<val>`, seen, out);
+      });
     } else if (value instanceof Set) {
       out.push([path, 'set']);
-      for (const v of value.values()) {
-        lossyTypeWitness(v, `${path}[]`, seen, out);
-      }
+      const values = [...value.values()].map((entryValue) => ({
+        value: entryValue,
+        parts: canonicalWitnessParts(entryValue),
+      }));
+      values.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
+      values.forEach((entry, index) => {
+        lossyTypeWitness(entry.value, `${path}.$set[${index}]`, seen, out);
+      });
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
