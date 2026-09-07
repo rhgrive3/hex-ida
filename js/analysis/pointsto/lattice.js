@@ -21,7 +21,6 @@
  */
 
 import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
-import { isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
 
 export const POINTS_TO_LATTICE_VERSION = '1.0.0';
 
@@ -178,18 +177,6 @@ export function rangeRelation(a, sizeA, b, sizeB) {
   return 'may';
 }
 
-/** Storage classes whose separation may be proven by a canonical root descriptor. */
-export const PROVEN_SEPARATION_CLASSES = Object.freeze(['global-like', 'heap-like', 'tls-like']);
-
-/**
- * Module-private brand for canonical root-descriptor separation proofs.
- *
- * The symbol carries the exact proof object returned by the canonical address
- * producer. It may survive internal object-spread reconstructions, but the
- * target's root identity and storage class must still match that proof.
- */
-const ROOT_DESCRIPTOR_PROOF = Symbol('phase7.pointsto.root-descriptor-proof');
-
 function rootKeyOf(target) {
   return stableStringify({
     addressSpace: target.addressSpace,
@@ -202,70 +189,21 @@ function rootKeyOf(target) {
   });
 }
 
-function proofRootKind(proof) {
-  return proof?.kind === 'root-only' ? proof.rootKind : proof?.kind;
-}
-
-function canonicalProofMetadataIsValid(proof) {
-  return isCanonicalRootDescriptorProof(proof)
-    && proofRootKind(proof) === 'rooted'
-    && proof.separationAuthority === 'root-descriptor'
-    && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass);
-}
-
-function targetMatchesCanonicalProof(input, proof) {
-  if (!canonicalProofMetadataIsValid(proof)) return false;
-  const addressSpace = input.addressSpace == null
-    ? 'memory'
-    : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown');
-  const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
-  const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
-    ? input.rootEntityId : null;
-  return addressSpace === (proof.addressSpace ?? 'memory')
-    && rootKind === proofRootKind(proof)
-    && stableStringify(input.rootIdentity ?? null) === stableStringify(proof.rootIdentity ?? null)
-    && rootEntityId === (proof.rootEntityId ?? null)
-    && input.separationClass === proof.separationClass
-    && input.separationAuthority === 'root-descriptor';
-}
-
-function inputMatchesCanonicalProof(input, proof) {
-  if (!canonicalProofMetadataIsValid(proof)) return false;
-  const expectedRootKind = proofRootKind(proof);
-  const checks = [
-    ['addressSpace', proof.addressSpace ?? 'memory'],
-    ['rootKind', expectedRootKind],
-    ['rootIdentity', proof.rootIdentity ?? null],
-    ['rootEntityId', proof.rootEntityId ?? null],
-    ['separationClass', proof.separationClass],
-    ['separationAuthority', 'root-descriptor'],
-  ];
-  for (const [key, expected] of checks) {
-    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
-    const actual = key === 'rootEntityId' && input[key] != null
-      ? String(input[key]) : (input[key] ?? null);
-    if (key === 'rootIdentity') {
-      if (stableStringify(actual) !== stableStringify(expected)) return false;
-    } else if (actual !== expected) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
-  // A plain object can never mint authority. Internal copies are accepted only
-  // when the exact canonical proof object and its root identity are preserved.
-  const proof = input[ROOT_DESCRIPTOR_PROOF];
-  const proven = targetMatchesCanonicalProof(input, proof);
   const target = {
-    addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
+    // Address spaces are identity strings, not free-form labels: non-canonical
+    // spelling (e.g. stray whitespace) must not become a fake separation proof
+    // downstream (#5717), so they are canonicalized here exactly like the
+    // regions-v2 boundary does.
+    addressSpace: input.addressSpace == null
+      ? 'memory'
+      : (typeof input.addressSpace === 'string' && input.addressSpace.trim() ? input.addressSpace.trim() : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
     rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
-    separationAuthority: proven ? 'root-descriptor' : null,
+    separationAuthority: typeof input.separationAuthority === 'string' ? input.separationAuthority : null,
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
       ? String(input.address)
       : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
@@ -273,45 +211,10 @@ export function createPointsToTarget(input = {}) {
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
   };
-  if (proven) target[ROOT_DESCRIPTOR_PROOF] = proof;
   target.rootKey = rootKeyOf(target);
   return deepFreeze(target);
 }
 
-/**
- * Canonical root-descriptor proof boundary (#6066).
- *
- * `proof` must be the exact object returned by the canonical root-descriptor
- * producer. Matching `separationClass`/authority strings are insufficient.
- */
-export function createRootDescriptorSeparatedTarget(input = {}, proof = null) {
-  if (!canonicalProofMetadataIsValid(proof) || !inputMatchesCanonicalProof(input, proof)) {
-    fail('phase7-pointsto-root-descriptor-proof-required');
-  }
-  const target = {
-    ...input,
-    addressSpace: proof.addressSpace ?? 'memory',
-    rootKind: proofRootKind(proof),
-    rootIdentity: proof.rootIdentity ?? null,
-    rootEntityId: proof.rootEntityId ?? null,
-    separationClass: proof.separationClass,
-    separationAuthority: 'root-descriptor',
-    [ROOT_DESCRIPTOR_PROOF]: proof,
-  };
-  return createPointsToTarget(target);
-}
-
-/**
- * Consumer-side authority check (#6066).
- *
- * Answers with the target's proof-brand and exact root fields, not with a
- * caller-supplied authority string.
- */
-export function provenSeparationAuthority(target) {
-  return targetMatchesCanonicalProof(target, target?.[ROOT_DESCRIPTOR_PROOF])
-    ? 'root-descriptor'
-    : null;
-}
 /**
  * A points-to set.
  *
