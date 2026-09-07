@@ -67,7 +67,7 @@ export function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter)
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);

@@ -67,7 +67,7 @@ function parameterClass(parameter) {
   const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
   const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
