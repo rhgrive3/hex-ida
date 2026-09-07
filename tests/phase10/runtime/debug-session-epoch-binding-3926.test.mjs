@@ -169,6 +169,7 @@ function assertEpochMismatch(error) {
   assert.equal(error?.code,'session-epoch-event-mismatch');
   assert.equal(error?.details?.traceEpoch,1);
   assert.equal(error?.details?.eventEpoch,null);
+  assert.equal(error?.details?.reason,'event-epoch-invalid');
   return true;
 }
 
@@ -228,9 +229,44 @@ test('P10 traceFunction rejects mixed valid/stale batches without retaining a pr
     assert.equal(error?.code,'session-epoch-event-mismatch');
     assert.equal(error?.details?.traceEpoch,2);
     assert.equal(error?.details?.eventEpoch,null);
+    assert.equal(error?.details?.reason,'event-epoch-mismatch');
     return true;
   });
 
   assert.equal(session.traces.snapshot().events.length,0);
   assert.equal(platform.evidence.length,0);
+});
+
+test('P10 trace batch rejection exposes a structured reason for each failure class (#3926)', async () => {
+  const direct = new DebugSession(adapterFixture(),{ id:'batch-reason' });
+  assert.deepEqual(direct.acceptEvents({ events:'not-an-array' }),{ ok:false, reason:'events-not-array' });
+  await direct.disconnect();
+  assert.deepEqual(direct.acceptEvents([]),{ ok:false, reason:'closed-session' });
+
+  const cases = [
+    {
+      trace:async () => ({ events:{ type:'branch' } }),
+      code:'session-trace-invalid',
+      reason:'events-not-array',
+    },
+    {
+      trace:async () => ({ events:[{ type:'branch', epoch:1, value:undefined }] }),
+      code:'session-trace-not-wire-safe',
+      reason:'wire-unsafe',
+    },
+  ];
+  for (const [index, scenario] of cases.entries()) {
+    const adapter = traceAdapterFixture(scenario.trace);
+    const platform = new RuntimeAnalysisPlatform({ symbolic:false });
+    const session = await platform.startSession({ adapter, connect:false });
+
+    await assert.rejects(platform.traceFunction(0x7300n + BigInt(index)), (error) => {
+      assert.equal(error?.code,scenario.code);
+      assert.equal(error?.details?.reason,scenario.reason);
+      assert.equal(error?.details?.eventEpoch,null);
+      return true;
+    });
+    assert.equal(session.traces.snapshot().events.length,0);
+    assert.equal(platform.evidence.length,0);
+  }
 });
