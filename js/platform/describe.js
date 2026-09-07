@@ -1,4 +1,5 @@
 import { architectureCapability } from '../architecture/index.js';
+import { sectionHasMappedAddress } from '../binary/audit.js';
 import { DEPLOYED_CAPSTONE_SUPPORT } from './capstone-capability.js';
 import { supportDisplayForTruth, supportTruthForImage } from './support-capability.js';
 
@@ -23,7 +24,7 @@ function regionFrom(item, id, kind) {
     vmAddr: BigInt(item.address ?? 0),
     size: fileSize,
     declaredSize,
-    exec: !!item.perms?.execute,
+    exec: !!item.perms?.execute && (kind !== 'section' || sectionHasMappedAddress(item)),
     write: !!item.perms?.write,
     read: !!item.perms?.read,
     zerofill: fileSize === 0n && declaredSize > 0n,
@@ -35,86 +36,86 @@ function regionFrom(item, id, kind) {
 export function regionsForImage(image, prefix = 'p0_') {
   const sections = image.sections || [];
   const usefulSections = sections.filter((s) => BigInt(s.fileSize ?? s.size ?? 0) > 0n || BigInt(s.size ?? 0n) > 0n);
+  const segments = image.segments || [];
+
   if (!usefulSections.length) {
-    const segments = image.segments || [];
-    return segments.map((item, index) => regionFrom(item, `${prefix}g${index}`, 'segment'));
+    return segments.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'segment'));
   }
 
-  const out = usefulSections.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'section'));
+  const regions = usefulSections.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'section'));
+  const mappedExecSections = usefulSections.filter((s) => sectionHasMappedAddress(s) && !!s.perms?.execute);
 
-  // Retain executable segment coverage not covered by mapped sections
-  const segments = image.segments || [];
-  for (let segIndex = 0; segIndex < segments.length; segIndex++) {
-    const seg = segments[segIndex];
-    const segStart = BigInt(seg.address ?? 0n);
-    const segSize = BigInt(seg.size ?? seg.fileSize ?? 0n);
-    if (segSize <= 0n || !seg.perms?.execute) continue;
+  let extraIndex = usefulSections.length;
+  for (const seg of segments) {
+    if (!seg.perms?.execute) continue;
+    const segStart = BigInt(seg.address ?? 0);
+    const segSize = BigInt(seg.size ?? seg.fileSize ?? 0);
+    if (segSize <= 0n) continue;
     const segEnd = segStart + segSize;
 
-    // Find mapped sections that overlap this segment
-    const covering = usefulSections.filter((s) => {
-      const sStart = BigInt(s.address ?? 0n);
-      const sSize = BigInt(s.size ?? s.fileSize ?? 0n);
-      const sEnd = sStart + sSize;
-      // Only an executable section can replace executable PT_LOAD coverage.
-      // Allocated/read-only sections remain useful regions, but they do not
-      // override the segment's executable mapping authority.
-      const preservesExecutableCoverage = !!s.perms?.execute;
-      return preservesExecutableCoverage && sSize > 0n && sStart < segEnd && sEnd > segStart;
-    }).map((s) => {
-      const sStart = BigInt(s.address ?? 0n);
-      const sSize = BigInt(s.size ?? s.fileSize ?? 0n);
-      return {
-        start: sStart < segStart ? segStart : sStart,
-        end: (sStart + sSize) > segEnd ? segEnd : (sStart + sSize),
-      };
-    }).sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    const coveredSpans = [];
+    for (const sec of mappedExecSections) {
+      const secStart = BigInt(sec.address ?? 0);
+      const secSize = BigInt(sec.size ?? sec.fileSize ?? 0);
+      if (secSize <= 0n) continue;
+      const secEnd = secStart + secSize;
+      if (secEnd <= segStart || secStart >= segEnd) continue;
+      coveredSpans.push({
+        start: secStart > segStart ? secStart : segStart,
+        end: secEnd < segEnd ? secEnd : segEnd,
+      });
+    }
 
-    // Find uncovered spans
+    coveredSpans.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    const merged = [];
+    for (const span of coveredSpans) {
+      if (!merged.length) {
+        merged.push(span);
+      } else {
+        const last = merged[merged.length - 1];
+        if (span.start <= last.end) {
+          if (span.end > last.end) last.end = span.end;
+        } else {
+          merged.push(span);
+        }
+      }
+    }
+
     let cursor = segStart;
-    const uncovered = [];
-    for (const span of covering) {
+    for (const span of merged) {
       if (span.start > cursor) {
-        uncovered.push({ start: cursor, end: span.start });
+        emitUncovered(cursor, span.start);
       }
       if (span.end > cursor) {
         cursor = span.end;
       }
     }
     if (cursor < segEnd) {
-      uncovered.push({ start: cursor, end: segEnd });
+      emitUncovered(cursor, segEnd);
     }
 
-    uncovered.forEach((span, subIndex) => {
-      const spanSize = span.end - span.start;
-      if (spanSize <= 0n) return;
-      const id = uncovered.length === 1 && span.start === segStart && spanSize === segSize
-        ? `${prefix}g${segIndex}`
-        : `${prefix}g${segIndex}_${subIndex}`;
-      if (span.start === segStart && spanSize === segSize) {
-        out.push(regionFrom(seg, id, 'segment'));
-      } else {
-        const offsetDelta = span.start - segStart;
-        const segFileOffset = BigInt(seg.fileOffset ?? 0n);
-        const segFileSize = BigInt(seg.fileSize ?? seg.size ?? 0n);
-        const spanFileOffset = segFileOffset + offsetDelta;
-        const remainingFileSize = segFileSize > offsetDelta ? segFileSize - offsetDelta : 0n;
-        const spanFileSize = remainingFileSize > spanSize ? spanSize : remainingFileSize;
-        out.push(regionFrom({
-          name: seg.name ? `${seg.name} (uncovered)` : `Segment ${id}`,
-          segment: seg.name || null,
-          address: span.start,
-          size: spanSize,
-          fileOffset: spanFileOffset,
-          fileSize: spanFileSize,
-          perms: seg.perms,
-          source: seg.source || 'segment',
-        }, id, 'segment'));
-      }
-    });
+    function emitUncovered(uStart, uEnd) {
+      const uSize = uEnd - uStart;
+      const offsetDelta = uStart - segStart;
+      const fileOffset = BigInt(seg.fileOffset ?? 0) + offsetDelta;
+      const segFileSize = BigInt(seg.fileSize ?? seg.size ?? 0);
+      const fileSize = offsetDelta < segFileSize
+        ? (segFileSize - offsetDelta < uSize ? segFileSize - offsetDelta : uSize)
+        : 0n;
+      const spanItem = {
+        name: seg.name,
+        segment: seg.name,
+        address: uStart,
+        size: uSize,
+        fileOffset,
+        fileSize,
+        perms: seg.perms,
+      };
+      regions.push(regionFrom(spanItem, `${prefix}s${extraIndex++}`, 'segment'));
+    }
   }
 
-  return out;
+  return regions;
 }
 
 export function describeBinaryImage(image, options = {}) {
