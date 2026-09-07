@@ -7,7 +7,7 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed','skipdata']);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 // Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
 // and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
@@ -265,6 +265,15 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  // Capstone 5.0 SKIPDATA emits id == 0 for the synthetic ".byte" data
+  // record (capstone.h: 'in Skipdata mode, "data" instruction has 0 for
+  // this id field').  The sentinel is canonical only for the SKIPDATA
+  // status; any other status with instructionCode 0 stays a schema error
+  // and a normal instruction keeps requiring a positive opcode id (#6058).
+  const skipdataRecord = detailStatus === 'skipdata';
+  const instructionCode = skipdataRecord
+    ? integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:0, max:0 })
+    : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 });
   const result = {
     ...input,
     contractVersion,
@@ -278,7 +287,7 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:instructionIdOf(input.instructionId),
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    instructionCode,
     instructionFamily,
     decoderContractVersion:contractVersion,
     detailStatus,
