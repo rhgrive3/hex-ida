@@ -200,7 +200,11 @@ for (const [form, encoded] of [
   );
 }
 
-// 4c. A distinct contribution cannot trigger unbounded repeated full scans.
+// 4c. A distinct late contribution cannot trigger repeated full scans that
+// bypass the global per-header budget. With two headers available, the first
+// lookup consumes one header and the late lookup can inspect only the first
+// header before it must fail closed; the old per-lookup accounting incorrectly
+// resolved the second contribution here.
 {
   const firstTable = debugAddrSection([ADDRESS]);
   const secondBase = firstTable.length + 8;
@@ -210,7 +214,7 @@ for (const [form, encoded] of [
     debug_info: concat(first.debug_info, second.debug_info),
     debug_abbrev: first.debug_abbrev,
     debug_addr: concat(firstTable, debugAddrSection([ADDRESS])),
-  }, { maxRecords: 10, maxAddrContributionScans: 1 });
+  }, { maxRecords: 10, maxAddrContributionScans: 2 });
   const subprograms = [...parsed.dies.values()].filter((die) => die.tag === DW_TAG_subprogram);
   assert.equal(subprograms.length, 2);
   assert.equal(subprograms[0].attributes.get(DW_AT_low_pc).value, ADDRESS);
@@ -381,4 +385,3 @@ function assertAddrxRejected(debugAddr, { addrBase = 8 } = {}) {
 }
 
 console.log('issue #6184 DWARF5 addrx resolution: PASS');
-

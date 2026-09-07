@@ -333,11 +333,19 @@ function strxString(index, unit, sections) {
  * the base is not a header/interior offset and binds it to the header fields
  * that define the entry layout (#6184).
  */
-function debugAddrContributionAtBase(table, base) {
+function debugAddrContributionAtBase(table, base, state = null) {
   if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let offset = 0;
   while (offset < table.length) {
+    // A lookup for a later contribution re-inspects earlier headers. Charge
+    // each header before reading it so the shared parse-wide budget bounds the
+    // actual work across all distinct addrBase values, not just lookup count.
+    if (state && state.scans >= state.maxScans) {
+      state.exhausted = true;
+      return null;
+    }
+    if (state) state.scans += 1;
     if (offset + 4 > table.length) return null;
     const initialLength = view.getUint32(offset, true);
     let length;
@@ -385,12 +393,10 @@ function addrxAddress(index, unit, sections, state = null) {
   if (state?.cache?.has(base)) {
     contribution = state.cache.get(base);
   } else {
-    if (state && state.scans >= state.maxScans) {
-      state.exhausted = true;
-      return null;
-    }
-    if (state) state.scans += 1;
-    contribution = debugAddrContributionAtBase(table, base);
+    // The shared state is charged by contribution header below, not once per
+    // lookup: a late base may otherwise make a fresh full-section walk for
+    // every distinct CU and exceed the global work budget (#6184).
+    contribution = debugAddrContributionAtBase(table, base, state);
     if (state?.cache) state.cache.set(base, contribution);
   }
   if (!contribution
@@ -1033,4 +1039,3 @@ function normalizeSections(sections) {
   }
   return out;
 }
-
