@@ -4,6 +4,7 @@ import { ByteView } from '../../js/binary/reader.js';
 import { parseExceptionFunctions } from '../../js/binary/pe-loader.js';
 
 const INVALID_REASON = 'exception:invalid-record';
+const REMAINDER_REASON = 'exception:directory-record-remainder';
 
 function writeU32(bytes, offset, value) {
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(offset, value, true);
@@ -50,6 +51,23 @@ function reasons(image) {
   assert.equal(image.metadata.peMetadata?.complete, false);
   assert.equal(reasons(image).includes(INVALID_REASON), true);
   assert.equal(image.functions.length, 0);
+}
+
+{
+  const bytes = new Uint8Array(64);
+  writeU32(bytes, 0, 0x2000);
+  writeU32(bytes, 4, 0x1ff0);
+  writeU32(bytes, 8, 0x3000);
+  const image = new BinaryImage(bytes, { format: 'pe', bits: 64, imageBase: 0n });
+  addPdata(image, 13);
+  addText(image);
+
+  parseExceptionFunctions(new ByteView(bytes), { rva: 0x1000, size: 13 }, image, 0x8664);
+
+  const parsedReasons = reasons(image);
+  assert.equal(parsedReasons.includes(REMAINDER_REASON), true);
+  assert.equal(parsedReasons.includes(INVALID_REASON), true);
+  assert.equal(image.metadata.peMetadata?.complete, false);
 }
 
 {

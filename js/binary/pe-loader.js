@@ -114,7 +114,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   }
   const result = parseExceptionFunctionsCore(r, dir, image, machine, budget);
   const invalidAfter = image.metadata?.exceptionDirectory?.invalidRecords || 0;
-  if (invalidAfter > invalidBefore && image.metadata?.peMetadata?.complete !== false) {
+  if (invalidAfter > invalidBefore) {
     budget.partial(
       'exception:invalid-record',
       `PE exception directory rejected ${invalidAfter - invalidBefore} invalid record(s)`,
