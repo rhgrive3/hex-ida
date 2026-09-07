@@ -5,7 +5,10 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
-import { isCanonicalMemorySsaProducerArtifact } from './build.js';
+import {
+  canonicalMemorySsaProducerDigest,
+  isCanonicalMemorySsaProducerArtifact,
+} from './build.js';
 import {
   CANONICAL_ACCESS_ISSUER,
   CANONICAL_ALIAS_ISSUERS,
@@ -16,7 +19,6 @@ import {
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
-  canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
 } from './proof.js';
 
@@ -1233,7 +1235,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     }
   }
   if (typeof artifact.canonicalDigest !== 'string' || !artifact.canonicalDigest.trim()
-      || artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact)) {
+      || artifact.canonicalDigest !== canonicalMemorySsaProducerDigest(artifact)) {
     throw new ForwardingStop('stale', 'memoryssa-canonical-digest-mismatch');
   }
   // The artifact's serialized identity is not an authority for itself. Exact
@@ -1606,7 +1608,7 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
     if (!forwardingObject(artifact)
         || !isCanonicalMemorySsaProducerArtifact(artifact)
         || String(artifact.canonicalDigest ?? '') !== binding.artifactDigest
-        || String(canonicalMemorySsaDigest(artifact)) !== binding.artifactDigest
+        || String(canonicalMemorySsaProducerDigest(artifact)) !== binding.artifactDigest
         || String(artifact.snapshotId ?? '') !== binding.snapshotId
         || String(fact.artifactDigest ?? '') !== binding.artifactDigest
         || String(fact.identity?.digest ?? '') !== binding.identityDigest

@@ -12,7 +12,7 @@ release gate has been run for this development batch.
 | Stage B | Reassess residual work against the current code; historical task statuses are not current product proof. | Start independent residuals when their actual code dependencies exist; no Stage A administrative wait. |
 | Environment | Actual extracted LLVM/clang/LLD 18.1.3 are available; versioned wrappers/symlinks were restored. Phase 6 exact toolchain probe and F6 oracle now pass. | Preserve explicit tool selection and cwd/non-login shell. Phase 8 competitive compiler 18.1.8 is a separate lock. |
 | Combined release | Combined build passes; full suites, applicable independent verifiers, target/runtime proof and main reconciliation remain outstanding. | Run once on the final release candidate; do not reconstruct retired receipt history. |
-| Cold performance | Three-repetition 135-function batch measures 622.195 ms against the 250 ms threshold. Optimizer median of repetition means is 127.139 ms against 150 ms; interactive is 0.362 ms against 5 ms. | Diagnose slow functions locally; overall performance gate remains FAIL. |
+| Cold performance | Source11873792c measured cold622.195 ms >250; optimizer127.139 ms <=150 and interactive0.362 ms <=5. A subsequent private-artifact digest cache is implemented. | The current cold threshold remains unproven; do not reuse the earlier source-bound measurements as current acceptance. Repeated mutable-IR hashing needs a separate sound ownership solution. |
 | Hosted settings | This local change does not modify remote branch-protection requirements or other workflows. | When publishing this branch, inspect required checks and remove retired checkpoint job names from development-branch protection. Preserve final release checks. |
 
 Typical commands:
@@ -90,3 +90,16 @@ Generated-runtime checks: current host and release-version checks pass. The old
 unused 1.0 timestamp-version entry point conflicted with canonical content-bound
 2.0 serials; it now delegates to the single current release-version contract.
 Compatibility rerun passes (1.1s), without restoring a historical version rule.
+
+Cold-path follow-up: exactly two single-function CPU profiles found repeated
+identity serialization/hashing dominant (about84% for those cases). Added only
+a private-producer, deeply frozen MemorySSA artifact digest cache and seeded it
+at publication. Caller IR stays uncached, including getter-backed/mutable input;
+its freshness checks are preserved. Independent review approved this boundary.
+Focused cache regressions3/3, byte forwarding, core and CFG tests pass.
+Post-change single calls were3717.6 ms (ARM assembly/nonsemantic) and2610.2 ms
+(RISC-V/semantic), compared with earlier raw medians4343.6/3225.6 ms. These are
+limited environment-sensitive observations, not a proven whole-corpus speedup.
+No second nine-minute full performance run was started; current full-threshold
+acceptance remains open. Profile files are under the task-owned
+`/mnt/workspace/.dev-state/hex-development-batch/` directory.

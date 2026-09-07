@@ -53,8 +53,26 @@ class CanonicalMemorySsaArtifact {
   }
 }
 
+// Only the exact producer object is eligible for cross-query reuse.  The
+// builder publishes this privately branded object after deep-freezing it, so
+// its digest cannot become stale.  Unbranded or unfrozen values deliberately
+// take the ordinary recomputation path and never gain identity authority from
+// this cache.
+const canonicalMemorySsaDigestCache = new WeakMap();
+
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
+}
+
+export function canonicalMemorySsaProducerDigest(artifact) {
+  if (!isCanonicalMemorySsaProducerArtifact(artifact) || !Object.isFrozen(artifact)) {
+    return canonicalMemorySsaDigest(artifact);
+  }
+  const cached = canonicalMemorySsaDigestCache.get(artifact);
+  if (cached !== undefined) return cached;
+  const digest = canonicalMemorySsaDigest(artifact);
+  canonicalMemorySsaDigestCache.set(artifact, digest);
+  return digest;
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -1475,10 +1493,14 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     byteCoverage,
     blockStates,
   };
-  const unpublished = {
+  const canonicalDigest = canonicalMemorySsaDigest(artifact);
+  const published = deepFreeze(new CanonicalMemorySsaArtifact({
     ...artifact,
-    canonicalDigest: canonicalMemorySsaDigest(artifact),
-  };
-  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
+    canonicalDigest,
+  }));
+  // The digest was computed from the exact payload immediately before its
+  // private publication and deep freeze. Seed the producer-owned cache so
+  // the first consumer query does not repeat that full serialization pass.
+  canonicalMemorySsaDigestCache.set(published, canonicalDigest);
   return published;
 }
