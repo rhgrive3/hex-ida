@@ -115,10 +115,10 @@ test('#3189 numeric strings are not budget authority', () => {
 
 test('#3189 real numbers keep floor/clamp semantics', () => {
   const program = programWithChain();
-  const floored = functionPaths(program, 100n, 300n, { maxDepth: 3.5, maxPaths: 4.7 });
-  assert.deepEqual(floored.paths[0], [100n, 200n, 300n], '3.5 floors to 3 and reaches the sink');
-  const floorShort = functionPaths(program, 100n, 300n, { maxDepth: 2.9 });
-  assert.equal(floorShort.paths.length, 0, '2.9 floors to 2 and cannot reach the sink');
+  const floored = functionPaths(program, 100n, 300n, { maxDepth: 2.9, maxPaths: 4.7 });
+  assert.deepEqual(floored.paths[0], [100n, 200n, 300n], '2.9 floors to two edges and reaches the sink');
+  const floorShort = functionPaths(program, 100n, 300n, { maxDepth: 1.9 });
+  assert.equal(floorShort.paths.length, 0, '1.9 floors to one edge and cannot reach the sink');
 
   const limited = functionPaths(programWithThreePaths(), 100n, 900n, { maxPaths: 2.9 });
   assert.equal(limited.paths.length, 2, '2.9 floors to an actual two-path budget');
