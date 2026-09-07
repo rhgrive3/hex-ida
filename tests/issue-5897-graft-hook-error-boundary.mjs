@@ -51,3 +51,19 @@ const helper = fileURLToPath(new URL('../.claude/helpers/graft-hooks.cjs', impor
 }
 
 console.log('graft-hooks error-boundary regression: PASS');
+
+// Case 5: an installed but syntactically invalid hook is not "unavailable".
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graft-hook-'));
+  const dist = path.join(dir, 'dist', 'claude');
+  fs.mkdirSync(dist, { recursive: true });
+  fs.writeFileSync(path.join(dist, 'hooks.js'), 'export function main( {\n');
+  const result = spawnSync(process.execPath, [helper, 'post-edit'], {
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: dir, NODE_PATH: '' },
+  });
+  assert.equal(result.status, 1, 'an installed syntax error must not become a no-op');
+  assert.match(result.stderr, /graft hook unavailable:/);
+}
+
+console.log('graft-hooks import-error regression: PASS');

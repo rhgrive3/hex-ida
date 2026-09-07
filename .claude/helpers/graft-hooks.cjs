@@ -45,14 +45,18 @@ function entry(name) {
 // non-zero exit with evidence on stderr — a broken quality guardrail must not
 // be converted into a success.
 async function runGraftHook() {
+  const hookPath = entry("hooks.js");
   let module;
   try {
-    module = await import(pathToFileURL(entry("hooks.js")).href);
+    module = await import(pathToFileURL(hookPath).href);
   } catch (error) {
-    // Module not found / cannot resolve = graft unavailable; stay a no-op.
-    if (error && (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND')) return 0;
+    // Only an absent entry module is an unavailable graft. An existing but
+    // unloadable hook (syntax error or missing transitive dependency) is an
+    // installed guardrail failure and must not become a silent success.
+    if (!fs.existsSync(hookPath)
+      && error && (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND')) return 0;
     process.stderr.write(`graft hook unavailable: ${error?.message || error}\n`);
-    return 0; // resolution-side breakage is still "graft unavailable"
+    return 1;
   }
   if (!module || typeof module.main !== 'function') {
     process.stderr.write('graft hook failed: hooks.js has no main() export\n');
