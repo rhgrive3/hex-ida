@@ -146,6 +146,7 @@ test('issue #6085 - binaryImage imports provide bind identity without explicit b
     categoryList: { vmAddr: BigInt(CATLIST), size: 8n },
     binaryImage: {
       imports: [{ name: '_OBJC_CLASS_$_NSString', sites: [{ address: BigInt(CLS_STORAGE) }] }],
+      metadata: { chainedFixups: { complete: true, importsComplete: true, bindingSitesComplete: true } },
     },
   };
   const extra = await parseObjcExtendedMetadata(read, sections, {
