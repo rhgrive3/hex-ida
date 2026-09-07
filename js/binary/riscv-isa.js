@@ -74,14 +74,19 @@ function strictIndex(value) {
 }
 
 function strictRiscvProfile(value) {
+  const normalized = typeof value?.canonical === 'string'
+    ? normalizeRiscvIsaString(value.canonical)
+    : null;
   if (!value || typeof value !== 'object'
-    || typeof value.canonical !== 'string'
-    || value.canonical.trim() === ''
+    || !normalized
     || !Number.isSafeInteger(value.xlen)
     || (value.xlen !== 32 && value.xlen !== 64)
     || typeof value.compressedInstructions !== 'boolean'
     || !Number.isSafeInteger(value.instructionAlignment)
     || (value.instructionAlignment !== 2 && value.instructionAlignment !== 4)
+    || normalized.xlen !== value.xlen
+    || normalized.compressedInstructions !== value.compressedInstructions
+    || normalized.instructionAlignment !== value.instructionAlignment
     || (value.evidence != null && typeof value.evidence !== 'string')) return null;
   return {
     canonical:value.canonical,

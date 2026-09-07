@@ -66,3 +66,31 @@ test('5684: malformed file profile does not become exact evidence', () => {
 
   assert.equal(result, null);
 });
+
+test('5684: invalid primitive canonical does not become exact evidence', () => {
+  const result = resolveRiscvIsaProfile({ file:{
+    canonical:'garbage',
+    xlen:64,
+    compressedInstructions:false,
+    instructionAlignment:4,
+    evidence:'elf-attribute',
+  } }, 0n, { allowAssumed:false });
+
+  assert.equal(result, null);
+});
+
+test('5684: valid canonical profiles retain their existing identity', () => {
+  for (const profile of [
+    { canonical:'rv32i', xlen:32, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64i', xlen:64, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64imc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+    { canonical:'rv64gc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+  ]) {
+    const result = resolveRiscvIsaProfile({ file:{ ...profile, evidence:'elf-attribute' } }, 0n, { allowAssumed:false });
+    assert.equal(result?.canonical, profile.canonical);
+    assert.equal(result?.xlen, profile.xlen);
+    assert.equal(result?.compressedInstructions, profile.compressedInstructions);
+    assert.equal(result?.instructionAlignment, profile.instructionAlignment);
+    assert.equal(result?.exact, true);
+  }
+});
