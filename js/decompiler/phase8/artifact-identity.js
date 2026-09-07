@@ -111,9 +111,10 @@ function failOnEnumerableOwnProperties(descriptors, label, { allowArrayIndex = f
   }
 }
 
-function snapshotArtifactOptions(value, active = new WeakSet()) {
+function snapshotArtifactOptions(value, active = new WeakSet(), done = new WeakMap()) {
   if (!value || typeof value !== 'object') return value;
   if (active.has(value)) fail('phase8-artifact-options-cycle');
+  if (done.has(value)) return done.get(value);
   if (isSharedArrayBuffer(value)) fail('phase8-artifact-options-shared-buffer');
   active.add(value);
   try {
@@ -125,21 +126,23 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       if (descriptor.enumerable && FORBIDDEN_KEY_FIELDS.includes(key)) {
         fail(`phase8-artifact-presentation-state-in-key:${key}`);
       }
-      return snapshotArtifactOptions(descriptor.value, active);
+      return snapshotArtifactOptions(descriptor.value, active, done);
     };
 
     if (value instanceof Map) {
       failOnEnumerableOwnProperties(descriptors, 'map');
       const out = new Map();
       for (const [key, entryValue] of Map.prototype.entries.call(value)) {
-        out.set(snapshotArtifactOptions(key, active), snapshotArtifactOptions(entryValue, active));
+        out.set(snapshotArtifactOptions(key, active, done), snapshotArtifactOptions(entryValue, active, done));
       }
+      done.set(value, out);
       return out;
     }
     if (value instanceof Set) {
       failOnEnumerableOwnProperties(descriptors, 'set');
       const out = new Set();
-      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active));
+      for (const entry of Set.prototype.values.call(value)) out.add(snapshotArtifactOptions(entry, active, done));
+      done.set(value, out);
       return out;
     }
     if (ArrayBuffer.isView(value)) {
@@ -162,20 +165,34 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       } else {
         failOnEnumerableOwnProperties(descriptors, 'view', { allowArrayIndex: true });
       }
-      if (typeof structuredClone === 'function') return structuredClone(value);
+      if (typeof structuredClone === 'function') {
+        const out = structuredClone(value);
+        done.set(value, out);
+        return out;
+      }
       const bytes = new Uint8Array(backingBuffer, value.byteOffset, value.byteLength).slice().buffer;
-      if (value instanceof DataView) return new DataView(bytes);
+      if (value instanceof DataView) {
+        const out = new DataView(bytes);
+        done.set(value, out);
+        return out;
+      }
       const Constructor = Object.getPrototypeOf(value)?.constructor;
       if (typeof Constructor !== 'function') fail('phase8-artifact-options-view-invalid');
-      return new Constructor(bytes);
+      const out = new Constructor(bytes);
+      done.set(value, out);
+      return out;
     }
     if (value instanceof ArrayBuffer) {
       failOnEnumerableOwnProperties(descriptors, 'arraybuffer');
-      return ArrayBuffer.prototype.slice.call(value, 0);
+      const out = ArrayBuffer.prototype.slice.call(value, 0);
+      done.set(value, out);
+      return out;
     }
     if (value instanceof Date) {
       failOnEnumerableOwnProperties(descriptors, 'date');
-      return new Date(Date.prototype.getTime.call(value));
+      const out = new Date(Date.prototype.getTime.call(value));
+      done.set(value, out);
+      return out;
     }
     if (Array.isArray(value)) {
       const length = descriptors.length?.value;
@@ -194,6 +211,7 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
         const item = snapshotDataProperty(key, descriptor);
         Object.defineProperty(out, key, { value:item, enumerable:descriptor.enumerable, configurable:true, writable:true });
       }
+      done.set(value, out);
       return out;
     }
 
@@ -204,6 +222,7 @@ function snapshotArtifactOptions(value, active = new WeakSet()) {
       const item = snapshotDataProperty(key, descriptor);
       Object.defineProperty(out, key, { value:item, enumerable:true, configurable:true, writable:true });
     }
+    done.set(value, out);
     return out;
   } finally {
     active.delete(value);
