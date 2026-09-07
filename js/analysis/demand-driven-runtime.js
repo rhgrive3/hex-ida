@@ -177,13 +177,15 @@ function scheduleBackgroundIdentity(signal) {
 
 function installWorkerBackedIdentity(app) {
   const backend = app?.backend;
-  if (!backend || typeof backend.ensureContentHash !== 'function') return;
+  if (!backend || (typeof backend.ensureSha256ContentHash !== 'function'
+    && typeof backend.ensureContentHash !== 'function')) return;
   backend.ensureBinaryId = function ensureBinaryIdFromPlatformWorker(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     let entry = this._binaryIdEntry;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
+      const hasCanonicalDigest = typeof this.ensureSha256ContentHash === 'function';
       const controller = new AbortController();
       entry = {
         controller,
@@ -193,7 +195,9 @@ function installWorkerBackedIdentity(app) {
         cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
       };
       entry.promise = scheduleBackgroundIdentity(controller.signal)
-        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
+        .then(() => hasCanonicalDigest
+          ? this.ensureSha256ContentHash(options.onProgress, controller.signal)
+          : this.ensureContentHash(options.onProgress, controller.signal))
         .then((hash) => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }

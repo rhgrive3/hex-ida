@@ -45,6 +45,8 @@ function createWorkerHarness() {
   let hashReady = null;
   let openCalls = 0;
   let hashCalls = 0;
+  let sha256Calls = 0;
+  let sha256Input = null;
   let clearCalls = 0;
 
   class FakeCachedByteSource {
@@ -99,6 +101,11 @@ function createWorkerHarness() {
       if (!hashReady) return 'hash';
       return hashReady.promise;
     },
+    async sha256ByteSource(input) {
+      sha256Calls++;
+      sha256Input = input;
+      return '00'.repeat(32);
+    },
     boundedOffset(value) { return BigInt(value); },
     checkedChunkIndex(value) { return Number(value); },
     chunkLength(value, cap) { return Number(value < BigInt(cap) ? value : BigInt(cap)); },
@@ -121,6 +128,8 @@ function createWorkerHarness() {
     deferHash() { hashReady = deferred(); return hashReady; },
     openCalls() { return openCalls; },
     hashCalls() { return hashCalls; },
+    sha256Calls() { return sha256Calls; },
+    sha256Input() { return sha256Input; },
     clearCalls() { return clearCalls; },
   };
 }
@@ -180,6 +189,21 @@ function replyFor(posts, id) {
 
   assert.equal(worker.clearCalls(), 0, 'epoch-wide cancellation must cover requests waiting for foreground drain');
   assert.match(replyFor(worker.posts, 11)?.error || '', /cancel/i);
+}
+
+{
+  const worker = createWorkerHarness();
+  const opening = worker.send({ t:'open', id:1, epoch:9, file:{ name:'opened-source', size:1 } });
+  await waitFor(() => worker.openCalls() === 1, 'canonical identity fixture must open');
+  worker.resolveOpen();
+  await opening;
+
+  const capturedFile = { name:'captured-request', size:7 };
+  await worker.send({ t:'sha256', id:12, epoch:9, file:capturedFile });
+  assert.equal(worker.sha256Calls(), 1);
+  assert.equal(worker.sha256Input(), capturedFile,
+    'canonical SHA-256 must hash the exact request file, even when worker source is from an older open');
+  assert.equal(replyFor(worker.posts, 12)?.result?.hash, '00'.repeat(32));
 }
 
 console.log('issue-4507 platform worker queued cancellation: PASS');

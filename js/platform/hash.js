@@ -1,4 +1,5 @@
 import { asByteSource } from '../binary/source.js';
+import { IncrementalSha256 } from '../cache/content-identity.js';
 
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
@@ -55,6 +56,36 @@ export async function hashByteSource(input, options = {}) {
     if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
   return `fnv1a64:${source.size.toString(16)}:${hash.toString(16).padStart(16, '0')}`;
+}
+
+/**
+ * Compute the conventional whole-source SHA-256 digest without materializing
+ * the source.  The FNV result above remains the cheap cache/project hash;
+ * callers that mint canonical BinaryIds must use this producer instead.
+ */
+export async function sha256ByteSource(input, options = {}) {
+  const source = asByteSource(input);
+  const onProgress = optionalProgressCallback(options.onProgress);
+  throwIfAborted(options.signal);
+  const chunkSize = Math.min(options.chunkSize ?? 1024 * 1024, source.maxReadLength);
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
+  const hash = new IncrementalSha256();
+  let offset = 0n;
+  while (offset < source.size) {
+    throwIfAborted(options.signal);
+    const remaining = source.size - offset;
+    const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
+    const bytes = await source.readExactly(offset, length, { signal:options.signal });
+    throwIfAborted(options.signal);
+    hash.update(bytes);
+    offset += BigInt(bytes.byteLength);
+    if (bytes.byteLength !== length) {
+      throw new Error(`sha256 truncated read: expected ${length}, received ${bytes.byteLength}`);
+    }
+    if (onProgress) Reflect.apply(onProgress, options, [{ done:offset, total:source.size }]);
+  }
+  throwIfAborted(options.signal);
+  return hash.hexDigest();
 }
 
 export function hashBytes(bytes) {

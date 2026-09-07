@@ -67,13 +67,15 @@ function waitForEntry(entry, signal) {
 
 /**
  * Replace the compatibility BinaryId wrapper with one producer per file/epoch.
- * Consumer cancellation only detaches that waiter; the platform-worker hash is
- * cancelled when the last waiter leaves. Durable callers still receive the exact
- * full-content digest and stale file/epoch publication remains fail-closed.
+ * Consumer cancellation only detaches that waiter; the canonical SHA-256
+ * producer is cancelled when the last waiter leaves. Durable callers still
+ * receive the exact full-content digest and stale file/epoch publication
+ * remains fail-closed.
  */
 export function installSharedWorkerBinaryIdentity(app) {
   const backend = app?.backend;
-  if (!backend || typeof backend.ensureContentHash !== 'function') return null;
+  if (!backend || (typeof backend.ensureSha256ContentHash !== 'function'
+    && typeof backend.ensureContentHash !== 'function')) return null;
 
   let current = null;
   backend.ensureBinaryId = function ensureSharedBinaryId(options = {}) {
@@ -91,11 +93,14 @@ export function installSharedWorkerBinaryIdentity(app) {
 
     if (!current) {
       const controller = new AbortController();
+      const hasCanonicalDigest = typeof this.ensureSha256ContentHash === 'function';
       const entry = {
         file, epoch, controller, waiters:0, settled:false, promise:null,
       };
       entry.promise = scheduleBackground(controller.signal)
-        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
+        .then(() => hasCanonicalDigest
+          ? this.ensureSha256ContentHash(options.onProgress, controller.signal)
+          : this.ensureContentHash(options.onProgress, controller.signal))
         .then((hash) => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || Number(this.gen ?? this.analysisEpoch ?? 0) !== epoch) {

@@ -23,6 +23,7 @@ async function waitUntil(predicate, turns = 20) {
 
 async function testSharedBinaryIdentityConsumers() {
   let started = 0;
+  let legacyStarted = 0;
   let producerAborts = 0;
   let releaseHash;
   const backend = {
@@ -30,6 +31,10 @@ async function testSharedBinaryIdentityConsumers() {
     file:{ size:500 * 1024 * 1024 },
     gen:4,
     ensureContentHash(_progress, signal) {
+      legacyStarted++;
+      return Promise.resolve('fnv1a64:dead:0000000000000000');
+    },
+    ensureSha256ContentHash(_progress, signal) {
       started++;
       return new Promise((resolve, reject) => {
         releaseHash = resolve;
@@ -56,6 +61,7 @@ async function testSharedBinaryIdentityConsumers() {
   const binaryId = await second;
   assert.ok(binaryId.includes('ab'.repeat(32)));
   assert.equal(started, 1, 'compatible BinaryId consumers must share one worker hash');
+  assert.equal(legacyStarted, 0, 'legacy FNV content hashes must stay out of BinaryId production');
 
   let lastStarted = 0;
   let lastAborted = 0;
@@ -64,6 +70,9 @@ async function testSharedBinaryIdentityConsumers() {
     file:{ size:1000 * 1024 * 1024 },
     gen:8,
     ensureContentHash(_progress, signal) {
+      return Promise.resolve('fnv1a64:dead:0000000000000000');
+    },
+    ensureSha256ContentHash(_progress, signal) {
       lastStarted++;
       return new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => {

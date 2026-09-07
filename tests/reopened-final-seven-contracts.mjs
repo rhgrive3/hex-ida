@@ -95,13 +95,19 @@ function abortError(){const e=new Error('aborted');e.name='AbortError';return e;
   globalThis.scheduler={postTask(fn,options){assert.equal(options.priority,'background');return new Promise((resolve)=>{release=()=>Promise.resolve(fn()).then(resolve);});}};
   try{
     for(const size of [100,500,1024].map((m)=>m*1024*1024)){
-      let hashes=0; const backend={file:{size},gen:1,binaryId:null,async ensureContentHash(){hashes++;return '00'.repeat(32);}}; const app={backend}; installSharedWorkerBinaryIdentity(app);
+      let hashes=0; let legacyHashes=0;
+      const backend={file:{size},gen:1,binaryId:null,
+        async ensureContentHash(){legacyHashes++;return 'fnv1a64:dead:0000000000000000';},
+        async ensureSha256ContentHash(){hashes++;return '00'.repeat(32);},
+      }; const app={backend}; installSharedWorkerBinaryIdentity(app);
       const p=backend.ensureBinaryId(); await tick(); assert.equal(hashes,0,`hash must not start before background slot (${size})`); await release(); await p; assert.equal(hashes,1);
+      assert.equal(legacyHashes,0,'legacy FNV cache identity must never mint a BinaryId');
     }
   }finally{if(prior===undefined)delete globalThis.scheduler;else globalThis.scheduler=prior;}
   const backendSource=source('js/backend.js');
-  assert.match(source('js/analysis/shared-binary-identity.js'),/ensureContentHash\(options\.onProgress, controller\.signal\)/);
+  assert.match(source('js/analysis/shared-binary-identity.js'),/ensureSha256ContentHash\(options\.onProgress, controller\.signal\)/);
   assert.doesNotMatch(source('js/analysis/shared-binary-identity.js'),/sha256BlobHex/);
+  assert.match(backendSource,/async ensureSha256ContentHash\(/);
   assert.ok(backendSource.includes('ensureContentHash'));
 }
 

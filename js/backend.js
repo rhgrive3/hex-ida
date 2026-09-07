@@ -159,6 +159,7 @@ export class Backend {
     this._disasmSeq = 1;
     this._disasmPending = new Map();
     this.contentHash = null;
+    this.sha256ContentHash = null;
     this.binaryId = null;
     this._binaryIdPromise = null;
     this.disposed = false;
@@ -459,6 +460,7 @@ export class Backend {
     this.legacyInfo=nextLegacy;
     this.arm64Bridge=nextBridge;
     this.contentHash=null;
+    this.sha256ContentHash=null;
     this.binaryId=null;
     this._binaryIdPromise=null;
     return result;
@@ -810,6 +812,29 @@ export class Backend {
     return this.contentHash;
   }
 
+  /**
+   * Conventional whole-file SHA-256 for canonical BinaryId production.
+   * `contentHash` intentionally remains the cheap FNV cache/project identity;
+   * the two digests must never be substituted for one another.
+   */
+  async ensureSha256ContentHash(onProgress, signal = null) {
+    if (this.sha256ContentHash) return this.sha256ContentHash;
+    if (!this.file) throw new Error('binary-id-file-unavailable');
+    const file = this.file;
+    const uiEpoch = this.gen;
+    const transportEpoch = this.transportEpoch;
+    const result = await awaitCancellableProducer(
+      this._callTo('platform', 'sha256', { file }, null, onProgress),
+      signal,
+    );
+    if (this.file !== file || this.gen !== uiEpoch || this.transportEpoch !== transportEpoch) {
+      throw new StaleRequestError();
+    }
+    const canonical = createBinaryIdFromDigest(result?.hash);
+    this.sha256ContentHash = canonical.slice('bin_sha256_'.length);
+    return this.sha256ContentHash;
+  }
+
   async disassembleAt(addr, options = {}) {
     const uiEpoch = this.gen;
     const architecture = options.architecture || this.platformInfo?.capability?.architecture || 'arm64';
@@ -900,6 +925,7 @@ export class Backend {
     const failure = new Error('Backend has been disposed.'); failure.code = 'BACKEND_DISPOSED';
     this.analysisEpoch++; this.transportEpoch++;
     this.binaryId = null; this._binaryIdPromise = null;
+    this.sha256ContentHash = null;
     this.resetCache();
     this._releaseDisassembly(failure);
     this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });

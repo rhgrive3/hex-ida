@@ -2,7 +2,7 @@ import { asByteSource, detectBinary, openBinarySource, parseMachOSource } from '
 import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
-import { hashByteSource } from './hash.js';
+import { hashByteSource, sha256ByteSource } from './hash.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
@@ -127,6 +127,7 @@ async function handle(msg, signal) {
     case 'valueShapes': return { groups: [], unsupported: true };
     case 'metadata': return metadataPage(msg);
     case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
+    case 'sha256': return { hash: await sha256ByteSource(Object.hasOwn(msg, 'file') ? msg.file : source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'sha256', done, total }) }) };
     case 'memoryStats': return memoryStats();
     case 'cleanupMemory': source?.clear?.(); return memoryStats();
     case 'probe': return { ok: true, capability: descriptor?.capability || null };
