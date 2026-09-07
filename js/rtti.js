@@ -45,22 +45,23 @@ export function shortName(name,opts){if(typeof name!=='string'||!name)return nam
 export function isMangled(name){return typeof name==='string'&&!!name&&(/^_?_Z/.test(name)||/^_?\$s/.test(name)||/^_?\$S/.test(name));}
 export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length&&out.size<limit;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls))out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
 
-// Resolver results are an authority boundary: only typed, in-range addresses
-// may become canonical pointers (#5721). BigInt()/Number() coercion would
-// launder booleans, arrays and numeric strings into resolved addresses.
+// Resolver results and chained-pointer options are authority inputs. Validate
+// their raw representation before converting anything into a canonical address.
 function normalizedResolverAddress(addr){
-  if(typeof addr==='bigint')return addr;
+  if(typeof addr==='bigint')return addr>=0n?addr:null;
   if(typeof addr==='number'&&Number.isSafeInteger(addr)&&addr>=0)return BigInt(addr);
-  if(typeof addr==='string'&&/^-?(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(addr.trim())){try{return BigInt(addr.trim());}catch{return null;}}
+  if(typeof addr==='string'&&addr===addr.trim()&&/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(addr)){
+    try{return BigInt(addr);}catch{return null;}
+  }
   return null;
 }
 
 function normalizeResolvedPointer(result,raw){
   if(result==null)return{raw,addr:null,binding:null,unresolved:true,reason:'resolver-returned-null'};
-  if(typeof result==='bigint')return{raw,addr:result,binding:null,unresolved:false};
-  if(typeof result==='number'){
-    if(!Number.isSafeInteger(result)||result<0)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-address'};
-    return{raw,addr:BigInt(result),binding:null,unresolved:false};
+  if(typeof result==='bigint'||typeof result==='number'){
+    const normalized=normalizedResolverAddress(result);
+    if(normalized==null)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-address'};
+    return{raw,addr:normalized,binding:null,unresolved:false};
   }
   if(typeof result==='object'){
     const addr=result.address??result.addr??null;
@@ -72,8 +73,10 @@ function normalizeResolvedPointer(result,raw){
   return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-result'};
 }
 
+const SUPPORTED_CHAINED_POINTER_FORMATS=new Set([1,2,6,7,9,10,12]);
+
 function decodeChainedVtablePointer(raw,format,imageBase){
-  const base=imageBase==null?null:BigInt(imageBase);
+  const base=imageBase==null?null:imageBase;
 
   // dyld_chained_ptr_64[_OFFSET]: both layouts carry target:36 + high8:8.
   // Format 2 encodes a preferred vmaddr; format 6 encodes a vm offset, so
@@ -118,13 +121,19 @@ function decodeChainedVtablePointer(raw,format,imageBase){
 
 async function resolveVtablePointer(raw,address,opts){
   if(raw===0n)return{raw,addr:0n,binding:null,unresolved:false};
+  const pointerFormat=opts.pointerFormat??null;
+  if(pointerFormat!=null&&(
+    typeof pointerFormat!=='number'||!Number.isSafeInteger(pointerFormat)||!SUPPORTED_CHAINED_POINTER_FORMATS.has(pointerFormat)
+  ))return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-pointer-format'};
+  let imageBase=null;
+  if(opts.imageBase!=null){
+    imageBase=normalizedResolverAddress(opts.imageBase);
+    if(imageBase==null)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-image-base'};
+  }
   if(typeof opts.resolvePointer==='function'){
-    try{return normalizeResolvedPointer(await opts.resolvePointer(raw,{address,pointerFormat:opts.pointerFormat??null,imageBase:opts.imageBase??null}),raw);}catch(e){return{raw,addr:null,binding:null,unresolved:true,reason:`pointer-resolver-failed:${e?.message||'unknown'}`};}
+    try{return normalizeResolvedPointer(await opts.resolvePointer(raw,{address,pointerFormat,imageBase}),raw);}catch(e){return{raw,addr:null,binding:null,unresolved:true,reason:`pointer-resolver-failed:${e?.message||'unknown'}`};}
   }
-  if(opts.pointerFormat!=null){
-    if(typeof opts.pointerFormat!=='number'||!Number.isSafeInteger(opts.pointerFormat)||opts.pointerFormat<0)return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-pointer-format'};
-    return decodeChainedVtablePointer(raw,opts.pointerFormat,opts.imageBase);
-  }
+  if(pointerFormat!=null)return decodeChainedVtablePointer(raw,pointerFormat,imageBase);
   // Plain relocations are already materialized as canonical user-space VAs.
   // Values with high encoding/tag bits are not safe to reinterpret by masking:
   // without fixup context a bind ordinal and a rebase target are indistinguishable.
