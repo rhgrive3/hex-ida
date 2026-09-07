@@ -120,7 +120,10 @@ function compactObservations(values, maxBytes) {
   const newest = values.slice(-12).reverse(), out = []; let used = 0;
   for (let index = 0; index < newest.length; index++) {
     const value = newest[index];
-    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: (value.evidenceIds || []).slice(0, 100), data: jsonSafe(value.data) };
+    // Observation payloads cross tool/provider boundaries; a non-array
+    // evidenceIds (`{}`, `true`) crashed model-context construction with a
+    // raw TypeError (#6136). Drop malformed id lists instead of trusting them.
+    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: evidenceIdList(value.evidenceIds, 100), data: jsonSafe(value.data) };
     let size = byteLength(safe), remaining = maxBytes - used;
     if (size > remaining) {
       if (index === 0 && remaining > 256) { safe = fitObservation(safe, remaining); size = byteLength(safe); if (size <= remaining) { out.push(safe); used += size; } }
@@ -131,12 +134,16 @@ function compactObservations(values, maxBytes) {
   return out.reverse();
 }
 function fitObservation(value, maxBytes) {
-  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: (value.evidenceIds || []).slice(0, 32), data: { truncated: true } };
+  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: evidenceIdList(value.evidenceIds, 32), data: { truncated: true } };
   let summary = String(value.summary || ''), candidate = { ...base, summary };
   while (summary.length && byteLength(candidate) > maxBytes) { summary = summary.slice(0, Math.floor(summary.length * 0.7)); candidate = { ...base, summary, truncated: true }; }
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
 }
 function compactMessages(values) { return values.slice(-8).map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 3000) })); }
+function evidenceIdList(value, max) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === 'string' && item).slice(0, max);
+}
 function trimQueue(context, queue, maxBytes) {
   if (!queue.length || byteLength(context) <= maxBytes) return;
   const original = queue.slice();
