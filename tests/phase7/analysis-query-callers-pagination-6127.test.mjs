@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createAppAnalysisQueryAdapter } from '../../js/analysis/query/app-adapter.js';
 
 // Issue 6127: base-adapter callers must stay reachable past the 5000 prefix.
-function makeCallersApp(count) {
+function makeCallersApp(count, { queryLimited = null } = {})
   const callers = Array.from({ length: count }, (_, i) => ({
     addr: 0x2000n + BigInt(i),
     site: 0x3000n + BigInt(i),
@@ -14,7 +14,7 @@ function makeCallersApp(count) {
     callersOf(_target, limit) {
       const page = [...callers.slice(0, limit)];
       Object.defineProperty(page, 'queryLimited', {
-        value: callers.length > limit,
+        value: queryLimited ?? callers.length > limit,
         enumerable: false,
         configurable: true,
       });
@@ -61,6 +61,13 @@ test('6127: a truncated source never reports returned:0 with next:null', async (
   assert.equal(result.page.next, 5100);
 });
 
+test('6127: a capped source preserves continuation after an empty page', async () => {
+  const { app } = makeCallersApp(5000, { queryLimited:true });
+  const api = createAppAnalysisQueryAdapter(app);
+  const result = await api.callers({}, 0x1000n, { offset:5000, limit:100 });
+  assert.equal(result.page.returned, 0);
+  assert.equal(result.page.next, 5000, 'a capped producer must keep a non-null continuation at the cap');
+});
 test('6127: single-page limits stay bounded', async () => {
   const { app } = makeCallersApp(6000);
   const api = createAppAnalysisQueryAdapter(app);

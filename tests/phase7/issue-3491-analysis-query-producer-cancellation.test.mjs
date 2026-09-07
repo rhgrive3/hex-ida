@@ -5,8 +5,37 @@ import { installSharedAppArtifacts } from '../../js/analysis/shared-app-artifact
 
 const source = fs.readFileSync(new URL('../../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
 
-const programOptionCall = /app\.ensureProgram\(\{ signal:options\.signal \?\? null, onProgress:options\.onProgress, priority:options\.priority, budget:options\.budget \}\)/g;
-assert.equal((source.match(programOptionCall) || []).length, 3, 'callers/callees/xrefs must forward the full per-consumer program options');
+{
+  const signal = new AbortController().signal;
+  const onProgress = () => {};
+  const seen = [];
+  const app = {
+    ensureProgram: async (options) => {
+      seen.push(options);
+      const empty = () => { const rows = []; rows.complete = true; return rows; };
+      return {
+        callersOf: empty,
+        calleesOf: empty,
+        refSitesTo: empty,
+        callSitesTo: empty,
+      };
+    },
+    symbols: { functionAt: () => ({ start:0x2000n, end:0x2004n }) },
+    store: { get: (key) => key === 'regions' ? [{ exec:true, vmAddr:0x2000n, size:0x10n }] : null },
+  };
+  const adapter = createAppAnalysisQueryAdapter(app);
+  const options = { signal, onProgress, priority:'high', budget:123 };
+  await adapter.callers(null, 0x2000n, {}, options);
+  await adapter.callees(null, 0x2000n, {}, options);
+  await adapter.xrefs(null, 0x2000n, {}, options);
+  assert.equal(seen.length, 3, 'callers/callees/xrefs must each acquire the program');
+  for (const received of seen) {
+    assert.equal(received.signal, signal);
+    assert.equal(received.onProgress, onProgress);
+    assert.equal(received.priority, 'high');
+    assert.equal(received.budget, 123);
+  }
+}
 assert.doesNotMatch(source, /app\.ensureProgram\(options\.onProgress\)/, 'legacy callback-only ensureProgram calls lose AbortSignal ownership');
 
 const searchStart = source.indexOf('    async search(_snapshot, query, page = {}, options = {}) {');
