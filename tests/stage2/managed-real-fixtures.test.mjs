@@ -63,7 +63,13 @@ for (const fixture of manifest.fixtures) {
   assert.ok(selectedMethod, `${fixture.id}: deterministic decodable method selection`);
   const decoded = await frontend.decodeMethod(selectedMethod, { image });
   assert.ok(decoded.bundles.length > 0, `${fixture.id}: compiled method decodes`);
-  const validation = await frontend.validateMethod(decoded, { image });
+  // The pinned CIL fixture is `int Add(int, int)`, so the positive validation
+  // must bind its one-slot return contract explicitly. CIL deliberately stays
+  // partial when MethodDef/#Blob return-shape authority is unavailable.
+  const validationOptions = fixture.frontendId === 'cil'
+    ? { image, returnStackSlots: 1 }
+    : { image };
+  const validation = await frontend.validateMethod(decoded, validationOptions);
   assert.equal(validation.status, 'valid', `${fixture.id}: compiled method validates`);
 
   // The runtime binding is deliberately local and fixture-scoped: it proves
