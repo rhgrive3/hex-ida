@@ -186,8 +186,8 @@ for (const [mn, operation] of reverseX) {
   assert.ok(result.terms.includes('endian'), `${mn} must retain the endian term (#3627)`);
 }
 assert.notEqual(explain('rev16', 'x0, x1').pseudo, explain('rev32', 'x0, x1').pseudo);
-for (const mn of ['rev16', 'rev32']) {
-  for (const width of ['w', 'x']) {
+for (const [mn, widths] of [['rev16', ['w', 'x']], ['rev32', ['x']]]) {
+  for (const width of widths) {
     const result = explain(mn, `${width}0, ${width}1`);
     assert.equal(result.handlerError, undefined, `${mn} ${width}-form must remain valid (#3627)`);
     assert.equal(result.pseudo, `${width}0 = byteswap${mn.slice(3)}(${width}1)`);
