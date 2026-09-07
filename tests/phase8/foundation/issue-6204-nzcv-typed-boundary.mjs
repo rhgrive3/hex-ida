@@ -65,7 +65,13 @@ assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, undefined), nul
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 
-assert.ok(buildNZCVConditionExpression('sub', 'eq', a32, b32));
+const omittedAddGe = buildNZCVConditionExpression('add', 'ge', a32, b32);
+const explicit64AddGe = buildNZCVConditionExpression('add', 'ge', a32, b32, 64);
+const explicit32AddGe = buildNZCVConditionExpression('add', 'ge', a32, b32, 32);
+assert.equal(omittedAddGe.name, '__arm64_nzcv_add_ge_64');
+assert.equal(omittedAddGe.name, explicit64AddGe.name);
+assert.equal(explicit32AddGe.name, '__arm64_nzcv_add_ge_32');
+assert.notEqual(omittedAddGe.name, explicit32AddGe.name);
 
 // Canonical builder results still hold.
 const addGe = buildNZCVConditionExpression('add', 'ge', a32, b32, 32);
@@ -80,7 +86,11 @@ assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', null), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', ''), null);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', undefined), null);
 assert.equal(renderNZCVCondition(['sub'], 'eq', 'a', 'b', 32), null);
-assert.equal(typeof renderNZCVCondition('sub', 'eq', 'a', 'b'), 'string');
+const omittedAddGeText = renderNZCVCondition('add', 'ge', 'a', 'b');
+const explicit64AddGeText = renderNZCVCondition('add', 'ge', 'a', 'b', 64);
+const explicit32AddGeText = renderNZCVCondition('add', 'ge', 'a', 'b', 32);
+assert.equal(omittedAddGeText, explicit64AddGeText);
+assert.notEqual(omittedAddGeText, explicit32AddGeText);
 assert.equal(renderNZCVCondition('sub', 'eq', 'a', 'b', 32), '(uint32_t)a == (uint32_t)b');
 assert.equal(renderNZCVCondition('sub', 'hs', 'a', 'b', 32), '(uint32_t)a >= (uint32_t)b');
 
