@@ -12,10 +12,20 @@ class WrappedProgressCallback {}
 const proxyWrappedClass = new Proxy(WrappedProgressCallback, {});
 for (const onProgress of [
   undefined, null, true, false, {}, [], 1, 0, '', 'progress', Symbol('progress'),
-  ProgressCallback, class {}, proxyWrappedClass,
+  ProgressCallback, class {},
 ]) {
   assert.equal(await hashByteSource(source(), { chunkSize: 2, onProgress }), expectedFnv);
   assert.equal(await sha256TreeByteSource(source(), { chunkSize: 2, onProgress }), expectedTree);
+}
+
+// A class hidden behind an opaque proxy cannot be classified without invoking
+// user code. It remains a function-valued option, so its native invocation error
+// is propagated instead of being mistaken for a callback error.
+for (const hash of [hashByteSource, sha256TreeByteSource]) {
+  await assert.rejects(
+    hash(source(), { chunkSize: 2, onProgress: proxyWrappedClass }),
+    (error) => error instanceof TypeError && /cannot be invoked without ['"]new['"]/.test(error.message),
+  );
 }
 
 const expectedProgress = [
@@ -63,6 +73,21 @@ for (const hash of [hashByteSource, sha256TreeByteSource]) {
     lockedPrototypeEvents,
     expectedProgress,
     'ordinary callbacks remain valid when their own prototype is non-writable',
+  );
+
+  const replacedConstructorEvents = [];
+  function replacedConstructorProgress(value) {
+    replacedConstructorEvents.push(value);
+  }
+  replacedConstructorProgress.prototype.constructor = class Marker {};
+  assert.equal(
+    await hash(source(), { chunkSize: 2, onProgress: replacedConstructorProgress }),
+    hash === hashByteSource ? expectedFnv : expectedTree,
+  );
+  assert.deepEqual(
+    replacedConstructorEvents,
+    expectedProgress,
+    'ordinary callbacks remain valid when prototype.constructor is replaced',
   );
 
   const boundCallbackError = new Error('bound progress callback failure');

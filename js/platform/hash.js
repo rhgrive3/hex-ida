@@ -7,38 +7,11 @@ const MASK64 = 0xffffffffffffffffn;
 function optionalProgressCallback(value) {
   if (typeof value !== 'function') return null;
   try {
-    const prototype = Reflect.getOwnPropertyDescriptor(value, 'prototype');
-    let constructible = true;
-    try {
-      Reflect.construct(Function, [], value);
-    } catch {
-      constructible = false;
-    }
-    // Avoid invoking constructor-only callbacks just to classify them: that would
-    // run user code early. A callable ordinary function may deliberately expose
-    // a non-writable own prototype, so writability is not a valid discriminator.
-    if (constructible && !prototype) {
-      // A bound ordinary function and a bound class have the same observable
-      // shape: neither exposes its target or an own prototype. Accept all bound
-      // functions and let the normal progress call determine its result/error;
-      // a user callback's exception must never be classified from its message.
-      return value;
-    }
-    if (constructible && prototype) {
-      const source = Function.prototype.toString.call(value);
-      const prototypeConstructor = prototype.value && typeof prototype.value === 'object'
-        ? Reflect.getOwnPropertyDescriptor(prototype.value, 'constructor')?.value
-        : null;
-      const constructorSource = typeof prototypeConstructor === 'function'
-        ? Function.prototype.toString.call(prototypeConstructor)
-        : '';
-      // Direct classes and proxies around classes are constructible but not
-      // callable. The prototype's constructor source preserves this distinction
-      // through a proxy without rejecting ordinary functions with locked props.
-      if (/^\s*class(?:\s|\{)/.test(source) || /^\s*class(?:\s|\{)/.test(constructorSource)) {
-        return null;
-      }
-    }
+    // Direct class syntax is visibly non-callable, but an opaque proxy can hide
+    // its target. Do not inspect prototype descriptors or constructors: ordinary
+    // callbacks may replace either property and remain callable. All other
+    // function-valued options are accepted and their invocation errors propagate.
+    if (/^\s*class(?:\s|\{)/.test(Function.prototype.toString.call(value))) return null;
     return value;
   } catch {
     return null;
