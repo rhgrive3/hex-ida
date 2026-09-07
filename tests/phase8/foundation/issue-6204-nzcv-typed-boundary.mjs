@@ -68,6 +68,11 @@ assert.equal(buildNZCVConditionExpression('sub', 'eq', 1, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, 1, 32), null);
 assert.equal(buildNZCVConditionExpression('add', 'ge', a32, {}, 32), null);
 assert.equal(buildNZCVConditionExpression('and', 'eq', true, b32, 32), null);
+const arrayWithNodeKind = [];
+arrayWithNodeKind.kind = 'var';
+assert.equal(buildNZCVConditionExpression('sub', 'eq', arrayWithNodeKind, b32, 32), null);
+const throwingKind = { get kind() { throw new Error('untrusted operand'); } };
+assert.equal(buildNZCVConditionExpression('sub', 'eq', throwingKind, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('rubbish', 'eq', a32, b32, 32), null);
 assert.equal(buildNZCVConditionExpression('sub', 'eq', a32, b32, 33), null);
 

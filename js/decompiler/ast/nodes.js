@@ -15,7 +15,14 @@ const EXPRESSION_KINDS = new Set([
 export function isExpressionNode(value) {
   return value !== null
     && typeof value === 'object'
-    && EXPRESSION_KINDS.has(value.kind);
+    && !Array.isArray(value)
+    && (() => {
+      try {
+        return EXPRESSION_KINDS.has(value.kind);
+      } catch {
+        return false;
+      }
+    })();
 }
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
 function canonicalIdentity(v, { allowBigInt = false, allowString = false } = {}) {
