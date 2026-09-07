@@ -38,9 +38,11 @@ import { deterministicTraversal } from '../../semantics/cfg/index.js';
 import {
   BOTTOM_POINTS_TO,
   POINTS_TO_DEFAULT_BUDGET,
+  PROVEN_SEPARATION_CLASSES,
   addRange,
   createPointsToSet,
   createPointsToTarget,
+  createRootDescriptorSeparatedTarget,
   UNBOUNDED_RANGE,
   exactRange,
   joinPointsTo,
@@ -424,13 +426,26 @@ function targetFromCanonicalProof(proof, evidenceIds) {
     });
   }
   if (proof.kind === 'stack-like' || proof.kind === 'rooted') {
+    // A canonical proof that carries root-descriptor separation authority must
+    // cross the proof boundary (#6066); every other proof shape creates a
+    // plain target with no separation authority at all.
+    if (proof.separationAuthority === 'root-descriptor'
+      && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+      return createRootDescriptorSeparatedTarget({
+        addressSpace: proof.addressSpace,
+        rootKind: proof.kind,
+        rootIdentity: proof.rootIdentity,
+        rootEntityId: proof.rootEntityId ?? null,
+        offsetRange: exactRange(proof.offset),
+        widthBits: proof.widthBits,
+        evidenceIds,
+      }, proof);
+    }
     return createPointsToTarget({
       addressSpace: proof.addressSpace,
       rootKind: proof.kind,
       rootIdentity: proof.rootIdentity,
       rootEntityId: proof.rootEntityId ?? null,
-      separationClass: proof.separationClass ?? null,
-      separationAuthority: proof.separationAuthority ?? null,
       offsetRange: exactRange(proof.offset),
       widthBits: proof.widthBits,
       evidenceIds,
@@ -448,13 +463,24 @@ function targetFromCanonicalProof(proof, evidenceIds) {
  */
 function rootOnlySeed(proof, evidenceIds) {
   if (!proof || proof.kind !== 'root-only') return null;
+  // Same proof-boundary rule as `targetFromCanonicalProof` (#6066).
+  if (proof.separationAuthority === 'root-descriptor'
+    && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+    return createRootDescriptorSeparatedTarget({
+      addressSpace: proof.addressSpace,
+      rootKind: proof.rootKind,
+      rootIdentity: proof.rootIdentity,
+      rootEntityId: proof.rootEntityId ?? null,
+      offsetRange: { min: null, max: null, exact: false },
+      widthBits: proof.widthBits,
+      evidenceIds,
+    }, proof);
+  }
   return createPointsToTarget({
     addressSpace: proof.addressSpace,
     rootKind: proof.rootKind,
     rootIdentity: proof.rootIdentity,
     rootEntityId: proof.rootEntityId ?? null,
-    separationClass: proof.separationClass ?? null,
-    separationAuthority: proof.separationAuthority ?? null,
     offsetRange: { min: null, max: null, exact: false },
     widthBits: proof.widthBits,
     evidenceIds,
