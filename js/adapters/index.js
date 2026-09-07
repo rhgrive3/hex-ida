@@ -78,6 +78,20 @@ function initialMemoryValue(value) {
   if (typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value)) return BigInt(value);
   throw new DebugAdapterError('invalid-argument', 'initial memory value must be an integer scalar');
 }
+function resumeSignal(value) {
+  if (value == null) return null;
+  if ((typeof value !== 'object' && typeof value !== 'function')
+    || typeof value.addEventListener !== 'function'
+    || typeof value.removeEventListener !== 'function') {
+    throw new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible');
+  }
+  return value;
+}
+function resumeProgressCallback(value) {
+  if (value == null) return null;
+  if (typeof value !== 'function') throw new DebugAdapterError('invalid-argument', 'onProgress must be a function');
+  return value;
+}
 
 function remoteArray(result, key, max, name) {
   const value = Array.isArray(result) ? result : result && Array.isArray(result[key]) ? result[key] : null;
@@ -150,7 +164,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
     const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
-      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals || [], mappings:spec.memoryMappings || []
+      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? []
     });
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
@@ -233,8 +247,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async resume(options = {}) {
     const sandbox = this.ensureSandbox();
     if (this.activeRun) throw new DebugAdapterError('already-running', 'local sandbox already has an active execution');
+    const signal = resumeSignal(options.signal);
+    const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(options.signal && options.signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
+    const run = { sandbox, epoch:this.epoch, cancelled:!!(signal && signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
     traceState.runMemoryEvents = run.memoryEvents;
     this.activeRun = run;
     this.cancelled = run.cancelled;
@@ -247,9 +263,9 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       run.sandbox.emulator.stopped = 'cancelled';
       if (this.activeRun === run) this.cancelled = true;
     };
-    if (options.signal && !run.cancelled) {
-      options.signal.addEventListener('abort', onAbort, { once:true });
-      if (options.signal.aborted) onAbort();
+    if (signal && !run.cancelled) {
+      signal.addEventListener('abort', onAbort, { once:true });
+      if (signal.aborted) onAbort();
     }
     if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
     this.running = true;
@@ -258,7 +274,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
         else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
-        if (options.onProgress) options.onProgress(n);
+        if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
@@ -271,7 +287,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         this.running = false;
         this.cancelled = run.cancelled;
       }
-      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
   }
   async stepInto() {
@@ -387,7 +403,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const loads = memoryEvents.filter((e) => e.type === 'memory-read');
     const stores = memoryEvents.filter((e) => e.type === 'memory-write');
     for (const e of trace) {
-      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      if (e?.type === 'call') continue;
       this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
@@ -456,7 +472,12 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) this.nextEpoch();
     return { disconnected:true };
   }
-  setEpoch(epoch) { const next = Number(epoch); this.protocol.setEpoch(next); this.epoch = next; return this.epoch; }
+  setEpoch(epoch) {
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 0) return this.epoch;
+    this.protocol.setEpoch(epoch);
+    this.epoch = epoch;
+    return this.epoch;
+  }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) {
@@ -469,7 +490,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})}
+  removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
+  }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:registerSelector(reg),value:String(value),threadId})}
@@ -486,14 +508,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,...options.capabilities,cancel:false } }); }
 }
 export class FridaCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id??'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,...options.capabilities,cancel:false } }); }
 }
 
 export class ReplayAdapter extends DebugAdapter {
-  constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
+  constructor(recording = {}, options = {}) { super({ id:options.id??'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return remoteRegisters(this.recording.registers||{})}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; if(!bytes)throw new DebugAdapterError('replay-miss',`recording has no memory at ${key}`); return remoteBytes(bytes,n)}
