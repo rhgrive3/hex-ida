@@ -109,6 +109,8 @@ function latestReviewStateByAuthor(reviews, mergedAt) {
   const latest = new Map();
   for (const review of reviews) {
     if (!atOrBefore(review.submittedAt, mergedAt)) continue;
+    const state = String(review.state || '').toUpperCase();
+    if (state !== 'APPROVED' && state !== 'CHANGES_REQUESTED' && state !== 'DISMISSED') continue;
     const login = String(review.author?.login || '').toLowerCase();
     if (!login) continue;
     const previous = latest.get(login);

@@ -103,6 +103,31 @@ function basePr(overrides = {}) {
   assert(result.findings.some((item) => item.code === 'FAILED_EXACT_HEAD_CHECK_AT_MERGE'));
 }
 
+{
+  const result = classifyPullRequest(basePr({
+    reviews: [
+      {
+        author: { login: 'reviewer' },
+        state: 'CHANGES_REQUESTED',
+        submittedAt: '2026-09-04T13:00:00Z',
+        commit: { oid: '14fe9cdee5adcb9a068a661409bc80c1547ba288' },
+        url: 'https://example.test/changes-requested',
+      },
+      {
+        author: { login: 'reviewer' },
+        state: 'COMMENTED',
+        submittedAt: '2026-09-04T13:01:00Z',
+        commit: { oid: '14fe9cdee5adcb9a068a661409bc80c1547ba288' },
+        url: 'https://example.test/commented',
+      },
+    ],
+  }), []);
+  assert(
+    result.findings.some((item) => item.code === 'OUTSTANDING_CHANGES_REQUESTED_AT_MERGE'),
+    'later COMMENTED review must not clear CHANGES_REQUESTED authority',
+  );
+}
+
 for (const state of ['PENDING', 'EXPECTED']) {
   const result = classifyPullRequest(basePr({
     reviews: [{
