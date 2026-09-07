@@ -15,6 +15,28 @@ const FAT_KINDS = new Map([
   ['bfbafeca', { bits: 64, littleEndian: true }],
 ]);
 
+// A valid ByteSource may cap every single read (maxReadLength). The FAT slice
+// table is variable-length container metadata (20/32 bytes per slice), so it
+// must be materialized through bounded chunks instead of one readExactly that
+// can exceed the declared per-read ceiling (#6129).
+async function readBoundedRange(source, offset, length, signal) {
+  const limit = Number(source.maxReadLength);
+  if (!Number.isSafeInteger(limit) || limit <= 0 || length <= limit) {
+    return source.readExactly(offset, length, { signal });
+  }
+  const chunks = [];
+  let done = 0;
+  while (done < length) {
+    const take = Math.min(limit, length - done);
+    chunks.push(await source.readExactly(offset + BigInt(done), take, { signal }));
+    done += take;
+  }
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const chunk of chunks) { out.set(chunk, at); at += chunk.byteLength; }
+  return out;
+}
+
 export async function openBinarySource(input, opts = {}) {
   const sourceOptions = opts.source || {};
   const source = asByteSource(input, sourceOptions);
@@ -80,7 +102,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const tableSize = count * entrySize;
   const extraSize = (fat.bits === 32 && source.size >= 8n + BigInt(tableSize + 20)) ? 20 : 0;
   if (8n + BigInt(tableSize) > source.size) throw new Error('Mach-O universal slice table is truncated');
-  const table = await source.readExactly(8n, tableSize + extraSize, { signal: opts.signal });
+  const table = await readBoundedRange(source, 8n, tableSize + extraSize, opts.signal);
   const r = new ByteView(table, { littleEndian: fat.littleEndian, base: 8 });
   const all = [];
   for (let i = 0, p = 0; i < count; i++, p += entrySize) {
