@@ -307,12 +307,23 @@ export class RemoteProtocolClient {
   receive(raw) {
     let wire;
     try { wire = validateRemotePacket(raw); } catch { return false; }
-    if (wire.type !== 'hello' && wire.epoch !== this.epoch) return false;
+    if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
+      // A request opened with an explicit epoch legally receives its response
+      // carrying that request's own epoch (#5726). Keep such a response only
+      // when it settles a pending request opened at that same epoch; every
+      // other foreign-epoch packet stays rejected.
+      const pendingForWire = wire.type === 'response' && Number.isSafeInteger(wire.id)
+        ? this.pending.get(wire.id) : null;
+      if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
+    }
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
-      if (!pending || pending.epoch !== packet.epoch || packet.epoch !== this.epoch) return false;
+      // The request's own epoch is the settle authority: a pending opened at
+      // an explicit epoch must be settled by its matching response even when
+      // that epoch is not the client's current one (#5726).
+      if (!pending || pending.epoch !== packet.epoch) return false;
       this._cleanupPending(packet.id, pending);
       if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
       else pending.resolve(packet.result);
