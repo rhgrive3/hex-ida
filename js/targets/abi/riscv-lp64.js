@@ -868,7 +868,11 @@ function createRiscvAbi(profile) {
     semanticVersion:'1',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
-    callingConventions:()=>Object.freeze([profile.id, 'riscv-vector-variant']),
+    // The classifier's vectorVariantRequested() accepts both the canonical
+    // 'riscv-vector-variant' and the legacy 'riscv_vector_cc' alias; the
+    // registry must claim the same spellings so an explicit ABI id resolves
+    // instead of degrading to 'unknown' (#6026).
+    callingConventions:()=>Object.freeze([profile.id, 'riscv-vector-variant', 'riscv_vector_cc']),
     classifyArguments,
     classifyCallReturn:(instruction, options = {}) => classifyReturn(callPrototypeOf(instruction, options), options),
     classifyFunctionReturn:(options = {}) => classifyReturn(options.functionPrototype || options.prototype || {}, options),
