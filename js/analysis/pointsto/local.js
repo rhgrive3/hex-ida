@@ -37,9 +37,11 @@ import { deterministicTraversal } from '../../semantics/cfg/index.js';
 import {
   BOTTOM_POINTS_TO,
   POINTS_TO_DEFAULT_BUDGET,
+  PROVEN_SEPARATION_CLASSES,
   addRange,
   createPointsToSet,
   createPointsToTarget,
+  createRootDescriptorSeparatedTarget,
   UNBOUNDED_RANGE,
   exactRange,
   joinPointsTo,
@@ -192,7 +194,8 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     memorySsa,
     ir,
     binding,
-    snapshotId: options.snapshotId ?? binding.snapshotId,
+    // The supplied binding is the value being checked, not current context.
+    snapshotId: options.snapshotId ?? options.memorySsaSnapshotId ?? 'snapshot-unbound',
   });
   if (!bindingCheck.valid) return failBoundary(bindingCheck.state, bindingCheck.reason);
 
@@ -400,13 +403,26 @@ function targetFromCanonicalProof(proof, evidenceIds) {
     });
   }
   if (proof.kind === 'stack-like' || proof.kind === 'rooted') {
+    // A canonical proof that carries root-descriptor separation authority must
+    // cross the proof boundary (#6066); every other proof shape creates a
+    // plain target with no separation authority at all.
+    if (proof.separationAuthority === 'root-descriptor'
+      && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+      return createRootDescriptorSeparatedTarget({
+        addressSpace: proof.addressSpace,
+        rootKind: proof.kind,
+        rootIdentity: proof.rootIdentity,
+        rootEntityId: proof.rootEntityId ?? null,
+        offsetRange: exactRange(proof.offset),
+        widthBits: proof.widthBits,
+        evidenceIds,
+      }, proof);
+    }
     return createPointsToTarget({
       addressSpace: proof.addressSpace,
       rootKind: proof.kind,
       rootIdentity: proof.rootIdentity,
       rootEntityId: proof.rootEntityId ?? null,
-      separationClass: proof.separationClass ?? null,
-      separationAuthority: proof.separationAuthority ?? null,
       offsetRange: exactRange(proof.offset),
       widthBits: proof.widthBits,
       evidenceIds,
@@ -424,13 +440,24 @@ function targetFromCanonicalProof(proof, evidenceIds) {
  */
 function rootOnlySeed(proof, evidenceIds) {
   if (!proof || proof.kind !== 'root-only') return null;
+  // Same proof-boundary rule as `targetFromCanonicalProof` (#6066).
+  if (proof.separationAuthority === 'root-descriptor'
+    && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+    return createRootDescriptorSeparatedTarget({
+      addressSpace: proof.addressSpace,
+      rootKind: proof.rootKind,
+      rootIdentity: proof.rootIdentity,
+      rootEntityId: proof.rootEntityId ?? null,
+      offsetRange: { min: null, max: null, exact: false },
+      widthBits: proof.widthBits,
+      evidenceIds,
+    }, proof);
+  }
   return createPointsToTarget({
     addressSpace: proof.addressSpace,
     rootKind: proof.rootKind,
     rootIdentity: proof.rootIdentity,
     rootEntityId: proof.rootEntityId ?? null,
-    separationClass: proof.separationClass ?? null,
-    separationAuthority: proof.separationAuthority ?? null,
     offsetRange: { min: null, max: null, exact: false },
     widthBits: proof.widthBits,
     evidenceIds,
@@ -460,13 +487,15 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
+  // Only canonical wire-contract fields are read here. Extra fields a forged
+  // serialized summary might carry (addressSpace/separationClass/
+  // separationAuthority) are not producer-emittable and must never become
+  // target authority (#5956).
   return createPointsToTarget({
-    addressSpace: provenance.addressSpace == null ? 'memory' : String(provenance.addressSpace),
+    addressSpace: 'memory',
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
     rootIdentity: provenance.rootIdentity ?? null,
     rootEntityId: String(rootEntityId),
-    separationClass: provenance.separationClass ?? null,
-    separationAuthority: provenance.separationAuthority ?? null,
     offsetRange: exactRange(offset),
     widthBits,
     evidenceIds,
@@ -766,9 +795,12 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (!alternatives.length) return topPointsTo('unresolved-call');
 
       // Canonical Semantic IR carries the argument list independently from a
-      // runtime target value. Old fixtures predate that field, so node.inputs is
-      // retained only as a compatibility fallback.
-      const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
+      // runtime target value; an explicit empty array means a zero-argument
+      // call, not a missing field. node.inputs is retained only as a legacy
+      // fallback for fixtures that predate the canonical field entirely.
+      const argumentIds = Array.isArray(node.call?.arguments)
+        ? node.call.arguments
+        : node.inputs;
       let merged = BOTTOM_POINTS_TO;
       for (const prov of alternatives) {
         let candidate;

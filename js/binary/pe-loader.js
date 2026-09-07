@@ -92,6 +92,8 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   if (!dir || !dir.rva || !dir.size) {
     return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
   }
+  const budget = ensureBudget(image, sharedBudget);
+  const invalidBefore = image.metadata?.exceptionDirectory?.invalidRecords || 0;
   const directorySize = dir.size;
   const recordSize = machine === 0x8664
     ? 12
@@ -105,14 +107,20 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
     && directorySize % recordSize !== 0
     && mappedFileSpanForRva(image, dir.rva, directorySize)
   ) {
-    const budget = ensureBudget(image, sharedBudget);
     budget.partial(
       'exception:directory-record-remainder',
       `PE exception directory size ${directorySize} is not a multiple of ${recordSize}`,
     );
-    return parseExceptionFunctionsCore(r, dir, image, machine, budget);
   }
-  return parseExceptionFunctionsCore(r, dir, image, machine, sharedBudget);
+  const result = parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  const invalidAfter = image.metadata?.exceptionDirectory?.invalidRecords || 0;
+  if (invalidAfter > invalidBefore) {
+    budget.partial(
+      'exception:invalid-record',
+      `PE exception directory rejected ${invalidAfter - invalidBefore} invalid record(s)`,
+    );
+  }
+  return result;
 }
 
 export function parseTlsDirectory(r, dir, image, sharedBudget = null) {

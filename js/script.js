@@ -220,7 +220,7 @@ export function createApi(app, out, options = {}) {
     /** 名前を付ける（IDA の Rename）。 */
     rename(addr, name) {
       const a = BigInt(addr);
-      app.notes.setName(a, name);
+      if (app.notes.setName(a, name) === false) return false;
       app.symbols.rename(a, name);
       app.viewer.setSymbols(app.symbols);
       return true;
@@ -228,8 +228,7 @@ export function createApi(app, out, options = {}) {
 
     /** その行にメモを書く。 */
     comment(addr, text) {
-      app.notes.setComment(BigInt(addr), text);
-      return true;
+      return app.notes.setComment(BigInt(addr), text) !== false;
     },
 
     /** そのアドレスを含む関数の {start, end}。 */
@@ -438,7 +437,7 @@ export function createApi(app, out, options = {}) {
     },
 
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
-    async patch(addr, textOrHex) {
+    async patch(addr, textOrHex, context = null) {
       const a = BigInt(addr);
       const r = executableRegionForAddress(app, a);
       if (!r) return { error: 'セクションが選ばれていません。' };
@@ -460,7 +459,7 @@ export function createApi(app, out, options = {}) {
       // Explicit raw bytes are ISA-neutral and may be any in-range length/alignment.
       const valid = validatePatchRange(r, a, built.bytes.length, file && file.size, false);
       if (valid.error) return valid;
-      const before = await api.bytes(a, built.bytes.length);
+      const before = await api.bytes(a, built.bytes.length, context);
       if (!before || before.length !== built.bytes.length) return { error: '元のバイトを読み取れません。' };
       const mode = raw ? 'raw' : 'assembly';
       app.patches.add(valid.fileOffset, before, built.bytes, { addr:a, text:textOrHex, mode, architecture:arch });

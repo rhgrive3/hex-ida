@@ -121,3 +121,34 @@ test('issue-4072: current canonical MemorySSA keeps complete public answers', ()
   assert.equal(path.status.completeness, 'complete');
   assert.equal(path.status.stopReason, null);
 });
+
+test('issue-4072: snapshotless artifacts cannot let a stale binding certify itself', () => {
+  const built = fixture();
+  const { snapshotId: _snapshotId, ...memorySsa } = built.memorySsa;
+  for (const context of [{ memorySsaSnapshotId: SNAPSHOT_ID }, {}]) {
+    const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+      ...context,
+      memorySsa,
+      memorySsaBinding: { snapshotId: 'snapshot_old', completeness: 'complete' },
+    });
+    assert.notEqual(result.recovery.bindingState, 'current');
+    assert.equal(result.recovery.publicationAllowed, false);
+    assert.deepEqual(result.recovery.recoveredValueIds, []);
+  }
+});
+
+test('issue-4072: snapshot identity must remain a primitive string at both boundaries', () => {
+  const built = fixture();
+  const { snapshotId: _snapshotId, ...memorySsa } = built.memorySsa;
+  for (const snapshotId of [[SNAPSHOT_ID], { id: SNAPSHOT_ID }, 42]) {
+    assertBothBoundariesReject(built, { memorySsa, memorySsaBinding: { snapshotId } });
+    const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+      memorySsa,
+      memorySsaSnapshotId: snapshotId,
+      memorySsaBinding: { snapshotId, completeness: 'complete' },
+    });
+    assert.notEqual(result.recovery.bindingState, 'current');
+    assert.equal(result.recovery.publicationAllowed, false);
+    assert.deepEqual(result.recovery.recoveredValueIds, []);
+  }
+});

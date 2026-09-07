@@ -30,7 +30,9 @@ export function validateMemorySsaBinding({ memorySsa, ir, binding, snapshotId } 
           || memorySsa.snapshotId !== expectedSnapshotId)) {
     return { valid: false, state: 'stale', reason: 'memoryssa-stale-snapshot' };
   }
-  if (binding?.snapshotId !== expectedSnapshotId) {
+  if (typeof expectedSnapshotId !== 'string'
+      || typeof binding?.snapshotId !== 'string'
+      || binding.snapshotId !== expectedSnapshotId) {
     return { valid: false, state: 'stale', reason: 'memoryssa-stale-snapshot' };
   }
   if (memorySsa.contractVersion !== MEMORY_SSA_CONTRACT_VERSION) {

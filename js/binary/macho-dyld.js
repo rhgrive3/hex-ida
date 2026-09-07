@@ -399,7 +399,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
-  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = 1, addend = 0n, segIndex = 0, segOffset = 0n;
+  // Classic bind state mirrors dyld's BindOpcodes state machine: only
+  // lazy-bind streams carry an implicit pointer type, and a bind location exists
+  // only after SET_SEGMENT_AND_OFFSET_ULEB has run.
+  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
   let threadedTable = null, threadedTableLimit = 0;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
@@ -417,6 +420,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
+    if (!locationSet) return false;
     const seg = segments[segIndex];
     return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
   };
@@ -424,10 +428,12 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
     if (!validDylibOrdinal()) return;
     if (threadedTable) {
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
       return;
     }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
     if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
@@ -497,7 +503,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
-    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; locationSet = true; }
     else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
     else if (op === 0x90) { bind(); segOffset += ptrSize; }
     else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
@@ -516,6 +522,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
         const x = r.uleb(p, 10, end); p = x.next;
         if (x.value > 65536n) { fail('threaded ordinal table exceeds 65536 entries'); break; }
         threadedTableLimit = Number(x.value); threadedTable = [];
+        // Threaded bind entries are pointer-form chained fixups: the stream has
+        // no SET_TYPE_IMM opcode, so the implicit pointer type applies here.
+        type = 1;
       } else if (imm === 1) applyThreaded();
       else { fail(`unknown threaded bind subopcode 0x${imm.toString(16)}`, byte); break; }
     } else { fail(`unknown dyld bind opcode 0x${op.toString(16)}`, byte); break; }
