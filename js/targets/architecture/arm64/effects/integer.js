@@ -88,6 +88,28 @@ function logicalImmediateEncodable(op, widthBits) {
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
 }
 
+function singleWideMoveEncodable(pattern, widthBits) {
+  const value = BigInt.asUintN(widthBits, pattern);
+  const widthMask = (1n << BigInt(widthBits)) - 1n;
+  for (let shift = 0; shift < widthBits; shift += 16) {
+    const laneMask = 0xffffn << BigInt(shift);
+    if ((value & (widthMask ^ laneMask)) === 0n) return true;
+    const inverted = (~value) & widthMask;
+    if ((inverted & (widthMask ^ laneMask)) === 0n) return true;
+  }
+  return false;
+}
+
+// A structured `MOV #imm` is only architecturally encodable as a wide-move
+// alias (MOVZ/MOVN lane pattern) or as the ORR (immediate) bitmask alias.
+function movImmediateEncodable(op, widthBits) {
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
+  let immediate;
+  try { immediate = BigInt(op.value); } catch { return false; }
+  const pattern = BigInt.asUintN(widthBits, immediate);
+  return singleWideMoveEncodable(pattern, widthBits) || LOGICAL_IMMEDIATE_MASKS[widthBits].has(pattern.toString());
+}
+
 function validExtendedSource(rhs, targetBits) {
   if (!isGpOrZr(rhs) || (rhs.shift != null && rhs.extend != null)) return false;
   const modifier = rhs.shift || rhs.extend || null;
@@ -171,7 +193,15 @@ function validMovEncoding(mnemonic, ops) {
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
   if (dst.shift != null || dst.extend != null) return false;
-  if (src?.k === 'imm') return dstClass !== 'sp' && src.shift == null && src.extend == null;
+  if (src?.k === 'imm') {
+    if (src.shift != null || src.extend != null) return false;
+    if (dstClass === 'sp') {
+      // MOV (bitmask immediate) is the ORR <Xd|SP>, XZR, #imm alias: the only
+      // immediate form whose destination accepts SP.
+      return logicalImmediateEncodable(src, bits);
+    }
+    return movImmediateEncodable(src, bits);
+  }
   const srcClass = regClass(src);
   if (!['gp','zr','sp'].includes(srcClass) || regBits(src) !== bits || src.shift != null || src.extend != null) return false;
   const spInvolved = dstClass === 'sp' || srcClass === 'sp';
