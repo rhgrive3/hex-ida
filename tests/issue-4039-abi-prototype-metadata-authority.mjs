@@ -114,6 +114,21 @@ const providerResult = SYSV_AMD64_ABI.classifyArguments(
 );
 assertConservative(providerResult, 'xmm0', 'provider-supplied structured prototype');
 
+const providerReturnResult = SYSV_AMD64_ABI.classifyCallReturn(
+  { callTarget:0x1234n },
+  {
+    callPrototypeFor() {
+      return { returnType:['double'], returnBits:64, returnsValue:true };
+    },
+  },
+);
+assert.equal(providerReturnResult?.partial, true,
+  'provider-supplied malformed return type must be partial');
+assert.equal(providerReturnResult?.reg ?? null, null,
+  'provider-supplied malformed return type must not mint a return register');
+assert.equal(providerReturnResult?.exact, false,
+  'provider-supplied malformed return type must be explicitly non-exact');
+
 const validProviderResult = SYSV_AMD64_ABI.classifyArguments(
   { callTarget:0x1234n },
   {
