@@ -116,9 +116,12 @@ export function validateMemorySsa(memorySsa, options = {}) {
 
   if (memorySsa.blockStates != null) {
     const blockIds = new Set(options.cfg?.blocks?.map((block) => block.id) ?? memorySsa.blockStates.map((state) => state.blockId));
+    const seenBlockIds = new Set();
     for (const state of memorySsa.blockStates) {
       assertNotAborted(options);
       if (!blockIds.has(state.blockId)) fail('memory-ssa-validate-invalid-block-state');
+      if (seenBlockIds.has(state.blockId)) fail('memory-ssa-validate-duplicate-block-state');
+      seenBlockIds.add(state.blockId);
       for (const side of ['entry', 'exit']) {
         if (!Array.isArray(state[side])) fail('memory-ssa-validate-invalid-block-state');
         const seenRegions = new Set();
