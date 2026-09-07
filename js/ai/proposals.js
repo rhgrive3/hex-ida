@@ -342,6 +342,10 @@ function assertSnapshotStateShape(value, seen = new WeakSet()) {
   if (value === null || typeof value !== 'object' || seen.has(value)) return;
   seen.add(value);
   if (Object.getOwnPropertySymbols(value).length) throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if (!('value' in descriptor)) throw new AIError('tool_failed', 'Proposal state contains an accessor and cannot be snapshotted safely.');
+    assertSnapshotStateShape(descriptor.value, seen);
+  }
   if (value instanceof Map) {
     for (const [key, item] of Map.prototype.entries.call(value)) {
       assertSnapshotStateShape(key, seen);
@@ -358,10 +362,6 @@ function assertSnapshotStateShape(value, seen = new WeakSet()) {
   const prototype = Object.getPrototypeOf(value);
   if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
     throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
-  }
-  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-    if (!('value' in descriptor)) throw new AIError('tool_failed', 'Proposal state contains an accessor and cannot be snapshotted safely.');
-    assertSnapshotStateShape(descriptor.value, seen);
   }
 }
 

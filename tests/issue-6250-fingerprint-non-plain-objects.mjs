@@ -127,4 +127,19 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
   assert.notEqual(bigintOne.revision, bigintTwo.revision, '#1299 type-tag separation must not regress');
 }
 
+// Internal-slot objects must still reject own getters before cloning can
+// silently drop them. Include non-enumerable state and collection entries.
+for (const make of [() => /alpha/g, () => new Date(0), () => new Map(), () => new Set(), () => new ArrayBuffer(4), () => new Uint8Array(4)]) {
+  for (const enumerable of [false, true]) {
+    const before = make();
+    let reads = 0;
+    Object.defineProperty(before, 'revisionSensitive', { enumerable, get() { reads++; return 'state'; } });
+    assert.throws(() => proposalFor(before), /accessor/);
+    assert.equal(reads, 0, 'snapshot validation must not execute built-in own getters');
+  }
+}
+const nestedBuiltIn = /nested/g;
+Object.defineProperty(nestedBuiltIn, 'revisionSensitive', { get() { throw new Error('must not execute'); } });
+assert.throws(() => proposalFor(new Map([['pattern', nestedBuiltIn]])), /accessor/);
+
 console.log('issue-6250-fingerprint-non-plain-objects: ok');
