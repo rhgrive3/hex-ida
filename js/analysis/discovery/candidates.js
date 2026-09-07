@@ -101,6 +101,20 @@ function candidateConflicts(value) {
   return out;
 }
 
+function compareCanonicalRegions(left, right) {
+  const leftStart = BigInt(left.start);
+  const rightStart = BigInt(right.start);
+  if (leftStart < rightStart) return -1;
+  if (leftStart > rightStart) return 1;
+  const leftEnd = BigInt(left.end);
+  const rightEnd = BigInt(right.end);
+  if (leftEnd < rightEnd) return -1;
+  if (leftEnd > rightEnd) return 1;
+  if (left.ownership < right.ownership) return -1;
+  if (left.ownership > right.ownership) return 1;
+  return 0;
+}
+
 function canonicalRegions(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -109,6 +123,7 @@ function canonicalRegions(value, code) {
     if (!Object.hasOwn(value, index)) fail(code);
     regions.push(createRegion(value[index]));
   }
+  regions.sort(compareCanonicalRegions);
   return regions;
 }
 
@@ -177,17 +192,6 @@ export function createFunctionCandidate(input = {}) {
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
   const regions = canonicalRegions(input.regions, 'discovery-candidate-invalid-regions');
-  regions.sort((left, right) => {
-    const leftStart = BigInt(left.start);
-    const rightStart = BigInt(right.start);
-    if (leftStart < rightStart) return -1;
-    if (leftStart > rightStart) return 1;
-    const leftEnd = BigInt(left.end);
-    const rightEnd = BigInt(right.end);
-    if (leftEnd < rightEnd) return -1;
-    if (leftEnd > rightEnd) return 1;
-    return left.ownership.localeCompare(right.ownership);
-  });
   if (extentState === 'unknown' && regions.length > 0 && input.allowRegionsWithUnknownExtent !== true) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
