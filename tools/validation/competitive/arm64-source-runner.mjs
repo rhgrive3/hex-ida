@@ -36,6 +36,7 @@ import {
   validateArm64A64IntegerDenominator,
 } from '../../validation/machine-effects/arm64-a64-integer-denominator.mjs';
 import {
+  arm64A64MemoryDecoderDependencyProof,
   arm64A64MemoryEncodingCases,
   arm64A64MemoryCorpusSha256,
   validateArm64A64MemoryDenominator,
@@ -260,7 +261,7 @@ async function main() {
 
   const memoryProof = validateArm64A64MemoryDenominator();
   const simdProof = validateArm64A64SimdDenominator();
-  const memoryDependency = (await import('../../validation/machine-effects/arm64-a64-memory-denominator.mjs')).arm64A64MemoryDecoderDependencyProof();
+  const memoryDependency = arm64A64MemoryDecoderDependencyProof();
   const simdDependency = arm64A64SimdDecoderDependencyProof();
   if (!validateArm64A64DecoderDependencyProof('memory', memoryDependency)
       || !validateArm64A64DecoderDependencyProof('simd', simdDependency)) {

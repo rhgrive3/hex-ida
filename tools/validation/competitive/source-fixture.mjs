@@ -2,7 +2,7 @@
  * Repository-owned nonbinary competitive measurements.
  *
  * These rows are source-fixture measurements rather than binary-twin rows.
- * The expected side is generated from the frozen fixture truth declarations;
+ * The expected side is generated from frozen fixture/denominator truth;
  * it never comes from the candidate implementation or a hand-entered number.
  * ARM64 coverage is measured from the complete repository-owned A2 registry
  * denominator. The historical one-branch sample is never used as evidence.
