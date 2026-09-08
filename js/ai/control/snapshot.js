@@ -103,14 +103,18 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
   // touch. A stale/incorrect request-side `binaryIdentity` must not override a
   // strong live identity: the snapshot would alias another binary before any
   // binding guard runs, letting session/store/planner side effects land in the
-  // wrong namespace (#5769). Strong-vs-strong disagreement fails closed
-  // immediately; request values remain the fallback contract only when the
-  // live context is unbound/weak.
+  // wrong namespace (#5769). Any request ID disagreement with a strong live
+  // identity fails closed immediately, regardless of request confidence. On a
+  // match, keep the strong live identity authoritative; request values remain
+  // the fallback contract only when the live context is unbound/weak.
   const requestExplicit = normalizeIdentity(request.binaryIdentity);
   if (requestExplicit) {
     const live = resolveBinaryIdentity(local, {});
-    if (live.confidence === 'strong' && requestExplicit.confidence === 'strong' && live.id !== requestExplicit.id) {
-      throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
+    if (live.confidence === 'strong') {
+      if (live.id !== requestExplicit.id) {
+        throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
+      }
+      return live;
     }
     return requestExplicit;
   }
