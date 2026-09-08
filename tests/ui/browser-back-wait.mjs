@@ -43,9 +43,9 @@ export async function waitForFunctionRoute(readState, expectedPath, {
     } finally {
       clearTimeout(timeoutId);
     }
-    if (functionRouteReady(lastState, expectedPath)) return lastState;
     const remaining = deadline - now();
     if (remaining <= 0) throw timeoutError(expectedPath, lastState);
+    if (functionRouteReady(lastState, expectedPath)) return lastState;
     await sleep(Math.min(pollMs, remaining));
   }
 }

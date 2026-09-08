@@ -109,3 +109,27 @@ test('#7331 a state read that outlives the deadline cannot pass late', async () 
       && error.expectedPath === EXPECTED_PATH,
   );
 });
+
+test('#7331 a ready state must arrive before the deadline even if its read resolves first', async () => {
+  for (const elapsed of [5, 10]) {
+    let time = 0;
+    const ready = routeState();
+    await assert.rejects(
+      waitForFunctionRoute(() => {
+        time = elapsed;
+        return ready;
+      }, EXPECTED_PATH, { timeoutMs: 5, now: () => time }),
+      (error) => error?.code === 'FUNCTION_ROUTE_WAIT_TIMEOUT'
+        && error.expectedPath === EXPECTED_PATH
+        && error.lastState === ready,
+      `a ready state at ${elapsed}ms must not satisfy a 5ms deadline`,
+    );
+  }
+
+  let time = 0;
+  const ready = routeState();
+  assert.equal(await waitForFunctionRoute(() => {
+    time = 4;
+    return ready;
+  }, EXPECTED_PATH, { timeoutMs: 5, now: () => time }), ready);
+});
