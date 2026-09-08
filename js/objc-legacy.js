@@ -164,7 +164,14 @@ function u64(b, o) {
  * read(addr, len) を、64 KiB ごとにまとめて読むように包む。
  * クラス表は飛び飛びに読むので、素直に呼ぶと往復が多くなりすぎる。
  */
+function pagedBudgetInteger(value, fallback, min) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= min) return value;
+  return fallback;
+}
+
 export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}) {
+  pageBytes = pagedBudgetInteger(pageBytes, 65536, 1);
+  maxPages = pagedBudgetInteger(maxPages, 96, 0);
   const signal = options?.signal ?? null;
   const pages = new Map();
   const direct = async (addr, len, soft) => {
