@@ -149,6 +149,7 @@ assert.deepEqual(
     'js/managed/jvm/parser-core.js',
     'js/platform/plugin-api-core.js',
     'js/workspace.js',
+    'tests/ai-control-plane.mjs',
     'tests/diff-platform.mjs',
     'tests/issue-4512-diff-abort-registration-race.mjs',
     'tests/issue-6086-agent-monotonic-clock.mjs',
