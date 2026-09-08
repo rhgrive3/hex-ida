@@ -9,7 +9,11 @@ import {
   observeCorpus,
   validateNativeArm64FunctionRecord,
 } from '../../tools/validation/phase8/decompile-corpus.mjs';
-import { phase8CurrentObservations } from '../../tools/validation/competitive/measurements.mjs';
+import {
+  collectCompetitiveMeasurements,
+  measurePhase8Quality,
+  phase8CurrentObservations,
+} from '../../tools/validation/competitive/measurements.mjs';
 import { extractElfFunctionRecord, loadCorpus } from '../../tools/validation/phase8/build-corpus.mjs';
 import { loadFrozenBaseline } from '../../tools/validation/phase8/metrics.mjs';
 
@@ -104,12 +108,50 @@ test('validated native ARM64 adapter admits one full-corpus row and rejects iden
   const foreignId = adapter.decompile({ ...entry, id:'foreign.quality.aggregate_array_stride.O0' });
   assert.equal(foreignId.failure, 'phase8-native-arm64-entry-identity-mismatch');
 
+  const candidate = baseline.observations.map((observation) => ({
+    ...observation,
+    failure:null,
+    semantic:true,
+    readability:{
+      ...observation.readability,
+      gotos:Number.isSafeInteger(observation.readability?.gotos) ? observation.readability.gotos : 0,
+      rawAssemblyFallbacks:Number.isSafeInteger(observation.readability?.rawAssemblyFallbacks)
+        ? observation.readability.rawAssemblyFallbacks : 0,
+    },
+  }));
+  candidate[0] = { ...candidate[0], observationMethod:'validated-native-arm64-capture' };
+  const methodMismatch = measurePhase8Quality({
+    metricId:'decompiler-quality-gotos',
+    observations:candidate,
+    capture,
+  });
+  assert.equal(methodMismatch.status, 'UNMEASURED');
+  assert.equal(methodMismatch.candidateValue, null);
+  assert.equal(methodMismatch.reason, 'phase8-reference-method-mismatch');
+  const collected = collectCompetitiveMeasurements({
+    capturesByMetric:{ 'decompiler-quality-gotos':capture },
+    phase8Observations:candidate,
+    phase8Corpus:frozen,
+    phase8ObservationMethod:'validated-native-arm64-capture',
+  });
+  assert.equal(collected['decompiler-quality-gotos'].status, 'UNMEASURED');
+  assert.equal(collected['decompiler-quality-gotos'].reason, 'phase8-reference-method-mismatch');
+
   const artifact = capture.artifacts.find((candidate) => candidate.id === 'arm64-native-quality.c-O0');
   assert.ok(artifact);
   const functionRecord = extractElfFunctionRecord(fs.readFileSync(artifact.debugArtifactPath), entry.function);
   assert.equal(functionRecord.elfType, 2);
+  assert.equal(functionRecord.elfMachine, 183);
   assert.equal(functionRecord.relocationSectionCount, 0);
   assert.doesNotThrow(() => validateNativeArm64FunctionRecord(functionRecord, entry.id));
+  const foreignMachineBytes = Buffer.from(fs.readFileSync(artifact.debugArtifactPath));
+  foreignMachineBytes.writeUInt16LE(62, 0x12);
+  const foreignMachineRecord = extractElfFunctionRecord(foreignMachineBytes, entry.function);
+  assert.equal(foreignMachineRecord.elfMachine, 62);
+  assert.throws(
+    () => validateNativeArm64FunctionRecord(foreignMachineRecord, entry.id),
+    /phase8-native-arm64-capture-function-machine-mismatch/,
+  );
   assert.throws(
     () => validateNativeArm64FunctionRecord({ ...functionRecord, elfType:1, address:null }, entry.id),
     /phase8-native-arm64-capture-function-relocations-or-address-unavailable/,

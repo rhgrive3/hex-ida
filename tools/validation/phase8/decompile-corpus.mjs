@@ -50,6 +50,7 @@ process.once('exit', closeSessions);
 const ARM64_NATIVE_CAPTURE_SCHEMA = 'hex-competitive-twin-capture/v1';
 const ARM64_NATIVE_CAPTURE_WORKLOAD = 'phase8-decompiler-quality-corpus';
 const ARM64_NATIVE_TARGET_TRIPLE = 'aarch64-unknown-linux-gnu';
+const ARM64_ELF_MACHINE = 183;
 const ARM64_NATIVE_COMPILER_ARGS = Object.freeze([
   `--target=${ARM64_NATIVE_TARGET_TRIPLE}`,
   '-g',
@@ -517,6 +518,9 @@ export function validateNativeArm64FunctionRecord(functionRecord, functionId = '
   if (functionRecord.elfType !== 2 || functionRecord.address == null || functionRecord.relocationSectionCount !== 0) {
     nativeCaptureFailure('function-relocations-or-address-unavailable', functionId);
   }
+  if (functionRecord.elfMachine !== ARM64_ELF_MACHINE) {
+    nativeCaptureFailure('function-machine-mismatch', `${functionId}:${functionRecord.elfMachine ?? 'missing'}`);
+  }
   return Object.freeze({
     bytes:functionRecord.bytes,
     address:BigInt(functionRecord.address),
@@ -675,8 +679,15 @@ export function decompileEntry(entry, {
   }
 }
 
-export function observationOf(entry, outcome) {
-  if (outcome.failure) return { id:entry.id, architectureId:entry.architectureId, failure:outcome.failure };
+export function observationOf(entry, outcome, observationMethod = null) {
+  if (outcome.failure) {
+    return {
+      id:entry.id,
+      architectureId:entry.architectureId,
+      failure:outcome.failure,
+      ...(observationMethod == null ? {} : { observationMethod }),
+    };
+  }
   const result = outcome.result;
   const metrics = result?.metrics ?? {};
   const provenance = provenanceFromSourceMap(result?.sourceMap);
@@ -723,6 +734,7 @@ export function observationOf(entry, outcome) {
       version:result.phase8Projection.version,
       transformCount:result.phase8Projection.transformCount,
     },
+    ...(observationMethod == null ? {} : { observationMethod }),
   };
 }
 
@@ -751,7 +763,7 @@ export function observeCorpus({
       const outcome = nativeAdapterFailure == null
         ? nativeAdapter.decompile(entry, { decompilerTimeBudgetMs, phase8WorkBudget, index, deterministicTransforms, phase8Optimize })
         : { id:entry.id, failure:nativeAdapterFailure };
-      return observationOf(entry, outcome);
+      return observationOf(entry, outcome, 'validated-native-arm64-capture');
     }
     return observationOf(entry, decompileEntry(entry, {
       decompilerTimeBudgetMs,

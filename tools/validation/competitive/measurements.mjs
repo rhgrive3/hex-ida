@@ -33,6 +33,7 @@ export const COMPETITIVE_MEASUREMENT_SCHEMA = 'hex-competitive-measurement/v1';
 export const MEASURED_STATUS = 'MEASURED';
 export const UNMEASURED_STATUS = 'UNMEASURED';
 const AUTHORITY = 'same-binary-twin';
+const NATIVE_ARM64_OBSERVATION_METHOD = 'validated-native-arm64-capture';
 const COMPARISONS = new Set(['WIN', 'TIE', 'LOSS', UNMEASURED_STATUS]);
 const BINARY_METRICS = Object.freeze([
   'machine-effects-x86_64-coverage',
@@ -1135,7 +1136,7 @@ function validateMeasuredPhase8Authority(value) {
 }
 
 /** Bind P8 candidate observations to the frozen source/corpus baseline. */
-export function measurePhase8Quality({ metricId, observations, baseline, provenance, corpus, capture, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+export function measurePhase8Quality({ metricId, observations, baseline, provenance, corpus, capture, observationMethod = null, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
   const field = qualityMetric(metricId);
   const authority = phase8FrozenAuthority();
   const binding = bindPhase8FrozenAuthority({ baseline, provenance, corpus }, authority);
@@ -1172,6 +1173,16 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
     return unmeasured(metricId, capture, 'phase8-frozen-baseline-digest-mismatch', {
       expected: recomputedBaselineDigest,
       observed: baseline?.observationsDigest ?? null,
+    });
+  }
+  const nativeObservationRows = (Array.isArray(observations) ? observations : [])
+    .filter((observation) => observation?.observationMethod === NATIVE_ARM64_OBSERVATION_METHOD);
+  if (observationMethod === NATIVE_ARM64_OBSERVATION_METHOD || nativeObservationRows.length > 0) {
+    return unmeasured(metricId, capture, 'phase8-reference-method-mismatch', {
+      candidateObservationMethod: NATIVE_ARM64_OBSERVATION_METHOD,
+      referenceObservationMethod: 'frozen-legacy-assembly',
+      nativeObservationCount: nativeObservationRows.length,
+      nativeObservationIds: nativeObservationRows.map((observation) => observation.id),
     });
   }
   const expectedFunctionIds = corpus.functions.map((row) => row?.id);
@@ -1246,7 +1257,7 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
 }
 
 /** Collect all four binary records from already captured evidence. */
-export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null } = {}) {
+export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null, phase8ObservationMethod = null } = {}) {
   const records = {};
   records['machine-effects-x86_64-coverage'] = measurePhase56Coverage({
     metricId: 'machine-effects-x86_64-coverage',
@@ -1265,6 +1276,7 @@ export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Le
       baseline: phase8Baseline || undefined,
       corpus: phase8Corpus || undefined,
       capture: capturesByMetric[metricId] || capturesByMetric['decompiler-quality-gotos'],
+      observationMethod: phase8ObservationMethod,
     });
   }
   return Object.freeze(records);
@@ -1399,6 +1411,9 @@ export function collectCompetitiveMeasurementsFromRepository({
   // or the opt-in gotos capture, is validated before any ARM64 row is used.
   const nativeArm64Capture = p8NativeArm64Capture
     ?? (p8UseNativeArm64 ? captures['decompiler-quality-gotos'] : null);
+  const phase8ObservationMethod = nativeArm64Capture == null
+    ? null
+    : NATIVE_ARM64_OBSERVATION_METHOD;
   const observations = p8Ready ? phase8CurrentObservations({ corpus, nativeArm64Capture, decompilerTimeBudgetMs }) : null;
   const measurements = collectCompetitiveMeasurements({
     capturesByMetric: captures,
@@ -1406,6 +1421,7 @@ export function collectCompetitiveMeasurementsFromRepository({
     phase6Ledger: ledgers['machine-effects-riscv64-coverage'] || null,
     phase8Observations: observations,
     phase8Corpus: corpus,
+    phase8ObservationMethod,
   });
   writeJson(path.join(root, 'measurements.json'), measurements);
   return Object.freeze({ captures, measurements, outputRoot: root });

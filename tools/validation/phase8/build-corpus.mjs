@@ -129,13 +129,15 @@ function cString(buffer, offset, limit) {
  * virtual st_value, so the section virtual address is subtracted before mapping
  * to file bytes. Phase 8 machine-byte lanes intentionally use the latter: local
  * branch/jump relocations must already be applied before bytes become evidence.
- * The record also retains the final virtual function address and relocation
- * section count so native consumers can reject unresolved ET_REL evidence and
- * decode PC-relative instructions at their linked address.
+ * The record also retains the ELF machine, final virtual function address, and
+ * relocation section count so native consumers can reject foreign or
+ * unresolved ET_REL evidence and decode PC-relative instructions at their
+ * linked address.
  */
 export function extractElfFunctionRecord(buffer, name) {
   const sections = elf64SectionHeaders(buffer);
   const elfType = buffer.readUInt16LE(0x10);
+  const elfMachine = buffer.readUInt16LE(0x12);
   const symbolTable = sections.find((section) => section.type === 2 && section.entrySize >= 24);
   if (!symbolTable) throw new Error('phase8 corpus: ELF symbol table missing');
   const strings = sections[symbolTable.link];
@@ -158,6 +160,7 @@ export function extractElfFunctionRecord(buffer, name) {
       bytes:Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size)),
       address:elfType === 1 ? null : symbolValue,
       elfType,
+      elfMachine,
       relocationSectionCount:sections.filter((candidate) => (candidate.type === 4 || candidate.type === 9) && candidate.size > 0).length,
     };
   }
