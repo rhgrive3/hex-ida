@@ -1,0 +1,9 @@
+# Remaining canonical UI chain; viewport matrix was already run and is retained separately.
+date -Is
+git -C /mnt/workspace/hex-development-gate-policy rev-parse HEAD
+git -C /mnt/workspace/hex-development-gate-policy status --short
+source /mnt/workspace/.dev-state/hex-development-batch/browser-env.sh
+export DEBUG=pw:browser
+export NO_PROXY="localhost,127.0.0.1${NO_PROXY:+,${NO_PROXY}}"
+export no_proxy="$NO_PROXY"
+${HEX_NODE22}/node scripts/run-quiet-command.mjs --label ui-remaining -- bash /mnt/workspace/.dev-state/hex-development-batch/t019-ui-remaining.sh

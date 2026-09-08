@@ -18,8 +18,10 @@ Log: `/tmp/hex-ui-browser-with-runtime-trace-3RXotG/full.log`.
 
 The [task-local schema repair](reviews/2026-09-08/webkit-environment.md) now
 passes actual-page navigation and all configured Chromium/WebKit viewports.
-The remaining navigation/mobile/accessibility/AI chain is being verified
-separately; full UI acceptance is not inferred from viewport coverage.
+The [remaining navigation/mobile/accessibility/AI chain](reviews/2026-09-08/t019-ui-remaining.md)
+also passed in 107.4 s on unchanged runtime source. Together these cover the
+complete development UI chain; the subsequent combined main candidate still
+requires validation for its changed runtime.
 
 Native ARM64 adapter commits are integrated at `a814cac2f` (preceded by
 `4bdb8443e` and `41d66f7ef`). The adapter uses captured linked ELF bytes, checks
