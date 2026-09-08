@@ -95,6 +95,7 @@
     "js/goals.js",
     "js/recognition/matcher.js",
     "js/program.js",
+    "js/patch.js",
     "tests/issue-2059-program-merge.mjs",
     "js/analysis/discovery/fusion.js",
     "js/analysis/query/product-adapter.js",
