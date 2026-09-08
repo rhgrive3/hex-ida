@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { LLVM18_VERSION, resolveLlvmTool18 } from '../../../tests/machine-effects/helpers/llvm-toolchain.mjs';
 
 /**
  * Build the Phase 6 mandatory RISC-V64 corpus from the frozen profile.
@@ -34,19 +35,17 @@ function run(executable, args, options = {}) {
   return result;
 }
 
-function firstExecutable(candidates, binDirectory = null) {
-  const preferred = binDirectory == null ? [] : candidates.map((candidate) => path.join(binDirectory, path.basename(candidate)));
-  for (const candidate of [...new Set([...preferred, ...candidates])]) {
-    if (candidate.includes('/') ? fs.existsSync(candidate) : spawnSync('bash', ['-lc', `command -v ${candidate}`], { encoding: 'utf8' }).status === 0) return candidate;
-  }
-  return null;
+function resolveTool(tool, binDirectory = null) {
+  const env = { ...process.env, ...(binDirectory == null ? {} : { HEX_P56_TOOLCHAIN_BIN: binDirectory }) };
+  try { return resolveLlvmTool18(tool, { env, expectedVersion: LLVM18_VERSION }); }
+  catch { return null; }
 }
 
 export function probeToolchain({ binDirectory = process.env.HEX_P56_TOOLCHAIN_BIN || null } = {}) {
-  const clang = firstExecutable(['/usr/bin/clang-18', 'clang-18', '/usr/bin/clang', 'clang'], binDirectory);
-  const lld = firstExecutable(['/usr/bin/ld.lld-18', 'ld.lld-18', '/usr/bin/ld.lld', 'ld.lld'], binDirectory);
-  const objdump = firstExecutable(['/usr/bin/llvm-objdump-18', 'llvm-objdump-18', '/usr/bin/llvm-objdump', 'llvm-objdump'], binDirectory);
-  const readobj = firstExecutable(['/usr/bin/llvm-readobj-18', 'llvm-readobj-18', '/usr/bin/llvm-readobj', 'llvm-readobj'], binDirectory);
+  const clang = resolveTool('clang', binDirectory);
+  const lld = resolveTool('lld', binDirectory);
+  const objdump = resolveTool('llvm-objdump', binDirectory);
+  const readobj = resolveTool('llvm-readobj', binDirectory);
   const compilerVersion = clang ? run(clang, ['--version']).stdout.trim() : null;
   const linkerVersion = lld ? run(lld, ['--version']).stdout.trim() : null;
   // Upstream support for a target is not evidence that this build has it.

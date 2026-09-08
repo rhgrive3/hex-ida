@@ -6,9 +6,12 @@ export const LLVM18_VERSION = '18.1.3';
 
 const TOOL_NAMES = Object.freeze({
   clang: Object.freeze(['clang-18', 'clang']),
+  lld: Object.freeze(['ld.lld-18', 'ld.lld']),
+  'lld-link': Object.freeze(['lld-link-18', 'lld-link']),
   'llvm-mc': Object.freeze(['llvm-mc-18', 'llvm-mc']),
   'llvm-objcopy': Object.freeze(['llvm-objcopy-18', 'llvm-objcopy']),
   'llvm-objdump': Object.freeze(['llvm-objdump-18', 'llvm-objdump']),
+  'llvm-readobj': Object.freeze(['llvm-readobj-18', 'llvm-readobj']),
 });
 
 function unique(values) {
