@@ -18,13 +18,17 @@ for (const operands of [
   'x0, sp',
   'sp, sp',
   'x0, #0',
+  'sp, #1',
 ]) {
   assert.notEqual(lift(operands).completeness, 'partial', `valid MOV alias regressed: ${operands}`);
 }
 
 for (const operands of [
   'x0, w1',
-  'sp, #1',
+  // `mov sp, #0x1234` is rejected by the ISA (not a bitmask immediate and not
+  // a wide-move form). `mov sp, #1` is `orr sp, xzr, #0x1` and is encodable,
+  // so it moved to the legal list via the ARM64 MOV alias encoding authority.
+  'sp, #0x1234',
   'sp, xzr',
   'xzr, sp',
   'x0, x1, x2',

@@ -121,7 +121,11 @@ export function decodeWireValue(value, depth = 0) {
     ) {
       throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
     }
-    return BigInt(value.value);
+    const decoded = BigInt(value.value);
+    if (decoded.toString(10) !== value.value) {
+      throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
+    }
+    return decoded;
   }
   if (value[WIRE_TAG] === BYTES_TAG) {
     if (Object.keys(value).some((k) => ![WIRE_TAG, 'value', 'length'].includes(k)) || typeof value.value !== 'string') {
