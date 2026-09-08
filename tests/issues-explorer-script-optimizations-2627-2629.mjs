@@ -39,6 +39,62 @@ import { classItems, externalItems } from '../js/ui/product.js';
   assert.equal(res3[0].addr, 0x1000n);
 }
 
+// ── #5900: findStrings no-match must be bounded by a scan budget and abortable ──
+{
+  let accessed = 0;
+  const strings = Array.from({ length: 50_000 }, (_, i) => ({
+    addr: BigInt(0x1000 + i * 16),
+    get text() { accessed++; return 'A'.repeat(128) + i; },
+  }));
+  const fakeApp = { stringIndex: strings };
+  const out = { log() {}, warn() {}, error() {} };
+  const { api: hex } = createApi(fakeApp, out);
+
+  // No-match over a large index must stop at the scan budget, not walk all
+  // 50k entries (pre-fix this scanned every item).
+  accessed = 0;
+  const noMatch = hex.findStrings('__never_exists__', 1, { scanLimit: 1000 });
+  assert.equal(noMatch.length, 0);
+  assert.equal(accessed, 1000, `expected the scan budget to bound text accesses, got ${accessed}`);
+  assert.equal(noMatch.complete, false);
+  assert.equal(noMatch.completeness, 'partial');
+  assert.equal(noMatch.truncationReason, 'scan-budget');
+  assert.equal(noMatch.scannedItems, 1000);
+
+  // context.scanLimit can lower but never raise the default budget.
+  let raiseAccessed = 0;
+  const small = Array.from({ length: 3000 }, (_, i) => ({
+    addr: BigInt(0x5000 + i * 8),
+    get text() { raiseAccessed++; return `needle_${i}`; },
+  }));
+  const smallApp = { stringIndex: small };
+  const { api: hex2 } = createApi(smallApp, out);
+  raiseAccessed = 0;
+  const capped = hex2.findStrings('__never_exists__', 1, { scanLimit: 500 });
+  assert.equal(capped.scannedItems, 500, 'context.scanLimit must lower the scan budget');
+  assert.equal(raiseAccessed, 500);
+  assert.equal(capped.complete, false);
+  raiseAccessed = 0;
+  const attempted = hex2.findStrings('__never_exists__', 1, { scanLimit: 999_999_999 });
+  assert.equal(attempted.scannedItems, 3000, 'context.scanLimit must never raise the default budget');
+  assert.equal(raiseAccessed, 3000);
+  assert.equal(attempted.complete, true, 'full walk of a small index is complete, not truncated');
+
+  // Full-walk completion keeps legacy Array parity and reports completion.
+  raiseAccessed = 0;
+  const found = hex2.findStrings('needle_2999', 10);
+  assert.equal(found.length, 1);
+  assert.equal(found.complete, true);
+  assert.equal(found.completeness, 'complete');
+  assert.equal(found.truncationReason, null);
+  assert.equal(found.scannedItems, 3000);
+
+  // Abort before the scan starts must throw instead of scanning.
+  const controller = new AbortController();
+  controller.abort();
+  assert.throws(() => hex2.findStrings('needle', 5, { signal: controller.signal }), (e) => e.name === 'AbortError');
+}
+
 // ── #2628: Product Explorer Classes caching and filtering ──
 {
   const classesMap = new Map();

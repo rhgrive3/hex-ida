@@ -32,6 +32,7 @@ import { Emulator } from './emu.js';
 
 export { UnsupportedArchitectureError } from './architecture/index.js';
 import { runInSandbox } from './sandbox.js';
+import { FIND_STRINGS_SCAN_BUDGET, SearchScanBudget } from './string-budget.js';
 import { investigationServiceFor } from './analysis/investigation-service.js';
 
 function executableRegionForAddress(app, address) {
@@ -400,20 +401,51 @@ export function createApi(app, out, options = {}) {
 
     async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
 
-    /** 文字列を検索する。 */
-    findStrings(query, limit = 200) {
+    /**
+     * 文字列を検索する。result limitとscan work budgetは別物: no-matchの
+     * クエリでも巨大indexを全走査しない。走査を打ち切った場合はpartialと
+     * 打ち切り理由を配列メタデータとして返す (#5900)。
+     */
+    findStrings(query, limit = 200, context = null) {
+      if (isExecutionContext(limit)) { context = limit; limit = 200; }
+      const signal = signalOf(context);
+      throwIfAborted(signal);
       const q = String(query ?? '').toLowerCase();
       const max = Math.max(1, Math.min(5000, Number(limit) || 200));
       const source = app.stringIndex || (app.strings?.items) || [];
+      // context.scanLimit may lower the scan budget for bounded automation;
+      // it can never raise it past the fixed default (#5900).
+      const scanLimit = Number.isSafeInteger(context?.scanLimit) && context.scanLimit > 0
+        ? Math.min(context.scanLimit, FIND_STRINGS_SCAN_BUDGET.items)
+        : FIND_STRINGS_SCAN_BUDGET.items;
+      const budget = new SearchScanBudget({ items: scanLimit, textBytes: FIND_STRINGS_SCAN_BUDGET.textBytes });
       const results = [];
+      let visited = 0;
+      let truncationReason = null;
       for (const s of source) {
+        visited += 1;
+        throwIfAborted(signal);
+        if (budget.exhausted) { truncationReason = 'scan-budget'; break; }
         const text = s?.text;
         if (typeof text !== 'string') continue;
+        budget.consume(text);
         if (!q || text.toLowerCase().includes(q)) {
           results.push(s);
-          if (results.length >= max) break;
+          if (results.length >= max) {
+            // Result limit hit. Only a truncation if the index has entries left.
+            truncationReason = Array.isArray(source) && visited >= source.length ? null : 'result-limit';
+            break;
+          }
         }
       }
+      Object.assign(results, {
+        complete: truncationReason == null,
+        completeness: truncationReason == null ? 'complete' : 'partial',
+        truncationReason,
+        reason: truncationReason,
+        scannedItems: budget.scannedItems,
+        scannedTextBytes: budget.scannedTextBytes,
+      });
       return results;
     },
 

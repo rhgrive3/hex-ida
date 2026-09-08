@@ -4,6 +4,17 @@ export const STRING_SCAN_BUDGET = Object.freeze({
   estimatedHeapBytes: 32 * 1024 * 1024,
 });
 
+/*
+ * findStrings() walks the collected string index synchronously on the main
+ * thread, so the scan work needs its own budget independent of the result
+ * limit: without one, a no-match query over a large index walks every entry
+ * and neither the result limit nor an abort signal can stop it (#5900).
+ */
+export const FIND_STRINGS_SCAN_BUDGET = Object.freeze({
+  items: 1_000_000,
+  textBytes: 64 * 1024 * 1024,
+});
+
 export class StringCollectionBudget {
   constructor(config = STRING_SCAN_BUDGET) {
     const inputBytes = typeof config.inputBytes === 'number' ? config.inputBytes : NaN;
@@ -48,5 +59,32 @@ export class StringCollectionBudget {
 
   get exhausted() {
     return this.requestLimit() <= 0 || this.estimatedHeap >= this.heapLimit;
+  }
+}
+
+export class SearchScanBudget {
+  constructor(config = FIND_STRINGS_SCAN_BUDGET) {
+    const items = typeof config.items === 'number' && Number.isFinite(config.items) ? config.items : NaN;
+    const textBytes = typeof config.textBytes === 'number' && Number.isFinite(config.textBytes) ? config.textBytes : NaN;
+    this.itemsRemaining = Number.isFinite(items) ? Math.max(0, Math.floor(items)) : 0;
+    this.textBytesRemaining = Number.isFinite(textBytes) ? Math.max(0, textBytes) : 0;
+    this.scannedItems = 0;
+    this.scannedTextBytes = 0;
+  }
+
+  get exhausted() {
+    return this.itemsRemaining <= 0 || this.textBytesRemaining <= 0;
+  }
+
+  /*
+   * Charge one candidate entry. Callers must check `exhausted` before reading
+   * the entry, so budget exhaustion never pays for one extra text read.
+   */
+  consume(text) {
+    this.itemsRemaining -= 1;
+    this.scannedItems += 1;
+    const bytes = typeof text === 'string' ? text.length * 2 : 0;
+    this.textBytesRemaining -= bytes;
+    this.scannedTextBytes += bytes;
   }
 }
