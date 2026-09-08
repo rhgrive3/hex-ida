@@ -47,12 +47,50 @@ test('6076: missing mid-chain superclass blocks negative filtering', () => {
   assert.equal(result.partial, true);
 });
 
+test('6076: hierarchy depth budget keeps beyond-budget candidates inconclusive', () => {
+  const classes = Array.from({ length: 65 }, (_, i) => ({
+    name: `Depth${i}`,
+    ...(i < 64 ? { superName: `Depth${i + 1}` } : {}),
+    methods: i === 64 ? [{ sel: 'work', addr: 0x1234n }] : [],
+  }));
+  const deep = buildObjcRuntimeIndex(model(classes));
+  const result = resolveObjcDispatch(deep, { receiverType: 'Depth0', selector: 'work' });
+  assert.equal(result.resolved, null);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.className), ['Depth64']);
+  assert.equal(result.partial, true);
+  assert.match(result.reason, /hierarchy is unavailable or incomplete/);
+});
+
+test('6076: cyclic hierarchy keeps unrelated selector candidates inconclusive', () => {
+  const cyclic = buildObjcRuntimeIndex(model([
+    { name: 'CycleA', superName: 'CycleB', methods: [] },
+    { name: 'CycleB', superName: 'CycleA', methods: [] },
+    { name: 'Base', methods: [{ sel: 'work', addr: 0x1234n }] },
+  ]));
+  let result = null;
+  assert.doesNotThrow(() => {
+    result = resolveObjcDispatch(cyclic, { receiverType: 'CycleA', selector: 'work' });
+  });
+  assert.equal(result.resolved, null);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.className), ['Base']);
+  assert.equal(result.partial, true);
+  assert.match(result.reason, /hierarchy is unavailable or incomplete/);
+});
+
 test('6076: IMP resolution keeps candidates for unknown receiver class', () => {
   const result = resolveObjcIMP(index, 0x1234n, { receiverType: 'ExternalChild', selector: 'work' });
   assert.ok(result.candidates.length > 0, 'parsed IMP must remain available');
   assert.equal(result.resolved, null);
   assert.equal(result.partial, true);
   assert.doesNotMatch(result.reason, /not found/);
+});
+
+test('6076: null receiver remains conservative with a unique current-image candidate', () => {
+  const result = resolveObjcDispatch(index, { receiverType: null, selector: 'work' });
+  assert.equal(result.resolved, null);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.className), ['Base']);
+  assert.equal(result.partial, true);
+  assert.match(result.reason, /receiver type is unknown/);
 });
 
 test('6076: complete metadata still resolves exactly', () => {
