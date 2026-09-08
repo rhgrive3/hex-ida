@@ -1826,16 +1826,141 @@ for (const n of ['fcvtzs', 'fcvtzu', 'fcvtas', 'fcvtau', 'fcvtms', 'fcvtns', 'fc
     o.terms = ['float'];
   };
 }
-for (const n of ['scvtf', 'ucvtf']) {
-  HANDLERS[n] = (o, ops) => {
+const INT_FLOAT_VECTOR_SHAPES = Object.freeze({
+  '4h': Object.freeze({ lanes: 4, bits: 16, precision: 'half' }),
+  '8h': Object.freeze({ lanes: 8, bits: 16, precision: 'half' }),
+  '2s': Object.freeze({ lanes: 2, bits: 32, precision: 'float' }),
+  '4s': Object.freeze({ lanes: 4, bits: 32, precision: 'float' }),
+  '2d': Object.freeze({ lanes: 2, bits: 64, precision: 'double' }),
+});
+
+function intFloatRegister(op) {
+  return op?.k === 'reg' && Number.isInteger(op.num) && op.num >= 0 && op.num < 32;
+}
+
+function intFloatScalarFpRegister(op) {
+  return intFloatRegister(op) && op.cls === 'fp' && (op.bits === 32 || op.bits === 64);
+}
+
+function intFloatScalarIntegerRegister(op) {
+  if (!intFloatRegister(op) || !['gp', 'zr'].includes(op.cls) || ![32, 64].includes(op.bits)) return false;
+  return op.cls !== 'gp' || op.num < 31;
+}
+
+function intFloatVectorShape(op) {
+  if (!intFloatRegister(op) || op.cls !== 'vec' || op.bits !== 128 || typeof op.arr !== 'string') return null;
+  const arrangement = op.arr.toLowerCase();
+  const shape = INT_FLOAT_VECTOR_SHAPES[arrangement];
+  return shape ? { ...shape, arrangement } : null;
+}
+
+function intFloatScale(op, maximum) {
+  if (op?.k !== 'imm' || op.shift != null || typeof op.value !== 'bigint') return null;
+  if (op.value < 1n || op.value > BigInt(maximum)) return null;
+  return Number(op.value);
+}
+
+function intFloatShape(ops) {
+  if (!Array.isArray(ops) || ops.length < 2 || ops.some((op) => op?.shift != null || op?.extend != null)) return null;
+  const [d, s] = ops;
+  const destinationVector = intFloatVectorShape(d);
+  const sourceVector = intFloatVectorShape(s);
+  if (destinationVector && sourceVector && destinationVector.arrangement === sourceVector.arrangement) {
+    if (ops.length === 2) return { kind: 'vector', d, s, ...destinationVector, scale: null };
+    if (ops.length === 3) {
+      const scale = intFloatScale(ops[2], destinationVector.bits);
+      return scale == null ? null : { kind: 'vector', d, s, ...destinationVector, scale };
+    }
+    return null;
+  }
+
+  if (intFloatScalarFpRegister(d) && intFloatScalarFpRegister(s) && d.bits === s.bits) {
+    const scalarShape = { kind: 'scalar-simd', d, s, bits: d.bits, precision: d.bits === 64 ? 'double' : 'float' };
+    if (ops.length === 2) return { ...scalarShape, scale: null };
+    if (ops.length !== 3) return null;
+    const scale = intFloatScale(ops[2], d.bits);
+    return scale == null ? null : { ...scalarShape, scale };
+  }
+
+  if (!intFloatScalarFpRegister(d) || !intFloatScalarIntegerRegister(s)) return null;
+  if (ops.length === 2) return { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale: null };
+  if (ops.length !== 3) return null;
+  const scale = intFloatScale(ops[2], s.bits);
+  return scale == null ? null : { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale };
+}
+
+function intFloatPrecision(precision) {
+  return precision === 'double'
+    ? { ja: '倍精度の小数', en: 'double-precision floating point' }
+    : precision === 'half'
+      ? { ja: '半精度の小数', en: 'half-precision floating point' }
+      : { ja: '単精度の小数', en: 'single-precision floating point' };
+}
+
+function intFloatUnknown(o, mnemonic, ops) {
+  const shown = typeof o.operands === 'string' && o.operands.trim()
+    ? o.operands.trim()
+    : ops.map((op) => opShort(op) || '?').join(', ') || '(missing operands)';
+  o.title = J('整数→小数（オペランド形状不明）', 'Integer to float (operand shape unknown)');
+  o.pseudo = mnemonic.toUpperCase() + '(' + shown + ')';
+  o.summary = J(
+    mnemonic.toUpperCase() + ' のこのオペランド形状は未解釈です。符号・幅・精度を推測していません。',
+    'The operand shape for ' + mnemonic.toUpperCase() + ' is not interpreted; signedness, width, and precision are left unknown.');
+  o.detail.push(J(
+    '対応している W/X から S/D、または SIMD の同じレーン形状ではないため、整数の型変換を断定しません。',
+    'This is not a supported W/X-to-S/D or same-shape SIMD form, so no integer cast is asserted.'));
+  o.terms = ['float'];
+}
+
+function intToFloatHandler(mnemonic, signed) {
+  return (o, ops) => {
+    const shape = intFloatShape(ops);
+    if (!shape) {
+      intFloatUnknown(o, mnemonic, ops);
+      return;
+    }
+
+    const signedLabelJa = signed ? '符号付き' : '符号なし';
+    const signedLabelEn = signed ? 'signed' : 'unsigned';
+    const precision = intFloatPrecision(shape.precision);
+    const scaleNoteJa = shape.scale == null ? '' : '。固定小数点の小数部は ' + shape.scale + ' ビット（2^' + shape.scale + ' で割る）';
+    const scaleNoteEn = shape.scale == null ? '' : ' Fixed-point scale #' + shape.scale + ' divides the value by 2^' + shape.scale + '.';
+
     o.title = J('整数を小数にする', 'Integer to float');
-    o.pseudo = opShort(ops[0]) + ' = (double)' + opShort(ops[1]);
+    if (shape.kind === 'scalar-integer') {
+      const sourceType = (signed ? 'int' : 'uint') + shape.bits + '_t';
+      o.pseudo = shape.scale == null
+        ? shape.d.text + ' = (' + shape.precision + ')(' + sourceType + ')' + shape.s.text
+        : shape.d.text + ' = ((' + shape.precision + ')(' + sourceType + ')' + shape.s.text + ') / 2^' + shape.scale;
+      o.summary = J(
+        shape.s.text + ' の' + signedLabelJa + '整数（' + sourceType + '）を' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' integer (' + sourceType + ') in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn);
+      o.terms = ['float'];
+      return;
+    }
+
+    const lane = shape.bits + '-bit';
+    if (shape.kind === 'scalar-simd') {
+      const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lane_to_' + shape.precision;
+      o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
+      o.summary = J(
+        'SIMD スカラー ' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + 'レーンを' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' ' + lane + ' SIMD scalar lane in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn,
+      );
+      o.terms = ['float', 'simd'];
+      return;
+    }
+
+    const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lanes_to_' + shape.precision;
+    o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の整数を小数の形に変換して ' + opShort(ops[0]) + ' に入れる。',
-      'Convert the integer in ' + opShort(ops[1]) + ' to floating point.');
-    o.terms = ['float'];
+      shape.d.text + ' の各レーンを、' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + '整数レーンから' + precision.ja + 'へ変換する' + scaleNoteJa + '。',
+      'Convert each ' + signedLabelEn + ' ' + lane + ' integer lane in ' + shape.s.text + ' to ' + precision.en + ' lanes in ' + shape.d.text + '.' + scaleNoteEn);
+    o.terms = ['float', 'simd'];
   };
 }
+HANDLERS.scvtf = intToFloatHandler('scvtf', true);
+HANDLERS.ucvtf = intToFloatHandler('ucvtf', false);
 HANDLERS.fcvt = (o, ops) => {
   o.title = J('小数の精度を変える', 'Convert float precision');
   o.pseudo = opShort(ops[0]) + ' = (' + (ops[0] && ops[0].bits === 64 ? 'double' : 'float') + ')' + opShort(ops[1]);
