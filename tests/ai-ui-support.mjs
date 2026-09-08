@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PREF_KEY = 'hexviewer.prefs.v1';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -65,10 +66,20 @@ export async function closeSheets(page) {
 }
 
 /** A booted page with the product UI and the assistant installed. */
-export async function openApp(browser, { width, height, sample = false } = {}) {
+export async function openApp(browser, { width, height, sample = false, onboarding = false } = {}) {
   const context = await browser.newContext({
     viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600,
   });
+  /*
+   * Assistant tests are not onboarding tests. Seed the persisted preference
+   * before app.js constructs App so its delayed welcome-guide timer cannot
+   * race the first launcher interaction. The explicit onboarding mode below
+   * keeps that product path covered without letting it interfere with the
+   * assistant suite.
+   */
+  await context.addInitScript(({ key, guideSeen }) => {
+    try { localStorage.setItem(key, JSON.stringify({ guideSeen })); } catch { /* storage may be unavailable on about:blank */ }
+  }, { key: PREF_KEY, guideSeen: !onboarding });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -79,8 +90,10 @@ export async function openApp(browser, { width, height, sample = false } = {}) {
   });
   await page.goto(page.__baseUrl || context.__baseUrl || global.__hexBaseUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.__hexUi && !!window.__hexAi, null, { timeout: 20000 });
-  await page.waitForTimeout(250);
-  await closeSheets(page);
+  if (!onboarding) {
+    await page.waitForTimeout(250);
+    await closeSheets(page);
+  }
   if (sample) {
     await page.evaluate(() => window.__app.openSample());
     await page.waitForFunction(() => !!window.__app.store.get('fileInfo'), null, { timeout: 30000 });
