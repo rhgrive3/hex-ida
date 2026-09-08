@@ -7,6 +7,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
 import {
   canonicalMemorySsaProducerDigest,
+  canonicalMemorySsaProducerSemanticIrDigest,
   isCanonicalMemorySsaProducerArtifact,
 } from './build.js';
 import {
@@ -49,6 +50,10 @@ function useFrom(memorySsa, useOrId) {
   const use = useMap(memorySsa).get(String(useOrId));
   if (!use) fail('memory-ssa-query-use-not-found');
   return use;
+}
+
+function semanticIrDigestForArtifact(artifact, ir) {
+  return canonicalMemorySsaProducerSemanticIrDigest(artifact, ir) ?? stableDigest(ir);
 }
 
 export function getMemoryDefinition(memorySsa, definitionId) {
@@ -1230,7 +1235,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     if (!forwardingObject(options.ir)
         || String(options.ir.functionId ?? '') !== String(artifact.functionId)
         || String(options.ir.contractVersion ?? '') !== String(identity.semanticIrContractVersion)
-        || stableDigest(options.ir) !== String(identity.semanticIrDigest)) {
+        || semanticIrDigestForArtifact(artifact, options.ir) !== String(identity.semanticIrDigest)) {
       throw new ForwardingStop('stale', 'memoryssa-canonical-ir-identity-mismatch');
     }
   }
@@ -1524,7 +1529,7 @@ function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage,
       optionsIdentity: options.currentIdentity ?? null,
       consumerId: options.consumerId ?? null,
       purpose: options.purpose ?? null,
-      canonicalIrDigest: options.ir == null ? null : stableDigest(options.ir),
+      canonicalIrDigest: options.ir == null ? null : semanticIrDigestForArtifact(memorySsa, options.ir),
     }),
     functionId: memorySsa.functionId,
     snapshotId: memorySsa.snapshotId ?? options.snapshotId ?? null,

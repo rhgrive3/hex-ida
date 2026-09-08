@@ -20,6 +20,7 @@ import {
   createSemanticIrFunction,
   lowerMachineEffectBundleToSemanticIr,
 } from '../ir/index.js';
+import { canonicalSemanticIrDigest } from '../ir/function.js';
 import {
   SEMANTIC_SSA_BUILD_VERSION,
   buildSemanticSsa,
@@ -518,7 +519,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});
   validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});
 
-  const semanticIrDigest = stableDigest(ir);
+  const semanticIrDigest = canonicalSemanticIrDigest(ir);
   const scalarSsaDigest = stableDigest(ssa);
   const snapshotId = String(options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound');
   const semanticIrId = options.memorySsaOptions?.identity?.semanticIrId

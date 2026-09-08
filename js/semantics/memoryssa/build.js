@@ -13,6 +13,10 @@ import {
   reachableBlocks,
 } from '../cfg/index.js';
 import {
+  canonicalSemanticIrDigest,
+  isCanonicalSemanticIrFunction,
+} from '../ir/function.js';
+import {
   MEMORY_SSA_ALIAS_RELATIONS,
   MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
@@ -59,6 +63,7 @@ class CanonicalMemorySsaArtifact {
 // take the ordinary recomputation path and never gain identity authority from
 // this cache.
 const canonicalMemorySsaDigestCache = new WeakMap();
+const canonicalMemorySsaSemanticIrCache = new WeakMap();
 
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
@@ -73,6 +78,12 @@ export function canonicalMemorySsaProducerDigest(artifact) {
   const digest = canonicalMemorySsaDigest(artifact);
   canonicalMemorySsaDigestCache.set(artifact, digest);
   return digest;
+}
+
+export function canonicalMemorySsaProducerSemanticIrDigest(artifact, ir) {
+  if (!isCanonicalMemorySsaProducerArtifact(artifact) || !Object.isFrozen(artifact)) return null;
+  const binding = canonicalMemorySsaSemanticIrCache.get(artifact);
+  return binding?.ir === ir ? binding.digest : null;
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -1502,5 +1513,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // private publication and deep freeze. Seed the producer-owned cache so
   // the first consumer query does not repeat that full serialization pass.
   canonicalMemorySsaDigestCache.set(published, canonicalDigest);
+  if (isCanonicalSemanticIrFunction(irFunction)) {
+    const semanticIrDigest = canonicalSemanticIrDigest(irFunction);
+    if (String(identity?.semanticIrDigest ?? '') === semanticIrDigest) {
+      canonicalMemorySsaSemanticIrCache.set(published, { ir: irFunction, digest: semanticIrDigest });
+    }
+  }
   return published;
 }

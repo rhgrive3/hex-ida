@@ -1,4 +1,4 @@
-import { deepFreeze, stableStringify } from '../../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
@@ -47,6 +47,33 @@ function assertVersion(input) {
 }
 
 const REFERENCE_COUNT_OVERFLOW = Number.MAX_SAFE_INTEGER + 1;
+
+// A function returned by the canonical IR factory is fully validated and
+// deeply frozen. Compatibility projection re-enters that factory with the
+// same object, so retaining the private authority lets the second validation
+// return in constant time when the default budget was used. Explicit-budget
+// constructions remain canonical for immutable digest reuse, but are always
+// rechecked when a later caller asks for default limits.
+const CANONICAL_SEMANTIC_IR_FUNCTIONS = new WeakSet();
+const CANONICAL_SEMANTIC_IR_DEFAULT_FUNCTIONS = new WeakSet();
+const CANONICAL_SEMANTIC_IR_DIGESTS = new WeakMap();
+
+function usesDefaultBudget(options) {
+  return options?.budget == null;
+}
+
+export function isCanonicalSemanticIrFunction(value) {
+  return CANONICAL_SEMANTIC_IR_FUNCTIONS.has(value);
+}
+
+export function canonicalSemanticIrDigest(value) {
+  if (!isCanonicalSemanticIrFunction(value)) return stableDigest(value);
+  const cached = CANONICAL_SEMANTIC_IR_DIGESTS.get(value);
+  if (cached !== undefined) return cached;
+  const digest = stableDigest(value);
+  CANONICAL_SEMANTIC_IR_DIGESTS.set(value, digest);
+  return digest;
+}
 
 function addReferenceCount(total, amount) {
   if (total === REFERENCE_COUNT_OVERFLOW
@@ -280,6 +307,7 @@ function validateNormalizedFunction(out, options) {
 
 export function createSemanticIrFunction(input, options = {}) {
   assertNotAborted(options);
+  if (CANONICAL_SEMANTIC_IR_DEFAULT_FUNCTIONS.has(input) && usesDefaultBudget(options)) return input;
   input = object(input, 'semantic-ir-invalid-function');
   assertAllowedKeys(input, new Set([
     'schemaVersion', 'contractVersion', 'functionId', 'entryBlockId', 'blocks', 'values', 'nodes',
@@ -312,7 +340,10 @@ export function createSemanticIrFunction(input, options = {}) {
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');
   validateNormalizedFunction(out, options);
-  return deepFreeze(out);
+  const frozen = deepFreeze(out);
+  CANONICAL_SEMANTIC_IR_FUNCTIONS.add(frozen);
+  if (usesDefaultBudget(options)) CANONICAL_SEMANTIC_IR_DEFAULT_FUNCTIONS.add(frozen);
+  return frozen;
 }
 
 export function validateSemanticIrFunction(input, options = {}) {

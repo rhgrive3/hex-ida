@@ -3,7 +3,16 @@ import test from 'node:test';
 
 import { canonicalMemorySsaDigest } from '../../../js/semantics/memoryssa/proof.js';
 import {
+  canonicalSemanticIrDigest,
+  createSemanticIrFunction,
+  isCanonicalSemanticIrFunction,
+  validateSemanticIrFunction,
+} from '../../../js/semantics/ir/function.js';
+import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
+import {
+  buildMemorySsa,
   canonicalMemorySsaProducerDigest,
+  canonicalMemorySsaProducerSemanticIrDigest,
   isCanonicalMemorySsaProducerArtifact,
 } from '../../../js/semantics/memoryssa/build.js';
 
@@ -54,4 +63,84 @@ test('reentrant mutation during an unbranded digest cannot poison later checks',
 
   assert.notEqual(second, first);
   assert.equal(second, canonicalMemorySsaDigest(artifact));
+});
+
+test('canonical Semantic IR reuse retains cancellation, budget, and clone guards', () => {
+  const origin = { instructionIds: ['ir-marker'], virtualRanges: [{ start: 0n, end: 1n }] };
+  const ir = createSemanticIrFunction({
+    schemaVersion: 2,
+    contractVersion: '2.0.0',
+    functionId: 'memoryssa-ir-marker',
+    entryBlockId: 'entry',
+    blocks: [{ id: 'entry', nodeIds: [], origin }],
+    values: [],
+    nodes: [],
+    completeness: 'complete',
+    unknowns: [],
+    origin,
+  });
+
+  assert.equal(isCanonicalSemanticIrFunction(ir), true);
+  assert.equal(Object.isFrozen(ir), true);
+  assert.equal(validateSemanticIrFunction(ir), ir);
+  const semanticIrDigest = canonicalSemanticIrDigest(ir);
+  assert.equal(semanticIrDigest, canonicalSemanticIrDigest(ir));
+
+  const cfg = createSemanticCfg({
+    functionId: ir.functionId,
+    entryBlockId: ir.entryBlockId,
+    blocks: [{ id: ir.entryBlockId, successors: [] }],
+  });
+  const artifact = buildMemorySsa(ir, cfg, {
+    identity: {
+      functionId: ir.functionId,
+      semanticIrId: 'memoryssa-ir-marker',
+      semanticIrContractVersion: ir.contractVersion,
+      semanticIrDigest,
+      snapshotId: 'memoryssa-ir-marker-snapshot',
+    },
+    canonicalIrIdentity: {
+      functionId: ir.functionId,
+      semanticIrId: 'memoryssa-ir-marker',
+      semanticIrContractVersion: ir.contractVersion,
+      semanticIrDigest,
+    },
+    snapshotId: 'memoryssa-ir-marker-snapshot',
+  });
+  assert.equal(canonicalMemorySsaProducerSemanticIrDigest(artifact, ir), semanticIrDigest);
+  assert.equal(canonicalMemorySsaProducerSemanticIrDigest(artifact, structuredClone(ir)), null);
+
+  const controller = new AbortController();
+  controller.abort();
+  assert.throws(() => validateSemanticIrFunction(ir, { signal: controller.signal }), /cancelled/);
+  assert.throws(() => validateSemanticIrFunction(ir, { budget: { maxBlocks: 0 } }), /invalid-budget-maxBlocks/);
+
+  const clone = structuredClone(ir);
+  clone.functionId = 'memoryssa-ir-marker-mutated';
+  const normalizedClone = validateSemanticIrFunction(clone);
+  assert.notEqual(normalizedClone, clone);
+  assert.equal(normalizedClone.functionId, 'memoryssa-ir-marker-mutated');
+});
+
+test('an explicitly looser canonical IR budget is rechecked against defaults', () => {
+  const origin = { instructionIds: ['ir-budget'], virtualRanges: [{ start: 0n, end: 1n }] };
+  const blocks = Array.from({ length: 16385 }, (_, index) => ({
+    id: `budget-${index}`,
+    nodeIds: [],
+  }));
+  const ir = createSemanticIrFunction({
+    schemaVersion: 2,
+    contractVersion: '2.0.0',
+    functionId: 'memoryssa-ir-budget',
+    entryBlockId: 'budget-0',
+    blocks,
+    values: [],
+    nodes: [],
+    completeness: 'complete',
+    unknowns: [],
+    origin,
+  }, { budget: { maxBlocks: blocks.length } });
+
+  assert.equal(isCanonicalSemanticIrFunction(ir), true);
+  assert.throws(() => validateSemanticIrFunction(ir), /semantic-ir-budget-exceeded-maxBlocks/);
 });

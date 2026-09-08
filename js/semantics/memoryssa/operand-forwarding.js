@@ -1,5 +1,8 @@
 import { stableDigest } from '../../core/identity/index.js';
-import { isCanonicalMemorySsaProducerArtifact } from './build.js';
+import {
+  canonicalMemorySsaProducerSemanticIrDigest,
+  isCanonicalMemorySsaProducerArtifact,
+} from './build.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -20,11 +23,12 @@ function record(value) {
 }
 
 function semanticIrMatches(memorySsa, ir) {
+  const semanticIrDigest = canonicalMemorySsaProducerSemanticIrDigest(memorySsa, ir) ?? stableDigest(ir);
   if (!record(ir)
       || String(ir.functionId ?? '') !== String(memorySsa.functionId ?? '')
       || typeof memorySsa.identity?.semanticIrDigest !== 'string'
       || !memorySsa.identity.semanticIrDigest
-      || stableDigest(ir) !== memorySsa.identity.semanticIrDigest) return false;
+      || semanticIrDigest !== memorySsa.identity.semanticIrDigest) return false;
   const canonical = memorySsa.canonicalIrIdentity;
   return record(canonical)
     && String(canonical.functionId ?? '') === String(ir.functionId ?? '')
