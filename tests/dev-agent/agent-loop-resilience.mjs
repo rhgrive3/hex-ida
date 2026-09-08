@@ -40,6 +40,54 @@ async function testRunScopedRetryUsesBackoff() {
   host.close();
 }
 
+/* The retry deadline can become due between the launch and wait checks. Both
+   checks must use one scheduling tick, or the graph can report graph-stalled
+   while a retry is already eligible. */
+async function testRetryBoundaryUsesSingleSchedulingTick() {
+  let phase = 'steady';
+  const sleepCalls = [];
+  const nowMs = () => {
+    if (phase === 'steady') return 1000;
+    if (phase === 'after-release') {
+      phase = 'launch-tick';
+      return 1000;
+    }
+    if (phase === 'launch-tick') {
+      phase = 'retry-tick';
+      return 1034;
+    }
+    return 1035;
+  };
+  const pool = new FakePool([
+    { result: { status: 'failed', error: { code: 'transient', message: 'retry me' } } },
+    { result: { status: 'completed', responseText: 'done' } },
+  ], {
+    onRelease() {
+      if (phase === 'steady') phase = 'after-release';
+    },
+  });
+  const host = graphHost(pool, {
+    supervisorWatchdogTimeoutMs: 500,
+    retryBaseDelayMs: 35,
+    nowMs,
+    sleep: async (ms) => {
+      sleepCalls.push(ms);
+      phase = 'due';
+    },
+  });
+  await host.start({
+    graphId: 'backoff-boundary',
+    runId: 'run-backoff-boundary',
+    tasks: [{ id: 'retry', dependencies: [], instruction: 'retry', maxAttempts: 2 }],
+  });
+  const status = await waitTerminal(host, 'backoff-boundary');
+  assert.equal(status.state, 'SUCCEEDED');
+  const task = host.taskResult({ graphId: 'backoff-boundary', taskId: 'retry' });
+  assert.equal(task.attempts, 2);
+  assert.deepEqual(sleepCalls, [1], 'the graph must wait for the remaining backoff at the shared scheduling tick');
+  host.close();
+}
+
 async function testCompletionDeliveryCannotRewriteSuccess() {
   const syncPool = new FakePool([{ result: { status: 'completed', responseText: 'sync' } }]);
   const syncHost = graphHost(syncPool, {
@@ -138,6 +186,8 @@ function graphHost(workerPool, options = {}) {
     cleanupTimeoutMs: 50,
     supervisorWatchdogTimeoutMs: options.supervisorWatchdogTimeoutMs ?? 500,
     retryBaseDelayMs: options.retryBaseDelayMs ?? 0,
+    nowMs: options.nowMs,
+    sleep: options.sleep,
     onWorkerCompletion: options.onWorkerCompletion ?? null,
   });
 }
@@ -153,10 +203,11 @@ async function waitTerminal(host, graphId, timeoutMs = 1500) {
 }
 
 class FakePool {
-  constructor(attempts, { releaseError = false, discardError = false } = {}) {
+  constructor(attempts, { releaseError = false, discardError = false, onRelease = null } = {}) {
     this.attemptPlans = attempts;
     this.releaseError = releaseError;
     this.discardError = discardError;
+    this.onRelease = typeof onRelease === 'function' ? onRelease : null;
     this.claimTimes = [];
     this.releaseCalls = 0;
     this.sequence = 0;
@@ -215,6 +266,7 @@ class FakePool {
       throw error;
     }
     this.leases.delete(leaseId);
+    this.onRelease?.();
     return { released: true };
   }
 
@@ -249,6 +301,7 @@ function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 await testSupervisorWatchdogBoundsUnattendedWait();
 await testRunScopedRetryUsesBackoff();
+await testRetryBoundaryUsesSingleSchedulingTick();
 await testCompletionDeliveryCannotRewriteSuccess();
 await testSuccessfulWorkIsNotRetriedForCleanupFailure();
 await testSupervisorRestoreFailurePreservesWorkerCompletion();

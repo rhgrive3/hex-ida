@@ -41,6 +41,7 @@ export class DynamicTaskGraphHost {
     workerPool,
     cryptoRef = globalThis.crypto,
     now = () => new Date().toISOString(),
+    nowMs = () => Date.now(),
     sleep = delay,
     pollMs = DEFAULT_POLL_MS,
     cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
@@ -55,6 +56,7 @@ export class DynamicTaskGraphHost {
     this.workerPool = workerPool;
     this.cryptoRef = cryptoRef;
     this.now = now;
+    this.nowMs = typeof nowMs === 'function' ? nowMs : () => Date.now();
     this.sleep = sleep;
     this.pollMs = boundedInt(pollMs, 1, 1000, DEFAULT_POLL_MS);
     this.cleanupTimeoutMs = boundedInt(cleanupTimeoutMs, 10, 60000, DEFAULT_CLEANUP_TIMEOUT_MS);
@@ -78,6 +80,7 @@ export class DynamicTaskGraphHost {
       maxConcurrency,
       workerPool: this.workerPool,
       now: this.now,
+      nowMs: this.nowMs,
       sleep: this.sleep,
       pollMs: this.pollMs,
       cleanupTimeoutMs: this.cleanupTimeoutMs,
@@ -124,6 +127,7 @@ export class DynamicTaskGraph {
     maxConcurrency,
     workerPool,
     now,
+    nowMs,
     sleep,
     pollMs,
     cleanupTimeoutMs,
@@ -135,6 +139,7 @@ export class DynamicTaskGraph {
     this.graphId = normalizeGraphId(graphId);
     this.workerPool = workerPool;
     this.now = now;
+    this.nowMs = typeof nowMs === 'function' ? nowMs : () => Date.now();
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.cleanupTimeoutMs = cleanupTimeoutMs;
@@ -214,12 +219,16 @@ export class DynamicTaskGraph {
     while (this.state === DEV_TASK_GRAPH_STATE.RUNNING) {
       this.propagateDependencyFailures();
       this.markReady();
-      this.launchReadyTasks();
+      // Use one clock sample for both launch and retry-wait decisions. A retry
+      // can cross its deadline between two Date.now() calls; sampling twice
+      // would then incorrectly make the graph appear stalled.
+      const schedulingMs = this.nowMs();
+      this.launchReadyTasks(schedulingMs);
       if (allTerminal(this.tasks)) {
         this.finalize();
         return;
       }
-      const retryWaitMs = this.nextRetryWaitMs();
+      const retryWaitMs = this.nextRetryWaitMs(schedulingMs);
       if (this.active.size === 0) {
         if (retryWaitMs != null) {
           await this.sleep(retryWaitMs);
@@ -258,8 +267,7 @@ export class DynamicTaskGraph {
     }
   }
 
-  launchReadyTasks() {
-    const currentMs = Date.now();
+  launchReadyTasks(currentMs = this.nowMs()) {
     for (const task of this.tasks.values()) {
       if (this.active.size >= this.maxConcurrency) break;
       if (task.state !== DEV_TASK_STATE.READY) continue;
@@ -274,8 +282,7 @@ export class DynamicTaskGraph {
     }
   }
 
-  nextRetryWaitMs() {
-    const currentMs = Date.now();
+  nextRetryWaitMs(currentMs = this.nowMs()) {
     let next = null;
     for (const task of this.tasks.values()) {
       if (task.state !== DEV_TASK_STATE.READY || task.retryNotBeforeMs <= currentMs) continue;
@@ -374,7 +381,7 @@ export class DynamicTaskGraph {
           task.state = DEV_TASK_STATE.READY;
           task.readyAt = this.now();
           const retryDelayMs = this.retryDelayMs(task);
-          task.retryNotBeforeMs = retryDelayMs > 0 ? Date.now() + retryDelayMs : 0;
+          task.retryNotBeforeMs = retryDelayMs > 0 ? this.nowMs() + retryDelayMs : 0;
           if (outcome) this.publishWorkerCompletion(task, lease);
           return;
         }
