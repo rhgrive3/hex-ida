@@ -65,6 +65,14 @@ function decodedAbsoluteTargetOf(op) {
   try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
 
+// A numeric `other` target text is canonical address evidence, not display
+// text: this pipeline already parses it into a real target through
+// `directTargetOf()`. Export the same grammar so ADR/ADRP evidence-equality
+// checks can cross-check every canonical target spelling in one record.
+export function numericOtherTargetValue(op) {
+  return decodedAbsoluteTargetOf(op);
+}
+
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   // The condition code picks a canonical NZCV predicate: structured text must

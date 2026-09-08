@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic, numericOtherTargetValue } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -392,8 +392,16 @@ function addressImmediateEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
+  // Both canonical target spellings are address evidence: a numeric `other`
+  // text contradicts `pcRelTarget` exactly like an `imm` value does.
   if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
+  if (targetOperand?.k === 'other') {
+    const otherValue = numericOtherTargetValue(targetOperand);
+    if (otherValue != null && otherValue !== target) {
+      return `arm64-${mnemonic}-target-evidence-mismatch`;
+    }
   }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
