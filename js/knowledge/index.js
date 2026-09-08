@@ -5,7 +5,14 @@ import { FunctionMatchIndex } from '../recognition/matcher.js';
 export const KNOWLEDGE_SCHEMA_VERSION = 3;
 export const CONFIRMATION_LEVELS = Object.freeze(['user-confirmed','debugger-confirmed','metadata-confirmed','high-confidence-inferred','weak-inferred']);
 
-function clamp(v) { return Math.max(0, Math.min(1, Number(v) || 0)); }
+function clamp(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+function explicitConfidence(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new TypeError('knowledge-confidence-must-be-finite-number');
+  return clamp(v);
+}
 function uniq(values) { return [...new Set((values || []).filter((x) => x != null && String(x).length).map(String))]; }
 function clone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -92,7 +99,7 @@ export class KnowledgeDB {
     const userConfirmed = input.userConfirmed || requestedConfirmation === 'user-confirmed';
     const debuggerConfirmed = input.debuggerConfirmed || requestedConfirmation === 'debugger-confirmed';
     const metadataConfirmed = input.metadataConfirmed || requestedConfirmation === 'metadata-confirmed';
-    const resolvedConfidence = input.confidence == null ? (userConfirmed || debuggerConfirmed ? 1 : metadataConfirmed ? 0.95 : 0.5) : clamp(input.confidence);
+    const resolvedConfidence = input.confidence == null ? (userConfirmed || debuggerConfirmed ? 1 : metadataConfirmed ? 0.95 : 0.5) : explicitConfidence(input.confidence);
     const confirmation = requestedConfirmation || (userConfirmed ? 'user-confirmed' : debuggerConfirmed ? 'debugger-confirmed' : metadataConfirmed ? 'metadata-confirmed' : resolvedConfidence >= 0.9 ? 'high-confidence-inferred' : 'weak-inferred');
     const record = {
       schemaVersion: KNOWLEDGE_SCHEMA_VERSION, id, identityKey, fingerprint, fingerprints: uniq(input.fingerprints || (fingerprint.hash ? [fingerprint.hash] : [])),
