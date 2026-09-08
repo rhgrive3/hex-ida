@@ -614,7 +614,10 @@ export function registerABIPlugin(definition, { replace = false } = {}) {
   if (ABI_PLUGINS.has(plugin.id) && !replace) {
     throw new Error(`ABI already registered: ${plugin.id}`);
   }
-  ABI_PLUGINS.set(plugin.id, plugin);
+  // Digest derivation must complete before publication: classifierDescriptor
+  // String()-s the classifier callbacks, and a hostile callable can throw.
+  // Publishing first would strand a half-registered plugin that abiPlugin()
+  // can serve but isRegisteredABIPlugin() denies (#5544).
   const generation = ++ABI_REGISTRY_GENERATION;
   const classifierDigest = stableDigest(classifierDescriptor(plugin));
   const binding = {
@@ -624,6 +627,7 @@ export function registerABIPlugin(definition, { replace = false } = {}) {
     digest:null,
   };
   binding.digest = expectedRegistryDigest(plugin, binding);
+  ABI_PLUGINS.set(plugin.id, plugin);
   ABI_REGISTRY_BINDINGS.set(plugin, binding);
   return plugin;
 }
