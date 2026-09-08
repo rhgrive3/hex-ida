@@ -13,13 +13,7 @@ const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', '
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
 
 function asAddr(v) {
-  if (typeof v === 'bigint') return v >= 0n ? v : null;
-  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
-  if (typeof v === 'string') {
-    const text = v.trim();
-    if (/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return BigInt(text);
-  }
-  return null;
+  try { return v == null ? null : (typeof v === 'bigint' ? v : BigInt(v)); } catch { return null; }
 }
 function lower(v) { return String(v == null ? '' : v).toLowerCase(); }
 function resultAddress(row) {
@@ -195,4 +189,564 @@ function desiredFactKinds(query) {
   if (a === 'save') return new Set([FACT.WRITE, FACT.TRANSFER, FACT.RMW]);
   if (a === 'read') return new Set([FACT.READ, FACT.RETURN]);
   if (a === 'decide' || a === 'check' || a === 'detect') return new Set([FACT.BRANCH, FACT.THRESHOLD, FACT.ZERO_NULL]);
-  if (a === 'send') return ne²È="24°É•…Í½¹ÌèÉÉ…ä¹™É½´¡¹•ÜM•Ð¡Œ¹Í½ÕÉ•Ì¤¤°Í½ÕÉ•ÌèÉÉ…ä¹™É½´¡¹•ÜM•Ð¡Œ¹Í½ÕÉ•Ì¤¤°(€€€Í•µ…¹Ñ¥…ÑÌèŒ¹Í•µ…¹Ñ¥Œñðmt°Í•µ…¹Ñ¥½µÁ±•Ñ•¹•ÍÌèŒ¹Í•µ…¹Ñ¥½µÁ±•Ñ•¹•ÍÌñð¹Õ±°°ÍÕµµ…ÉäèŒ¹ÍÕµµ…Éäñð¹Õ±°°(€€€Ù•É¥™¥…Ñ¥½¸èŒ¹Ù•É¥™¥…Ñ¥½¸ñð¹Õ±°°Ñ¡É•Í¡½±‘Ù¥‘•¹”èŒ¹Ñ¡É•Í¡½±‘Ù¥‘•¹”ñð¹Õ±°°•Ù¥‘•¹”èÉÉ…ä¹™É½´¡Œ¹•Ù¥‘•¹”ñðmt¤°(€€€½µÁ±•Ñ”è½µÁ±•Ñ•¹•ÍÌ€ü½µÁ±•Ñ•¹•ÍÌ¹½µÁ±•Ñ”€ôôôÑÉÕ”€èÑÉÕ”°‰Õ‘•Ñ1¥µ¥Ñ•è½µÁ±•Ñ•¹•ÍÌ€ü½µÁ±•Ñ•¹•ÍÌ¹‰Õ‘•Ñ1¥µ¥Ñ•€ôôôÑÉÕ”€è™…±Í”°(€ôì)ô)™Õ¹Ñ¥½¸Õ…É‘•‘½¹Ñ•áÐ¡Ñà°ˆ¤ì(€¥˜€¡ÑåÁ•½˜Ñà¹…¹…±åé”€„ôô€™Õ¹Ñ¥½¸œ¤É•ÑÕÉ¸Ñàì(€É•ÑÕÉ¸ì(€€€€¸¸¹Ñà°(€€€…¹…±åé”è…Íå¹Œ€ ¸¸¹…ÉÌ¤€ôøì(€€€€€¥˜€¡•áÁ¥É•¡ˆ¤¤Ñ¡É½Ü…‰½ÉÑÉÉ½È¡ˆ¤ì(€€€€€¥˜€¡ˆ¹…¹…±åé•‘%¹ÍÑÉÕÑ¥½¹Ì€øôˆ¹µ…á¥Í…ÍÍ•µ‰±ä¤ìˆ¹‘¥Í…ÍÍ•µ‰±åá¡…ÕÍÑ•€ôÑÉÕ”ìÑ¡É½Ü=‰©•Ð¹…ÍÍ¥¸¡¹•ÜÉÉ½È ‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœ¤°ì½‘”è‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœô¤ìô(€€€€€½¹ÍÐµ½‘•°€ô…Ý…¥Ð…Ý…¥Ñ	Õ‘•Ð¡Ñà¹…¹…±åé” ¸¸¹…ÉÌ¤°ˆ¤ì(€€€€€¥˜€¡•áÁ¥É•¡ˆ¤¤Ñ¡É½Ü…‰½ÉÑÉÉ½È¡ˆ¤ì(€€€€€½¹ÍÐ½ÍÐ€ô5…Ñ ¹µ…à À°ÉÉ…ä¹¥ÍÉÉ…ä¡µ½‘•°€˜˜µ½‘•°¹¥¹ÍÑÉÕÑ¥½¹Ì¤€üµ½‘•°¹¥¹ÍÑÉÕÑ¥½¹Ì¹±•¹Ñ €è€À¤ì(€€€€€¥˜€¡ˆ¹…¹…±åé•‘%¹ÍÑÉÕÑ¥½¹Ì€¬½ÍÐ€øˆ¹µ…á¥Í…ÍÍ•µ‰±ä¤ìˆ¹‘¥Í…ÍÍ•µ‰±åá¡…ÕÍÑ•€ôÑÉÕ”ìÑ¡É½Ü=‰©•Ð¹…ÍÍ¥¸¡¹•ÜÉÉ½È ‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœ¤°ì½‘”è‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœô¤ìô(€€€€€ˆ¹…¹…±åé•‘%¹ÍÑÉÕÑ¥½¹Ì€¬ô½ÍÐì(€€€€€É•ÑÕÉ¸µ½‘•°ì(€€€ô°(€ôì)ô)™Õ¹Ñ¥½¸…É•…Ñ•M•…É¡½Ù•É…”¡É•Á½ÉÑÌ¤ì(€¥˜€ …É•Á½ÉÑÌ¹±•¹Ñ ¤É•ÑÕÉ¸ì½µÁ±•Ñ”èÑÉÕ”°½Ù•É…”è€Ä°É•…Í½¸è¹Õ±°°É•Á½ÉÑÌèmtôì(€½¹ÍÐ½Ù•É…”€ôÉ•Á½ÉÑÌ¹É•‘Õ” ¡ÍÕ´°É•Á½ÉÐ¤€ôøÍÕ´€¬É•Á½ÉÐ¹½Ù•É…”°€À¤€¼É•Á½ÉÑÌ¹±•¹Ñ ì(€½¹ÍÐ¥¹½µÁ±•Ñ”€ôÉ•Á½ÉÑÌ¹™¥±Ñ•È ¡É•Á½ÉÐ¤€ôø€…É•Á½ÉÐ¹½µÁ±•Ñ”¤ì(€É•ÑÕÉ¸ì½µÁ±•Ñ”è¥¹½µÁ±•Ñ”¹±•¹Ñ €ôôô€À°½Ù•É…”°É•…Í½¸è¥¹½µÁ±•Ñ•lÁtü¹É•…Í½¸ñð¹Õ±°°É•Á½ÉÑÌôì)ô)•áÁ½ÉÐ…Íå¹Œ™Õ¹Ñ¥½¸Á±…¹¹…±åÍ¥Í½…°¡½…±=ÉEÕ•Éä°½¹Ñ•áÐ°½ÁÑÌ¤ì(€½¹ÍÐÅÕ•Éä€ôÑåÁ•½˜½…±=ÉEÕ•Éä€ôôô€ÍÑÉ¥¹œœ€ü½µÁ¥±•½…°¡½…±=ÉEÕ•Éä¤€è½…±=ÉEÕ•Éäì(€½¹ÍÐÑà€ô½¹Ñ•áÐñðíôì(€½¹ÍÐˆ€ô‰Õ‘•ÑMÑ…Ñ”¡½ÁÑÌ¤ì(€ÑÉäì(€€€½¹ÍÐÑ½½±Ì€ô½ÁÑÌ€˜˜½ÁÑÌ¹Ñ½½±ÌñðÉ•…Ñ••¹ÑQ½½±Ì¡Õ…É‘•‘½¹Ñ•áÐ¡Ñà°ˆ¤°ìµ…áÕ¹Ñ¥½¹Ìèˆ¹µ…áÕ¹Ñ¥½¹Ì°µ…á¥Í…ÍÍ•µ‰±äèˆ¹µ…á¥Í…ÍÍ•µ‰±äô¤ì(€€€¥˜€ …ÅÕ•Éä¤É•ÑÕÉ¸ìÅÕ•Éäè¹Õ±°°…¹‘¥‘…Ñ•Ìèmt°‰•ÍÐè¹Õ±°°•Ù¥‘•¹”èmt°µ¥ÍÍ¥¹Ù¥‘•¹”èlÅÕ•Éät°•¹¥¹”è€‘•Ñ•Éµ¥¹¥ÍÑ¥Œµ½…°µÁ±…¹¹•Èœôì(€€€±•ÐÁ½½±Ì€ô=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡A==1}=IH¹µ…À ¡¹…µ”¤€ôøm¹…µ”°¹•Ü5…À ¥t¤¤ì(€€€±•ÐÉ…¹­•€ômtì(€€€±•Ð‰•ÍÐ€ô¹Õ±°ì(€€€ÑÉäì(€€€€€Á½½±Ì€ô…Ý…¥Ð…¹‘¥‘…Ñ•A½½±Ì¡ÅÕ•Éä°Ñ½½±Ì°Ñà°ˆ¤ì(€€€€€¥˜€ …•áÁ¥É•¡ˆ¤¤…Ý…¥Ð•áÁ…¹‘…±±9•¥¡‰½É¡½½¡Á½½±Ì°Ñ½½±Ì°ˆ¤ì(€€€€€É…¹­•€ô…Ý…¥Ð…¹…±åé•…¹‘¥‘…Ñ•Ì¡ÅÕ•Éä°Á½½±Ì°Ñ½½±Ì°ˆ¤ì(€€€€€‰•ÍÐ€ô…Ý…¥ÐÙ•É¥™å	•ÍÐ¡ÅÕ•Éä°É…¹­•°Ñ½½±Ì°ˆ¤ì(€€€ô…Ñ €¡•ÉÉ½È¤ì(€€€€€½¹ÍÐ½‘”€ôMÑÉ¥¹œ¡•ÉÉ½È€˜˜€¡•ÉÉ½È¹½‘”ñð•ÉÉ½È¹µ•ÍÍ…”¤ñð€œœ¤ì(€€€€€¥˜€¡½‘”€„ôô€Ñ¥µ•½ÕÐœ€˜˜½‘”€„ôô€…¹•±±•œ€˜˜½‘”€„ôô€Ñ½½°µ…±°µ‰Õ‘•Ðœ¤Ñ¡É½Ü•ÉÉ½Èì(€€€ô(€€€É…¹­•€ôÉ…¹­•¹Í½ÉÐ ¡„°ˆÈ¤€ôøˆÈ¹Í½É”€´„¹Í½É”¤ì(€€€¥˜€¡‰•ÍÐ¤‰•ÍÐ€ôÉ…¹­•¹™¥¹ ¡à¤€ôøà¹…‘‘É•ÍÌ€ôôô‰•ÍÐ¹…‘‘É•ÍÌ¤ñð‰•ÍÐì(€€€½¹ÍÐ•Ù¥‘•¹”€ô¹•ÜM•Ð ¤ì(€€€¥˜€¡‰•ÍÐ¤™½È€¡½¹ÍÐ”½˜‰•ÍÐ¹•Ù¥‘•¹”ñðmt¤•Ù¥‘•¹”¹…‘¡”¤ì(€€€¥˜€¡‰•ÍÐü¹Ù•É¥™¥…Ñ¥½¸ü¹•Ù¥‘•¹”¤™½È€¡½¹ÍÐ”½˜‰•ÍÐ¹Ù•É¥™¥…Ñ¥½¸¹•Ù¥‘•¹”¤•Ù¥‘•¹”¹…‘¡”¤ì(€€€½¹ÍÐµ¥ÍÍ¥¹Ù¥‘•¹”€ômtì(€€€¥˜€ …‰•ÍÐ¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  ¹¼µ…¹‘¥‘…Ñ”µ™Õ¹Ñ¥½¸œ¤ì(€€€•±Í”¥˜€ …‰•ÍÐ¹Ù•É¥™¥…Ñ¥½¸¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  ¹¼µÉÕ¹Ñ¥µ”µ½Èµ…ÕÍ…°µÙ•É¥™¥…Ñ¥½¸œ¤ì(€€€¥˜€¡ˆ¹‘¥Í…ÍÍ•µ‰±åá¡…ÕÍÑ•¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  ‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœ¤ì(€€€¥˜€¡ˆ¹™Õ¹Ñ¥½¹á¡…ÕÍÑ•¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  ™Õ¹Ñ¥½¸µ‰Õ‘•Ðœ¤ì(€€€¥˜€¡ˆ¹Í¡½ÉÑ±¥ÍÑ1¥µ¥Ñ•¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  Á±…¹¹•ÈµÍ¡½ÉÑ±¥ÍÐµ±¥µ¥Ðœ¤ì(€€€¥˜€¡ˆ¹Í½ÕÉ•A½½±QÉÕ¹…Ñ•¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  …¹‘¥‘…Ñ”µÍ½ÕÉ”µ±¥µ¥Ðœ¤ì(€€€¥˜€¡ˆ¹Í•…É¡%¹½µÁ±•Ñ”¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  Í•…É µ¥¹½µÁ±•Ñ”œ¤ì(€€€¥˜€¡ˆ¹Õ¹…½Õ¹Ñ•‘Q½½±½ÍÐ¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  Õ¹…½Õ¹Ñ•µÑ½½°µ½ÍÐœ¤ì(€€€¥˜€¡Ñ½½±…±±	Õ‘•Ñá¡…ÕÍÑ•¡ˆ¤¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  Ñ½½°µ…±°µ‰Õ‘•Ðœ¤ì(€€€¥˜€¡Ñ¥µ•‘=ÕÐ¡ˆ¤¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  Ñ¥µ•½ÕÐœ¤ì(€€€¥˜€¡…¹•±±•¡ˆ¤¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  …¹•±±•œ¤ì(€€€¥˜€¡ÅÕ•Éä¹½¹™¥‘•¹Ð€ôôô™…±Í”¤µ¥ÍÍ¥¹Ù¥‘•¹”¹ÁÕÍ  ¸¸¸¡ÅÕ•Éä¹µ¥ÍÍ¥¹œñðmt¤¤ì(€€€½¹ÍÐÍ•…É €ô…É•…Ñ•M•…É¡½Ù•É…”¡ˆ¹Í•…É¡I•Á½ÉÑÌ¤ì(€€€½¹ÍÐÍ½ÕÉ•½µÁ±•Ñ•¹•ÍÍ%¹™¼€ôˆ¹Í½ÕÉ•½µÁ±•Ñ•¹•ÍÌñðÍ½ÕÉ•½µÁ±•Ñ•¹•ÍÌ¡Á½½±Ì°ˆ¤ì(€€€½¹ÍÐ¥¹½µÁ±•Ñ”€ô•áÁ¥É•¡ˆ¤ñðˆ¹Í¡½ÉÑ±¥ÍÑ1¥µ¥Ñ•ñðˆ¹Í½ÕÉ•A½½±QÉÕ¹…Ñ•ñðˆ¹Í•…É¡%¹½µÁ±•Ñ”ì(€€€½¹ÍÐ‰Õ‘•Ñ1¥µ¥Ñ•€ôˆ¹‘¥Í…ÍÍ•µ‰±åá¡…ÕÍÑ•ñðˆ¹™Õ¹Ñ¥½¹á¡…ÕÍÑ•ñðÑ½½±…±±	Õ‘•Ñá¡…ÕÍÑ•¡ˆ¤ì(€€€½¹ÍÐ…±°€ôµ•É•‘…¹‘¥‘…Ñ•Ì¡Á½½±Ì¤ì(€€€½¹ÍÐ…¹‘¥‘…Ñ•½Õ¹Ð€ô…±°¹Í¥é”ì(€€€½¹ÍÐ…¹…±åé•‘½Õ¹Ð€ôÉ…¹­•¹±•¹Ñ ì(€€€½¹ÍÐÍÑ½É•‘…¹‘¥‘…Ñ•½Ù•É…”€ô…¹‘¥‘…Ñ•½Õ¹Ð€ôôô€À€ü€Ä€è5…Ñ ¹µ¥¸ Ä°…¹…±åé•‘½Õ¹Ð€¼…¹‘¥‘…Ñ•½Õ¹Ð¤ì(€€€½¹ÍÐ…¹‘¥‘…Ñ•½Ù•É…”€ôÍÑ½É•‘…¹‘¥‘…Ñ•½Ù•É…”€¨Í•…É ¹½Ù•É…”€¨Í½ÕÉ•½µÁ±•Ñ•¹•ÍÍ%¹™¼¹½Ù•É…”ì(€€€½¹ÍÐÉ•…Í½¸€ôÑ½½±…±±	Õ‘•Ñá¡…ÕÍÑ•¡ˆ¤€ü€Ñ½½°µ…±°µ‰Õ‘•Ðœ(€€€€€€èˆ¹™Õ¹Ñ¥½¹á¡…ÕÍÑ•€ü€™Õ¹Ñ¥½¸µ‰Õ‘•Ðœ(€€€€€€èˆ¹‘¥Í…ÍÍ•µ‰±åá¡…ÕÍÑ•€ü€‘¥Í…ÍÍ•µ‰±äµ‰Õ‘•Ðœ(€€€€€€€€èÑ¥µ•‘=ÕÐ¡ˆ¤€ü€Ñ¥µ•½ÕÐœ(€€€€€€€€€€è…¹•±±•¡ˆ¤€ü€…¹•±±•œ(€€€€€€€€€€€€èˆ¹Í½ÕÉ•A½½±QÉÕ¹…Ñ•€ü€…¹‘¥‘…Ñ”µÍ½ÕÉ”µ±¥µ¥Ðœ(€€€€€€€€€€€€€€èˆ¹Í¡½ÉÑ±¥ÍÑ1¥µ¥Ñ•€ü€Á±…¹¹•ÈµÍ¡½ÉÑ±¥ÍÐµ±¥µ¥Ðœ(€€€€€€€€€€€€€€€€èˆ¹Í•…É¡%¹½µÁ±•Ñ”€ü€¡Í•…É ¹É•…Í½¸ñð€Í•…É µ¥¹½µÁ±•Ñ”œ¤€è¹Õ±°ì(€€€½¹ÍÐ½µÁ±•Ñ•¹•ÍÌ€ôì(€€€€€½µÁ±•Ñ”è€…¥¹½µÁ±•Ñ”°Á…ÉÑ¥…°è¥¹½µÁ±•Ñ”°‰Õ‘•Ñ1¥µ¥Ñ•°É•…Í½¸°…¹‘¥‘…Ñ•½Ù•É…”°(€€€€€ÍÑ½É•‘…¹‘¥‘…Ñ•½Ù•É…”°…¹‘¥‘…Ñ•M½ÕÉ•½Ù•É…”èÍ½ÕÉ•½µÁ±•Ñ•¹•ÍÍ%¹™¼¹½Ù•É…”°(€€€€€Í•…É¡½Ù•É…”èÍ•…É ¹½Ù•É…”°Í•…É¡½µÁ±•Ñ”èÍ•…É ¹½µÁ±•Ñ”°(€€€€€…¹…±åé•‘Õ¹Ñ¥½¹Ìè…¹…±åé•‘½Õ¹Ð°…¹‘¥‘…Ñ•Õ¹Ñ¥½¹Ìè…¹‘¥‘…Ñ•½Õ¹Ð°Õ¹…¹…±åé•‘Õ¹Ñ¥½¹Ìè5…Ñ ¹µ…à À°…¹‘¥‘…Ñ•½Õ¹Ð€´…¹…±åé•‘½Õ¹Ð¤°(€€€ôì(€€€É•ÑÕÉ¸ì(€€€€€ÅÕ•Éä°(€€€€€…¹‘¥‘…Ñ•ÌèÉ…¹­•¹Í±¥” À°5…Ñ ¹µ¥¸ ÈÀ°ˆ¹µ…áÕ¹Ñ¥½¹Ì¤¤¹µ…À ¡Œ¤€ôøÁÕ‰±¥…¹‘¥‘…Ñ”¡Œ°½µÁ±•Ñ•¹•ÍÌ¤¤°(€€€€€‰•ÍÐèÁÕ‰±¥…¹‘¥‘…Ñ”¡‰•ÍÐ°½µÁ±•Ñ•¹•ÍÌ¤°•Ù¥‘•¹”èÉÉ…ä¹™É½´¡•Ù¥‘•¹”¤°µ¥ÍÍ¥¹Ù¥‘•¹”èÉÉ…ä¹™É½´¡¹•ÜM•Ð¡µ¥ÍÍ¥¹Ù¥‘•¹”¤¤°(€€€€€•á¡…ÕÍÑ•è‰Õ‘•Ñ1¥µ¥Ñ•ñðÑ¥µ•‘=ÕÐ¡ˆ¤ñð…¹•±±•¡ˆ¤°Á…ÉÑ¥…°è¥¹½µÁ±•Ñ”°½µÁ±•Ñ•¹•ÍÌ°(€€€€€É•™¥¹•µ•¹ÑÙ…¥±…‰±”è€…‰Õ‘•Ñ1¥µ¥Ñ•€˜˜€¡ˆ¹É•Í•ÉÙ•‘Õ¹Ñ¥½¹Ì€ø€Àñðˆ¹É•Í•ÉÙ•‘¥Í…ÍÍ•µ‰±ä€ø€À¤°(€€€€€…¹‘¥‘…Ñ•M½ÕÉ•Ìèì(€€€€€€€ÅÕ½Ñ…Ìèˆ¹ÅÕ½Ñ…ÌñðÅÕ½Ñ…½Õ¹ÑÌ¡Á½½±Ì°ˆ¹µ…áÕ¹Ñ¥½¹Ì¤°ÍÑ½É•è=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡A==1}=IH¹µ…À ¡Á½½°¤€ôømÁ½½°°Á½½±ÍmÁ½½±t¹Í¥é•t¤¤°ÍÕÁÁ±¥•èì€¸¸¹ˆ¹Í½ÕÉ•Q½Ñ…±Ìô°(€€€€€€€€¼¼ÍÑ½É•€¬ÍÑ…•€¬ÁÉ½‰…Ñ¥½¸ìÍ½ÕÉ”É½ÝÌ…É”½¹ÍÕµ•¥¹É•µ•¹Ñ…±±ä¸(€€€€€€€É•Ñ…¥¹•‘	½Õ¹è=‰©•Ð¹™É½µ¹ÑÉ¥•Ì¡A==1}=IH¹µ…À ¡Á½½°¤€ôømÁ½½°°Í½ÕÉ•A½½±…À¡ˆ°Á½½°¤€¨€Ít¤¤°(€€€€€€€½µÁ±•Ñ•¹•ÍÌèÍ½ÕÉ•½µÁ±•Ñ•¹•ÍÍ%¹™¼°(€€€€€ô°(€€€€€‰Õ‘•Ðèì(€€€€€€€É•ÅÕ•ÍÑ•èì™Õ¹Ñ¥½¹Ìèˆ¹É•ÅÕ•ÍÑ•‘5…áÕ¹Ñ¥½¹Ì°‘¥Í…ÍÍ•µ‰±äèˆ¹É•ÅÕ•ÍÑ•‘5…á¥Í…ÍÍ•µ‰±äô°(€€€€€€€Á±…¹¹•Èèì™Õ¹Ñ¥½¹Ìèˆ¹µ…áÕ¹Ñ¥½¹Ì°‘¥Í…ÍÍ•µ‰±äèˆ¹µ…á¥Í…ÍÍ•µ‰±äô°(€€€€€€€É•Í•ÉÙ•èì™Õ¹Ñ¥½¹Ìèˆ¹É•Í•ÉÙ•‘Õ¹Ñ¥½¹Ì°‘¥Í…ÍÍ•µ‰±äèˆ¹É•Í•ÉÙ•‘¥Í…ÍÍ•µ‰±äô°(€€€€€ô°(€€€€€Í•…É¡½µÁ±•Ñ•¹•ÍÌèÍ•…É °(€€€€€ÍÑ…ÑÌèì(€€€€€€€…¹…±åé•‘Õ¹Ñ¥½¹Ìè…¹…±åé•‘½Õ¹Ð°…¹‘¥‘…Ñ•Õ¹Ñ¥½¹Ìè…¹‘¥‘…Ñ•½Õ¹Ð°Õ¹…¹…±åé•‘Õ¹Ñ¥½¹Ìè5…Ñ ¹µ…à À°…¹‘¥‘…Ñ•½Õ¹Ð€´…¹…±åé•‘½Õ¹Ð¤°(€€€€€€€‘¥Í…ÍÍ•µ‰±äèˆ¹…¹…±åé•‘%¹ÍÑÉÕÑ¥½¹Ì°Ñ½½±…±±Ìèˆ¹Ñ½½±…±±	Õ‘•Ð¹ÕÍ•°•±…ÁÍ•‘5Ìè…Ñ”¹¹½Ü ¤€´ˆ¹ÍÑ…ÉÑ•°(€€€€€€€Á±…¹¹•ÉÕ¹Ñ¥½¹	Õ‘•Ðèˆ¹µ…áÕ¹Ñ¥½¹Ì°É•ÅÕ•ÍÑ•‘Õ¹Ñ¥½¹	Õ‘•Ðèˆ¹É•ÅÕ•ÍÑ•‘5…áÕ¹Ñ¥½¹Ì°(€€€€€€€Á±…¹¹•É¥Í…ÍÍ•µ‰±å	Õ‘•Ðèˆ¹µ…á¥Í…ÍÍ•µ‰±ä°É•ÅÕ•ÍÑ•‘¥Í…ÍÍ•µ‰±å	Õ‘•Ðèˆ¹É•ÅÕ•ÍÑ•‘5…á¥Í…ÍÍ•µ‰±ä°(€€€€€ô°(€€€€€•¹¥¹”è€‘•Ñ•Éµ¥¹¥ÍÑ¥Œµ½…°µÁ±…¹¹•Èœ°(€€€ôì(€ô™¥¹…±±äì‘¥ÍÁ½Í•	Õ‘•Ð¡ˆ¤ìô)ô)•áÁ½ÉÐ½¹ÍÐÉÕ¹½…±A±…¹¹•È€ôÁ±…¹¹…±åÍ¥Í½…°ì(
+  if (a === 'send') return new Set([FACT.TRANSFER, FACT.CALL_RESULT]);
+  return new Set([FACT.RMW, FACT.READ, FACT.WRITE, FACT.BRANCH, FACT.THRESHOLD]);
+}
+function semanticScore(query, facts) {
+  const desired = desiredFactKinds(query);
+  let score = 0;
+  const hits = [];
+  for (const f of facts || []) {
+    if (!desired.has(f.kind)) continue;
+    let w = 8;
+    if (f.kind === FACT.RMW) w = 22;
+    else if (f.kind === FACT.INCREMENT && query.action === 'increase') w = 35;
+    else if (f.kind === FACT.DECREMENT && query.action === 'decrease') w = 35;
+    else if (f.kind === FACT.CLAMP) w = 12;
+    else if (f.kind === FACT.THRESHOLD) w = 14;
+    else if (f.kind === FACT.BRANCH) w = 10;
+    else if (f.kind === FACT.TRANSFER) w = 12;
+    score += w;
+    hits.push(f);
+  }
+  if (query && query.dataflow && query.dataflow.shape === 'read-modify-write' && hits.some((f) => f.kind === FACT.RMW)) score += 30;
+  return { score, hits };
+}
+function lexicalScore(query, candidate, name) {
+  const hay = lower(name) + ' ' + Array.from(candidate.terms).join(' ').toLowerCase();
+  let score = 0;
+  for (const t of query.entity && query.entity.terms || []) if (t && hay.includes(lower(t))) score += 6;
+  for (const t of query.context && query.context.terms || []) if (t && hay.includes(lower(t))) score += 3;
+  return score;
+}
+function uniqueTerms(query) {
+  const out = [];
+  const seen = new Set();
+  for (const t of [
+    ...(query.entity && query.entity.terms || []),
+    ...(query.context && query.context.terms || []),
+    ...(query.event && query.event.terms || []),
+  ]) {
+    const s = String(t || '').trim();
+    const k = s.toLowerCase();
+    if (!s || seen.has(k)) continue;
+    seen.add(k); out.push(s);
+  }
+  return out.slice(0, 16);
+}
+function explicitBudget(value, fallback, minimum = 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.floor(value));
+}
+
+export function createToolCallBudget(maxToolCalls = Infinity) {
+  const limit = explicitBudget(maxToolCalls, Infinity, 0);
+  let used = 0;
+  return Object.freeze({
+    limit,
+    get used() { return used; },
+    remaining() { return Math.max(0, limit - used); },
+    consume() {
+      if (used >= limit) return false;
+      used += 1;
+      return true;
+    },
+  });
+}
+function plannerShare(total, ratio = 0.4) {
+  if (total <= 0) return 0;
+  if (total <= 2) return total;
+  return Math.max(1, Math.min(total - 1, Math.floor(total * ratio)));
+}
+function plannerDisassemblyShare(total, ratio = 0.4) {
+  if (total <= 0) return 0;
+  if (total <= 64) return total;
+  return Math.max(64, Math.min(total - 1, Math.floor(total * ratio)));
+}
+function budgetState(opts) {
+  const controller = new AbortController();
+  const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
+  const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
+  const requestedMaxDisassembly = explicitBudget(opts && opts.maxDisassembly, 50000, 0);
+  const toolCallBudget = opts?.toolCallBudget || createToolCallBudget(opts?.maxToolCalls);
+  const ratioRaw = opts?.plannerBudgetFraction;
+  const ratio = typeof ratioRaw === 'number' && Number.isFinite(ratioRaw) ? Math.max(0.1, Math.min(0.8, ratioRaw)) : 0.4;
+  const maxFunctions = plannerShare(requestedMaxFunctions, ratio);
+  const maxDisassembly = plannerDisassemblyShare(requestedMaxDisassembly, ratio);
+  const b = {
+    requestedMaxFunctions, requestedMaxDisassembly, maxFunctions, maxDisassembly,
+    toolCallBudget,
+    reservedFunctions: Math.max(0, requestedMaxFunctions - maxFunctions),
+    reservedDisassembly: Math.max(0, requestedMaxDisassembly - maxDisassembly),
+    maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
+    maxExpansions: explicitBudget(opts && opts.maxExpansions, 20, 0),
+    timeoutMs, started: Date.now(), isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
+    analyzedInstructions: 0, disassemblyExhausted: false, functionExhausted: false,
+    candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
+    analysisAccountedExternally: !!(opts && opts.tools),
+    searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
+    controller, signal: controller.signal, timeout: null, externalSignal: opts && opts.signal || null, externalAbort: null,
+  };
+  b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
+  if (b.externalSignal) {
+    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(b.externalSignal.reason ?? 'cancelled'); };
+    if (b.externalSignal.aborted) b.externalAbort();
+    else b.externalSignal.addEventListener('abort', b.externalAbort, { once:true });
+  }
+  return b;
+}
+function disposeBudget(b) {
+  if (b.timeout) clearTimeout(b.timeout);
+  if (b.externalSignal && b.externalAbort) b.externalSignal.removeEventListener('abort', b.externalAbort);
+}
+function timedOut(b) { return b.signal.aborted && String(b.signal.reason || '') === 'timeout' || Date.now() - b.started >= b.timeoutMs; }
+function cancelled(b) {
+  if (!b.signal.aborted && b.isCancelled()) b.controller.abort('cancelled');
+  return b.signal.aborted && !timedOut(b);
+}
+function toolCallBudgetExhausted(b) { return b.toolCallBudget.remaining() <= 0; }
+function expired(b) { return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b); }
+function abortError(b) {
+  const code = timedOut(b) ? 'timeout' : 'cancelled';
+  const error = new Error(code); error.code = code; return error;
+}
+async function awaitBudget(promise, b) {
+  if (expired(b)) throw abortError(b);
+  let onAbort;
+  const abortPromise = new Promise((_, reject) => {
+    onAbort = () => reject(abortError(b)); b.signal.addEventListener('abort', onAbort, { once:true });
+  });
+  try { return await Promise.race([Promise.resolve(promise), abortPromise]); }
+  finally { b.signal.removeEventListener('abort', onAbort); }
+}
+async function invokeTool(tools, name, b, ...args) {
+  const fn = tools && tools[name];
+  if (typeof fn !== 'function') { const error = new Error(`missing-tool:${name}`); error.code = 'missing-tool'; throw error; }
+  if (!b.toolCallBudget.consume()) {
+    const error = new Error('tool-call-budget');
+    error.code = 'tool-call-budget';
+    throw error;
+  }
+  if (args.length && args[args.length - 1] && typeof args[args.length - 1] === 'object' && !Array.isArray(args[args.length - 1]) && typeof args[args.length - 1] !== 'bigint') {
+    args[args.length - 1] = { ...args[args.length - 1], signal:b.signal };
+  } else args.push({ signal:b.signal });
+  return awaitBudget(fn.apply(tools, args), b);
+}
+function consumeExternalCost(result, b) {
+  if (!b.analysisAccountedExternally) return true;
+  if (result && result.found === false) return true;
+  const raw = result && result.cost && result.cost.disassembly;
+  if (!Number.isSafeInteger(raw) || raw < 0) { b.unaccountedToolCost = true; b.disassemblyExhausted = true; return false; }
+  if (b.analyzedInstructions + raw > b.maxDisassembly) { b.disassemblyExhausted = true; return false; }
+  b.analyzedInstructions += raw;
+  return true;
+}
+function searchCompleteness(result, requestedLimit) {
+  const complete = result?.completeness?.complete ?? result?.complete ?? (!result?.truncated && (result?.results?.length || 0) < requestedLimit);
+  let coverage = Number(result?.completeness?.coverage ?? result?.coverage);
+  const returned = Number(result?.completeness?.returned ?? result?.returned ?? result?.results?.length ?? 0);
+  const totalRaw = result?.completeness?.total ?? result?.total;
+  const total = totalRaw == null ? null : Number(totalRaw);
+  if (!Number.isFinite(coverage)) {
+    if (Number.isFinite(total) && total > 0) coverage = Math.min(1, returned / total);
+    else if (Number.isFinite(Number(result?.scanned)) && Number.isFinite(Number(result?.scanTotal)) && Number(result.scanTotal) > 0) coverage = Math.min(1, Number(result.scanned) / Number(result.scanTotal));
+    else coverage = complete ? 1 : 0.65;
+  }
+  return { complete: Boolean(complete), coverage: Math.max(0, Math.min(1, coverage)), reason: result?.completeness?.reason ?? result?.reason ?? (complete ? null : 'result-limit'), returned, total: Number.isFinite(total) ? total : null };
+}
+function noteSearch(b, tool, term, result) {
+  const report = { tool, term, ...searchCompleteness(result, b.maxSearchResults) };
+  b.searchReports.push(report);
+  if (!report.complete) b.searchIncomplete = true;
+  return report.coverage;
+}
+function sourcePoolCap(b, pool) {
+  const factor = pool === 'recognition' ? 10 : 8;
+  return Math.max(48, b.maxFunctions * factor, b.maxSearchResults * 2);
+}
+function classifyPrior(c) {
+  const text = lower(c?.source ?? c?.kind ?? c?.reason ?? '');
+  if (text.includes('runtime')) return 'runtime';
+  if (text.includes('semantic')) return 'semantic';
+  if (text.includes('explor')) return 'exploration';
+  return 'recognition';
+}
+async function candidatePools(query, tools, ctx, b) {
+  const pools = Object.fromEntries(POOL_ORDER.map((name) => [name, new Map()]));
+  // Consume discovery results directly. The retained state is limited to the
+  // stored pool plus two bounded overflow tiers; no rows-sized staging array
+  // or address-sized aggregate Map is created.
+  const terms = uniqueTerms(query);
+  for (const term of terms) {
+    if (expired(b)) break;
+    const fs = await invokeTool(tools, 'search_functions', b, term, { limit: b.maxSearchResults });
+    if (expired(b)) break;
+    const fCoverage = noteSearch(b, 'search_functions', term, fs);
+    for (const row of fs.results || []) {
+      addCandidate(
+        pools,
+        'lexical',
+        resultAddress(row),
+        'function-name',
+        term,
+        12,
+        fCoverage,
+        sourcePoolCap(b, 'lexical'),
+      );
+    }
+
+    const ss = await invokeTool(tools, 'search_strings', b, term, { limit: b.maxSearchResults });
+    if (expired(b)) break;
+    const sCoverage = noteSearch(b, 'search_strings', term, ss);
+    for (const row of ss.results || []) {
+      const direct = explicitFunctionAddress(row);
+      if (direct != null) {
+        addCandidate(
+          pools,
+          'string',
+          direct,
+          'string-reference',
+          term,
+          8,
+          sCoverage,
+          sourcePoolCap(b, 'string'),
+        );
+      }
+      const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
+      if (target != null) {
+        const xr = await invokeTool(tools, 'get_xrefs', b, target, { limit: b.maxSearchResults });
+        if (expired(b)) break;
+        const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
+        for (const fn of xr.functions || []) {
+          addCandidate(
+            pools,
+            'string',
+            fn.addr != null ? fn.addr : fn.function,
+            'string-xref',
+            term,
+            10,
+            xCoverage,
+            sourcePoolCap(b, 'string'),
+          );
+        }
+      }
+    }
+  }
+
+  const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
+  for (const c of priors) {
+    const pool = classifyPrior(c);
+    b.sourceTotals[pool]++;
+    addCandidate(
+      pools,
+      pool,
+      c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      c?.source || `${pool}-prior`,
+      null,
+      Number(c?.score || 1),
+      Number(c?.coverage ?? 1),
+      sourcePoolCap(b, pool),
+    );
+  }
+  for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], pools[pool].size);
+  return pools;
+}
+function seedCandidates(pools, limit) {
+  const merged = mergedCandidates(pools);
+  return Array.from(merged.values()).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+async function expandCallNeighborhood(pools, tools, b) {
+  if (b.maxFunctions === 0 || b.maxExpansions === 0) return;
+  const initial = seedCandidates(pools, b.maxExpansions);
+  const graphCap = Math.max(24, b.maxFunctions * 4, b.maxExpansions * 8);
+  // Consume caller/callee rows directly through the same bounded accumulator.
+  for (const c of initial) {
+    if (expired(b)) break;
+    const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
+    if (expired(b)) break;
+    for (const row of callers.results || []) {
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'caller',
+        null,
+        2,
+        1,
+        graphCap,
+      );
+    }
+    const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
+    if (expired(b)) break;
+    for (const row of callees.results || []) {
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'callee',
+        null,
+        1,
+        1,
+        graphCap,
+      );
+    }
+  }
+  b.sourceTotals.graph = Math.max(b.sourceTotals.graph, pools.graph.size);
+}
+function quotaCounts(pools, total) {
+  const available = POOL_ORDER.filter((pool) => pools[pool].size > 0);
+  const quota = Object.fromEntries(POOL_ORDER.map((pool) => [pool, 0]));
+  if (!available.length || total <= 0) return quota;
+  if (total >= available.length) for (const pool of available) quota[pool] = 1;
+  let assigned = Object.values(quota).reduce((a, n) => a + n, 0);
+  const target = {};
+  for (const pool of available) target[pool] = Math.max(quota[pool], Math.floor(total * (POOL_SHARE[pool] || 0)));
+  while (assigned < total) {
+    let best = null;
+    let bestNeed = -Infinity;
+    for (const pool of available) {
+      if (quota[pool] >= pools[pool].size) continue;
+      const desired = Math.max(target[pool], total * (POOL_SHARE[pool] || 0));
+      const need = desired - quota[pool];
+      if (need > bestNeed) { bestNeed = need; best = pool; }
+    }
+    if (!best) break;
+    quota[best]++; assigned++;
+  }
+  return quota;
+}
+function quotaMerge(pools, total) {
+  const global = mergedCandidates(pools);
+  const quota = quotaCounts(pools, total);
+  const selected = new Set();
+  for (const pool of POOL_ORDER) {
+    const rows = Array.from(pools[pool].values()).sort((a, b) => b.score - a.score);
+    let used = 0;
+    for (const row of rows) {
+      if (used >= quota[pool] || selected.size >= total) break;
+      const key = row.address.toString();
+      if (selected.has(key)) continue;
+      selected.add(key); used++;
+    }
+  }
+  if (selected.size < total) {
+    const spill = Array.from(global.values()).sort((a, b) => b.score - a.score);
+    for (const row of spill) {
+      if (selected.size >= total) break;
+      selected.add(row.address.toString());
+    }
+  }
+  return { candidates: Array.from(selected).map((key) => global.get(key)).filter(Boolean).sort((a, b) => b.score - a.score), all: global, quotas: quota };
+}
+function sourceCompleteness(pools, b) {
+  const bySource = {};
+  let supplied = 0;
+  let stored = 0;
+  for (const pool of POOL_ORDER) {
+    const suppliedCount = Math.max(Number(b.sourceTotals[pool] || 0), pools[pool].size);
+    const storedCount = pools[pool].size;
+    supplied += suppliedCount;
+    stored += Math.min(storedCount, suppliedCount);
+    bySource[pool] = {
+      supplied: suppliedCount,
+      stored: storedCount,
+      complete: storedCount >= suppliedCount,
+      coverage: suppliedCount ? Math.min(1, storedCount / suppliedCount) : 1,
+    };
+  }
+  return {
+    complete: Object.values(bySource).every((entry) => entry.complete),
+    supplied,
+    stored,
+    coverage: supplied ? Math.min(1, stored / supplied) : 1,
+    bySource,
+  };
+}
+
+async function analyzeCandidates(query, pools, tools, b) {
+  const merged = quotaMerge(pools, b.maxFunctions);
+  b.candidateCount = merged.all.size;
+  b.shortlistLimited = merged.all.size > b.maxFunctions;
+  b.candidateTruncated = b.shortlistLimited; // compatibility alias for older diagnostics
+  b.sourceCompleteness = sourceCompleteness(pools, b);
+  b.sourcePoolTruncated = !b.sourceCompleteness.complete;
+  b.quotas = merged.quotas;
+  const analyzed = [];
+  for (const c of merged.candidates) {
+    if (expired(b)) break;
+    let fn;
+    try { fn = await invokeTool(tools, 'get_function', b, c.address); }
+    catch (error) {
+      const code = String(error && (error.code || error.message) || '');
+      if (code === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
+      if (code === 'function-budget') { b.functionExhausted = true; break; }
+      if (code === 'timeout' || code === 'cancelled') break;
+      continue;
+    }
+    if (expired(b)) break;
+    if (!consumeExternalCost(fn, b)) break;
+    c.name = fn.name || null;
+    c.summary = fn.summary || null;
+    const lexical = lexicalScore(query, c, c.name);
+    c.score += lexical; c.scoreComponents.lexicalScore += lexical;
+    const factsResult = await invokeTool(tools, 'get_semantic_facts', b, c.address, { limit: 500 });
+    if (expired(b)) break;
+    const semantic = semanticScore(query, factsResult.results || []);
+    c.score += semantic.score; c.scoreComponents.semanticScore += semantic.score; c.semantic = semantic.hits;
+    c.evidence = new Set();
+    for (const f of semantic.hits) for (const e of f.evidence || []) c.evidence.add(e);
+    c.semanticCompleteness = factsResult.completeness || { complete: !factsResult.truncated, coverage: factsResult.coverage ?? null, reason: factsResult.reason || null };
+    if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
+      const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
+      if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
+    }
+    analyzed.push(c);
+  }
+  return analyzed.sort((a, b2) => b2.score - a.score);
+}
+async function verifyBest(query, ranked, tools, b) {
+  for (const c of ranked.slice(0, 8)) {
+    if (expired(b)) break;
+    const rmw = (c.semantic || []).find((f) => f.kind === FACT.RMW ||
+      (query.action === 'increase' && f.kind === FACT.INCREMENT) ||
+      (query.action === 'decrease' && f.kind === FACT.DECREMENT));
+    if (rmw && rmw.location) {
+      const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.location.key || { offset: rmw.location.disp }, { pathLimit: 8 });
+      if (expired(b)) break;
+      c.verification = verified;
+      if (verified.verified) { c.score += 45; c.scoreComponents.evidenceScore += 45; return c; }
+      continue;
+    }
+    if (query.action === 'decide' || query.action === 'check' || query.action === 'detect') {
+      const thresholds = await invokeTool(tools, 'find_thresholds', b, c.address, {});
+      if (expired(b)) break;
+      if ((thresholds.results || []).length) { c.thresholdEvidence = thresholds; c.score += 8; c.scoreComponents.semanticScore += 8; }
+    }
+  }
+  return ranked[0] || null;
+}
+function publicCandidate(c, completeness = null) {
+  if (!c) return null;
+  const discoveryCoverage = c.coverageWeight ? c.coverageSum / c.coverageWeight : 1;
+  return {
+    address: c.address, name: c.name || null, score: c.score,
+    lexicalScore: c.scoreComponents?.lexicalScore || 0, semanticScore: c.scoreComponents?.semanticScore || 0,
+    graphScore: c.scoreComponents?.graphScore || 0, evidenceScore: c.scoreComponents?.evidenceScore || 0,
+    runtimeScore: c.scoreComponents?.runtimeScore || 0, totalScore: c.score,
+    discoveryCoverage, sourcePoolScores: { ...c.sourcePoolScores }, reasons: Array.from(new Set(c.sources)), sources: Array.from(new Set(c.sources)),
+    semanticFacts: c.semantic || [], semanticCompleteness: c.semanticCompleteness || null, summary: c.summary || null,
+    verification: c.verification || null, thresholdEvidence: c.thresholdEvidence || null, evidence: Array.from(c.evidence || []),
+    complete: completeness ? completeness.complete === true : true, budgetLimited: completeness ? completeness.budgetLimited === true : false,
+  };
+}
+function guardedContext(ctx, b) {
+  if (typeof ctx.analyze !== 'function') return ctx;
+  return {
+    ...ctx,
+    analyze: async (...args) => {
+      if (expired(b)) throw abortError(b);
+      if (b.analyzedInstructions >= b.maxDisassembly) { b.disassemblyExhausted = true; throw Object.assign(new Error('disassembly-budget'), { code:'disassembly-budget' }); }
+      const model = await awaitBudget(ctx.analyze(...args), b);
+      if (expired(b)) throw abortError(b);
+      const cost = Math.max(0, Array.isArray(model && model.instructions) ? model.instructions.length : 0);
+      if (b.analyzedInstructions + cost > b.maxDisassembly) { b.disassemblyExhausted = true; throw Object.assign(new Error('disassembly-budget'), { code:'disassembly-budget' }); }
+      b.analyzedInstructions += cost;
+      return model;
+    },
+  };
+}
+function aggregateSearchCoverage(reports) {
+  if (!reports.length) return { complete: true, coverage: 1, reason: null, reports: [] };
+  const coverage = reports.reduce((sum, report) => sum + report.coverage, 0) / reports.length;
+  const incomplete = reports.filter((report) => !report.complete);
+  return { complete: incomplete.length === 0, coverage, reason: incomplete[0]?.reason || null, reports };
+}
+export async function planAnalysisGoal(goalOrQuery, context, opts) {
+  const query = typeof goalOrQuery === 'string' ? compileGoal(goalOrQuery) : goalOrQuery;
+  const ctx = context || {};
+  const b = budgetState(opts);
+  try {
+    const tools = opts && opts.tools || createAgentTools(guardedContext(ctx, b), { maxFunctions: b.maxFunctions, maxDisassembly: b.maxDisassembly });
+    if (!query) return { query: null, candidates: [], best: null, evidence: [], missingEvidence: ['query'], engine: 'deterministic-goal-planner' };
+    let pools = Object.fromEntries(POOL_ORDER.map((name) => [name, new Map()]));
+    let ranked = [];
+    let best = null;
+    try {
+      pools = await candidatePools(query, tools, ctx, b);
+      if (!expired(b)) await expandCallNeighborhood(pools, tools, b);
+      ranked = await analyzeCandidates(query, pools, tools, b);
+      best = await verifyBest(query, ranked, tools, b);
+    } catch (error) {
+      const code = String(error && (error.code || error.message) || '');
+      if (code !== 'timeout' && code !== 'cancelled' && code !== 'tool-call-budget') throw error;
+    }
+    ranked = ranked.sort((a, b2) => b2.score - a.score);
+    if (best) best = ranked.find((x) => x.address === best.address) || best;
+    const evidence = new Set();
+    if (best) for (const e of best.evidence || []) evidence.add(e);
+    if (best?.verification?.evidence) for (const e of best.verification.evidence) evidence.add(e);
+    const missingEvidence = [];
+    if (!best) missingEvidence.push('no-candidate-function');
+    else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+    if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
+    if (b.functionExhausted) missingEvidence.push('function-budget');
+    if (b.shortlistLimited) missingEvidence.push('planner-shortlist-limit');
+    if (b.sourcePoolTruncated) missingEvidence.push('candidate-source-limit');
+    if (b.searchIncomplete) missingEvidence.push('search-incomplete');
+    if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
+    if (toolCallBudgetExhausted(b)) missingEvidence.push('tool-call-budget');
+    if (timedOut(b)) missingEvidence.push('timeout');
+    if (cancelled(b)) missingEvidence.push('cancelled');
+    if (query.confident === false) missingEvidence.push(...(query.missing || []));
+    const search = aggregateSearchCoverage(b.searchReports);
+    const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
+    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete;
+    const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
+    const all = mergedCandidates(pools);
+    const candidateCount = all.size;
+    const analyzedCount = ranked.length;
+    const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
+    const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
+    const reason = toolCallBudgetExhausted(b) ? 'tool-call-budget'
+      : b.functionExhausted ? 'function-budget'
+      : b.disassemblyExhausted ? 'disassembly-budget'
+        : timedOut(b) ? 'timeout'
+          : cancelled(b) ? 'cancelled'
+            : b.sourcePoolTruncated ? 'candidate-source-limit'
+              : b.shortlistLimited ? 'planner-shortlist-limit'
+                : b.searchIncomplete ? (search.reason || 'search-incomplete') : null;
+    const completeness = {
+      complete: !incomplete, partial: incomplete, budgetLimited, reason, candidateCoverage,
+      storedCandidateCoverage, candidateSourceCoverage: sourceCompletenessInfo.coverage,
+      searchCoverage: search.coverage, searchComplete: search.complete,
+      analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+    };
+    return {
+      query,
+      candidates: ranked.slice(0, Math.min(20, b.maxFunctions)).map((c) => publicCandidate(c, completeness)),
+      best: publicCandidate(best, completeness), evidence: Array.from(evidence), missingEvidence: Array.from(new Set(missingEvidence)),
+      exhausted: budgetLimited || timedOut(b) || cancelled(b), partial: incomplete, completeness,
+      refinementAvailable: !budgetLimited && (b.reservedFunctions > 0 || b.reservedDisassembly > 0),
+      candidateSources: {
+        quotas: b.quotas || quotaCounts(pools, b.maxFunctions), stored: Object.fromEntries(POOL_ORDER.map((pool) => [pool, pools[pool].size])), supplied: { ...b.sourceTotals },
+        // stored + staged + probation; source rows are consumed incrementally.
+        retainedBound: Object.fromEntries(POOL_ORDER.map((pool) => [pool, sourcePoolCap(b, pool) * 3])),
+        completeness: sourceCompletenessInfo,
+      },
+      budget: {
+        requested: { functions: b.requestedMaxFunctions, disassembly: b.requestedMaxDisassembly },
+        planner: { functions: b.maxFunctions, disassembly: b.maxDisassembly },
+        reserved: { functions: b.reservedFunctions, disassembly: b.reservedDisassembly },
+      },
+      searchCompleteness: search,
+      stats: {
+        analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+        disassembly: b.analyzedInstructions, toolCalls: b.toolCallBudget.used, elapsedMs: Date.now() - b.started,
+        plannerFunctionBudget: b.maxFunctions, requestedFunctionBudget: b.requestedMaxFunctions,
+        plannerDisassemblyBudget: b.maxDisassembly, requestedDisassemblyBudget: b.requestedMaxDisassembly,
+      },
+      engine: 'deterministic-goal-planner',
+    };
+  } finally { disposeBudget(b); }
+}
+export const runGoalPlanner = planAnalysisGoal;
