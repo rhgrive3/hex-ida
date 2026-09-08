@@ -155,6 +155,17 @@ jobs:
                 fi
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/lane5-6633-abi-a8b2)
+                # #6975 intentionally pairs a Phase 7 production-path regression
+                # with the ABI/Phase 6 owner slice. The exact helper rejects every
+                # foreign path except that declared three-file slice before the
+                # Phase 7-owned subset is validated.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
