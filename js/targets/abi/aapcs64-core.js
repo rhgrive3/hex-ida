@@ -1,5 +1,9 @@
 import { ABIPlugin } from './registry.js';
-import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
+import {
+  aggregateLayoutDescriptorPresent,
+  aggregateRequiresIndirectCopy,
+  canonicalAggregateLayout,
+} from './aggregate-layout.js';
 
 function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
@@ -206,7 +210,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       return;
     }
 
-    if (c.aggregate && c.bits > 128) {
+    if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
         ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,bytes:8,

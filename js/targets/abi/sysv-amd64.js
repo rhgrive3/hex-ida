@@ -77,7 +77,7 @@ function parameterClass(parameter) {
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
   return {
