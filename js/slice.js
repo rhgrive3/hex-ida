@@ -271,16 +271,24 @@ export function findPaths(graph, from, to, opts) {
   if (from == null || to == null) return [];
   const paths = [];
   const queue = [[from]];
+  let head = 0;
   let seen = 0;
-  while (queue.length && paths.length < maxPaths && seen < maxVisited) {
-    const path = queue.shift();
-    const head = path[path.length - 1];
+  while (head < queue.length && paths.length < maxPaths && seen < maxVisited) {
+    const path = queue[head++];
+    // Release the slot so a bounded frontier does not retain visited path objects.
+    queue[head - 1] = null;
+    const headNode = path[path.length - 1];
     seen++;
-    if (head === to) { paths.push(path); continue; }
+    if (headNode === to) { paths.push(path); continue; }
     if (path.length >= maxDepth) continue;
     let next = [];
-    try { next = graph.calleesOf(head) || []; } catch { next = []; }
+    try { next = graph.calleesOf(headNode) || []; } catch { next = []; }
     for (const item of next) {
+      // Bound the frontier by the same visited budget: never hold more
+      // pending paths than the remaining visit budget allows. Without this,
+      // one high fan-out expansion can allocate far beyond maxVisited.
+      if (seen + (queue.length - head) >= maxVisited) break;
+      if (paths.length >= maxPaths) break;
       const n = item && item.addr != null ? item.addr : item;
       if (n == null || path.some((p) => p === n)) continue;
       queue.push(path.concat([n]));
