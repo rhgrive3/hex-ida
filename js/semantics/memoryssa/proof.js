@@ -21,6 +21,84 @@ export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 
+// These caches are populated only by the canonical MemorySSA builder after it
+// has deeply frozen the published artifact.  Generic proof helpers remain
+// content based for caller-owned values; only the exact frozen producer object
+// can take the identity fast path.
+const CANONICAL_PRODUCER_ACCESS_BINDINGS = new WeakMap();
+const CANONICAL_PRODUCER_ACCESS_BINDING_DIGESTS = new WeakMap();
+const CANONICAL_ACCESS_BINDING_CONSTRUCTED_DIGESTS = new WeakMap();
+const CANONICAL_PRODUCER_IDENTITY_DIGESTS = new WeakMap();
+const CANONICAL_PRODUCER_VALUE_DIGESTS = new WeakMap();
+const CANONICAL_PRODUCER_ALIAS_PROOF_DIGESTS = new WeakMap();
+const CANONICAL_PRODUCER_ACCESS_PROOF_DIGESTS = new WeakMap();
+const CANONICAL_PRODUCER_STORE_VALUE_PROOF_DIGESTS = new WeakMap();
+const CANONICAL_ALIAS_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
+const CANONICAL_ACCESS_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
+const CANONICAL_STORE_VALUE_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
+
+function frozenObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.isFrozen(value)
+    ? value
+    : null;
+}
+
+function cacheProducerProof(proof, cache, constructedDigests) {
+  const candidate = frozenObject(proof);
+  if (!candidate || typeof candidate.proofDigest !== 'string' || !candidate.proofDigest.trim()) return;
+  if (constructedDigests.get(candidate) !== candidate.proofDigest) return;
+  cache.set(candidate, candidate.proofDigest);
+}
+
+function cacheProducerValue(value, digest) {
+  const candidate = frozenObject(value);
+  if (!candidate || typeof digest !== 'string' || !digest.trim()) return;
+  CANONICAL_PRODUCER_VALUE_DIGESTS.set(candidate, digest);
+}
+
+/*
+ * The builder calls this after publishing one deeply frozen artifact.  The
+ * source-to-binding association lets forwarding validate the exact producer
+ * row by identity, while copied/unbranded rows retain the full digest path.
+ * The proof caches use the same boundary for the proof objects nested in that
+ * artifact.  This function is intentionally a narrow internal handoff from
+ * build.js; it does not authorize arbitrary caller-provided objects.
+ */
+export function registerCanonicalMemorySsaIdentities({ identity, accessMetadata, canonicalAccessBindings, byteCoverage } = {}) {
+  if (!Array.isArray(accessMetadata) || !Array.isArray(canonicalAccessBindings)) return;
+  const producerIdentity = frozenObject(identity);
+  if (producerIdentity) CANONICAL_PRODUCER_IDENTITY_DIGESTS.set(producerIdentity, stableDigest(producerIdentity));
+  const bindingById = new Map();
+  for (const binding of canonicalAccessBindings) {
+    const candidate = frozenObject(binding);
+    const id = String(candidate?.memorySsaEntityId ?? '');
+    if (!candidate || !id || bindingById.has(id)
+        || CANONICAL_ACCESS_BINDING_CONSTRUCTED_DIGESTS.get(candidate) !== candidate.bindingDigest) continue;
+    CANONICAL_PRODUCER_ACCESS_BINDING_DIGESTS.set(candidate, candidate.bindingDigest);
+    bindingById.set(id, candidate);
+  }
+  for (const metadata of accessMetadata) {
+    const source = frozenObject(metadata);
+    const id = String(source?.memorySsaEntityId ?? '');
+    const binding = bindingById.get(id);
+    if (!source || !binding) continue;
+    CANONICAL_PRODUCER_ACCESS_BINDINGS.set(source, binding);
+    cacheProducerValue(source.memory, binding.memoryDigest);
+    cacheProducerValue(source.sequencing, binding.sequencingDigest);
+    cacheProducerValue(source.origin, binding.originDigest);
+    cacheProducerValue(source.byteRange, binding.byteRangeDigest);
+    cacheProducerValue(source.rangeProof, binding.rangeProofDigest);
+    cacheProducerProof(source.aliasProof, CANONICAL_PRODUCER_ALIAS_PROOF_DIGESTS, CANONICAL_ALIAS_PROOF_CONSTRUCTED_DIGESTS);
+    cacheProducerProof(source.accessProof, CANONICAL_PRODUCER_ACCESS_PROOF_DIGESTS, CANONICAL_ACCESS_PROOF_CONSTRUCTED_DIGESTS);
+    cacheProducerProof(source.canonicalValue, CANONICAL_PRODUCER_STORE_VALUE_PROOF_DIGESTS, CANONICAL_STORE_VALUE_PROOF_CONSTRUCTED_DIGESTS);
+  }
+  for (const coverage of Array.isArray(byteCoverage) ? byteCoverage : []) {
+    for (const state of coverage?.regionAliasStates ?? []) {
+      cacheProducerProof(state?.aliasProof, CANONICAL_PRODUCER_ALIAS_PROOF_DIGESTS, CANONICAL_ALIAS_PROOF_CONSTRUCTED_DIGESTS);
+    }
+  }
+}
+
 function weakObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
@@ -32,18 +110,32 @@ function withoutDigest(value, key = 'proofDigest') {
 }
 
 export function canonicalIdentityDigest(identity) {
+  const cached = CANONICAL_PRODUCER_IDENTITY_DIGESTS.get(identity);
+  if (cached !== undefined && Object.isFrozen(identity)) return cached;
   return stableDigest(identity ?? null);
 }
 
+export function canonicalProducerValueDigest(value) {
+  const cached = CANONICAL_PRODUCER_VALUE_DIGESTS.get(value);
+  if (cached !== undefined && Object.isFrozen(value)) return cached;
+  return stableDigest(value ?? null);
+}
+
 export function canonicalAliasProofDigest(proof) {
+  const cached = CANONICAL_PRODUCER_ALIAS_PROOF_DIGESTS.get(proof);
+  if (cached !== undefined && Object.isFrozen(proof)) return cached;
   return stableDigest(withoutDigest(proof));
 }
 
 export function canonicalAccessProofDigest(proof) {
+  const cached = CANONICAL_PRODUCER_ACCESS_PROOF_DIGESTS.get(proof);
+  if (cached !== undefined && Object.isFrozen(proof)) return cached;
   return stableDigest(withoutDigest(proof));
 }
 
 export function canonicalStoreValueProofDigest(proof) {
+  const cached = CANONICAL_PRODUCER_STORE_VALUE_PROOF_DIGESTS.get(proof);
+  if (cached !== undefined && Object.isFrozen(proof)) return cached;
   return stableDigest(withoutDigest(proof));
 }
 
@@ -132,14 +224,24 @@ export function canonicalAccessBinding({
     aliasProofDigest: stableDigest(aliasProof ?? null),
     canonicalValueDigest: stableDigest(canonicalValue ?? null),
   };
-  return {
+  const binding = {
     ...base,
     bindingDigest: stableDigest(base),
   };
+  CANONICAL_ACCESS_BINDING_CONSTRUCTED_DIGESTS.set(binding, binding.bindingDigest);
+  return binding;
 }
 
 export function canonicalAccessBindingDigest(binding) {
+  const cached = CANONICAL_PRODUCER_ACCESS_BINDING_DIGESTS.get(binding);
+  if (cached !== undefined && Object.isFrozen(binding)) return cached;
   return stableDigest(withoutDigest(binding, 'bindingDigest'));
+}
+
+export function canonicalAccessBindingForMetadata(metadata) {
+  const cached = CANONICAL_PRODUCER_ACCESS_BINDINGS.get(metadata);
+  if (cached !== undefined && Object.isFrozen(metadata) && Object.isFrozen(cached)) return cached;
+  return canonicalAccessBinding(metadata);
 }
 
 export function canonicalAliasProof({
@@ -192,10 +294,12 @@ export function canonicalAliasProof({
       provider: jsonSafe(provider),
     },
   };
-  return {
+  const proof = {
     ...base,
     proofDigest: canonicalAliasProofDigest(base),
   };
+  CANONICAL_ALIAS_PROOF_CONSTRUCTED_DIGESTS.set(proof, proof.proofDigest);
+  return proof;
 }
 
 export function canonicalAccessProof({ raw, descriptor, identity, functionId }) {
@@ -256,10 +360,12 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId }) 
       memoryAccessDigest: stableDigest(memory),
     },
   };
-  return {
+  const proof = {
     ...base,
     proofDigest: canonicalAccessProofDigest(base),
   };
+  CANONICAL_ACCESS_PROOF_CONSTRUCTED_DIGESTS.set(proof, proof.proofDigest);
+  return proof;
 }
 
 export function canonicalStoreValueProof({
@@ -362,8 +468,10 @@ export function canonicalStoreValueProof({
       ...(scalarSsaDigest == null ? {} : { scalarSsaDigest: String(scalarSsaDigest) }),
     }),
   };
-  return {
+  const proof = {
     ...base,
     proofDigest: canonicalStoreValueProofDigest(base),
   };
+  CANONICAL_STORE_VALUE_PROOF_CONSTRUCTED_DIGESTS.set(proof, proof.proofDigest);
+  return proof;
 }

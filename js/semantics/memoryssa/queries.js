@@ -16,11 +16,13 @@ import {
   CANONICAL_ALIAS_ISSUER_VERSIONS,
   CANONICAL_STORE_VALUE_ISSUER,
   MEMORY_SSA_PROOF_VERSION,
-  canonicalAccessBinding,
+  canonicalAccessBindingForMetadata,
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
   canonicalStoreValueProofDigest,
+  canonicalIdentityDigest,
+  canonicalProducerValueDigest,
 } from './proof.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -304,7 +306,8 @@ function forwardingMetadataIndex(memorySsa, state = null) {
     }
     if (item.regionId == null) throw new ForwardingStop('unknown', 'memoryssa-access-metadata-region-missing');
     const binding = bindings.get(id);
-    if (!binding || stableStringify(canonicalAccessBinding(item)) !== stableStringify(binding)) {
+    const expectedBinding = canonicalAccessBindingForMetadata(item);
+    if (!binding || (expectedBinding !== binding && stableStringify(expectedBinding) !== stableStringify(binding))) {
       throw new ForwardingStop('unknown', 'memoryssa-canonical-access-binding-mismatch');
     }
     index.set(id, item);
@@ -546,7 +549,7 @@ function forwardingCanonicalAliasProofIsValid(proof, relation, context = {}) {
   const identity = context.memorySsa?.identity;
   if (!forwardingObject(proof.identity)
       || String(proof.identity.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
-      || String(proof.identity.digest ?? '') !== stableDigest(identity ?? null)) return false;
+      || String(proof.identity.digest ?? '') !== canonicalIdentityDigest(identity ?? null)) return false;
   const provenance = proof.provenance;
   if (!forwardingObject(provenance)
       || String(provenance.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
@@ -675,7 +678,7 @@ function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
       && expectedRegionId != null
       && String(proof.regionId ?? '') === String(expectedRegionId)
       && String(proof.functionId ?? '') === String(context.memorySsa?.functionId ?? '')
-      && String(proof.identityDigest ?? '') === stableDigest(context.memorySsa?.identity ?? null)
+      && String(proof.identityDigest ?? '') === canonicalIdentityDigest(context.memorySsa?.identity ?? null)
       && forwardingObject(proof.evidence)
       && proof.evidence.source === 'canonical-semantic-stack-root'
       && proof.evidence.root === 'canonical-stack-root'
@@ -919,7 +922,7 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
       || String(proof.sourceEntityId ?? '') !== String(definition.sourceEntityId ?? '')
       || !String(proof.valueId ?? '').trim()
       || String(proof.identity?.functionId ?? '') !== String(memorySsa.functionId ?? '')
-      || String(proof.identity?.digest ?? '') !== stableDigest(memorySsa.identity ?? null)
+      || String(proof.identity?.digest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)
       || !forwardingObject(proof.issuer)
       || proof.issuer.type !== 'canonical-semantic-value-provider'
       || String(proof.issuer.id ?? '') !== CANONICAL_STORE_VALUE_ISSUER
@@ -1256,7 +1259,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     const currentIdentity = options.currentIdentity;
     if (!forwardingObject(currentIdentity)
         || currentIdentity === artifact.identity
-        || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
+        || stableDigest(currentIdentity) !== canonicalIdentityDigest(artifact.identity)) {
       throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
     }
   }
@@ -1413,12 +1416,12 @@ function forwardingAccessProofIsCanonical(proof, metadata, memory, memorySsa = n
     && typeof issuer.version === 'string' && issuer.version === MEMORY_SSA_PROOF_VERSION
     && forwardingObject(proof.identity)
     && String(proof.identity.functionId ?? '') === String(memorySsa?.functionId ?? '')
-    && String(proof.identity.digest ?? '') === stableDigest(memorySsa?.identity ?? null)
+    && String(proof.identity.digest ?? '') === canonicalIdentityDigest(memorySsa?.identity ?? null)
     && forwardingObject(provenance)
     && String(provenance.functionId ?? '') === String(memorySsa?.functionId ?? '')
     && String(provenance.sourceEntityId ?? '') === String(sourceId)
     && metadata?.origin != null
-    && String(provenance.sourceOriginDigest ?? '') === stableDigest(metadata.origin)
+    && String(provenance.sourceOriginDigest ?? '') === canonicalProducerValueDigest(metadata.origin)
     && typeof proof.architectureId === 'string' && proof.architectureId.trim().length > 0
     && typeof proof.family === 'string' && proof.family.trim().length > 0
     && Number(proof.widthBits) === forwardingWidthBits(memory)
@@ -1438,7 +1441,7 @@ function forwardingAccessProofIsCanonical(proof, metadata, memory, memorySsa = n
     && (memory.ordering == null || memory.ordering === 'unknown')
     && forwardingObject(proof.evidence)
     && typeof proof.evidence.source === 'string' && proof.evidence.source.trim().length > 0
-    && String(proof.evidence.memoryAccessDigest ?? '') === stableDigest(memory)
+    && String(proof.evidence.memoryAccessDigest ?? '') === canonicalProducerValueDigest(memory)
     && String(proof.proofDigest ?? '') === canonicalAccessProofDigest(proof);
   return valid;
 }
@@ -1828,7 +1831,7 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
       || String(proof.regionId ?? '') !== String(use.regionId ?? '')
       || expectedBuildVersion == null
       || String(proof.buildVersion ?? '') !== String(expectedBuildVersion)
-      || String(proof.identityDigest ?? '') !== stableDigest(memorySsa.identity ?? null)) {
+      || String(proof.identityDigest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-coverage-proof-invalid');
   }
   const proofRange = forwardingRawRange(proof.loadRange, context.loadRange.domain);
@@ -1974,7 +1977,7 @@ function forwardingCoverageRowShapeForUse(memorySsa, use, coverage) {
     && String(proof.regionId ?? '') === String(use.regionId ?? '')
     && expectedBuildVersion != null
     && String(proof.buildVersion ?? '') === String(expectedBuildVersion)
-    && String(proof.identityDigest ?? '') === stableDigest(memorySsa.identity ?? null)
+    && String(proof.identityDigest ?? '') === canonicalIdentityDigest(memorySsa.identity ?? null)
     && (coverage.loadRange == null || forwardingObject(coverage.loadRange));
 }
 

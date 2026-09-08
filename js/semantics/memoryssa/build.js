@@ -30,6 +30,7 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
   MEMORY_SSA_PROOF_VERSION,
+  registerCanonicalMemorySsaIdentities,
 } from './proof.js';
 
 export const MEMORY_SSA_BUILD_VERSION = '1.0.1';
@@ -1478,5 +1479,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       canonicalMemorySsaSemanticIrCache.set(published, { ir: irFunction, digest: semanticIrDigest });
     }
   }
+  registerCanonicalMemorySsaIdentities(published);
   return published;
 }
