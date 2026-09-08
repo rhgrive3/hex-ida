@@ -20,6 +20,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const semanticIr = lowered.semanticIr;
   const cfg = lowered.cfg;
   const directCalls = [], dynamicCalls = [], externalCalls = [], memoryReads = [], memoryWrites = [], unknownCallEffects = [], thrownExceptions = [];
+  let hasLanguageThrow = false;
   for (const node of semanticIr.nodes) {
     if (node.kind === 'call' && node.call) {
       const call = node.call, candidates = call.targetEntityIds || [];
@@ -30,9 +31,17 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       else {dynamicCalls.push({targets:candidates,dispatchKind:'dynamic',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'indirect-incomplete-target-set',targetEntityIds:candidates,evidenceIds:[node.id]}));}
     } else if(node.kind==='load')memoryReads.push(createMemoryEffect({regionKind:'heap',broad:false,addressSpaces:['memory'],source:'instruction',evidenceIds:[node.id]}));
     else if(node.kind==='store')memoryWrites.push(createMemoryEffect({regionKind:'heap',broad:false,addressSpaces:['memory'],source:'instruction',evidenceIds:[node.id]}));
-    else if(node.kind==='trap')thrownExceptions.push({kind:'trap',nodeId:node.id});
+    else if(node.kind==='trap'){
+      // A language-level throw keeps its identity through the bridge (#7311):
+      // the lowering stamps metadata.exceptionThrow and keeps the thrown
+      // operand as the node's input, so the summary can name it instead of
+      // collapsing it into a generic runtime trap.
+      const languageThrow=node.metadata?.exceptionThrow===true;
+      thrownExceptions.push({kind:languageThrow?'throw':'trap',nodeId:node.id,thrownValueId:languageThrow?(node.inputs?.[0]??null):null});
+      if(languageThrow)hasLanguageThrow=true;
+    }
   }
-  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=unknownCallEffects.length>0?'partial':'complete';
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(unknownCallEffects.length>0||hasLanguageThrow)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
   const status=createAnalysisStatus({snapshotId:options.snapshotId||'managed-summary-v1',analyzerId:'managed.method.summary',analyzerVersion:'1.0.0',completeness,stopReason:completeness==='complete'?null:'evidence-missing'});
   const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects});
