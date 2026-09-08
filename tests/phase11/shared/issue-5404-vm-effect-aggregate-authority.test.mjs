@@ -77,4 +77,46 @@ assert.throws(
     'a validator pass cannot bless an out-of-taxonomy aggregate');
 }
 
+// 7. Resolution completeness is a typed authority field: arbitrary and
+//    structured values fail closed; the taxonomy from the runtime evidence
+//    bridge is accepted.
+{
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [], resolutionCompleteness: 'anything' }),
+    /vm-effect-resolution-completeness-invalid/,
+    'arbitrary resolution values must be rejected',
+  );
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [], resolutionCompleteness: ['complete'] }),
+    /vm-effect-resolution-completeness-invalid/,
+    'structured resolution values must not be String-coerced into the enum',
+  );
+  const bounded = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [], resolutionCompleteness: 'bounded' });
+  assert.equal(bounded.resolutionCompleteness, 'bounded');
+  const defaultResolution = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [] });
+  assert.equal(defaultResolution.resolutionCompleteness, 'complete');
+}
+
+// 8. A canonical object whose aggregate was tampered to claim stronger
+//    authority than its bundles support must fail the validator.
+{
+  const canonical = createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [partialBundle] });
+  assert.equal(canonical.aggregateCompleteness, 'partial');
+  assert.equal(validateVMEffectFunction(canonical), true, 'the honest canonical object validates');
+  assert.throws(
+    () => validateVMEffectFunction({ ...canonical, aggregateCompleteness: 'exact' }),
+    /vm-effect-aggregate-completeness-contradiction/,
+    'a hand-made exact aggregate over partial bundles must be rejected',
+  );
+}
+
+// 9. Structured aggregate values are never String()-coerced into enum tokens.
+{
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [], aggregateCompleteness: ['exact'] }),
+    /vm-effect-aggregate-completeness-invalid/,
+    'an array aggregate value must not launder into the exact token',
+  );
+}
+
 console.log('issue-5404 vm-effect aggregate completeness authority: ok');
