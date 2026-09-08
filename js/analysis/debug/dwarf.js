@@ -24,6 +24,7 @@ import {
   createDebugPage,
   createDebugProviderResult,
   createDebugRecord,
+  resolveDebugBudget,
 } from './provider.js';
 
 export const DWARF_PROVIDER_ID = 'phase7.debug.dwarf';
@@ -436,10 +437,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const dies = new Map();
   if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false, cancelled: false };
   // Missing or malformed budgets fall back to explicit defaults, never disable
-  // a cap: comparisons against undefined/NaN are always false (#5352, #3932).
-  const maxRecords = Number.isSafeInteger(budget?.maxRecords) && budget.maxRecords > 0
-    ? budget.maxRecords
-    : DEBUG_DEFAULT_BUDGET.maxRecords;
+  // a cap: comparisons against undefined/NaN are always false (#5352, #3932,
+  // #5604). maxRecords merges over the shared provider defaults; the abbrev
+  // caps use their own DWARF-specific defaults.
+  const { maxRecords } = resolveDebugBudget(budget);
   const maxAbbrevDeclarations = Number.isSafeInteger(budget?.maxAbbrevDeclarations) && budget.maxAbbrevDeclarations > 0
     ? budget.maxAbbrevDeclarations
     : DEFAULT_MAX_ABBREV_DECLARATIONS;

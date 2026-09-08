@@ -23,6 +23,7 @@ import {
   createDebugPage,
   createDebugProviderResult,
   createDebugRecord,
+  resolveDebugBudget,
 } from './provider.js';
 
 export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
@@ -329,13 +330,14 @@ export function parseSectionHeaders(bytes) {
  * unlike DWARF forms, which have no self-describing length.
  */
 export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
   const symbols = [];
   const unmodelled = new Set();
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
   let recordCount = 0;
-  while (offset + 4 <= bytes.length && recordCount < budget.maxRecords) {
+  while (offset + 4 <= bytes.length && recordCount < maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
@@ -390,6 +392,7 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
 
 /** Walks the TPI stream's leaf records. */
 export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
   const types = new Map();
   const unmodelled = new Set();
   if (!bytes || bytes.length < 56) return { types, unmodelled, complete: false, firstIndex: 0x1000 };
@@ -419,7 +422,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < budget.maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
@@ -440,7 +443,10 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     if (leaf === LF_STRUCTURE || leaf === LF_CLASS || leaf === LF_UNION) {
       const count = view.getUint16(body, true);
       const properties = view.getUint16(body + 2, true);
-      const fieldList = leaf === LF_UNION ? 0 : view.getUint32(body + 4, true);
+      // LF_UNION carries MemberCount/Properties/FieldList/Size/Name just like
+      // LF_STRUCTURE/LF_CLASS (only Size sits at a different offset): dropping
+      // its FieldList index severed every union from its member layout (#6045).
+      const fieldList = view.getUint32(body + 4, true);
       const sizeOffset = leaf === LF_UNION ? body + 8 : body + 16;
       const numeric = readNumeric(view, bytes, sizeOffset, end);
       if (!numeric) break;

@@ -200,11 +200,18 @@ function normalSectionIndex(index, sections) {
   return Number.isInteger(index) && index > 0 && index < sections.length && index < SHN_LORESERVE;
 }
 
-function symbolAddressForELF(elfType, value, sectionIndex, sections) {
+function actualSectionIndex(index, sections) {
+  return Number.isInteger(index) && index > 0 && index < sections.length;
+}
+
+function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSectionIndex = false) {
   if (elfType !== ET_REL) return value;
-  if (sectionIndex === SHN_ABS) return value;
-  if (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF) return null;
-  if (!normalSectionIndex(sectionIndex, sections)) return null;
+  if (!extendedSectionIndex && sectionIndex === SHN_ABS) return value;
+  if (!extendedSectionIndex && (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF)) return null;
+  const valid = extendedSectionIndex
+    ? actualSectionIndex(sectionIndex, sections)
+    : normalSectionIndex(sectionIndex, sections);
+  if (!valid) return null;
   const sec = sections[sectionIndex];
   if (value > sec.size) return null;
   return (sec.syntheticAddr ?? 0n) + value;
@@ -372,17 +379,18 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       resolvedShndx=null;sectionIdentityKnown=false;
       const xoff=xindexValid?safeOffset(xindex.offset+BigInt(i*4)):null;
       if(xoff==null||xoff+4>r.length||BigInt((i+1)*4)>xindex.size){image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);}
-      else{const candidate=r.u32(xoff);if(candidate===SHN_UNDEF||candidate===SHN_ABS||candidate===SHN_COMMON||candidate<sections.length){resolvedShndx=candidate;sectionIdentityKnown=true;}else image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);}
+      else{const candidate=r.u32(xoff);if(candidate===SHN_UNDEF||actualSectionIndex(candidate,sections)){resolvedShndx=candidate;sectionIdentityKnown=true;}else image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);}
     }
-    const normal=sectionIdentityKnown&&normalSectionIndex(resolvedShndx,sections);
-    const specialKnown=resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON;
+    const extendedSectionIndex=shndx===SHN_XINDEX&&actualSectionIndex(resolvedShndx,sections);
+    const normal=sectionIdentityKnown&&(extendedSectionIndex?actualSectionIndex(resolvedShndx,sections):normalSectionIndex(resolvedShndx,sections));
+    const specialKnown=!extendedSectionIndex&&(resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON);
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
     const tls=type===6;
-    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,value,resolvedShndx,sections):null;
+    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,value,resolvedShndx,sections,extendedSectionIndex):null;
     // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
     // ABI): it must stay in the export/linkage truth, not be lumped into an
     // anonymous `bind-N` bucket (#5844).
@@ -445,6 +453,19 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const tableStart=safeOffset(sec.offset),ent=safeOffset(sec.entsize);if(tableStart==null||ent==null||tableStart>r.length){budget.partial(`relocations:${sec.index}:file-span`,`ELF relocation section ${sec.index} has an invalid file span`);return;}
   const declaredBig=sec.size/sec.entsize,fileCapacity=Math.floor((r.length-tableStart)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
   if(declaredBig>BigInt(fileCapacity))budget.partial(`relocations:${sec.index}:truncated`,`ELF relocation section ${sec.index} exceeds its file-backed capacity`);
+  const symbolTable=sections[sec.link];
+  const symbolMinEnt=BigInt(bits===64?24:16);
+  const linkedSymbolTable=symbolTable&&(symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM);
+  let symbolEntryCount=null;
+  if(linkedSymbolTable){
+    if(symbolTable.entsize<symbolMinEnt){
+      budget.partial(`relocations:${sec.index}:symbol-table-entry-size`,`ELF symbol table ${sec.link} entry size ${symbolTable.entsize} is smaller than ${symbolMinEnt}`);
+    }else if(symbolTable.size%symbolTable.entsize!==0n){
+      budget.partial(`relocations:${sec.index}:symbol-table-span`,`ELF symbol table ${sec.link} size ${symbolTable.size} is not divisible by entry size ${symbolTable.entsize}`);
+    }else{
+      symbolEntryCount=symbolTable.size/symbolTable.entsize;
+    }
+  }
   const symbols=image.symbols.filter((x)=>x.tableIndex===sec.link);
   if(!budget.take({objects:symbols.length,operations:symbols.length,estimatedHeapBytes:symbols.length*48},'relocation-symbol-index'))return;
   const byIndex=new Map(symbols.map((x)=>[x.index,x]));
@@ -460,6 +481,8 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
+    if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
+    if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
     if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}

@@ -234,15 +234,24 @@ export function microsoftX64ReturnResult(decision) {
     reg:null,
     partial:true,
     unsupported:decision.unsupported === true,
+    // Preserve a known vector shape as diagnostic metadata, without turning
+    // an unsupported return into a physical register placement.
+    ...(decision.vector === true ? {
+      vector:true,
+      bits:Number.isSafeInteger(decision.bits) && decision.bits > 0 ? decision.bits : null,
+    } : {}),
     reason:decision.reason,
     hiddenResultPossible:decision.hiddenResultPossible === true,
   };
   /* Preserve proven shape metadata on unsupported vector results.  The
    * decision layer already established these fields; dropping them here made
    * a fail-closed __m256 result look indistinguishable from an untyped
-   * unknown return to callers. */
-  if (decision.vector === true) result.vector = true;
-  if (Number.isSafeInteger(decision.bits) && decision.bits > 0) result.bits = decision.bits;
+   * unknown return to callers. Untyped unknowns must not inherit diagnostic
+   * width metadata merely because a caller supplied an ignored `bits` field. */
+  if (decision.vector === true) {
+    result.vector = true;
+    result.bits = Number.isSafeInteger(decision.bits) && decision.bits > 0 ? decision.bits : null;
+  }
   return result;
 }
 

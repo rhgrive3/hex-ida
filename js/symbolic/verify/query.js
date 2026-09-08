@@ -33,11 +33,36 @@ export const VERDICT = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+// Caller-controlled metadata must be normalized inside an explicit budget:
+// freezeDeep's recursive DFS previously relied on the native call stack as its
+// only depth limit, so a schema-valid but deep object could exhaust it
+// synchronously before any query/domain error could be raised (#5496).
+export const QUERY_METADATA_MAX_DEPTH = 512;
+export const QUERY_METADATA_MAX_NODES = 65536;
+
+function freezeDeep(value, seen = new WeakSet(), depth = 0, budget = { nodes: 0 }, skipCanonicalExpressions = false) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  // Expression DAGs have their own iterative structural node/depth budgets.
+  // Keep this metadata guard focused on caller-controlled query metadata so a
+  // valid deep expression reaches the solver's expression budget checks.
+  if (skipCanonicalExpressions && isCanonicalExpression(value)) return Object.freeze(value);
+  if (depth > QUERY_METADATA_MAX_DEPTH) {
+    throw new TypeError(`createVerificationQuery: metadata depth budget exceeded (>${QUERY_METADATA_MAX_DEPTH})`);
+  }
+  budget.nodes += 1;
+  if (budget.nodes > QUERY_METADATA_MAX_NODES) {
+    throw new TypeError(`createVerificationQuery: metadata node budget exceeded (>${QUERY_METADATA_MAX_NODES})`);
+  }
+  seen.add(value);
+  for (const child of Object.values(value)) freezeDeep(child, seen, depth + 1, budget, skipCanonicalExpressions);
+  return Object.freeze(value);
+}
+
 const DEFAULT_QUERY_HASH_LIMITS = Object.freeze({
   maxExprNodes: 100000,
   maxIdentityNodes: 10000,
   maxIdentityEdges: 40000,
-  maxIdentityDepth: 64,
+  maxIdentityDepth: QUERY_METADATA_MAX_DEPTH,
 });
 
 const CANONICAL_EXPRESSION_KINDS = new Set([
@@ -53,6 +78,10 @@ const CANONICAL_EXPRESSION_KINDS = new Set([
   'concat',
   'cast',
 ]);
+
+function isCanonicalExpression(value) {
+  return value && typeof value === 'object' && CANONICAL_EXPRESSION_KINDS.has(value.kind);
+}
 
 function requirePositiveSafeInteger(value, name) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
@@ -331,6 +360,17 @@ export function createVerificationQuery({
   const normalizedAssumptions = Array.isArray(assumptions) ? [...assumptions] : [];
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
+  // Preserve the metadata guard's explicit depth/node errors before the
+  // bounded identity walk below. The caller-owned graph is frozen as part of
+  // the query contract, then copied into immutable identity snapshots.
+  freezeDeep(normalizedTargetEntityInput);
+  freezeDeep(normalizedConstraints, new WeakSet(), 0, { nodes: 0 }, true);
+  freezeDeep(assertion, new WeakSet(), 0, { nodes: 0 }, true);
+  freezeDeep(normalizedAssumptions);
+  freezeDeep(normalizedOutputs);
+  freezeDeep(normalizedCompleteness);
+  freezeDeep(proofScope);
+
   const identities = validateBoundedIdentityValues([
     normalizedTargetEntityInput,
     normalizedAssumptions,
@@ -339,6 +379,7 @@ export function createVerificationQuery({
     proofScope,
   ], DEFAULT_QUERY_HASH_LIMITS);
   if (!identities.ok) throw new TypeError(`createVerificationQuery: ${identities.reason}`);
+
   const normalizedTargetEntity = immutableIdentitySnapshot(normalizedTargetEntityInput);
   const normalizedAssumptionIdentity = immutableIdentitySnapshot(normalizedAssumptions);
   const normalizedCompletenessIdentity = immutableIdentitySnapshot(normalizedCompleteness);
@@ -350,7 +391,7 @@ export function createVerificationQuery({
     claimKind,
     targetEntity: normalizedTargetEntity,
     constraints: normalizedConstraints,
-    assertion,
+    assertion: assertion || null,
     assumptions: normalizedAssumptionIdentity,
     completeness: normalizedCompletenessIdentity,
     requestedOutputs: normalizedOutputIdentity,
@@ -360,6 +401,7 @@ export function createVerificationQuery({
     bitWidth: normalizedBitWidth,
     proofScope: normalizedProofScope,
   };
+
   const expressions = [...normalizedConstraints, ...(assertion ? [assertion] : [])];
   const structural = computeStructuralHashesBounded(expressions, { maxNodes: DEFAULT_QUERY_HASH_LIMITS.maxExprNodes });
   if (!structural.ok) throw new TypeError(`createVerificationQuery: ${structural.reason}`);

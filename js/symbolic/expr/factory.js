@@ -183,6 +183,16 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
+  return createConnectiveFromArgs(op, args);
+}
+
+// Keep deserialization from expanding a very wide connective into a function
+// call with hundreds of thousands of arguments. The array form retains the
+// same validation and immutable result shape as createConnective.
+export function createConnectiveFromArgs(op, args) {
+  if (!Array.isArray(args)) {
+    throw new TypeError('createConnectiveFromArgs: args must be an array');
+  }
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }

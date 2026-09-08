@@ -300,7 +300,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const signal = resumeSignal(options.signal);
     const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     // Injectable per call or at construction time (tests, embedders) so the
@@ -312,22 +311,25 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     // budget; timeout-free resumes preserve their existing behavior even in a
     // runtime without a monotonic clock implementation.
     const started = timeoutMs == null ? null : monotonicNow();
-    const run = { sandbox, epoch:this.epoch, cancelled:!!(signal && signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
-    traceState.runMemoryEvents = run.memoryEvents;
+    const initiallyCancelled = !!(signal && signal.aborted);
+    const run = { sandbox, epoch:this.epoch, cancelled:initiallyCancelled, paused:false, kind:'resume', memoryEvents:[] };
+    let onAbort = null;
     this.activeRun = run;
-    this.cancelled = run.cancelled;
-    const onAbort = () => {
-      run.cancelled = true;
-      run.sandbox.emulator.stopped = 'cancelled';
-      if (this.activeRun === run) this.cancelled = true;
-    };
-    if (signal && !run.cancelled) {
-      signal.addEventListener('abort', onAbort, { once:true });
-      if (signal.aborted) onAbort();
-    }
-    if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
-    this.running = true;
     try {
+      traceState.runMemoryEvents = run.memoryEvents;
+      this.cancelled = run.cancelled;
+      if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
+      onAbort = () => {
+        run.cancelled = true;
+        run.sandbox.emulator.stopped = 'cancelled';
+        if (this.activeRun === run) this.cancelled = true;
+      };
+      if (signal && !run.cancelled) {
+        signal.addEventListener('abort', onAbort, { once:true });
+        if (signal.aborted) onAbort();
+      }
+      if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
+      this.running = true;
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
@@ -345,7 +347,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         this.running = false;
         this.cancelled = run.cancelled;
       }
-      if (signal) signal.removeEventListener('abort', onAbort);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     }
   }
   async stepInto() {

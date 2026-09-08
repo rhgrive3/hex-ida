@@ -225,6 +225,16 @@ const OPERATION_FIELDS_BY_KIND = Object.freeze({
   barrier: new Set(['kind', 'id', 'metadata', 'scope']),
   unknown: new Set(['kind', 'id', 'metadata', 'reason', 'categories']),
 });
+const CONTROL_FIELDS_BY_KIND = Object.freeze({
+  fallthrough: new Set(['kind']),
+  branch: new Set(['kind', 'target', 'targets']),
+  'conditional-branch': new Set(['kind', 'target', 'targets', 'condition', 'fallthrough']),
+  call: new Set(['kind', 'target', 'fallthrough']),
+  return: new Set(['kind', 'target']),
+  trap: new Set(['kind', 'reason']),
+  indirect: new Set(['kind', 'target', 'reason']),
+  unknown: new Set(['kind', 'reason']),
+});
 // Canonical registries. Objects produced by the normalizers below are already
 // fully validated, budget-compliant, and deep-frozen, so re-entering them is
 // a proven identity: the full path would rebuild an object with identical
@@ -509,6 +519,7 @@ function normalizeControlEffect(input, options = {}) {
   input = object(input, 'machine-effects-control-effect-required');
   assertAllowedKeys(input, ALLOWED_FIELDS.controlEffect, 'machine-effects-unexpected-control-effect-field');
   const kind = enumValue(input.kind, SETS.controls, 'machine-effects-invalid-control-effect');
+  assertAllowedKeys(input, CONTROL_FIELDS_BY_KIND[kind], 'machine-effects-control-field-not-allowed');
   const out = { kind };
   if (input.target != null) out.target = serializable(input.target, 'machine-effects-invalid-control-target');
   if (input.targets != null) out.targets = array(input.targets, 'machine-effects-invalid-control-targets').map((value) => serializable(value, 'machine-effects-invalid-control-target'));
@@ -517,6 +528,18 @@ function normalizeControlEffect(input, options = {}) {
   if (input.reason != null) out.reason = nonEmpty(input.reason, 'machine-effects-invalid-control-reason');
   if (kind === 'unknown' && !out.reason) fail('machine-effects-unknown-control-reason-required');
   return deepFreeze(out);
+}
+
+function controlEffectIsSemanticallyComplete(control) {
+  if (control.kind === 'unknown') return false;
+  if (control.kind === 'branch') return (control.targets?.length ?? 0) > 0 || control.target != null;
+  if (control.kind === 'conditional-branch') {
+    const targetCount = control.targets?.length ?? 0;
+    const hasTakenTarget = targetCount > 0 || control.target != null;
+    const hasFallthroughTarget = control.fallthrough != null || targetCount >= 2;
+    return control.condition != null && hasTakenTarget && hasFallthroughTarget;
+  }
+  return true;
 }
 
 function normalizeFault(input) {
@@ -571,7 +594,7 @@ export function createIntrinsicEffectSummary(input, options = {}) {
 
 function intrinsicSummaryIsComplete(summary) {
   if (summary.memoryRead.scope === 'unknown' || summary.memoryWrite.scope === 'unknown') return false;
-  if (summary.controlEffects.some((effect) => effect.kind === 'unknown')) return false;
+  if (summary.controlEffects.some((effect) => !controlEffectIsSemanticallyComplete(effect))) return false;
   return summary.determinism !== 'unknown';
 }
 
@@ -712,8 +735,8 @@ function validateCompletenessSemantics(bundle) {
   const hasUnknownOperation = bundle.operations.some((operation) => operation.kind === 'unknown');
   const intrinsics = bundle.operations.filter((operation) => operation.kind === 'intrinsic');
   const intrinsicIsIncomplete = intrinsics.some((operation) => !intrinsicSummaryIsComplete(operation.effectSummary));
-  const controlUnknown = bundle.controlEffect.kind === 'unknown';
-  const unresolved = hasUnknownOperation || intrinsicIsIncomplete || controlUnknown;
+  const controlIncomplete = !controlEffectIsSemanticallyComplete(bundle.controlEffect);
+  const unresolved = hasUnknownOperation || intrinsicIsIncomplete || controlIncomplete;
 
   if (bundle.completeness === 'exact') {
     if (bundle.unknownEffects != null || unresolved || intrinsics.length !== 0) fail('machine-effects-exact-has-unresolved-effects');

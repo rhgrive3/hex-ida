@@ -27,6 +27,17 @@ const JVM_CLASS_VERSIONS = new Map([
   [61, { vmSpecEdition: 'java-se-17', maxMinor: 0 }],
 ]);
 const CP_TAG_MIN_MAJOR = new Map([[15,51],[16,51],[17,55],[18,51],[19,53],[20,53]]);
+const CONSTANT_VALUE_TAGS = Object.freeze({
+  B: Object.freeze([3]),
+  C: Object.freeze([3]),
+  S: Object.freeze([3]),
+  Z: Object.freeze([3]),
+  I: Object.freeze([3]),
+  F: Object.freeze([4]),
+  J: Object.freeze([5]),
+  D: Object.freeze([6]),
+  'Ljava/lang/String;': Object.freeze([8]),
+});
 function classVersionInfo(major,minor){const version=JVM_CLASS_VERSIONS.get(major);if(!version||!Number.isInteger(minor)||minor<0||minor>version.maxMinor)return null;return version;}
 export function probeJvm(bytes){if(!bytes||bytes.length<10)return{supported:false,confidence:0,reason:'too-small'};const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);if(u8[0]!==0xca||u8[1]!==0xfe||u8[2]!==0xba||u8[3]!==0xbe)return{supported:false,confidence:0,reason:'invalid-magic'};const minor=(u8[4]<<8)|u8[5],major=(u8[6]<<8)|u8[7],formatVersion=`class-${major}.${minor}`,version=classVersionInfo(major,minor);if(!version)return{supported:false,confidence:0.95,reason:'unsupported-version',formatVersion};return{supported:true,confidence:1,formatVersion,vmSpecEdition:version.vmSpecEdition};}
 function decodeMutf8(bytes){let pos=0,chars=[];while(pos<bytes.length){const b1=bytes[pos++];if(b1>=0x01&&b1<=0x7f){chars.push(String.fromCharCode(b1));continue;}if((b1&0xe0)===0xc0){if(pos>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++];if((b2&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x1f)<<6)|(b2&0x3f);if(value===0){if(b1!==0xc0||b2!==0x80)fail('jvm-invalid-modified-utf8');}else if(value<0x80)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}if((b1&0xf0)===0xe0){if(pos+1>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++],b3=bytes[pos++];if((b2&0xc0)!==0x80||(b3&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x0f)<<12)|((b2&0x3f)<<6)|(b3&0x3f);if(value<0x800)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}fail('jvm-invalid-modified-utf8');}return chars.join('');}
@@ -87,15 +98,46 @@ export function parseJvm(bytes,options={}){
   function validateBootstrapMethodReferences(bootstrapMethodsCount){for(const entry of constantPool){if(entry&&(entry.tag===17||entry.tag===18)&&(bootstrapMethodsCount===null||entry.bootstrapMethodAttrIndex>=bootstrapMethodsCount))fail('jvm-invalid-cp-bootstrap-method-index');}}
   validateConstantPool();
   ensure(pos,8,'jvm-truncated-class-info');const accessFlags=view.getUint16(pos,false),thisClassIdx=view.getUint16(pos+2,false),superClassIdx=view.getUint16(pos+4,false),interfacesCount=view.getUint16(pos+6,false);pos+=8;const classFlagValidation=validateJvmClassFlags(accessFlags,{majorVersion});if(classFlagValidation.errors.length)fail(classFlagValidation.errors[0]);validateModuleConstants(accessFlags);
-  const interfaces=[];ensure(pos,interfacesCount*2,'jvm-truncated-interfaces');for(let i=0;i<interfacesCount;i++){interfaces.push(requireDefiningClassName(view.getUint16(pos,false),'jvm-invalid-interface-index'));pos+=2;}
+  const interfaces=[];ensure(pos,interfacesCount*2,'jvm-truncated-interfaces');const seenInterfaces=new Set();for(let i=0;i<interfacesCount;i++){const ifaceName=requireDefiningClassName(view.getUint16(pos,false),'jvm-invalid-interface-index');pos+=2;
+    // JVMS §4.1: entries of interfaces[] are the direct superinterfaces; the
+    // JVM rejects a class whose table names the same interface more than once
+    // (ClassFormatError: Duplicate interface name). Compare resolved names, not
+    // raw CP indices — two CONSTANT_Class entries may alias one Utf8 (#7373).
+    if(seenInterfaces.has(ifaceName))fail('jvm-duplicate-interface-name');seenInterfaces.add(ifaceName);interfaces.push(ifaceName);}
   ensure(pos,2,'jvm-truncated-fields-count');const fieldsCount=view.getUint16(pos,false);pos+=2;const fields=[];
-  for(let i=0;i<fieldsCount;i++){ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-field-attribute');requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index');const aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');pos+=6+aLen;}const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);fields.push({accessFlags:fFlags,name:requireMemberName(nameIdx,'jvm-invalid-field-name-index'),descriptor:fieldDescriptor});}
+  for(let i=0;i<fieldsCount;i++){
+    ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;
+    const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);
+    const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);let constantValue=null;
+    for(let a=0;a<attrCount;a++){
+      ensure(pos,6,'jvm-truncated-field-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index'),aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');
+      if(attrName==='ConstantValue'){
+        if(constantValue!==null)fail('jvm-duplicate-constant-value-attribute');
+        if(aLen!==2)fail('jvm-invalid-constant-value-attribute-length');
+        const expectedTags=CONSTANT_VALUE_TAGS[fieldDescriptor];if(!expectedTags)fail('jvm-invalid-constant-value-descriptor');
+        const constantPoolIndex=view.getUint16(pos+6,false),entry=requireCpOneOf(constantPoolIndex,expectedTags,'jvm-invalid-constant-value-index');
+        const value=entry.tag===8?requireUtf8(entry.stringIndex,'jvm-invalid-constant-value-string-index'):entry.value;
+        constantValue={constantPoolIndex,tag:entry.tag,value,runtimeInitialized:(fFlags&0x0008)!==0};
+      }
+      pos+=6+aLen;
+    }
+    const field={accessFlags:fFlags,name:requireMemberName(nameIdx,'jvm-invalid-field-name-index'),descriptor:fieldDescriptor};if(constantValue!==null)field.constantValue=constantValue;fields.push(field);
+  }
   ensure(pos,2,'jvm-truncated-methods-count');const methodsCount=view.getUint16(pos,false);pos+=2;const methods=[];
   for(let i=0;i<methodsCount;i++){ensure(pos,8,'jvm-truncated-method-info');const mFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;let codeAttr=null,codeCount=0;const methodName=requireMemberName(nameIdx,'jvm-invalid-method-name-index',{method:true});const flagValidation=validateJvmMethodFlags(mFlags,{methodName,ownerAccessFlags:accessFlags,majorVersion});if(flagValidation.errors.length)fail(flagValidation.errors[0]);
     for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-method-attribute');const attrNameIdx=view.getUint16(pos,false),attrLen=view.getUint32(pos+2,false),attrName=requireUtf8(attrNameIdx,'jvm-invalid-method-attribute-name-index'),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-method-attribute');pos+=6+attrLen;
       if(attrName==='Code'){codeCount++;if(codeCount>1)fail('jvm-duplicate-code-attribute');const attrEnd=attrDataStart+attrLen,ensureCode=(o,s,c)=>checkedRange(attrEnd,o,s,c);ensureCode(attrDataStart,8,'jvm-truncated-code-attribute');const maxStack=view.getUint16(attrDataStart,false),maxLocals=view.getUint16(attrDataStart+2,false),codeLength=view.getUint32(attrDataStart+4,false);ensureCode(attrDataStart+8,codeLength+2,'jvm-truncated-code-bytes');const bytecode=u8.subarray(attrDataStart+8,attrDataStart+8+codeLength);let cPos=attrDataStart+8+codeLength;const excTableLength=view.getUint16(cPos,false);cPos+=2;const exceptionTable=[];ensureCode(cPos,excTableLength*8,'jvm-truncated-exception-table');for(let e=0;e<excTableLength;e++){const startPc=view.getUint16(cPos,false),endPc=view.getUint16(cPos+2,false),handlerPc=view.getUint16(cPos+4,false),catchType=view.getUint16(cPos+6,false);cPos+=8;if(startPc>=endPc||endPc>codeLength||handlerPc>=codeLength)fail('jvm-invalid-exception-table-range');exceptionTable.push({startPc,endPc,handlerPc,catchType:catchType!==0?requireClassName(catchType,'jvm-invalid-catch-type-index'):null});}ensureCode(cPos,2,'jvm-truncated-code-attributes-count');const nestedAttrCount=view.getUint16(cPos,false);cPos+=2;for(let n=0;n<nestedAttrCount;n++){ensureCode(cPos,6,'jvm-truncated-code-attribute');requireUtf8(view.getUint16(cPos,false),'jvm-invalid-code-attribute-name-index');const nestedLen=view.getUint32(cPos+2,false);ensureCode(cPos+6,nestedLen,'jvm-truncated-code-attribute');cPos+=6+nestedLen;}if(cPos!==attrEnd)fail('jvm-invalid-code-attribute-length');codeAttr={maxStack,maxLocals,codeLength,bytecode,exceptionTable,offset:attrDataStart+8};}}
     const forbidsCode=!!(mFlags&(0x0100|0x0400));if(forbidsCode?codeCount!==0:codeCount!==1)fail(forbidsCode?'jvm-code-attribute-forbidden':'jvm-code-attribute-required');
-    const methodDescriptor=requireUtf8(descIdx,'jvm-invalid-method-descriptor-index'),parsedMethodDescriptor=parseJvmMethodDescriptor(methodDescriptor);if((mFlags&0x0008)===0){const parameterSlots=parsedMethodDescriptor.parameters.reduce((slots,type)=>slots+(type.kind==='base'&&(type.tag==='J'||type.tag==='D')?2:1),0);if(parameterSlots>=255)fail('jvm-invalid-method-descriptor');}methods.push({accessFlags:mFlags,name:methodName,descriptor:methodDescriptor,code:codeAttr});
+    const methodDescriptor=requireUtf8(descIdx,'jvm-invalid-method-descriptor-index'),parsedMethodDescriptor=parseJvmMethodDescriptor(methodDescriptor);
+    // JVMS §4.6 special-method contract, checked against the parsed
+    // descriptor rather than raw syntax: <init> and <clinit> must be void,
+    // and <clinit> (major >= 51) must take no parameters (#7321). OpenJDK
+    // rejects violators with ClassFormatError "illegal signature".
+    if(methodName==='<init>'||methodName==='<clinit>'){
+      if(parsedMethodDescriptor.returnType!==null)fail('jvm-special-method-descriptor-not-void');
+      if(methodName==='<clinit>'&&majorVersion>=51&&parsedMethodDescriptor.parameters.length>0)fail('jvm-clinit-parameters-forbidden');
+    }
+    if((mFlags&0x0008)===0){const parameterSlots=parsedMethodDescriptor.parameters.reduce((slots,type)=>slots+(type.kind==='base'&&(type.tag==='J'||type.tag==='D')?2:1),0);if(parameterSlots>=255)fail('jvm-invalid-method-descriptor');}methods.push({accessFlags:mFlags,name:methodName,descriptor:methodDescriptor,code:codeAttr});
   }
   const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index'),superClassName=superClassIdx===0?null:requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
   ensure(pos,2,'jvm-truncated-class-attributes-count');const classAttrCount=view.getUint16(pos,false);pos+=2;let bootstrapMethodsCount=null;for(let a=0;a<classAttrCount;a++){ensure(pos,6,'jvm-truncated-class-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-class-attribute-name-index'),attrLen=view.getUint32(pos+2,false),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-class-attribute');pos=attrDataStart+attrLen;if(majorVersion>=51&&attrName==='BootstrapMethods'){if(bootstrapMethodsCount!==null)fail('jvm-duplicate-bootstrap-methods-attribute');const attrEnd=pos,ensureBootstrap=(o,s,c='jvm-truncated-bootstrap-methods-attribute')=>checkedRange(attrEnd,o,s,c);ensureBootstrap(attrDataStart,2);bootstrapMethodsCount=view.getUint16(attrDataStart,false);let bPos=attrDataStart+2;for(let b=0;b<bootstrapMethodsCount;b++){ensureBootstrap(bPos,4);const argumentCount=view.getUint16(bPos+2,false);bPos+=4;ensureBootstrap(bPos,argumentCount*2);bPos+=argumentCount*2;}if(bPos!==attrEnd)fail('jvm-invalid-bootstrap-methods-attribute-length');}}validateBootstrapMethodReferences(bootstrapMethodsCount);if(pos!==u8.length)fail('jvm-trailing-bytes');

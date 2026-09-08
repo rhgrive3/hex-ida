@@ -149,11 +149,12 @@ export class InstrumentationProvider {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'instrumentation provider already has an open session');
     let session;
     let unsubscribe = null;
+    let connectedBySession = false;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        if (typeof this.backend.disconnect === 'function') await this.backend.disconnect();
+        if (connectedBySession && typeof this.backend.disconnect === 'function') await this.backend.disconnect();
         if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
         unsubscribe = null;
         if (this.activeSession === session) this.activeSession = null;
@@ -204,7 +205,10 @@ export class InstrumentationProvider {
     // race through while this session is still connecting or enumerating.
     this.activeSession = session;
     try {
-      if (options.connect !== false && typeof this.backend.connect === 'function') await this.backend.connect(options.connectOptions || request);
+      if (options.connect !== false && typeof this.backend.connect === 'function') {
+        connectedBySession = true;
+        await this.backend.connect(options.connectOptions || request);
+      }
       if (typeof this.backend.onEvent === 'function') {
         const maybe = this.backend.onEvent(ingest);
         if (maybe != null && typeof maybe !== 'function') throw new DebugAdapterError('event-subscription', 'instrumentation backend onEvent must return an unsubscribe function');

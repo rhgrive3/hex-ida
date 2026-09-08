@@ -29,8 +29,8 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       if (candidates.length===1&&!isExternal&&dispatchKind==='direct'&&!targetUnresolved) { directCalls.push({target:candidates[0],dispatchKind:'direct',unresolved:false,nodeId:node.id}); if(call.completeness!=='complete')unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'summary-incomplete',targetEntityIds:candidates,evidenceIds:[node.id]})); }
       else if(isExternal){externalCalls.push({target:candidates[0]||'external',dispatchKind:'external',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'unresolved-target',targetEntityIds:candidates,evidenceIds:[node.id]}));}
       else {dynamicCalls.push({targets:candidates,dispatchKind:'dynamic',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'indirect-incomplete-target-set',targetEntityIds:candidates,evidenceIds:[node.id]}));}
-    } else if(node.kind==='load')memoryReads.push(createMemoryEffect({regionKind:'heap',broad:false,addressSpaces:['memory'],source:'instruction',evidenceIds:[node.id]}));
-    else if(node.kind==='store')memoryWrites.push(createMemoryEffect({regionKind:'heap',broad:false,addressSpaces:['memory'],source:'instruction',evidenceIds:[node.id]}));
+    } else if(node.kind==='load')memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[node.memory?.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
+    else if(node.kind==='store')memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[node.memory?.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
     else if(node.kind==='trap'){
       // A language-level throw keeps its identity through the bridge (#7311):
       // the lowering stamps metadata.exceptionThrow and keeps the thrown
