@@ -286,6 +286,49 @@ identity `56f8f5e7dd27e7487b5a14b097943a89b222d3d034858ba5efe21dff7f95da8d`.
 Commit/rebuild-zero-diff, complete current-head gates and runtime checks remain
 required. The earlier Phase 8 green does not attest these new runtime bytes.
 
+That repair is committed as `08afd3431bf15601839d8dd54039b6014c531c87`
+(tree `761beaa4350691b67f9c6276665242129ea60013`) and was fast-forwarded
+back into the same integration branch only after the earlier run terminated.
+Its own-head changed tests passed (0.6 s), canonical rebuild produced zero
+generated diff (3.3 s; repeated on integration in 3.4 s), exact ownership
+validated 169 paths (12 Phase 7 / 24 Phase 8), and sequential generated-runtime
+Chromium/WebKit sandbox E2E passed (9.7 s). This is not physical iPad evidence.
+
+The complete Phase 7 suite on that exact head passed 1313/1327 tests (86.6 s),
+leaving 14 failures instead of the prior 29:
+`/tmp/hex-roadmap-p7-current-Vn0TG0/full.log`. The full `npm run check` stopped
+at the MachineEffects invariant (145.0 s), with 11 failing files instead of
+the previous 20: `/tmp/hex-check-8fOO1P/full.log`. Later gates were not reached;
+these partial results do not satisfy the repository exit gate.
+
+### Existing #7097 cache repair reused, not reimplemented
+
+The remaining #4486/#4487 shared artifact failures already have a source fix
+in open PR #7097 at `f8d127553914efe18e51ab86a60b9f05243c7b7b`. Its exact
+`js/analysis/shared-app-artifacts.js` blob is reused after inspecting its full
+delta and reconfirming that PR head. Existing canonical tests for both issues
+are byte-identical on the integration and PR heads. No other #7097 paths are
+imported, and this is not a claim that the entire PR has been integrated.
+
+The fix evicts settled obsolete epoch entries, preserves in-flight consumers
+until settlement, and rejects a producer when a newer symbol-generation
+producer already owns the destination cache key. Both issue tests plus shared
+result contracts, abort registration races, zero-waiter producer races and
+retryability regressions passed with ownership checks (0.7 s).
+
+The first remaining ARM64 branch failure was an outdated diagnostic assertion:
+merged #7335 rejects malformed operands before target-coherence checking. The
+test now requires that exact earlier refusal and additionally checks zero
+operations/no definite control edge. Production branch behavior is unchanged.
+The original assertion failed in `/tmp/hex-roadmap-branch-first-a9Vdgw/full.log`;
+the corrected contract test passes (0.2 s).
+
+The cache source and branch test are explicitly owned additional paths.
+Canonical generation passed (3.2 s), producing serial `2322242155`, build ID
+`59e5ab229ebea67dc8c43d27`, release identity
+`bb73b24028b8795d5218e407fb00fea43397913dc8fb6b519e4cf2306889d43c`.
+Exact commit/rebuild-zero-diff and new-head broad gates remain to be verified.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

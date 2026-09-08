@@ -141,7 +141,10 @@ for (const hostile of [[0x1004n], true, { toString: () => '4100' }]) {
 
   const invalidOperand = branch({ explicitTarget: 0x1004n, operandTarget: hostile });
   assert.equal(invalidOperand?.completeness, 'partial');
-  assert.match(invalidOperand.unknownEffects?.reason ?? '', /operand-shape-unmodelled|target-evidence-mismatch/);
+  // #7335 rejects malformed operand shape before target-coherence checking.
+  assert.equal(invalidOperand.unknownEffects?.reason, 'arm64-b-operand-shape-invalid');
+  assert.equal(invalidOperand.operations.length, 0);
+  assert.equal(targetOf(invalidOperand), undefined, 'invalid operands cannot emit a definite control edge');
 }
 
 console.log('ARM64 direct branch target evidence coherence (#6067): PASS');
