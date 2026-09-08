@@ -1,0 +1,100 @@
+import assert from 'node:assert/strict';
+import {
+  createSemanticIrFunction,
+  validateSemanticIrFunction,
+  canonicalSemanticIrDigest,
+  isCanonicalSemanticIrFunction,
+} from '/mnt/workspace/hex-development-gate-policy/js/semantics/ir/function.js';
+import { createSemanticCfg } from '/mnt/workspace/hex-development-gate-policy/js/semantics/cfg/index.js';
+import {
+  buildMemorySsa,
+  canonicalMemorySsaProducerSemanticIrDigest,
+  canonicalMemorySsaProducerDigest,
+  isCanonicalMemorySsaProducerArtifact,
+} from '/mnt/workspace/hex-development-gate-policy/js/semantics/memoryssa/build.js';
+
+const origin = { instructionIds: ['probe'], virtualRanges: [{ start: 0n, end: 1n }] };
+const makeIr = (id = 'probe-ir') => createSemanticIrFunction({
+  schemaVersion: 2,
+  contractVersion: '2.0.0',
+  functionId: id,
+  entryBlockId: 'entry',
+  blocks: [{ id: 'entry', nodeIds: [], origin }],
+  values: [],
+  nodes: [],
+  completeness: 'complete',
+  unknowns: [],
+  origin,
+});
+const ir = makeIr();
+const digest = canonicalSemanticIrDigest(ir);
+const results = [];
+
+// 1. Revalidation of the default-budget frozen object is identity-preserving.
+assert.equal(validateSemanticIrFunction(ir), ir);
+results.push(['default-canonical-reuse', true]);
+
+// 2. The abort check remains before the fast path.
+const controller = new AbortController();
+controller.abort('probe-abort');
+assert.throws(() => validateSemanticIrFunction(ir, { signal: controller.signal }), /cancelled/);
+results.push(['pre-abort-rejected', true]);
+
+// 3. A structured clone has no private canonical brand and cannot reuse identity.
+const clone = structuredClone(ir);
+assert.equal(isCanonicalSemanticIrFunction(clone), false);
+assert.notEqual(validateSemanticIrFunction(clone), clone);
+results.push(['clone-unbranded', true]);
+
+const cfg = createSemanticCfg({
+  functionId: ir.functionId,
+  entryBlockId: 'entry',
+  blocks: [{ id: 'entry', successors: [] }],
+});
+const identity = {
+  functionId: ir.functionId,
+  semanticIrId: 'probe-ir',
+  semanticIrContractVersion: ir.contractVersion,
+  semanticIrDigest: digest,
+  snapshotId: 'probe-snapshot',
+};
+const artifact = buildMemorySsa(ir, cfg, {
+  identity,
+  canonicalIrIdentity: {
+    functionId: ir.functionId,
+    semanticIrId: 'probe-ir',
+    semanticIrContractVersion: ir.contractVersion,
+    semanticIrDigest: digest,
+  },
+  snapshotId: identity.snapshotId,
+});
+
+// 4. Exact producer/IR identity gets the private binding; a clone does not.
+assert.equal(isCanonicalMemorySsaProducerArtifact(artifact), true);
+assert.equal(canonicalMemorySsaProducerSemanticIrDigest(artifact, ir), digest);
+assert.equal(canonicalMemorySsaProducerSemanticIrDigest(artifact, clone), null);
+results.push(['producer-exact-ir-only', true]);
+
+// 5. A producer with a forged/mismatched serialized IR digest does not get a semantic binding.
+const wrongArtifact = buildMemorySsa(ir, cfg, {
+  identity: { ...identity, semanticIrDigest: '0'.repeat(digest.length) },
+  canonicalIrIdentity: {
+    functionId: ir.functionId,
+    semanticIrId: 'probe-ir',
+    semanticIrContractVersion: ir.contractVersion,
+    semanticIrDigest: '0'.repeat(digest.length),
+  },
+  snapshotId: identity.snapshotId,
+});
+assert.equal(canonicalMemorySsaProducerSemanticIrDigest(wrongArtifact, ir), null);
+results.push(['mismatched-producer-binding-rejected', true]);
+
+// 6. A mutable/unbranded artifact is always redigested after mutation.
+const mutable = { identity: { marker: 1 } };
+const before = canonicalMemorySsaProducerDigest(mutable);
+mutable.identity.marker = 2;
+const after = canonicalMemorySsaProducerDigest(mutable);
+assert.notEqual(before, after);
+results.push(['mutable-unbranded-redigested', true]);
+
+console.log(JSON.stringify({ cases: results.length, results }));

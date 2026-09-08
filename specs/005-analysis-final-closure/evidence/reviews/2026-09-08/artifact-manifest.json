@@ -1,0 +1,47 @@
+[
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/t019-recovery-probes.mjs",
+    "archived": "t019-recovery-probes.mjs.txt",
+    "sha256": "ae145bb7212d67fbfb8f1dcdb159106aab9043468fe8911287bc26f5d2e9972e"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/t019-recovery-probes-output.jsonl",
+    "archived": "t019-recovery-probes-output.jsonl",
+    "sha256": "5bcbc06c56a457bf6d3f75336279cc4d474fd419cc93caf07f4d052841920c6f"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/t019-recovery-probes-commands.txt",
+    "archived": "t019-recovery-probes-commands.txt",
+    "sha256": "bfea145919116a595ee6d2b89730a4b4dccc220a1628edd4e58e39c92066cde6"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/t019-source-bound.txt",
+    "archived": "t019-source-bound.txt",
+    "sha256": "392e9643b442a27101a97252112c60e9dcc76e15b148fe66147090ebd3027152"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/independent-cache-probe.mjs",
+    "archived": "independent-cache-probe.mjs.txt",
+    "sha256": "e3dfb974e1e520ec1345d62c36873735cae0fc213709b0318fbe84d67328c140"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/independent-cache-probe-output.json",
+    "archived": "independent-cache-probe-output.json",
+    "sha256": "df54e833d5e9ef2e2798127cf3a3237e49a8fbfb0fefe6ee96a5b386b9fe1981"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/independent-reference-probe.mjs",
+    "archived": "independent-reference-probe.mjs.txt",
+    "sha256": "dcec3f6e4b8c56de524ea167fbeb2d8a343171cb86e3ab9c2c5870fe283f5397"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/independent-reference-probe-output.json",
+    "archived": "independent-reference-probe-output.json",
+    "sha256": "cdd5b63a4c99526ca4ca0b492beb46c2d12275393af2949da3a55643081cded9"
+  },
+  {
+    "source": "/mnt/workspace/.dev-state/hex-development-batch/independent-probe-commands.txt",
+    "archived": "independent-probe-commands.txt",
+    "sha256": "6403872fc0e20b3c8e8a359effd3b9fb56ad68a5f299a82ac71438b20120caea"
+  }
+]

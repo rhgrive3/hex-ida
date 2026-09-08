@@ -1,0 +1,1 @@
+{"cases":6,"results":[["default-canonical-reuse",true],["pre-abort-rejected",true],["clone-unbranded",true],["producer-exact-ir-only",true],["mismatched-producer-binding-rejected",true],["mutable-unbranded-redigested",true]]}

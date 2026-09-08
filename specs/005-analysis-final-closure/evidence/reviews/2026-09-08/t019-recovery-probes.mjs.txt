@@ -1,0 +1,451 @@
+import assert from 'node:assert/strict';
+
+const ROOT = '/mnt/workspace/hex-development-gate-policy';
+
+const { expr } = await import(`${ROOT}/js/decompiler/ast/nodes.js`);
+const { recoverExactStackReturn } = await import(`${ROOT}/js/decompiler/passes/stack-return-recovery.js`);
+
+const { canonicalAnalysisIdentity } = await import(`${ROOT}/js/decompiler/phase8/analysis-identity.js`);
+const { SCCP_PASS, runSccpPass } = await import(`${ROOT}/js/decompiler/phase8/sccp.js`);
+const { runPassTransaction, seedAnalysisState } = await import(`${ROOT}/js/decompiler/phase8/transaction.js`);
+const { GVN_PASS, runGvnPass } = await import(`${ROOT}/js/decompiler/phase8/valuenumber.js`);
+const { fixture } = await import(`${ROOT}/tests/phase8/helpers/ir-fixtures.mjs`);
+
+const {
+  BV_COMPARE_OP,
+  BV_BINARY_OP,
+  bvSort,
+} = await import(`${ROOT}/js/symbolic/expr/kinds.js`);
+const {
+  createBinary,
+  createBv,
+  createCompare,
+  createFreshSymbol,
+} = await import(`${ROOT}/js/symbolic/expr/factory.js`);
+const {
+  BitBlastBvBackend,
+  ExhaustiveBvBackend,
+} = await import(`${ROOT}/js/symbolic/solver/index.js`);
+const { SOLVER_STATUS } = await import(`${ROOT}/js/symbolic/solver/result.js`);
+const { isExactProofBackend } = await import(`${ROOT}/js/symbolic/solver/backend.js`);
+const {
+  CLAIM_KIND,
+  VERIFICATION_QUERY_KIND,
+  createVerificationQuery,
+} = await import(`${ROOT}/js/symbolic/verify/query.js`);
+
+const {
+  parseDyldSharedCache,
+  parseAppleCodeSignature,
+  assessAppleSigningImpact,
+} = await import(`${ROOT}/js/apple/knowledge.js`);
+const { parseMachO, machOImageAuthority } = await import(`${ROOT}/js/binary/macho-core.js`);
+
+const { functionCandidates } = await import(`${ROOT}/js/analysis/index.js`);
+const {
+  canonicalTypedValue,
+  canonicalTypedDigest,
+} = await import(`${ROOT}/js/analysis/discovery/canonical-value.js`);
+const {
+  discoveryArtifactForRebuild,
+  verifyDiscoveryReparse,
+} = await import(`${ROOT}/js/analysis/discovery/artifact.js`);
+
+const { apiInfo } = await import(`${ROOT}/js/blocks.js`);
+const {
+  createBitVectorValue,
+  createMachineOperation,
+  createTemporaryValue,
+  createUndefinedResultDescriptor,
+} = await import(`${ROOT}/js/semantics/effects/index.js`);
+
+function stackReturnFixture({ includeLoad = true, storeSize = 4, barrier = false } = {}) {
+  const key = 'stack:sp:e0:-16:s4';
+  const value = { id: 100 };
+  const store = {
+    id: 10, op: 'store', block: 0, row: 0, address: 0x1000n,
+    loc: { kind: 'stack', key, size: storeSize }, args: [{ value }],
+  };
+  const load = {
+    id: 11, op: 'load', block: 0, row: 2, address: 0x1008n,
+    loc: { kind: 'stack', key, size: 4 }, args: [],
+  };
+  const unknown = { id: 12, op: 'unknown', block: 0, row: 1, address: 0x1004n, args: [] };
+  const ret = { id: 13, op: 'ret', block: 0, row: 3, address: 0x100cn, args: [] };
+  const instructions = [store, ...(barrier ? [unknown] : []), ...(includeLoad ? [load] : []), ret];
+  const expression = expr.load({ kind: 'stack', key }, 32, { row: load.row, address: load.address, ir: load.id });
+  return {
+    semantic: true,
+    ir: { instructions, blocks: [{ index: 0, startRow: 0, endRow: 3, pred: [], succ: [], insts: instructions }], idom: [-1] },
+    semanticAst: {
+      values: [{ valueId: value.id, expression: expr.constant(11n, 32, true) }],
+      conditions: [],
+      outputs: [{ name: 'return', expression }],
+    },
+    cAst: { body: [{
+      kind: 'stmt', indent: 0, text: 'return local_0;',
+      semantic: { op: 'return', expression },
+      source: { rows: [ret.row], addresses: [ret.address], ir: [ret.id] },
+    }] },
+    rewriteProof: [],
+    metrics: { rewrittenExpressions: 0 },
+  };
+}
+
+function phase8IdentityFixture(name) {
+  const f = fixture(name);
+  f.block(0);
+  const input = f.opaque(8);
+  f.binary('add', input, f.constant(1, 8), 8);
+  f.ret();
+  return f.build();
+}
+
+function phase8GvnFixture(name) {
+  const f = fixture(name);
+  f.block(0);
+  const left = f.opaque(32);
+  const right = f.opaque(32);
+  const first = f.binary('add', left, right, 32);
+  const second = f.binary('add', left, right, 32);
+  f.ret();
+  return { ir: f.build(), first, second };
+}
+
+function solverQuery(assertion, constraints = []) {
+  return createVerificationQuery({
+    kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+    claimKind: CLAIM_KIND.EDGE_FEASIBLE,
+    targetEntity: 't019-recovery-probe',
+    constraints,
+    assertion,
+  });
+}
+
+function discover({ binaryId = 't019-binary', sourceHash = 'source-v1', sizeBytes } = {}) {
+  const functionRecord = { address: 0x1000, source: 'function_starts' };
+  if (sizeBytes !== undefined) functionRecord.sizeBytes = sizeBytes;
+  return functionCandidates({
+    input: { image: { functions: [functionRecord] } },
+    binaryId,
+    sourceHash,
+    snapshotId: 'snapshot-v1',
+    architectureId: 'x86_64',
+  });
+}
+
+function dyldHeader({ mappingCount = 0, mappingOffset = 104 } = {}) {
+  const bytes = new Uint8Array(104);
+  const magic = new TextEncoder().encode('dyld_v1  x86_64');
+  bytes.set(magic, 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, mappingOffset, true);
+  view.setUint32(20, mappingCount, true);
+  return bytes;
+}
+
+function minimalMachO() {
+  const bytes = new Uint8Array(32);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xfeedfacf, true);
+  view.setInt32(4, 0x01000007, true);
+  view.setInt32(8, 3, true);
+  view.setUint32(12, 2, true);
+  view.setUint32(16, 0, true);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 0, true);
+  view.setUint32(28, 0, true);
+  return bytes;
+}
+
+function valueOperation(undefinedResult) {
+  return createMachineOperation({
+    kind: 'value', opcode: 't019-boundary',
+    inputs: [createBitVectorValue(32, 1n)],
+    outputs: [createTemporaryValue('t019-output', createBitVectorValue(32))],
+    undefinedResult,
+  });
+}
+
+const lanes = [
+  {
+    lane: 'T011',
+    cases: [
+      ['missing-physical-load', () => {
+        const result = stackReturnFixture({ includeLoad: false });
+        recoverExactStackReturn(result, { deterministicTransforms: true });
+        assert.equal(result.cAst.body[0].text, 'return local_0;');
+        assert.equal(result.metrics.rewrittenExpressions, 0);
+      }],
+      ['unknown-barrier-before-load', () => {
+        const result = stackReturnFixture({ barrier: true });
+        recoverExactStackReturn(result, { deterministicTransforms: true });
+        assert.equal(result.cAst.body[0].text, 'return local_0;');
+        assert.equal(result.metrics.rewrittenExpressions, 0);
+      }],
+      ['store-load-width-mismatch', () => {
+        const result = stackReturnFixture({ storeSize: 8 });
+        recoverExactStackReturn(result, { deterministicTransforms: true });
+        assert.equal(result.cAst.body[0].text, 'return local_0;');
+        assert.equal(result.metrics.rewrittenExpressions, 0);
+      }],
+      ['pre-cancel-preserves-publication', () => {
+        const result = stackReturnFixture();
+        const originalOutput = result.semanticAst.outputs[0].expression;
+        const originalBody = result.cAst.body;
+        recoverExactStackReturn(result, { deterministicTransforms: true, shouldAbort: () => true });
+        assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+        assert.strictEqual(result.cAst.body, originalBody);
+        assert.equal(result.cAst.body[0].text, 'return local_0;');
+        assert.equal(result.metrics.rewrittenExpressions, 0);
+      }],
+      ['printer-failure-rolls-back', () => {
+        const result = stackReturnFixture();
+        const originalOutput = result.semanticAst.outputs[0].expression;
+        const originalBody = result.cAst.body;
+        const originalText = result.cAst.body[0].text;
+        Object.defineProperty(result.cAst.body[0], 'indent', {
+          configurable: true,
+          get() { throw new Error('t019-indent-failure'); },
+        });
+        assert.doesNotThrow(() => recoverExactStackReturn(result, { deterministicTransforms: true }));
+        assert.strictEqual(result.cAst.body, originalBody);
+        assert.equal(result.cAst.body[0].text, originalText);
+        assert.strictEqual(result.semanticAst.outputs[0].expression, originalOutput);
+        assert.equal(result.metrics.rewrittenExpressions, 0);
+      }],
+    ],
+  },
+  {
+    lane: 'T012',
+    cases: [
+      ['accessor-is-not-executed', () => {
+        const ir = phase8IdentityFixture('t019-t012-accessor');
+        let reads = 0;
+        Object.defineProperty(ir.values[0], 'poison', {
+          enumerable: true, configurable: true,
+          get() { reads += 1; throw new Error('identity getter executed'); },
+        });
+        assert.equal(canonicalAnalysisIdentity({ ir }).valid, false);
+        assert.equal(reads, 0);
+      }],
+      ['proxy-omitted-known-field-fails-closed', () => {
+        const ir = phase8IdentityFixture('t019-t012-proxy');
+        const target = ir.values[0];
+        ir.values[0] = new Proxy(target, {
+          ownKeys(object) { return Reflect.ownKeys(object).filter((key) => key !== 'bits'); },
+        });
+        assert.equal(canonicalAnalysisIdentity({ ir }).valid, false);
+      }],
+      ['captured-descriptor-intrinsic-survives-poison', () => {
+        const ir = phase8IdentityFixture('t019-t012-intrinsic');
+        const original = Object.getOwnPropertyDescriptor;
+        let calls = 0;
+        Object.getOwnPropertyDescriptor = () => { calls += 1; throw new Error('poisoned descriptor'); };
+        try {
+          assert.equal(canonicalAnalysisIdentity({ ir }).valid, true);
+          assert.equal(calls, 0);
+        } finally {
+          Object.getOwnPropertyDescriptor = original;
+        }
+      }],
+      ['gvn-publication-is-read-only', () => {
+        const { ir, first, second } = phase8GvnFixture('t019-t012-gvn');
+        const state = seedAnalysisState(ir);
+        const context = { analysis: state, ir };
+        assert.equal(runPassTransaction(state, { descriptor: SCCP_PASS, run: runSccpPass }, context, {}).committed, true);
+        assert.equal(runPassTransaction(state, { descriptor: GVN_PASS, run: runGvnPass }, context, {}).committed, true);
+        const facts = state.get('valueNumbers');
+        const number = facts.numbers.get(first.id);
+        assert.equal(number, facts.numbers.get(second.id));
+        assert.throws(() => facts.numbers.set(first.id, number + 100), /immutable|published|read-only/);
+        assert.throws(() => facts.classes.get(number).push('t019-forged'), /read only|immutable|object is not extensible/i);
+        assert.deepEqual(facts.classes.get(number), [first.id, second.id]);
+      }],
+      ['semantic-mutation-changes-shape-digest', () => {
+        const ir = phase8IdentityFixture('t019-t012-mutation');
+        const before = canonicalAnalysisIdentity({ ir });
+        assert.equal(before.valid, true);
+        ir.values[0].bits = 16;
+        const after = canonicalAnalysisIdentity({ ir });
+        assert.equal(after.valid, true);
+        assert.notEqual(after.identity.shapeDigest, before.identity.shapeDigest);
+      }],
+    ],
+  },
+  {
+    lane: 'T014',
+    cases: [
+      ['unsupported-width-is-nonpublishable', async () => {
+        const symbol = createFreshSymbol(bvSort(65), 't019-wide');
+        const result = await new BitBlastBvBackend().createSession().check(solverQuery(
+          createCompare(BV_COMPARE_OP.EQ, symbol, createBv(65, 0n)),
+        ));
+        assert.equal(result.status, SOLVER_STATUS.UNSUPPORTED);
+        assert.equal(result.lifecycle.publishable, false);
+      }],
+      ['bounded-variable-budget-is-nonpublishable', async () => {
+        const left = createFreshSymbol(bvSort(64), 't019-left');
+        const right = createFreshSymbol(bvSort(64), 't019-right');
+        const result = await new BitBlastBvBackend({ maxVariables: 32 }).createSession().check(solverQuery(
+          createCompare(BV_COMPARE_OP.EQ, createBinary(BV_BINARY_OP.UDIV, left, right), createBv(64, 7n)),
+        ));
+        assert.equal(result.status, SOLVER_STATUS.RESOURCE_LIMIT);
+        assert.equal(result.lifecycle.publishable, false);
+      }],
+      ['forged-exact-backend-is-rejected', () => {
+        const exact = new ExhaustiveBvBackend();
+        assert.equal(isExactProofBackend(exact), true);
+        assert.equal(isExactProofBackend(new Proxy(exact, {})), false);
+        assert.equal(isExactProofBackend({
+          id: exact.id, version: exact.version, proofAuthority: exact.proofAuthority,
+          capabilityFingerprint: () => exact.capabilityFingerprint(),
+          capabilities: () => exact.capabilities(),
+        }), false);
+      }],
+      ['pre-aborted-query-is-cancelled', async () => {
+        const symbol = createFreshSymbol(bvSort(8), 't019-preabort');
+        const controller = new AbortController();
+        controller.abort('t019-preabort');
+        const result = await new BitBlastBvBackend().createSession().check(
+          solverQuery(createCompare(BV_COMPARE_OP.EQ, symbol, createBv(8, 0n))),
+          { signal: controller.signal },
+        );
+        assert.equal(result.status, SOLVER_STATUS.CANCELLED);
+        assert.equal(result.lifecycle.publishable, false);
+      }],
+      ['tampered-query-hash-is-invalid', async () => {
+        const symbol = createFreshSymbol(bvSort(8), 't019-tampered');
+        const query = solverQuery(createCompare(BV_COMPARE_OP.EQ, symbol, createBv(8, 0n)));
+        const tampered = { ...query, queryHash: 't019-forged-query-hash' };
+        const result = await new BitBlastBvBackend().createSession().check(tampered);
+        assert.equal(result.status, SOLVER_STATUS.INVALID_QUERY);
+        assert.equal(result.lifecycle.publishable, false);
+      }],
+    ],
+  },
+  {
+    lane: 'T015',
+    cases: [
+      ['macho-authority-is-not-copyable', () => {
+        const image = parseMachO(minimalMachO());
+        assert.ok(machOImageAuthority(image));
+        assert.equal(machOImageAuthority({ ...image }), null);
+      }],
+      ['dyld-short-header-is-malformed', () => {
+        const result = parseDyldSharedCache(new Uint8Array(15));
+        assert.equal(result.status, 'malformed');
+        assert.ok(result.reasons.includes('header-truncated'));
+      }],
+      ['dyld-unknown-magic-is-unsupported', () => {
+        const bytes = new Uint8Array(64);
+        bytes.set(new TextEncoder().encode('not-a-dyld-cache'), 0);
+        const result = parseDyldSharedCache(bytes);
+        assert.equal(result.status, 'unsupported');
+        assert.ok(result.reasons.includes('unknown-cache-magic'));
+      }],
+      ['dyld-mapping-count-is-bounded', () => {
+        const result = parseDyldSharedCache(dyldHeader({ mappingCount: 4097 }));
+        assert.equal(result.status, 'malformed');
+        assert.ok(result.reasons.includes('mapping-count-unreasonable'));
+      }],
+      ['malformed-signature-blocks-signing-impact', () => {
+        const signature = parseAppleCodeSignature(new Uint8Array(12), { dataSize: 11 });
+        assert.equal(signature.status, 'malformed');
+        const impact = assessAppleSigningImpact(signature);
+        assert.equal(impact.state, 'blocked-signature-structure-unknown');
+        assert.equal(impact.requiresAuthoritativeValidation, true);
+      }],
+    ],
+  },
+  {
+    lane: 'T016',
+    cases: [
+      ['unknown-extent-survives-reparse', () => {
+        const sourceArtifact = discover().artifact;
+        assert.equal(sourceArtifact.functionCandidates[0].extentState, 'unknown');
+        const binding = discoveryArtifactForRebuild(sourceArtifact, {
+          binaryId: 't019-binary', sourceHash: 'source-v1', snapshotId: 'snapshot-v1', architectureId: 'x86_64',
+        });
+        const result = verifyDiscoveryReparse(binding, discover({ sourceHash: 'output-v1' }).artifact, { expectedOutputHash: 'output-v1' });
+        assert.equal(result.ok, true);
+      }],
+      ['invented-exact-extent-is-rejected', () => {
+        const sourceArtifact = discover().artifact;
+        const binding = discoveryArtifactForRebuild(sourceArtifact, {
+          binaryId: 't019-binary', sourceHash: 'source-v1', snapshotId: 'snapshot-v1', architectureId: 'x86_64',
+        });
+        const result = verifyDiscoveryReparse(binding, discover({ sourceHash: 'output-v1', sizeBytes: 24 }).artifact, { expectedOutputHash: 'output-v1' });
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'discovery-reparse-ambiguity-lost');
+      }],
+      ['sparse-width-is-budgeted', () => {
+        assert.throws(() => canonicalTypedValue(new Array(1_000_000_001)), /budget|limit/);
+      }],
+      ['nested-identity-is-depth-bounded', () => {
+        let nested = null;
+        for (let depth = 0; depth < 512; depth += 1) nested = [nested];
+        assert.throws(() => canonicalTypedValue(nested), /budget|limit/);
+      }],
+      ['cross-binary-reparse-is-rejected', () => {
+        const sourceArtifact = discover().artifact;
+        const binding = discoveryArtifactForRebuild(sourceArtifact, {
+          binaryId: 't019-binary', sourceHash: 'source-v1', snapshotId: 'snapshot-v1', architectureId: 'x86_64',
+        });
+        const result = verifyDiscoveryReparse(binding, discover({ binaryId: 't019-other-binary', sourceHash: 'output-v1' }).artifact, { expectedOutputHash: 'output-v1' });
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'discovery-reparse-identity-mismatch');
+      }],
+    ],
+  },
+  {
+    lane: 'T017',
+    cases: [
+      ['api-near-match-does-not-authorize', () => {
+        for (const name of ['strnlen_extra', 'my_strnlen', '___strnlen', 'os_log_impl_extra', 'malloc_size?']) {
+          assert.equal(apiInfo(name), null, name);
+        }
+      }],
+      ['undefined-result-symbol-field-is-rejected', () => {
+        const valid = { widthBits: 32, mask: '0xffffffff', class: 'fully', reason: 't019-symbol' };
+        const symbol = Symbol('unreviewed');
+        assert.throws(() => createUndefinedResultDescriptor({ ...valid, [symbol]: true }), /unexpected-undefined-result-field:symbol/);
+      }],
+      ['bitvector-width-and-value-are-strict', () => {
+        assert.throws(() => createBitVectorValue(0), /invalid-bitvector-width/);
+        assert.throws(() => createBitVectorValue(8, 256n), /bitvector-value-out-of-range/);
+      }],
+      ['undefined-result-width-must-match-one-output', () => {
+        assert.throws(() => valueOperation({ widthBits: 16, mask: '0xffff', class: 'fully', reason: 't019-width' }), /output-width-mismatch/);
+      }],
+      ['published-undefined-result-cannot-be-mutated', () => {
+        const operation = valueOperation({ widthBits: 32, mask: '0xffffffff', class: 'fully', reason: 't019-freeze' });
+        assert.equal(Object.isFrozen(operation), true);
+        assert.equal(Object.isFrozen(operation.undefinedResult), true);
+        assert.throws(() => { operation.undefinedResult.reason = 'forged'; }, /read only|Cannot assign|object is not extensible/i);
+        assert.equal(operation.undefinedResult.reason, 't019-freeze');
+      }],
+    ],
+  },
+];
+
+for (const { lane, cases } of lanes) {
+  let stopped = false;
+  for (const [id, run] of cases) {
+    if (stopped) {
+      console.log(JSON.stringify({ lane, id, status: 'not-run-after-first-failure' }));
+      continue;
+    }
+    const started = Date.now();
+    try {
+      await run();
+      console.log(JSON.stringify({ lane, id, status: 'passed', elapsedMs: Date.now() - started }));
+    } catch (error) {
+      stopped = true;
+      console.log(JSON.stringify({
+        lane, id, status: 'failed', elapsedMs: Date.now() - started,
+        error: { name: error?.name, message: String(error?.message || error), stack: error?.stack },
+      }));
+    }
+  }
+}

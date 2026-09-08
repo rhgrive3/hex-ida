@@ -1,0 +1,11 @@
+Working directory: /mnt/workspace/hex-development-gate-policy
+Node runtime: /mnt/workspace/.local/hex-final-node22/bin/node
+
+Cache/MemorySSA six-case probe:
+/mnt/workspace/.local/hex-final-node22/bin/node /mnt/workspace/.dev-state/hex-development-batch/independent-cache-probe.mjs > /mnt/workspace/.dev-state/hex-development-batch/independent-cache-probe-output.json 2>&1
+
+Frozen P8 authority eight-case probe:
+/mnt/workspace/.local/hex-final-node22/bin/node /mnt/workspace/.dev-state/hex-development-batch/independent-reference-probe.mjs > /mnt/workspace/.dev-state/hex-development-batch/independent-reference-probe-output.json 2>&1
+
+Focused competitive regression fixture:
+env PATH=/mnt/workspace/.local/hex-stage-a-toolchain/install/bin:/mnt/workspace/.local/hex-stage-a-llvm18/bin:$PATH HEX_COMPETITIVE_P8_CAPTURE_FIXTURE=/mnt/workspace/.dev-state/competitive-measurement-captures/p8-1813-capture.json /mnt/workspace/.local/hex-final-node22/bin/node --test tests/competitive/measurements.test.mjs > /mnt/workspace/.dev-state/hex-development-batch/competitive-measurements-p8-fixture-output.txt 2>&1

@@ -1,5 +1,17 @@
 # Independent recovery convergence review
 
+## Current bounded review evidence — 2026-09-08
+
+The [six-lane review](reviews/2026-09-08/recovery-review.md) at source
+`1dab32bab503ad3ee0c8e82e5b41177966f9e68f` passes 30 fresh cases (five each
+for T011, T012, T014, T015, T016 and T017). Inspected paths are unchanged from
+requested `8da22cd95`. The separate [cache/reference review](reviews/2026-09-08/cache-reference-review.md)
+adds six cache and eight reference boundary probes, with its exact source and
+limits recorded. Original probe bytes, outputs, commands and SHA-256 hashes are
+archived alongside the reports. No concrete defect was found in these exercised
+boundaries. Final combined convergence and affected integration gates remain
+pending; these bounded results alone do not close T019.
+
 ## Review identity and scope
 
 This bounded T019 review was performed against the current shared-worktree

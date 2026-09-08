@@ -1,0 +1,10 @@
+# T019 bounded six-lane recovery probes; primary source is read-only.
+date -Is
+git -C /mnt/workspace/hex-development-gate-policy rev-parse HEAD
+git -C /mnt/workspace/hex-development-gate-policy status --short
+/mnt/workspace/.local/hex-final-node22/bin/node /mnt/workspace/.dev-state/hex-development-batch/t019-recovery-probes.mjs
+run-at=2026-09-08T10:18:38+08:00
+exit=0
+
+run-2-at=2026-09-08T10:18:57+08:00
+run-2-exit=0

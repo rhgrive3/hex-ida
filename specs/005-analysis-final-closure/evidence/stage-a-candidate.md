@@ -10,11 +10,16 @@ previous RUNNING observation, not the failed result with a partial PASS.
 Durable log:
 `/mnt/workspace/hex-stage-a-logs/8da22cd959241d1d0c61b7ca1f663f77b8e7e982-full-check.log`.
 
-The traced UI browser run also terminated **FAIL** after 58.7 s. Chromium
+The earlier traced UI browser run terminated **FAIL** after 58.7 s. Chromium
 viewports passed. WebKit network subprocesses report `No GSettings schemas are
 installed on the system`; actual-page preflight and the complete browser matrix
 must pass with the same repaired environment before this gate can close.
 Log: `/tmp/hex-ui-browser-with-runtime-trace-3RXotG/full.log`.
+
+The [task-local schema repair](reviews/2026-09-08/webkit-environment.md) now
+passes actual-page navigation and all configured Chromium/WebKit viewports.
+The remaining navigation/mobile/accessibility/AI chain is being verified
+separately; full UI acceptance is not inferred from viewport coverage.
 
 Native ARM64 adapter commits are integrated at `a814cac2f` (preceded by
 `4bdb8443e` and `41d66f7ef`). The adapter uses captured linked ELF bytes, checks

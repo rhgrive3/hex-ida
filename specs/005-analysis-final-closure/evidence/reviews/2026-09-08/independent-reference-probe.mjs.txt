@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict';
+import { stableDigest } from '/mnt/workspace/hex-development-gate-policy/js/core/identity/index.js';
+import {
+  comparePhase8Quality,
+  measurePhase8Quality,
+} from '/mnt/workspace/hex-development-gate-policy/tools/validation/competitive/measurements.mjs';
+import { loadCorpus } from '/mnt/workspace/hex-development-gate-policy/tools/validation/phase8/build-corpus.mjs';
+import {
+  loadFrozenBaseline,
+  loadFrozenProvenance,
+} from '/mnt/workspace/hex-development-gate-policy/tools/validation/phase8/metrics.mjs';
+
+const baseline = loadFrozenBaseline();
+const provenance = loadFrozenProvenance(undefined, baseline);
+const corpus = loadCorpus();
+const measure = (args) => measurePhase8Quality({
+  metricId: 'decompiler-quality-gotos',
+  observations: [],
+  ...args,
+});
+const results = [];
+
+// 1. Binding canonical clones is accepted, but no uncaptured score is emitted.
+const canonical = measure({
+  baseline: structuredClone(baseline),
+  provenance: structuredClone(provenance),
+  corpus: structuredClone(corpus),
+});
+assert.equal(canonical.status, 'UNMEASURED');
+assert.equal(canonical.reason, 'twin-capture-missing');
+results.push(['canonical-authority-requires-capture', canonical.reason]);
+
+// 2. Baseline commit drift is rejected before scoring.
+const wrongHead = structuredClone(baseline);
+wrongHead.baseCommit = '0'.repeat(40);
+const wrongHeadResult = measure({ baseline: wrongHead, corpus });
+assert.match(wrongHeadResult.reason, /frozen-baseline-authority-mismatch/);
+results.push(['baseline-head-drift', wrongHeadResult.reason]);
+
+// 3. A self-consistent but changed baseline observation remains non-authoritative.
+const changedBaseline = structuredClone(baseline);
+changedBaseline.observations.find((row) => row.semantic === true).readability.gotos += 1;
+changedBaseline.observationsDigest = stableDigest(changedBaseline.observations);
+const changedBaselineResult = measure({ baseline: changedBaseline, corpus });
+assert.match(changedBaselineResult.reason, /frozen-baseline-authority-mismatch/);
+results.push(['baseline-value-drift', changedBaselineResult.reason]);
+
+// 4. A self-consistent changed provenance sidecar is rejected.
+const changedProvenance = structuredClone(provenance);
+changedProvenance.observations[0].available = !changedProvenance.observations[0].available;
+changedProvenance.observationsDigest = stableDigest(changedProvenance.observations);
+const changedProvenanceResult = measure({ baseline, provenance: changedProvenance, corpus });
+assert.match(changedProvenanceResult.reason, /frozen-provenance-authority-mismatch/);
+results.push(['provenance-drift', changedProvenanceResult.reason]);
+
+// 5. A changed corpus function identity is rejected even without a capture.
+const changedCorpus = structuredClone(corpus);
+changedCorpus.functions[0].id = `${changedCorpus.functions[0].id}.changed`;
+const changedCorpusResult = measure({ baseline, corpus: changedCorpus });
+assert.match(changedCorpusResult.reason, /frozen-corpus-authority-mismatch/);
+results.push(['corpus-function-drift', changedCorpusResult.reason]);
+
+const base = [{
+  id: 'f1',
+  semantic: true,
+  readability: { gotos: 3, rawAssemblyFallbacks: 4 },
+}];
+
+// 6. Candidate denominator/order drift cannot enter quality comparison.
+const wrongIds = comparePhase8Quality({
+  metricId: 'decompiler-quality-gotos',
+  observations: [{ ...base[0], id: 'f2' }],
+  baselineObservations: base,
+  expectedFunctionIds: ['f1'],
+});
+assert.equal(wrongIds.ok, false);
+assert.equal(wrongIds.reason, 'phase8-observation-denominator-mismatch');
+results.push(['candidate-id-drift', wrongIds.reason]);
+
+// 7. Candidate incomplete semantics are not silently scored as zero.
+const incomplete = comparePhase8Quality({
+  metricId: 'decompiler-quality-gotos',
+  observations: [{ ...base[0], semantic: false }],
+  baselineObservations: base,
+  expectedFunctionIds: ['f1'],
+});
+assert.equal(incomplete.ok, false);
+assert.match(incomplete.reason, /observation-incomplete/);
+results.push(['candidate-incomplete', incomplete.reason]);
+
+// 8. Non-finite candidate readability is rejected by completeness/value checks.
+const nonfinite = comparePhase8Quality({
+  metricId: 'decompiler-quality-gotos',
+  observations: [{
+    ...base[0],
+    readability: { ...base[0].readability, gotos: Number.NaN },
+  }],
+  baselineObservations: base,
+  expectedFunctionIds: ['f1'],
+});
+assert.equal(nonfinite.ok, false);
+assert.match(nonfinite.reason, /observation-nonfinite|quality-value-missing/);
+results.push(['candidate-nonfinite', nonfinite.reason]);
+
+console.log(JSON.stringify({ cases: results.length, results }));
