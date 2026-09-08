@@ -9,6 +9,16 @@ import { STACK_TOP } from '../emu.js';
 const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
+// Listener isolation must cover async failures too: a listener returning a
+// promise that later rejects would otherwise leak an unhandledRejection
+// through the sync-only try/catch (#5931).
+function invokeListener(fn, packet) {
+  try {
+    const result = fn(packet);
+    if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => { /* listener isolation */ });
+  } catch { /* listener isolation */ }
+}
+
 // Execution budgets measure elapsed time, so they need a monotonic clock:
 // Date.now() jumps with NTP/host/VM corrections and would defer or fire the
 // sandbox resume timeout at the wrong moment (#6075).
@@ -524,7 +534,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     this.allowedCapabilities = this.capabilities;
     this.protocol.onEvent((event) => {
       if (event.epoch !== this.epoch) return;
-      for (const fn of this.eventListeners) { try { fn(event); } catch { /* listener isolation */ } }
+      for (const fn of this.eventListeners) { invokeListener(fn, event); }
     });
   }
   async connect(options = {}) {
