@@ -18,6 +18,13 @@ await run(async ({ browser }) => {
   for (const [name, width, height, expectedLayout] of VIEWPORTS) {
     const { context, page, errors } = await openApp(browser, { width, height });
 
+    if (name === 'desktop') {
+      const prefs = await page.evaluate(() => {
+        try { return JSON.parse(localStorage.getItem('hexviewer.prefs.v1') || 'null'); } catch { return null; }
+      });
+      check('assistant harness marks onboarding seen before app boot', prefs?.guideSeen === true, JSON.stringify(prefs));
+    }
+
     const closed = await page.evaluate(() => {
       const launcher = document.getElementById('ai-launcher');
       const rect = launcher.getBoundingClientRect();
@@ -100,6 +107,27 @@ await run(async ({ browser }) => {
       afterEscape.hidden === true && afterEscape.focus === 'ai-launcher' && !afterEscape.docked, JSON.stringify(afterEscape));
 
     check(`${name}: no page errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* Onboarding remains an explicit, independently testable product path. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, onboarding: true });
+    const prefs = await page.evaluate(() => {
+      try { return JSON.parse(localStorage.getItem('hexviewer.prefs.v1') || 'null'); } catch { return null; }
+    });
+    check('explicit onboarding mode leaves the welcome guide enabled', prefs?.guideSeen === false, JSON.stringify(prefs));
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'visible', timeout: 2000 });
+    const guide = await page.evaluate(() => ({
+      title: document.querySelector('#overlays .sheet .sheet-title')?.textContent || '',
+      navigation: document.querySelectorAll('#overlays .guide-nav button').length,
+    }));
+    check('explicit onboarding mode renders the delayed welcome guide', guide.navigation > 0 && guide.title.length > 0, JSON.stringify(guide));
+    await page.keyboard.press('Escape');
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'detached', timeout: 2000 });
+    const dismissed = await page.locator('#overlays .guide-nav').count();
+    check('explicit onboarding mode can dismiss the welcome guide', dismissed === 0, String(dismissed));
+    check('explicit onboarding mode has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
     await context.close();
   }
 
