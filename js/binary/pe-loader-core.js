@@ -361,8 +361,20 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0x014c) return new Set([1, 2, 3, 4]);
   if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);
   if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]);
-  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
+}
+function mappedBaseRelocationTarget(image, rva) {
+  if (!Number.isSafeInteger(rva) || rva < 0 || rva > 0xffffffff) return null;
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && rva >= sizeOfImage) return null;
+  const address = image.imageBase + BigInt(rva);
+  const owners = [...(image.sections || []), ...(image.segments || [])];
+  for (const owner of owners) {
+    if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+    if (address >= owner.address && address < owner.address + owner.size) return address;
+  }
+  return null;
 }
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size===0)return; const budget=ensureBudget(image,sharedBudget);
@@ -389,7 +401,9 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
         addend=BigInt(r.i16(off+8+(i+1)*2));
         i++;
       }
-      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
+      const targetRva=pageRva+within,address=mappedBaseRelocationTarget(image,targetRva);
+      if(address===null){budget.partial('relocations:unmapped-target',`Ignored PE base relocation target outside loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
+      image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
   }

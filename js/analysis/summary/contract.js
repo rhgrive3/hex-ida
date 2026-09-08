@@ -10,7 +10,7 @@ import * as core from './contract-core.js';
 
 export * from './contract-core.js';
 
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.1';
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
@@ -229,13 +229,9 @@ export function summaryIdentityMatches(summary, expected = {}) {
   } catch { return false; }
 }
 export function functionSummaryDigest(summary) { return core.functionSummaryDigest(summary); }
-export function summaryMayWriteRegion(summary, regionId) {
+export function summaryMayWriteRegion(summary, regionOrId) {
   if (!summaryIdentityMatches(summary)) return true;
-  if (!isCompleteStatus(summary.status)) return true;
-  if (summary.unknownCallEffects.length > 0) return true;
-  if (summary.memoryWriteRegions.some((effect) => effect.broad)) return true;
-  if (regionId == null) return summary.memoryWriteRegions.length > 0;
-  return summary.memoryWriteRegions.some((effect) => effect.regionId === regionId);
+  return core.summaryMayWriteRegion(summary, regionOrId);
 }
 export function summaryIsPure(summary) {
   // Allocations and frees are canonical effect dimensions of their own: a

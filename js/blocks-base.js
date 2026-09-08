@@ -683,8 +683,15 @@ export function analyzeDataFlow(insns, opts) {
       const src = regKey(insn.ops[1]);
       const dst = insn.writes[0];
       const prev = src ? get(src) : null;
-      if (dst && prev && prev.kind === 'address' && prev.partial) {
-        const addr = prev.addr + insn.ops[2].value;
+      const immediate = insn.ops[2];
+      const shift = immediate.shift;
+      const offset = !shift
+        ? immediate.value
+        : shift.op === 'lsl' && (shift.amount === 0 || shift.amount === 12)
+          ? immediate.value << BigInt(shift.amount)
+          : null;
+      if (dst && prev && prev.kind === 'address' && prev.partial && offset != null) {
+        const addr = prev.addr + offset;
         const v = value('address', { addr, page: false, partial: false }, SCORE.confirmed,
           prev.ev.concat([ev('adrp-add', insn.row, { addr })]), insn.row);
         set(dst, v);
