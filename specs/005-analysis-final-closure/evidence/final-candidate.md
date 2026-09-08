@@ -125,7 +125,23 @@ generated-refresh observation above. The independent Luna review approves the
   explicitly means draft review skipped; it is not review approval.
   API packet: `/mnt/workspace/.dev-state/hex-development-batch/t043-github-92bbe2f11/`.
 
-The canonical full check on immutable 97621 is still running at this observation.
-The separately recorded cold result is 379.479 ms against 250 ms, so these
-completed constituents do not close T040–T044. Physical-device verification is
-DEFERRED until development ends, as authorized by the owner.
+The canonical full check on immutable 97621 completed **PASS in 2655.3 seconds**,
+exit 0, with the same clean tree after the run. Owner session 72914 retained the
+terminal PASS result. This canonical command includes `npm test` and
+`benchmark:baseline`; neither requires a duplicate run. The successful quiet
+wrapper deleted its temporary full log as designed. This closes the outstanding
+97621 local full-check constituent, not a later source's exact-head release gate.
+
+The later jsonSafe source change is integrated at `98a606df7`; its combined
+`core:test` passed in 3.5 seconds. The handoff build passed in 3.8 seconds and
+`userscript:test` passed in 135.0 seconds. The frozen performance handoff branch
+`handoff/performance-20260908` is published at
+`1b6d3eebf14e59a051169b1eb86220b05d303acf`, with the order in
+`prompts/orders/2026-09-08-performance-improvement.ja.md` and a verified ZIP.
+
+The owner transferred remaining performance work to another local AI. Local
+performance optimization and collection are stopped; the unfinished origin.js
+experiment stays outside the published handoff. The existing measured cold
+result remains 379.479 ms against 250 ms and is not relabeled as a result for the
+handoff source. T040–T044 retain their remaining performance/runtime/admission
+requirements. Physical-device verification is DEFERRED until development ends.
