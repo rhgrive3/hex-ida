@@ -1528,17 +1528,130 @@ HANDLERS.pacga = (o, ops) => {
   o.terms = ['pac', 'security'];
 };
 
-for (const n of ['dmb', 'dsb', 'isb']) {
-  HANDLERS[n] = (o) => {
-    o.title = J('順番を守らせる', 'Memory barrier');
-    o.pseudo = 'barrier()';
+const DATA_BARRIER_OPTION_INFO = Object.freeze({
+  sy: Object.freeze({ ja: 'sy（システム全体の読み書き）', en: 'sy (full-system loads/stores)' }),
+  st: Object.freeze({ ja: 'st（システム全体のストア）', en: 'st (full-system stores)' }),
+  ld: Object.freeze({ ja: 'ld（システム全体のロード）', en: 'ld (full-system loads)' }),
+  ish: Object.freeze({ ja: 'ish（Inner Shareable の読み書き）', en: 'ish (inner-shareable loads/stores)' }),
+  ishst: Object.freeze({ ja: 'ishst（Inner Shareable のストア）', en: 'ishst (inner-shareable stores)' }),
+  ishld: Object.freeze({ ja: 'ishld（Inner Shareable のロード）', en: 'ishld (inner-shareable loads)' }),
+  nsh: Object.freeze({ ja: 'nsh（Non-shareable の読み書き）', en: 'nsh (non-shareable loads/stores)' }),
+  nshst: Object.freeze({ ja: 'nshst（Non-shareable のストア）', en: 'nshst (non-shareable stores)' }),
+  nshld: Object.freeze({ ja: 'nshld（Non-shareable のロード）', en: 'nshld (non-shareable loads)' }),
+  osh: Object.freeze({ ja: 'osh（Outer Shareable の読み書き）', en: 'osh (outer-shareable loads/stores)' }),
+  oshst: Object.freeze({ ja: 'oshst（Outer Shareable のストア）', en: 'oshst (outer-shareable stores)' }),
+  oshld: Object.freeze({ ja: 'oshld（Outer Shareable のロード）', en: 'oshld (outer-shareable loads)' }),
+});
+
+const DSB_OPTION_INFO = Object.freeze({
+  ...DATA_BARRIER_OPTION_INFO,
+  ssbb: Object.freeze({ kind: 'speculation', ja: 'ssbb（ストアバイパス投機の抑制）', en: 'ssbb (store-bypass speculation barrier)' }),
+  pssbb: Object.freeze({ kind: 'speculation', ja: 'pssbb（特権ストアバイパス投機の抑制）', en: 'pssbb (privileged store-bypass speculation barrier)' }),
+  oshnxs: Object.freeze({ ja: 'oshnxs（Outer Shareable の nXS アクセス）', en: 'oshnxs (outer-shareable nXS accesses)' }),
+  nshnxs: Object.freeze({ ja: 'nshnxs（Non-shareable の nXS アクセス）', en: 'nshnxs (non-shareable nXS accesses)' }),
+  ishnxs: Object.freeze({ ja: 'ishnxs（Inner Shareable の nXS アクセス）', en: 'ishnxs (inner-shareable nXS accesses)' }),
+  synxs: Object.freeze({ ja: 'synxs（システム全体の nXS アクセス）', en: 'synxs (full-system nXS accesses)' }),
+});
+
+const BARRIER_OPTION_INFO = Object.freeze({
+  dmb: DATA_BARRIER_OPTION_INFO,
+  dsb: DSB_OPTION_INFO,
+  isb: Object.freeze({
+    sy: Object.freeze({ ja: 'sy（命令同期の指定）', en: 'sy (instruction-synchronization option)' }),
+  }),
+});
+
+function barrierOptionInfo(mnemonic, ops) {
+  const operands = Array.isArray(ops) ? ops : [];
+  if (operands.length === 0) {
+    return {
+      raw: '',
+      known: true,
+      defaulted: true,
+      kind: 'data',
+      ja: 'オプション省略（AArch64 の既定値 sy）',
+      en: 'option omitted (AArch64 architectural default: sy)',
+    };
+  }
+  const raw = operands.map((operand) => typeof operand?.text === 'string' ? operand.text.trim() : '').join(', ');
+  const optionTable = BARRIER_OPTION_INFO[mnemonic];
+  const optionKey = raw.toLowerCase();
+  const descriptor = operands.length === 1 && optionTable &&
+    Object.prototype.hasOwnProperty.call(optionTable, optionKey)
+    ? optionTable[optionKey]
+    : null;
+  if (descriptor) {
+    return {
+      raw,
+      known: true,
+      defaulted: false,
+      kind: descriptor.kind || 'data',
+      ja: 'オプション ' + descriptor.ja,
+      en: 'option ' + descriptor.en,
+    };
+  }
+  const display = raw || '<unparsed>';
+  return {
+    raw: display,
+    known: false,
+    defaulted: false,
+    kind: 'unknown',
+    ja: 'オプション ' + display + ' は未解釈（範囲・種別は不明）',
+    en: 'option ' + display + ' is not interpreted (scope/type unknown)',
+  };
+}
+
+for (const mnemonic of ['dmb', 'dsb', 'isb']) {
+  HANDLERS[mnemonic] = (o, ops) => {
+    const option = barrierOptionInfo(mnemonic, ops);
+    const optionNote = J(option.ja, option.en);
+    const pseudo = mnemonic + '(' + option.raw + ')';
+    o.pseudo = pseudo;
+
+    if (mnemonic === 'dmb') {
+      o.title = J('データメモリアクセスの順序付けバリア', 'Data memory ordering barrier');
+      o.summary = J(
+        'DMB はデータメモリアクセスの順序をこの地点の前後で保つ。アクセスの完了を待つ命令ではない。' + optionNote + '。',
+        'DMB orders data-memory accesses across this point; it does not wait for those accesses to complete. ' + optionNote + '.');
+      o.detail.push(J(
+        'DMB は指定されたデータアクセスを順序付けする。DSB のような完了待ちや、ISB のような命令取得の同期は行わない。' + optionNote + '。',
+        'DMB orders the selected data accesses; unlike DSB it does not add completion/wait semantics, and unlike ISB it does not synchronize instruction fetch. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    if (mnemonic === 'dsb' && option.kind === 'speculation') {
+      o.title = J('ストアバイパス投機を抑える同期バリア', 'Store-bypass speculation barrier');
+      o.summary = J(
+        'DSB の ' + option.raw + ' はストアバイパス投機を抑える特殊な指定で、通常のデータアクセス範囲や完了待ちとしては解釈しない。' + optionNote + '。',
+        'DSB ' + option.raw + ' is a specialized store-bypass speculation barrier; its data-access scope and completion behavior are not interpreted here. ' + optionNote + '.');
+      o.detail.push(J(
+        'この特殊な指定は通常の DSB のデータアクセス範囲と同じものとして扱わない。' + optionNote + '。',
+        'Do not treat this specialized option as the ordinary DSB data-access scope. ' + optionNote + '.'));
+      o.terms = [];
+      return;
+    }
+
+    if (mnemonic === 'dsb') {
+      o.title = J('データ同期バリア', 'Data synchronization barrier');
+      o.summary = J(
+        'DSB はデータメモリアクセスの順序を保ち、対象アクセスの完了を待ってから後続命令を進める。' + optionNote + '。',
+        'DSB orders data-memory accesses and waits for covered accesses to complete before later instructions proceed. ' + optionNote + '.');
+      o.detail.push(J(
+        'DSB は DMB の順序付けに加えて、指定されたアクセスなどの完了を待つ。ISB のような命令取得の同期ではない。' + optionNote + '。',
+        'DSB adds completion/wait semantics to DMB-style ordering for the selected accesses; it is not ISB instruction-fetch synchronization. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    o.title = J('命令ストリーム同期バリア', 'Instruction synchronization barrier');
     o.summary = J(
-      'CPU が勝手に順番を入れ替えないよう、ここで一度そろえる。',
-      'Stop the CPU from reordering memory operations across this point.');
+      'ISB は前のコンテキスト変更の効果を後続命令の取得・実行に反映させるため、命令ストリームを同期する。データメモリアクセスの順序付けを行う命令ではない。' + optionNote + '。',
+      'ISB synchronizes the instruction stream so later instruction fetch and execution observe earlier context-changing operations; it is not a data-memory ordering barrier. ' + optionNote + '.');
     o.detail.push(J(
-      'CPU は速度のために命令の順番を入れ替えます。複数のスレッドが同じデータを触るときは、それが困るのでここで止めます。',
-      'CPUs reorder for speed; with multiple threads that is unsafe, so this pins the order.'));
-    o.terms = ['thread'];
+      'ISB はシステムレジスタ更新などの後で、後続命令を新しい実行コンテキストから取得・実行する境界を作る。スレッド間のデータ順序付けとして説明しない。' + optionNote + '。',
+      'ISB synchronizes instruction fetch and execution after a context-changing operation such as a system-register update; it is not thread data-memory ordering. ' + optionNote + '.'));
+    o.terms = [];
   };
 }
 HANDLERS.mrs = (o, ops) => {
