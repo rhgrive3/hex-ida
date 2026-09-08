@@ -241,9 +241,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     // runtime target value; an explicit empty array means a zero-argument
     // call, not a missing field. `callNode.inputs` is a legacy fallback for
     // fixtures that predate the canonical field, never an argument source
-    // when the canonical field exists.
+    // when the canonical field exists. Arguments may be plain value ids or
+    // the canonical structured spelling ({ valueId }); the structured form is
+    // unwrapped exactly as escape analysis does (#6151).
     const argumentIds = Array.isArray(callNode.call?.arguments)
-      ? callNode.call.arguments
+      ? callNode.call.arguments.map((argument) => argument?.valueId ?? argument)
       : callNode.inputs;
     const composed = [];
     for (const provenance of alternatives) {
