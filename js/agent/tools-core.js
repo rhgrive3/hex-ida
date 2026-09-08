@@ -136,12 +136,25 @@ class FunctionLoader {
     this.cache.set(key, value);
     while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value);
   }
+  _canonicalKey(addr) {
+    // Interior addresses of one function share the canonical budget/cache
+    // identity: resolve the function start through the ProgramIndex before
+    // keying, so 0x1000/0x1004/0x1008 in one function cost one slot (#5424).
+    if (this.ctx.program && typeof this.ctx.program.functionRange === 'function') {
+      try {
+        const range = this.ctx.program.functionRange(addr);
+        if (range && range.start != null) return range.start.toString();
+      } catch { /* fall back to the raw address key */ }
+    }
+    return addr.toString();
+  }
   async get(address) {
     const addr = requiredAddress(address);
     if (typeof this.ctx.analyze !== 'function') throw new AgentToolError('unsupported', 'function analysis is unavailable', { capability: 'analyze' });
-    const key = addr.toString();
-    if (this.cache.has(key)) {
-      const hit = this.cache.get(key); this._put(key, hit); return hit;
+    const key = this._canonicalKey(addr);
+    const cacheHit = this.cache.get(key);
+    if (cacheHit !== undefined || this.cache.has(key)) {
+      this._put(key, cacheHit); return cacheHit;
     }
     if (this.inflight.has(key)) return this.inflight.get(key);
     if (!this.attempted.has(key) && this.attempted.size >= this.maxFunctions) {

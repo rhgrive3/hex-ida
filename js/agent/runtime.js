@@ -299,7 +299,15 @@ export async function runAgent(config) {
     }
     const addr = addressFromRequest(req.tool, req.args);
     if (addr != null) {
-      functions.add(addr.toString());
+      // Interior addresses of one function share the canonical budget slot:
+      // resolve the function start before accounting, matching the loader's
+      // cache identity (#5424).
+      let budgetKey = addr.toString();
+      try {
+        const range = context.program?.functionRange?.(addr);
+        if (range && range.start != null) budgetKey = range.start.toString();
+      } catch { /* keep the raw address key */ }
+      functions.add(budgetKey);
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
     let result;

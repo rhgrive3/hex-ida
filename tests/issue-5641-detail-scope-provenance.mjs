@@ -23,13 +23,17 @@ function registryWithTool() {
   return registry;
 }
 
+function isScopeViolation(error) {
+  return error?.type === 'scope_violation' || error?.code === 'scope_violation' || /scope_violation/.test(error?.message || '');
+}
+
 test('#5641 a selection-scope turn must not re-expose broad-scope observation detail', async () => {
   const registry = registryWithTool();
   const broad = await registry.execute('search_strings', {}, { scope: 'binary' });
   assert.ok(broad.detailRef);
   await assert.rejects(
     () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'selection', scopeIdentity: 'selection-A' }),
-    (error) => error.code === 'scope_violation' || /scope_violation/.test(error.message),
+    isScopeViolation,
     'narrow turn must not read back broad-scope detail',
   );
   // The broad turn can still read its own record.
@@ -42,7 +46,7 @@ test('#5641 function-scope turn cannot read binary-scope records but reads its o
   const broad = await registry.execute('search_strings', {}, { scope: 'binary' });
   await assert.rejects(
     () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'function', scopeIdentity: 'function-A' }),
-    /scope_violation/,
+    isScopeViolation,
   );
   const own = await registry.execute('search_strings', {}, { scope: 'function', scopeIdentity: 'function-A' });
   const ownDetail = await registry.execute('get_observation_detail', { detailRef: own.detailRef, limit: 10 }, { scope: 'function', scopeIdentity: 'function-A' });
@@ -79,14 +83,14 @@ test('#5641 function and selection identities cannot cross-read within the same 
   assert.equal(sameFunction.result?.detailRef, functionA.detailRef);
   await assert.rejects(
     () => registry.execute('get_observation_detail', { detailRef: functionA.detailRef }, { scope: 'function', scopeIdentity: 'function-B' }),
-    /scope_violation/,
+    isScopeViolation,
   );
   const selectionA = await registry.execute('search_strings', {}, { scope: 'selection', scopeIdentity: 'selection-A' });
   const sameSelection = await registry.execute('get_observation_detail', { detailRef: selectionA.detailRef }, { scope: 'selection', scopeIdentity: 'selection-A' });
   assert.equal(sameSelection.result?.detailRef, selectionA.detailRef);
   await assert.rejects(
     () => registry.execute('get_observation_detail', { detailRef: selectionA.detailRef }, { scope: 'selection', scopeIdentity: 'selection-B' }),
-    /scope_violation/,
+    isScopeViolation,
   );
 });
 
@@ -103,7 +107,7 @@ test('#5641 get_evidence_detail applies the same boundary to source traversal', 
   const registry = { observationStore, evidenceStore };
   await assert.rejects(
     () => evidenceDetail(registry, evidence.id, null, 10, 'function', 'function:function-B'),
-    /scope_violation/,
+    isScopeViolation,
   );
   const same = await evidenceDetail(registry, evidence.id, null, 10, 'function', 'function:function-A');
   assert.equal(same.relevantSourceRecords?.secret, 'function-A');

@@ -68,8 +68,10 @@ export class InvestigationSessionStore {
 
   async create(input) {
     const session = createInvestigationSession(input);
-    this.sessions.set(session.id, session);
+    // Durability before visibility: a failed save must not leave the session
+    // in memory presenting a write that never landed (#5434).
     await this.persist(session);
+    this.sessions.set(session.id, session);
     return session;
   }
 
@@ -87,15 +89,20 @@ export class InvestigationSessionStore {
     const current = await this.get(id);
     if (!current) return null;
     const allowed = ['binaryId','binaryIdentity','projectId','conversationId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
-    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) current[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
+    // Work on a detached candidate and swap it in only after the durable save
+    // succeeded: a rejected write must leave the previous canonical state
+    // visible instead of a partially applied patch (#5434).
+    const candidate = { ...current };
+    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) candidate[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
     // rejected on the next turn because binaryId still contains filename:slice.
-    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) current.binaryId = String(patch.binaryIdentity.id);
-    if (current.binaryId != null) current.binaryId = String(current.binaryId);
-    current.updatedAt = new Date().toISOString();
-    await this.persist(current);
-    return current;
+    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
+    if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
+    candidate.updatedAt = new Date().toISOString();
+    await this.persist(candidate);
+    this.sessions.set(String(id), candidate);
+    return candidate;
   }
 
   async updateMemory(id, patch = {}) {
@@ -112,9 +119,18 @@ export class InvestigationSessionStore {
   async appendMessage(id, message) {
     const current = await this.get(id);
     if (!current) return null;
-    current.messages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 20000), timestamp: message.timestamp || new Date().toISOString() });
-    current.messages = current.messages.slice(-100);
-    return this.update(id, { messages: current.messages });
+    // Build the candidate without mutating the currently visible session. If
+    // persistence rejects the write, the old message list must remain the
+    // canonical in-memory state (#5434).
+    const messages = [
+      ...(Array.isArray(current.messages) ? current.messages : []),
+      {
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: String(message.content || '').slice(0, 20000),
+        timestamp: message.timestamp || new Date().toISOString(),
+      },
+    ].slice(-100);
+    return this.update(id, { messages });
   }
 
   async persist(session) { if (this.persistence && typeof this.persistence.save === 'function') await this.persistence.save(stripSecrets(session)); }

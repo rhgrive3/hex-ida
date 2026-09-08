@@ -31,8 +31,12 @@ export function renderIndexedMemory(baseText, indexText, { extend = null, scale 
   if (bytes > 0 && Number.isSafeInteger(scaleBytes) && scaleBytes === bytes) {
     return `${wrapped(baseText)}[${index}]`;
   }
+  // The base expression can be any renderValue() output, including bitwise
+  // forms whose precedence is below '+'. Without parentheses the C output
+  // would reassociate the effective address (memory[a & b + i] parses as
+  // memory[a & (b + i)]) (#5561).
   const offset = shift ? `(${index} << ${shift})` : index;
-  return `memory[${baseText} + ${offset}]`;
+  return `memory[${wrapped(baseText)} + ${offset}]`;
 }
 
 function canonicalExtendSelector(value) {

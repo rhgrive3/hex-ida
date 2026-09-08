@@ -254,7 +254,9 @@ function randomId() {
 }
 function safeRequest(input) {
   const out = {};
-  for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
+  // `planner:false` is an explicit disable flag: it must survive the
+  // checkpoint or runSlice silently re-enables the planner (#5440).
+  for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs', 'planner']) if (input[key] != null) out[key] = input[key];
   return checkpoint(out);
 }
 

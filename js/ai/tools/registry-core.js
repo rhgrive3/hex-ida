@@ -101,7 +101,7 @@ export class ToolRegistry {
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
       if (!record) {
-        raw = await raceAbort(tool.execute(args, { ...options, signal: execution.signal, context: this.context }), execution.signal);
+        raw = await raceAbort(tool.execute(args, { ...options, scopeBoundary, signal: execution.signal, context: this.context }), execution.signal);
         if (tool.outputSchema) assertSchema(raw, tool.outputSchema, "tool_failed");
         const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
         const publishable = lifecycle.publishable !== false && lifecycle.late !== true;

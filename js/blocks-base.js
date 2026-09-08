@@ -970,8 +970,9 @@ function looksPrologue(insn, base) {
 function looksEpilogue(insn, base) {
   if (/^(autiasp|autibsp)$/.test(base)) return true;
   if (insn.memory && insn.memory.kind === 'load' && insn.memory.stack) {
-    // x29/x30 を戻しているならほぼ確実に後片付け
-    return insn.writes.some((w) => w === 'x29' || w === 'x30') || true;
+    // x29/x30を戻しているならほぼ確実に後片付け。それ以外のstack loadは
+    // 戻り値や局所値の再読み出しでもあり得るため、cleanupと断定しない (#5445)。
+    return insn.writes.some((w) => w === 'x29' || w === 'x30');
   }
   if (base === 'add' && insn.ops[0] && insn.ops[0].cls === 'sp' &&
       insn.ops[1] && insn.ops[1].cls === 'sp') return true;

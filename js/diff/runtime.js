@@ -12,7 +12,12 @@ export function runDiffInWorker(before, after, options = {}) {
   const signal=options.signal??null;
   if(signal?.aborted)return Promise.reject(abortError(signal));
   const workerFactory=options.workerFactory||(()=>new Worker(new URL('./worker.js',import.meta.url),{type:'module'}));
-  const worker=workerFactory(); const id=sequence++;
+  const id=sequence++;
+  // A synchronous workerFactory failure is a normal promise rejection like
+  // every other transport failure, not an out-of-band throw (#5436).
+  let worker;
+  try { worker = workerFactory(); }
+  catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
   return new Promise((resolve,reject)=>{
     let settled=false;
     const finish=(fn,value)=>{if(settled)return;settled=true;signal?.removeEventListener('abort',onAbort);try{worker.terminate();}catch{}fn(value);};
