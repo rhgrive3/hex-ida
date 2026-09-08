@@ -22,6 +22,11 @@ const base = (overrides = {}) => ({
   memorySsaVersion: '2.0.0',
   architectureSemanticVersion: '1',
   abiSemanticVersion: '1',
+  // Points-to completeness depends on the budget, so the fixture declares a
+  // budget class; #5751 makes an unbound budget class on a
+  // completeness-affecting artifact a fail-closed construction error.
+  budgetClass: 'interactive',
+  budgetAffectsCompleteness: true,
   ...overrides,
 });
 
@@ -238,7 +243,9 @@ test('explicit blank optional identities fail closed instead of becoming absent'
   const cases = [
     [{ sliceId: '   ' }, /phase7-artifact-invalid-slice-id/],
     [{ functionId: '   ' }, /phase7-artifact-invalid-entity-id/],
-    [{ budgetClass: '   ' }, /phase7-artifact-invalid-budget-class/],
+    // With budget relevance explicitly denied the budget class is an optional
+    // key slot, so a blank value still fails closed instead of becoming absent.
+    [{ budgetClass: '   ', budgetAffectsCompleteness: false }, /phase7-artifact-invalid-budget-class/],
     [{ platformId: '   ' }, /phase7-artifact-invalid-platform-id/],
   ];
   for (const [overrides, expected] of cases) {
@@ -301,4 +308,29 @@ test('required identity is enforced rather than defaulted', () => {
   assert.throws(() => createPhase7ArtifactDescriptor(base({ snapshotId: null })), /snapshot-required/);
   assert.throws(() => createPhase7ArtifactDescriptor(base({ memorySsaVersion: null })), /memoryssa-version-required/);
   assert.throws(() => createPhase7ArtifactDescriptor(base({ kind: 'phase7.not.a.kind' })), /unknown-kind/);
+});
+
+test('a completeness-affecting artifact must bind its budget generation (#5751)', () => {
+  // budgetAffectsCompleteness defaults to "relevant", so a producer that
+  // forgets budgetClass must not mint an identity where the budget dimension
+  // is silently absent — interactive and exhaustive results would collide.
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: undefined })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: null })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: '   ' })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetAffectsCompleteness: true, budgetClass: null })),
+    /phase7-artifact-budget-class-required/,
+  );
+  // A denied budget dependence keeps the old identity semantics: the budget
+  // class is excluded from the key, so omitting it stays legal.
+  assert.doesNotThrow(() => createPhase7ArtifactDescriptor(base({ budgetAffectsCompleteness: false, budgetClass: null })));
 });
