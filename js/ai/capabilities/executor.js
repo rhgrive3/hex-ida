@@ -506,7 +506,7 @@ function assertPatchTargetCurrent(app, patchSet) {
 function captureRuntimeWriteTarget(platform) {
   const session = platform?.currentSession?.(false);
   if (!session?.adapter) throw new AIError('scope_violation', 'The approved runtime session was replaced before the memory write.');
-  return session;
+  return Object.freeze({ adapter: session.adapter, id: session.id, binaryHash: session.binaryHash });
 }
 function assertRuntimeWriteTarget(platform, expected) {
   const current = platform?.currentSession?.(false);

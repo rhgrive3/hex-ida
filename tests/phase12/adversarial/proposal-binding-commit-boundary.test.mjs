@@ -56,6 +56,24 @@ test('proposal publication fails closed when binding changes during an async ada
   assert.equal(store.get(proposal.id).status, 'failed', 'binding drift must not publish an applied proposal');
 });
 
+test('proposal binding guard preserves the store callback receiver', async () => {
+  const store = new ProposalStore({
+    evidenceStore,
+    binding() { return { binaryId: this.scope.binaryId, projectId: 'project-a', runtimeSessionId: null }; },
+  });
+  store.scope = { binaryId: 'bin-a' };
+  const proposal = store.create({
+    kind: 'project-annotation',
+    target: { id: 'receiver-bound' },
+    before: null,
+    after: 'approved',
+    evidenceIds: ['evidence'],
+  });
+  const { approvalToken } = store.approve(proposal.id);
+  const result = await store.apply(proposal.id, { approvalToken, currentState: null, apply: async () => {} });
+  assert.equal(result.status, 'applied');
+});
+
 test('patch creation rejects a replaced patch set before adding to the target', async () => {
   const liveBinding = binding('bin-a');
   let readCount = 0;
@@ -116,14 +134,20 @@ test('runtime memory write rechecks the captured session target before writing',
   let oldWriteCount = 0;
   let replacementWriteCount = 0;
   let memory = Uint8Array.from([1, 2, 3, 4]);
-  let activeSession;
+  const activeSession = { id: 'session-a', binaryHash: 'bin-a', adapter: null };
   const adapter = {
     async readMemory(_address, size) {
       readCount += 1;
       const result = memory.slice(0, size);
       // The fourth read is boundedMemoryWrite()'s expected-before read. The
       // earlier three belong to proposal creation/current-state checks.
-      if (readCount === 4) activeSession = { id: 'session-b', binaryHash: 'bin-a', adapter: replacementAdapter };
+      if (readCount === 4) {
+        // Mutate the existing session object in place. A guard that retains
+        // the mutable object itself would observe these new fields and miss
+        // that the adapter captured before the await is no longer authorized.
+        activeSession.id = 'session-b';
+        activeSession.adapter = replacementAdapter;
+      }
       return result;
     },
     async writeMemory(_address, bytes) {
@@ -138,7 +162,7 @@ test('runtime memory write rechecks the captured session target before writing',
       memory = Uint8Array.from(bytes);
     },
   };
-  activeSession = { id: 'session-a', binaryHash: 'bin-a', adapter };
+  activeSession.adapter = adapter;
   const runtimePlatform = {
     currentSession: () => activeSession,
   };

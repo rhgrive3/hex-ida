@@ -161,7 +161,7 @@ export class ProposalStore {
       // own commit guard, later UI churn is an acknowledgement concern and
       // must not relabel an already-committed mutation as failed.
       if (!proposalAuthorizationCommitted(authorization)) {
-        assertProposalBinding(this.binding, authority.bindingRevision);
+        assertProposalBinding(this, authority.bindingRevision);
       }
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: authority.id, timestamp: new Date().toISOString() });
@@ -249,7 +249,7 @@ export function assertProposalAuthorizationBinding(authorization, { commit = fal
   if (record.store.records.get(record.proposalId) !== record.proposal || record.proposal.status !== 'applying') {
     throw new AIError('approval_required', 'The proposal is no longer applying.');
   }
-  assertProposalBinding(record.store.binding, record.bindingRevision);
+  assertProposalBinding(record.store, record.bindingRevision);
   if (commit) record.committed = true;
   return true;
 }
@@ -453,8 +453,8 @@ function fingerprint(value) {
   return stableDigest(canonicalIdentity(value));
 }
 
-function assertProposalBinding(binding, expectedRevision) {
-  const currentRevision = fingerprint(binding?.() || null);
+function assertProposalBinding(store, expectedRevision) {
+  const currentRevision = fingerprint(store?.binding?.() || null);
   if (currentRevision !== expectedRevision) {
     throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
   }
