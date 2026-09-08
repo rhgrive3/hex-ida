@@ -38,6 +38,28 @@ function mapFor(root, app) {
   if (!map) { map = new Map(); root.set(app, map); }
   return map;
 }
+function evictSettledEntry(root, app, key, entry) {
+  if (!entry.evictWhenSettled) return;
+  const map = mapFor(root, app);
+  if (map.get(key) === entry) map.delete(key);
+}
+function pruneStaleEntries(root, app, epoch) {
+  const map = mapFor(root, app);
+  for (const [key, entry] of map) {
+    if (entry.epoch === epoch) continue;
+    entry.evictWhenSettled = true;
+    if (entry.settled) {
+      map.delete(key);
+      continue;
+    }
+    if (entry.waiters === 0) {
+      if (!entry.controller.signal.aborted) entry.controller.abort('stale-epoch');
+      map.delete(key);
+      entry.promise?.catch?.(() => { /* no waiters left: swallow stale abort */ });
+    }
+  }
+  return map;
+}
 // A map entry is reusable only while it can still serve the next consumer:
 // an aborted-but-unsettled entry is doomed and would infect newcomers with
 // the old rejection (#5349), while a settled retryable-incomplete entry must
@@ -224,7 +246,7 @@ function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -303,7 +325,11 @@ function createStringEntry(app, key, initialOptions = {}) {
     app.stringIndex = rows;
     entry.result = rows;
     return rows;
-  })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+  })().then((value) => {
+    entry.settled = true;
+    evictSettledEntry(STRING_ENTRIES, app, key, entry);
+    return value;
+  }).catch((error) => {
     const live = mapFor(STRING_ENTRIES, app);
     if (live.get(key) === entry) live.delete(key);
     throw error;
@@ -323,7 +349,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -387,7 +413,11 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     app.program = program;
     entry.result = program;
     return program;
-  })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+  })().then((value) => {
+    entry.settled = true;
+    evictSettledEntry(PROGRAM_ENTRIES, app, `${epoch}:${key}`, entry);
+    return value;
+  }).catch((error) => {
     const live = mapFor(PROGRAM_ENTRIES, app);
     if (live.get(`${epoch}:${key}`) === entry) live.delete(`${epoch}:${key}`);
     throw error;
@@ -414,7 +444,7 @@ export function installSharedAppArtifacts(app) {
     if (app.stringIndex?.complete === true) return Promise.resolve(app.stringIndex);
     const epoch = epochOf(app);
     const key = String(epoch);
-    const map = mapFor(STRING_ENTRIES, app);
+    const map = pruneStaleEntries(STRING_ENTRIES, app, epoch);
     let entry = liveEntry(map, key, map.get(key));
     if (!entry) {
       entry = createStringEntry(app, key, options);
@@ -442,7 +472,7 @@ export function installSharedAppArtifacts(app) {
       && app.program.completeness?.complete === true) return Promise.resolve(app.program);
     const epoch = epochOf(app);
     const mapKey = `${epoch}:${key}`;
-    const map = mapFor(PROGRAM_ENTRIES, app);
+    const map = pruneStaleEntries(PROGRAM_ENTRIES, app, epoch);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
     if (!entry) {
       entry = createProgramEntry(app, key, regions, options);
@@ -472,4 +502,10 @@ export const __sharedAppArtifactInternalsForTests = Object.freeze({
   normalizeOptions,
   accumulateGlobalRefs,
   statsFor,
+  cacheSizes(app) {
+    return Object.freeze({
+      stringEntries: STRING_ENTRIES.get(app)?.size ?? 0,
+      programEntries: PROGRAM_ENTRIES.get(app)?.size ?? 0,
+    });
+  },
 });
