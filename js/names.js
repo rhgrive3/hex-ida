@@ -22,11 +22,41 @@ import { hashByteSource, sha256TreeByteSource } from './platform/hash.js';
 const PREFIX = 'hex.notes.';
 const MAX_BYTES = 2 * 1024 * 1024;   // 1 ファイルぶんの上限（保存が壊れないように）
 const NOTE_KEY_CACHE = new WeakMap(); // File/ByteSource -> resolved slice identities
+const SNAPSHOT_MISSING = 'missing';
+const SNAPSHOT_VALID = 'valid';
+const SNAPSHOT_TOMBSTONE = 'tombstone';
+const SNAPSHOT_INVALID = 'invalid';
+const SNAPSHOT_UNAVAILABLE = 'unavailable';
+let noteGenerationCounter = 0;
+
+/** Opaque identity for one committed base snapshot and its delta overlay. */
+function nextNoteGeneration() {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  } catch { /* deterministic fallback below keeps old browsers usable */ }
+  noteGenerationCounter += 1;
+  return `${Date.now().toString(36)}-${noteGenerationCounter.toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /** BigInt でも Number でも同じ鍵になるように、10 進の文字列にそろえる。 */
 function key(addr) {
   if (addr == null) return '';
-  return typeof addr === 'bigint' ? addr.toString() : String(BigInt(Math.trunc(Number(addr))));
+  if (typeof addr === 'bigint') return addr.toString();
+  if (typeof addr === 'number') {
+    if (!Number.isSafeInteger(addr)) return '';
+    return BigInt(addr).toString();
+  }
+  if (typeof addr === 'string') {
+    // Decimal/hex strings are exact identities and must not pass through
+    // Number, which silently rounds > 2^53 addresses into each other (#5909).
+    const text = addr.trim();
+    if (!text) return '';
+    try {
+      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return BigInt(text).toString();
+    } catch { /* fall through: not an address */ }
+    return '';
+  }
+  return '';
 }
 
 /**
@@ -143,14 +173,23 @@ export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = global
   const identity = ['v3', p.sourceSize, p.uuid, p.cpu, p.cpuSub, p.sliceOffset, p.sliceSize].join('|');
   const prefix = PREFIX + identity + '|';
   try {
+    const matches = new Set();
     for (let i = 0; i < storage.length; i++) {
       const candidate = storage.key(i);
       if (typeof candidate !== 'string' || !candidate.startsWith(prefix)) continue;
       if (candidate.includes('.delta.', prefix.length)) continue;
-      return candidate.slice(PREFIX.length);
+      matches.add(candidate.slice(PREFIX.length));
     }
+    const cacheable = (typeof file === 'object' && file !== null) || typeof file === 'function';
+    const cachedKey = cacheable ? NOTE_KEY_CACHE.get(file)?.get(identity) : null;
+    if (cachedKey) {
+      return matches.has(cachedKey) ? cachedKey : null;
+    }
+    if (matches.size === 1) {
+      return matches.values().next().value;
+    }
+    return null;
   } catch { return null; }
-  return null;
 }
 
 export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
@@ -207,8 +246,14 @@ export class NoteStore {
     this.lastSaveError = null;
     this.lastMutationSaved = true;
     this._snapshotBytes = 0;
+    this._snapshotState = SNAPSHOT_MISSING;
+    this._snapshotLoadError = null;
+    this._snapshotGeneration = null;
     this._deltaBytes = new Map();
     this._deltaTotalBytes = 0;
+    this._deltaScanComplete = true;
+    this._unreadableDeltaKeys = new Set();
+    this._cleanupPending = false;
     this._deltaPrefix = this.id ? `${PREFIX}${this.id}.delta.` : null;
     this.names = new Map();      // addr -> 名前
     this.comments = new Map();   // addr -> メモ
@@ -229,26 +274,89 @@ export class NoteStore {
     this.structs = Array.isArray(o.structs) ? o.structs : [];
   }
 
+  _validatePayload(o) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('invalid-notes-snapshot');
+    if (Object.prototype.hasOwnProperty.call(o, 'generation') &&
+        (typeof o.generation !== 'string' || !o.generation)) {
+      throw new Error('invalid-notes-snapshot');
+    }
+    if (o.cleared === true) return;
+    for (const field of ['names', 'comments', 'vars', 'types']) {
+      const value = o[field];
+      if (value != null && (typeof value !== 'object' || Array.isArray(value))) {
+        throw new Error('invalid-notes-snapshot');
+      }
+    }
+    if (o.structs != null && !Array.isArray(o.structs)) throw new Error('invalid-notes-snapshot');
+  }
+
+  _snapshotFailure(state, error) {
+    this._snapshotState = state;
+    this._snapshotBytes = 0;
+    this._snapshotGeneration = null;
+    this._snapshotLoadError = error || null;
+    this.lastSaveError = {
+      code: state === SNAPSHOT_UNAVAILABLE ? 'SNAPSHOT_READ_ERROR' : 'INVALID_SNAPSHOT',
+      message: error?.message || String(error || ''),
+    };
+  }
+
   load() {
     if (!this.id) return;
+    this._cleanupPending = false;
     let raw = null;
-    try { raw = localStorage.getItem(PREFIX + this.id); } catch { return; }
-    if (raw) {
-      try {
-        this._snapshotBytes = new TextEncoder().encode(raw).byteLength;
-        const o = JSON.parse(raw);
-        if (o && o.cleared === true) {
-          this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
-          this.migratedFrom = null; this.legacyCandidate = null; return;
-        }
-        this._applyPayload(o || {});
-        this._loadDeltas();
-      } catch { }
+    try { raw = localStorage.getItem(PREFIX + this.id); }
+    catch (error) {
+      this._snapshotFailure(SNAPSHOT_UNAVAILABLE, error);
+      this._loadDeltas({ apply: false });
       return;
     }
+    if (raw !== null) {
+      try {
+        const bytes = new TextEncoder().encode(raw).byteLength;
+        const o = JSON.parse(raw);
+        this._validatePayload(o);
+        const generation = typeof o.generation === 'string' ? o.generation : null;
+        if (o && o.cleared === true) {
+          this._snapshotBytes = bytes;
+          this._snapshotState = SNAPSHOT_TOMBSTONE;
+          this._snapshotGeneration = generation;
+          this._snapshotLoadError = null;
+          this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
+          this.migratedFrom = null; this.legacyCandidate = null;
+          this._loadDeltas({ apply: false });
+          return;
+        }
+        this._applyPayload(o || {});
+        this._snapshotBytes = bytes;
+        this._snapshotState = SNAPSHOT_VALID;
+        this._snapshotGeneration = generation;
+        this._snapshotLoadError = null;
+        this.lastSaveError = null;
+        this.lastMutationSaved = true;
+        this._loadDeltas();
+      } catch (error) {
+        // A raw byte count is only durable after decode and apply both succeed.
+        // Keep the unreadable primary and any deltas untouched for explicit
+        // recovery; ordinary mutations must not fall through to delta writes.
+        this._snapshotFailure(SNAPSHOT_INVALID, error);
+        this._loadDeltas({ apply: false });
+      }
+      return;
+    }
+    this._snapshotState = SNAPSHOT_MISSING;
+    this._snapshotBytes = 0;
+    this._snapshotGeneration = null;
+    this._snapshotLoadError = null;
+    this.lastSaveError = null;
+    this._loadDeltas({ apply: false });
     for (const old of this.legacyIds) {
       let legacyRaw = null;
-      try { legacyRaw = localStorage.getItem(PREFIX + old); } catch { return; }
+      try { legacyRaw = localStorage.getItem(PREFIX + old); }
+      catch (error) {
+        this._snapshotFailure(SNAPSHOT_UNAVAILABLE, error);
+        return;
+      }
       if (!legacyRaw) continue;
       try {
         const payload = JSON.parse(legacyRaw);
@@ -278,47 +386,273 @@ export class NoteStore {
     return `${this._deltaPrefix}${encodeURIComponent(kind)}.${encodeURIComponent(String(recordKey))}`;
   }
 
-  _loadDeltas() {
-    if (!this._deltaPrefix || typeof localStorage === 'undefined') return;
+  _loadDeltas({ apply = true, preserveRecoveryKeys = null } = {}) {
+    this._deltaScanComplete = true;
+    if (!this._deltaPrefix || typeof localStorage === 'undefined') return { complete: true };
     this._deltaBytes.clear(); this._deltaTotalBytes = 0;
+    this._unreadableDeltaKeys.clear();
     const keys = [];
     try {
       for (let index = 0; index < localStorage.length; index++) {
         const storageKey = localStorage.key(index);
         if (storageKey?.startsWith(this._deltaPrefix)) keys.push(storageKey);
       }
-    } catch { return; }
+    } catch {
+      this._deltaScanComplete = false;
+      return { complete: false };
+    }
     keys.sort();
     // One unreadable delta must not abandon the rest of the overlay: each
     // record is decoded and applied independently, and a malformed record is
     // skipped on its own so later valid deltas still restore (issue #6307).
     for (const storageKey of keys) {
       let raw = null;
-      try { raw = localStorage.getItem(storageKey); } catch { continue; }
+      try { raw = localStorage.getItem(storageKey); }
+      catch {
+        this._unreadableDeltaKeys.add(storageKey);
+        this._deltaScanComplete = false;
+        continue;
+      }
       if (raw == null) continue;
+      const preserve = preserveRecoveryKeys?.get(storageKey) === raw;
       try {
         const bytes = new TextEncoder().encode(raw).byteLength;
         this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
         const delta = JSON.parse(raw);
+        const hasGeneration = !!delta && typeof delta === 'object' &&
+          Object.prototype.hasOwnProperty.call(delta, 'generation');
+        const generation = hasGeneration ? delta.generation : null;
+        if (hasGeneration && (typeof generation !== 'string' || !generation)) {
+          this._unreadableDeltaKeys.add(storageKey);
+          this._deltaScanComplete = false;
+          continue;
+        }
+        if (this._snapshotState === SNAPSHOT_MISSING) {
+          if (!preserve) {
+            this._unreadableDeltaKeys.add(storageKey);
+            this._deltaScanComplete = false;
+          }
+          continue;
+        }
+        // A missing generation belongs to the pre-generation format. It is
+        // replayable only while the base is also legacy; a committed base
+        // with an exact generation ignores all older overlays.
+        if (generation !== this._snapshotGeneration) {
+          // A delta found without a base has no safe generation to bind to.
+          // Keep it as recovery evidence rather than compacting it away.
+          if (this._snapshotGeneration == null && generation != null) {
+            if (!preserve) {
+              this._unreadableDeltaKeys.add(storageKey);
+              this._deltaScanComplete = false;
+            }
+          }
+          continue;
+        }
+        if (!apply) continue;
         const map = this._mapForDelta(delta?.kind);
-        if (!map || typeof delta?.key !== 'string') continue;
+        if (!map || typeof delta?.key !== 'string') {
+          this._unreadableDeltaKeys.add(storageKey);
+          this._deltaScanComplete = false;
+          continue;
+        }
         if (delta.deleted) map.delete(delta.key); else map.set(delta.key, String(delta.value ?? ''));
-      } catch { /* base snapshot remains valid if a delta is unreadable */ }
+      } catch {
+        // Keep malformed raw bytes accounted and block a full rewrite. A
+        // later explicit recovery can decide what to do with this evidence.
+        this._unreadableDeltaKeys.add(storageKey);
+        this._deltaScanComplete = false;
+      }
+    }
+    return { complete: this._deltaScanComplete };
+  }
+
+  /**
+   * Structural revalidation for a delta record that was unreadable at load
+   * time (#7160): mirrors the _loadDeltas decode boundary. Returns false when
+   * the record still fails the boundary, `current` for a live record that
+   * needs a fresh ordered reload, `reconstructable` for a valid delta that
+   * can be adopted by explicit recovery, and `ignorable` for stale evidence
+   * that the current base already supersedes.
+   */
+  _isUnreadableDeltaRecord(raw) {
+    try {
+      const delta = JSON.parse(raw);
+      if (!delta || typeof delta !== 'object') return false;
+      const hasGeneration = Object.prototype.hasOwnProperty.call(delta, 'generation');
+      if (hasGeneration && (typeof delta.generation !== 'string' || !delta.generation)) return false;
+      const map = this._mapForDelta(delta.kind);
+      if (!map || typeof delta.key !== 'string') return false;
+      const generation = hasGeneration ? delta.generation : null;
+      if (this._snapshotState === SNAPSHOT_MISSING) return 'reconstructable';
+      if (this._snapshotState !== SNAPSHOT_VALID) return 'current';
+      if (generation !== this._snapshotGeneration) {
+        // A committed generation makes all other well-formed overlays stale;
+        // they cannot affect a normal reload and may be collected safely.
+        if (this._snapshotGeneration != null) return 'ignorable';
+        // A generated overlay without a generated base can be adopted only by
+        // explicit recovery after the complete set of deltas is revalidated.
+        return 'reconstructable';
+      }
+      return 'current';
+    } catch {
+      return false;
     }
   }
 
+  /**
+   * Quarantine (or explicitly discard) only delta records that failed the
+   * structural read/parse/schema boundary. Readable deltas remain intact, and
+   * a successful recovery re-enables full snapshot compaction without using
+   * clear() as a destructive escape hatch.
+   */
+  recoverUnreadableDeltas({ quarantine = true } = {}) {
+    if (!this._deltaPrefix || typeof localStorage === 'undefined') return true;
+    // A failed scan with no per-key evidence may have skipped valid overlay
+    // records before this instance could apply them. A metadata-only retry
+    // cannot establish that this in-memory view incorporated those records.
+    const priorScanIncompleteWithoutKeys = !this._deltaScanComplete &&
+      this._unreadableDeltaKeys.size === 0;
+    const pending = [...this._unreadableDeltaKeys];
+    const failed = [];
+    const reloadRequired = [];
+    const reconstructed = new Map();
+    const dirtyAtStart = this.dirty;
+    const quarantinePrefix = PREFIX + this.id + '.quarantine.';
+    for (const storageKey of pending) {
+      let raw = null;
+      try { raw = localStorage.getItem(storageKey); }
+      catch { failed.push(storageKey); continue; }
+      if (raw == null) continue;
+      const status = this._isUnreadableDeltaRecord(raw);
+      if (status === 'current') {
+        // Repaired live record (transient read failure at load time): it stays
+        // live. Recovery is blocked with an explicit reload requirement — the
+        // caller must re-read the store so the record is incorporated in
+        // normal delta order; deleting it here would destroy live evidence.
+        if (!this._deltaBytes.has(storageKey)) {
+          try {
+            const bytes = new TextEncoder().encode(raw).byteLength;
+            this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
+          } catch { failed.push(storageKey); continue; }
+        }
+        reloadRequired.push(storageKey);
+        continue;
+      }
+      if (status === 'reconstructable') {
+        if (dirtyAtStart) {
+          failed.push(storageKey);
+          continue;
+        }
+        try {
+          const delta = JSON.parse(raw);
+          const map = this._mapForDelta(delta.kind);
+          if (!map || typeof delta.key !== 'string') {
+            failed.push(storageKey);
+            continue;
+          }
+          if (delta.deleted) map.delete(delta.key);
+          else map.set(delta.key, String(delta.value ?? ''));
+          reconstructed.set(storageKey, raw);
+          continue;
+        } catch {
+          failed.push(storageKey);
+          continue;
+        }
+      }
+      try {
+        if (quarantine) localStorage.setItem(
+          quarantinePrefix + encodeURIComponent(storageKey),
+          raw,
+        );
+        localStorage.removeItem(storageKey);
+      } catch { failed.push(storageKey); }
+    }
+    const retry = this._loadDeltas({ apply: false, preserveRecoveryKeys: reconstructed });
+    // Do not let a successful retry erase uncertainty from a failed read or
+    // enumeration. The raw records remain live until a fresh ordered load.
+    for (const storageKey of failed) this._unreadableDeltaKeys.add(storageKey);
+    if (failed.length || priorScanIncompleteWithoutKeys) this._deltaScanComplete = false;
+    // A repaired delta remains live. Keep recovery scan-incomplete so save()
+    // cannot compact it away before a fresh reload establishes its ordering.
+    for (const storageKey of reloadRequired) this._unreadableDeltaKeys.add(storageKey);
+    if (reloadRequired.length) this._deltaScanComplete = false;
+    const scanReloadRequired = priorScanIncompleteWithoutKeys;
+    if (retry.complete && failed.length === 0 && !scanReloadRequired &&
+        this._unreadableDeltaKeys.size === 0) {
+      this._deltaScanComplete = true;
+    }
+    const ok = failed.length === 0 && reloadRequired.length === 0 &&
+      !scanReloadRequired &&
+      this._deltaScanComplete && this._unreadableDeltaKeys.size === 0;
+    if (ok) {
+      if (!this._cleanupPending) this.lastSaveError = null;
+      return true;
+    }
+    this.lastSaveError = {
+      code: reloadRequired.length ? 'DELTA_RECOVERY_REPAIRED' : 'DELTA_RECOVERY_FAILED',
+      message: reloadRequired.length || scanReloadRequired
+        ? 'a fresh reload is required before recovery'
+        : 'unreadable delta recovery remains pending',
+      recoveryRequired: true,
+      ...((reloadRequired.length || scanReloadRequired) ? { reloadRequired: true } : {}),
+      pendingKeys: [...new Set([...failed, ...this._unreadableDeltaKeys])],
+    };
+    return false;
+  }
+
   _clearDeltas() {
-    for (const storageKey of this._deltaBytes.keys()) { try { localStorage.removeItem(storageKey); } catch { /* stale overlay is idempotent */ } }
-    this._deltaBytes.clear(); this._deltaTotalBytes = 0;
+    const remaining = new Map();
+    const failedKeys = [];
+    for (const [storageKey, bytes] of this._deltaBytes) {
+      try { localStorage.removeItem(storageKey); }
+      catch {
+        remaining.set(storageKey, bytes);
+        failedKeys.push(storageKey);
+      }
+    }
+    this._deltaBytes = remaining;
+    this._deltaTotalBytes = [...remaining.values()].reduce((total, bytes) => total + bytes, 0);
+    return {
+      ok: this._deltaScanComplete && failedKeys.length === 0,
+      failedKeys,
+      scanIncomplete: !this._deltaScanComplete,
+    };
+  }
+
+  _cleanupStatus(result) {
+    if (result.ok) return null;
+    return {
+      code: result.scanIncomplete ? 'DELTA_SCAN_INCOMPLETE' : 'DELTA_CLEANUP_ERROR',
+      message: result.scanIncomplete
+        ? 'delta overlay scan was incomplete; cleanup remains pending'
+        : 'base snapshot committed; stale delta cleanup remains pending',
+      cleanupPending: true,
+      durability: 'committed',
+      pendingKeys: result.failedKeys,
+    };
   }
 
   _persistDelta(kind, recordKey, value) {
     if (!this.id || !this._deltaPrefix) return this._saveFailure('NO_ID');
-    // A delta overlay needs a durable base. The first mutation of a fresh store
-    // creates that base once; subsequent ordinary mutations stay record-local.
-    if (this._snapshotBytes === 0) return this.save();
+    if (this._snapshotState === SNAPSHOT_INVALID || this._snapshotState === SNAPSHOT_UNAVAILABLE) {
+      return this._saveFailure(
+        this._snapshotState === SNAPSHOT_UNAVAILABLE ? 'SNAPSHOT_READ_ERROR' : 'INVALID_SNAPSHOT',
+        this._snapshotLoadError,
+        { recoveryRequired: true },
+      );
+    }
+    // A delta overlay needs a durable, replayable base. The first mutation of
+    // a fresh store and the first mutation after a clear tombstone create a
+    // real snapshot; a tombstone short-circuits delta loading on reopen.
+    if (this._snapshotState !== SNAPSHOT_VALID || this._snapshotGeneration == null) return this.save();
     const storageKey = this._deltaKey(kind, recordKey);
-    const text = JSON.stringify({ kind, key:String(recordKey), deleted:value == null, ...(value == null ? {} : { value:String(value) }) });
+    const text = JSON.stringify({
+      kind,
+      key:String(recordKey),
+      deleted:value == null,
+      generation:this._snapshotGeneration,
+      ...(value == null ? {} : { value:String(value) }),
+    });
     const bytes = new TextEncoder().encode(text).byteLength;
     const previousBytes = this._deltaBytes.get(storageKey) || 0;
     const projected = this._snapshotBytes + this._deltaTotalBytes - previousBytes + bytes;
@@ -327,7 +661,9 @@ export class NoteStore {
       localStorage.setItem(storageKey, text);
       this._deltaBytes.set(storageKey, bytes);
       this._deltaTotalBytes += bytes - previousBytes;
-      this.dirty = false; this.lastSaveError = null; this.lastMutationSaved = true;
+      this.dirty = false;
+      if (!this._cleanupPending) this.lastSaveError = null;
+      this.lastMutationSaved = true;
       return true;
     } catch (error) { return this._saveFailure(error?.name || 'STORAGE_ERROR', error); }
   }
@@ -345,8 +681,23 @@ export class NoteStore {
 
   save() {
     if (!this.id) return this._saveFailure('NO_ID');
+    if (this._snapshotState === SNAPSHOT_INVALID || this._snapshotState === SNAPSHOT_UNAVAILABLE) {
+      return this._saveFailure(
+        this._snapshotState === SNAPSHOT_UNAVAILABLE ? 'SNAPSHOT_READ_ERROR' : 'INVALID_SNAPSHOT',
+        this._snapshotLoadError,
+        { recoveryRequired: true },
+      );
+    }
+    // A full rewrite can compact the overlay only when every delta was read.
+    // An unreadable key may still contain the newest edit, so preserve it for
+    // explicit recovery instead of declaring the in-memory subset durable.
+    if (!this._deltaScanComplete && this._snapshotState !== SNAPSHOT_TOMBSTONE) {
+      return this._saveFailure('DELTA_SCAN_INCOMPLETE', null, { recoveryRequired: true });
+    }
+    const generation = nextNoteGeneration();
     const o = {
       v: 2,
+      generation,
       names: Object.fromEntries(this.names),
       comments: Object.fromEntries(this.comments),
       vars: Object.fromEntries(this.vars),
@@ -360,9 +711,13 @@ export class NoteStore {
     try {
       localStorage.setItem(PREFIX + this.id, text);
       this._snapshotBytes = bytes;
-      this._clearDeltas();
+      this._snapshotState = SNAPSHOT_VALID;
+      this._snapshotGeneration = generation;
+      this._snapshotLoadError = null;
+      const cleanup = this._clearDeltas();
+      this._cleanupPending = !cleanup.ok;
       this.dirty = false;
-      this.lastSaveError = null;
+      this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
       return true;
     } catch (error) {
@@ -477,12 +832,17 @@ export class NoteStore {
     // Keep the legacy payload intact for old app versions, but atomically write
     // a primary-key tombstone so this version never migrates it again.
     try {
-      const tombstone = JSON.stringify({ v: 2, cleared: true });
+      const generation = nextNoteGeneration();
+      const tombstone = JSON.stringify({ v: 2, cleared: true, generation });
       localStorage.setItem(PREFIX + this.id, tombstone);
       this._snapshotBytes = new TextEncoder().encode(tombstone).byteLength;
-      this._clearDeltas();
+      this._snapshotState = SNAPSHOT_TOMBSTONE;
+      this._snapshotGeneration = generation;
+      this._snapshotLoadError = null;
+      const cleanup = this._clearDeltas();
+      this._cleanupPending = !cleanup.ok;
       this.dirty = false;
-      this.lastSaveError = null;
+      this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
       this.migratedFrom = null;
       return true;
@@ -507,7 +867,9 @@ export class NoteStore {
   fromJSON(text) {
     const o = JSON.parse(text);
     if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
-    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
+    // Identity comparison stays type-preserving: a structured id must never
+    // launder into this store's namespace through String() coercion (#5968).
+    if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }

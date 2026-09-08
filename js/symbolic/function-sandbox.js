@@ -219,6 +219,7 @@ export class FunctionSandbox {
     return {
       ...result,
       stopped: this.emulator.stopped,
+      faultCode: this.emulator.faultCode || null,
       returnValue: this.emulator.get('x0'),
       before: this.before,
       after,

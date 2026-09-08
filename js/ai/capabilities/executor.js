@@ -1,5 +1,6 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
+import { consumeProposalAuthorization } from '../proposals.js';
 import { validatePatchRange } from '../../patch.js';
 
 export class CapabilityExecutor {
@@ -16,13 +17,14 @@ export class CapabilityExecutor {
   async execute(id, args = {}, options = {}) {
     const entry = this.catalog?.get?.(id);
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
-    assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
+    assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
-    this.verifyBinding(entry, args, runtimePlatform);
-    if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
-    if (entry.agentTool) return this.executeTool(entry, args, options);
-    if (entry.actionKind) return this.executeAction(entry, args);
-    return this.executeBuiltIn(entry, args, options, runtimePlatform);
+    this.verifyBinding(entry, executionArgs, runtimePlatform);
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
+    if (entry.actionKind) return this.executeAction(entry, executionArgs);
+    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
   }
 
   verifyBinding(entry, args, runtimePlatform = null) {
@@ -77,8 +79,8 @@ export class CapabilityExecutor {
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
       case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
-      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume(options);
-      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause(options);
+      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume({ signal: options?.signal });
+      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause({ signal: options?.signal });
       case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
       case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
       case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
@@ -107,6 +109,40 @@ export class CapabilityExecutor {
     this.reverts.set(String(patch.offset), metadata);
     return { reverted: true, patch: metadata };
   }
+}
+
+function snapshotApprovedArguments(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
+  let snapshot;
+  try {
+    snapshot = clone(value);
+  } catch {
+    throw new AIError('invalid_tool_call', 'Approved capability arguments must be structured-cloneable.');
+  }
+  if (containsSharedMemory(snapshot)) throw new AIError('invalid_tool_call', 'Approved capability arguments must not contain shared memory.');
+  return snapshot;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  if (value instanceof ArrayBuffer || seen.has(value)) return false;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of value) if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) if (containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
@@ -281,14 +317,73 @@ function setStructField(app, args) {
 
 function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
+  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+
+  const previousProjectAnnotations = app.projectAnnotations;
+  const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
-  const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
-  app.projectAnnotations.push(record);
-  app.autoReport ||= { report: { confirmed: [], deep: [] } };
-  app.autoReport.report ||= { confirmed: [], deep: [] };
-  app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
-  app.workspace?.autosave?.(); return record;
+  const projectAnnotations = app.projectAnnotations;
+
+  const previousAutoReport = app.autoReport;
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
+  const autoReport = app.autoReport;
+  const previousReport = autoReport.report;
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
+  const report = autoReport.report;
+  const previousConfirmed = report.confirmed;
+  const confirmedSnapshot = Array.isArray(previousConfirmed) ? previousConfirmed.slice() : null;
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
+  const confirmed = report.confirmed;
+
+  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762). Existing
+  // append-only duplicates are collapsed only after full array snapshots are
+  // captured so failed persistence can restore the exact prior state.
+  const id = String(args.id || `annotation:${Date.now()}`);
+  const existingIndex = projectAnnotations.findIndex((item) => item?.id === id);
+  const previousRecord = existingIndex >= 0 ? projectAnnotations[existingIndex] : undefined;
+  const findingIndex = confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
+
+  const rollback = () => {
+    if (Array.isArray(previousProjectAnnotations)) {
+      previousProjectAnnotations.splice(0, previousProjectAnnotations.length, ...projectAnnotationsSnapshot);
+    } else app.projectAnnotations = previousProjectAnnotations;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
+    else if (Array.isArray(previousConfirmed)) {
+      previousConfirmed.splice(0, previousConfirmed.length, ...confirmedSnapshot);
+    } else report.confirmed = previousConfirmed;
+  };
+
+  const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: previousRecord?.createdAt || new Date().toISOString() };
+  if (existingIndex >= 0) {
+    projectAnnotations[existingIndex] = record;
+    for (let index = projectAnnotations.length - 1; index > existingIndex; index--) {
+      if (projectAnnotations[index]?.id === id) projectAnnotations.splice(index, 1);
+    }
+  } else projectAnnotations.push(record);
+
+  const finding = { ...record, confirmed: true, source: 'project-annotation' };
+  if (findingIndex >= 0) {
+    confirmed[findingIndex] = finding;
+    for (let index = confirmed.length - 1; index > findingIndex; index--) {
+      if (confirmed[index]?.source === 'project-annotation' && confirmed[index]?.id === id) confirmed.splice(index, 1);
+    }
+  } else confirmed.push(finding);
+
+  let saved;
+  try {
+    saved = app.workspace.autosave();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
 }
 
 async function previewPatch(app, args) {

@@ -49,6 +49,61 @@ function positiveSafeIntegerScalar(value) {
   return null;
 }
 
+function abortError(signal, fallback = 'Analysis query aborted') {
+  const reason = signal?.reason;
+  let message = fallback;
+  if (reason instanceof Error) {
+    try { message = reason.message || String(reason) || fallback; } catch { /* use fallback */ }
+  } else if (reason != null) {
+    try { message = String(reason) || fallback; } catch { /* use fallback */ }
+  }
+  // Never mutate signal.reason: it can be frozen, shared, or otherwise
+  // caller-owned. A fresh normalized error also prevents one consumer's
+  // cancellation metadata from leaking into another consumer.
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function requestWithSignal(request, signal) {
+  if (!request || typeof request.then !== 'function') {
+    throwIfAborted(signal);
+    return Promise.resolve(request);
+  }
+  const task = Promise.resolve(request);
+  // A producer can abort synchronously while creating its request. Once a
+  // cancelable request exists, observe it and cancel it before normalizing the
+  // consumer abort; the pre-abort search check still prevents new work.
+  if (signal?.aborted) {
+    try { request.cancel?.(); } catch { /* best effort */ }
+    void task.catch(() => {});
+    throw abortError(signal);
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request.cancel?.(); } catch { /* best effort */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 function pageOf(page = {}) {
   const rawOffset = page.offset ?? page.start ?? 0;
   const rawLimit = page.limit ?? page.size ?? 200;
@@ -58,17 +113,52 @@ function pageOf(page = {}) {
   };
 }
 
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
+
+function nextPageOffset(offset, advance) {
+  const next = offset + Math.max(1, advance);
+  return Number.isSafeInteger(next) && next > offset ? next : null;
+}
+
+function unsupportedPage(id, page, reason) {
+  const { offset, limit } = pageOf(page);
+  return {
+    value:[],
+    functionId:id,
+    page:{ offset, limit, returned:0, total:0, next:null },
+    status:{ completeness:'unsupported', reason, paged:true },
+  };
+}
 function unsupported(id, reason) {
   return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
 }
 
+const COMPLETENESS_ORDER = Object.freeze({
+  complete: 0,
+  partial: 1,
+  truncated: 2,
+  unsupported: 3,
+});
+
 function completenessOf(value, fallback = 'complete') {
-  if (value?.status?.completeness) return value.status.completeness;
-  if (value?.unsupported === true) return 'unsupported';
-  if (value?.truncated === true) return 'truncated';
-  if (value?.completeness?.complete === false || value?.complete === false || value?.partial === true) return 'partial';
-  if (typeof value?.completeness === 'string') return value.completeness;
-  return fallback;
+  const evidence = [];
+  const statusCompleteness = value?.status?.completeness;
+  const topLevelCompleteness = value?.completeness;
+  if (typeof statusCompleteness === 'string') evidence.push(statusCompleteness);
+  if (typeof topLevelCompleteness === 'string') evidence.push(topLevelCompleteness);
+  if (value?.unsupported === true) evidence.push('unsupported');
+  if (value?.truncated === true) evidence.push('truncated');
+  if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
+
+  const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  if (hasInvalidString) recognized.push('partial');
+  if (recognized.length === 0) return fallback;
+  return recognized.reduce((strongest, item) => (
+    COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
+  ));
 }
 
 function wrap(value, completeness = null, status = {}) {
@@ -459,11 +549,19 @@ export function createAppAnalysisQueryAdapter(app) {
       const request = range && typeof range === 'object' ? range : { functionId:range };
       let start = addressOf(request.start ?? request.address);
       let end = addressOf(request.end);
+      // A functionId projection must inherit the function-range completeness:
+      // `ok:true` means a safe bounded window exists, not that the whole
+      // function body was proven (#5996). An explicit caller-supplied
+      // {start,end} range keeps the read-completeness contract of that range.
+      let rangeComplete = true;
+      let rangeReason = null;
       if (start == null && request.functionId != null) {
         const fnRange = rangeFor(app, request.functionId);
         if (!fnRange.ok) return unsupported(request.functionId, fnRange.reason);
         start = fnRange.start;
         end = fnRange.end;
+        rangeComplete = fnRange.complete !== false;
+        rangeReason = fnRange.reason ?? null;
       }
       if (start == null) return unsupported(null, 'instruction-range-start-required');
       const rawLength = request.length ?? (end == null ? 4096 : end - start);
@@ -475,7 +573,8 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          return paged(rows, page, truncated ? 'truncated' : 'complete', { reason:truncated ? 'instruction-read-budget' : null });
+          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
@@ -506,7 +605,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async callers(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.callersOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -515,16 +614,42 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.callersOf(address, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      // MAX_PAGE bounds a single page (via pageOf), never the cumulative
+      // offset: the producer only serves a leading prefix, so reaching an
+      // offset beyond MAX_PAGE requires fetching the full prefix.
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.callersOf(address, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
+      const queryLimited = source?.queryLimited === true;
+      const result = paged(
+        sourceRows,
+        page,
+        source?.complete === false || queryLimited ? 'partial' : 'complete',
+        { reason:source?.incompleteReason ?? (queryLimited ? 'query-limit' : null) },
+      );
+      if (source?.queryLimited === true && result.page.next == null) {
+        // A capped producer may expose one empty boundary page at exactly its
+        // current prefix length. Advance once so offset=5000 does not repeat
+        // itself, but stop when the producer's entire prefix is already below
+        // the requested offset: there is no evidence for another page and an
+        // unconditional cursor would create an infinite empty continuation.
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
       return result;
     },
 
     async callees(_snapshot, id, page = {}, options = {}) {
       const range = rangeFor(app, id);
       if (!range.ok || typeof app?.ensureProgram !== 'function') return unsupported(id, range.reason || 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program?.calleesOf) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -534,7 +659,11 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const { offset, limit } = pageOf(page);
       const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      // The scan only covers the validated range; an unproven function extent
+      // (analysis window or region clip) keeps the query partial (#5991).
+      const rangeIncomplete = range.complete === false;
+      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
+      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
       return result;
     },
@@ -542,7 +671,7 @@ export function createAppAnalysisQueryAdapter(app) {
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id);
       if (address == null || typeof app?.ensureProgram !== 'function') return unsupported(id, 'program-index-unavailable');
-      const program = await app.ensureProgram(options.onProgress);
+      const program = await app.ensureProgram({ signal:options.signal ?? null, onProgress:options.onProgress, priority:options.priority, budget:options.budget });
       if (!program) return unsupported(id, 'program-index-unavailable');
       if (program.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported)) {
         return unsupported(id, program.graphCompleteness.reasons?.[0] || program.queryIncompleteReason || 'unsupported-program-analysis');
@@ -653,10 +782,21 @@ export function createAppAnalysisQueryAdapter(app) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (typeof app?.querySearch === 'function') {
         const value = await app.querySearch(query, options);
+        if (value?.unsupported === true || value?.status?.completeness === 'unsupported'
+          || value?.completeness === 'unsupported') {
+          return unsupportedPage(null, page,
+            value?.reason ?? value?.unsupportedReason ?? value?.status?.reason ?? 'search-kind-unsupported');
+        }
         return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
       }
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
-      const value = await app.backend.search(query, options.onProgress);
+      throwIfAborted(options.signal);
+      const request = app.backend.search(query, options.onProgress);
+      const value = await requestWithSignal(request, options.signal);
+      // An explicit backend `unsupported` must survive the query boundary:
+      // "the backend cannot run this search" is not a complete empty result
+      // (#5840, #5833).
+      if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
       return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 

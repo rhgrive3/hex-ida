@@ -60,9 +60,9 @@ function binOp(name, a, b, bits = 64) {
       else if (name === 'and') value = av & bv;
       else if (name === 'or' || name === 'orr') value = av | bv;
       else if (name === 'xor' || name === 'eor') value = av ^ bv;
-      else if (name === 'shl') value = av << (bv % BigInt(width));
-      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv % BigInt(width));
-      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv % BigInt(width));
+      else if (name === 'shl') value = av << (bv & BigInt(width - 1));
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv & BigInt(width - 1));
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv & BigInt(width - 1));
       else return op(name, a, b);
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
@@ -266,9 +266,17 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
 function conditionFromFlags(inst, state, ir, opts, memo, active) {
   // Semantic-v2 compatibility carries the comparison result explicitly as a
   // value whose defining instruction is CMP. Prefer that architecture-neutral
-  // proof. The legacy nzcv register identity remains a fallback for the old IR.
-  const carrierArg = (inst.args || []).find((a) => a?.value?.def?.op === OP.CMP)
-    ?? (inst.args || []).find((a) => a?.value?.reg === 'nzcv');
+  // proof. SEL has two data arms before its flags carrier, while CBR keeps its
+  // flags carrier at the last argument; choosing the first CMP would let a
+  // data arm hijack the condition. The legacy nzcv register identity remains
+  // a fallback for old IR that does not retain the defining CMP.
+  const args = inst.args || [];
+  const positionalCarrier = inst.op === OP.SEL ? args[2]
+    : inst.op === OP.CBR ? args.at(-1)
+      : null;
+  const carrierArg = positionalCarrier?.value?.def?.op === OP.CMP
+    ? positionalCarrier
+    : args.find((a) => a?.value?.reg === 'nzcv');
   const carrier = carrierArg?.value ?? null;
   return conditionFromCmp(carrier?.def, inst.cond, state, ir, opts, memo, active);
 }
@@ -338,13 +346,14 @@ function executionBudget(value, fallback, min, max, name) {
 
 /** Explore bounded Semantic IR paths. */
 export function symbolicExecute(ir, opts) {
+  const cancelledFn = opts?.isCancelled ?? (() => false);
+  if (typeof cancelledFn !== 'function') throw new TypeError('isCancelled must be a function');
   if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
   const maxPaths = executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
   const maxSteps = executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
   const maxBranches = executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
   const maxBlockVisits = executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
   const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
-  const cancelledFn = opts && opts.isCancelled || (() => false);
   const signal = opts && opts.signal || null;
   const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
   const deadline = Date.now() + timeoutMs;

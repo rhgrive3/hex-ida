@@ -66,6 +66,7 @@ export class AnalysisCache {
     if (options.memory != null && !(options.memory instanceof Map)) throw new TypeError('analysis-cache-memory-backend-invalid');
     this.memory = options.memory || (!this.indexedDB && this.fallbackMode === ANALYSIS_CACHE_FALLBACK.MEMORY ? new Map() : null);
     this._db = null;
+    this._dbPromise = null;
     this._idbFailed = false;
   }
 
@@ -139,13 +140,54 @@ export class AnalysisCache {
     }
     if (!record) return null;
     if (this.#isCorruptOrStale(record, artifactId)) {
-      await this.delete(binaryHash, { artifactId });
+      await this.#deleteObservedCorruptRecord(key, record);
       return null;
     }
     if (!this.#validRecord(record, binaryHash, artifactId)) {
       return null;
     }
     return structuredCloneSafe(record.data);
+  }
+
+  /**
+   * Conditional cleanup for a corrupt record observed by get() (#5934).
+   *
+   * The read and the cleanup are separate transactions, and IndexedDB starts
+   * overlapping transactions in creation order — so an unconditional delete
+   * could run after a concurrent put() had already replaced the record and
+   * erase the fresh, valid entry. This cleanup re-reads the key inside its
+   * own readwrite transaction (atomic with the delete) and deletes only when
+   * the record it observed is still the one stored. Memory backends compare
+   * record identity for the same guarantee.
+   */
+  async #deleteObservedCorruptRecord(key, observed) {
+    if (this.memory) {
+      if (this.memory.get(key) === observed) this.memory.delete(key);
+      return;
+    }
+    const fingerprint = (record) => JSON.stringify([
+      record?.schemaVersion ?? null,
+      record?.analysisIdentity ?? null,
+      record?.binaryHash ?? null,
+      record?.canonicalArtifactId ?? null,
+      record?.updatedAt ?? null,
+    ]);
+    const expected = fingerprint(observed);
+    try {
+      const db = await this.#db();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('entries', 'readwrite');
+        const store = tx.objectStore('entries');
+        const reread = store.get(key);
+        reread.onerror = () => reject(reread.error || new Error('IndexedDB request failed'));
+        reread.onsuccess = () => {
+          if (fingerprint(reread.result) === expected) store.delete(key);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+      });
+    } catch (error) { this.#fallback(error).delete(key); }
   }
 
   async put(hash, data = {}, options = {}) {
@@ -232,7 +274,9 @@ export class AnalysisCache {
   async #db() {
     if (this._idbFailed || !this.indexedDB?.open) throw this.lastIndexedDBError || new Error('IndexedDB unavailable');
     if (this._db) return this._db;
-    this._db = await new Promise((resolve, reject) => {
+    if (this._dbPromise) return this._dbPromise;
+
+    const opening = new Promise((resolve, reject) => {
       let req;
       let settled = false;
       const fail = (error) => {
@@ -251,13 +295,28 @@ export class AnalysisCache {
           try { db?.close?.(); } catch { /* best effort */ }
           return;
         }
+        db.onversionchange = () => {
+          try { db?.close?.(); } catch { /* best effort */ }
+          if (this._db === db) this._db = null;
+        };
         settled = true;
         resolve(db);
       };
       req.onerror = () => fail(req.error || new Error('IndexedDB open failed'));
       req.onblocked = () => fail(new Error('IndexedDB open blocked'));
     });
-    return this._db;
+    this._dbPromise = opening;
+    try {
+      const db = await opening;
+      if (this._idbFailed) {
+        try { db?.close?.(); } catch { /* best effort */ }
+        throw this.lastIndexedDBError || new Error('IndexedDB unavailable');
+      }
+      this._db = db;
+      return db;
+    } finally {
+      if (this._dbPromise === opening) this._dbPromise = null;
+    }
   }
 
   async #idbGet(key) { const db = await this.#db(); return requestPromise(db.transaction('entries', 'readonly').objectStore('entries').get(key)); }

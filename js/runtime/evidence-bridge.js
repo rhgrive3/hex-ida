@@ -17,10 +17,18 @@ function required(value, code, message) {
 function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
+  const normalized = [];
   for (const item of value) {
-    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string') throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    // Same canonical contract as the scalar ids and the core evidence
+    // stringArray: trim, require non-empty, dedupe/sort canonicalized values.
+    // Keeping raw strings would alias padded duplicates and make parent
+    // references unresolvable against their canonical record ids (#5966).
+    const text = item.trim();
+    if (!text) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    normalized.push(text);
   }
-  return Object.freeze([...new Set(value)].sort());
+  return Object.freeze([...new Set(normalized)].sort());
 }
 
 function optionalSequence(value) {
@@ -224,7 +232,33 @@ export class RuntimeEvidenceBridge {
     const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
-    const interventionRecords = this.interventions.ancestry(event.interventionIds);
+    const topLevelInterventions = event.interventionIds.map((interventionId) => {
+      const record = this.interventions.get(interventionId);
+      if (!record) {
+        throw new DebugAdapterError(
+          'runtime-intervention-not-found',
+          `runtime event intervention not found: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      if (record.runtimeSessionId !== event.runtimeSessionId) {
+        throw new DebugAdapterError(
+          'runtime-intervention-session-mismatch',
+          `runtime event intervention belongs to a different session: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      return record;
+    });
+    const interventionRecords = this.interventions.ancestry(
+      topLevelInterventions.map((record) => record.interventionId),
+    );
+    if (interventionRecords.some((record) => record.runtimeSessionId !== event.runtimeSessionId)) {
+      throw new DebugAdapterError(
+        'runtime-intervention-session-mismatch',
+        'runtime event intervention ancestry crosses session boundary',
+      );
+    }
     const evidenceId = createEvidenceId({
       binaryId,
       kind: 'runtime-event',

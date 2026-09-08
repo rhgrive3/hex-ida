@@ -46,8 +46,8 @@ const KIND_SET = new Set(PHASE7_ARTIFACT_KINDS);
  */
 export const PHASE7_DEPENDENCY_CLASSES = deepFreeze({
   'phase7.alias.region': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions'],
-  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions'],
-  'phase7.summary.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions'],
+  'phase7.pointsto.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
+  'phase7.summary.local': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.escape': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries'],
   'phase7.summary.interprocedural': ['binary', 'semantic', 'cfg', 'ssa', 'memoryssa', 'aliasOptions', 'pointsToOptions', 'calleeSummaries', 'libraryModel'],
   'phase7.types.constraint-graph': ['binary', 'semantic', 'abi', 'calleeSummaries', 'debugIdentity', 'userConstraints'],
@@ -81,6 +81,32 @@ function sortedIds(values, code) {
 export function dependencyClassFor(kind) {
   if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
   return PHASE7_DEPENDENCY_CLASSES[kind];
+}
+
+/**
+ * Option-group names recognized across the dependency table.
+ *
+ * These are the only keys allowed in `input.options`: the descriptor projects
+ * the bag down to the option groups the kind's dependency class declares, so
+ * an unrelated analysis' tuning options cannot change this kind's identity
+ * (FM-14 over-invalidation). Keys that are not a known option group at all
+ * fail closed — silently dropping a real dependency's options would narrow
+ * the key below the actual semantics (FM-15), which is worse than a cache
+ * miss.
+ */
+const OPTION_CLASS_KEYS = deepFreeze(
+  [...new Set(Object.values(PHASE7_DEPENDENCY_CLASSES).flat())]
+    .filter((name) => name.endsWith('Options')),
+);
+
+function projectOptionsForKind(options, classes) {
+  const projected = {};
+  const declared = new Set(classes.filter((name) => OPTION_CLASS_KEYS.includes(name)));
+  for (const key of Object.keys(options)) {
+    if (!OPTION_CLASS_KEYS.includes(key)) fail(`phase7-artifact-unknown-option-class:${key}`);
+    if (declared.has(key)) projected[key] = options[key];
+  }
+  return projected;
 }
 
 /**
@@ -166,16 +192,32 @@ export function createPhase7ArtifactDescriptor(input = {}) {
       ? sortedIds(input.calleeSummaryIds, 'phase7-artifact-invalid-callee-summary-id')
       : [],
     libraryModelId: classes.includes('libraryModel') ? optional(input.libraryModelId, 'phase7-artifact-invalid-library-model-id') : null,
-    debugProviderVersion: classes.includes('debugProvider') || classes.includes('debugIdentity')
+    // A declared dependency must be bound in the key: a producer that derives
+    // from debug sources has to name which provider version and matched build
+    // identity it used. Omitting them would drop the debug dimension from the
+    // cache key entirely (#5836).
+    debugProviderVersion: classes.includes('debugProvider')
+      ? nonEmpty(input.debugProviderVersion, 'phase7-artifact-debug-provider-version-required')
+      : classes.includes('debugIdentity')
       ? optional(input.debugProviderVersion, 'phase7-artifact-invalid-debug-provider-version')
       : null,
-    debugBuildIdentity: classes.includes('debugIdentity') ? optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity') : null,
+    debugBuildIdentity: kind === 'phase7.debug.facts'
+      ? nonEmpty(input.debugBuildIdentity, 'phase7-artifact-debug-build-identity-required')
+      : optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity'),
+    // The debug identity digest binds the full canonical debug identity —
+    // including the matched-partial coverage domain that decides which
+    // records are hard evidence — into the key (#5849).
+    debugIdentityDigest: classes.includes('debugIdentity')
+      ? nonEmpty(input.debugIdentityDigest, 'phase7-artifact-debug-identity-digest-required')
+      : null,
     loaderEvidenceId: classes.includes('loaderEvidence') ? optional(input.loaderEvidenceId, 'phase7-artifact-invalid-loader-evidence-id') : null,
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
 
   const options = input.options ?? {};
+  if (!options || typeof options !== 'object' || Array.isArray(options)) fail('phase7-artifact-invalid-options');
   assertNoPresentationState(options);
+  const kindOptions = projectOptionsForKind(options, classes);
 
   return createArtifactDescriptor({
     binaryId: nonEmpty(input.binaryId, 'phase7-artifact-binary-id-required'),
@@ -198,7 +240,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
       provider: keyExtras.debugProviderVersion != null,
     },
     providerVersion: keyExtras.debugProviderVersion ?? undefined,
-    config: options,
+    config: kindOptions,
     keyExtras,
     upstreamArtifactIds: sortedIds(input.upstreamArtifactIds, 'phase7-artifact-invalid-upstream-id'),
     originRefs: sortedIds(input.originRefs, 'phase7-artifact-invalid-origin-ref'),

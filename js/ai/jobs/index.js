@@ -5,6 +5,7 @@ export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
     if (!runtime || typeof runtime.turn !== 'function') throw new TypeError('AgentJobManager requires an AIRuntime');
     this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, 32); this.maxElapsedMs = bounded(maxElapsedMs, 1000, 4 * 60 * 60 * 1000);
+    this.pendingCheckpoints = new Map();
     this.jobs = new Map(); this.creatingIds = new Set(); this.runningJobIds = new Set(); this.loadingPromises = new Map();
   }
 
@@ -44,7 +45,11 @@ export class AgentJobManager {
         limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
         request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
       };
-      this.jobs.set(job.id, job); await this.save(job); return checkpoint(job);
+      // Keep the ID reserved, but do not publish a runnable job until its
+      // initial checkpoint is durable. Failed saves leave no in-memory ghost.
+      await this.save(job);
+      this.jobs.set(job.id, job);
+      return checkpoint(job);
     } finally {
       this.creatingIds.delete(id);
     }
@@ -56,6 +61,14 @@ export class AgentJobManager {
     if (this.runningJobIds.has(id)) throw new Error('Agent job already has an active slice');
     this.runningJobIds.add(id);
     try {
+      // A successful slice is never replayed to recover a failed checkpoint
+      // write (#6273). The first resume retries the exact saved result only,
+      // including when the execution status is checkpointed rather than done.
+      if (this.pendingCheckpoints.has(id)) {
+        await this.persistPendingCheckpoint(job);
+        return checkpoint(job);
+      }
+      if (options.checkpointOnly === true) return checkpoint(job);
       if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
       if (job.status === 'running') throw new Error('Agent job already has an active slice');
       if (hardLimit(job)) {
@@ -99,12 +112,8 @@ export class AgentJobManager {
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
       job.updatedAt = new Date().toISOString();
-      try {
-        await this.save(job);
-      } catch (saveError) {
-        job.unresolvedWork = unique([...job.unresolvedWork, `checkpoint-save-failed:${String(saveError?.message || saveError)}`]).slice(-32);
-        throw saveError;
-      }
+      this.pendingCheckpoints.set(id, checkpoint(job));
+      await this.persistPendingCheckpoint(job);
       return checkpoint(job);
     } finally {
       this.runningJobIds.delete(id);
@@ -112,6 +121,23 @@ export class AgentJobManager {
   }
 
   async resume(id, options = {}) { return this.runSlice(id, options); }
+  async retryCheckpoint(id) { return this.runSlice(id, { checkpointOnly: true }); }
+  async persistPendingCheckpoint(job) {
+    const pending = this.pendingCheckpoints.get(job.id);
+    if (!pending) return;
+    try {
+      // save() clones again, so a mutating/rejecting persistence adapter cannot
+      // change the checkpoint retained for the next retry.
+      await this.save(pending);
+    } catch (error) {
+      job.checkpointSavePending = true;
+      job.checkpointSaveError = String(error?.message || error);
+      throw error;
+    }
+    this.pendingCheckpoints.delete(job.id);
+    delete job.checkpointSavePending;
+    delete job.checkpointSaveError;
+  }
   async get(id) {
     if (typeof id !== 'string') return null;
     return this.jobs.get(id) || await this.load(id);
@@ -169,8 +195,13 @@ function mergeResult(job, result) {
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
-  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += Number(usage.modelCalls || 0); job.budgetUsage.toolCalls += Number(usage.toolCalls || 0);
-  job.budgetUsage.elapsedMs += Number(usage.elapsedMs || 0); job.budgetUsage.contextBytes += Number(usage.contextBytes || 0);
+  // Usage counters feed the job hard-limit authority (`maxElapsedMs` etc.).
+  // `Number()` coercion admitted NaN (silently disabling the elapsed ceiling
+  // forever after) and negative values (rewinding monotonic accounting);
+  // adopt only primitive finite non-negative numbers (#5689).
+  const usageDelta = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
+  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
+  job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
 }
 function collectRefs(result) {

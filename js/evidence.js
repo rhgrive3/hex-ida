@@ -161,6 +161,13 @@ const FAMILY_CAP = {
   [FAMILY.NAMING]: 1e9,
 };
 
+function deepFreeze(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) deepFreeze(value[key], seen);
+  return Object.freeze(value);
+}
+
 /* ── 証拠の表 ────────────────────────────────────────────────
  *
  *   lr     … 尤度比。1 より大きければ「本物らしい」、小さければ「本物らしくない」。
@@ -187,7 +194,7 @@ const FAMILY_CAP = {
  *
  * 数字はここに集めてある。画面に出るのはこの数字そのもの。
  */
-export const EVIDENCE = {
+export const EVIDENCE = deepFreeze({
   /* 値（フィールド）を特定するための証拠 */
   /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
   'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -401,7 +408,7 @@ export const EVIDENCE = {
   'role-topic-agree':   { lr: 3,    family: FAMILY.USAGE,    kind: 'inference' },
   // 手がかりが別々の機能を指している。名指しの邪魔になるので、下げる。
   'role-topic-conflict':{ lr: 0.35, family: FAMILY.CONTEXT,  kind: 'inference' },
-};
+});
 
 /** その証拠は「目的に結びつける」ものか。裏打ちするだけのものか。 */
 export function isIdentifying(code) {
@@ -417,6 +424,53 @@ export function evidenceFamily(code) {
 export function evidenceKind(code) {
   const e = EVIDENCE[code];
   return e ? e.kind : 'inference';
+}
+
+/* ── 動的アダプタの証拠契約 ──────────────────────────────────
+ *
+ * semantic/runtime のように実測から動的な code を生む証拠は、この表に
+ * code と authority（family/kind/id）を明示的に登録する。fuse() は
+ * EVIDENCE 表とこの表のどちらにも無い code を証拠として受理しない。
+ * 生の object が kind:'verified' や id:true を名乗っても、表に登録の
+ * ない限り何の効きも持たない（fail-closed）。
+ */
+export const ADAPTER_EVIDENCE = deepFreeze({
+  'semantic-ir-proof':       { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+  'semantic-ir-observation': { family: FAMILY.USAGE,    kind: 'semantic', id: false },
+  'runtime-field-verified':  { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+  'runtime-branch-verified': { family: FAMILY.VERIFIED, kind: 'verified', id: false },
+});
+
+/*
+ * fuse() が受理する factory 出力の producer と mint 時 code を、caller から
+ * コピー/改変できない module-private metadata に束縛する（#5972）。WeakMap は
+ * spread/JSON/Object.getOwnPropertySymbols() のどれにも露出せず、通常 evidence と
+ * dynamic adapter evidence の provenance を別 authority として保持する。
+ */
+const FACTORY_PROVENANCE = new WeakMap();
+const STATIC_EVIDENCE_FACTORY = Symbol('hex-static-evidence-factory');
+const ADAPTER_EVIDENCE_FACTORY = Symbol('hex-adapter-evidence-factory');
+
+/**
+ * 動的アダプタ証拠の型付き契約。
+ * 登録されていない code は例外になる。family/kind/id は契約表が authority で、
+ * 呼び出し側が上書きすることはできない。id を付ける証拠は EVIDENCE 表だけ。
+ */
+export function adapterEvidence(code, strength, detail, lr) {
+  const info = Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null;
+  if (!info) throw new TypeError(`unregistered-adapter-evidence-code:${code}`);
+  const normalizedLr = finitePositiveLr(lr, 1);
+  const item = {
+    code,
+    strength: strength == null ? 1 : finiteStrength(strength, 0),
+    lr: normalizedLr,
+    family: info.family,
+    kind: info.kind,
+    id: info.id,
+    detail: detail || null,
+  };
+  FACTORY_PROVENANCE.set(item, { producer: ADAPTER_EVIDENCE_FACTORY, code, lr: normalizedLr });
+  return item;
 }
 
 function finiteStrength(value, fallback = 0) {
@@ -438,16 +492,19 @@ export function evidence(code, strength, detail, lr) {
   const info = EVIDENCE[code];
   const s = strength == null ? 1 : finiteStrength(strength, 0);
   const fallbackLr = finitePositiveLr(info?.lr, 1);
-  return {
+  const normalizedLr = finitePositiveLr(lr, fallbackLr);
+  const item = {
     code,
     strength: s,
     // 実測から作った尤度比があれば、表の既定値より優先する
-    lr: finitePositiveLr(lr, fallbackLr),
+    lr: normalizedLr,
     family: info ? info.family : FAMILY.CONTEXT,
     kind: info ? info.kind : 'inference',
     id: !!(info && info.id),
     detail: detail || null,
   };
+  FACTORY_PROVENANCE.set(item, { producer: STATIC_EVIDENCE_FACTORY, code, lr: normalizedLr });
+  return item;
 }
 
 /**
@@ -594,11 +651,41 @@ export function fuse(items, opts) {
     const eb = Math.abs(LN(Math.max(1e-6, b.lr)) * b.strength);
     return eb - ea;
   };
-  const all = (items || []).filter((x) => x && x.code).map((x) => ({
-    ...x,
-    strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
-    lr: finitePositiveLr(x.lr, 1),
-  }));
+  const all = (items || []).filter((x) => x && x.code).map((x) => {
+    /*
+     * fuse() は evidence() / adapterEvidence() の出力だけを受理する。
+     * 生の object が family/kind/id/lr/strength を自由に名乗ることを許すと、
+     * EVIDENCE 表に無い code だけで confirmed を捏造できる（#5972）。
+     * factory 出力は mint 時 producer + code から authority を再導出し、
+     * 呼び出し側の family/kind/id や後付け code mutation は採用しない。
+     * lr だけは実測チャネルとして factory が明示的に渡した値を優先する
+     * （family cap が歯止めになる）。
+     */
+    const provenance = x && FACTORY_PROVENANCE.get(x);
+    if (!provenance) {
+      throw new TypeError(`raw-evidence-item-rejected:${x && x.code}`);
+    }
+    if (!Object.is(provenance.code, x.code)) {
+      throw new TypeError('evidence-code-mutated');
+    }
+    const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
+      ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
+      : (EVIDENCE[provenance.code] || null);
+    /*
+     * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
+     * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
+     * 表に無い static code と同じ弱い既定（CONTEXT / inference / 非識別）に落ちる。
+     */
+    return {
+      code: provenance.code,
+      strength: finiteStrength(x.strength, x.strength == null ? 1 : 0),
+      lr: provenance.lr,
+      family: info ? info.family : FAMILY.CONTEXT,
+      kind: info ? info.kind : 'inference',
+      id: !!(info && info.id),
+      detail: x.detail || null,
+    };
+  });
   /*
    * 目的に結びつける証拠を先に処理する。そのあとで、裏打ちの証拠を
    * 「結びつきがどれだけ強いか」に応じて割り引く。順番に意味がある。

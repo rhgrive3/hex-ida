@@ -55,6 +55,7 @@ function address(value, code) {
   if (value == null) fail(code);
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) fail(code);
+  if (type === 'string' && value.trim().length === 0) fail(code);
   try {
     const result = BigInt(value);
     if (result < 0n) fail(code);
@@ -64,7 +65,11 @@ function address(value, code) {
 
 function producerId(value) {
   if (value == null) return 'unknown';
-  if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
+  // Producer identity is an independence token for corroboration: two
+  // whitespace-only strings are different JS values but name no source, and
+  // padded variants ('p' vs ' p ') must not count as distinct producers.
+  // Only a canonical trimmed non-empty token is accepted (#5792).
+  if (typeof value !== 'string' || value.trim() === '' || value.trim() !== value) fail('discovery-evidence-invalid-producer-id');
   return value;
 }
 

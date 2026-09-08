@@ -13,7 +13,7 @@ function loadControlNormalizers() {
   const end = SOURCE.indexOf('\n\nexport function runInSandbox', start);
   assert.ok(start >= 0 && end > start, 'sandbox control normalizers must remain extractable');
   const body = SOURCE.slice(start, end);
-  return new Function(`${body}\nreturn { normalizeSandboxIndex, normalizeSandboxTimeout };`)();
+  return new Function(`${body}\nreturn { normalizeSandboxIndex, normalizeSandboxDefinition, normalizeSandboxTimeout };`)();
 }
 
 function loadWorkerProgram() {
@@ -24,7 +24,7 @@ function loadWorkerProgram() {
   return new Function('WORKER_PRELUDE', 'WORKER_POSTLUDE', `return (${body});`)('', '');
 }
 
-const { normalizeSandboxIndex, normalizeSandboxTimeout } = loadControlNormalizers();
+const { normalizeSandboxIndex, normalizeSandboxDefinition, normalizeSandboxTimeout } = loadControlNormalizers();
 const workerProgram = loadWorkerProgram();
 
 test('plugin index accepts only primitive non-negative safe integers', () => {
@@ -40,6 +40,17 @@ test('plugin index accepts only primitive non-negative safe integers', () => {
 test('non-plugin modes do not transport irrelevant caller index values', () => {
   assert.equal(normalizeSandboxIndex('script', ['1']), 0);
   assert.equal(normalizeSandboxIndex('discover', true), 0);
+});
+
+test('expected plugin metadata is normalized without coercing malformed values', () => {
+  assert.deepEqual(
+    normalizeSandboxDefinition({ name: 'A'.repeat(100), description: 'B'.repeat(220) }),
+    { name: 'A'.repeat(80), description: 'B'.repeat(200) },
+  );
+  for (const value of [null, [], { name: 'A' }, { description: 'B' }, { name: 1, description: 'B' }]) {
+    assert.equal(normalizeSandboxDefinition(value), null, `must reject ${String(value)}`);
+  }
+  assert.equal(normalizeSandboxDefinition(undefined), undefined, 'omitted expectation stays omitted');
 });
 
 test('timeout accepts only positive safe-integer numbers and preserves the 50 ms floor', () => {
@@ -60,6 +71,12 @@ test('worker-side plugin selection does not coerce a structured index', () => {
   assert.match(workerProgram('', 'plugin', ['1']), /const def = defs\[-1\];/);
   assert.match(workerProgram('', 'plugin', true), /const def = defs\[-1\];/);
   assert.match(workerProgram('', 'plugin', 1.5), /const def = defs\[-1\];/);
+});
+
+test('worker compares the selected definition immediately before running it', () => {
+  const program = workerProgram('', 'plugin', 1, { name: 'A', description: 'A' });
+  assert.match(program, /const expectedDefinition = \{"name":"A","description":"A"\};/);
+  assert.match(program, /selectedDefinition\.name !== expectedDefinition\.name/);
 });
 
 test('runInSandbox rejects malformed plugin index before allocating browser resources', async () => {
