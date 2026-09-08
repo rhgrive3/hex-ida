@@ -621,6 +621,19 @@ function entryRootTarget(definition, functionId, values) {
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  // The termination gates compare against these numbers, so a non-finite or
+  // non-integer cap (e.g. NaN) would silently disable both the iteration cap
+  // and the widening switch and hang the synchronous solve (#5322). Fail
+  // closed at the option boundary, matching the lattice's budget contract.
+  for (const key of ['maxIterations', 'widenAfterIterations']) {
+    const value = budget[key];
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError('points-to-invalid-budget-value');
+    }
+  }
+  if (typeof budget.maxValues !== 'number' || !Number.isSafeInteger(budget.maxValues) || budget.maxValues <= 0) {
+    throw new TypeError('points-to-invalid-budget-value');
+  }
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
