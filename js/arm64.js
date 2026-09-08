@@ -1358,7 +1358,17 @@ HANDLERS.brk = (o) => {
     'Swift の配列範囲外アクセスや、整数のあふれ検出で、この命令に飛ばされてクラッシュします。',
     'Swift traps such as array-out-of-bounds land here.'));
 };
-HANDLERS.udf = HANDLERS.brk;
+HANDLERS.udf = (o) => {
+  o.title = J('永久に未定義の命令', 'Permanently undefined instruction');
+  o.pseudo = 'undefined_instruction_exception()';
+  o.summary = J(
+    'この命令は永久に未定義です。実行すると未定義命令例外になり、通常の命令実行は続きません。',
+    'This instruction is permanently undefined. Executing it raises an Undefined Instruction exception; normal instruction execution does not continue.');
+  o.detail.push(J(
+    '命令に埋め込まれた #imm16 は、未定義命令のエンコードに含まれる印で、動作を選ぶ値ではありません。これは BRK のデバッガ用ブレークポイントではありません。',
+    'The #imm16 field is part of the undefined-instruction encoding, not an operation selector. This is not a debugger breakpoint like BRK.'));
+  o.terms = ['immediate'];
+};
 
 HANDLERS.bti = (o) => {
   o.title = J('ここへの飛び込みを許可する目印', 'Branch target marker');
