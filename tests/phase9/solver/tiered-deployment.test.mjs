@@ -833,14 +833,14 @@ test('identity data is canonical plain immutable data with bounded edges and lon
       claimKind: CLAIM_KIND.EDGE_FEASIBLE,
       targetEntity: invalid,
       assertion: createBool(true),
-    }), /unsupported-query-identity-object/);
+    }), /targetEntity must be null, string, or plain object/);
   }
   for (const edge of ['edge-A', 'edge-B']) assert.throws(() => createVerificationQuery({
     kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
     claimKind: CLAIM_KIND.EDGE_FEASIBLE,
     targetEntity: new Map([['edge', edge]]),
     assertion: createBool(true),
-  }), /unsupported-query-identity-object/);
+  }), /targetEntity must be null, string, or plain object/);
   const base = structuredClone(query(createBool(true)));
   base.targetEntity = new Map([['edge', 'forged']]);
   assert.equal(validateVerificationQuery(base).valid, false);
