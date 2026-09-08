@@ -3,6 +3,7 @@ import { createManagedImageId, createManagedModuleId } from '../shared/identity.
 import { parseJvmFieldDescriptor, parseJvmMethodDescriptor } from './descriptors.js';
 import { validateJvmMethodFlags } from './method-flags.js';
 import { validateJvmFieldFlags } from './field-flags.js';
+import { validateJvmClassFlags } from './class-flags.js';
 
 function fail(code){throw new TypeError(code);}
 function checkedRange(limit,offset,size,code){if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(size)||offset<0||size<0||offset>limit||size>limit-offset)fail(code);}
@@ -85,7 +86,7 @@ export function parseJvm(bytes,options={}){
   function validateModuleConstants(accessFlags){if((accessFlags&0x8000)!==0)return;for(const entry of constantPool){if(entry&&(entry.tag===19||entry.tag===20))fail('jvm-invalid-cp-module-context');}}
   function validateBootstrapMethodReferences(bootstrapMethodsCount){for(const entry of constantPool){if(entry&&(entry.tag===17||entry.tag===18)&&(bootstrapMethodsCount===null||entry.bootstrapMethodAttrIndex>=bootstrapMethodsCount))fail('jvm-invalid-cp-bootstrap-method-index');}}
   validateConstantPool();
-  ensure(pos,8,'jvm-truncated-class-info');const accessFlags=view.getUint16(pos,false),thisClassIdx=view.getUint16(pos+2,false),superClassIdx=view.getUint16(pos+4,false),interfacesCount=view.getUint16(pos+6,false);pos+=8;validateModuleConstants(accessFlags);
+  ensure(pos,8,'jvm-truncated-class-info');const accessFlags=view.getUint16(pos,false),thisClassIdx=view.getUint16(pos+2,false),superClassIdx=view.getUint16(pos+4,false),interfacesCount=view.getUint16(pos+6,false);pos+=8;const classFlagValidation=validateJvmClassFlags(accessFlags,{majorVersion});if(classFlagValidation.errors.length)fail(classFlagValidation.errors[0]);validateModuleConstants(accessFlags);
   const interfaces=[];ensure(pos,interfacesCount*2,'jvm-truncated-interfaces');for(let i=0;i<interfacesCount;i++){interfaces.push(requireDefiningClassName(view.getUint16(pos,false),'jvm-invalid-interface-index'));pos+=2;}
   ensure(pos,2,'jvm-truncated-fields-count');const fieldsCount=view.getUint16(pos,false);pos+=2;const fields=[];
   for(let i=0;i<fieldsCount;i++){ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-field-attribute');requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index');const aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');pos+=6+aLen;}const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);fields.push({accessFlags:fFlags,name:requireMemberName(nameIdx,'jvm-invalid-field-name-index'),descriptor:fieldDescriptor});}
