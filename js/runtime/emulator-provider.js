@@ -84,7 +84,10 @@ function eventIdentity(source, index, runOccurrence) {
   const providerEventId = source.providerEventId ?? source.id;
   const hasProviderEventId = providerEventId != null;
   const hasExplicitStreamSequence = source.streamId != null && source.sequence != null;
-  let streamId = source.streamId ?? fallbackStreamId(runOccurrence);
+  // Provider event IDs are already the engine's stable identity. Keep the
+  // historical fallback stream when no stream was supplied so adding a run
+  // namespace cannot change the digest for providerEventId-only events.
+  let streamId = source.streamId ?? (hasProviderEventId ? 'emulator' : fallbackStreamId(runOccurrence));
   // A complete engine-supplied stream/sequence pair (or provider event ID)
   // owns its identity. When either half is absent, the provider's generated
   // fallback must include this run occurrence (#5929).

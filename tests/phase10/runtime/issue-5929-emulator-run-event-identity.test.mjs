@@ -84,9 +84,27 @@ test('#5929 preserves engine-supplied identity fields', async () => {
           events: [{
             kind: 'call',
             providerEventId: 'engine-event-7',
-            streamId: 'engine-provider-stream',
-            sequence: 7,
             payload: { target: 'helper' },
+          }],
+        };
+      }
+      if (input.kind === 'stream-only') {
+        return {
+          termination: 'return',
+          events: [{
+            kind: 'return',
+            streamId: 'engine-stream',
+            payload: { value: 7 },
+          }],
+        };
+      }
+      if (input.kind === 'sequence-only') {
+        return {
+          termination: 'return',
+          events: [{
+            kind: 'return',
+            sequence: 41,
+            payload: { value: 7 },
           }],
         };
       }
@@ -102,15 +120,35 @@ test('#5929 preserves engine-supplied identity fields', async () => {
     },
   }, '5929-supplied-identities');
 
-  const providerIdEvent = (await session.facets.emulator.run({ kind: 'provider-id' })).batch.events[0];
+  const providerIdFirst = (await session.facets.emulator.run({ kind: 'provider-id' })).batch.events[0];
+  const providerIdSecond = (await session.facets.emulator.run({ kind: 'provider-id' })).batch.events[0];
   const streamSequenceEvent = (await session.facets.emulator.run({ kind: 'stream-sequence' })).batch.events[0];
+  const streamOnlyFirst = (await session.facets.emulator.run({ kind: 'stream-only' })).batch.events[0];
+  const streamOnlySecond = (await session.facets.emulator.run({ kind: 'stream-only' })).batch.events[0];
+  const sequenceOnlyFirst = (await session.facets.emulator.run({ kind: 'sequence-only' })).batch.events[0];
+  const sequenceOnlySecond = (await session.facets.emulator.run({ kind: 'sequence-only' })).batch.events[0];
 
-  assert.equal(providerIdEvent.providerEventId, 'engine-event-7');
-  assert.equal(providerIdEvent.streamId, 'engine-provider-stream');
-  assert.equal(providerIdEvent.sequence, 7);
+  assert.equal(providerIdFirst.providerEventId, 'engine-event-7');
+  assert.equal(providerIdFirst.streamId, 'emulator');
+  assert.equal(providerIdFirst.sequence, 0);
+  assert.equal(providerIdSecond.eventId, providerIdFirst.eventId);
+  assert.equal(providerIdSecond.streamId, 'emulator');
+  assert.equal(providerIdSecond.sequence, 0);
   assert.equal(streamSequenceEvent.providerEventId, null);
   assert.equal(streamSequenceEvent.streamId, 'engine-stream');
   assert.equal(streamSequenceEvent.sequence, 41);
+  assert.notEqual(streamOnlyFirst.eventId, streamOnlySecond.eventId);
+  assert.notEqual(streamOnlyFirst.streamId, streamOnlySecond.streamId);
+  assert.match(streamOnlyFirst.streamId, /^emulator:run:/);
+  assert.match(streamOnlySecond.streamId, /^emulator:run:/);
+  assert.equal(streamOnlyFirst.sequence, 0);
+  assert.equal(streamOnlySecond.sequence, 0);
+  assert.notEqual(sequenceOnlyFirst.eventId, sequenceOnlySecond.eventId);
+  assert.notEqual(sequenceOnlyFirst.streamId, sequenceOnlySecond.streamId);
+  assert.match(sequenceOnlyFirst.streamId, /^emulator:run:/);
+  assert.match(sequenceOnlySecond.streamId, /^emulator:run:/);
+  assert.equal(sequenceOnlyFirst.sequence, 41);
+  assert.equal(sequenceOnlySecond.sequence, 41);
 
   await session.close();
 });
@@ -137,4 +175,3 @@ test('#5929 deterministic replay is a new fallback event occurrence', async () =
 
   await session.close();
 });
-
