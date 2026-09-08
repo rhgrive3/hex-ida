@@ -230,13 +230,20 @@ export function microsoftX64ReturnResult(decision) {
     const { kind:_kind, ...result } = decision;
     return result;
   }
-  return {
+  const result = {
     reg:null,
     partial:true,
     unsupported:decision.unsupported === true,
     reason:decision.reason,
     hiddenResultPossible:decision.hiddenResultPossible === true,
   };
+  /* Preserve proven shape metadata on unsupported vector results.  The
+   * decision layer already established these fields; dropping them here made
+   * a fail-closed __m256 result look indistinguishable from an untyped
+   * unknown return to callers. */
+  if (decision.vector === true) result.vector = true;
+  if (Number.isSafeInteger(decision.bits) && decision.bits > 0) result.bits = decision.bits;
+  return result;
 }
 
 export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
@@ -271,7 +278,7 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   const typeAndClass = `${type} ${abiClass}`;
   const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256/.test(typeAndClass);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
   const bitsProven = prototype.returnBits != null || prototype.bits != null || options.returnBits != null;
   const wideVectorBits = /__m256/.test(typeAndClass) ? 256
     : vector && bitsProven && Number.isSafeInteger(rawBits) && rawBits > 128 ? rawBits : null;

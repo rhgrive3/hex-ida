@@ -50,10 +50,16 @@ function rawBytesOf(input, expectedLength) {
   if (input.length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
   const bytes = new Uint8Array(expectedLength);
   for (let index = 0; index < expectedLength; index += 1) {
-    if (!Object.hasOwn(input, index)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
-    const byte = input[index];
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+    /* A getter is not a stable byte authority: reading it can observe or
+     * mutate state, so reject accessor-backed array entries before invoking
+     * user code. */
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    const byte = descriptor.value;
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
-      throw new TypeError('riscv64-decoded-instruction-invalid-raw-byte');
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
     }
     bytes[index] = byte;
   }
