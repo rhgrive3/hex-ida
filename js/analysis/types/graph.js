@@ -432,6 +432,13 @@ export class TypeConstraintGraph {
 
   /** Every layer's answer for one entity. */
   solveEntity(entityId, { signal = null, sccContext = null } = {}) {
+    if (typeof entityId !== 'string' || entityId.length === 0) {
+      return createTypeResult({
+        entityId: '',
+        status: this.#status('unsupported', 'unsupported-input'),
+        layers: {},
+      });
+    }
     const layers = this.entities.get(entityId);
     if (!layers) {
       return createTypeResult({
@@ -740,7 +747,7 @@ export function createTypeResult(input = {}) {
   if (!status) fail('type-result-status-required');
   return deepFreeze({
     schemaVersion: TYPE_RESULT_SCHEMA_VERSION,
-    entityId: String(input.entityId ?? ''),
+    entityId: typeof input.entityId === 'string' ? input.entityId : '',
     layers: deepFreeze(layers),
     contradictions: deepFreeze(contradictions),
     userConstrained: input.userConstrained === true,
@@ -806,6 +813,14 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
     return null;
   }
 
+  // A graph query is the authority for the returned identity. In particular,
+  // solveEntity() deliberately returns an empty identity for malformed input;
+  // re-stringifying the raw argument here would turn ['A'] back into 'A' and
+  // reintroduce the lookup/result mismatch at this consumer boundary.
+  const canonicalEntityId = typeof result?.entityId === 'string'
+    ? result.entityId
+    : typeof entityId === 'string' ? entityId : '';
+
   const structuralLayer = result?.layers?.structural;
   const nominalLayer = result?.layers?.nominal;
   const selected = structuralLayer?.selected?.descriptor;
@@ -814,7 +829,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
   if (!selected) {
     return deepFreeze({
       kind: 'unknown',
-      entityId: String(entityId ?? result?.entityId ?? ''),
+      entityId: canonicalEntityId,
       name: nominalName,
       sizeBytes: null,
       alignBytes: null,
@@ -855,12 +870,12 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
 
   return deepFreeze({
     kind: selected.kind ?? 'struct',
-    entityId: String(entityId ?? result?.entityId ?? ''),
+    entityId: canonicalEntityId,
     name: nominalName,
     sizeBytes: totalSize,
     alignBytes: maxAlign,
     isRecursive: selected.isRecursive === true,
-    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? String(entityId ?? result?.entityId ?? '') : null),
+    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? canonicalEntityId : null),
     sccMembers: selected.sccMembers ?? null,
     members: deepFreeze(members),
     confidence: structuralLayer.confidence,
