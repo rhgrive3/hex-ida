@@ -474,6 +474,12 @@ export function pointsToDigest(set) {
       min: target.offsetRange.min == null ? null : target.offsetRange.min.toString(),
       max: target.offsetRange.max == null ? null : target.offsetRange.max.toString(),
       widthBits: target.widthBits,
+      // Join unions provenance ids; the fixed-point equality must observe
+      // that growth or a join that only adds provenance looks equal to its
+      // input and the merged provenance never reaches the solved state
+      // (#5629). Target construction keeps this list deduped and sorted, so
+      // the digest stays canonical for identical semantic sets.
+      evidenceIds: target.evidenceIds,
     })),
   });
 }
