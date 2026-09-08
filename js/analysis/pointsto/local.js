@@ -30,8 +30,7 @@ import {
   deriveCanonicalAddressProof,
   normalizeRootIdentity,
 } from '../alias/canonical-address-v2.js';
-import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
-import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
+import { validateMemorySsaBinding } from '../memoryssa-binding.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -263,36 +262,14 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     reason,
     binding,
   });
-  if (!memorySsa || typeof memorySsa !== 'object' || Array.isArray(memorySsa)) {
-    return failBoundary('unsupported', 'memoryssa-invalid');
-  }
-  if (typeof memorySsa.functionId !== 'string' || typeof ir.functionId !== 'string' || memorySsa.functionId !== ir.functionId) {
-    return failBoundary('stale', 'memoryssa-stale-function');
-  }
-  if (binding.functionId != null && (typeof binding.functionId !== 'string' || typeof ir.functionId !== 'string' || binding.functionId !== ir.functionId)) {
-    return failBoundary('stale', 'memoryssa-stale-function');
-  }
-  if (memorySsa.snapshotId != null && (typeof memorySsa.snapshotId !== 'string' || typeof (options.snapshotId ?? 'snapshot-unbound') !== 'string' || memorySsa.snapshotId !== (options.snapshotId ?? 'snapshot-unbound'))) {
-    return failBoundary('stale', 'memoryssa-stale-snapshot');
-  }
-  if (binding.snapshotId !== (options.snapshotId ?? 'snapshot-unbound')) {
-    return failBoundary('stale', 'memoryssa-stale-snapshot');
-  }
-  if (memorySsa.contractVersion !== MEMORY_SSA_CONTRACT_VERSION) {
-    return failBoundary('unsupported', 'memoryssa-contract-mismatch');
-  }
-  if (memorySsa.buildVersion !== MEMORY_SSA_BUILD_VERSION) {
-    return failBoundary('stale', 'memoryssa-build-mismatch');
-  }
-  if (binding.memorySsaBuildVersion != null && (typeof binding.memorySsaBuildVersion !== 'string' || typeof memorySsa.buildVersion !== 'string' || binding.memorySsaBuildVersion !== memorySsa.buildVersion)) {
-    return failBoundary('stale', 'memoryssa-build-mismatch');
-  }
-  if (binding.semanticIrVersion != null && (typeof binding.semanticIrVersion !== 'string' || typeof ir.contractVersion !== 'string' || binding.semanticIrVersion !== ir.contractVersion)) {
-    return failBoundary('stale', 'semantic-ir-version-mismatch');
-  }
-  if (binding.completeness !== 'complete') {
-    return failBoundary('unsupported', 'memoryssa-incomplete');
-  }
+  const bindingCheck = validateMemorySsaBinding({
+    memorySsa,
+    ir,
+    binding,
+    // The supplied binding is the value being checked, not current context.
+    snapshotId: options.snapshotId ?? options.memorySsaSnapshotId ?? 'snapshot-unbound',
+  });
+  if (!bindingCheck.valid) return failBoundary(bindingCheck.state, bindingCheck.reason);
 
   const definitions = Array.isArray(memorySsa.definitions) ? memorySsa.definitions : null;
   const uses = Array.isArray(memorySsa.uses) ? memorySsa.uses : null;
