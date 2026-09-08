@@ -329,6 +329,30 @@ Canonical generation passed (3.2 s), producing serial `2322242155`, build ID
 `bb73b24028b8795d5218e407fb00fea43397913dc8fb6b519e4cf2306889d43c`.
 Exact commit/rebuild-zero-diff and new-head broad gates remain to be verified.
 
+The reused slice and branch assertion are committed at
+`68319ac9b5f8c476f3387129e2a592f22e27d954` (tree
+`959867d2c40b64b73d5734cfc43399487cbfd96f`) and fast-forwarded into the
+same integration branch. Own-head targeted tests passed (0.6 s); canonical
+rebuild produced zero generated diff (3.5 s; repeated on integration in
+3.3 s); generated-runtime Chromium/WebKit sandbox E2E passed (8.2 s).
+The complete changed inventory is 171 paths (13 Phase 7 / 24 Phase 8).
+
+Full Phase 7 on that exact head passed 1315/1327 tests (68.8 s), with the two
+reused fixes removing their failures:
+`/tmp/hex-roadmap-p7-cache-exact-LREJCy/full.log`. The remaining 12 are
+canonical proof address-space normalization (#6066), summary region geometry
+and merge identity (#4064), provenance index typing (#4314/#6069), canonical
+summary writes (#4320/#5752), and fallback completeness (#5851). The next
+#6066 correction also already exists as a one-line change in #7097's pinned
+`pointsto/lattice.js`; it has been inspected but not yet imported.
+
+The next MachineEffects diagnostic selection is retained at
+`/tmp/hex-roadmap-next-me-0jjBMr/full.log`. It distinguishes an incorrectly
+exact `movzx ax,bx` (#5553), a stale source-shape routing assertion (#5566),
+RISC-V compressed-profile contract differences (#5999), and x87 terminal
+authority failures (#6133). These are unresolved; no oracle/terminal-domain
+coverage is claimed from the earlier targeted ARM64 successes.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
