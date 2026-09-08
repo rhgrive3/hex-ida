@@ -3,7 +3,7 @@
 // A->A call edge twice at depth 1. Contract now: the edge set is deduped by
 // (from, to, kind) — one logical call edge appears once.
 import assert from 'node:assert/strict';
-import { callGraph } from '../js/graphview-base.js';
+import { callGraph } from '../../js/graphview-base.js';
 
 // 1. The issue's scenario: a self-recursive function at depth 1.
 {

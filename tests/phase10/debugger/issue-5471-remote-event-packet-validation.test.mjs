@@ -5,8 +5,8 @@
 // Contract now: `type:'event'` requires a 1..128 character string event name,
 // exactly like a request method.
 import assert from 'node:assert/strict';
-import { RemoteProtocolClient, validateRemotePacket } from '../js/debug/remote-protocol.js';
-import { DEBUG_PROTOCOL_VERSION } from '../js/debug/adapter.js';
+import { RemoteProtocolClient, validateRemotePacket } from '../../../js/debug/remote-protocol.js';
+import { DEBUG_PROTOCOL_VERSION } from '../../../js/debug/adapter.js';
 
 function makeTransport() {
   return { async send() {}, onMessage() { return () => {}; } };
