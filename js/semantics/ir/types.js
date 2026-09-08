@@ -15,24 +15,39 @@ import {
   uniqueStrings,
 } from './common.js';
 
-export function createSemanticMachineType(input) {
+export function createSemanticMachineType(input, seenTypes = new WeakSet()) {
   input = object(input, 'semantic-ir-invalid-machine-type');
   assertAllowedKeys(input, new Set(['kind', 'widthBits', 'format', 'laneCount', 'elementType', 'addressSpace']), 'semantic-ir-unexpected-machine-type-field');
   const kind = enumValue(input.kind, SEMANTIC_SETS.machineTypes, 'semantic-ir-invalid-machine-type-kind');
+  /*
+   * Vector element types must be flat: nesting is validated AFTER recursion,
+   * so a self-referential (or deeply nested) `elementType` exhausts the call
+   * stack before reaching the `semantic-ir-invalid-vector-element-type` check.
+   * Track in-progress types and fail closed on re-entry (#5855).
+   */
+  if (seenTypes.has(input)) fail('semantic-ir-invalid-vector-element-type');
+  seenTypes.add(input);
   let out;
   if (kind === 'bitvector') {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width') };
   } else if (kind === 'float') {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width'), format: nonEmpty(input.format, 'semantic-ir-float-format-required') };
   } else if (kind === 'vector') {
-    out = { kind, laneCount: positiveInteger(input.laneCount, 'semantic-ir-invalid-vector-lane-count'), elementType: createSemanticMachineType(input.elementType) };
-    if (out.elementType.kind === 'vector' || out.elementType.kind === 'address') fail('semantic-ir-invalid-vector-element-type');
+    // Reject disallowed nesting before descending. Otherwise a long chain of
+    // distinct vector objects can exhaust the call stack before the existing
+    // post-recursion shape check runs (#5855).
+    const elementType = input.elementType;
+    if (elementType?.kind === 'vector' || elementType?.kind === 'address') {
+      fail('semantic-ir-invalid-vector-element-type');
+    }
+    out = { kind, laneCount: positiveInteger(input.laneCount, 'semantic-ir-invalid-vector-lane-count'), elementType: createSemanticMachineType(elementType, seenTypes) };
   } else if (kind === 'predicate') {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width') };
     if (input.laneCount != null) out.laneCount = positiveInteger(input.laneCount, 'semantic-ir-invalid-predicate-lane-count');
   } else {
     out = { kind, widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-width'), addressSpace: nonEmpty(input.addressSpace, 'semantic-ir-address-space-required') };
   }
+  seenTypes.delete(input);
   return deepFreeze(out);
 }
 
