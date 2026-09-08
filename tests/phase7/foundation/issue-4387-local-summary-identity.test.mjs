@@ -6,6 +6,7 @@ const base = {
   kind: 'phase7.summary.local', binaryId: 'binary-A', functionId: 'caller', architectureId: 'arm64',
   snapshotId: 'snapshot-A', analyzerId: 'phase7.summary.local', analyzerVersion: '1.1.0',
   semanticSchemaVersion: '2', cfgVersion: '2', ssaVersion: '2', memorySsaVersion: '2', architectureSemanticVersion: '1',
+  budgetClass: 'interactive', budgetAffectsCompleteness: true,
 };
 const id = (calleeSummaryIds, overrides = {}) => createPhase7ArtifactDescriptor({ ...base, calleeSummaryIds, ...overrides }).artifactId;
 

@@ -34,6 +34,8 @@ const base = (overrides = {}) => ({
   memorySsaVersion: '2.0.0',
   architectureSemanticVersion: '1',
   abiSemanticVersion: '1',
+  budgetClass: 'interactive',
+  budgetAffectsCompleteness: true,
   ...overrides,
 });
 
