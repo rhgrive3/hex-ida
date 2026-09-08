@@ -179,6 +179,7 @@ export class EvidenceStore {
     // provenance from being silently replaced (new observation) or dropped
     // (no sourceRef) while sourceData persists anyway (#5425).
     if (malformedSourceRef(input.sourceRef)) return null;
+    if (input.id != null && typeof input.id !== 'string') return null;
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 
@@ -206,7 +207,6 @@ export class EvidenceStore {
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ]));
-    if (input.id && typeof input.id !== 'string') return null;
     const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
