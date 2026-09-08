@@ -49,6 +49,14 @@ export class ProposalStore {
     const before = input.before;
     rejectUnstableProposalState(before);
     const executionPayload = snapshotProposalPayload(input, before);
+    // Uint8Array is an accepted wire representation of patch bytes, but the
+    // stale-state authority and the backend read both use plain arrays. Keep
+    // one canonical payload for either accepted container so equal bytes do
+    // not produce different revisions (#6171).
+    if (kind === 'patch' && (executionPayload.before instanceof Uint8Array || executionPayload.after instanceof Uint8Array)) {
+      executionPayload.before = proposalBytes(executionPayload.before);
+      executionPayload.after = proposalBytes(executionPayload.after);
+    }
     // The stale-state authority must fingerprint the same stable value that
     // execution will receive. Reading caller-controlled `input.before` again
     // after snapshotting would make an accessor-backed value a TOCTOU boundary:
@@ -258,7 +266,23 @@ function proposalSnapshot(proposal) {
 }
 
 function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
-function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function proposalBytes(value) {
+  // Patch bytes are mutation-authority input. Coercing each element (the old
+  // `Number` mapping) let string/boolean/null bytes reach the strict
+  // capability validator as canonical numbers, so the original type violation
+  // could never be detected and the approved identity was compared against a
+  // laundered view. Validate byte identity instead of laundering it (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
