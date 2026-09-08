@@ -8,7 +8,7 @@ import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../bu
 import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
-  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
+  createMonotonicClock, ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
   remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
@@ -38,7 +38,7 @@ export async function executeTurn(input = {}, options = {}) {
     }
     const budget = aiBudget(request.mode, budgetOverrides);
     const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
-    const monotonicNow = resolveMonotonicClock(options.clock, options.monotonicNow, options.now);
+    const monotonicNow = createMonotonicClock(resolveMonotonicClock(options.clock, options.monotonicNow, options.now));
     const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };

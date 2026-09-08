@@ -105,6 +105,17 @@ export function resolveMonotonicClock(...candidates) {
   for (const candidate of candidates) if (typeof candidate === 'function') return candidate;
   return defaultMonotonicNow;
 }
+export function createMonotonicClock(source = defaultMonotonicNow) {
+  const now = resolveMonotonicClock(source);
+  let last = null;
+  return () => {
+    let value;
+    try { value = now(); } catch { value = null; }
+    if (typeof value !== 'number' || !Number.isFinite(value)) return last ?? 0;
+    if (last == null || value > last) last = value;
+    return last;
+  };
+}
 export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonotonicNow) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (nowFn() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
 export function remainingTime(started, timeoutMs, nowFn = defaultMonotonicNow) { return Math.max(1, timeoutMs - (nowFn() - started)); }
 export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }

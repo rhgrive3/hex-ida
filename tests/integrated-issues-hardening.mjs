@@ -447,6 +447,8 @@ console.log('Testing integrated PRs and issue fixes...');
     cfgVersion: '2.0.0',
     ssaVersion: '2.0.0',
     memorySsaVersion: '2.0.0',
+    budgetClass: 'interactive',
+    debugIdentityDigest: 'digest_issue_1097',
   };
   assert.throws(() => {
     createPhase7ArtifactDescriptor({ ...descriptorBase });

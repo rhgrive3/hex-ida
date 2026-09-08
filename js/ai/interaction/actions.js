@@ -10,14 +10,15 @@
 import { toast } from '../../ui.js';
 import { pick } from '../../i18n.js';
 import { showXrefs, showValueFlow } from '../../panels.js';
+import { canonicalAddress } from '../../core/identity/index.js';
 
 function narrow() {
   return typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
-function addressesEqual(a, b) {
+export function addressesEqual(a, b) {
   try {
-    return BigInt(a) === BigInt(b);
+    return canonicalAddress(a) === canonicalAddress(b);
   } catch {
     return false;
   }
