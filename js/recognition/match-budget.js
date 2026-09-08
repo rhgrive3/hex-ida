@@ -12,6 +12,7 @@ export const DEFAULT_MATCH_BUDGET = Object.freeze({
   maxComponentEdges: 20_000,
   maxSolverRelaxations: 500_000,
   maxSolverAugmentations: 2_048,
+  maxPostprocessWork: 500_000,
   maxWallMs: 2_000,
 });
 
@@ -55,6 +56,7 @@ export function createMatchBudget(overrides = {}) {
     maxComponentEdges: limit(overrides.maxComponentEdges, DEFAULT_MATCH_BUDGET.maxComponentEdges),
     maxSolverRelaxations: limit(overrides.maxSolverRelaxations, DEFAULT_MATCH_BUDGET.maxSolverRelaxations),
     maxSolverAugmentations: limit(overrides.maxSolverAugmentations, DEFAULT_MATCH_BUDGET.maxSolverAugmentations),
+    maxPostprocessWork: limit(overrides.maxPostprocessWork, DEFAULT_MATCH_BUDGET.maxPostprocessWork),
     maxWallMs: limit(overrides.maxWallMs, DEFAULT_MATCH_BUDGET.maxWallMs),
   };
   const now = typeof overrides.now === 'function' ? overrides.now : Date.now;
@@ -70,6 +72,7 @@ export function createMatchBudget(overrides = {}) {
   let candidateEdges = 0;
   let solverRelaxations = 0;
   let solverAugmentations = 0;
+  let postprocessWork = 0;
   let oversizedComponents = 0;
   let truncated = false;
   let candidateGraphIncomplete = false;
@@ -155,6 +158,14 @@ export function createMatchBudget(overrides = {}) {
       if (solverAugmentations > limits.maxSolverAugmentations) return stop(`solver augmentations exceeded ${limits.maxSolverAugmentations}`);
       return true;
     },
+    postprocess(cost = 1) {
+      if (truncated) return false;
+      if (signal?.aborted) return stop('match post-processing aborted');
+      if (!Number.isSafeInteger(cost) || cost < 1) return stop('match post-processing cost is invalid');
+      if (postprocessWork > limits.maxPostprocessWork - cost) return stop(`post-processing work exceeded ${limits.maxPostprocessWork}`);
+      postprocessWork += cost;
+      return wallOkay('match post-processing');
+    },
     snapshot() {
       return {
         ...limits,
@@ -168,6 +179,7 @@ export function createMatchBudget(overrides = {}) {
         candidateEdges: Math.min(candidateEdges, limits.maxCandidateEdges),
         solverRelaxations,
         solverAugmentations,
+        postprocessWork,
         oversizedComponents,
         truncated,
         candidateGraphIncomplete,

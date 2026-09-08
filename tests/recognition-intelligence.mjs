@@ -8,6 +8,7 @@ import { KnowledgeDB } from '../js/knowledge/index.js';
 import { ensureRecognitionState } from '../js/app.js';
 import { diffFunctions } from '../js/diff/index.js';
 import { PlatformPluginRegistry } from '../js/platform/plugin-api.js';
+import './issue-4527-matcher-postprocess-budget.mjs';
 
 const cfg = { blocks:2, edges:1, exits:1, loops:0, calls:1 };
 const base = { address:0x1000n, architecture:'arm64', bytes:Uint8Array.from([1,2,3,4,5,6,7,8]), instructions:['stp x29, x30, [sp,#-0x20]!', 'add x3, x1, x2', 'str x3, [x0,#0x20]', 'ret'], cfg, strings:['coins'], imports:['memcpy'], calls:['helper'], constants:[100], semantic:{reads:['field:0x20'],writes:['field:0x20'],rmw:['field:0x20'],operations:['add'],returnOrigin:'void'} };

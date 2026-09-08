@@ -99,6 +99,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
         truncated: true,
         candidateGraphIncomplete: true,
         preprocessingIncomplete: true,
+        postprocessingIncomplete: false,
         ambiguousBefore: beforeFunctions.length,
         ambiguousAfter: afterFunctions.length,
         truncatedComponents: [],
@@ -154,6 +155,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       matching: {
         truncated: true, candidateGraphIncomplete: true,
         preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
+        postprocessingIncomplete: false,
         ambiguousBefore: before.length, ambiguousAfter: after.length,
         truncatedComponents: [], budget: matchingBudget,
       },
@@ -201,14 +203,55 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
+  const solverWasAlreadyTruncated = budget.truncated;
+  const incompletePostprocessing = () => {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [],
+      deleted: before.slice(),
+      new: after.slice(),
+      candidatesEvaluated: all.length,
+      candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index.buckets.size,
+      truncated: true,
+      ambiguous: true,
+      unresolvedBefore: before,
+      unresolvedAfter: after,
+      matching: {
+        truncated: true,
+        candidateGraphIncomplete: false,
+        preprocessingIncomplete: false,
+        postprocessingIncomplete: true,
+        ambiguousBefore: before.length,
+        ambiguousAfter: after.length,
+        truncatedComponents: solved.truncatedComponents.slice(0, 32),
+        omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - 32),
+        budget: matchingBudget,
+      },
+    };
+  };
+  const postprocessStep = () => solverWasAlreadyTruncated || budget.postprocess();
+  const collectAlternatives = (list, excludedIndex, side, confidence) => {
+    const alternatives = [];
+    for (const x of list) {
+      if (!postprocessStep()) return null;
+      if ((side === 'after' && x.j === excludedIndex) || (side === 'before' && x.i === excludedIndex)
+        || x.confidence < confidence - ambiguityWindow) continue;
+      alternatives.push({ side, index: side === 'after' ? x.j : x.i, address: side === 'after' ? after[x.j].address : before[x.i].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons });
+      if (alternatives.length === 4) break;
+    }
+    return alternatives;
+  };
+  if (!solverWasAlreadyTruncated && !budget.checkSolverWall('match post-processing')) return incompletePostprocessing();
   for (const c of selected) {
+    if (!postprocessStep()) return incompletePostprocessing();
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
-    const forwardAlternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const reverseAlternatives = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
+    const forwardAlternatives = collectAlternatives(eligibleByBefore.get(c.i) || [], c.j, 'after', c.confidence);
+    if (!forwardAlternatives) return incompletePostprocessing();
+    const reverseAlternatives = collectAlternatives(eligibleByAfter.get(c.j) || [], c.i, 'before', c.confidence);
+    if (!reverseAlternatives) return incompletePostprocessing();
     const alternatives = [...forwardAlternatives, ...reverseAlternatives]
       .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
     const ambiguous = alternatives.length > 0;
@@ -216,12 +259,19 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
   }
-  matches.sort((a,b)=>{
-    const ai=before.findIndex((x)=>x===a.before), bi=before.findIndex((x)=>x===b.before);
-    return ai-bi;
-  });
-  const deleted = before.filter((_x, i) => !usedBefore.has(i));
-  const added = after.filter((_x, i) => !usedAfter.has(i));
+  // solveCandidateMatching returns selected in deterministic (i,j) order. Keep
+  // that order instead of discarding c.i and re-running a linear index lookup
+  // from every comparator invocation.
+  const deleted = [];
+  for (let i = 0; i < before.length; i++) {
+    if (!postprocessStep()) return incompletePostprocessing();
+    if (!usedBefore.has(i)) deleted.push(before[i]);
+  }
+  const added = [];
+  for (let i = 0; i < after.length; i++) {
+    if (!postprocessStep()) return incompletePostprocessing();
+    if (!usedAfter.has(i)) added.push(after[i]);
+  }
   const matchingBudget = budget.snapshot();
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
@@ -238,6 +288,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       truncated,
       candidateGraphIncomplete: false,
       preprocessingIncomplete: false,
+      postprocessingIncomplete: false,
       ambiguousBefore: solved.ambiguousLeft.size,
       ambiguousAfter: solved.ambiguousRight.size,
       truncatedComponents,
