@@ -20,7 +20,7 @@ export class ContextBroker {
   }
 
   currentAddress(snapshot = null) {
-    return addressText(snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
+    return addressText(snapshot?.currentAddress ?? snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
@@ -95,7 +95,7 @@ function compactSnapshot(snapshot) {
   return {
     id: snapshot.id, binaryIdentity: snapshot.binaryIdentity, projectIdentity: snapshot.projectIdentity,
     architecture: snapshot.architecture, slice: snapshot.slice, runtimeSessionIdentity: snapshot.runtimeSessionIdentity,
-    requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
+    currentAddress: snapshot.currentAddress, requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
   };
 }
 function structuredMemory(session) {

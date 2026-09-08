@@ -46,3 +46,8 @@ jobs:
         run: npm run core:test
       - name: CI development-mode contract
         run: node tests/ci-development-mode.mjs
+
+      - name: Final-head admission unit contract
+        run: |
+          node tests/ci/final-head-admission-6570.test.mjs
+          node tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs

@@ -52,7 +52,7 @@ export class ProposalExecutor {
       return;
     }
     const live = await this.currentState({ ...proposal, before: proposal.after });
-    if (!containsValue(live, proposal.after)) throw new AIError('tool_failed', `Postcondition verification failed for ${proposal.kind}.`);
+    if (!containsValue(live, structFieldExpectation(proposal))) throw new AIError('tool_failed', `Postcondition verification failed for ${proposal.kind}.`);
   }
 }
 
@@ -86,6 +86,21 @@ async function awaitNoteStoreReady(app) {
 }
 
 function targetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
+/* The live struct-field record is {offset, name, type}; an after payload may
+   spell the field name as `field`/`fieldName` (the capability's value keys).
+   Map those onto `name` for the containment check — every other key keeps its
+   literal meaning, so previously-passing after shapes are unaffected (#5412). */
+function structFieldExpectation(proposal) {
+  const after = proposal.after;
+  if (proposal.kind !== 'struct-field' || !after || typeof after !== 'object' || Array.isArray(after)) return after;
+  const fieldName = after.field ?? after.fieldName;
+  if (fieldName == null) return after;
+  const expectation = { ...after };
+  delete expectation.field;
+  delete expectation.fieldName;
+  expectation.name = fieldName;
+  return expectation;
+}
 function findStructField(app, target) {
   const struct = app?.notes?.structs?.find?.((item) => item?.name === String(target.struct || target.name || ''));
   return struct?.fields?.find?.((item) => Number(item?.offset) === Number(target.offset)) || null;
