@@ -4,6 +4,7 @@ import {
   mappedFileRangeForRva,
   mappedFileSpanForRva,
   parseExceptionFunctions as parseExceptionFunctionsCore,
+  parseBaseRelocations as parseBaseRelocationsCore,
   parseLoadConfig as parseLoadConfigCore,
   parseTlsDirectory as parseTlsDirectoryCore,
 } from './pe-loader-core.js';
@@ -13,7 +14,6 @@ export {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
-  parseBaseRelocations,
   directory,
   peMachineName,
   resolveCoffSectionName,
@@ -35,6 +35,16 @@ export {
 
 function ensureBudget(image, budget) {
   return budget || createPEMetadataBudget(image);
+}
+
+export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
+  if (!dir || !dir.rva || dir.size < 8) return;
+  const budget = ensureBudget(image, sharedBudget);
+  const warningStart = image.warnings.length;
+  parseBaseRelocationsCore(r, dir, image, machine, budget);
+  if (image.warnings.slice(warningStart).some((warning) => warning.includes('Ignored reserved/unsupported PE base relocation type'))) {
+    budget.partial('relocations:unsupported-type');
+  }
 }
 
 export function parseLoadConfig(r, dir, image, sharedBudget = null) {
