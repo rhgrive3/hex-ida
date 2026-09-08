@@ -129,8 +129,11 @@ function cString(buffer, offset, limit) {
  * virtual st_value, so the section virtual address is subtracted before mapping
  * to file bytes. Phase 8 machine-byte lanes intentionally use the latter: local
  * branch/jump relocations must already be applied before bytes become evidence.
+ * The record also retains the final virtual function address and relocation
+ * section count so native consumers can reject unresolved ET_REL evidence and
+ * decode PC-relative instructions at their linked address.
  */
-export function extractElfFunctionBytes(buffer, name) {
+export function extractElfFunctionRecord(buffer, name) {
   const sections = elf64SectionHeaders(buffer);
   const elfType = buffer.readUInt16LE(0x10);
   const symbolTable = sections.find((section) => section.type === 2 && section.entrySize >= 24);
@@ -151,9 +154,18 @@ export function extractElfFunctionBytes(buffer, name) {
     const value = safeNumber(sectionRelativeValue, `function ${name} offset is invalid`);
     const size = safeNumber(buffer.readBigUInt64LE(at + 16), `function ${name} size is invalid`);
     if (size <= 0 || value + size > section.size) throw new Error(`phase8 corpus: function ${name} has invalid/empty extent`);
-    return Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size));
+    return {
+      bytes:Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size)),
+      address:elfType === 1 ? null : symbolValue,
+      elfType,
+      relocationSectionCount:sections.filter((candidate) => (candidate.type === 4 || candidate.type === 9) && candidate.size > 0).length,
+    };
   }
   return null;
+}
+
+export function extractElfFunctionBytes(buffer, name) {
+  return extractElfFunctionRecord(buffer, name)?.bytes ?? null;
 }
 
 function compileAssembly(clang, architecture, optimization, sourcePath) {

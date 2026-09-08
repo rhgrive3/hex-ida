@@ -1,37 +1,68 @@
 /**
  * Runs the frozen Phase 8 corpus through the real product decompiler paths.
  *
- * ARM64 keeps the historical public `decompile()` facade over frozen assembly.
+ * ARM64 keeps the historical public `decompile()` facade over frozen assembly
+ * by default. An explicitly supplied, identity-validated native twin can use
+ * the structured product path without changing the frozen corpus.
  * x86-64/RISC-V64 freeze real machine bytes, decode them with Hex's shipped
  * Capstone artifact, then use the existing target lifter + shared Semantic
  * IR/CFG/SSA/MemorySSA pipeline and the public semantic decompiler facade.
  * No architecture is represented by another architecture's parser or labels.
  */
 
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { decompile } from '../../../js/decompile.js';
 import { parseOperands } from '../../../js/arm64.js';
 import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../../js/targets/abi/index.js';
+import { arm64EncodingWord } from '../../../js/targets/architecture/arm64/encoding-word.js';
+import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION } from '../../../js/targets/architecture/arm64/effects/index.js';
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { createRiscv64DecodedInstruction, RISCV64_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { createCapstoneX86Session } from '../../../tests/phase5/helpers/capstone-session.mjs';
 import { createCapstoneRiscv64Session } from '../../../tests/phase6/helpers/capstone-session.mjs';
+import { createCapstoneArm64Session } from '../../../tests/machine-effects/helpers/arm64-capstone-session.mjs';
+import { validateCompetitiveTwinCapture } from '../competitive/workload-twins.mjs';
 
-import { loadCorpus } from './build-corpus.mjs';
+import { extractElfFunctionRecord, loadCorpus } from './build-corpus.mjs';
 import { decompileDecodedProductFunction } from './decoded-function-adapter.mjs';
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const ABI_ADAPTER = semanticAbiAdapter(AAPCS64_ABI);
 const X86_SESSION = await createCapstoneX86Session();
 const RISCV_SESSION = await createCapstoneRiscv64Session();
+const ARM64_SESSION = await createCapstoneArm64Session();
 let sessionsClosed = false;
 function closeSessions() {
   if (sessionsClosed) return;
   sessionsClosed = true;
   try { X86_SESSION.close(); } catch { /* best effort */ }
   try { RISCV_SESSION.close(); } catch { /* best effort */ }
+  try { ARM64_SESSION.close(); } catch { /* best effort */ }
 }
 process.once('exit', closeSessions);
+
+const ARM64_NATIVE_CAPTURE_SCHEMA = 'hex-competitive-twin-capture/v1';
+const ARM64_NATIVE_CAPTURE_WORKLOAD = 'phase8-decompiler-quality-corpus';
+const ARM64_NATIVE_TARGET_TRIPLE = 'aarch64-unknown-linux-gnu';
+const ARM64_NATIVE_COMPILER_ARGS = Object.freeze([
+  `--target=${ARM64_NATIVE_TARGET_TRIPLE}`,
+  '-g',
+  '-c',
+  '-fno-asynchronous-unwind-tables',
+  '-fuse-ld=lld',
+  '-nostdlib',
+  '-no-pie',
+  '-Wl,--build-id=none',
+  '-Wl,-e,0',
+]);
+const ARM64_NATIVE_DECODER_SEMANTIC_VERSION = `arm64-capstone-a64-native/v1:${ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION}`;
+const QUALITY_METRIC_IDS = new Set(['decompiler-quality-gotos', 'decompiler-quality-assembly-fallbacks']);
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
@@ -162,6 +193,398 @@ function bytesOf(entry) {
 
 function decodedCoverage(instructions, expectedBytes) {
   return (instructions || []).reduce((total, instruction) => total + Number(instruction.length ?? instruction.size ?? 0), 0) === expectedBytes;
+}
+
+function sha256Bytes(value) {
+  return crypto.createHash('sha256').update(Buffer.from(value)).digest('hex');
+}
+
+function compilerVersionToken(value) {
+  return String(value || '').match(/\b\d+\.\d+\.\d+\b/)?.[0] ?? null;
+}
+
+/** Return the capture-only artifact id for one frozen ARM64 corpus entry. */
+export function nativeArm64ArtifactIdFor(entry) {
+  if (entry?.architectureId !== 'arm64' || typeof entry.source !== 'string' || typeof entry.optimization !== 'string') return null;
+  return `arm64-native-${entry.source}-${entry.optimization.replace(/^-/, '')}`;
+}
+
+function nativeArm64FunctionKey(entry) {
+  return `${entry.source}\u0000${entry.optimization}`;
+}
+
+function nativeCaptureFailure(reason, detail = '') {
+  throw new TypeError(`phase8-native-arm64-capture-${reason}${detail ? `:${detail}` : ''}`);
+}
+
+function fileBytes(filePath, code) {
+  if (typeof filePath !== 'string' || !filePath.trim()) nativeCaptureFailure(`${code}-path-missing`);
+  const resolved = path.resolve(filePath);
+  let stat;
+  try { stat = fs.statSync(resolved); } catch { nativeCaptureFailure(`${code}-missing`, resolved); }
+  if (!stat.isFile()) nativeCaptureFailure(`${code}-not-file`, resolved);
+  try { return Buffer.from(fs.readFileSync(resolved)); } catch (error) {
+    nativeCaptureFailure(`${code}-unreadable`, error?.message || String(error));
+  }
+}
+
+function sourceIdentityFor(sourceDirectory, sourceName) {
+  if (typeof sourceDirectory !== 'string' || !sourceDirectory.trim()) nativeCaptureFailure('source-directory-missing');
+  if (typeof sourceName !== 'string' || !sourceName.trim()) nativeCaptureFailure('source-name-missing');
+  const root = path.resolve(sourceDirectory);
+  const sourcePath = path.resolve(root, sourceName);
+  if (sourcePath !== root && !sourcePath.startsWith(`${root}${path.sep}`)) nativeCaptureFailure('source-path-invalid', sourceName);
+  const bytes = fileBytes(sourcePath, 'source');
+  return {
+    path:sourcePath,
+    ids:new Set([sourceName, path.relative(ROOT, sourcePath).replaceAll('\\', '/')]),
+    sha256:sha256Bytes(bytes),
+    text:bytes.toString('utf8'),
+  };
+}
+
+function expectedNativeEntries(corpus) {
+  if (!Array.isArray(corpus?.functions) || corpus.functions.length === 0) nativeCaptureFailure('corpus-functions-missing');
+  const entries = corpus.functions.filter((entry) => entry?.architectureId === 'arm64');
+  if (entries.length === 0) nativeCaptureFailure('corpus-arm64-functions-missing');
+  const ids = new Set();
+  for (const entry of entries) {
+    if (typeof entry.id !== 'string' || !entry.id.trim()
+        || typeof entry.source !== 'string' || !entry.source.trim()
+        || typeof entry.function !== 'string' || !entry.function.trim()
+        || typeof entry.optimization !== 'string' || !/^-[A-Za-z]\d+$/.test(entry.optimization)
+        || entry.representation !== 'assembly'
+        || ids.has(entry.id)) {
+      nativeCaptureFailure('corpus-entry-invalid', String(entry?.id || 'unknown'));
+    }
+    ids.add(entry.id);
+  }
+  return entries;
+}
+
+function productionRowFor(capture, artifact) {
+  const rows = capture.measurement?.productionObservation?.rows;
+  if (!Array.isArray(rows)) nativeCaptureFailure('production-observation-missing');
+  const row = rows.find((candidate) => candidate?.id === artifact.id);
+  if (!row) nativeCaptureFailure('production-row-missing', artifact.id);
+  return row;
+}
+
+function validateNativeArtifact(corpus, capture, artifact, sourceRecords, compilerToken) {
+  const manifest = artifact?.manifest;
+  if (artifact == null || typeof artifact !== 'object' || manifest == null || typeof manifest !== 'object') {
+    nativeCaptureFailure('artifact-manifest-missing', String(artifact?.id || 'unknown'));
+  }
+  if (manifest.corpusId !== corpus.corpusId || manifest.corpusVersion !== corpus.corpusVersion) {
+    nativeCaptureFailure('artifact-corpus-identity-mismatch', artifact.id);
+  }
+  if (manifest.architecture?.id !== 'arm64'
+      || manifest.architecture?.profile !== 'aarch64-linux-gnu'
+      || manifest.targetTriple !== ARM64_NATIVE_TARGET_TRIPLE) {
+    nativeCaptureFailure('artifact-target-mismatch', artifact.id);
+  }
+  const options = manifest.compileOptions;
+  if (options?.captureOnly !== true
+      || options?.representation !== 'machine-bytes'
+      || options?.debug !== true
+      || options?.generator !== 'phase8-decompiler-quality-corpus/v2') {
+    nativeCaptureFailure('artifact-capture-contract-mismatch', artifact.id);
+  }
+  if (manifest.compiler?.id !== 'clang'
+      || compilerToken == null
+      || compilerVersionToken(manifest.compiler?.version) !== compilerToken) {
+    nativeCaptureFailure('artifact-compiler-mismatch', artifact.id);
+  }
+  const source = sourceRecords.get(manifest.sourceIdentity?.id);
+  if (!source || manifest.sourceIdentity?.sha256 !== source.sha256) {
+    nativeCaptureFailure('artifact-source-mismatch', artifact.id);
+  }
+  const debugBytes = fileBytes(artifact.debugArtifactPath, 'debug-artifact');
+  const strippedBytes = fileBytes(artifact.strippedArtifactPath, 'stripped-artifact');
+  if (manifest.debugArtifactSha256 !== sha256Bytes(debugBytes)) nativeCaptureFailure('debug-artifact-hash-mismatch', artifact.id);
+  if (manifest.strippedArtifactSha256 !== sha256Bytes(strippedBytes)) nativeCaptureFailure('stripped-artifact-hash-mismatch', artifact.id);
+  const row = productionRowFor(capture, artifact);
+  if (row.debugBytes !== debugBytes.byteLength
+      || row.strippedBytes !== strippedBytes.byteLength
+      || row.debugArtifactSha256 !== manifest.debugArtifactSha256
+      || row.strippedArtifactSha256 !== manifest.strippedArtifactSha256) {
+    nativeCaptureFailure('production-row-mismatch', artifact.id);
+  }
+  return Object.freeze({ artifact, manifest, debugBytes, functions:new Map() });
+}
+
+/**
+ * Validate the capture-only ARM64 twins and index them by source/optimization.
+ * The frozen ARM64 entries remain assembly; this index is only used by the
+ * explicit native observation path and never changes the corpus denominator.
+ */
+function validatedNativeArm64Artifacts(corpus, capture, { sourceDirectory = path.join(ROOT, 'tests/phase8/corpus/sources') } = {}) {
+  if (capture == null) return null;
+  try {
+    // The native adapter consumes the actual ELF bytes, so archived metadata
+    // alone cannot establish provenance. Replay the allowlisted strip for each
+    // admitted twin in addition to the independent byte/hash checks below.
+    validateCompetitiveTwinCapture(capture, { replayArtifacts:true });
+  } catch (error) {
+    nativeCaptureFailure('identity-invalid', error?.message || String(error));
+  }
+  if (capture.schemaVersion !== ARM64_NATIVE_CAPTURE_SCHEMA) nativeCaptureFailure('schema-mismatch');
+  if (!QUALITY_METRIC_IDS.has(capture.metricId)) nativeCaptureFailure('metric-mismatch', String(capture.metricId));
+  if (capture.workloadId !== ARM64_NATIVE_CAPTURE_WORKLOAD) nativeCaptureFailure('workload-mismatch', String(capture.workloadId));
+  if (capture.corpusId !== corpus.corpusId || capture.corpusVersion !== corpus.corpusVersion) nativeCaptureFailure('corpus-identity-mismatch');
+
+  const entries = expectedNativeEntries(corpus);
+  const sourceNames = [...new Set(corpus.functions.map((entry) => entry?.source).filter((name) => typeof name === 'string' && name))]
+    .sort((left, right) => left.localeCompare(right));
+  const sourceRecords = new Map();
+  for (const sourceName of sourceNames) {
+    const record = sourceIdentityFor(sourceDirectory, sourceName);
+    for (const id of record.ids) sourceRecords.set(id, record);
+  }
+  if (typeof corpus.sourceDigest !== 'string'
+      || stableDigest(sourceNames.map((name) => ({ name, text:sourceRecords.get(name)?.text }))) !== corpus.sourceDigest) {
+    nativeCaptureFailure('corpus-source-digest-mismatch');
+  }
+  const compilerToken = compilerVersionToken(corpus.toolchain?.compiler);
+  if (compilerToken == null) nativeCaptureFailure('corpus-compiler-identity-missing');
+
+  const artifacts = Array.isArray(capture.artifacts) ? capture.artifacts : [];
+  const expectedIds = [...new Set(entries.map(nativeArm64ArtifactIdFor))].sort();
+  const nativeArtifacts = artifacts.filter((artifact) => artifact?.manifest?.compileOptions?.captureOnly === true);
+  const nativeIds = nativeArtifacts.map((artifact) => artifact?.id).sort();
+  if (nativeIds.length !== expectedIds.length || stableDigest(nativeIds) !== stableDigest(expectedIds)) {
+    nativeCaptureFailure('denominator-mismatch', `${nativeIds.join(',')}!=${expectedIds.join(',')}`);
+  }
+
+  const byId = new Map(nativeArtifacts.map((artifact) => [artifact.id, artifact]));
+  const expectedByArtifactId = new Map();
+  const entriesById = new Map();
+  for (const entry of entries) {
+    const artifactId = nativeArm64ArtifactIdFor(entry);
+    const expected = expectedByArtifactId.get(artifactId);
+    if (expected != null && (expected.source !== entry.source || expected.optimization !== entry.optimization)) {
+      nativeCaptureFailure('artifact-ambiguous', artifactId);
+    }
+    expectedByArtifactId.set(artifactId, expected ?? {
+      source:entry.source,
+      optimization:entry.optimization,
+      profile:`arm64-${entry.optimization}`,
+      compileArgs:[ARM64_NATIVE_COMPILER_ARGS[0], '-g', entry.optimization, ...ARM64_NATIVE_COMPILER_ARGS.slice(2)],
+    });
+    entriesById.set(entry.id, Object.freeze({
+      id:entry.id,
+      source:entry.source,
+      function:entry.function,
+      optimization:entry.optimization,
+      architectureId:entry.architectureId,
+      targetTriple:entry.targetTriple,
+      representation:entry.representation,
+    }));
+  }
+
+  const recordsByArtifactId = new Map();
+  for (const [artifactId, expected] of expectedByArtifactId) {
+    const artifact = byId.get(artifactId);
+    if (!artifact) nativeCaptureFailure('artifact-unmapped', artifactId);
+    const validated = validateNativeArtifact(corpus, capture, artifact, sourceRecords, compilerToken);
+    if (validated.manifest.profile !== expected.profile
+        || validated.manifest.compileOptions?.optimization !== expected.optimization
+        || stableDigest(validated.manifest.compileArgs) !== stableDigest(expected.compileArgs)) {
+      nativeCaptureFailure('artifact-optimization-mismatch', artifactId);
+    }
+    recordsByArtifactId.set(artifactId, validated);
+  }
+
+  const byKey = new Map();
+  const byEntryId = new Map();
+  for (const entry of entries) {
+    const artifactId = nativeArm64ArtifactIdFor(entry);
+    const record = recordsByArtifactId.get(artifactId);
+    if (!record) nativeCaptureFailure('artifact-unmapped', entry.id);
+    const key = nativeArm64FunctionKey(entry);
+    if (byKey.has(key)) {
+      const existing = byKey.get(key);
+      if (existing.artifact.id !== record.artifact.id) nativeCaptureFailure('artifact-ambiguous', key);
+    } else {
+      byKey.set(key, record);
+    }
+    byEntryId.set(entry.id, Object.freeze({ entry:entriesById.get(entry.id), record }));
+  }
+  const contentDigest = stableDigest([...recordsByArtifactId.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, record]) => ({
+      id,
+      debugArtifactSha256:record.manifest.debugArtifactSha256,
+      strippedArtifactSha256:record.manifest.strippedArtifactSha256,
+    })));
+  return Object.freeze({
+    captureDigest:capture.captureDigest,
+    artifactIdsDigest:capture.denominator.artifactIdsDigest,
+    contentDigest,
+    byKey,
+    byEntryId,
+    entriesById,
+  });
+}
+
+function signExtend(value, bits) {
+  const width = 1 << bits;
+  const sign = 1 << (bits - 1);
+  const normalized = value & (width - 1);
+  return BigInt(normalized & sign ? normalized - width : normalized);
+}
+
+function displayedBranchTarget(opStr) {
+  const token = String(opStr || '').split(',').at(-1)?.trim().replace(/^#/, '');
+  if (/^-?0x[0-9a-f]+$/i.test(token) || /^-?\d+$/.test(token)) {
+    try { return BigInt(token); } catch { return null; }
+  }
+  return null;
+}
+
+function encodedBranchTarget(mnemonic, word, address) {
+  const op = String(mnemonic || '').toLowerCase();
+  const value = Number(word) >>> 0;
+  if (op === 'b' || op === 'bl') return BigInt(address) + (signExtend(value & 0x03ffffff, 26) << 2n);
+  if (/^b\.[a-z]{2}$/.test(op)) return BigInt(address) + (signExtend((value >>> 5) & 0x7ffff, 19) << 2n);
+  if (op === 'cbz' || op === 'cbnz') return BigInt(address) + (signExtend((value >>> 5) & 0x7ffff, 19) << 2n);
+  if (op === 'tbz' || op === 'tbnz') return BigInt(address) + (signExtend((value >>> 5) & 0x3fff, 14) << 2n);
+  return null;
+}
+
+function branchTargetFor(mnemonic, opStr, word, address) {
+  const isDirect = mnemonic === 'b' || mnemonic === 'bl' || /^b\.[a-z]{2}$/.test(mnemonic)
+    || mnemonic === 'cbz' || mnemonic === 'cbnz' || mnemonic === 'tbz' || mnemonic === 'tbnz';
+  if (!isDirect) return null;
+  const encoded = encodedBranchTarget(mnemonic, word, address);
+  const displayed = displayedBranchTarget(opStr);
+  if (encoded == null || displayed == null || encoded !== displayed) {
+    nativeCaptureFailure('branch-target-mismatch', `${mnemonic}@${String(address)}`);
+  }
+  return encoded;
+}
+
+/** Decode one byte-backed A64 function into the canonical product input shape. */
+export function decodeNativeArm64Function(bytes, { baseAddress = 0x100000n, instructionIdPrefix = 'phase8:native' } = {}) {
+  const input = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
+  if (input.length === 0 || input.length % 4 !== 0) nativeCaptureFailure('function-bytes-invalid');
+  const raw = ARM64_SESSION.decode(input, baseAddress);
+  if (!decodedCoverage(raw, input.length)) nativeCaptureFailure('decoder-coverage-mismatch');
+  let offset = 0;
+  const instructions = raw.map((instruction, index) => {
+    const size = Number(instruction.size ?? instruction.length);
+    if (size !== 4 || offset + size > input.length) nativeCaptureFailure('instruction-width-invalid', String(index));
+    const address = BigInt(instruction.address);
+    const expectedAddress = BigInt(baseAddress) + BigInt(offset);
+    if (address !== expectedAddress) nativeCaptureFailure('instruction-address-mismatch', String(index));
+    const rawBytes = Uint8Array.from(input.slice(offset, offset + size));
+    const word = arm64EncodingWord(rawBytes, 0);
+    if (word == null) nativeCaptureFailure('instruction-encoding-missing', String(index));
+    const mnemonic = String(instruction.mnemonic || '').toLowerCase();
+    const opStr = String(instruction.opStr || '');
+    const instructionId = `${instructionIdPrefix}:${index}`;
+    const branchTarget = branchTargetFor(mnemonic, opStr, word, address);
+    const callTarget = mnemonic === 'bl' ? branchTarget : null;
+    offset += size;
+    return Object.freeze({
+      instructionId,
+      address,
+      length:size,
+      size,
+      mnemonic,
+      operands:opStr,
+      opStr,
+      ops:parseOperands(opStr),
+      mode:'a64',
+      rawBytes,
+      word,
+      origin:{ instructionIds:[instructionId] },
+      ...(branchTarget == null ? {} : { branchTarget }),
+      ...(callTarget == null ? {} : { callTarget }),
+    });
+  });
+  if (offset !== input.length) nativeCaptureFailure('decoder-offset-mismatch');
+  return Object.freeze(instructions);
+}
+
+function nativeFunctionBytes(record, entry) {
+  let functionRecord = record.functions?.get(entry.function);
+  if (functionRecord != null) return functionRecord;
+  try { functionRecord = extractElfFunctionRecord(record.debugBytes, entry.function); } catch (error) {
+    nativeCaptureFailure('function-bytes-unreadable', `${entry.id}:${error?.message || String(error)}`);
+  }
+  if (functionRecord == null
+      || !(functionRecord.bytes instanceof Uint8Array)
+      || functionRecord.bytes.length === 0
+      || functionRecord.bytes.length % 4 !== 0) {
+    nativeCaptureFailure('function-unmapped', entry.id);
+  }
+  if (functionRecord.elfType !== 2 || functionRecord.address == null || functionRecord.relocationSectionCount !== 0) {
+    nativeCaptureFailure('function-relocations-or-address-unavailable', entry.id);
+  }
+  const copy = {
+    bytes:Uint8Array.from(functionRecord.bytes),
+    address:BigInt(functionRecord.address),
+  };
+  record.functions.set(entry.function, copy);
+  return copy;
+}
+
+/** Build the explicit, fail-closed native ARM64 observation adapter. */
+export function createNativeArm64CaptureAdapter({ corpus = loadCorpus(), capture, sourceDirectory = path.join(ROOT, 'tests/phase8/corpus/sources') } = {}) {
+  const validated = validatedNativeArm64Artifacts(corpus, capture, { sourceDirectory });
+  if (validated == null) return null;
+  return Object.freeze({
+    captureDigest:validated.captureDigest,
+    artifactIdsDigest:validated.artifactIdsDigest,
+    contentDigest:validated.contentDigest,
+    decompile(entry, {
+      decompilerTimeBudgetMs = 20000,
+      phase8WorkBudget = undefined,
+      deterministicTransforms = true,
+      phase8Optimize = true,
+    } = {}) {
+      if (entry?.architectureId !== 'arm64') return { id:entry?.id, failure:'phase8-native-arm64-entry-architecture-mismatch' };
+      const admitted = validated.entriesById.get(entry?.id);
+      if (admitted == null
+          || admitted.source !== entry.source
+          || admitted.function !== entry.function
+          || admitted.optimization !== entry.optimization
+          || admitted.targetTriple !== entry.targetTriple
+          || admitted.representation !== entry.representation) {
+        return { id:entry?.id, failure:'phase8-native-arm64-entry-identity-mismatch' };
+      }
+      const binding = validated.byEntryId.get(admitted.id);
+      if (!binding) return { id:admitted.id, failure:'phase8-native-arm64-entry-unmapped' };
+      try {
+        const functionRecord = nativeFunctionBytes(binding.record, admitted);
+        const instructions = decodeNativeArm64Function(functionRecord.bytes, {
+          baseAddress:functionRecord.address,
+          instructionIdPrefix:`phase8-native:${admitted.id}`,
+        });
+        const result = decompileDecodedProductFunction({
+          architecture:'arm64',
+          platform:'linux',
+          name:admitted.function,
+          instructions,
+          decoderSemanticVersion:ARM64_NATIVE_DECODER_SEMANTIC_VERSION,
+          mode:'a64',
+          binaryId:`phase8-native-capture-content:${validated.contentDigest}`,
+          sliceId:`${admitted.id}:${validated.artifactIdsDigest}`,
+          dataEndianness:'little',
+          instructionEndianness:'little',
+        }, {
+          decompilerTimeBudgetMs,
+          deterministicTransforms,
+          phase8Optimize,
+          ...(phase8WorkBudget != null ? { phase8WorkBudget } : {}),
+        });
+        return { id:admitted.id, result };
+      } catch (error) {
+        return { id:admitted.id, failure:error?.message || String(error) };
+      }
+    },
+  });
 }
 
 function decodedFor(entry, baseAddress) {
@@ -297,18 +720,39 @@ export function observationOf(entry, outcome) {
 
 export function observeCorpus({
   corpus = loadCorpus(),
+  nativeArm64Capture = null,
+  nativeCapture = null,
+  sourceDirectory = path.join(ROOT, 'tests/phase8/corpus/sources'),
   decompilerTimeBudgetMs = 20000,
   phase8WorkBudget = undefined,
   deterministicTransforms = true,
   phase8Optimize = true,
 } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, {
-    decompilerTimeBudgetMs,
-    phase8WorkBudget,
-    index,
-    deterministicTransforms,
-    phase8Optimize,
-  })));
+  const suppliedNativeCapture = nativeArm64Capture ?? nativeCapture;
+  let nativeAdapter = null;
+  let nativeAdapterFailure = null;
+  if (suppliedNativeCapture != null) {
+    try {
+      nativeAdapter = createNativeArm64CaptureAdapter({ corpus, capture:suppliedNativeCapture, sourceDirectory });
+    } catch (error) {
+      nativeAdapterFailure = error?.message || String(error);
+    }
+  }
+  return corpus.functions.map((entry, index) => {
+    if (entry.architectureId === 'arm64' && suppliedNativeCapture != null) {
+      const outcome = nativeAdapterFailure == null
+        ? nativeAdapter.decompile(entry, { decompilerTimeBudgetMs, phase8WorkBudget, index, deterministicTransforms, phase8Optimize })
+        : { id:entry.id, failure:nativeAdapterFailure };
+      return observationOf(entry, outcome);
+    }
+    return observationOf(entry, decompileEntry(entry, {
+      decompilerTimeBudgetMs,
+      phase8WorkBudget,
+      index,
+      deterministicTransforms,
+      phase8Optimize,
+    }));
+  });
 }
 
 export { closeSessions };

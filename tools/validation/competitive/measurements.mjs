@@ -1308,8 +1308,17 @@ export function runPipelineLedger(metricId, { env = {}, node = process.execPath 
   return ledger;
 }
 
-export function phase8CurrentObservations({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000 } = {}) {
-  return observeCorpus({ corpus, decompilerTimeBudgetMs });
+/**
+ * Collect Phase 8 rows through the frozen assembly path by default. A
+ * validated native capture is an explicit opt-in used for a later authority
+ * migration; it never changes the frozen corpus IDs or denominator.
+ */
+export function phase8CurrentObservations({ corpus = loadCorpus(), nativeArm64Capture = null, capture = null, decompilerTimeBudgetMs = 20000 } = {}) {
+  return observeCorpus({
+    corpus,
+    nativeArm64Capture:nativeArm64Capture ?? capture,
+    decompilerTimeBudgetMs,
+  });
 }
 
 function writeJson(filePath, value) {
@@ -1331,6 +1340,8 @@ export function collectCompetitiveMeasurementsFromRepository({
   p8Clang = process.env.CLANG || 'clang',
   p8ExpectedCompilerVersion,
   p8NativeArm64 = true,
+  p8UseNativeArm64 = false,
+  p8NativeArm64Capture = null,
   decompilerTimeBudgetMs = 20000,
 } = {}) {
   if (typeof outputRoot !== 'string' || !outputRoot.trim()) throw new TypeError('competitive-measurement-output-root-required');
@@ -1383,7 +1394,12 @@ export function collectCompetitiveMeasurementsFromRepository({
   const corpus = loadCorpus();
   const p8Ready = captures['decompiler-quality-gotos'].status === 'READY'
     || captures['decompiler-quality-assembly-fallbacks'].status === 'READY';
-  const observations = p8Ready ? phase8CurrentObservations({ corpus, decompilerTimeBudgetMs }) : null;
+  // Keep the legacy observation path as the default until the native byte
+  // authority has its own reviewed baseline. An explicitly supplied capture,
+  // or the opt-in gotos capture, is validated before any ARM64 row is used.
+  const nativeArm64Capture = p8NativeArm64Capture
+    ?? (p8UseNativeArm64 ? captures['decompiler-quality-gotos'] : null);
+  const observations = p8Ready ? phase8CurrentObservations({ corpus, nativeArm64Capture, decompilerTimeBudgetMs }) : null;
   const measurements = collectCompetitiveMeasurements({
     capturesByMetric: captures,
     phase5Ledger: ledgers['machine-effects-x86_64-coverage'] || null,
