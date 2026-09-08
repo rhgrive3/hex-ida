@@ -81,7 +81,7 @@ export function parseHexPattern(text) {
   if (typeof text !== 'string') return null;
   // A prefix is syntax only at the beginning of a token.  Removing every
   // occurrence first would turn malformed input such as `10x2` into `12`.
-  const s = text.replace(/(^|[\s,_-])0x/gi, '$1').replace(/[\s,_-]/g, '');
+  const s = text.replace(/(^|[\s,_-])0x(?=[0-9a-f?])/gi, '$1').replace(/[\s,_-]/g, '');
   if (!s.length || s.length % 2 !== 0) return null;
   if (!/^[0-9a-f?]+$/i.test(s)) return null;
   const n = s.length / 2;

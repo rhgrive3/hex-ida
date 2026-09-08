@@ -77,6 +77,9 @@ import { mnemonicClass, parseHexPattern } from '../js/format.js';
   assert.deepEqual(shape('4865??6C'), {
     bytes: [0x48, 0x65, 0x00, 0x6c], mask: [0xff, 0xff, 0x00, 0xff],
   });
+  assert.deepEqual(shape('A? ?B'), {
+    bytes: [0xa0, 0x0b], mask: [0xf0, 0x0f],
+  });
   assert.deepEqual(shape('0x48,0X65'), {
     bytes: [0x48, 0x65], mask: [0xff, 0xff],
   });
@@ -84,7 +87,7 @@ import { mnemonicClass, parseHexPattern } from '../js/format.js';
     bytes: [0x48, 0x65, 0x6c], mask: [0xff, 0xff, 0xff],
   });
 
-  for (const malformed of ['10x2', 'A0xB', '0x48x65']) {
+  for (const malformed of ['10x2', 'A0xB', '0x48x65', '0x', '0x 48', '0x,48', '0x0x48', '0x48,0x']) {
     assert.equal(parseHexPattern(malformed), null, `${malformed} must not be laundered into another pattern`);
   }
   console.log('✔ #4664 misplaced hex prefixes are rejected');
