@@ -1,6 +1,11 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
-import { consumeProposalAuthorization, isLiveProposalAuthorization, proposalCapability } from '../proposals.js';
+import {
+  assertProposalAuthorizationBinding,
+  consumeProposalAuthorization,
+  isLiveProposalAuthorization,
+  proposalCapability,
+} from '../proposals.js';
 import { validatePatchRange } from '../../patch.js';
 
 // Shared across executor instances so a proposal cannot confuse two different
@@ -34,9 +39,12 @@ export class CapabilityExecutor {
       approvalState = { ...approvalState, ...this.#approvalStateNow(id, executionArgs, runtimePlatform) };
     }
     if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs, approvalState)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    const commitGuard = entry.requiresApproval
+      ? () => assertProposalAuthorizationBinding(options.authorization, { commit: true })
+      : null;
     if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
-    if (entry.actionKind) return this.executeAction(entry, executionArgs);
-    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
+    if (entry.actionKind) return this.executeAction(entry, executionArgs, commitGuard);
+    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform, commitGuard);
   }
 
   #approvalIdentity(value) {
@@ -114,44 +122,45 @@ export class CapabilityExecutor {
       : record.execute(args, options);
   }
 
-  async executeAction(entry, args) {
+  async executeAction(entry, args, commitGuard = null) {
     if (typeof this.actionRunner !== 'function') throw new AIError('tool_failed', 'Workbench action adapter is unavailable.');
+    commitGuard?.();
     await this.actionRunner({ kind: entry.actionKind, ...args });
     return { ok: true, capability: entry.id };
   }
 
-  async executeBuiltIn(entry, args, options, runtimePlatform = null) {
+  async executeBuiltIn(entry, args, options, runtimePlatform = null, commitGuard = null) {
     const app = this.app;
     switch (entry.id) {
-      case 'annotation.rename': return renameSymbol(app, args);
-      case 'annotation.comment': return setNote(app, 'comment', args);
-      case 'annotation.set-type': return setType(app, args);
-      case 'annotation.struct-field': return setStructField(app, args);
-      case 'annotation.project': return setProjectAnnotation(app, args);
+      case 'annotation.rename': commitGuard?.(); return renameSymbol(app, args);
+      case 'annotation.comment': commitGuard?.(); return setNote(app, 'comment', args);
+      case 'annotation.set-type': commitGuard?.(); return setType(app, args);
+      case 'annotation.struct-field': commitGuard?.(); return setStructField(app, args);
+      case 'annotation.project': commitGuard?.(); return setProjectAnnotation(app, args);
       case 'patch.preview': return previewPatch(app, args);
-      case 'patch.create': return createPatch(app, args);
+      case 'patch.create': return createPatch(app, args, commitGuard);
       case 'patch.inspect': return { patches: (app?.patches?.list?.() || []).map(serializePatch) };
-      case 'patch.revert': return this.revertPatch(args);
-      case 'patch.apply': return applyPatch(app, args);
+      case 'patch.revert': return this.revertPatch(args, commitGuard);
+      case 'patch.apply': return applyPatch(app, args, commitGuard);
       case 'runtime.status': return runtimeStatus(runtimePlatform);
-      case 'runtime.connect': return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash: args.binaryId || this.currentBinaryId(), trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
-      case 'runtime.attach': return runtimeAdapter(runtimePlatform).attach(args.target || {}, options);
-      case 'runtime.detach': return runtimePlatform.sessions.close(args.runtimeSessionId);
-      case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
-      case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
-      case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
-      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume(options);
-      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause(options);
-      case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
-      case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
-      case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
+      case 'runtime.connect': commitGuard?.(); return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash: args.binaryId || this.currentBinaryId(), trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
+      case 'runtime.attach': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.attach(args.target || {}, options); }
+      case 'runtime.detach': commitGuard?.(); return runtimePlatform.sessions.close(args.runtimeSessionId);
+      case 'runtime.breakpoint-create': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.setBreakpoint(args.breakpoint || args); }
+      case 'runtime.watchpoint-create': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.watchMemory(args.watchpoint || args); }
+      case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.removeBreakpoint(args.id); }
+      case 'runtime.continue': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.resume(options); }
+      case 'runtime.pause': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.pause(options); }
+      case 'runtime.step-in': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepInto(options); }
+      case 'runtime.step-over': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepOver(options); }
+      case 'runtime.step-out': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepOut(options); }
       case 'runtime.registers': return runtimeAdapter(runtimePlatform).readRegisters(args.threadId);
       case 'runtime.memory-read': return boundedMemoryRead(runtimeAdapter(runtimePlatform), args);
-      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args);
-      case 'runtime.experiment': return runtimePlatform.runExperiment(args.experiment, options);
+      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args, commitGuard);
+      case 'runtime.experiment': commitGuard?.(); return runtimePlatform.runExperiment(args.experiment, options);
       case 'project.save': return callRequired(app?.workspace, 'autosave');
       case 'project.snapshot': return callRequired(app?.workspace, 'snapshot');
-      case 'project.restore-known': return callRequired(app?.workspace, 'importProject', args.project);
+      case 'project.restore-known': commitGuard?.(); return callRequired(app?.workspace, 'importProject', args.project);
       case 'project.binary-diff': return callRequired(app?.workspace, 'diff', args.options || {});
       case 'project.export-report': {
         if (typeof app?.report?.export === 'function') return app.report.export(args);
@@ -162,10 +171,12 @@ export class CapabilityExecutor {
     }
   }
 
-  async revertPatch(args) {
-    const patch = this.app?.patches?.at?.(BigInt(args.fileOffset));
+  async revertPatch(args, commitGuard = null) {
+    const patchSet = this.app?.patches;
+    const patch = patchSet?.at?.(BigInt(args.fileOffset));
     if (!patch) throw new AIError('tool_failed', 'Patch is no longer present.');
-    this.app.patches.remove(patch.offset);
+    commitGuard?.();
+    patchSet.remove(patch.offset);
     const metadata = serializePatch(patch);
     this.reverts.set(String(patch.offset), metadata);
     return { reverted: true, patch: metadata };
@@ -216,11 +227,12 @@ async function boundedMemoryRead(adapter, args) {
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
 }
-async function boundedMemoryWrite(adapter, args) {
+async function boundedMemoryWrite(adapter, args, commitGuard = null) {
   const bytes = byteArray(args.bytes), expected = byteArray(args.expectedBefore);
   if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
   const before = await adapter.readMemory(args.address, expected.length);
   if (!equalBytes(before, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+  commitGuard?.();
   await adapter.writeMemory(args.address, bytes);
   const after = await adapter.readMemory(args.address, bytes.length);
   if (!equalBytes(after, bytes)) throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
@@ -451,14 +463,16 @@ async function previewPatch(app, args) {
   const validated = await validatePatchTarget(app, args);
   return { ok: true, ...validated, after: byteArray(args.after) };
 }
-async function createPatch(app, args) {
-  const validated = await validatePatchTarget(app, args), after = byteArray(args.after);
-  app.patches?.add?.(validated.fileOffset, validated.before, after, { addr: validated.address, label: args.label || null, reason: args.reason || null, expectedBefore: validated.before, createdAt: new Date().toISOString() });
-  const stored = app.patches?.at?.(validated.fileOffset);
+async function createPatch(app, args, commitGuard = null) {
+  const patchSet = app?.patches;
+  const validated = await validatePatchTarget(app, args, patchSet), after = byteArray(args.after);
+  commitGuard?.();
+  patchSet?.add?.(validated.fileOffset, validated.before, after, { addr: validated.address, label: args.label || null, reason: args.reason || null, expectedBefore: validated.before, createdAt: new Date().toISOString() });
+  const stored = patchSet?.at?.(validated.fileOffset);
   if (!stored || !equalBytes(stored.before, validated.before) || !equalBytes(stored.after, after)) throw new AIError('tool_failed', 'Patch postcondition verification failed.');
   return serializePatch(stored);
 }
-async function validatePatchTarget(app, args) {
+async function validatePatchTarget(app, args, patchSet = app?.patches) {
   const address = BigInt(args.address), before = byteArray(args.before), after = byteArray(args.after);
   if (!before.length || before.length !== after.length) throw new AIError('invalid_tool_call', 'Patch before/after lengths must match and be non-zero.');
   const regions = app?.store?.get?.('regions') || [];
@@ -466,17 +480,19 @@ async function validatePatchTarget(app, args) {
   const fileSize = app?.file?.size ?? app?.store?.get?.('fileInfo')?.size ?? null;
   const range = validatePatchRange(region, address, after.length, fileSize, args.instruction !== false);
   if (!range.ok) throw new AIError('invalid_tool_call', range.error);
-  if (app?.patches?.at?.(range.fileOffset)) throw new AIError('tool_failed', 'Patch target already has a patch; revert it before creating a replacement.');
+  if (patchSet?.at?.(range.fileOffset)) throw new AIError('tool_failed', 'Patch target already has a patch; revert it before creating a replacement.');
   const result = await app?.backend?.readAt?.(address, before.length);
   const actual = result?.found ? result.bytes : null;
   if (!actual || !equalBytes(actual, before)) throw new AIError('tool_failed', 'Patch target is stale: original bytes no longer match expected-before.');
   return { address, fileOffset: range.fileOffset, before };
 }
-async function applyPatch(app, args) {
+async function applyPatch(app, args, commitGuard = null) {
+  const patchSet = app?.patches;
   const source = args.file || app?.file;
-  const output = await app?.patches?.apply?.(source);
+  const output = await patchSet?.apply?.(source);
   if (!(output instanceof Blob)) throw new AIError('tool_failed', 'Patch application did not produce an output Blob.');
-  return { ok: true, output, size: output.size, patches: app.patches.list().map(serializePatch) };
+  commitGuard?.();
+  return { ok: true, output, size: output.size, patches: patchSet.list().map(serializePatch) };
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
 function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }

@@ -14,6 +14,12 @@ const CAPABILITY_PROPOSALS = new Set([
 const EXECUTION_PAYLOADS = new WeakMap();
 const PROPOSAL_AUTHORITIES = new WeakMap();
 const EXECUTION_AUTHORIZATIONS = new WeakMap();
+// A consumed authorization is removed from EXECUTION_AUTHORIZATIONS so it
+// cannot be replayed. Keep a separate, private commit guard alive until the
+// enclosing ProposalStore.apply() finishes so asynchronous adapters can fail
+// closed if the binary/project/session binding changes before their mutation
+// boundary.
+const EXECUTION_COMMIT_GUARDS = new WeakMap();
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -149,6 +155,14 @@ export class ProposalStore {
       const executionProposal = proposalExecutionView(proposal);
       authorization = issueProposalAuthorization(this, proposal, executionProposal, approvalToken);
       await apply(executionProposal, authorization);
+      // An adapter that did not expose a commit boundary may have awaited
+      // while the live workbench changed. Never publish such a proposal as
+      // applied after that binding has moved. Once an adapter has passed its
+      // own commit guard, later UI churn is an acknowledgement concern and
+      // must not relabel an already-committed mutation as failed.
+      if (!proposalAuthorizationCommitted(authorization)) {
+        assertProposalBinding(this.binding, authority.bindingRevision);
+      }
       proposal.status = 'applied';
       this.audit.push({ type: 'proposal-applied', proposalId: authority.id, timestamp: new Date().toISOString() });
       return proposalSnapshot(proposal);
@@ -157,7 +171,10 @@ export class ProposalStore {
       this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
     } finally {
-      if (authorization) EXECUTION_AUTHORIZATIONS.delete(authorization);
+      if (authorization) {
+        EXECUTION_AUTHORIZATIONS.delete(authorization);
+        EXECUTION_COMMIT_GUARDS.delete(authorization);
+      }
     }
   }
 
@@ -203,6 +220,7 @@ export function consumeProposalAuthorization(authorization, capability, args, cu
   // or arguments are wrong. This prevents a leaked authority from being probed
   // and then replayed with a corrected mutation.
   EXECUTION_AUTHORIZATIONS.delete(authorization);
+  EXECUTION_COMMIT_GUARDS.delete(authorization);
   try {
     if (authorization.kind !== 'proposal' || authorization.token !== record.token || authorization.proposalId !== record.proposalId) return false;
     if (record.store.records.get(record.proposalId) !== record.proposal || record.proposal.status !== 'applying') return false;
@@ -211,10 +229,33 @@ export function consumeProposalAuthorization(authorization, capability, args, cu
     if (record.capability !== capability) return false;
     if (authority.kind === 'capability' && fingerprint(currentState) !== authority.revision) return false;
     if (fingerprint(record.store.binding?.() || null) !== record.bindingRevision) return false;
-    return fingerprint(args) === record.argumentsRevision;
+    if (fingerprint(args) !== record.argumentsRevision) return false;
+    EXECUTION_COMMIT_GUARDS.set(authorization, record);
+    return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Check the live binding at the point an approved adapter is about to commit.
+ * The authorization itself remains single-use: this guard is only reachable
+ * from the one successful consume and is deleted when ProposalStore.apply()
+ * completes.
+ */
+export function assertProposalAuthorizationBinding(authorization, { commit = false } = {}) {
+  const record = authorization && EXECUTION_COMMIT_GUARDS.get(authorization);
+  if (!record) throw new AIError('approval_required', 'A valid approved proposal authorization is required at mutation commit.');
+  if (record.store.records.get(record.proposalId) !== record.proposal || record.proposal.status !== 'applying') {
+    throw new AIError('approval_required', 'The proposal is no longer applying.');
+  }
+  assertProposalBinding(record.store.binding, record.bindingRevision);
+  if (commit) record.committed = true;
+  return true;
+}
+
+function proposalAuthorizationCommitted(authorization) {
+  return authorization && EXECUTION_COMMIT_GUARDS.get(authorization)?.committed === true;
 }
 
 function issueProposalAuthorization(store, proposal, executionProposal, approvalToken) {
@@ -410,6 +451,13 @@ function containsSharedMemory(value, seen = new WeakSet()) {
  */
 function fingerprint(value) {
   return stableDigest(canonicalIdentity(value));
+}
+
+function assertProposalBinding(binding, expectedRevision) {
+  const currentRevision = fingerprint(binding?.() || null);
+  if (currentRevision !== expectedRevision) {
+    throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
+  }
 }
 
 /**
