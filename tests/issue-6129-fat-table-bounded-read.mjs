@@ -70,9 +70,9 @@ class RecordingSource extends ByteSource {
 // A complete FAT32/FAT64 container must parse under the same 16-byte ceiling
 // as the malformed-table regressions, and every read in the full parse must
 // carry the caller's exact AbortSignal.
-async function assertNormalFat(bits, count) {
+async function assertNormalFat(bits, count, maxReadLength = 16) {
   const { bytes, offsets, thinSize } = normalFatFixture(bits, count);
-  const source = new RecordingSource(bytes, 16);
+  const source = new RecordingSource(bytes, maxReadLength);
   const controller = new AbortController();
   const selectedIndex = count > 1 ? 1 : 0;
   const image = await parseMachOSource(source, {
@@ -89,7 +89,7 @@ async function assertNormalFat(bits, count) {
   assert.equal(image.metadata.fat.selected.size, BigInt(thinSize));
   assert.equal(image.metadata.fat.selected.arch, selectedIndex ? 'arm64e' : 'arm64');
   assert.ok(source.reads.length > 2, `normal FAT${bits} parse must perform chunked source reads`);
-  assert.ok(source.reads.every((read) => read.length <= 16), `FAT${bits} read exceeded maxReadLength`);
+  assert.ok(source.reads.every((read) => read.length <= maxReadLength), `FAT${bits} read exceeded maxReadLength ${maxReadLength}`);
   assert.ok(source.signals.length > 0);
   assert.ok(source.signals.every((signal) => signal === controller.signal), `FAT${bits} lost AbortSignal identity`);
 }
@@ -97,6 +97,7 @@ async function assertNormalFat(bits, count) {
 for (const bits of [32, 64]) {
   await assertNormalFat(bits, 1);
   await assertNormalFat(bits, 2);
+  await assertNormalFat(bits, 1, 8);
 }
 
 // The valid-slice path above proves the selected offset/size contract; retain
