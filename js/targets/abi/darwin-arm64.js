@@ -1,5 +1,9 @@
 import { ABIPlugin } from './registry.js';
-import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
+import {
+  aggregateLayoutDescriptorPresent,
+  aggregateRequiresIndirectCopy,
+  canonicalAggregateLayout,
+} from './aggregate-layout.js';
 import {
   AAPCS64_ABI,
   classifyAAPCS64CallReturn,
@@ -37,6 +41,39 @@ function descriptorBoolean(parameter, key) {
   if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
   const normalized = values;
   return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+}
+
+function aggregateAlignmentEvidence(parameter, layoutEvidence) {
+  const alignmentKeys = ['alignmentBytes', 'alignBytes', 'alignment'];
+  const ownAlignment = (record) => {
+    if (!nestedRecord(record)) return { present:false, value:null };
+    const owners = [record];
+    if (nestedRecord(record.layout)) owners.push(record.layout);
+    const values = owners
+      .filter((owner) => alignmentKeys.some((key) => Object.hasOwn(owner, key)))
+      .map((owner) => alignmentKeys
+        .filter((key) => Object.hasOwn(owner, key))
+        .map((key) => {
+          const value = owner[key];
+          return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+        }));
+    if (!values.length) return { present:false, value:null };
+    const flattened = values.flat();
+    if (flattened.some((value) => value == null)
+      || flattened.some((value) => value !== flattened[0])) return { present:true, value:null };
+    return { present:true, value:flattened[0] };
+  };
+  const explicit = ownAlignment(parameter);
+  if (explicit.present) return explicit.value == null
+    ? { proven:false, alignment:1 } : { proven:true, alignment:explicit.value };
+  if (!layoutEvidence?.members?.length) return { proven:false, alignment:1 };
+  const memberAlignments = [];
+  for (const member of layoutEvidence.members) {
+    const evidence = ownAlignment(member);
+    if (!evidence.present || evidence.value == null) return { proven:false, alignment:1 };
+    memberAlignments.push(evidence.value);
+  }
+  return { proven:true, alignment:Math.max(8, ...memberAlignments) };
 }
 
 function pointerSpelling(value) {
@@ -112,11 +149,12 @@ function parameterClass(param) {
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
-  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
-    ? explicitAlignment : null;
-  let alignmentBytes = explicitAlignmentBytes ?? 1;
-  if (explicitAlignmentBytes == null) {
-    if (bytes >= 16) alignmentBytes = 16;
+  const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;
+  const aggregateAlignment = aggregateAlignmentEvidence(param, layoutEvidence);
+  let alignmentBytes = explicitAlignmentProven ? explicitAlignment : 1;
+  if (!explicitAlignmentProven) {
+    if (aggregate && aggregateAlignment.proven) alignmentBytes = aggregateAlignment.alignment;
+    else if (!aggregate && bytes >= 16) alignmentBytes = 16;
     else if (bytes >= 8) alignmentBytes = 8;
     else if (bytes >= 4) alignmentBytes = 4;
     else if (bytes >= 2) alignmentBytes = 2;
@@ -124,7 +162,7 @@ function parameterClass(param) {
   const signed = param?.signed === true || /(^|\s)(?:signed|int\d*)/.test(type);
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateMetadataInvalid,
-    aggregate, aggregateLayoutProven, aggregateLayout:layoutEvidence,
+    aggregate, aggregateLayoutProven, aggregateAlignmentProven:!aggregate || aggregateAlignment.proven, aggregateLayout:layoutEvidence,
     aggregateBytes:aggregate ? bytes : null,
     vector, fp, members, elementBits,
     elementBytes:homogeneousElementBytes
@@ -180,6 +218,14 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   for (let index = 0; index < params.length; index++) {
     const param = params[index];
     const c = parameterClass(param);
+    const variadicProto = proto?.variadic === true || proto?.varargs === true;
+    const fixedCount = Number.isSafeInteger(proto?.fixedParameterCount) && proto.fixedParameterCount >= 0
+      ? proto.fixedParameterCount : null;
+    const anonymousVararg = variadicProto && (
+      param?.variadic === true || param?.unnamed === true || param?.named === false
+      || (fixedCount != null && index >= fixedCount)
+    );
+    const forceStack = anonymousVararg === true;
     if (c.appleLongDoubleWidthConflict) {
       aggregatePartial = true;
       arguments_.push({ index, location:'unknown', abiClass:'darwin-long-double-width-conflict',
@@ -212,7 +258,39 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       });
       continue;
     }
-    if (c.fp || c.hva) {
+    if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
+      const reg = !forceStack && gp < 8 ? `x${gp++}` : null;
+      const stackPointerOffset = reg ? null : alignUp(stackOffset, 8);
+      const entry = reg
+        ? {
+          index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true, bits:64, bytes:8,
+          pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
+          possible:false, mustUse:true,
+        }
+        : {
+          index, location:'stack', offset:stackPointerOffset, bytes:8,
+          abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
+          pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
+          possible:false, mustUse:true,
+        };
+      if (reg) srcs.push(registerSource(reg, 64));
+      else { stackArguments.push(entry); stackOffset = stackPointerOffset + 8; }
+      arguments_.push(entry);
+      stackArgsMayContainPointers = true;
+      continue;
+    }
+    if (c.aggregate && !c.aggregateAlignmentProven) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'aggregate-alignment-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'darwin-arm64-aggregate-alignment-not-proven',
+      });
+      continue;
+    }
+    if ((c.fp || c.hva) && !forceStack) {
       const regsNeeded = c.homogeneous ? c.members : 1;
       if (fp + regsNeeded <= 8) {
         const regs = [];
@@ -267,7 +345,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           reason:'aggregate-physical-padding-register-layout-not-represented' });
         continue;
       }
-      if (gp + regsNeeded <= 8) {
+      if (gp + regsNeeded <= 8 && !forceStack) {
         const regs = [];
         for (let n = 0; n < regsNeeded; n++) {
           const reg = `x${gp++}`;
@@ -346,6 +424,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       possible:false,
       mustUse:true,
       compactDarwinSlot:true,
+      ...(forceStack ? { variadicAnonymous:true } : {}),
     };
     stackArguments.push(entry);
     arguments_.push(entry);
