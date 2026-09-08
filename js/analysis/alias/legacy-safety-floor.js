@@ -19,9 +19,28 @@ function intervalRelation(startA, sizeA, startB, sizeB) {
   return 'may';
 }
 
+function hasFunctionLocalRoot(root) {
+  return !!root && typeof root === 'object' && !Array.isArray(root)
+    && Object.prototype.hasOwnProperty.call(root, 'addressValueId');
+}
+
+function samePhysicalScope(a, b) {
+  // A `{ addressValueId }` root is a function-local SSA value identity: the
+  // same string in another function (or binary) is not the same storage.
+  if (hasFunctionLocalRoot(a.rootIdentity) || hasFunctionLocalRoot(b.rootIdentity)) {
+    if (a.functionId == null || b.functionId == null) return false;
+    if (a.functionId !== b.functionId) return false;
+  }
+  // Without an explicit global-identity proof, the same root spelling in
+  // another binary is not proven to be the same storage either.
+  if (a.binaryId != null && b.binaryId != null) return a.binaryId === b.binaryId;
+  return false;
+}
+
 function sameScope(a, b) {
   if (a.kind === 'stack-fixed') return a.functionId != null && a.functionId === b.functionId;
   if (a.kind === 'global-absolute') return a.binaryId != null && a.binaryId === b.binaryId;
+  if (a.kind === 'tls' || a.kind === 'io' || a.kind === 'physical-space') return samePhysicalScope(a, b);
   return true;
 }
 
