@@ -24,7 +24,7 @@ import {
 } from './workload-twins.mjs';
 import { extractElfFunctionBytes, loadCorpus } from '../phase8/build-corpus.mjs';
 import { observeCorpus } from '../phase8/decompile-corpus.mjs';
-import { loadFrozenBaseline, qualityVector } from '../phase8/metrics.mjs';
+import { loadFrozenBaseline, loadFrozenProvenance, qualityVector } from '../phase8/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'tests/phase8/corpus/sources');
@@ -152,6 +152,7 @@ export function validateCompetitiveMeasurement(value, {
     if (value.semanticOracle == null || typeof value.semanticOracle !== 'object' || Array.isArray(value.semanticOracle)) measurementError('oracle', value.metricId);
     validateMeasuredDenominator(value, metricConfig, capture);
     validateMeasuredOracle(value, metricConfig, capture);
+    if (metricConfig.kind === 'phase8-frozen-function-corpus') validateMeasuredPhase8Authority(value);
   } else {
     if (value.candidateValue !== null || value.referenceValue !== null || value.comparison !== UNMEASURED_STATUS) {
       measurementError('unmeasured-values', value.metricId);
@@ -243,6 +244,8 @@ function validateMeasuredDenominator(value, metricConfig, capture) {
   for (const key of ['corpusDigest', 'sourceDigest', 'functionIdsDigest', 'machineFunctionBytesDigest', 'machineArtifactIdsDigest', 'nativeArtifactIdsDigest', 'candidateObservationsDigest', 'baselineObservationsDigest']) {
     requiredDigest(denominator[key], HEX32_RE, `denominator-${key}:${value.metricId}`);
   }
+  requiredDigest(denominator.baselineProvenanceDigest, HEX32_RE, `denominator-baseline-provenance:${value.metricId}`);
+  requiredDigest(denominator.baselineCommit, HEX40_RE, `denominator-baseline-commit:${value.metricId}`);
   if (denominator.candidateObservationsDigest !== value.semanticOracle?.candidateObservationDigest
       || denominator.baselineObservationsDigest !== value.semanticOracle?.baselineObservationDigest) {
     measurementError('denominator-observation-digest', value.metricId);
@@ -302,6 +305,9 @@ function validateMeasuredOracle(value, metricConfig, capture) {
       if (typeof oracle[key] !== 'string' || !oracle[key].trim()) measurementError(`oracle-${key}`, value.metricId);
     } else requiredDigest(oracle[key], regex, `oracle-${key}:${value.metricId}`);
   }
+  requiredDigest(oracle.baselineProvenanceDigest, HEX32_RE, `oracle-baseline-provenance:${value.metricId}`);
+  requiredDigest(oracle.baselineCommit, HEX40_RE, `oracle-baseline-commit:${value.metricId}`);
+  requiredDigest(oracle.provenanceBaseCommit, HEX40_RE, `oracle-provenance-base-commit:${value.metricId}`);
   if (!Number.isSafeInteger(oracle.corpusVersion) || oracle.corpusVersion < 0) measurementError('oracle-corpus-version', value.metricId);
 }
 
@@ -782,7 +788,7 @@ function phase8SourceRecords(corpus, sourceDirectory) {
   return { ok: true, records };
 }
 
-function phase8CaptureLineage(corpus, capture, { sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+export function validatePhase8CaptureLineage(corpus, capture, { sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
   if (!Array.isArray(corpus?.functions) || corpus.functions.length === 0 || typeof corpus.sourceDigest !== 'string') {
     return { ok: false, reason: 'phase8-corpus-byte-identity-missing' };
   }
@@ -909,9 +915,238 @@ function completePhase8CandidateObservations(observations, expectedFunctionIds) 
   return { ok: true };
 }
 
-/** Bind P8 candidate observations to the frozen source/corpus baseline. */
-export function measurePhase8Quality({ metricId, observations, baseline = loadFrozenBaseline(), corpus = loadCorpus(), capture, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+/**
+ * Compare two observation vectors without producing a measurement envelope.
+ *
+ * This small pure contract keeps fixture-level tests focused on candidate
+ * completeness and metric-field independence.  The integrated measurement
+ * path below supplies the immutable corpus IDs and the repository-owned frozen
+ * baseline before it calls this helper.
+ */
+export function comparePhase8Quality({ metricId, observations, baselineObservations, expectedFunctionIds, direction = 'lower' } = {}) {
   const field = qualityMetric(metricId);
+  if (!Array.isArray(expectedFunctionIds)
+      || !Array.isArray(observations)
+      || !Array.isArray(baselineObservations)
+      || observations.length !== expectedFunctionIds.length
+      || baselineObservations.length !== expectedFunctionIds.length
+      || stableDigest(observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)
+      || stableDigest(baselineObservations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)) {
+    return { ok: false, reason: 'phase8-observation-denominator-mismatch' };
+  }
+  const completeness = completePhase8CandidateObservations(observations, expectedFunctionIds);
+  if (!completeness.ok) return { ok: false, reason: completeness.reason, identityFailure: completeness };
+  let candidate;
+  let reference;
+  try {
+    candidate = qualityVector(observations);
+    reference = qualityVector(baselineObservations);
+  } catch {
+    return { ok: false, reason: 'phase8-quality-value-missing' };
+  }
+  const candidateValue = candidate[field];
+  const referenceValue = reference[field];
+  if (!finiteNumber(candidateValue) || !finiteNumber(referenceValue)) {
+    return { ok: false, reason: 'phase8-quality-value-missing' };
+  }
+  return {
+    ok: true,
+    field,
+    candidate,
+    reference,
+    candidateValue,
+    referenceValue,
+    comparison: comparison(direction, candidateValue, referenceValue),
+    candidateIdentity: observationIdentity(observations),
+    baselineIdentity: observationIdentity(baselineObservations),
+  };
+}
+
+function digestOrNull(value) {
+  try { return stableDigest(value); } catch { return null; }
+}
+
+/**
+ * Load the repository-owned P8 authority as one identity-bearing unit.
+ *
+ * The historical observations are intentionally allowed to contain incomplete
+ * rows.  Their semantic/readability shape is part of the frozen question, so
+ * this boundary validates the file and sidecar identities without applying the
+ * candidate completeness contract to the reference rows.
+ */
+function phase8FrozenAuthority() {
+  try {
+    const baseline = loadFrozenBaseline();
+    const provenance = loadFrozenProvenance(undefined, baseline);
+    const corpus = loadCorpus();
+    const baselineObservationsDigest = digestOrNull(baseline.observations);
+    if (baseline.schemaVersion !== 1 || corpus.schemaVersion !== 2
+        || !HEX40_RE.test(String(baseline.baseCommit || ''))
+        || !HEX40_RE.test(String(provenance.baseProductSha || ''))
+        || baseline.baseCommit !== provenance.baseProductSha
+        || stableDigest(baseline.toolchain) !== stableDigest(corpus.toolchain)
+        || !Array.isArray(baseline.observations)
+        || baselineObservationsDigest == null
+        || baseline.observationsDigest !== baselineObservationsDigest) {
+      return { ok: false, reason: 'phase8-frozen-baseline-invalid' };
+    }
+    if (baseline.corpusId !== corpus.corpusId
+        || baseline.corpusVersion !== corpus.corpusVersion
+        || baseline.corpusDigest !== corpus.corpusDigest) {
+      return { ok: false, reason: 'phase8-frozen-authority-identity-mismatch' };
+    }
+    return {
+      ok: true,
+      baseline,
+      baselineDigest: digestOrNull(baseline),
+      provenance,
+      provenanceDigest: digestOrNull(provenance),
+      corpus,
+      corpusDigest: digestOrNull(corpus),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'phase8-frozen-authority-unavailable',
+      detail: firstLine(error?.message || error),
+    };
+  }
+}
+
+function bindPhase8FrozenAuthority({ baseline, provenance, corpus }, authority) {
+  if (!authority.ok) return authority;
+  if (baseline !== undefined) {
+    const observedDigest = digestOrNull(baseline);
+    if (observedDigest == null || observedDigest !== authority.baselineDigest) {
+      return {
+        ok: false,
+        reason: 'phase8-frozen-baseline-authority-mismatch',
+        expectedDigest: authority.baselineDigest,
+        observedDigest,
+        expectedBaseCommit: authority.baseline.baseCommit,
+        observedBaseCommit: baseline?.baseCommit ?? null,
+      };
+    }
+  }
+  // A provenance sidecar is not accepted because it is internally
+  // self-consistent; it must be the committed sidecar bound to the committed
+  // historical baseline.  The nested form is rejected as well so callers
+  // cannot smuggle a second reference alongside an otherwise valid baseline.
+  const suppliedProvenance = provenance !== undefined
+    ? provenance
+    : baseline != null && typeof baseline === 'object' && Object.prototype.hasOwnProperty.call(baseline, 'provenance')
+      ? baseline.provenance
+      : undefined;
+  if (suppliedProvenance !== undefined) {
+    const observedDigest = digestOrNull(suppliedProvenance);
+    if (observedDigest == null || observedDigest !== authority.provenanceDigest) {
+      return {
+        ok: false,
+        reason: 'phase8-frozen-provenance-authority-mismatch',
+        expectedDigest: authority.provenanceDigest,
+        observedDigest,
+        expectedBaseCommit: authority.provenance.baseProductSha,
+        observedBaseCommit: suppliedProvenance?.baseProductSha ?? null,
+      };
+    }
+  }
+  if (corpus !== undefined) {
+    const observedDigest = digestOrNull(corpus);
+    if (observedDigest == null || observedDigest !== authority.corpusDigest) {
+      return {
+        ok: false,
+        reason: 'phase8-frozen-corpus-authority-mismatch',
+        expectedDigest: authority.corpusDigest,
+        observedDigest,
+      };
+    }
+  }
+  // Always return the loaded objects.  A caller may provide a deep clone of
+  // the authority, but the score must read the repository-owned objects rather
+  // than carrying caller-owned reference rows into the result.
+  return {
+    ok: true,
+    baseline: authority.baseline,
+    provenance: authority.provenance,
+    corpus: authority.corpus,
+  };
+}
+
+function phase8AuthorityLineage(authority) {
+  const corpus = authority.corpus;
+  const machineFunctions = corpus.functions.filter((entry) => entry?.representation === 'machine-bytes');
+  const machineFunctionHashes = machineFunctions.map((entry) => ({
+    id: entry.id,
+    sha256: sha256Bytes(Buffer.from(entry.bytes, 'hex')),
+  }));
+  const machineArtifactIds = sortedUnique(machineFunctions.map(phase8ArtifactIdFor).filter(Boolean));
+  const nativeArtifactIds = sortedUnique(corpus.functions
+    .filter((entry) => entry?.architectureId === 'arm64')
+    .map((entry) => `arm64-native-${entry.source}-${String(entry.optimization).replace(/^-/, '')}`));
+  return {
+    sourceDigest: corpus.sourceDigest,
+    functionIdsDigest: stableDigest(corpus.functions.map((entry) => entry.id)),
+    machineFunctionCount: machineFunctions.length,
+    machineFunctionBytesDigest: stableDigest(machineFunctionHashes),
+    machineArtifactIdsDigest: stableDigest(machineArtifactIds),
+    nativeArtifactIdsDigest: stableDigest(nativeArtifactIds),
+  };
+}
+
+function validateMeasuredPhase8Authority(value) {
+  const authority = phase8FrozenAuthority();
+  if (!authority.ok) measurementError('frozen-authority', value.metricId);
+  const denominator = value.denominator;
+  const oracle = value.semanticOracle;
+  const lineage = phase8AuthorityLineage(authority);
+  const referenceQuality = qualityVector(authority.baseline.observations);
+  const referenceField = MEASUREMENT_CONFIG[value.metricId].field;
+  if (value.referenceTool !== 'phase8-frozen-source-baseline'
+      || value.referenceVersion !== authority.baseline.baseCommit) {
+    measurementError('frozen-baseline-identity', value.metricId);
+  }
+  if (denominator.corpusDigest !== authority.corpus.corpusDigest
+      || denominator.functionCount !== authority.corpus.functions.length
+      || denominator.sourceDigest !== lineage.sourceDigest
+      || denominator.functionIdsDigest !== lineage.functionIdsDigest
+      || denominator.machineFunctionCount !== lineage.machineFunctionCount
+      || denominator.machineFunctionBytesDigest !== lineage.machineFunctionBytesDigest
+      || denominator.machineArtifactIdsDigest !== lineage.machineArtifactIdsDigest
+      || denominator.nativeArtifactIdsDigest !== lineage.nativeArtifactIdsDigest
+      || denominator.baselineObservationsDigest !== authority.baseline.observationsDigest
+      || denominator.baselineProvenanceDigest !== authority.provenance.observationsDigest
+      || denominator.baselineCommit !== authority.baseline.baseCommit) {
+    measurementError('frozen-baseline-denominator', value.metricId);
+  }
+  if (value.referenceValue !== referenceQuality[referenceField]) {
+    measurementError('frozen-baseline-value', value.metricId);
+  }
+  if (oracle.corpusDigest !== authority.corpus.corpusDigest
+      || oracle.sourceDigest !== lineage.sourceDigest
+      || oracle.functionIdsDigest !== lineage.functionIdsDigest
+      || oracle.machineFunctionBytesDigest !== lineage.machineFunctionBytesDigest
+      || oracle.baselineObservationDigest !== authority.baseline.observationsDigest
+      || oracle.baselineLedgerDigest !== authority.baseline.observationsDigest
+      || oracle.baselineProvenanceDigest !== authority.provenance.observationsDigest
+      || oracle.baselineCommit !== authority.baseline.baseCommit
+      || oracle.provenanceBaseCommit !== authority.provenance.baseProductSha) {
+    measurementError('frozen-baseline-oracle', value.metricId);
+  }
+}
+
+/** Bind P8 candidate observations to the frozen source/corpus baseline. */
+export function measurePhase8Quality({ metricId, observations, baseline, provenance, corpus, capture, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+  const field = qualityMetric(metricId);
+  const authority = phase8FrozenAuthority();
+  const binding = bindPhase8FrozenAuthority({ baseline, provenance, corpus }, authority);
+  if (!binding.ok) return unmeasured(metricId, capture, binding.reason, {
+    expectedDigest: binding.expectedDigest,
+    observedDigest: binding.observedDigest,
+    expectedBaseCommit: binding.expectedBaseCommit,
+    observedBaseCommit: binding.observedBaseCommit,
+  });
+  baseline = binding.baseline;
+  corpus = binding.corpus;
   const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
   if (identity.capture.corpusId !== corpus.corpusId || identity.capture.corpusVersion !== corpus.corpusVersion) {
@@ -930,7 +1165,7 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       capturedCompilers,
     });
   }
-  const lineage = phase8CaptureLineage(corpus, capture, { sourceDirectory });
+  const lineage = validatePhase8CaptureLineage(corpus, capture, { sourceDirectory });
   if (!lineage.ok) return unmeasured(metricId, capture, lineage.reason, { identityFailure: lineage });
   const recomputedBaselineDigest = Array.isArray(baseline?.observations) ? stableDigest(baseline.observations) : null;
   if (typeof baseline?.observationsDigest !== 'string' || recomputedBaselineDigest == null || baseline.observationsDigest !== recomputedBaselineDigest) {
@@ -940,21 +1175,22 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
     });
   }
   const expectedFunctionIds = corpus.functions.map((row) => row?.id);
-  if (!Array.isArray(observations) || !Array.isArray(baseline.observations) || observations.length !== corpus.functions.length
-      || baseline.observations.length !== corpus.functions.length
-      || stableDigest(observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)
-      || stableDigest(baseline.observations.map((row) => row?.id)) !== stableDigest(expectedFunctionIds)) {
-    return unmeasured(metricId, capture, 'phase8-observation-denominator-mismatch');
-  }
-  const completeness = completePhase8CandidateObservations(observations, expectedFunctionIds);
-  if (!completeness.ok) return unmeasured(metricId, capture, completeness.reason, { identityFailure: completeness });
-  const candidate = qualityVector(observations);
-  const reference = qualityVector(baseline.observations);
-  const candidateValue = candidate[field];
-  const referenceValue = reference[field];
-  if (!finiteNumber(candidateValue) || !finiteNumber(referenceValue)) return unmeasured(metricId, capture, 'phase8-quality-value-missing');
-  const candidateIdentity = observationIdentity(observations);
-  const baselineIdentity = observationIdentity(baseline.observations);
+  const compared = comparePhase8Quality({
+    metricId,
+    observations,
+    baselineObservations: baseline.observations,
+    expectedFunctionIds,
+    direction,
+  });
+  if (!compared.ok) return unmeasured(metricId, capture, compared.reason, { identityFailure: compared.identityFailure });
+  const {
+    candidate,
+    reference,
+    candidateValue,
+    referenceValue,
+    candidateIdentity,
+    baselineIdentity,
+  } = compared;
   return measured({
     metricId,
     capture,
@@ -974,6 +1210,8 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       nativeArtifactIdsDigest: lineage.nativeArtifactIdsDigest,
       candidateObservationsDigest: candidateIdentity.digest,
       baselineObservationsDigest: baseline.observationsDigest,
+      baselineProvenanceDigest: binding.provenance.observationsDigest,
+      baselineCommit: baseline.baseCommit,
     },
     referenceTool: 'phase8-frozen-source-baseline',
     referenceVersion: String(baseline.baseCommit || 'unknown'),
@@ -993,9 +1231,13 @@ export function measurePhase8Quality({ metricId, observations, baseline = loadFr
       candidateObservationDigest: candidateIdentity.digest,
       baselineObservationDigest: baselineIdentity.digest,
       baselineLedgerDigest: baseline.observationsDigest,
+      baselineProvenanceDigest: binding.provenance.observationsDigest,
+      baselineCommit: baseline.baseCommit,
+      provenanceBaseCommit: binding.provenance.baseProductSha,
     },
     evidenceRefs: [
       'tests/phase8/corpus/**',
+      'tests/phase8/corpus/pre-phase8-provenance.json',
       'tools/validation/phase8/decompile-corpus.mjs',
       'tools/validation/phase8/metrics.mjs',
     ],
