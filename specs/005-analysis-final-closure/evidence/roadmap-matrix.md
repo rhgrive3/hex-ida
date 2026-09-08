@@ -1,9 +1,12 @@
 # Stage B Roadmap Reconciliation Matrix
 
-Current development source under T037 review: product commit
+The retained T037 packet is bound to product commit
 `459dfe5bc7345d1ad3a7693738f6f73d5db66d9b`, tree
 `239c8035f06b3e089c2daef186f3028e3f8c8d18`, with evidence base
 `fce943f5e58990ce223971af270d5fca7b976b6e` (`perf/development-gate-policy`).
+The current integrated candidate is runtime commit `1e2df44bf43051068098be04ea37bcd2dc38f881`,
+tree `5ebc67508d4afb3846554aa3854d3fc6ccf40663`, with canonical generated
+outputs at `a5209e5bd5580ad6bd95c82f496f854b2374183c`.
 Canonical roadmap: `docs/解析ツール改善.md.txt` (unchanged by this reconciliation).
 Reconciliation date: 2026-09-08.
 
@@ -121,3 +124,24 @@ repairs, both tests pass under Node 22.
 T037 is **DONE** for terminal-existing-row revalidation with no production
 regression found. This does not close T026/C0-01, T038, final performance,
 external-asset, deployment, physical-device, or protected-main release gates.
+
+## Approved origin-identity integration delta — 2026-09-08
+
+The Luna Max approved runtime delta at `1e2df44bf` is limited to producer-owned
+deeply frozen `OriginSet` branding and Phase 8 capture/digest handling. It does
+not change the canonical producers or denominator of the twelve authoritative
+T025 terminal-existing rows, so those retained row results remain
+source-equivalent to the `459dfe5bc` packet. The shared Phase 8 identity boundary
+was checked on the current candidate with core identity contracts **14/14**,
+T012 identity publication **3/3**, and the two existing origin-sharing cases in
+the C2-02 adversarial file **2/2**. The independent owner packet also records
+core **14/14**, cache **6/6**, adversarial **72/72**, and five fresh boundaries.
+The retained C2-02 **158/158** row result remains bound to the earlier source;
+these focused delta checks are the current proof, not a reissued full row run.
+
+The canonical userscript build was run twice after the runtime change. The
+tracked generated outputs are committed at `a5209e5bd`; the second build added
+no tracked diff. The bounded three-repetition origin-leaf timing observation is
+retained in `/mnt/workspace/.dev-state/hex-development-batch/perf-origin-leaf-f0a60ffc5-bounded-observation.json`
+and its companion test note. It is representative evidence and does not close
+aggregate performance acceptance; the whole benchmark is not proven.

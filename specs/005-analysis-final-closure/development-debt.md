@@ -14,6 +14,18 @@ T037 is complete for the authoritative 12 T025 terminal-existing rows on the
 same product source. The focused packet is recorded in `evidence/roadmap-matrix.md`;
 T026/C0-01 and release-only gates remain open.
 
+The approved Luna Max runtime integration is recorded at `1e2df44bf` (tree
+`5ebc67508`), with canonical generated outputs at `a5209e5bd`. It only changes
+producer-owned deeply frozen `OriginSet` recognition in the Phase 8 identity
+consumer. The canonical producers and denominator for the authoritative twelve
+T025 rows remain source-equivalent to the retained `459dfe5bc` packet. Current
+delta proof is core identity **14/14**, T012 identity publication **3/3**, and
+the two filtered C2-02 origin cases **2/2**; the owner packet additionally
+records cache **6/6**, adversarial **72/72**, and five fresh boundaries. The
+retained 45/61 count is unchanged. The bounded origin-leaf timing observation
+is representative evidence only; aggregate performance and the whole benchmark
+are not proven, and release completion is not claimed.
+
 | Area | Current state | Next action |
 | --- | --- | --- |
 | Local integration | The exact `ea5d05b24` check failed after261.7 s at semantic-v2 integration (`1.0.1` actual versus stale `1.0.0` expected). Focused repair `6ff3b7b22` was followed by a Phase4 stale invalid-binary fixture stop; `b230b0a4a` repaired that fixture and suffix PID545932 reached Phase5. No full PASS is claimed. | Retain each exact observation and finish the current full check from the repaired suffix; do not convert focused repairs into a full-gate result. |
@@ -33,6 +45,11 @@ tests passed (45.4 s). Subsequent integrated runtime changes now require the
 canonical generated rebuild. That update is committed at71b654adc; two builds
 produce identical hashes and userscript:test passes49.1 s. Browser and full-command
 checks remain pending. The original issue worktree and user tmp work are untouched.
+
+For the current `1e2df44bf` runtime delta, the canonical generated outputs were
+rebuilt twice with no second-run tracked diff and committed at `a5209e5bd`.
+Only the narrow affected identity checks are current for this delta; no full
+userscript or full-command result is promoted from the retained historical runs.
 
 ## Historical implementation observations
 
