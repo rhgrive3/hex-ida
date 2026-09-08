@@ -21,12 +21,27 @@ test('#5855 valid flat and one-level-nested vectors keep working', () => {
     elementType: { kind: 'predicate', widthBits: 8, laneCount: 4 },
   });
   assert.equal(predicateElem.elementType.kind, 'predicate');
+  const floatElem = createSemanticMachineType({
+    kind: 'vector', laneCount: 2,
+    elementType: { kind: 'float', widthBits: 32, format: 'ieee754' },
+  });
+  assert.equal(floatElem.elementType.kind, 'float');
 
   const machineVector = createMachineValue({
     kind: 'vector', laneCount: 2,
     elementType: { kind: 'bitvector', widthBits: 32 },
   });
   assert.equal(machineVector.elementType.kind, 'bitvector');
+  const machinePredicate = createMachineValue({
+    kind: 'vector', laneCount: 2,
+    elementType: { kind: 'predicate', widthBits: 8, laneCount: 4 },
+  });
+  assert.equal(machinePredicate.elementType.kind, 'predicate');
+  const machineFloat = createMachineValue({
+    kind: 'vector', laneCount: 2,
+    elementType: { kind: 'float', widthBits: 32, format: 'ieee754' },
+  });
+  assert.equal(machineFloat.elementType.kind, 'float');
 });
 
 test('#5855 Semantic IR and MachineEffects reject bounded nested vectors before descent', () => {
