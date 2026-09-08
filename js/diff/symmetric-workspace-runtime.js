@@ -121,9 +121,20 @@ export function installSymmetricWorkspaceDiff(app) {
 
   workspace.loadBaseline = async function loadSymmetricBaseline(file, options = {}) {
     const baseline = await originalLoadBaseline(file, options);
+    // The base guard ends when originalLoadBaseline resolves. The discovery /
+    // fingerprint awaits below must re-verify that this baseline is still the
+    // live one, or a superseded load can resolve as a normal success (#5492).
+    const assertCurrent = () => {
+      if (workspace.baseline !== baseline) {
+        const error = new Error('workspace-binding-changed');
+        error.code = 'HEX_WORKSPACE_STALE';
+        throw error;
+      }
+    };
     try {
       await discoverBaselineFunctions(baseline, options);
       throwIfAborted(options.signal);
+      assertCurrent();
       baseline.functions = await createSymmetricCodeFunctionSet({
         backend:baseline.backend,
         symbols:baseline.symbols,
@@ -133,11 +144,17 @@ export function installSymmetricWorkspaceDiff(app) {
         signal:options.signal ?? null,
         onProgress:options.onProgress,
       });
+      throwIfAborted(options.signal);
+      assertCurrent();
       baseline.complete = baseline.functions.complete === true;
       baseline.evidenceProfile = baseline.functions.evidenceProfile;
       workspace.diffState = null;
       return baseline;
     } catch (error) {
+      // A superseding load already disposed this baseline's owned backend and
+      // repointed workspace.baseline; only a genuine failure of the live
+      // baseline clears it here.
+      if (error?.code === 'HEX_WORKSPACE_STALE') throw error;
       if (workspace.baseline === baseline) workspace.baseline = null;
       if (baseline?.ownedBackend) baseline.backend?.dispose?.();
       throw error;

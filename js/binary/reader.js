@@ -9,6 +9,11 @@ function nonNegativeOffset(value, label = 'offset') {
   return BigInt(value);
 }
 
+function booleanValue(value, label) {
+  if (typeof value !== 'boolean') throw new TypeError(`${label} must be a boolean`);
+  return value;
+}
+
 function integerValue(value, label = 'value') {
   if (typeof value === 'bigint') return value;
   if (Number.isSafeInteger(value)) return BigInt(value);
@@ -55,7 +60,7 @@ export class ByteView {
     else if (input?.__binaryByteBacking === true && (typeof input.size === 'bigint' || Number.isSafeInteger(input.length)) && typeof input.subarray === 'function') this.bytes = input;
     else throw new TypeError('ByteView expects bytes or a binary byte backing');
     this.view = this.bytes instanceof Uint8Array ? new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength) : null;
-    this.littleEndian = !!littleEndian;
+    this.littleEndian = booleanValue(littleEndian, 'ByteView littleEndian');
     this.base = nonNegativeOffset(base, 'ByteView base');
     this.lengthBigInt = typeof this.bytes.size === 'bigint' ? this.bytes.size : BigInt(this.bytes.length);
   }
@@ -86,12 +91,12 @@ export class ByteView {
 
   u8(offset) { const x = this.data(offset, 1); return x.view.getUint8(x.offset); }
   i8(offset) { const x = this.data(offset, 1); return x.view.getInt8(x.offset); }
-  u16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getUint16(x.offset, le); }
-  i16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getInt16(x.offset, le); }
-  u32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getUint32(x.offset, le); }
-  i32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getInt32(x.offset, le); }
-  u64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigUint64(x.offset, le); }
-  i64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigInt64(x.offset, le); }
+  u16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getUint16(x.offset, booleanValue(le, 'littleEndian')); }
+  i16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getInt16(x.offset, booleanValue(le, 'littleEndian')); }
+  u32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getUint32(x.offset, booleanValue(le, 'littleEndian')); }
+  i32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getInt32(x.offset, booleanValue(le, 'littleEndian')); }
+  u64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigUint64(x.offset, booleanValue(le, 'littleEndian')); }
+  i64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigInt64(x.offset, booleanValue(le, 'littleEndian')); }
 
   slice(offset, size) {
     const o = this.check(offset, size);
@@ -100,8 +105,9 @@ export class ByteView {
 
   subview(offset, size = this.length - Number(offset), opts = {}) {
     const o = this.check(offset, size);
+    const littleEndian = opts.littleEndian === undefined ? this.littleEndian : opts.littleEndian;
     return new ByteView(this.bytes.subarray(o, o + Number(size)), {
-      littleEndian: opts.littleEndian ?? this.littleEndian,
+      littleEndian,
       base: this.base + BigInt(o),
     });
   }

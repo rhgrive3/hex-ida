@@ -228,6 +228,18 @@ export async function executeTurn(input = {}, options = {}) {
 
       assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
+      // The deadline/cancellation contract holds to the final return: a turn
+      // whose budget expired during finalization must not resolve as a normal
+      // success (#5606). A cancelled turn rejects (see the catch above); a
+      // timed-out turn keeps the graceful budget-exhausted policy.
+      const assertDeadlineHonest = () => {
+        try { ensureRunning(signal, started, turnTimeoutMs, monotonicNow); }
+        catch (error) {
+          if (error instanceof AIError && error.type === 'cancelled') throw error;
+          if (!limitReason) limitReason = error instanceof AIError ? error.type : 'budget_exhausted';
+        }
+      };
+      assertDeadlineHonest();
       const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
@@ -260,6 +272,11 @@ export async function executeTurn(input = {}, options = {}) {
         lastActivity: activity[activity.length - 1] || null,
       }));
       result.sessionId = session.id;
+      // Final honest re-check right before the successful return: an expiry
+      // that fired during the persistence awaits must demote the result to
+      // the budget-exhausted policy, never a clean success (#5606).
+      assertDeadlineHonest();
+      if (limitReason && result.limits && !result.limits.reason) result.limits = { exhausted: true, reason: limitReason };
       return validateAIResult(result);
     } finally {
       clearTimeout(deadline); this.activeControllers.delete(turnController);

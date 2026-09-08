@@ -97,13 +97,26 @@ function aiTurns(){
   })):[];
 }
 
+// AI investigation sessions carry either the raw content hash or the strong
+// `content:<hash>[:<slice>]` binary identity. Project round-trips must match
+// both spellings, or valid sessions are dropped on export/import (#5652).
+function sessionMatchesBinaryHash(sessionBinaryId, hash) {
+  if (!sessionBinaryId || !hash) return false;
+  if (sessionBinaryId === hash) return true;
+  if (sessionBinaryId === `content:${hash}`) return true;
+  return sessionBinaryId.startsWith(`content:${hash}:`);
+}
+
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
   const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
-  const activeSessions = app?.aiRuntime?.sessionStore?.list?.(identity?.hash || identity?.binaryId)
+  const allSessions = app?.aiRuntime?.sessionStore?.list?.()
     || (app?.aiRuntime?.sessionStore?.sessions ? Array.from(app.aiRuntime.sessionStore.sessions.values()) : null)
     || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
+  const activeSessions = Array.isArray(allSessions)
+    ? allSessions.filter((session) => session?.binaryId == null || sessionMatchesBinaryHash(session.binaryId, identity?.hash))
+    : allSessions;
   const rawTurns = aiTurns();
   const safeTurns = rawTurns.map((turn) => stripSecrets(turn));
   const safeSessions = Array.isArray(activeSessions) && activeSessions.length
@@ -168,7 +181,10 @@ export function applyWorkspaceProject(app, project){
     for(const session of project.findings.investigationSessions){
       if(session && typeof session === 'object'){
         const sessionBinaryId = session.binaryId || null;
-        if(sessionBinaryId && currentHash && sessionBinaryId !== currentHash) continue;
+        // Saved sessions may carry the raw hash or the strong
+        // `content:<hash>[:<slice>]` identity; both bind to the current
+        // binary, a raw comparison drops the strong ones (#5652).
+        if(sessionBinaryId && currentHash && !sessionMatchesBinaryHash(sessionBinaryId, currentHash)) continue;
         if(session.id && app?.aiRuntime?.sessionStore?.register){
           app.aiRuntime.sessionStore.register(session);
         }

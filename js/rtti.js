@@ -147,7 +147,7 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const exactSlotCount=Number(opts?.slotCount);
   const slotLimit=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0?Math.min(4096,exactSlotCount):maxSlots;
   const bytes=await read(vtableAddr,(slotLimit+2)*8);
-  if(!bytes||bytes.length<24)return null;
+  if(!bytes||bytes.length<16)return null;
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[];
   const offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true));
   const typeinfoRaw=dv.getBigUint64(8,true);

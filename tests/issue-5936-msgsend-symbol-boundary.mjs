@@ -41,9 +41,12 @@ assert.equal(isObjcMsgSendSymbol('_objc_msgSend_fixup$objc_class_ref'), true);
 assert.equal(isObjcMsgSendSymbol('objc_msgSend_fixup'), true);
 
 // 4. objc_msgSend via IMP evidence still routes through the imp path.
+// The call carries no symbol name, so the origin is genuinely unknown and the
+// IMP evidence may infer objc (#5608: a named non-objc runtime origin like
+// 'helper' -> 'c' stays authoritative instead of being reclassified).
 {
   const index = { objc: { runtime: 'objc', methodsByIMP: new Map([['4660', [{ className: 'PlayerData', selector: 'addCoins:', classMethod: false }]]]), completeness: { complete: true } } };
-  const result = resolveAppleCall(index, { name: 'helper', kind: 'function-pointer', impTarget: 0x1234n });
+  const result = resolveAppleCall(index, { kind: 'function-pointer', impTarget: 0x1234n });
   assert.equal(result.runtime, 'objc');
   assert.equal(result.kind, 'imp');
 }

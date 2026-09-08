@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { AiSession } from '../js/ai/ui/session.js';
 import { createConversationStore, deriveTitle, conversationTitle } from '../js/ai/ui/conversations.js';
 import {
-  applyStatus, capabilityApi, normalizeCapabilities, selectionForProvider, selectionLabel,
+  applyStatus, capabilityApi, findModel, findProvider, findReasoning, normalizeCapabilities,
+  selectionForModel, selectionForProvider, selectionLabel,
 } from '../js/ai/ui/model-picker.js';
 
 let failures = 0;
@@ -313,6 +314,77 @@ await check('capabilities normalize from whatever shape the engine advertises', 
   const fromMap = normalizeCapabilities({ providers: { gemini: { label: 'Gemini', models: { 'gemini-3.7-flash': 'Gemini 3.7 Flash' } } } });
   assert.equal(fromMap.providers[0].id, 'gemini');
   assert.equal(fromMap.providers[0].models[0].label, 'Gemini 3.7 Flash');
+
+  const fromStrings = normalizeCapabilities({
+    provider: 'gemini',
+  });
+  assert.deepEqual(fromStrings.providers.map((item) => item.id), ['gemini']);
+  const fromStringArray = normalizeCapabilities({ providers: ['gemini'] });
+  assert.deepEqual(fromStringArray.providers.map((item) => item.id), ['gemini']);
+  const singletonLists = normalizeCapabilities({
+    providers: [{ id: 'gemini', models: 'gemini-3.7-flash', reasoning: 'high' }],
+  });
+  assert.deepEqual(singletonLists.providers[0].models.map((item) => item.id), ['gemini-3.7-flash']);
+  assert.deepEqual(singletonLists.providers[0].reasoning.map((item) => item.id), ['high']);
+  const singletonModelReasoning = normalizeCapabilities({
+    providers: [{ id: 'gemini', models: [{ id: 'gemini-3.7-flash', reasoning: 'high' }] }],
+  });
+  assert.deepEqual(singletonModelReasoning.providers[0].models[0].reasoning.map((item) => item.id), ['high']);
+
+  for (const unsupported of [42, true]) {
+    const rejected = normalizeCapabilities({ providers: unsupported });
+    assert.equal(rejected.known, false);
+    assert.deepEqual(rejected.providers.map((item) => item.id), ['chatgpt-web', 'gemini']);
+  }
+});
+
+await check('model-specific reasoning is authoritative and string capability IDs stay atomic', () => {
+  const capabilities = normalizeCapabilities({ providers: [{
+    id: 'chatgpt-web',
+    reasoning: [
+      { id: 'low', label: 'Provider low' },
+      { id: 'medium', label: 'Provider medium', available: false },
+      { id: 'high', label: 'Provider high' },
+    ],
+    models: [
+      { id: 'restricted-model', label: 'Restricted', reasoning: [{ id: 'low', label: 'Model low' }] },
+      { id: 'expanded-model', label: 'Expanded', reasoning: [{ id: 'high', label: 'Model high' }] },
+      { id: 'inherited-model', label: 'Inherited' },
+      { id: 'empty-model', label: 'Empty', reasoning: [] },
+    ],
+  }] });
+  const provider = findProvider(capabilities, 'chatgpt-web');
+  const restricted = findModel(provider, 'restricted-model');
+  const expanded = findModel(provider, 'expanded-model');
+  const inherited = findModel(provider, 'inherited-model');
+  const empty = findModel(provider, 'empty-model');
+
+  assert.equal(findReasoning(provider, restricted, 'high'), null);
+  assert.equal(findReasoning(provider, restricted, 'low').label, 'Model low');
+  assert.equal(findReasoning(provider, expanded, 'high').label, 'Model high');
+  assert.equal(findReasoning(provider, inherited, 'high').label, 'Provider high');
+  assert.equal(findReasoning(provider, inherited, 'medium').available, false);
+  assert.equal(findReasoning(provider, empty, 'high').label, 'Provider high');
+  assert.deepEqual(
+    selectionLabel(capabilities, { provider: 'chatgpt-web', model: 'restricted-model', reasoning: 'low' }, false),
+    { text: 'Restricted · Model low', unavailable: false, note: '' },
+  );
+  assert.deepEqual(
+    selectionLabel(capabilities, { provider: 'chatgpt-web', model: 'restricted-model', reasoning: 'high' }, false),
+    { text: 'Restricted · high', unavailable: true, note: 'Unavailable' },
+  );
+  assert.deepEqual(
+    selectionLabel(capabilities, { provider: 'chatgpt-web', model: 'inherited-model', reasoning: 'medium' }, false),
+    { text: 'Inherited · Provider medium', unavailable: true, note: 'Unavailable' },
+  );
+  assert.deepEqual(
+    selectionForProvider(capabilities, 'chatgpt-web', { provider: 'chatgpt-web', model: 'restricted-model', reasoning: 'high' }),
+    { provider: 'chatgpt-web', model: 'restricted-model', reasoning: null },
+  );
+  assert.deepEqual(
+    selectionForModel(capabilities, 'chatgpt-web', 'restricted-model', { provider: 'chatgpt-web', model: 'inherited-model', reasoning: 'high' }),
+    { provider: 'chatgpt-web', model: 'restricted-model', reasoning: null },
+  );
 });
 
 await check('with no capability API the picker still offers the hosts Hex can use', () => {

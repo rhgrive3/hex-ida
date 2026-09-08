@@ -69,6 +69,45 @@ function readerFor(bytes, base = 0n) {
   assert.equal(table.slots[2].addr, 0x3330n);
 }
 
+// #5706 — an exact zero-slot vtable consists of its 16-byte Itanium header.
+{
+  const header = vtableBytes([], 0x4444n);
+  let requested = null;
+  const table = await readVtable(async (_address, length) => {
+    requested = Number(length);
+    return header;
+  }, 0n, null, { slotCount: 0 });
+  assert.equal(requested, 16);
+  assert.equal(table.offsetToTop, 0n);
+  assert.equal(table.typeinfo, 0x4444n);
+  assert.deepEqual(table.slots, []);
+
+  const oneSlot = vtableBytes([0x1234n], 0x5555n);
+  requested = null;
+  const one = await readVtable(async (_address, length) => {
+    requested = Number(length);
+    return oneSlot;
+  }, 0n, null, { slotCount: 1 });
+  assert.equal(requested, 24);
+  assert.equal(one.typeinfo, 0x5555n);
+  assert.equal(one.slots.length, 1);
+  assert.equal(one.slots[0].raw, 0x1234n);
+
+  const omitted = vtableBytes([0x1110n, 0x2220n]);
+  requested = null;
+  const defaulted = await readVtable(async (_address, length) => {
+    requested = Number(length);
+    return omitted;
+  }, 0n, null);
+  assert.equal(requested, (64 + 2) * 8, 'omitted slotCount keeps the default maxSlots read');
+  assert.equal(defaulted.slots.length, 2);
+
+  const truncated = new Uint8Array(15);
+  const failed = await readVtable(async (_address, length) => truncated.subarray(0, Number(length)),
+    0n, null, { slotCount: 0 });
+  assert.equal(failed, null, 'an RTTI header shorter than 16 bytes must fail closed');
+}
+
 // #835 — Swift MethodDescriptorFlags::IsInstance is a positive bit; keep async too.
 {
   const bytes = new Uint8Array(24);
