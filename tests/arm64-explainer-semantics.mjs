@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 7 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 8 つの確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -13,6 +13,7 @@
  *   #3610  ordered narrow memory のアクセス幅をレジスタ幅で推定する
  *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
  *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
+ *   #3620  条件付き比較/select の別演算 alias を同じ説明にする
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -176,6 +177,41 @@ for (const [mn, reg, bytes] of [
   assert.equal(insn.memory?.size, bytes, `${mn} ${reg} must report ${bytes}-byte access`);
 }
 console.log('  ok 4b ordered narrow memory widths remain architectural (#3610)');
+
+/* ── #3620 conditional compare/select aliases keep their own semantics ── */
+
+const conditionalLang = lang();
+try {
+  setLang('en');
+  const CONDITIONAL_CASES = [
+    ['ccmp', 'w0, w1, #0, eq', 'if (eq) flags = w0 − w1 else flags = 0', /subtract|compare again/i],
+    ['ccmp', 'x0, x1, #0, ne', 'if (ne) flags = x0 − x1 else flags = 0', /subtract|compare again/i],
+    ['ccmn', 'x0, x1, #0, ne', 'if (ne) flags = x0 + x1 else flags = 0', /add.*flags|negative/i],
+    ['ccmn', 'w0, w1, #0, eq', 'if (eq) flags = w0 + w1 else flags = 0', /add.*flags|negative/i],
+    ['csinc', 'w0, w1, w2, eq', 'w0 = eq ? w1 : w2 + 1', /adding one/i],
+    ['csinc', 'x0, x1, x2, ne', 'x0 = ne ? x1 : x2 + 1', /adding one/i],
+    ['csinv', 'x0, x1, x2, eq', 'x0 = eq ? x1 : ~x2', /bitwise inverse|invert/i],
+    ['csinv', 'w0, w1, w2, ne', 'w0 = ne ? w1 : ~w2', /bitwise inverse|invert/i],
+    ['csneg', 'w0, w1, w2, ne', 'w0 = ne ? w1 : -w2', /negat|negative/i],
+    ['csneg', 'x0, x1, x2, eq', 'x0 = eq ? x1 : -x2', /negat|negative/i],
+    ['cinc', 'x0, x1, eq', 'x0 = eq ? x1 + 1 : x1', /add one/i],
+    ['cinc', 'w0, w1, ne', 'w0 = ne ? w1 + 1 : w1', /add one/i],
+    ['cinv', 'w0, w1, ne', 'w0 = ne ? ~w1 : w1', /bitwise inverse|invert/i],
+    ['cinv', 'x0, x1, eq', 'x0 = eq ? ~x1 : x1', /bitwise inverse|invert/i],
+    ['cneg', 'x0, x1, eq', 'x0 = eq ? -x1 : x1', /negat|negative/i],
+    ['cneg', 'w0, w1, ne', 'w0 = ne ? -w1 : w1', /negat|negative/i],
+  ];
+
+  for (const [mn, ops, pseudo, summary] of CONDITIONAL_CASES) {
+    const e = explain(mn, ops, 0x1000n, {});
+    assert.equal(e.handlerError, undefined, `${mn} ${ops} handler must not throw (#3620)`);
+    assert.equal(e.pseudo, pseudo, `${mn} ${ops} must preserve both condition paths (#3620)`);
+    assert.match(e.summary, summary, `${mn} ${ops} summary must describe its operation (#3620)`);
+  }
+} finally {
+  setLang(conditionalLang);
+}
+console.log('  ok 4c conditional compare/select aliases retain W/X and true/false-path semantics (#3620)');
 
 /* ── handler が例外で落ちていないこと ───────────────────────── */
 
