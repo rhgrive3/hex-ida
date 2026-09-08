@@ -108,3 +108,28 @@ test('#5980: isDebugRecordAuthoritative refuses incomplete records on every verd
   });
   assert.equal(isDebugRecordAuthoritative(result, neutral), true);
 });
+
+test('#5980: matched-partial authority requires coverage and record completeness', () => {
+  const result = createDebugProviderResult({
+    ecosystem: 'dwarf',
+    identity: {
+      verdict: 'matched-partial',
+      providerId: 'phase7.debug.dwarf',
+      providerVersion: '1',
+      method: 'partial-id',
+      expected: 'build-A',
+      observed: 'build-A',
+      coverage: { entityIds: ['type:complete', 'type:incomplete'] },
+    },
+    status: {
+      snapshotId: 'snap-5980-partial',
+      analyzerId: 'phase7.debug.dwarf',
+      analyzerVersion: '1',
+      completeness: 'partial',
+      stopReason: 'evidence-missing',
+    },
+  });
+  assert.equal(isDebugRecordAuthoritative(result, typeRecord(false)), false);
+  assert.equal(isDebugRecordAuthoritative(result, typeRecord(true)), true);
+  assert.equal(isDebugRecordAuthoritative(result, symbolRecord(true)), false);
+});
