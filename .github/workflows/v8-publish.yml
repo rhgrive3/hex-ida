@@ -20,15 +20,24 @@ jobs:
         run: |
           set -euo pipefail
           cat .v8-staging/part*.b64 | base64 -d > /tmp/v8.patch.gz
-          echo 'e9e5dab90b5dac4a0114b42ab342898390d2d8f3ab0a97cca697bc9e57e4f434  /tmp/v8.patch.gz' | sha256sum -c -
+          actual="$(sha256sum /tmp/v8.patch.gz | awk '{print $1}')"
+          echo "bundle_sha=$actual" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$actual" != 'e9e5dab90b5dac4a0114b42ab342898390d2d8f3ab0a97cca697bc9e57e4f434' ]; then
+            echo 'failure=bundle-sha-mismatch' >> "$GITHUB_STEP_SUMMARY"
+            exit 11
+          fi
           gzip -dc /tmp/v8.patch.gz > /tmp/v8.patch
-          git apply --check /tmp/v8.patch
+          if ! git apply --check /tmp/v8.patch 2>/tmp/v8-apply.err; then
+            echo 'failure=git-apply-check' >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,20p' /tmp/v8-apply.err >> "$GITHUB_STEP_SUMMARY"
+            exit 12
+          fi
           git apply /tmp/v8.patch
           rm -rf .v8-staging
           rm -f .github/workflows/v8-publish.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git diff --cached --quiet && exit 1
+          git diff --cached --quiet && exit 13
           git commit -m 'feat(analysis): integrate symbolic memory, taint and proof-gated optimization'
           git push origin HEAD:tmp-analysis-v8-publish-20260908
