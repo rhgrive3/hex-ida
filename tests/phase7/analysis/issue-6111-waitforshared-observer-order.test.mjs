@@ -6,7 +6,7 @@ import { installDemandDrivenAnalysis } from '../../../js/analysis/demand-driven-
 // post-registration abort recheck cancels the producer.
 {
   const source = fs.readFileSync(new URL('../../../js/analysis/demand-driven-runtime.js', import.meta.url), 'utf8');
-  const start = source.indexOf('function waitForShared(entry, signal)');
+  const start = source.indexOf('function waitForShared(entry, signal');
   const end = source.indexOf('function mergeMapCounts', start);
   const wait = source.slice(start, end);
   const attachAt = wait.indexOf('entry.promise.then');

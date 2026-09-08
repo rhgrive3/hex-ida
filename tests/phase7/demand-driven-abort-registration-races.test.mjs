@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../js/analysis/demand-driven-runtime.js', import.meta.url), 'utf8');
-const waitStart = source.indexOf('function waitForShared(entry, signal)');
+const waitStart = source.indexOf('function waitForShared(entry, signal');
 const waitEnd = source.indexOf('function mergeMapCounts', waitStart);
 const wait = source.slice(waitStart, waitEnd);
 assert.match(wait, /addEventListener\('abort', onAbort, \{ once: true \}\);\n    entry\.promise\.then/);
