@@ -50,31 +50,34 @@ function createFakeIndexedDB() {
     close() {},
     transaction(storeNames) {
       const names = Array.isArray(storeNames) ? storeNames : [storeNames];
-      return {
-        objectStore: (name) => {
-          if (!names.includes(name)) throw new Error(`fake-idb: store ${name} not in transaction`);
-          const entry = stores.get(name);
-          if (!entry) throw new Error(`fake-idb: unknown store ${name}`);
-          const indexes = entry.indexes;
-          const records = entry.records;
-          return {
-            indexNames: { contains: (indexName) => indexes.has(indexName) },
-            put: (record) => {
-              records.set(record.id, structuredClone(record));
-              return settle(makeRequest(), record.id);
+      const tx = { error: null };
+      const complete = () => queueMicrotask(() => tx.oncomplete?.());
+      tx.objectStore = (name) => {
+        if (!names.includes(name)) throw new Error(`fake-idb: store ${name} not in transaction`);
+        const entry = stores.get(name);
+        if (!entry) throw new Error(`fake-idb: unknown store ${name}`);
+        const indexes = entry.indexes;
+        const records = entry.records;
+        return {
+          indexNames: { contains: (indexName) => indexes.has(indexName) },
+          put: (record) => {
+            records.set(record.id, structuredClone(record));
+            const request = settle(makeRequest(), record.id);
+            complete();
+            return request;
+          },
+          index: (indexName) => ({
+            getAll: (value, limit) => {
+              if (!indexes.has(indexName)) throw new Error(`fake-idb: unknown index ${indexName}`);
+              const matched = [...records.values()]
+                .filter((record) => record[indexName] === value)
+                .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+              return settle(makeRequest(), matched.slice(0, limit ?? Infinity));
             },
-            index: (indexName) => ({
-              getAll: (value, limit) => {
-                if (!indexes.has(indexName)) throw new Error(`fake-idb: unknown index ${indexName}`);
-                const matched = [...records.values()]
-                  .filter((record) => record[indexName] === value)
-                  .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-                return settle(makeRequest(), matched.slice(0, limit ?? Infinity));
-              },
-            }),
-          };
-        },
+          }),
+        };
       };
+      return tx;
     },
   };
   const indexedDB = {
