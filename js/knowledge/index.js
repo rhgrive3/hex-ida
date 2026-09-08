@@ -126,8 +126,7 @@ export class KnowledgeDB {
     validateAddressSources(input);
     const name = input.candidateName || null, identity = input.candidateIdentity || null;
     const fp = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
-    const records = this.negativeMemory ? [...this.negativeMemory.values()] : await this.#negativeCandidates(name, identity, fp);
-    return records.some((r) => {
+    const matches = (r) => {
       if (r.candidateName && r.candidateName !== name) return false;
       if (r.candidateIdentity && r.candidateIdentity !== identity) return false;
       if (fp) {
@@ -138,7 +137,12 @@ export class KnowledgeDB {
       const address = input.address ?? fp?.address ?? null;
       const sameBinary = r.sourceBinaryHash !== 'unknown' && input.sourceBinaryHash && r.sourceBinaryHash === input.sourceBinaryHash;
       return !r.targetHash && !r.targetNormalizedBytesHash && !r.targetSemanticHash && sameBinary && address != null && r.targetAddress === addrText(address);
-    });
+    };
+    if (this.negativeMemory) {
+      for (const record of this.negativeMemory.values()) if (matches(record)) return true;
+      return false;
+    }
+    return this.#hasNegativeCandidate(matches, name, identity);
   }
 
   async findMatches(input, options = {}) {
@@ -329,17 +333,46 @@ export class KnowledgeDB {
     return [...out.values()].slice(0,limit);
   }
 
-  async #negativeCandidates(name,identity) {
-    const db=await this.#dbOpen(); const store=db.transaction('negative','readonly').objectStore('negative');
-    // The identity index is strictly more selective: a name-prefixed retrieval
-    // is capped before the queried identity's record may appear, which made an
-    // explicit rejection invisible once enough same-name records existed
-    // (#6134). Look the identity up first and fall back to the name index only
-    // when no identity was provided.
-    if (identity && store.indexNames.contains('candidateIdentity')) return requestPromise(store.index('candidateIdentity').getAll(identity,200));
-    if (name && store.indexNames.contains('candidateName')) return requestPromise(store.index('candidateName').getAll(name,200));
-    return [];
+  async #hasNegativeCandidate(matches, name, identity) {
+    const db = await this.#dbOpen();
+    const tx = db.transaction('negative', 'readonly');
+    const store = tx.objectStore('negative');
+
+    // Real IndexedDB stores expose a cursor. Stream the complete relation so
+    // no finite getAll cap can be mistaken for evidence of absence (#6134).
+    // Waiting for transaction completion also preserves read/abort failures.
+    if (typeof store.openCursor === 'function') {
+      const done = transactionPromise(tx);
+      const result = new Promise((resolve, reject) => {
+        const request = store.openCursor();
+        request.onerror = () => reject(request.error || new Error('Knowledge negative lookup failed'));
+        request.onsuccess = () => {
+          try {
+            const cursor = request.result;
+            if (!cursor) return resolve(false);
+            if (matches(cursor.value)) return resolve(true);
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+      });
+      const [found] = await Promise.all([result, done]);
+      return found;
+    }
+
+    // Some embedders/test doubles implement only index.getAll(). Do not
+    // reintroduce the old 200-row cap: retrieve the complete selective index
+    // result and apply the exact same predicate locally.
+    const candidates = new Map();
+    const readIndex = async (indexName, value) => {
+      if (value == null || !store.indexNames?.contains?.(indexName)) return;
+      const rows = await requestPromise(store.index(indexName).getAll(value));
+      for (const row of rows || []) candidates.set(row.id, row);
+    };
+    await readIndex('candidateIdentity', identity);
+    await readIndex('candidateName', name);
+    return [...candidates.values()].some(matches);
   }
+
 }
 
 export function fingerprintVendors(input = {}) {
