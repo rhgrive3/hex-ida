@@ -212,6 +212,10 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // A cancelled turn must surface as a cancelled rejection: it is never
+        // a fallback answer, and cancelled turns finalize/persist nothing
+        // (#5632). Timeout/budget limits keep the deterministic fallback.
+        if (normalized.type === 'cancelled') throw normalized;
         // Live-binding violations must never become a fallback decision.
         // The inner catch runs caller-supplied onActivity synchronously, so a
         // drift detected at the planner boundary could otherwise be masked by
