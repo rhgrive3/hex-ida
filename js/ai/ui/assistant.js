@@ -13,6 +13,7 @@ import { toast } from '../../ui.js';
 import { AiSession } from './session.js';
 import { createPanel } from './panel.js';
 import { createLauncher } from './launcher.js';
+import { launcherStateForSessionEvent } from './launcher-state.js';
 import { createAiEngine } from './bridge.js';
 import { workbenchContext } from './workbench.js';
 import { createActionRunner } from '../interaction/actions.js';
@@ -27,6 +28,17 @@ import { runProductionDevBootstrap } from '../dev/bootstrap/production-bootstrap
 
 const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
+const CONTEXT_STORE_KEYS = new Set([
+  'fileInfo', 'regions', 'currentRegion', 'architecture',
+  'selectedRow', 'selectionStart', 'selectionEnd',
+]);
+
+function storePatchAffectsContext(patch) {
+  // Older/custom stores may only pass the current state to listeners. Keep
+  // those stores fail-open rather than silently leaving the context stale.
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return true;
+  return Object.keys(patch).some((key) => CONTEXT_STORE_KEYS.has(key));
+}
 
 function layoutFor(width) {
   if (width >= DOCK_MIN_WIDTH) return 'dock';
@@ -183,11 +195,12 @@ export function installAssistant(app, ui) {
   }
 
   session.on((event) => {
-    if (event.type === 'settled') {
-      launcher.setState('idle');
-      if (!open) { unread += 1; launcher.setUnread(unread); launcher.setState('attention'); }
-    } else if (event.type === 'turn') {
-      launcher.setState('running');
+    const launcherState = launcherStateForSessionEvent(event.type, session.busy);
+    if (launcherState) launcher.setState(launcherState);
+    if (event.type === 'settled' && launcherState === 'idle' && !open) {
+      unread += 1;
+      launcher.setUnread(unread);
+      launcher.setState('attention');
     }
     panel.update();
   });
@@ -218,7 +231,10 @@ export function installAssistant(app, ui) {
 
   /* Keep the context chip honest as the user navigates the code. */
   const unsubscribe = typeof app.store.subscribe === 'function'
-    ? app.store.subscribe(() => { if (open) panel.update({ stick: false }); })
+    ? app.store.subscribe((_state, patch) => {
+      if (!open || !storePatchAffectsContext(patch)) return;
+      panel.update({ stick: false });
+    })
     : null;
 
   function api() {

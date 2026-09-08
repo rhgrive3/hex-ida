@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createSymbolicEvidence } from '../js/symbolic/evidence/symbolic-evidence.js';
+import { ExhaustiveBvBackend } from '../js/symbolic/solver/exhaustive-backend.js';
 import { SymbolIndex } from '../js/symbols.js';
 import { ProgramIndex } from '../js/program.js';
 import { readFile } from 'node:fs/promises';
@@ -41,6 +43,57 @@ function makeIndex() {
   index.rename(0x1008n, 'interesting_branch');
   assert.equal(index.label(0x100cn), 'interesting_branch+0x4', 'explicit local renames may label later addresses in the same function');
   assert.equal(index.label(0x1104n), null, 'local rename must not leak into the next function');
+}
+
+// #5970: malformed structured addresses must not alias canonical rename keys.
+{
+  const index = new SymbolIndex({
+    addrs: new BigUint64Array([0x1000n]),
+    kinds: new Uint8Array([0]),
+    names: 'real_name',
+    funcs: new BigUint64Array([0x1000n]),
+  });
+  index.rename(['4096'], 'forged');
+  assert.equal(index.renamedAt(0x1000n), null, 'structured rename address must not create a canonical alias');
+  assert.equal(index.nameEvidence(0x1000n)?.source, 'binary-symbol', 'malformed rename must not replace symbol provenance');
+  index.rename(0x1000n, 'real_name_override');
+  assert.equal(index.renamedAt(['4096']), null, 'structured lookup address must not read a canonical rename');
+  assert.equal(index.nameAt(0x1000n), 'real_name_override');
+  index.rename(['4096'], '');
+  assert.equal(index.renamedAt(0x1000n), 'real_name_override', 'malformed delete must not remove a canonical rename');
+}
+
+// #5711: functionWindowBound must honor the same containment as functionAt.
+{
+  const explicit = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1010n]),
+  });
+  assert.equal(explicit.functionWindowBound(0x1000n), 0x1010n, 'function start keeps its explicit window bound');
+  assert.equal(explicit.functionWindowBound(0x100fn), 0x1010n, 'address inside explicit function keeps its bound');
+  assert.equal(explicit.functionWindowBound(0x1010n), null, 'exact explicit end is outside the function window');
+  assert.equal(explicit.functionWindowBound(0x2000n), null, 'address after explicit end has no stale window bound');
+
+  const regions = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x2000n]),
+    regions: [
+      { id: 'text-a', vmAddr: 0x1000n, size: 0x10n, exec: true },
+      { id: 'text-b', vmAddr: 0x2000n, size: 0x100n, exec: true },
+    ],
+  });
+  assert.equal(regions.functionWindowBound(0x1080n), null, 'a clear cross-region gap must not inherit the prior function window');
+
+  const outsideRegions = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1010n]),
+    regions: [{ id: 'text-only', vmAddr: 0x2000n, size: 0x100n, exec: true }],
+  });
+  assert.equal(outsideRegions.functionAt(0x1008n), null, 'a function outside executable regions is not contained');
+  assert.equal(
+    outsideRegions.functionWindowBound(0x1008n),
+    null,
+    'a start and query outside executable regions must not expose an explicit window bound',
+  );
 }
 
 
@@ -114,3 +167,38 @@ function makeIndex() {
 }
 
 console.log('symbol identity regression: PASS');
+
+
+// #5774: Map projection is independent of insertion order and keeps own-data keys.
+{
+  const backend = new ExhaustiveBvBackend();
+  const base = {
+    queryKind:'edge-feasibility', claimKind:'edge-feasibility',
+    proofStatement:'Edge is infeasible',
+    queryHash:'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    solverStatus:'sat', preconditionStatus:'satisfiable',
+    validationStatus:'validated', verdict:'refuted',
+    backendId:backend.id, backendVersion:backend.version,
+    proofAuthority:backend.proofAuthority,
+    capabilityFingerprint:backend.capabilityFingerprint(),
+    targetEntities:['func:0x1000'],
+  };
+  const forward = createSymbolicEvidence({ ...base, witnessModel:new Map([['x',1n],['y',2n]]) });
+  const reverse = createSymbolicEvidence({ ...base, witnessModel:new Map([['y',2n],['x',1n]]) });
+  assert.deepEqual(forward.witnessModel, reverse.witnessModel);
+  assert.equal(JSON.stringify(forward.witnessModel), JSON.stringify(reverse.witnessModel));
+  assert.deepEqual(forward.witnessModel, { x:'0x1', y:'0x2' });
+
+  const proto = createSymbolicEvidence({
+    ...base, witnessModel:new Map([['__proto__',{ safe:true }]]),
+  });
+  assert.equal(Object.getPrototypeOf(proto.witnessModel), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(proto.witnessModel, '__proto__').value, { safe:true });
+
+  assert.throws(() => createSymbolicEvidence({
+    ...base, witnessModel:new Map([[1,'number'],['1','string']]),
+  }), /map key projection collision/);
+  assert.throws(() => createSymbolicEvidence({
+    ...base, origins:new Map([[1,['origin-number']],['1',['origin-string']]]),
+  }), /map key projection collision/);
+}

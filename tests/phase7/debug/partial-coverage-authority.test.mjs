@@ -32,7 +32,7 @@ function record(input = {}) {
     name: input.name ?? null,
     providerId: 'pdb',
     providerVersion: '1',
-    buildIdentity: 'build-A-partial',
+    buildIdentity: input.buildIdentity ?? 'build-A-partial',
     descriptor: input.descriptor ?? { claim: { kind: 'int' } },
   });
 }
@@ -98,7 +98,7 @@ test('matched-authoritative remains authoritative and symbol confidence is per-r
     verdict: 'matched-authoritative', providerId: 'pdb', providerVersion: '1',
     expected: 'build-A', observed: 'build-A', method: 'guid-age',
   }));
-  assert.equal(isDebugRecordAuthoritative(full, record()), true);
+  assert.equal(isDebugRecordAuthoritative(full, record({ buildIdentity: 'build-A' })), true);
 
   const partial = resultFor(createDebugIdentity({
     verdict: 'matched-partial', providerId: 'pdb', providerVersion: '1',

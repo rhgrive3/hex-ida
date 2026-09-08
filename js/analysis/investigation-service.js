@@ -89,6 +89,13 @@ function budgetConfig(options, key, defaults) {
 function budgetProfileKey(config) {
   return Object.keys(config).sort().map((key) => `${key}:${config[key]}`).join('|');
 }
+function budgetProfileCovers(available, requested) {
+  if (!available || typeof available !== 'object') return false;
+  return Object.keys(requested).every((key) => {
+    const value = available[key];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= requested[key];
+  });
+}
 
 function waitShared(entry, signal, onLastWaiterAbort = null) {
   abortIfNeeded(signal);
@@ -155,6 +162,9 @@ function programComplete(program) {
   if (program.callsCapped || program.refsCapped || program.statsComplete === false) return false;
   return true;
 }
+function programIndexComplete(program) {
+  return program?.completeness?.complete === true;
+}
 function completenessFor({ strings, program, shapes, metadata, goal }) {
   const reasons = [];
   if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
@@ -183,13 +193,16 @@ function captureAnalysisBinding(app, resolved = {}) {
   const epoch = epochOf(app);
   const sliceIndex = strictInteger(storeValue(app, 'sliceIndex'), -1);
   const symbolsGen = strictInteger(symbols?.gen, 0);
+  const program = resolved.program ?? app?.program ?? null;
   return Object.freeze({
     epoch,
     sliceIndex,
     symbols,
     symbolsGen,
     fields:resolved.fields ?? app?.fields ?? null,
-    program:resolved.program ?? app?.program ?? null,
+    program,
+    programPublished:program != null && app?.program === program,
+    programRegionKey:program == null ? null : execRegions(app).map((item) => item.id).join('|'),
     shapes:resolved.shapes ?? app?.shapes ?? null,
     region,
     regionId:region?.id ?? null,
@@ -205,7 +218,16 @@ function analysisBindingCurrent(app, binding) {
   const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
   if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
   if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
-  if (binding.program != null && app?.program !== binding.program) return false;
+  if (binding.program != null) {
+    if (binding.programPublished) {
+      if (app?.program !== binding.program) return false;
+    } else {
+      if (binding.program.symbols !== binding.symbols) return false;
+      const programGen = strictInteger(binding.program.gen, null);
+      if (programGen == null || programGen !== binding.symbolsGen) return false;
+      if (execRegions(app).map((item) => item.id).join('|') !== binding.programRegionKey) return false;
+    }
+  }
   if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
   return (region?.id ?? null) === binding.regionId;
@@ -217,14 +239,34 @@ function assertAnalysisBinding(app, binding) {
   error.stale = true;
   throw error;
 }
+function rankedCandidateAddress(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function typedRankedCandidates(ranked, context) {
   const candidates = Array.from(ranked?.candidates || [], (candidate, index) => {
-    const address = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
-    const evidenceIds = [...new Set((candidate?.reasons || []).flatMap((reason) => [reason?.evidenceId, reason?.id].filter(Boolean)).map(String))];
+    const rawAddress = candidate?.addr ?? candidate?.address ?? candidate?.function ?? null;
+    const address = rankedCandidateAddress(rawAddress);
+    const invalidAddress = rawAddress != null && address === undefined;
+    const evidenceIds = [...new Set((candidate?.reasons || [])
+      .flatMap((reason) => [reason?.evidenceId, reason?.id])
+      .filter((value) => typeof value === 'string' && value.length > 0))];
     return Object.freeze({
       ...candidate,
-      candidateId:`${context.snapshotId}:candidate:${address == null ? index : BigInt(address).toString(16)}`,
-      entityId:address == null ? null : `function:${BigInt(address).toString(16)}`,
+      candidateId:invalidAddress
+        ? `${context.snapshotId}:candidate:invalid:${index}`
+        : `${context.snapshotId}:candidate:${address == null ? index : address.toString(16)}`,
+      entityId:invalidAddress || address == null ? null : `function:${address.toString(16)}`,
       verdict:candidate?.verdict ?? VERDICT.NONE,
       evidenceIds,
       completeness:context.completeness.complete ? 'complete' : 'partial',
@@ -240,17 +282,73 @@ export class InvestigationService {
     this.app = app;
     this.shared = new Map();
     this.pinCache = new Map();
+    this.cacheEpoch = epochOf(app);
+    this.cacheGeneration = 0;
+    this.pinSnapshotId = undefined;
+  }
+
+  #invalidateCaches(reason) {
+    const error = abortError(null, reason);
+    error.stale = true;
+    for (const entry of this.shared.values()) {
+      if (!entry?.settled && !entry?.controller?.signal?.aborted) entry.controller.abort(error);
+    }
+    this.shared.clear();
+    this.pinCache.clear();
+    this.pinSnapshotId = undefined;
+    this.cacheGeneration++;
+  }
+
+  #syncEpoch() {
+    const epoch = epochOf(this.app);
+    if (Object.is(epoch, this.cacheEpoch)) return epoch;
+    this.#invalidateCaches('Investigation epoch changed');
+    this.cacheEpoch = epoch;
+    return epoch;
+  }
+
+  #syncPinSnapshot(snapshotId) {
+    if (Object.is(snapshotId, this.pinSnapshotId)) return;
+    this.pinCache.clear();
+    this.pinSnapshotId = snapshotId;
+  }
+
+  #assertPinMutationCurrent(context, epoch, generation) {
+    this.#syncEpoch();
+    if (generation === this.cacheGeneration
+      && Object.is(epoch, this.cacheEpoch)
+      && Object.is(context?.snapshotId, this.pinSnapshotId)
+      && analysisBindingCurrent(this.app, context?.binding)) return;
+    const error = new Error('investigation-analysis-binding-changed');
+    error.code = 'ANALYSIS_SNAPSHOT_STALE';
+    error.stale = true;
+    throw error;
   }
 
   #shared(key, producer, options = {}) {
     abortIfNeeded(options.signal);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
     let entry = this.shared.get(key);
     if (!entry || entry.controller.signal.aborted) {
       const controller = new AbortController();
       entry = { controller, waiters:0, settled:false, promise:null };
       entry.promise = scheduleProducer(options, controller.signal)
         .then(() => producer(controller.signal))
-        .then((value) => { entry.settled = true; return value; })
+        .then((value) => {
+          if (controller.signal.aborted || generation !== this.cacheGeneration
+            || !Object.is(epochOf(this.app), epoch)) {
+            if (!controller.signal.aborted) {
+              const error = abortError(null, 'Investigation epoch changed');
+              error.stale = true;
+              controller.abort(error);
+            }
+            throw abortError(controller.signal);
+          }
+          entry.value = value;
+          entry.settled = true;
+          return value;
+        })
         .catch((error) => {
           if (this.shared.get(key) === entry) this.shared.delete(key);
           throw error;
@@ -263,24 +361,25 @@ export class InvestigationService {
   }
 
   collectStrings(options = {}) {
+    const epoch = this.#syncEpoch();
     if (this.app.stringIndex?.complete === true) return Promise.resolve(this.app.stringIndex);
-    const epoch = epochOf(this.app);
     const config = budgetConfig(options, 'strings', STRING_SCAN_BUDGET);
     const profile = budgetProfileKey(config);
     return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
       const budget = new StringCollectionBudget(config);
+      // Section names are prioritization hints, not proof that other
+      // regions contain no strings. Scan every positive-size region so a
+      // complete result and its global cache cover the whole binary (#5801).
       const targets = stringTargets(this.app);
-      const current = storeValue(this.app, 'currentRegion');
+      const regions = (storeValue(this.app, 'regions') || []).filter((r) => BigInt(r?.size ?? 0) > 0n);
+      const hinted = new Set(targets);
+      const ordered = [...targets, ...regions.filter((region) => !hinted.has(region))];
       const use = [], skipped = [];
-      for (const region of targets) {
+      for (const region of ordered) {
         const bytes = budget.requestBytes(Number(region.size));
         if (bytes <= 0) { skipped.push(region); continue; }
         use.push({ region, bytes });
         if (bytes < Number(region.size)) skipped.push(region);
-      }
-      if (!use.length && current) {
-        const bytes = budget.requestBytes(Number(current.size));
-        if (bytes > 0) use.push({ region:current, bytes });
       }
       const rows = [];
       let scannedBytes = 0, backendPartial = false;
@@ -316,6 +415,7 @@ export class InvestigationService {
   }
 
   async discoverFunctions(options = {}) {
+    this.#syncEpoch();
     const symbols = this.app.symbols;
     if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
     if (typeof this.app.ensureFunctions !== 'function') return symbols;
@@ -332,16 +432,26 @@ export class InvestigationService {
 
   buildProgram(options = {}) {
     const app = this.app;
+    const epoch = this.#syncEpoch();
     const regions = execRegions(app);
     if (!regions.length) return Promise.resolve(null);
-    const epoch = epochOf(app);
     const key = regions.map((r) => r.id).join('|');
-    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen) return Promise.resolve(app.program);
-    return this.#shared(`program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}`, async (signal) => {
+    const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
+    const profile = budgetProfileKey(limits);
+    if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+      && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) {
+      return Promise.resolve(app.program);
+    }
+    const sharedKey = `program:${epoch}:${strictInteger(app.symbols?.gen, 0)}:${key}:${profile}`;
+    const settled = this.shared.get(sharedKey);
+    if (settled?.settled && (!app.program || app.programKey !== key || app.program.gen !== app.symbols?.gen
+      || !programIndexComplete(app.program) || !programIndexComplete(settled.value))) {
+      this.shared.delete(sharedKey);
+    }
+    return this.#shared(sharedKey, async (signal) => {
       await this.discoverFunctions({ ...options, signal });
       abortIfNeeded(signal);
       const scans = [], failures = [];
-      const limits = budgetConfig(options, 'program', PROGRAM_MERGE_LIMITS);
       let calls = limits.calls, refs = limits.refs, kinds = limits.kindWords;
       let remainingBytes = regions.reduce((sum, region) => sum + BigInt(region.size), 0n);
       for (let index = 0; index < regions.length; index++) {
@@ -372,15 +482,23 @@ export class InvestigationService {
       const merged = mergeProgramScans(scans, { regions, reasons:failures, limits });
       const primary = regions.find((r) => r.section === '__text') || regions[0];
       const program = new ProgramIndex(merged, app.symbols, primary);
-      app.programScan = merged;
-      app.programKey = key;
-      app.program = program;
+      if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && budgetProfileCovers(app.programBudgetProfile, limits) && programIndexComplete(app.program)) return app.program;
+      const cachedComplete = app.program && app.programKey === key && app.program.gen === app.symbols?.gen
+        && programIndexComplete(app.program);
+      if (!cachedComplete || (programIndexComplete(program)
+        && budgetProfileCovers(limits, app.programBudgetProfile))) {
+        app.programScan = merged;
+        app.programKey = key;
+        app.programBudgetProfile = Object.freeze({ ...limits });
+        app.program = program;
+      }
       return program;
     }, options);
   }
 
   collectShapes(options = {}) {
-    const epoch = epochOf(this.app);
+    const epoch = this.#syncEpoch();
     if (this.app.shapes) return Promise.resolve(this.app.shapes);
     return this.#shared(`shapes:${epoch}`, (signal) => {
       const optionsObj = {
@@ -395,7 +513,7 @@ export class InvestigationService {
   }
 
   ensureMetadata(options = {}) {
-    const epoch = epochOf(this.app);
+    const epoch = this.#syncEpoch();
     return this.#shared(`metadata:${epoch}`, async (signal) => {
       abortIfNeeded(signal);
       const sliceIndex = strictInteger(storeValue(this.app, 'sliceIndex'), -1);
@@ -454,6 +572,7 @@ export class InvestigationService {
 
   async prepareGoal(goal, options = {}) {
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     const shapeNeeded = needsShapeEvidence(goal);
     const stringsP = this.collectStrings(options);
     const shapesP = shapeNeeded ? this.collectShapes(options) : Promise.resolve(null);
@@ -466,6 +585,7 @@ export class InvestigationService {
     const queryOptions = { signal:options.signal, priority:priorityOf(options), budget:options.budget ?? null };
     const snapshot = await this.app.analysisQueries.snapshot(queryOptions);
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, binding);
     const context = {
       snapshot,
@@ -486,6 +606,9 @@ export class InvestigationService {
 
   async investigate(goal, options = {}) {
     const context = await this.prepareGoal(goal, options);
+    const epoch = this.#syncEpoch();
+    const generation = this.cacheGeneration;
+    assertAnalysisBinding(this.app, context.binding);
     const ranked = rankCandidates({
       goal,
       strings:context.strings,
@@ -496,6 +619,7 @@ export class InvestigationService {
       vendors:vendorsOf(context.fields),
     });
     abortIfNeeded(options.signal);
+    this.#syncPinSnapshot(context.snapshotId);
     const cacheKey = `${context.snapshotId}:${goal?.id || ''}:${goal?.text || ''}`;
     let pin = this.pinCache.get(cacheKey) || null;
     if (!pin) {
@@ -532,7 +656,10 @@ export class InvestigationService {
         if (beats(fn, candidate)) candidate = fn;
       }
       pin = candidate;
-      if (!options.signal?.aborted) this.pinCache.set(cacheKey, pin);
+      if (!options.signal?.aborted) {
+        this.#assertPinMutationCurrent(context, epoch, generation);
+        this.pinCache.set(cacheKey, pin);
+      }
     }
     await this.app.analysisQueries.binaryInfo(context.snapshot, {
       signal:options.signal,
@@ -540,6 +667,7 @@ export class InvestigationService {
       budget:options.budget ?? null,
     });
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, context.binding);
     const typedRanked = typedRankedCandidates(ranked, context);
     return Object.freeze({
@@ -585,6 +713,7 @@ export class InvestigationService {
       budget:options.budget ?? null,
     });
     abortIfNeeded(options.signal);
+    this.#syncEpoch();
     assertAnalysisBinding(this.app, context.binding);
     report.snapshotId = context.snapshotId;
     report.completeness = context.completeness;
@@ -599,4 +728,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });

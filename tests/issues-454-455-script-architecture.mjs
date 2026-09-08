@@ -149,6 +149,7 @@ function fakeApp(architecture, overrides = {}) {
     calleesOf: () => [{ addr:0x3000n }],
     mostCalled: () => [{ addr:0x3000n, count:5 }],
     graphCompleteness:{ complete:true, supported:true },
+    completeness:{ complete:true, reasons:[] },
     callsCapped:false,
     refsCapped:false,
     statsComplete:true,
@@ -174,6 +175,7 @@ function fakeApp(architecture, overrides = {}) {
     ensureProgram: async () => program,
     program,
     programKey:'text',
+    programBudgetProfile:{ calls:2_000_000, refs:2_000_000, kindWords:16 * 1024 * 1024 },
     analysisQueries,
   });
   const { api } = createApi(app, () => {});

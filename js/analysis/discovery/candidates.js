@@ -55,6 +55,7 @@ function address(value, code) {
   if (value == null) fail(code);
   const type = typeof value;
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) fail(code);
+  if (type === 'string' && value.trim().length === 0) fail(code);
   try {
     const result = BigInt(value);
     if (result < 0n) fail(code);
@@ -64,7 +65,11 @@ function address(value, code) {
 
 function producerId(value) {
   if (value == null) return 'unknown';
-  if (typeof value !== 'string' || value.length === 0) fail('discovery-evidence-invalid-producer-id');
+  // Producer identity is an independence token for corroboration: two
+  // whitespace-only strings are different JS values but name no source, and
+  // padded variants ('p' vs ' p ') must not count as distinct producers.
+  // Only a canonical trimmed non-empty token is accepted (#5792).
+  if (typeof value !== 'string' || value.trim() === '' || value.trim() !== value) fail('discovery-evidence-invalid-producer-id');
   return value;
 }
 
@@ -101,6 +106,32 @@ function candidateConflicts(value) {
   return out;
 }
 
+function compareCanonicalRegions(left, right) {
+  const leftStart = BigInt(left.start);
+  const rightStart = BigInt(right.start);
+  if (leftStart < rightStart) return -1;
+  if (leftStart > rightStart) return 1;
+  const leftEnd = BigInt(left.end);
+  const rightEnd = BigInt(right.end);
+  if (leftEnd < rightEnd) return -1;
+  if (leftEnd > rightEnd) return 1;
+  if (left.ownership < right.ownership) return -1;
+  if (left.ownership > right.ownership) return 1;
+  return 0;
+}
+
+function canonicalRegions(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  const regions = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) fail(code);
+    regions.push(createRegion(value[index]));
+  }
+  regions.sort(compareCanonicalRegions);
+  return regions;
+}
+
 /**
  * How much of a function's extent one piece of evidence describes.
  *
@@ -127,7 +158,7 @@ export function createDiscoveryEvidence(input = {}) {
     authority: EVIDENCE_AUTHORITY[kind],
     extentRole,
     start: input.start == null ? null : address(input.start, 'discovery-evidence-invalid-start').toString(),
-    regions: deepFreeze((input.regions ?? []).map((region) => createRegion(region))),
+    regions: deepFreeze(canonicalRegions(input.regions, 'discovery-evidence-invalid-regions')),
     // Producer identity participates in corroboration. Pre-registry evidence
     // may omit it, but any explicit identity must already be canonical.
     producerId: producerId(input.producerId),
@@ -165,18 +196,7 @@ export function createFunctionCandidate(input = {}) {
   const extentState = input.extentState == null ? 'unknown' : (typeof input.extentState === 'string' ? input.extentState : '');
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
-  const regions = (input.regions ?? []).map((region) => createRegion(region));
-  regions.sort((left, right) => {
-    const leftStart = BigInt(left.start);
-    const rightStart = BigInt(right.start);
-    if (leftStart < rightStart) return -1;
-    if (leftStart > rightStart) return 1;
-    const leftEnd = BigInt(left.end);
-    const rightEnd = BigInt(right.end);
-    if (leftEnd < rightEnd) return -1;
-    if (leftEnd > rightEnd) return 1;
-    return left.ownership.localeCompare(right.ownership);
-  });
+  const regions = canonicalRegions(input.regions, 'discovery-candidate-invalid-regions');
   if (extentState === 'unknown' && regions.length > 0 && input.allowRegionsWithUnknownExtent !== true) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
@@ -223,5 +243,7 @@ export function hasExactStart(candidate) {
 }
 
 export function hasKnownExtent(candidate) {
-  return candidate.extentState !== 'unknown' && candidate.regions.length > 0;
+  return candidate.extentState !== 'unknown'
+    && candidate.extentState !== 'contradicted'
+    && candidate.regions.length > 0;
 }

@@ -157,9 +157,8 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function optionalPositiveInteger(value, code) {
   return value == null ? undefined : positiveInteger(value, code);
@@ -206,7 +205,14 @@ function strictSerializable(value, code, seen = new WeakSet()) {
     return;
   }
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') fail(code);
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return;
+  if (value instanceof Date) {
+    // Invalid Dates would otherwise pass this boundary and fail later inside
+    // jsonSafe() with a bare RangeError. Keep the machine-effects error code
+    // at the field that accepted the value (#5853).
+    if (!Number.isFinite(value.getTime())) fail(code);
+    return;
+  }
   if (typeof value !== 'object') fail(code);
   if (seen.has(value)) fail(code);
   seen.add(value);
@@ -223,8 +229,19 @@ function serializable(value, code) {
 }
 
 function bigintValue(value, code) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { fail(code); }
+  // Machine payloads are exact facts: only bigint, safe integer, or a strict
+  // integer literal grammar may become a canonical machine value. ECMAScript
+  // BigInt() coercion would launder '' -> 0, booleans -> 0/1, and arrays ->
+  // their single element (#5830).
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) {
+    try { return BigInt(value); } catch { fail(code); }
+  }
+  fail(code);
 }
 
 function undefinedResultMask(value) {
@@ -280,7 +297,14 @@ export function createMachineValue(input, options = {}) {
     case 'vector': {
       assertAllowedKeys(input, ALLOWED_FIELDS.vectorValue, 'machine-effects-unexpected-value-field');
       const laneCount = positiveInteger(input.laneCount, 'machine-effects-invalid-vector-lane-count');
-      const elementType = createMachineValue(input.elementType, options);
+      // Vector elements are scalar machine values. Validate the raw kind
+      // before descending so a self-referential or deeply nested vector is
+      // rejected without recursive traversal (#5855).
+      const elementInput = object(input.elementType, 'machine-effects-invalid-vector-element-type');
+      if (!['bitvector', 'float', 'predicate'].includes(elementInput.kind)) {
+        fail('machine-effects-invalid-vector-element-type');
+      }
+      const elementType = createMachineValue(elementInput, options);
       if (!['bitvector', 'float', 'predicate'].includes(elementType.kind)) fail('machine-effects-invalid-vector-element-type');
       out = { kind, laneCount, elementType };
       break;

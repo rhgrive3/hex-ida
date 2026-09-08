@@ -22,7 +22,7 @@ import {
 } from './provider.js';
 
 import { GoMetadataProvider, GO_PROVIDER_ID, GO_PCLNTAB_MAGICS } from './go.js';
-import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable } from './rust.js';
+import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable, stripLegacyRustPrefix, isRustCandidateSymbol } from './rust.js';
 import { SwiftMetadataProvider, SWIFT_PROVIDER_ID } from './swift.js';
 import { ObjcMetadataProvider, OBJC_PROVIDER_ID } from './objc.js';
 
@@ -47,6 +47,8 @@ export {
   RUST_PROVIDER_ID,
   demangleRustSymbol,
   isRustLayoutStable,
+  stripLegacyRustPrefix,
+  isRustCandidateSymbol,
   SwiftMetadataProvider,
   SWIFT_PROVIDER_ID,
   ObjcMetadataProvider,
@@ -78,8 +80,16 @@ export function classifyLanguageRuntimeCall(name) {
     return { runtime: 'go', noise, category: 'runtime', name: symbol };
   }
 
-  // Rust
-  if (/^core::/.test(symbol) || /^alloc::/.test(symbol) || /^std::/.test(symbol) || /^_?rust_/.test(symbol)) {
+  // Rust. `std::` is also the C++ standard library namespace, so a bare
+  // `std::` prefix is ambiguous: demangled C++ symbols like
+  // `std::vector<int>::size()` would otherwise be pinned as Rust. Rust
+  // legacy symbols are distinguishable by their symbol-name hash, which
+  // survives demangling either as the raw `17h<16 hex>E` / `h<16 hex>E`
+  // component or as the toolchain-style `::h<16 hex>` suffix. Require one of
+  // those hash forms before treating a `std::`-prefixed demangled symbol as
+  // Rust evidence.
+  if (/^core::/.test(symbol) || /^alloc::/.test(symbol) || /^_?rust_/.test(symbol)
+    || (/^std::/.test(symbol) && /(?:17h|h)[0-9a-f]{16}E?(@)?$|::h[0-9a-f]{16}$/.test(symbol))) {
     const noise = /_rust_alloc|_rust_dealloc|core::panicking|alloc::raw_vec/.test(symbol);
     return { runtime: 'rust', noise, category: 'runtime', name: symbol };
   }
@@ -125,10 +135,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
     }));
   }
 
-  if (symbols.some((s) => {
-    const n = safeSymbolName(s);
-    return n.startsWith('_R') || n.startsWith('__R') || n.startsWith('_ZN') || n.startsWith('ZN');
-  }) || context.commentBuffer) {
+  if (symbols.some((s) => isRustCandidateSymbol(safeSymbolName(s))) || context.commentBuffer) {
     providers.push(new RustMetadataProvider({
       symbols,
       commentBuffer: context.commentBuffer,

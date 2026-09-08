@@ -129,7 +129,7 @@ scanProgram = async function scanProgramCanonicalStringRefs(args) {
 findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const want = BigInt(target);
+  const want = canonicalAddress(target);
   const cap = Math.min(Number(limit) || 2000, 2000);
   const total = Number(region.size);
   const out = [];
