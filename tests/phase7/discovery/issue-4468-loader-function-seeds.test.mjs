@@ -23,6 +23,13 @@ test('#4468 preserves validated canonical loader seeds and their extents', () =>
         exactFunctionStart: true,
         functionStartEvidence: 'validated ELF STT_FUNC extent',
       },
+      {
+        address: 0x402000n,
+        size: 0x18n,
+        source: 'ifunc-resolver',
+        confidence: 0.995,
+        exactFunctionStart: true,
+      },
       { address: 0x5000n, source: 'heuristic', confidence: 1, exactFunctionStart: true },
       { address: 0x6000n, source: 'symbol', confidence: 0.89, exactFunctionStart: true },
     ],
@@ -37,18 +44,21 @@ test('#4468 preserves validated canonical loader seeds and their extents', () =>
     String(0x140002000n),
     String(0x140003000n),
     String(0x401000n),
+    String(0x402000n),
   ]);
   assert.deepEqual(evidence.find((item) => item.start === '4198400').regions, [{ start: '4198400', end: '4198448', ownership: 'exclusive' }]);
   assert.ok(evidence.find((item) => item.start === '4198400').evidenceIds.includes('loader:source:symbol:4198400'));
+  assert.deepEqual(evidence.find((item) => item.start === '4202496').regions, [{ start: '4202496', end: '4202520', ownership: 'exclusive' }]);
   assert.equal(evidence.some((item) => item.start === '20480'), false, 'heuristic source must not become loader authority');
   assert.equal(evidence.some((item) => item.start === '24576'), false, 'low-confidence explicit symbol must not become loader authority');
 
   const result = functionCandidates({ input: { image }, architectureId: 'x86_64' });
-  for (const address of [0x140001000n, 0x140002000n, 0x140003000n, 0x401000n]) {
+  for (const address of [0x140001000n, 0x140002000n, 0x140003000n, 0x401000n, 0x402000n]) {
     assert.equal(candidateAt(result, address)?.startState, 'exact', `canonical loader seed ${address.toString(16)} must remain exact`);
   }
   assert.equal(candidateAt(result, 0x401000n)?.extentState, 'exact');
   assert.deepEqual(candidateAt(result, 0x401000n)?.regions, [{ start: '4198400', end: '4198448', ownership: 'exclusive' }]);
+  assert.equal(candidateAt(result, 0x402000n)?.extentState, 'exact');
   assert.equal(candidateAt(result, 0x5000n), undefined);
   assert.equal(candidateAt(result, 0x6000n), undefined);
 });
