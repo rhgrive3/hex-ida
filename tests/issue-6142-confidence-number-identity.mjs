@@ -28,7 +28,23 @@ import { normalizeAIInteraction, finiteConfidence } from '../js/ai/provider/work
 }
 
 {
-  // Primitive finite numbers keep working, including clamping and omission.
+  const decision = normalizeAIInteraction({
+    steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'done', confidence: { value: 0.9 } } }],
+  }, []);
+  assert.equal(decision.confidence, undefined, 'an object confidence must not become a canonical number');
+}
+
+{
+  // Primitive finite numbers keep working, including exact endpoints,
+  // clamping, and omission.
+  for (const confidence of [0, 0.5, 1]) {
+    const decision = normalizeAIInteraction({
+      steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'done', confidence } }],
+    }, []);
+    assert.equal(decision.confidence, confidence);
+    assert.equal(decision.type, 'final');
+    assert.equal(decision.answer, 'done');
+  }
   const clamped = normalizeAIInteraction({
     steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'done', confidence: 2 } }],
   }, []);
@@ -44,7 +60,26 @@ import { normalizeAIInteraction, finiteConfidence } from '../js/ai/provider/work
   assert.equal(finiteConfidence(['0.9']), undefined);
   assert.equal(finiteConfidence('0.8'), undefined);
   assert.equal(finiteConfidence(true), undefined);
+  assert.equal(finiteConfidence({ value: 0.9 }), undefined);
+  assert.equal(finiteConfidence(null), undefined);
+  assert.equal(finiteConfidence(undefined), undefined);
+  assert.equal(finiteConfidence(Number.NaN), undefined);
+  assert.equal(finiteConfidence(Number.POSITIVE_INFINITY), undefined);
   assert.equal(finiteConfidence(0.9), 0.9);
   assert.equal(finiteConfidence(-1), 0);
   assert.equal(finiteConfidence(1.5), 1);
+}
+
+{
+  const decision = normalizeAIInteraction({
+    steps: [{
+      type: 'function_call',
+      name: 'submit_hex_result',
+      arguments: { answer: 'done', confidence: 0.9, evidenceIds: ['ev1'], followups: ['next'] },
+    }],
+  }, []);
+  assert.deepEqual(decision, {
+    type: 'final', answer: 'done', confidence: 0.9, evidenceIds: ['ev1'],
+    hypothesisIds: [], hypotheses: [], suggestedActions: [], followups: ['next'],
+  }, 'normal final-result parsing must retain valid confidence and metadata');
 }
