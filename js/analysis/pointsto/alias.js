@@ -31,6 +31,18 @@ function isProvenAddressSpace(value) {
   return typeof value === 'string' && value.length > 0 && value.trim() === value && value !== 'unknown';
 }
 
+// `nonEscapingRoots` is proof authority: a caller handing us a truthy
+// non-Set (array, string, plain object) would otherwise leak a raw
+// TypeError mid-comparison (#5453). Only Set-compatible shapes are
+// accepted; anything else fails closed with a contract error.
+function setNonEscaping(value) {
+  if (value == null) return new Set();
+  if (typeof value !== 'object' || typeof value.has !== 'function') {
+    throw new TypeError('phase7-alias-nonescaping-roots-set-required');
+  }
+  return value;
+}
+
 /**
  * Alias relation between two points-to sets.
  *
@@ -42,7 +54,7 @@ export function pointsToAlias(left, right, options = {}) {
   const status = options.status;
   const widthA = widthBytes(options.widthBitsLeft);
   const widthB = widthBytes(options.widthBitsRight);
-  const nonEscaping = options.nonEscapingRoots ?? new Set();
+  const nonEscaping = setNonEscaping(options.nonEscapingRoots);
 
   if (!left || !right) return unknownAlias(status, ['unresolved-root']);
 
