@@ -277,11 +277,12 @@ export class DebugAdapterRuntimeProvider {
     );
     let session;
     let disconnectPending = false;
+    const connectedBySession = options.connect !== false && !this.adapter.connected;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        if (disconnectPending || this.adapter.connected) {
+        if (disconnectPending || connectedBySession) {
           disconnectPending = true;
           await this.adapter.disconnect();
           disconnectPending = false;

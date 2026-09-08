@@ -113,11 +113,12 @@ export class EmulatorProvider {
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'emulator provider already has an open session');
     let session;
+    let connectedBySession = false;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        if (typeof this.engine.disconnect === 'function') await this.engine.disconnect();
+        if (connectedBySession && typeof this.engine.disconnect === 'function') await this.engine.disconnect();
         if (this.activeSession === session) this.activeSession = null;
       },
     });
@@ -125,7 +126,10 @@ export class EmulatorProvider {
     // race through while this session is still connecting.
     this.activeSession = session;
     try {
-      if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});
+      if (options.connect !== false && typeof this.engine.connect === 'function') {
+        connectedBySession = true;
+        await this.engine.connect(options.connectOptions || {});
+      }
     } catch (error) {
       session.setState('failed');
       try { await session.close(); } catch {}
