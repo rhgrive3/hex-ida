@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAppAnalysisQueryAdapter } from '../../js/analysis/query/app-adapter.js';
-import { installDemandDrivenAnalysis } from '../../js/analysis/demand-driven-runtime.js';
+import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
+import { installDemandDrivenAnalysis } from '../../../js/analysis/demand-driven-runtime.js';
 
 // Issue 5991: callees() scans only the validated function range. When the
 // function extent itself is unproven (analysis window or region clip), the

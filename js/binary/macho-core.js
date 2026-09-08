@@ -126,7 +126,7 @@ function parseThin(bytes, opts) {
       else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
-      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
       markMachOMetadataPartial(image, `load-command-0x${cmd.toString(16)}-parse-error`);
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
@@ -209,6 +209,55 @@ function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, im
   }
 }
 
+// A file-backed segment owns canonical bytes for [address, address + fileSize).
+// Two file-backed segments whose ownership extents intersect must agree on the
+// file offsets for the shared range, or the same VM address resolves to
+// different bytes depending on load-command order (#7064). Fail closed instead
+// of letting insertion order pick a winner.
+function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, fileSize, size) {
+  // A segment with no file-backed bytes is transparent: a zero-fill-only
+  // mapping may legitimately overlap a file-backed segment. Once both
+  // segments carry bytes, however, their complete VM extents are ownership
+  // claims. Compare every sub-interval so a zero-fill tail cannot hide
+  // another segment's file-backed bytes (#7064).
+  if (fileSize === 0n) return;
+  const newVmEnd = address + size;
+  const newFileEnd = address + fileSize;
+  for (const existing of image.segments) {
+    if (existing.fileSize === 0n) continue;
+    const existingVmEnd = existing.address + existing.size;
+    const overlapStart = address > existing.address ? address : existing.address;
+    const overlapEnd = newVmEnd < existingVmEnd ? newVmEnd : existingVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const boundaries = [...new Set([
+      overlapStart,
+      overlapEnd,
+      newFileEnd,
+      existing.address + existing.fileSize,
+    ].filter((point) => point > overlapStart && point < overlapEnd))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newFileBacked = point < newFileEnd;
+      const oldFileBacked = point < existing.address + existing.fileSize
+        && point >= existing.address;
+      if (!newFileBacked && !oldFileBacked) continue;
+      if (newFileBacked !== oldFileBacked) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with ambiguous file/zero ownership`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = fileOffset + (point - address);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with a different file mapping`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseSegment64(r, p, cmdsize, image, order) {
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
@@ -221,6 +270,7 @@ function parseSegment64(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -251,6 +301,7 @@ function parseSegment32(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -434,7 +485,7 @@ function cpuName(cpu) {
 function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
 function cpuArchName(cpu, subtype) { return cpuName(cpu) === 'arm64' && subtypeBase(subtype) === 2 ? 'arm64e' : cpuName(cpu); }
 function sliceArchName(slice) { return cpuArchName(slice.cpu, slice.subtype); }
-function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
+function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 5: 'bridgeOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
 function machoKind(bytes) {
