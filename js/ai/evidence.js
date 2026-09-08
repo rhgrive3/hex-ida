@@ -91,16 +91,38 @@ function sameSemanticRecord(left, right) {
   return JSON.stringify(semanticRecord(left)) === JSON.stringify(semanticRecord(right));
 }
 
+// Observation provenance references are identity keys, not presentation text:
+// only a canonical non-empty primitive string may reach a record, so a
+// structured value can never launder into another observation's identity
+// (#5425). Identity fields fail closed; `path` stays a normalized projection.
+function canonicalIdentityRef(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+// A present-but-unusable sourceRef: neither canonicalizable to a reference
+// nor absent. String refs are always canonical; object refs must carry at
+// least one canonical identity field; any other shape is malformed.
+function malformedSourceRef(sourceRef) {
+  if (sourceRef == null) return false;
+  if (typeof sourceRef === 'string') return sourceRef.length === 0;
+  if (typeof sourceRef !== 'object') return true;
+  if (Object.hasOwn(sourceRef, 'detailRef') && sourceRef.detailRef != null && !canonicalIdentityRef(sourceRef.detailRef)) return true;
+  if (Object.hasOwn(sourceRef, 'evidenceSourceId') && sourceRef.evidenceSourceId != null && !canonicalIdentityRef(sourceRef.evidenceSourceId)) return true;
+  if (Object.hasOwn(sourceRef, 'bindingKey') && sourceRef.bindingKey != null && !canonicalIdentityRef(sourceRef.bindingKey)) return true;
+  if (canonicalIdentityRef(sourceRef.detailRef) || canonicalIdentityRef(sourceRef.evidenceSourceId)) return false;
+  return true;
+}
+
 function normalizeSourceRef(sourceRef) {
   if (!sourceRef) return null;
   if (typeof sourceRef === 'string') return { detailRef: sourceRef, path: '$' };
   if (typeof sourceRef !== 'object') return null;
-  if (sourceRef.detailRef) return {
-    detailRef: String(sourceRef.detailRef),
+  if (canonicalIdentityRef(sourceRef.detailRef)) return {
+    detailRef: sourceRef.detailRef,
     path: String(sourceRef.path || '$'),
-    ...(sourceRef.bindingKey ? { bindingKey: String(sourceRef.bindingKey) } : {}),
+    ...(canonicalIdentityRef(sourceRef.bindingKey) ? { bindingKey: sourceRef.bindingKey } : {}),
   };
-  if (sourceRef.evidenceSourceId) return { evidenceSourceId: String(sourceRef.evidenceSourceId), path: String(sourceRef.path || '$') };
+  if (canonicalIdentityRef(sourceRef.evidenceSourceId)) return { evidenceSourceId: sourceRef.evidenceSourceId, path: String(sourceRef.path || '$') };
   return null;
 }
 
@@ -149,13 +171,15 @@ export class EvidenceStore {
 
   add(input, authority = null) {
     if (!input || typeof input !== 'object') return null;
-    // All validations that can reject the record must run before any state
-    // mutation: an id-based rejection after sourceData persistence would leave
-    // an orphaned payload behind (#5405).
-    if (input.id != null && typeof input.id !== 'string') return null;
     // Validate before either source-data persistence path can create durable state.
     // The same normalized value is reused for the canonical record (#5946).
     const timestamp = evidenceTimestamp(input.timestamp);
+    // An explicitly supplied but malformed sourceRef is a caller contract
+    // violation: rejecting the whole evidence record keeps the malformed
+    // provenance from being silently replaced (new observation) or dropped
+    // (no sourceRef) while sourceData persists anyway (#5425).
+    if (malformedSourceRef(input.sourceRef)) return null;
+    if (input.id != null && typeof input.id !== 'string') return null;
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 

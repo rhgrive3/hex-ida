@@ -86,3 +86,16 @@ test('#5395 a pre-aborted signal still settles as cancelled without publication'
   assert.equal(result.status, SOLVER_STATUS.CANCELLED);
   assert.equal(session._inFlight.size, 0);
 });
+
+test('#5395 non-callable removeEventListener is rejected before publication', async () => {
+  const session = new TestSession({ id: 'test', version: '1' });
+  const signal = { aborted: false, addEventListener() {}, removeEventListener: true };
+  await assert.rejects(() => session.check({}, { signal }), (error) => error instanceof TypeError && /AbortSignal-compatible/.test(error.message));
+  assert.equal(session._inFlight.size, 0);
+});
+test('#5395 a throwing addEventListener cannot strand an in-flight record', async () => {
+  const session = new TestSession({ id: 'test', version: '1' });
+  const signal = { aborted: false, addEventListener() { throw new Error('boom'); }, removeEventListener() {} };
+  await assert.rejects(() => session.check({}, { signal }), (error) => error instanceof TypeError && /listener setup failed|AbortSignal-compatible/.test(error.message));
+  assert.equal(session._inFlight.size, 0);
+});
