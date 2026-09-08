@@ -116,15 +116,20 @@ export function normalizeNavigation(value = {}) {
  *
  * Renaming the tag would only move the collision, so the tag name is reserved
  * instead: on the way out, any object key matching `$hexBigInt` with one or
- * more leading `$` gains one more `$`; on the way in, the reader takes one
- * back. That is injective -- `$hexBigInt` -> `$$hexBigInt` -> `$$$hexBigInt` --
- * so ordinary data and the tag can never occupy the same shape.
+ * more leading `$` gains one more `$`; on the way in, a marked document takes
+ * one back. That is injective -- `$hexBigInt` -> `$$hexBigInt` ->
+ * `$$$hexBigInt` -- so ordinary data and the tag can never occupy the same
+ * shape.
  *
- * Files written before this change are unaffected: a real `{ $hexBigInt: hex }`
- * still reads as a BigInt, because escaped keys never produce that exact shape.
+ * Files written before this change have no provenance marker. Their literal
+ * keys are preserved; a historical escape-aware writer that also omitted the
+ * marker is inherently ambiguous with those legacy files and cannot be
+ * recovered by guessing from the key shape.
  */
 const BIGINT_TAG = '$hexBigInt';
 const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
+const BIGINT_ENCODING_FIELD = 'bigIntEncoding';
+const BIGINT_ENCODING_VERSION = 1;
 // Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
 // A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
 // inside the size-limited file from paying unbounded conversion cost (#5906).
@@ -142,20 +147,58 @@ function escapeBigIntTag(value) {
   return out;
 }
 
-function unescapeBigIntTag(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const keys = Object.keys(value);
-  if (!keys.some((key) => ESCAPED_TAG.test(key))) return value;
+/**
+ * Rebuilds a parsed tree and takes one `$` off escaped tag keys. Rebuilding
+ * instead of deleting from the input prevents key-order-dependent loss when
+ * siblings such as `$$$hexBigInt` and `$$hexBigInt` are both present.
+ */
+function unescapeBigIntTagTree(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => unescapeBigIntTagTree(item));
+
   const out = {};
-  for (const key of keys) {
+  for (const key of Object.keys(value)) {
     const unescaped = ESCAPED_TAG.test(key) ? key.slice(1) : key;
-    Object.defineProperty(out, unescaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+    if (Object.hasOwn(out, unescaped)) {
+      throw new ProjectFormatError(
+        `BigInt encoding key collision at ${JSON.stringify(unescaped)}`,
+        'HEX_PROJECT_BIGINT_ENCODING_COLLISION',
+      );
+    }
+    Object.defineProperty(out, unescaped, {
+      value: unescapeBigIntTagTree(value[key]),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return out;
 }
 
+function hasSupportedBigIntEncoding(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  if (!Object.hasOwn(raw, BIGINT_ENCODING_FIELD)) return false;
+  const version = raw[BIGINT_ENCODING_FIELD];
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new ProjectFormatError(
+      'invalid BigInt encoding provenance',
+      'HEX_PROJECT_BIGINT_ENCODING_INVALID',
+    );
+  }
+  if (version !== BIGINT_ENCODING_VERSION) {
+    throw new ProjectFormatError(
+      `unsupported BigInt encoding provenance version ${version}`,
+      'HEX_PROJECT_BIGINT_ENCODING_UNSUPPORTED',
+    );
+  }
+  return true;
+}
+
 export function serializeHexProject(project) {
-  const normalized = validateHexProject(project);
+  const normalized = {
+    ...validateHexProject(project),
+    [BIGINT_ENCODING_FIELD]: BIGINT_ENCODING_VERSION,
+  };
   const text = JSON.stringify(normalized, (_key, value) => (
     typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString(16) } : escapeBigIntTag(value)
   ), 2);
@@ -181,12 +224,18 @@ export function parseHexProject(input) {
         if (magnitude.length > MAX_BIGINT_HEX_DIGITS) throw new ProjectFormatError('bigint magnitude exceeds the project resource limit', 'resource-limit');
         const parsed = BigInt('0x' + magnitude); return negative ? -parsed : parsed;
       }
-      return unescapeBigIntTag(value);
+      return value;
     });
   } catch (error) {
     if (error instanceof ProjectFormatError) throw error;
     throw new ProjectFormatError(`project JSON is malformed: ${error.message}`);
   }
+  // Only an explicit provenance marker authorizes the one-$ unescape. Version
+  // numbers do not identify the BigInt encoding protocol: historical v1/v2
+  // files without this marker are preserved as-is, because some legacy files
+  // contain literal `$$hexBigInt` keys and old escape-aware files are
+  // indistinguishable from them.
+  if (hasSupportedBigIntEncoding(raw)) raw = unescapeBigIntTagTree(raw);
   let migrated;
   try {
     migrated = migrateHexProject(raw, { currentVersion: HEX_PROJECT_VERSION });
