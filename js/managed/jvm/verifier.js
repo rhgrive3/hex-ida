@@ -351,6 +351,18 @@ export function verifyJvmMethod(decoded, options = {}) {
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
+  // JVMS §4.6 flag combinations the JVM rejects with ClassFormatError:
+  // at most one visibility bit, and ACC_ABSTRACT excludes every one of
+  // PRIVATE/STATIC/FINAL/SYNCHRONIZED/NATIVE/STRICT (#7264).
+  if (accessFlags != null) {
+    const visibility = accessFlags & (0x0001 | 0x0002 | 0x0004);
+    if (visibility !== 0 && visibility !== 0x0001 && visibility !== 0x0002 && visibility !== 0x0004) {
+      errors.push({ code: 'jvm-method-visibility-conflict' });
+    }
+    if (isAbstract && (accessFlags & (0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0100 | 0x0800)) !== 0) {
+      errors.push({ code: 'jvm-method-abstract-flag-conflict' });
+    }
+  }
   const hasCode = metadata.hasCode === true;
   if (metadata.hasCode !== true && metadata.hasCode !== false) unsupported.add('method-code-cardinality-metadata-missing');
   else if ((isNative || isAbstract) && hasCode) errors.push({ code: 'jvm-code-forbidden-by-access-flags' });
