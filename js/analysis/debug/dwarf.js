@@ -308,28 +308,6 @@ function strxString(index, unit, sections) {
 }
 
 /**
- * Resolves a DW_FORM_addrx* index into the unit's .debug_addr entry array
- * (DWARF5 §7.26). `DW_AT_addr_base` points at the first entry, past the
- * section's header (unit_length + version + address_size +
- * segment_selector_size). Returns null when the base, table, or index cannot
- * produce a verified address so callers fail closed (#6184).
- */
-function addrxAddress(index, unit, sections) {
-  const table = sections?.debug_addr;
-  const base = unit?.addrBase;
-  if (!table || base == null) return null;
-  const headerSize = (unit.offsetSize ?? 4) + 4;
-  if (base < headerSize || base > table.length) return null;
-  const entrySize = unit.addressSize;
-  if (!Number.isInteger(entrySize) || entrySize < 1 || entrySize > 8) return null;
-  const at = base + Number(index) * entrySize;
-  if (!Number.isSafeInteger(at) || at < base || at + entrySize > table.length) return null;
-  let value = 0n;
-  for (let i = 0; i < entrySize; i += 1) value |= BigInt(table[at + i]) << BigInt(i * 8);
-  return value;
-}
-
-/**
  * Walks `.debug_info` and returns the DIE forest.
  *
  * DIEs are kept flat, keyed by their section offset, with a `parent` link. That
@@ -485,31 +463,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       if (attributes.has(DW_AT.str_offsets_base)) {
         unit.strOffsetsBase = Number(attributes.get(DW_AT.str_offsets_base).value);
       }
-      if (attributes.has(DW_AT.addr_base)) {
-        unit.addrBase = Number(attributes.get(DW_AT.addr_base).value);
-      }
       for (const [attribute, entry] of attributes) {
         if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
           const resolved = strxString(entry.value, unit, sections);
           attributes.set(attribute, { form: entry.form, value: resolved });
           if (resolved == null) dieComplete = false;
-        }
-      }
-      for (const [attribute, entry] of attributes) {
-        if ([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4].includes(entry.form)) {
-          // addrx* is an index into the unit's .debug_addr entry array, not
-          // an address: an unresolved index must never be published as a
-          // PC (#6184).
-          const resolved = addrxAddress(entry.value, unit, sections);
-          attributes.set(attribute, { form: entry.form, value: resolved });
-          if (resolved == null) {
-            dieComplete = false;
-            complete = false;
-            if (!unit.addrxUnresolvedReported) {
-              diagnostics.push('DW_FORM_addrx* addresses could not be resolved through .debug_addr; affected DIEs stay incomplete');
-              unit.addrxUnresolvedReported = true;
-            }
-          }
         }
       }
       // DW_AT_ranges carries non-contiguous address evidence in
