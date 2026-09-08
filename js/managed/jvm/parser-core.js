@@ -27,6 +27,17 @@ const JVM_CLASS_VERSIONS = new Map([
   [61, { vmSpecEdition: 'java-se-17', maxMinor: 0 }],
 ]);
 const CP_TAG_MIN_MAJOR = new Map([[15,51],[16,51],[17,55],[18,51],[19,53],[20,53]]);
+const CONSTANT_VALUE_TAGS = Object.freeze({
+  B: Object.freeze([3]),
+  C: Object.freeze([3]),
+  S: Object.freeze([3]),
+  Z: Object.freeze([3]),
+  I: Object.freeze([3]),
+  F: Object.freeze([4]),
+  J: Object.freeze([5]),
+  D: Object.freeze([6]),
+  'Ljava/lang/String;': Object.freeze([8]),
+});
 function classVersionInfo(major,minor){const version=JVM_CLASS_VERSIONS.get(major);if(!version||!Number.isInteger(minor)||minor<0||minor>version.maxMinor)return null;return version;}
 export function probeJvm(bytes){if(!bytes||bytes.length<10)return{supported:false,confidence:0,reason:'too-small'};const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);if(u8[0]!==0xca||u8[1]!==0xfe||u8[2]!==0xba||u8[3]!==0xbe)return{supported:false,confidence:0,reason:'invalid-magic'};const minor=(u8[4]<<8)|u8[5],major=(u8[6]<<8)|u8[7],formatVersion=`class-${major}.${minor}`,version=classVersionInfo(major,minor);if(!version)return{supported:false,confidence:0.95,reason:'unsupported-version',formatVersion};return{supported:true,confidence:1,formatVersion,vmSpecEdition:version.vmSpecEdition};}
 function decodeMutf8(bytes){let pos=0,chars=[];while(pos<bytes.length){const b1=bytes[pos++];if(b1>=0x01&&b1<=0x7f){chars.push(String.fromCharCode(b1));continue;}if((b1&0xe0)===0xc0){if(pos>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++];if((b2&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x1f)<<6)|(b2&0x3f);if(value===0){if(b1!==0xc0||b2!==0x80)fail('jvm-invalid-modified-utf8');}else if(value<0x80)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}if((b1&0xf0)===0xe0){if(pos+1>=bytes.length)fail('jvm-invalid-modified-utf8');const b2=bytes[pos++],b3=bytes[pos++];if((b2&0xc0)!==0x80||(b3&0xc0)!==0x80)fail('jvm-invalid-modified-utf8');const value=((b1&0x0f)<<12)|((b2&0x3f)<<6)|(b3&0x3f);if(value<0x800)fail('jvm-invalid-modified-utf8');chars.push(String.fromCharCode(value));continue;}fail('jvm-invalid-modified-utf8');}return chars.join('');}
@@ -94,7 +105,24 @@ export function parseJvm(bytes,options={}){
     // raw CP indices — two CONSTANT_Class entries may alias one Utf8 (#7373).
     if(seenInterfaces.has(ifaceName))fail('jvm-duplicate-interface-name');seenInterfaces.add(ifaceName);interfaces.push(ifaceName);}
   ensure(pos,2,'jvm-truncated-fields-count');const fieldsCount=view.getUint16(pos,false);pos+=2;const fields=[];
-  for(let i=0;i<fieldsCount;i++){ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-field-attribute');requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index');const aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');pos+=6+aLen;}const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);fields.push({accessFlags:fFlags,name:requireMemberName(nameIdx,'jvm-invalid-field-name-index'),descriptor:fieldDescriptor});}
+  for(let i=0;i<fieldsCount;i++){
+    ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;
+    const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);
+    const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);let constantValue=null;
+    for(let a=0;a<attrCount;a++){
+      ensure(pos,6,'jvm-truncated-field-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index'),aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');
+      if(attrName==='ConstantValue'){
+        if(constantValue!==null)fail('jvm-duplicate-constant-value-attribute');
+        if(aLen!==2)fail('jvm-invalid-constant-value-attribute-length');
+        const expectedTags=CONSTANT_VALUE_TAGS[fieldDescriptor];if(!expectedTags)fail('jvm-invalid-constant-value-descriptor');
+        const constantPoolIndex=view.getUint16(pos+6,false),entry=requireCpOneOf(constantPoolIndex,expectedTags,'jvm-invalid-constant-value-index');
+        const value=entry.tag===8?requireUtf8(entry.stringIndex,'jvm-invalid-constant-value-string-index'):entry.value;
+        constantValue={constantPoolIndex,tag:entry.tag,value,runtimeInitialized:(fFlags&0x0008)!==0};
+      }
+      pos+=6+aLen;
+    }
+    const field={accessFlags:fFlags,name:requireMemberName(nameIdx,'jvm-invalid-field-name-index'),descriptor:fieldDescriptor};if(constantValue!==null)field.constantValue=constantValue;fields.push(field);
+  }
   ensure(pos,2,'jvm-truncated-methods-count');const methodsCount=view.getUint16(pos,false);pos+=2;const methods=[];
   for(let i=0;i<methodsCount;i++){ensure(pos,8,'jvm-truncated-method-info');const mFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;let codeAttr=null,codeCount=0;const methodName=requireMemberName(nameIdx,'jvm-invalid-method-name-index',{method:true});const flagValidation=validateJvmMethodFlags(mFlags,{methodName,ownerAccessFlags:accessFlags,majorVersion});if(flagValidation.errors.length)fail(flagValidation.errors[0]);
     for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-method-attribute');const attrNameIdx=view.getUint16(pos,false),attrLen=view.getUint32(pos+2,false),attrName=requireUtf8(attrNameIdx,'jvm-invalid-method-attribute-name-index'),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-method-attribute');pos+=6+attrLen;
