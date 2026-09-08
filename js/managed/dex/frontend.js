@@ -1,3 +1,4 @@
+import { dexMethodDefinitions } from './method-definitions.js';
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
 import { createManagedValidationReport } from '../shared/validation.js';
@@ -47,7 +48,7 @@ export class DexFrontend {
   }
 
   async *enumerateMethods(image, options = {}) {
-    for (let i = 0; i < image.methods.length; i++) {
+    for (const [i, definition] of [...dexMethodDefinitions(image)].sort(([a], [b]) => a - b)) {
       const meth = image.methods[i];
       const methodId = createManagedMethodId(image.moduleId, i, meth.name);
       yield {
@@ -57,6 +58,8 @@ export class DexFrontend {
         name: meth.name,
         classType: meth.classType,
         proto: meth.proto,
+        accessFlags: definition.accessFlags,
+        codeOff: definition.codeOff,
       };
     }
   }

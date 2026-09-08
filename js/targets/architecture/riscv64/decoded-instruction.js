@@ -40,6 +40,13 @@ const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
   Symbol.toStringTag,
 )?.get;
 
+const UINT8_ARRAY_CONSTRUCTOR = Uint8Array;
+const UINT8_ARRAY_SET = UINT8_ARRAY_CONSTRUCTOR.prototype.set;
+const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(UINT8_ARRAY_CONSTRUCTOR.prototype),
+  'byteLength',
+)?.get;
+
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
   if (!ArrayBuffer.isView(value)) return false;
@@ -50,17 +57,35 @@ function isUint8ArrayView(value) {
 
 function rawBytesOf(input, expectedLength) {
   if (isUint8ArrayView(input)) {
-    if (input.byteLength !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
-    return Uint8Array.from(input);
+    let length;
+    try {
+      length = UINT8_ARRAY_BYTE_LENGTH_GETTER.call(input);
+    } catch {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    if (length !== expectedLength) {
+      throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+    }
+    try {
+      const snapshot = new UINT8_ARRAY_CONSTRUCTOR(length);
+      UINT8_ARRAY_SET.call(snapshot, input);
+      return snapshot;
+    } catch {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
   }
   if (!Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
-  if (input.length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
-  const bytes = new Uint8Array(expectedLength);
-  for (let index = 0; index < expectedLength; index += 1) {
-    if (!Object.hasOwn(input, index)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
-    const byte = input[index];
+  const length = input.length;
+  if (length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+  const bytes = new UINT8_ARRAY_CONSTRUCTOR(length);
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    const byte = descriptor.value;
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
-      throw new TypeError('riscv64-decoded-instruction-invalid-raw-byte');
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
     }
     bytes[index] = byte;
   }

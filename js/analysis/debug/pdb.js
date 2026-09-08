@@ -556,7 +556,7 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
     if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return { members, complete };
+  return { members, complete: complete && offset === end };
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
