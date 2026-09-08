@@ -782,12 +782,21 @@ export function createAppAnalysisQueryAdapter(app) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (typeof app?.querySearch === 'function') {
         const value = await app.querySearch(query, options);
+        if (value?.unsupported === true || value?.status?.completeness === 'unsupported'
+          || value?.completeness === 'unsupported') {
+          return unsupportedPage(null, page,
+            value?.reason ?? value?.unsupportedReason ?? value?.status?.reason ?? 'search-kind-unsupported');
+        }
         return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
       }
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
       throwIfAborted(options.signal);
       const request = app.backend.search(query, options.onProgress);
       const value = await requestWithSignal(request, options.signal);
+      // An explicit backend `unsupported` must survive the query boundary:
+      // "the backend cannot run this search" is not a complete empty result
+      // (#5840, #5833).
+      if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
       return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 

@@ -523,7 +523,10 @@ function lift(insn, opts = {}) {
   if (UN_OF[base]) {
     push({ op: OP.UN, sub: UN_OF[base], dstReg: dstReg(), dstBits: dstBits(),
       srcs: [opnd(ops[1])].filter(Boolean) });
-    if (/s$/.test(base) && base !== 'fabs') push(Object.assign(flags(), { op: OP.CMP, sub: 'sub', bits: dstBits(), srcs: [{ t: 'imm', value: 0n }, opnd(ops[1])].filter(Boolean) }));
+    /* Flag-setting unary forms are an explicit ISA set (`negs`), never a
+     * mnemonic-suffix guess: `abs`/`fabs` end in "s" as words but never
+     * write NZCV (#5687). */
+    if (base === 'negs') push(Object.assign(flags(), { op: OP.CMP, sub: 'sub', bits: dstBits(), srcs: [{ t: 'imm', value: 0n }, opnd(ops[1])].filter(Boolean) }));
     return out;
   }
 

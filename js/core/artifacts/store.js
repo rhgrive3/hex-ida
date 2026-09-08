@@ -13,6 +13,7 @@ import {
   canonicalStoredRecord,
   normalizeStoredPayloadBytes,
   validateStoredArtifact,
+  validateUpstreamRecordIdentity,
 } from './storage/integrity.js';
 
 const INCOMPATIBLE_CODES = new Set([
@@ -65,6 +66,11 @@ function snapshotCallableHooks(target, names, errorCode) {
 export class ArtifactStore {
   #backendHooks;
   #hotCacheHooks;
+  // artifactId → proven record identity for rows this store published or
+  // already re-validated. Upstream re-validation proves a stored row still
+  // matches the identity that minted its artifactId; the cache keeps that
+  // proof from degrading into trust (#5770).
+  #identityProofs = new Map();
 
   constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
     const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
@@ -209,6 +215,7 @@ export class ArtifactStore {
           { record:validated.record, payloadBytes:validated.payloadBytes },
           artifactHotEntrySize(validated.record, validated.payloadBytes),
         );
+        this.#identityProofs.set(artifactId, validated.record);
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
         return { status:'hit', source, artifactId, record:validated.record, payload:validated.payload };
@@ -266,10 +273,29 @@ export class ArtifactStore {
         }
         if (!raw) return UPSTREAM_INVALID;
         try {
+          const hasEnvelope = Object.hasOwn(raw, 'storageEnvelopeSchemaVersion') && Object.hasOwn(raw, 'recordChecksum');
+          if (!hasEnvelope && !this.#identityProofs.has(upstreamId)) {
+            // A legacy row this store never proved must not pass silently:
+            // its body could have been swapped under the unchanged payload
+            // checksum (#5770).
+            return UPSTREAM_INVALID;
+          }
           const validated = validateStoredArtifact(raw, {
             artifactId:upstreamId,
             allowIncomplete:options.allowIncomplete === true,
           });
+          // The artifactId string alone does not prove identity: a row whose
+          // record body was produced by a different descriptor (corruption,
+          // legacy import, row swap) keeps a self-consistent payload checksum
+          // while every identity field lies about what produced it (#5770).
+          // A row carrying a storage envelope self-proves its record bytes
+          // and establishes the proof; otherwise the proof recorded by this
+          // store is authoritative.
+          validateUpstreamRecordIdentity(validated.record, {
+            expectedArtifactId:upstreamId,
+            provenIdentity:this.#identityProofs.get(upstreamId) ?? null,
+          });
+          this.#identityProofs.set(upstreamId, validated.record);
           this.metrics.readBytes += validated.payloadBytes.byteLength;
           const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
           if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
@@ -301,6 +327,7 @@ export class ArtifactStore {
     if (this.corruptionPolicy !== 'delete') return false;
     return this.#withMutation(artifactId, async () => {
       this.#hotCacheHooks.delete(artifactId);
+      this.#identityProofs.delete(requireArtifactId(artifactId));
       try {
         if (record && payloadBytes != null && typeof this.backend.deleteIfMatches === 'function') {
           return await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
@@ -425,6 +452,7 @@ export class ArtifactStore {
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
         artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
       );
+      this.#identityProofs.set(artifactId, canonicalRecord);
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;
       if (writeResult?.duplicate) this.metrics.duplicatePuts++;
@@ -446,6 +474,7 @@ export class ArtifactStore {
     const id = requireArtifactId(artifactId);
     return this.#withMutation(id, async () => {
       this.#hotCacheHooks.delete(id);
+      this.#identityProofs.delete(id);
       let deleted;
       try { deleted = await this.#backendHooks.delete(id); }
       catch (error) { this.metrics.storageFailures++; throw error; }
@@ -458,11 +487,13 @@ export class ArtifactStore {
   evictHot(artifactId = null) {
     if (artifactId == null) {
       this.#hotCacheHooks.clear();
+      this.#identityProofs.clear();
       return;
     }
     const id = requireArtifactId(artifactId);
     this.#bumpEpoch(id);
     this.#hotCacheHooks.delete(id, true);
+    this.#identityProofs.delete(id);
     this.#bumpEpoch(id);
   }
 
