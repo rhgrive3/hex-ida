@@ -30,11 +30,6 @@ import {
   buildMemorySsa,
   validateMemorySsa,
 } from '../memoryssa/index.js';
-import {
-  CANONICAL_ACCESS_ISSUER,
-  MEMORY_SSA_PROOF_VERSION,
-  registerCanonicalAccessProvider,
-} from '../memoryssa/proof.js';
 import { projectSemanticIrV2ToLegacyV1 } from './semantic-ir-v2-to-v1.js';
 
 export {
@@ -270,11 +265,6 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
   if (memory.atomic === true || memory.volatility === true) return null;
   return {
     kind: 'canonical-memory-access-qualifiers',
-    issuer: {
-      type: 'canonical-memory-access-provider',
-      id: CANONICAL_ACCESS_ISSUER,
-      version: MEMORY_SSA_PROOF_VERSION,
-    },
     sourceEntityId: String(descriptor.node.id),
     architectureId: String(architectureId),
     family,
@@ -289,12 +279,6 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
       sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
     },
   };
-}
-
-function canonicalMemoryAccessProviderFor(architectureId) {
-  return registerCanonicalAccessProvider(
-    (descriptor) => canonicalMemoryAccessProof(descriptor, architectureId),
-  );
 }
 
 /**
@@ -565,13 +549,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       ...(options.signal == null ? {} : { signal: options.signal }),
     },
   });
-  const canonicalAccessProvider = options.memorySsaOptions?.accessProofForDescriptor
-    ?? canonicalMemoryAccessProviderFor(architectureId);
   const memorySsaOptionsFor = (canonicalMemorySsa = null) => ({
     ...(options.memorySsaOptions ?? {}),
     ssa,
     rootDescriptorProvider,
-    accessProofForDescriptor: canonicalAccessProvider,
+    accessProofForDescriptor: options.memorySsaOptions?.accessProofForDescriptor
+      ?? ((descriptor) => canonicalMemoryAccessProof(descriptor, architectureId)),
     identity: {
       ...(options.memorySsaOptions?.identity ?? {}),
       binaryId,
