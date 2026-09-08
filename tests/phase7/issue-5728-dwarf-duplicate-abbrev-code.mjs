@@ -58,3 +58,48 @@ test('#5728 a well-formed table stays complete with no diagnostics', () => {
   assert.equal(out.complete, true);
   assert.deepEqual(out.diagnostics, []);
 });
+
+test('#5728 identical duplicate declarations are rejected too', () => {
+  const identical = Uint8Array.from([
+    0x01, 0x11, 0x00,
+    0x11, 0x01,
+    0x00, 0x00,
+    // The second declaration is byte-for-byte identical to the first.
+    0x01, 0x11, 0x00,
+    0x11, 0x01,
+    0x00, 0x00,
+    0x00,
+  ]);
+  const out = parseDebugInfo({ debug_info, debug_abbrev: identical });
+  assert.equal(out.complete, false);
+  assert.ok(out.diagnostics.some((d) => /duplicate abbreviation/i.test(d)));
+  const die = [...out.dies.values()][0];
+  assert.ok(die);
+  assert.equal(die.complete, false);
+  assert.equal(die.attributes.has(0x11), true);
+});
+
+test('#5728 a table terminator isolates following abbreviation tables', () => {
+  const tables = Uint8Array.from([
+    // First table: one unique declaration, then its terminator.
+    0x01, 0x11, 0x00,
+    0x11, 0x01,
+    0x00, 0x00,
+    0x00,
+    // Following table: code 1 is duplicated, but belongs to another table.
+    0x01, 0x11, 0x00,
+    0x11, 0x01,
+    0x00, 0x00,
+    0x01, 0x11, 0x00,
+    0x12, 0x01,
+    0x00, 0x00,
+    0x00,
+  ]);
+  const out = parseDebugInfo({ debug_info, debug_abbrev: tables });
+  assert.equal(out.complete, true);
+  assert.deepEqual(out.diagnostics, []);
+  const die = [...out.dies.values()][0];
+  assert.ok(die);
+  assert.equal(die.attributes.has(0x11), true);
+  assert.equal(die.attributes.has(0x12), false);
+});
