@@ -26,6 +26,14 @@ test('#5953 malformed currentFunction is rejected at parse time', () => {
   }
 });
 
+test('#5953 unsafe numeric currentFunction is rejected', () => {
+  const unsafe = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(
+    () => parseHexProject(projectWith(unsafe)),
+    (error) => /currentFunction/.test(error?.message ?? ''),
+  );
+});
+
 test('#5953 valid currentFunction representations still parse', () => {
   for (const good of [4352, '4352', '0x1100']) {
     const parsed = parseHexProject(projectWith(good));

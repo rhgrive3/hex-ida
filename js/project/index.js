@@ -96,6 +96,9 @@ export function normalizeNavigation(value = {}) {
     if (typeof currentFunction !== 'string' && typeof currentFunction !== 'number' && typeof currentFunction !== 'bigint') {
       throw new ProjectFormatError('navigation.currentFunction must be an integer');
     }
+    if (typeof currentFunction === 'number' && !Number.isSafeInteger(currentFunction)) {
+      throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    }
     try { currentFunction = BigInt(currentFunction); }
     catch { throw new ProjectFormatError('navigation.currentFunction must be an integer'); }
   }
