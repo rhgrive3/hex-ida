@@ -188,8 +188,11 @@
       "tests/machine-effects/arm64-direct-branch-coherence.test.mjs",
       "tests/machine-effects/arm64-literal-target-coherence.test.mjs",
       "tests/machine-effects/arm64e-retained-provider-union.test.mjs",
+      "tests/machine-effects/issue-5553-x86-move-extend-widths.test.mjs",
+      "tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs",
       "tools/validation/analysis-roadmap/ownership.json",
       "tools/validation/analysis-roadmap/ownership.mjs",
+      "tools/validation/machine-effects/fixtures/move-extension-register-oracle.c",
       "userscript/hex.user.template.js",
       "userscript/release-version.json"
     ]

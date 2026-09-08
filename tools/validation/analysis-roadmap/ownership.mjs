@@ -14,6 +14,9 @@ const SPECIAL_PATHS = Object.freeze({
     'js/targets/architecture/arm64e/effects.js', 'tests/machine-effects/arm64e-retained-provider-union.test.mjs',
     'js/targets/architecture/arm64/effects/memory.js', 'tests/machine-effects/arm64-literal-target-coherence.test.mjs',
     'tests/machine-effects/arm64-direct-branch-coherence.test.mjs',
+    'tests/machine-effects/issue-5553-x86-move-extend-widths.test.mjs',
+    'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',
+    'tools/validation/machine-effects/fixtures/move-extension-register-oracle.c',
     'tools/validation/analysis-roadmap/ownership.mjs', 'tools/validation/analysis-roadmap/ownership.json',
     'userscript/hex.user.template.js', 'userscript/release-version.json'],
 });

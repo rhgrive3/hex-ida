@@ -347,8 +347,8 @@ summary writes (#4320/#5752), and fallback completeness (#5851). The next
 `pointsto/lattice.js`; it has been inspected but not yet imported.
 
 The next MachineEffects diagnostic selection is retained at
-`/tmp/hex-roadmap-next-me-0jjBMr/full.log`. It distinguishes an incorrectly
-exact `movzx ax,bx` (#5553), a stale source-shape routing assertion (#5566),
+`/tmp/hex-roadmap-next-me-0jjBMr/full.log`. It distinguishes conflicting
+`movzx ax,bx` width expectations (#5553), a stale source-shape routing assertion (#5566),
 RISC-V compressed-profile contract differences (#5999), and x87 terminal
 authority failures (#6133). These are unresolved; no oracle/terminal-domain
 coverage is claimed from the earlier targeted ARM64 successes.
@@ -403,6 +403,54 @@ inventory is 179 exact paths (21 Phase 7 / 24 Phase 8). Release serial is
 `e0e61b7bc8db36b81342a26c359222d1d590f4a9bd6db94ea5f26cc84cf08ba9`.
 These focused results require commit/rebuild-zero-diff, complete new-head
 Phase 7 and downstream verification before they can close the remaining gate.
+
+That reconciliation is committed at
+`d0da0fe577dc3c82f8bce18e5341f0e155b35e10` (tree
+`ba8c3912c0edf8b3e19d0bd58eea6cc010ed784b`). Canonical rebuild produced
+zero generated diff (3.0 s), and the entire canonical Phase 7 suite passed
+(79.4 s), removing the remaining 12 failures without excluding tests. The
+same integration branch then fast-forwarded to that tested tree. Its rebuild
+again produced zero generated diff (3.3 s); generated-runtime Chromium/WebKit
+sandbox E2E passed (8.3 s) in the detached worktree. Full Phase 8 was started
+there on the frozen `d0da0fe57` source and remains pending at this checkpoint.
+
+The full repository gate on `d0da0fe57` stopped at 10 MachineEffects files
+(145.2 s), log `/tmp/hex-check-PMCHWg/full.log`. No later gate is inferred
+green from that stopped chain.
+
+### x86 conflicting fixture expectations, independently checked
+
+The #5553 negative fixture predates `36e1c24498c2f8dc4ccc0c757d2a2e13678fbf87`,
+which added MOVZX/MOVSX 16-to-16 operand-size handling. The canonical integer
+denominator already requires those same real byte sequences to remain exact.
+Rather than treating either test expectation as independent truth, a bounded
+native probe checked the RAX result of five byte sequences across 105 cases
+on GenuineIntel Xeon Platinum 8269CY (x86_64). MOVZX16/MOVSX16 preserve upper
+RAX and copy the source's low 16 bits in those observations; MOVSXD16/32/64
+also matched the canonical denominator's update policies.
+
+The standalone fixture is retained at
+`tools/validation/machine-effects/fixtures/move-extension-register-oracle.c`.
+Its source SHA-256 is
+`eed187708d7577167dea2c7999d1130a5c45ec97754a875027137d5767575702`;
+the observed binary SHA-256 was
+`315fe142d4f13d63f9f3e938390b363bd91f23e3246afc8da8e72c3102f053cd`.
+Command: `/usr/bin/gcc -O2 -Wall -Wextra -Werror <fixture.c> -o <temporary-binary>`,
+then execute that binary. Compiler: Ubuntu GCC 11.4.0-1ubuntu1~22.04.3.
+The initial standalone LLVM 18 link attempt failed because its local libc
+launcher conflicted with the system linker; this is not a successful LLVM
+oracle run. Host GCC supplies this separate native probe only, not any frozen
+LLVM corpus requirement. This probe measures RAX only: no claim is made about
+flags, faults, all CPU implementations or the complete MachineEffects oracle.
+
+The two #5553 cases remain in the permanent test matrix, now with their
+observed/current-canonical positive expectations. All other malformed width
+and deferred-memory negatives remain. #5566's source-shape assertion now
+requires the existing receiver-provenance argument (`decoded`); its dynamic
+SETcc, unknown-set-family and SETSSBSY fail-closed checks are unchanged.
+Both corrected fixtures, the full existing integer denominator and ownership
+regressions passed together (23.6 s). No production x86 instruction logic or
+denominator was changed by this reconciliation.
 
 ## Ownership and regression policy
 
