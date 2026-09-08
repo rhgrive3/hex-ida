@@ -42,7 +42,7 @@ function pointsTo(callee) {
 }
 
 for (const field of ['argIndex', 'returnIndex']) {
-  for (const [label, value] of [['array', ['0']], ['boolean', true], ['string', '0'], ['object', { valueOf: () => 0 }],
+  for (const [label, value] of [['array', ['0']], ['boolean', true], ['object', { valueOf: () => 0 }],
     ['negative', -1], ['fraction', 0.5], ['unsafe', Number.MAX_SAFE_INTEGER + 1], ['nan', NaN], ['infinite', Infinity]]) {
     test(`#4314: ${field}/${label} is rejected before return provenance becomes pointer evidence`, () => {
       const raw = copy(); raw.returnProvenance[0][field] = value;
@@ -51,6 +51,18 @@ for (const field of ['argIndex', 'returnIndex']) {
       assert.equal(pointsTo(raw).top, true);
     });
   }
+}
+for (const field of ['argIndex', 'returnIndex']) {
+  test(`#4314: numeric-string ${field} is rejected at the serialized consumer boundary`, () => {
+    const raw = copy();
+    raw.returnProvenance[0][field] = '0';
+    assert.equal(summaryIdentityMatches(raw, identity), false);
+    assert.equal(pointsTo(raw).top, true);
+    // The constructor accepts legacy numeric spellings and canonicalizes them;
+    // only the canonical wire representation is consumable as evidence.
+    const canonical = createFunctionSummary(raw);
+    assert.equal(canonical.returnProvenance[0][field], 0);
+  });
 }
 for (const [label, value] of [['array', ['8']], ['boolean', true], ['object', { valueOf: () => 8 }],
   ['empty', ''], ['blank', '  '], ['fraction', 8.5], ['unsafe', Number.MAX_SAFE_INTEGER + 1], ['nan', NaN], ['infinite', Infinity]]) {
