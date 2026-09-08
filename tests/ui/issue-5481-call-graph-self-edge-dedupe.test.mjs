@@ -53,4 +53,44 @@ import { callGraph } from '../../js/graphview-base.js';
   assert.equal(backward.length, 1, 'other->entry caller edge appears once');
 }
 
+// 4. Issue-mandated mutual recursion A -> B -> A at depth > 1: repeated
+//    traversal at depth 2, 3 and 5 re-observes the same relations but must
+//    publish exactly the two distinct logical call edges, preserving node and
+//    depth behavior.
+{
+  const A = 0x3000n;
+  const B = 0x3100n;
+  const program = {
+    callersOf: (addr) => (addr === A ? [{ addr: B }] : addr === B ? [{ addr: A }] : []),
+    functionRange: (addr) => (addr === A ? { start: A, end: A + 4n } : addr === B ? { start: B, end: B + 4n } : null),
+    calleesOf: (start) => (start === A ? [{ addr: B }] : start === B ? [{ addr: A }] : []),
+  };
+  for (const depth of [2, 3, 5]) {
+    const graph = callGraph(program, null, A, { depth, limit: 8 });
+    assert.deepEqual(
+      graph.nodes.map((n) => n.id).sort(),
+      [A.toString(), B.toString()].sort(),
+      `depth ${depth}: exactly the two mutually recursive nodes`,
+    );
+    const forward = graph.edges.filter((e) => e.from === A.toString() && e.to === B.toString());
+    const backward = graph.edges.filter((e) => e.from === B.toString() && e.to === A.toString());
+    assert.equal(forward.length, 1, `depth ${depth}: A->B appears exactly once`);
+    assert.equal(backward.length, 1, `depth ${depth}: B->A appears exactly once`);
+    assert.equal(graph.edges.length, 2, `depth ${depth}: no duplicated relations beyond the two logical edges`);
+  }
+}
+
+// 5. limit still applies per traversal level alongside the dedupe.
+{
+  const entry = 0x4000n;
+  const callees = [1, 2, 3, 4, 5].map((i) => 0x4100n + BigInt(i) * 0x10n);
+  const program = {
+    callersOf: () => [],
+    functionRange: (addr) => (addr === entry ? { start: entry, end: entry + 4n } : null),
+    calleesOf: () => callees,
+  };
+  const graph = callGraph(program, null, entry, { depth: 1, limit: 3 });
+  assert.equal(graph.edges.length, 3, 'the traversal limit keeps capping fan-out');
+}
+
 console.log('issue-5481 call-graph self-edge dedupe: ok');
