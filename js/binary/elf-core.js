@@ -481,6 +481,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
+    if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
