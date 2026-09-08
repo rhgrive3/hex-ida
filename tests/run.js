@@ -2254,6 +2254,45 @@ test('PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる', a
   ok(res.top.why.every((x) => proofText(x).length > 0), '文にできない証拠がある');
 });
 
+test('PINPOINT: caller limit は明示的に正規化し、判定メタデータを切り詰めない', async () => {
+  const w = battleWorld();
+  const battle = w.fields.classes.get('BattleManager');
+  for (let i = 0; i < 12; i++) {
+    battle.ivars.push({ name: `_extra${i}`, offset: 0x40 + i * 4, size: 4, type: INT4 });
+  }
+  const base = { goal: goalFromPreset('hp'), fields: w.fields, map: w.map };
+  const run = (limit) => pinpointField(limit === undefined ? base : { ...base, limit });
+  const summary = (res) => ({
+    verdict: res.verdict,
+    top: res.top?.key || null,
+    runnerUp: res.runnerUp?.key || null,
+    margin: res.margin,
+    marginRatio: res.marginRatio,
+    missing: res.missing,
+  });
+
+  const defaultResult = await run();
+  const explicitDefault = await run(12);
+  const one = await run(1);
+  const zero = await run(0);
+  const defaultCount = defaultResult.candidates.length;
+  eq(defaultCount, 12);
+  eq(explicitDefault.candidates.length, defaultCount);
+  eq(one.candidates.length, 1);
+  eq(zero.candidates.length, 0);
+  for (const limited of [explicitDefault, one, zero]) {
+    eq(JSON.stringify(summary(limited)), JSON.stringify(summary(defaultResult)));
+  }
+
+  // Invalid public limits fail closed to the same default instead of reaching
+  // Array#slice's relative-index or coercion semantics.
+  for (const invalid of [-1, -2, 1.5, NaN, Infinity, '2', true, {}, [], 1n]) {
+    const result = await run(invalid);
+    eq(result.candidates.length, defaultCount, `invalid limit ${String(invalid)} must use default`);
+    eq(JSON.stringify(summary(result)), JSON.stringify(summary(defaultResult)));
+  }
+});
+
 test('PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない', async () => {
   const w = battleWorld();
   const res = await pinpointField({
