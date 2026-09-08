@@ -207,7 +207,13 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const needsReturnShape = bundles.some((bundle) =>
     (bundle?.controlEffects || []).some((effect) => effect?.kind === 'return'));
-  const returnStackSlots = context?.returnStackSlots;
+  // A parsed enclosing MethodDef signature is authoritative. Explicit context
+  // remains a compatibility fallback only for synthetic/legacy images that do
+  // not carry resolvable signature metadata (#7268).
+  const signatureReturnStackSlots = decoded?.entryState?.returnStackSlots;
+  const returnStackSlots = safeInteger(signatureReturnStackSlots)
+    ? signatureReturnStackSlots
+    : context?.returnStackSlots;
   const returnShapeKnown = !needsReturnShape || safeInteger(returnStackSlots);
   if (!returnShapeKnown) warnings.push({ code:'cil-return-stack-shape-unavailable' });
 
@@ -276,9 +282,13 @@ export function validateCilEffectFunction(decoded, context = {}) {
     }
 
     if (controls.some((effect) => effect?.kind === 'return')) {
-      if (safeInteger(returnStackSlots) && stack.length !== returnStackSlots) {
+      // The return shape is the evaluation-stack height at the `ret`, i.e.
+      // before the return operand is consumed by the lifter (#7268). Comparing
+      // post-consumption height would misclassify every non-void method.
+      const returnShapeHeight = stack.length + consumed.length;
+      if (safeInteger(returnStackSlots) && returnShapeHeight !== returnStackSlots) {
         errors.push({ code:'cil-return-stack-shape-invalid', operationId:bundle.operationId ?? null,
-          bytecodeOffset:offset, stackHeight:stack.length, expected:returnStackSlots });
+          bytecodeOffset:offset, stackHeight:returnShapeHeight, expected:returnStackSlots });
       }
       continue;
     }
