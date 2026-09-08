@@ -39,7 +39,11 @@ export function createManagedValidationReport(input) {
   };
 
   return deepFreeze({
-    id: `val-rep:${targetId}`,
+    // Validation report identity binds what was validated to the validation
+    // context: target + profile + status. Reports that differ in profile or
+    // outcome are different validation facts and must never share an id
+    // (#5294).
+    id: `val-rep:${targetId}:${profileId ?? '-'}:${status}`,
     targetId,
     profileId,
     status,
