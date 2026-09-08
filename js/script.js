@@ -418,7 +418,10 @@ export function createApi(app, out, options = {}) {
       const scanLimit = Number.isSafeInteger(context?.scanLimit) && context.scanLimit > 0
         ? Math.min(context.scanLimit, FIND_STRINGS_SCAN_BUDGET.items)
         : FIND_STRINGS_SCAN_BUDGET.items;
-      const budget = new SearchScanBudget({ items: scanLimit, textBytes: FIND_STRINGS_SCAN_BUDGET.textBytes });
+      const scanTextBytes = Number.isSafeInteger(context?.scanBytes) && context.scanBytes > 0
+        ? Math.min(context.scanBytes, FIND_STRINGS_SCAN_BUDGET.textBytes)
+        : FIND_STRINGS_SCAN_BUDGET.textBytes;
+      const budget = new SearchScanBudget({ items: scanLimit, textBytes: scanTextBytes });
       const results = [];
       let visited = 0;
       let truncationReason = null;
@@ -442,6 +445,10 @@ export function createApi(app, out, options = {}) {
         visited += 1;
         const text = s?.text;
         if (typeof text !== 'string') return true;
+        // A candidate that cannot fit the remaining text-byte budget is never
+        // processed: charging it anyway would let a final oversized candidate
+        // report a complete scan (#5900).
+        if (!budget.fitsText(text)) { truncationReason = 'scan-budget'; return false; }
         budget.consumeText(text);
         if (!q || text.toLowerCase().includes(q)) {
           results.push(s);

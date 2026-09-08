@@ -92,6 +92,16 @@ export class SearchScanBudget {
     this.scannedTextBytes += bytes;
   }
 
+  /*
+   * Preflight the byte fit: a candidate whose text cannot fit the remaining
+   * budget must not be processed (lowercased/searched) at all — charging it
+   * anyway would let a final oversized candidate report a complete scan
+   * (#5900). Callers check this before lowercasing/searching.
+   */
+  fitsText(text) {
+    return typeof text === 'string' && this.textBytesRemaining >= text.length * 2;
+  }
+
   /* Backward-compatible combined charge for existing direct callers. */
   consume(text) {
     if (!this.consumeItem()) return false;

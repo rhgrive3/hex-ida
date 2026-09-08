@@ -126,6 +126,35 @@ import { classItems, externalItems } from '../js/ui/product.js';
   clearTimeout(abortTimer);
   assert.ok(cancelAccessed > 0, 'mid-scan regression must begin scanning before cancellation');
   assert.ok(cancelAccessed < rawCap, `scheduled abort must stop before raw cap; accessed ${cancelAccessed}`);
+
+  // Small text-byte boundaries: the scan must preflight the byte fit before
+  // processing a candidate, so an over-budget candidate can never be searched
+  // and a final over-budget candidate can never report a complete scan.
+  const byteFitApp = { stringIndex: [{ text: 'abc' }] };
+  const { api: byteFitHex } = createApi(byteFitApp, out);
+  const overBudget = byteFitHex.findStrings('abc', 1, { scanBytes: 4 });
+  assert.equal(overBudget.length, 0, 'a candidate larger than the byte budget must not be searched');
+  assert.equal(overBudget.scannedTextBytes, 0, 'an over-budget candidate must not be charged');
+  assert.equal(overBudget.complete, false);
+  assert.equal(overBudget.truncationReason, 'scan-budget');
+  const exactFit = byteFitHex.findStrings('abc', 1, { scanBytes: 6 });
+  assert.equal(exactFit.length, 1, 'an exact-fit candidate is searched');
+  assert.equal(exactFit.complete, true, 'exact fit consumes the whole budget but finishes the walk');
+  assert.equal(exactFit.truncationReason, null);
+  assert.equal(exactFit.scannedTextBytes, 6);
+  // Final-candidate completeness: the last matching candidate is charged and
+  // the result stays complete even though the byte budget is now exhausted.
+  const finalCandidate = byteFitHex.findStrings('abc', 1, { scanBytes: 12 });
+  assert.equal(finalCandidate.length, 1);
+  assert.equal(finalCandidate.complete, true);
+  assert.equal(finalCandidate.truncationReason, null);
+  // A second candidate after the byte budget is exhausted must truncate.
+  const twoCandidates = { stringIndex: [{ text: 'ab' }, { text: 'cd' }] };
+  const { api: twoHex } = createApi(twoCandidates, out);
+  const exhausted = twoHex.findStrings('__never_exists__', 1, { scanBytes: 4 });
+  assert.equal(exhausted.scannedTextBytes, 4);
+  assert.equal(exhausted.complete, false, 'byte-budget exhaustion after the first candidate is partial');
+  assert.equal(exhausted.truncationReason, 'scan-budget');
 }
 
 // ── #2628: Product Explorer Classes caching and filtering ──
