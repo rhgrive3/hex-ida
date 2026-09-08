@@ -62,6 +62,20 @@ function materializeRuntimeValue(value, seen = new WeakMap()) {
     return new DataView(ownedBytes.buffer);
   }
   if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Map) {
+    const output = new Map();
+    seen.set(value, output);
+    for (const [key, item] of value) {
+      output.set(materializeRuntimeValue(key, seen), materializeRuntimeValue(item, seen));
+    }
+    return output;
+  }
+  if (value instanceof Set) {
+    const output = new Set();
+    seen.set(value, output);
+    for (const item of value) output.add(materializeRuntimeValue(item, seen));
+    return output;
+  }
 
   const output = Array.isArray(value) ? [] : {};
   seen.set(value, output);

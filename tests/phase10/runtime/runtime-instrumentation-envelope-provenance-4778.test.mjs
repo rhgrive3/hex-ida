@@ -167,3 +167,53 @@ test('InstrumentationProvider snapshots DataView envelope bytes without aliasing
     await session.close();
   }
 });
+
+
+test('InstrumentationProvider preserves canonical Map and Set payload semantics in owned envelopes', async () => {
+  const mapValue = { nested: 1 };
+  const map = new Map([['entry', mapValue]]);
+  const set = new Set(['member']);
+  let filtered = null;
+  const provider = new InstrumentationProvider(makeBackend(), {
+    eventFilter(event) { filtered = event; return true; },
+  });
+  const session = await provider.openSession({
+    processKey: 'envelope-collections-process',
+    binaryId: 'envelope-collections-binary',
+    sessionNonce: 'envelope-collections-session',
+  });
+  try {
+    const installed = await session.facets.instrumentation.installProbe({ address: 0x5000n });
+    const observed = session.facets.instrumentation.events.ingest({
+      type: 'event',
+      event: 'instrumentation-observation',
+      data: { sequence: 9, probeHandle: 7, map, set },
+    });
+
+    assert.ok(filtered?.data?.map instanceof Map);
+    assert.ok(filtered?.data?.set instanceof Set);
+    assert.notEqual(filtered.data.map, map);
+    assert.notEqual(filtered.data.set, set);
+    assert.deepEqual(observed.payload, {
+      map: { $map: [['entry', { nested: 1 }]] },
+      probeHandle: 7,
+      sequence: 9,
+      set: { $set: ['member'] },
+    });
+    assert.deepEqual(observed.interventionIds, [installed.intervention.interventionId]);
+
+    mapValue.nested = 2;
+    map.set('later', true);
+    set.add('later');
+    assert.deepEqual([...filtered.data.map.entries()], [['entry', { nested: 1 }]]);
+    assert.deepEqual([...filtered.data.set], ['member']);
+    assert.deepEqual(observed.payload, {
+      map: { $map: [['entry', { nested: 1 }]] },
+      probeHandle: 7,
+      sequence: 9,
+      set: { $set: ['member'] },
+    });
+  } finally {
+    await session.close();
+  }
+});
