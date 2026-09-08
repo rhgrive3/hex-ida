@@ -15,6 +15,7 @@ import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/id
 // Keep issue-specific regressions in both the core contract gate and Phase 10 discovery.
 import './phase10/identity/issue-4315-snapshot-derived-identity.test.mjs';
 import './phase10/identity/issue-4321-origin-range-identities.test.mjs';
+import './core-identity-fnv64-word-equivalence.test.mjs';
 
 // Stable identity exactness regressions live in this contract suite.
 const bytes = new TextEncoder().encode('same binary content');
