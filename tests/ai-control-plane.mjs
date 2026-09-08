@@ -9,6 +9,7 @@ import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
 import { AIRuntime } from '../js/ai/runtime.js';
+import { createHexToolRegistry } from '../js/ai/tools/index.js';
 
 // A: current UI navigation after turn start cannot move the turn anchor.
 let current = 0x1000n;
@@ -136,6 +137,28 @@ for (const goal of ['実行時にこの仮説を検証して', 'runtimeでverify
 const runtimeAuto = new ScopeController(fnSnap, 'auto');
 runtimeAuto.ensureForIntent(routeIntent('実行時にこの仮説を検証して', fnSnap));
 assert.equal(runtimeAuto.effectiveScope, 'runtime');
+
+// I3: with no runtime backend, the actual registry still exposes static tools
+// for the static request; an explicit intent override remains authoritative.
+const staticRegistry = createHexToolRegistry({});
+const staticIntent = routeIntent('この関数のCFGを検証して', fnSnap);
+const staticWindow = selectToolWindow(staticRegistry, {
+  requestedScope: 'auto', effectiveScope: 'function', intent: staticIntent, maxTools: 9,
+});
+assert.ok(staticWindow.tools.length > 0, 'static verification must retain model-visible tools without a runtime backend');
+assert.ok(staticWindow.tools.some((tool) => ['get_current_function', 'get_cfg', 'get_semantic_facts'].includes(tool.name)));
+assert.equal(staticRegistry.definitionsForModel({ scope: 'runtime' }).length, 0, 'the disconnected registry has no runtime tools');
+const explicitRequest = { goal: 'この関数のCFGを検証して', intent: 'runtime-verify', scope: 'auto' };
+const explicitIntent = explicitRequest.intent || routeIntent(explicitRequest.goal, fnSnap);
+const explicitScope = new ScopeController(fnSnap, explicitRequest.scope);
+explicitScope.ensureForIntent(explicitIntent);
+assert.equal(explicitIntent, 'runtime-verify', 'an explicit request intent must override keyword routing');
+assert.equal(explicitScope.effectiveScope, 'runtime');
+const explicitWindow = selectToolWindow(staticRegistry, {
+  requestedScope: explicitRequest.scope, effectiveScope: explicitScope.effectiveScope, intent: explicitIntent, maxTools: 9,
+});
+assert.equal(explicitWindow.phase, 'runtime');
+assert.equal(explicitWindow.tools.some((tool) => tool.name === 'get_cfg'), false, 'explicit runtime intent must not fall back to static function tools');
 
 // K: provider runtime can carry transcript exactly once (top-level messages).
 const sessionLike = { messages: [{ role: 'user', content: 'one' }], investigationMemory: { goal: 'one', anchor: null, confirmedFacts: [], activeHypotheses: [], rejectedHypotheses: [], unresolvedQuestions: [], userConstraints: [], importantPriorActions: [] } };
