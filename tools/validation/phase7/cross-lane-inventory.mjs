@@ -9,6 +9,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const LANE = 'codex/lane5-6633-abi-a8b2';
+const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -20,6 +21,11 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'js/targets/abi/registry.js',
     'tests/phase6/abi/issue-6052-riscv-abi-ambiguity.test.mjs',
     'tests/phase6/abi/riscv-psabi.test.mjs',
+  ]),
+  [OBJC_PROTOCOL_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/apple/objc-metadata.js',
+    'tests/issue-6270-objc-methodlist-cancellation.mjs',
   ]),
 });
 

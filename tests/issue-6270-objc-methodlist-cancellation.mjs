@@ -197,6 +197,7 @@ function createMockBuffer(size = 0x80000) {
   setU64(protoAddr + 32n, 0n);
   setU64(protoAddr + 40n, 0n);
   setU64(protoAddr + 48n, 0n);
+  setU32(protoAddr + 64n, 72); // Valid protocol_t prefix through size/flags, without optional tail fields.
 
   setU32(methodListAddr, 24);
   setU32(methodListAddr + 4n, 2);
