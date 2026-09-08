@@ -153,7 +153,11 @@ export class DebugAdapter {
     }
     this.id = id == null ? `${kind}-adapter` : id;
     this.kind = kind;
-    this.capabilities = normalizeCapabilities({ connect: true, disconnect: true, ...capabilities });
+    this.capabilities = normalizeCapabilities(
+      capabilities instanceof Set
+        ? new Set(['connect', 'disconnect', ...capabilities])
+        : { connect: true, disconnect: true, ...capabilities },
+    );
     this.connected = false;
   }
   negotiate(requested = null) {

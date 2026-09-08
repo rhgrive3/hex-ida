@@ -31,6 +31,28 @@ function selectedPluginIsBound(plugin, installation) {
     && definition.name === plugin.name
     && definition.description === plugin.description;
 }
+
+/* Plugin identity is persisted state: only canonical primitives may enter the
+   installation/plugin ID namespaces (#5655). A structured or coerced
+   installationId would alias a real installation's Map key, and a coerced
+   enabled/definition index would enable a definition the user never did. */
+function canonicalInstallationId(value, fallback = null) {
+  if (typeof value === 'string' && value.trim()) return value;
+  return fallback;
+}
+function canonicalPluginIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+function canonicalEnabledIndexSet(values) {
+  if (!Array.isArray(values)) return null;
+  const enabled = new Set();
+  for (const value of values) {
+    const index = canonicalPluginIndex(value);
+    if (index == null) continue;
+    enabled.add(index);
+  }
+  return enabled;
+}
 let fallbackInstallSeq = 1;
 
 let scriptSandboxPromise = null;
@@ -124,6 +146,9 @@ export class PluginHost {
       const legacySeen = new Set();
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
+        /* A present-but-malformed installationId would alias a canonical
+           installation's Map key; skipping the entry beats laundering it (#5655). */
+        if (p.installationId != null && canonicalInstallationId(p.installationId) == null) continue;
         // v3 manifest fast path: restore registry directly without sandbox execution
         if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
           // #6080: the fast path is only sound while the persisted definitions
@@ -139,11 +164,11 @@ export class PluginHost {
             });
             continue;
           }
-          const installationId = String(p.installationId);
-          const enabled = Array.isArray(p.enabledIndexes)
-            ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
-            : new Set(p.definitions.map((d) => d.index));
-          const all = p.definitions.map((def) => ({
+          const installationId = canonicalInstallationId(p.installationId, newInstallId());
+          const definitions = p.definitions.filter((def) => canonicalPluginIndex(def?.index) != null);
+          const enabled = canonicalEnabledIndexSet(p.enabledIndexes)
+            ?? new Set(definitions.map((def) => def.index));
+          const all = definitions.map((def) => ({
             id: `${installationId}:${def.index}`,
             installationId,
             name: def.name,
@@ -232,10 +257,8 @@ export class PluginHost {
     });
     if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
 
-    const installationId = String(opts.installationId || newInstallId());
-    const enabled = Array.isArray(opts.enabledIndexes)
-      ? new Set(opts.enabledIndexes.map(Number).filter(Number.isInteger))
-      : null;
+    const installationId = canonicalInstallationId(opts.installationId, newInstallId());
+    const enabled = canonicalEnabledIndexSet(opts.enabledIndexes);
     const definitions = (discovered.value || []).map((def, index) => ({
       index,
       name: def.name,
