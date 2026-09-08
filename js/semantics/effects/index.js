@@ -157,9 +157,8 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function optionalPositiveInteger(value, code) {
   return value == null ? undefined : positiveInteger(value, code);
