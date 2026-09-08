@@ -8,7 +8,7 @@ current results take precedence.
 | Area | Current state | Next action |
 | --- | --- | --- |
 | Local integration | Main65bc985e8 merged; legacy/v2 corpus and repaired Phase6 pass. The earlier Node24 batch has18-component composed passing evidence. A fresh full command stopped on LLVM selection; f853691e5 repairs it with focused passes. | SHA256 note initialization, real UI approval and measurement-contract repairs are complete and tested. Retain original logs; full-command npm check is not relabeled PASS. |
-| T026 comparison | Native P5/P6 captures and exact18.1.8 P8 nine-artifact captures exist. Reviewed metric bindings are implemented; all 32 competitive contract tests pass. Three real binary source/compiler/debug identities are unavailable. | Obtain corresponding external data or explicit deferral. Archived ledgers lack execution identity and frozen P8 compiler lineage differs from the captured twin. No fabricated values or denominator reduction. |
+| T026 comparison | Repository-owned P5/P6 capture artifacts and a valid P8 nine-artifact LLVM18.1.3 capture (`p8-1813-capture.json`, including ARM64) exist. Canonical P8 measured quality remains `UNMEASURED`: the locked 135-row observations contain ten known conservative fallback rows; the first failure is `quality.aggregate_array_stride.O0` with seven unsupported Semantic IR instructions, matching the frozen baseline. Reviewed metric bindings are implemented; all 32 competitive contract tests pass. | Obtain corresponding external data or explicit deferral. Archived P5/P6 ledgers still lack execution identity; three external game binaries still lack source/compiler/debug identities. The historical LLVM18.1.8 capture is not the frozen P8 lineage. Preserve the full denominator; do not fabricate values. |
 | Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Diagnose representative slow functions before another full measurement. Shared-host activity limits attribution. Physical execution is deferred; retain browser/runtime requirements. |
 | Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published f853691e5 head passes all six CircleCI jobs. | Integrate reviewed follow-up fixes, then publish and classify the resulting exact-head checks. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
@@ -18,9 +18,11 @@ current results take precedence.
 
 See `evidence/stage-a-candidate.md` for command identities and retained logs,
 and `evidence/post-development-device-checks.md` for deferred physical checks.
-Generated source at 0809dbfb5 was built twice with zero second-run tracked diff;
-a07ff5bb5 contains the artifacts. Generated runtime tests pass (45.4 s). Later
-changes affect tests, measurement tooling and evidence, not runtime source. The original issue worktree and user tmp work are untouched.
+The prior generated source at 0809dbfb5 was built twice with zero second-run
+tracked diff; a07ff5bb5 contains those historical artifacts. Its generated runtime
+tests passed (45.4 s). Subsequent integrated runtime changes now require the
+canonical generated rebuild; that rebuild is in progress and no new generated-runtime
+PASS is claimed here. The original issue worktree and user tmp work are untouched.
 
 ## Historical implementation observations
 
@@ -72,13 +74,18 @@ T026 capture implementation checkpoint: repository-owned Phase5/6/8 builders now
 support capture-only debug output while preserving their default frozen output.
 The collector creates and independently replays strip-only lineage and exposes
 all five binary metric owners in the scorecard. Real native captures passed for
-P5:6 artifacts (ELF/PE), P6:12 artifacts. P8:6 x86/RISC-V artifacts passed only
-with the explicitly scoped18.1.3 compiler override; the required18.1.8 invocation
-is BLOCKED-TOOLCHAIN. ARM64 still uses historical assembly and has no native
-capture path, and the benchmark input lacks source/compiler/debug identity.
-These are explicit remaining T026 gaps. All five score rows remain UNMEASURED;
-capture success does not supply measured values or close the denominator.
-Focused twin/capture/scorecard contracts and default-versus-debug isolation pass.
+P5:6 artifacts (ELF/PE) and P6:12 artifacts. The earlier six-artifact x86/RISC-V
+and required LLVM18.1.8 BLOCKED-TOOLCHAIN observations are historical; the earlier
+checkpoint's ARM64 historical-assembly-only state is superseded by a valid current
+P8 nine-artifact capture (`p8-1813-capture.json`) under LLVM18.1.3, including native
+ARM64 artifacts. Canonical P8 quality remains UNMEASURED because the locked
+135-row observations contain ten known conservative fallback rows; the first
+failure is `quality.aggregate_array_stride.O0` with seven unsupported Semantic IR
+instructions, matching the frozen baseline. Archived P5/P6 ledgers still lack
+execution identity, and three external game binaries still lack
+source/compiler/debug identities. All five score rows remain UNMEASURED; capture
+success does not supply measured values or close the denominator. Focused
+twin/capture/scorecard contracts and default-versus-debug isolation pass.
 
 Generated-runtime checks: current host and release-version checks pass. The old
 unused 1.0 timestamp-version entry point conflicted with canonical content-bound

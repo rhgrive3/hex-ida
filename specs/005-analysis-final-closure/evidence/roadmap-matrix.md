@@ -15,7 +15,7 @@ rows. All eleven recovered/residual rows have explicit implementation owners.
 
 | ID | Requirement / owner subsystem | Status | Source and test proof | Missing delta / dependencies | Risk / assigned model | Required exit gate |
 |---|---|---|---|---|---|---|
-| HEX-C0-01 | Same-binary twins and independent ground truth / competitive validation | PARTIAL | T026: Capture-only native twin collectors are implemented (P5:6/P6:12); five score rows remain UNMEASURED. P8 now has all nine native captures at locked18.1.8 including ARM64; reviewed metric/oracle bindings pass 32 contract tests. Archived ledgers lack current execution identity, frozen P8 compiler lineage differs from the capture, and benchmark source/compiler/debug identities are absent. Metrics remain UNMEASURED. Previous source anchors: `tools/validation/competitive/twin-manifest.mjs`; ground-truth/twin tests cover 21 rows, but profile retains `legacy-unproven`, `UNMEASURED`, and null twin identities. | T026 owns the remaining implementation/measurement gap. | HIGH / Luna Max implementation + Sol review | Locked identity-bound twins for full denominator; no self-oracle or denominator shrink. |
+| HEX-C0-01 | Same-binary twins and independent ground truth / competitive validation | PARTIAL | T026: Capture-only native twin collectors are implemented (P5:6/P6:12); five score rows remain UNMEASURED. A valid repository-owned P8 nine-artifact capture is now available under LLVM18.1.3, including native ARM64 artifacts. Canonical P8 quality remains UNMEASURED because the locked 135-row observations contain ten known conservative fallback rows; the first failure is `quality.aggregate_array_stride.O0` with seven unsupported Semantic IR instructions, matching the frozen baseline. Reviewed metric/oracle bindings pass 32 contract tests. The historical LLVM18.1.8 capture is not the frozen P8 lineage. Previous source anchors: `tools/validation/competitive/twin-manifest.mjs`; ground-truth/twin tests cover 21 rows, but profile retains `legacy-unproven`, `UNMEASURED`, and null twin identities. | Archived P5/P6 ledgers still lack current execution identity, and three external game binaries still lack source/compiler/debug identities. T026 owns the remaining implementation/measurement gap; preserve the full denominator and obtain corresponding external data or explicit deferral. | HIGH / Luna Max implementation + Sol review | Locked identity-bound twins for full denominator; no self-oracle or denominator shrink. |
 | HEX-ME-01 | Architecture-neutral exact MachineEffects and independent validation / targets + semantics effects | DONE | T027: RISC-V FENCE/HINT/TSO denominator reconciled; full A2 and RISC-V denominator checks pass. External formal/relaxed-memory/hardware proof remains release work. Previous source anchors: Independent/external oracle tools and Phase 2 release test; current coverage is 24 rows and cutover remains ineligible. | Implementation complete; final combined and applicable release checks remain under T037/T039–T045. | HIGH / Sol | Locked full corpus, zero semantic mismatch/false exactness, independent identities, cutover eligible. |
 | HEX-C1-01 | Loaded pointer recovery / canonical points-to consumer of MemorySSA | DONE | `prepareMemoryBoundary`/`transferLoadedPointer`; strict loaded-pointer tests; commit `66664d4b`, merged #2201. | No new implementation gap identified by current independent audit. Reverify on the final combined tree under T037. | HIGH / Sol verification | Focused and Phase 7 gates green on final candidate/main. |
 | HEX-C1-02 | Call-return pointer summaries / summary + points-to | DONE | Summary contract/local/interprocedural and 13-axis 22/22 test; `fef37203`, #3193. | No new implementation gap identified by current independent audit. Reverify on the final combined tree under T037. | HIGH / Sol verification | Matrix and recursion/budget gates retain 22/22 and conservative unknown union. |
@@ -47,10 +47,13 @@ rows. All eleven recovered/residual rows have explicit implementation owners.
 - Fixed row denominator: 23/23
 
 The remaining implementation/measurement row is owned by T026. Its five binary
-metrics stay UNMEASURED until actual identity-bound observations exist. Checked
-implementation tasks retain the applicable full-corpus, performance, independent
-oracle, runtime and physical-device obligations in the release column and the
-single development debt list. T038 and the authoritative roadmap remain open.
+metrics stay UNMEASURED until complete identity-bound observations and the
+remaining external identities exist; the current P8 capture does not close the
+canonical quality measurement while ten known conservative fallback rows remain.
+Checked implementation tasks retain the applicable full-corpus, performance,
+independent oracle, runtime and physical-device obligations in the release column
+and the single development debt list. T038 and the authoritative roadmap remain
+open.
 
 ## Reuse audit and validation boundary
 
