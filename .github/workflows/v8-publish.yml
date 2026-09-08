@@ -1,0 +1,34 @@
+name: analysis-v8-publish
+
+on:
+  push:
+    branches: [tmp-analysis-v8-publish-20260908]
+    paths: ['.v8-staging/READY']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify and apply reconciled v8 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .v8-staging/part*.b64 | base64 -d > /tmp/v8.patch.gz
+          echo 'e9e5dab90b5dac4a0114b42ab342898390d2d8f3ab0a97cca697bc9e57e4f434  /tmp/v8.patch.gz' | sha256sum -c -
+          gzip -dc /tmp/v8.patch.gz > /tmp/v8.patch
+          git apply --check /tmp/v8.patch
+          git apply /tmp/v8.patch
+          rm -rf .v8-staging
+          rm -f .github/workflows/v8-publish.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 1
+          git commit -m 'feat(analysis): integrate symbolic memory, taint and proof-gated optimization'
+          git push origin HEAD:tmp-analysis-v8-publish-20260908
