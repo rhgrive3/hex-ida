@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
 import { createLocalEngine } from '../js/ai/ui/local-engine-base.js';
+import { normalizeResponse } from '../js/ai/render/normalize.js';
 
 const BASE = 0x1000n;
 
@@ -43,22 +44,35 @@ const result = await engine.run({
 const hypotheses = result.hypotheses || [];
 assert.equal(hypotheses.length, 1, 'the deterministic best candidate yields one hypothesis');
 const hypothesis = hypotheses[0];
+assert.equal(hypothesis.status, 'verified',
+  'this fixture must exercise the verified path rather than passing by downgrade');
+assert.ok(hypothesis.supportEvidenceIds.length > 0,
+  'a verified hypothesis must carry supporting evidence (#5797 invariant)');
 
 const evidence = result.evidence || [];
 const evidenceById = new Map(evidence.map((item) => [item.id, item]));
-if (hypothesis.status === 'verified') {
-  assert.ok(hypothesis.supportEvidenceIds.length > 0,
-    'a verified hypothesis must carry supporting evidence (#5797 invariant)');
-  for (const supportId of hypothesis.supportEvidenceIds) {
-    const support = evidenceById.get(supportId);
-    assert.ok(support, `support evidence ${supportId} must be published in the same response`);
-    assert.equal(support.status, 'verified', `support evidence ${supportId} must itself be verified`);
-  }
-  assert.ok(evidence.some((item) => item.status === 'verified'),
-    'the verified candidate evidence the hypothesis points at is present');
-} else {
-  assert.equal(hypothesis.supportEvidenceIds.length, 0,
-    'a non-verified hypothesis must not claim support it cannot name');
+for (const supportId of hypothesis.supportEvidenceIds) {
+  const support = evidenceById.get(supportId);
+  assert.ok(support, `support evidence ${supportId} must be published in the same response`);
+  assert.equal(support.status, 'verified', `support evidence ${supportId} must itself be verified`);
+}
+assert.ok(evidence.some((item) => item.status === 'verified'),
+  'the verified candidate evidence the hypothesis points at is present');
+
+// The UI normalizer must resolve the support IDs rather than dropping them.
+// renderHypotheses consumes this normalized `support` array to draw the ✓ rows.
+const normalized = normalizeResponse(result, { mode: 'agent', style: 'beginner' });
+assert.equal(normalized.hypotheses.length, 1);
+const uiHypothesis = normalized.hypotheses[0];
+assert.equal(uiHypothesis.status, 'verified');
+assert.equal(uiHypothesis.unresolvedEvidenceIds.length, 0,
+  'every support ID must resolve in the same normalized response');
+assert.equal(uiHypothesis.support.length, hypothesis.supportEvidenceIds.length,
+  'UI normalization must preserve every verified support link');
+assert.ok(uiHypothesis.support.length > 0,
+  'a verified UI card must have at least one supporting check to render');
+for (const support of uiHypothesis.support) {
+  assert.equal(support.status, 'verified', 'rendered support must retain verified status');
 }
 
 console.log('issue #5797 local verified hypothesis support evidence: PASS');
