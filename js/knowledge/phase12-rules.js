@@ -115,12 +115,18 @@ function evaluateExpression(expression, features, budget) {
   const op = expression.op;
   if (op === 'all' || op === 'any') {
     const results = [];
+    let definite = false;
     for (const item of expression.args) {
-      results.push(evaluateExpression(item, features, budget));
+      const result = evaluateExpression(item, features, budget);
+      results.push(result);
+      // Only a complete decisive child can determine the logical value.
+      // An incomplete child may carry a provisional boolean (for example
+      // through `not`) and must remain fail-closed/partial.
+      if (result.complete === true && (op === 'any' ? result.value === true : result.value === false)) { definite = true; break; }
       if (budget.stopped) break;
     }
-    const complete = results.length === expression.args.length && results.every((item) => item.complete);
-    return { value: op === 'all' ? results.length === expression.args.length && results.every((item) => item.value) : results.some((item) => item.value), complete, reason: results.find((item) => !item.complete)?.reason || budget.stopped?.reason || null };
+    const complete = definite || (results.length === expression.args.length && results.every((item) => item.complete));
+    return { value: op === 'all' ? results.length === expression.args.length && results.every((item) => item.value) : results.some((item) => item.value), complete, reason: definite ? null : results.find((item) => !item.complete)?.reason || budget.stopped?.reason || null };
   }
   if (op === 'not') { const result = evaluateExpression(expression.arg, features, budget); return { value: !result.value, complete: result.complete, reason: result.reason }; }
   const actual = getPath(features, expression.path);

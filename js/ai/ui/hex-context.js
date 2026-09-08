@@ -149,12 +149,18 @@ export function createHexAIContext(app) {
         }
         const matches = Array.isArray(result?.value) ? result.value : [];
         if (neededOffset > 0) {
-          if (regionTotal != null && regionTotal <= neededOffset) {
+          if (regionCompleteness === 'complete' && regionTotal != null && regionTotal <= neededOffset) {
             neededOffset -= regionTotal;
             continue;
-          } else {
-            neededOffset = 0;
           }
+          if (matches.length === 0) {
+            // A partial/truncated region's page.total is only the count of
+            // materialized rows, so it cannot prove the requested offset lies
+            // beyond this region. Skipping into later regions on that basis
+            // fabricates the global window position (#5458): stop instead.
+            return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason: reasonOf(result) || 'search-region-total-unproven' };
+          }
+          neededOffset = 0;
         }
         for (const row of matches) {
           const address = toBigInt(row?.addr ?? row?.address);

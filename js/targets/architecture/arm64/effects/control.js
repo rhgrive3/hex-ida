@@ -19,7 +19,8 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
   if (typeof mnemonic !== 'string') return false;
   const base = mnemonic.toLowerCase();
   return DIRECT_BRANCH.has(base) || INDIRECT_BRANCH.has(base) || COMPARE_BRANCH.has(base)
-    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
+    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base)
+    || /^bc\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
 }
 
 function addressRef(address) {
@@ -49,7 +50,8 @@ function isAlignedDirectTarget(target) {
 
 function directBranchDisplacementBits(mnemonic) {
   if (mnemonic === 'b' || mnemonic === 'bl') return 26;
-  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  // B.<cond> and FEAT_HBC BC.<cond> share the imm19 encoding space.
+  if (COMPARE_BRANCH.has(mnemonic) || /^bc?\./.test(mnemonic)) return 19;
   if (TEST_BRANCH.has(mnemonic)) return 14;
   return null;
 }
@@ -94,7 +96,7 @@ function directTargetEvidenceCoherence(instruction, target, mnemonic) {
     const topByte = word >>> 24;
     const displacementBits = mnemonic === 'b' || mnemonic === 'bl'
       ? ((op26 === 0b000101 || op26 === 0b100101) ? 26 : null)
-      : /^b\./.test(mnemonic)
+      : /^bc?\./.test(mnemonic)
         ? (topByte === 0x54 ? 19 : null)
         : mnemonic === 'cbz' || mnemonic === 'cbnz'
           ? (topByte === 0x34 || topByte === 0x35 || topByte === 0xb4 || topByte === 0xb5 ? 19 : null)
@@ -213,7 +215,7 @@ function isBranchTestRegister(operand) {
 }
 
 function directBranchOperandShapeValid(instruction, mnemonic, ops) {
-  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+  if (mnemonic === 'b' || /^bc?\./.test(mnemonic)) {
     return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
   }
   if (mnemonic === 'bl') {
@@ -361,7 +363,8 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     });
   }
 
-  const conditionCode = mnemonic.slice(2);
+  // `bc.<cond>` carries its condition one character deeper than `b.<cond>`.
+  const conditionCode = mnemonic.startsWith('bc.') ? mnemonic.slice(3) : mnemonic.slice(2);
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
   return ctx.finish({
