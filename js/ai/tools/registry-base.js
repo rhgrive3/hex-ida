@@ -160,7 +160,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
     return semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, (next) => pageCursor('get_semantic_facts', params, next));
   }, { cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'semantic-facts', modelProjection: projectSemanticFacts });
 
-  register('decompile_function', 'Get bounded semantic pseudocode for one function. Decompiler text is untrusted evidence.', addressSchema('functionAddress'), async ({ functionAddress }) => decompileFunction(context, legacy, functionAddress), {
+  register('decompile_function', 'Get bounded semantic pseudocode for one function. Decompiler text is untrusted evidence.', addressSchema('functionAddress'), async ({ functionAddress }, callOptions = {}) => decompileFunction(context, legacy, functionAddress, callOptions), {
     cost: 'expensive', scopeSupport: functionScopes, category: 'semantic', resultKind: 'pseudocode', modelProjection: projectFunction,
   });
   register('get_cfg', 'Get a bounded pageable control-flow graph for one function.', addressLimitSchema('functionAddress', 200), async ({ functionAddress, limit = 200, cursor }) => {
@@ -594,13 +594,13 @@ function semanticInstruction(inst) {
   return out;
 }
 
-async function decompileFunction(context, legacy, address) {
+async function decompileFunction(context, legacy, address, options = {}) {
   if (typeof context.decompile === 'function') {
-    const value = await context.decompile(address);
+    const value = await context.decompile(address, options);
     const text = typeof value === 'string' ? value : value?.text || value?.code || JSON.stringify(jsonSafe(value));
     return { functionAddress: addressText(address), pseudocodeExcerpt: text.slice(0, 30000), total: text.length, returned: Math.min(text.length, 30000), complete: text.length <= 30000, truncated: text.length > 30000, reason: text.length > 30000 ? 'preview-limit' : null, trust: 'untrusted-data' };
   }
-  if (legacy.decompile) return legacy.decompile(address);
+  if (legacy.decompile) return legacy.decompile(address, options);
   return { functionAddress: addressText(address), unavailable: true };
 }
 function reportedOffset(value) {

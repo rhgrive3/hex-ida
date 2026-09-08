@@ -18,6 +18,53 @@ import { resolveObjcDispatch } from '../../objc.js';
 
 const MAX_SELECTION_ROWS = 80;
 
+function abortIfNeeded(signal) {
+  if (!signal?.aborted) return;
+  // AbortSignal.reason is user-owned and may be any JavaScript value,
+  // including false, 0, '', null, or undefined. Preserve it exactly.
+  throw signal.reason;
+}
+
+function awaitWithSignal(request, signal) {
+  abortIfNeeded(signal);
+  if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      try { abortIfNeeded(signal); } catch (error) { finish(reject, error); }
+    };
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    if (signal?.aborted) { onAbort(); return; }
+    Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
+function stringsRequest(app, signal) {
+  if (typeof app?.ensureStrings !== 'function') return null;
+  // The shared artifact producer accepts an options object. The legacy App
+  // method accepts only an onProgress callback, so keep its shared promise
+  // intact and attach a cancellable waiter around it.
+  return app.__sharedAppArtifactsVersion
+    ? app.ensureStrings({ signal: signal || null })
+    : app.ensureStrings();
+}
+
+function recognitionRequest(app, signal) {
+  if (typeof app?.ensureRecognition !== 'function') return null;
+  return app.ensureRecognition({ maxFunctions: 350000, knowledgeLimit: 512, signal: signal || null });
+}
+
+function objcRequest(app, signal) {
+  if (typeof app?.ensureObjc !== 'function') return null;
+  return app.ensureObjc(undefined, { signal: signal || null });
+}
+
 function toBigInt(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
@@ -50,6 +97,7 @@ function regionForAddress(app, address) {
 
 /** Legacy/headless compatibility oracle. First-party product AI uses hex-context.js. */
 export async function analyzeModelAt(app, address, end = null, options = {}) {
+  abortIfNeeded(options?.signal);
   const addr = toBigInt(address);
   if (addr == null) return null;
   const architecture = app.store.get('architecture') || app.store.get('capability')?.architecture || null;
@@ -83,12 +131,14 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
       maxRows,
       signal: options?.signal || null,
     });
+    abortIfNeeded(options?.signal);
     const model = res?.model;
     if (!model) return null;
     const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
     return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
   } catch (error) {
-    if (options?.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
+    if (options?.signal?.aborted) abortIfNeeded(options.signal);
+    if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
     return null;
   }
 }
@@ -151,13 +201,22 @@ export function createHexAIContext(app) {
     functionName: nameOf,
     analyze: (address, end, options) => analyzeModelAt(app, address, end, options),
     async searchStrings(query, options = {}) {
+      abortIfNeeded(options?.signal);
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
       const offset = nonNegativeOffset(options.offset);
-      const rows = await app.ensureStrings();
+      let request;
+      try { request = stringsRequest(app, options.signal); }
+      catch (error) {
+        if (options?.signal?.aborted) abortIfNeeded(options.signal);
+        throw error;
+      }
+      const rows = await awaitWithSignal(request, options.signal);
+      abortIfNeeded(options?.signal);
       const q = String(query || '').toLowerCase();
       const out = [];
       let matches = 0;
       for (const row of rows || []) {
+        abortIfNeeded(options?.signal);
         if (q && !String(row.text || '').toLowerCase().includes(q)) continue;
         matches++;
         if (matches <= offset) continue;
@@ -169,14 +228,21 @@ export function createHexAIContext(app) {
       return out;
     },
     async searchFunctions(query, options = {}) {
+      abortIfNeeded(options?.signal);
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 40));
       const offset = nonNegativeOffset(options.offset);
       const q = String(query || '').toLowerCase();
-      try { await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch {}
+      try {
+        await awaitWithSignal(recognitionRequest(app, options.signal), options.signal);
+        abortIfNeeded(options?.signal);
+      } catch (error) {
+        if (options?.signal?.aborted) abortIfNeeded(options.signal);
+      }
       const ranked=app.recognition?.records || [];
       if(ranked.length){
         const out=[]; let matches=0;
         for(const item of ranked){
+          abortIfNeeded(options?.signal);
           const name=String(item.name||item.originalName||'');
           const cls=String(item.classification||'');
           const knowledge=(item.knowledge?.names||[]).concat(item.knowledge?.roles||[]).join(' ');
@@ -199,6 +265,7 @@ export function createHexAIContext(app) {
       if (!sym || !Array.isArray(sym.names)) return [];
       const maxScan=Math.min(sym.names.length,1_000_000), out=[]; let matches=0;
       for (let i = 0; i < maxScan; i++) {
+        abortIfNeeded(options?.signal);
         const name = String(sym.names[i] || '');
         if (q && !name.toLowerCase().includes(q)) continue;
         matches++;
@@ -215,10 +282,17 @@ export function createHexAIContext(app) {
       out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
-    async decompile(address) {
+    async decompile(address, options = {}) {
+      abortIfNeeded(options?.signal);
       if (!fixedRows(app)) return null;
-      try { await app.ensureObjc?.(); } catch {}
-      const model = await analyzeModelAt(app, address);
+      try {
+        await awaitWithSignal(objcRequest(app, options.signal), options.signal);
+        abortIfNeeded(options?.signal);
+      } catch (error) {
+        if (options?.signal?.aborted) abortIfNeeded(options.signal);
+      }
+      const model = await analyzeModelAt(app, address, null, options);
+      abortIfNeeded(options?.signal);
       if (!model) return null;
       return decompiledText(pseudocode(app, model, toBigInt(address), nameOf));
     },
