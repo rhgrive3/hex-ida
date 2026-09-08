@@ -21,7 +21,7 @@ import {
 
 const origin = (id) => ({ instructionIds: [`instruction_${id}`] });
 
-function loadedPointerFixture({ unknownCall = false } = {}) {
+function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } = {}) {
   const functionId = 'function_loaded_pointer_recovery';
   const blockId = 'entry';
   const nodes = [
@@ -132,6 +132,55 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
       origin: origin('node_call_unknown'),
     });
   }
+
+  if (twoPointerRoots) {
+    const pointerIndex = nodes.findIndex((node) => node.id === 'node_pointer');
+    assert.notEqual(pointerIndex, -1, 'two-root fixture must contain the pointer node');
+    const pointerBase = nodes[pointerIndex];
+    nodes.splice(pointerIndex, 1,
+      {
+        ...pointerBase,
+        id: 'node_pointer_base',
+        outputs: ['pointer_base'],
+        origin: origin('node_pointer_base'),
+      },
+      {
+        id: 'node_alternate_base',
+        kind: 'state-read',
+        blockId,
+        inputs: [],
+        outputs: ['alternate_base'],
+        variable: { key: 'state:fp', kind: 'physical-state', scope: 'function' },
+        origin: origin('node_alternate_base'),
+      },
+      {
+        id: 'node_alternate_pointer',
+        kind: 'binary',
+        blockId,
+        inputs: ['alternate_base', 'target_offset'],
+        outputs: ['alternate_pointer'],
+        operator: 'add',
+        origin: origin('node_alternate_pointer'),
+      },
+      {
+        id: 'node_pointer_choice',
+        kind: 'const',
+        blockId,
+        inputs: [],
+        outputs: ['pointer_choice'],
+        attributes: { constant: { value: '0', widthBits: 1 } },
+        origin: origin('node_pointer_choice'),
+      },
+      {
+        id: 'node_pointer',
+        kind: 'select',
+        blockId,
+        inputs: ['pointer_choice', 'pointer_base', 'alternate_pointer'],
+        outputs: ['pointer'],
+        origin: origin('node_pointer'),
+      },
+    );
+  }
   const addressType = { kind: 'address', widthBits: 64, addressSpace: 'memory' };
   const values = [
     { id: 'base', kind: 'definition', machineType: addressType, definitionNodeId: 'node_base', origin: origin('base') },
@@ -141,6 +190,17 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     { id: 'pointer', kind: 'definition', machineType: addressType, definitionNodeId: 'node_pointer', origin: origin('pointer') },
     { id: 'loaded', kind: 'definition', machineType: addressType, definitionNodeId: 'node_load', origin: origin('loaded') },
   ];
+  if (twoPointerRoots) {
+    const pointerIndex = values.findIndex((value) => value.id === 'pointer');
+    const pointer = values[pointerIndex];
+    values.splice(pointerIndex, 1,
+      { ...pointer, id: 'pointer_base', definitionNodeId: 'node_pointer_base', origin: origin('pointer_base') },
+      { id: 'alternate_base', kind: 'definition', machineType: addressType, definitionNodeId: 'node_alternate_base', origin: origin('alternate_base') },
+      { id: 'alternate_pointer', kind: 'definition', machineType: addressType, definitionNodeId: 'node_alternate_pointer', origin: origin('alternate_pointer') },
+      { id: 'pointer_choice', kind: 'definition', machineType: { kind: 'bitvector', widthBits: 1 }, definitionNodeId: 'node_pointer_choice', origin: origin('pointer_choice') },
+      pointer,
+    );
+  }
   const ir = createSemanticIrFunction({
     functionId,
     entryBlockId: blockId,
@@ -493,7 +553,16 @@ test('cancellation, iteration, value, and target limits publish no refined point
   assert.equal(valueLimited.status.completeness, 'unsupported');
   assert.equal(valueLimited.pointsTo.size, 0);
 
-  const targetLimited = runWithMemory(built, built.memorySsa, { budget: { maxTargetsPerSet: 0 } });
+  const targetLimitedBuilt = loadedPointerFixture({ twoPointerRoots: true });
+  const targetLimitBaseline = runWithMemory(targetLimitedBuilt, targetLimitedBuilt.memorySsa);
+  const baselinePointer = targetLimitBaseline.pointsTo.get('pointer');
+  assert.equal(baselinePointer.top, false);
+  assert.equal(baselinePointer.targets.length, 2,
+    'the target-cap regression must start with two distinct pointer roots');
+  assert.notEqual(baselinePointer.targets[0].rootKey, baselinePointer.targets[1].rootKey);
+  const targetLimited = runWithMemory(targetLimitedBuilt, targetLimitedBuilt.memorySsa, {
+    budget: { maxTargetsPerSet: 1 },
+  });
   assertUnresolved(targetLimited, 'unresolved-load');
   assert.ok(targetLimited.pointsTo.get('pointer').lossReasons.includes('target-cap'));
   assert.ok(targetLimited.pointsTo.get('loaded').lossReasons.includes('target-cap'));
