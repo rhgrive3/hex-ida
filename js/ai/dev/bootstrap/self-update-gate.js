@@ -182,7 +182,8 @@ function assertCapabilities(value) {
   if (value == null) return [];
   if (!Array.isArray(value)) throw new TypeError('capabilities must be an array of tool names.');
   return value.map((item) => {
-    const name = String(item || '').trim();
+    if (typeof item !== 'string') throw new TypeError('capabilities entries must be non-empty tool names.');
+    const name = item.trim();
     if (!name) throw new TypeError('capabilities entries must be non-empty tool names.');
     return name;
   });
