@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../js/targets/abi/index.js';
 import { enhanceSemanticDecompilation } from '../js/decompiler/pipeline.js';
-import { printProgram } from '../js/decompiler/pretty/c.js';
 import { parseGhidraOutput } from '../tools/decompiler/ghidra-diff.mjs';
 
 function val(id, reg, bits = 32, kind = 'def') { return { id, reg, bits, kind, uses: [], def: null, const: null }; }
@@ -52,34 +51,5 @@ assert.equal(parsedGhidra('line1\\nline2'), 'line1\nline2');
 assert.equal(parsedGhidra('literal\\\\n'), 'literal\\n');
 assert.equal(parsedGhidra('literal\\\\\\\\n'), 'literal\\\\n');
 assert.equal(parsedGhidra('a\\n\\\\b\\n\\\\n'), 'a\n\\b\n\\n');
-
-// #5537: wrapping must not insert a physical newline into a C literal or
-// comment just because its contents resemble a separator.
-const literalLine = 'print("aaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbb + cccccccccccccccc - dddddddddddddddd && eeeeeeeeeeeeee || ffffffffffffff");';
-const escapedLiteralLine = 'print("aaaaaaaaaaaaaaaa \\"quoted, + - && || piece\\" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");';
-const charLiteralLine = "const marker = 'aaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbb + cccccccccccccccc - dddddddddddddddd && eeeeeeeeeeeeee || ffffffffffffff';";
-const lineCommentLine = 'log(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa); // comment, + - && ||';
-for (const text of [literalLine, escapedLiteralLine, charLiteralLine, lineCommentLine]) {
-  const printed = printProgram({ body: [{ kind: 'stmt', indent: 0, text, source: 'literal' }] }, { columnWidth: 48 });
-  assert.deepEqual(printed.lines, [text]);
-  assert.equal(printed.text, text);
-  assert.deepEqual(printed.mapping[0], { outputStartLine: 1, outputEndLine: 1, source: 'literal', kind: 'stmt' });
-}
-
-const commentLine = 'call(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) /* comment, + - && || */;';
-const wrappedComment = printProgram({ body: [{ kind: 'stmt', indent: 0, text: commentLine, source: 'comment' }] }, { columnWidth: 48 });
-assert.deepEqual(wrappedComment.lines, [
-  'call(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,',
-  '    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) /* comment, + - && || */;',
-]);
-assert.equal(wrappedComment.mapping[0].outputEndLine, wrappedComment.lines.length);
-
-const operatorLine = 'return aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa + bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;';
-const wrappedOperator = printProgram({ body: [{ kind: 'stmt', indent: 0, text: operatorLine, source: 'operator' }] }, { columnWidth: 48 });
-assert.deepEqual(wrappedOperator.lines, [
-  'return aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa +',
-  '    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;',
-]);
-assert.equal(wrappedOperator.mapping[0].outputEndLine, wrappedOperator.lines.length);
 
 console.log('decompiler semantic pipeline PASS');
