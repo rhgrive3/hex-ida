@@ -7,6 +7,7 @@ import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/build.js';
+import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 
 const snapshotId = 'snapshot-summary-boundary';
 const identity = { functionId: 'callee', snapshotId, analyzerId: 'summary-test', analyzerVersion: '1' };
@@ -42,7 +43,7 @@ function pointsTo(callee) {
 }
 
 for (const field of ['argIndex', 'returnIndex']) {
-  for (const [label, value] of [['array', ['0']], ['boolean', true], ['string', '0'], ['object', { valueOf: () => 0 }],
+  for (const [label, value] of [['array', ['0']], ['boolean', true], ['string', '0'], ['bigint', 0n], ['object', { valueOf: () => 0 }],
     ['negative', -1], ['fraction', 0.5], ['unsafe', Number.MAX_SAFE_INTEGER + 1], ['nan', NaN], ['infinite', Infinity]]) {
     test(`#4314: ${field}/${label} is rejected before return provenance becomes pointer evidence`, () => {
       const raw = copy(); raw.returnProvenance[0][field] = value;
@@ -129,11 +130,18 @@ for (const [name, mutate] of [
   });
 }
 test('#4320: canonical specific writes remain specific and pure callees remain pure', () => {
-  const specific = valid({ memoryWriteRegions: [{ regionId: 'r', regionKind: 'rooted-offset' }] });
+  const regionAt = (address) => deriveMemoryRegion({
+    binaryId: 'binary-summary-boundary', widthBits: 64,
+    origin: origin('region'), regionEvidence: { kind: 'global-absolute', address },
+  });
+  const region = regionAt(0x1000n);
+  const specific = valid({ memoryWriteRegions: [{ regionId: region.id, regionKind: region.kind, region }] });
   const summary = fold(specific);
   assert.equal(summary.status.completeness, 'complete');
-  assert.equal(summaryMayWriteRegion(summary, 'r'), true);
-  assert.equal(summaryMayWriteRegion(summary, 'other'), false);
+  assert.equal(summaryMayWriteRegion(summary, region), true);
+  assert.equal(summaryMayWriteRegion(summary, regionAt(0x1008n)), false);
+  assert.equal(summaryMayWriteRegion(summary, regionAt(0x1004n)), true, 'partial overlap is still a possible write');
+  assert.equal(summaryMayWriteRegion(summary, 'other'), true, 'an id mismatch alone cannot prove disjoint geometry');
   assert.equal(summaryIsPure(fold(valid())), true);
 });
 test('#4320: a mutable serialized summary is revalidated without being frozen or cached', () => {

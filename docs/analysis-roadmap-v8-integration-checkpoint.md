@@ -353,6 +353,57 @@ RISC-V compressed-profile contract differences (#5999), and x87 terminal
 authority failures (#6133). These are unresolved; no oracle/terminal-domain
 coverage is claimed from the earlier targeted ARM64 successes.
 
+### Phase 7 remaining-boundary reconciliation
+
+The documentation checkpoint head `391e320774bb40392624cc98dc17ec9d7ba0778d`
+(tree `32163ae71b17d5326d9e26b5ae1473df8e67f552`) passed the entire canonical
+Phase 9 suite with the supported serial option (132.4 s). It remained clean
+and unchanged while that run was live. Subsequent corrections were prepared
+in the existing detached repair worktree, not a replacement integration PR.
+
+The #6066 address-space normalization correction is now reused exactly from
+#7097 `f8d127553914efe18e51ab86a60b9f05243c7b7b`; that live PR head was
+reconfirmed. The complete points-to test directory passes (1.0 s), including
+canonical-proof precision and unbranded/lookalike proof refusals.
+
+For #4064, the existing local summary builder already carried canonical region
+geometry for intrinsic access scopes but omitted it from direct load/store
+effects. Both paths now feed the same existing `createMemoryEffect` geometry
+validator. The omission is also present on the merged #7467 source head; this
+is a missed producer path, not grounds to import an older summary engine.
+
+The public summary boundary already defines number-only safe nonnegative
+argument/return indices. Its unused `optionalIndex` validator is now used
+instead of the coercing helper, so serialized string and BigInt indices cannot
+be laundered through construction. Arbitrary-precision offsets retain their
+existing exact integer normalization. The #6069 positive fixture now uses
+canonical numeric indices and supplies the required argument index; its
+hexadecimal, binary, octal and signed offset assertions remain. The #4314
+consumer matrix additionally checks BigInt indices for both fields.
+
+The other failures were old fixtures bypassing newer existing contracts:
+
+- #4064 duplicate-geometry models now supply exact model schema/version,
+  target/snapshot identity and provenance; rejection of incomplete models is
+  unchanged. One-sided geometry still cannot prove separation, while two
+  canonical proofs retain both instruction origins.
+- #4320's positive disjoint-write check now uses actual canonical geometry,
+  with overlapping and id-only-negative controls. Different region labels
+  alone do not prove disjoint memory.
+- #5752's resolved intrinsic fixture now returns a real canonical region.
+- #5851's incomplete callee carries its required broad fallback write; its
+  modeled external call carries the existing versioned model contract.
+  Neither missing-model rejection nor unresolved-call conservatism is relaxed.
+
+All six previously failing summary test files passed (0.8 s), then the entire
+summary test directory passed (1.6 s). Both ownership regressions passed
+(0.6 s), lint passed (3.0 s), and canonical generation passed (3.3 s). The
+inventory is 179 exact paths (21 Phase 7 / 24 Phase 8). Release serial is
+`2322242156`, build ID `aa7381613722f0b52e060deb`, release identity
+`e0e61b7bc8db36b81342a26c359222d1d590f4a9bd6db94ea5f26cc84cf08ba9`.
+These focused results require commit/rebuild-zero-diff, complete new-head
+Phase 7 and downstream verification before they can close the remaining gate.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

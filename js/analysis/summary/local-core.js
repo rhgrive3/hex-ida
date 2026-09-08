@@ -322,6 +322,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           into.push(createMemoryEffect({
             regionId: region.id,
             regionKind: region.kind,
+            ...(region.kind === 'unknown' ? {} : { region }),
             broad: region.kind === 'unknown',
             addressSpaces: [node.memory.addressSpace],
             source: 'proven-summary',

@@ -7,7 +7,10 @@
     "phase7": [
       "js/analysis/discovery/layout.js",
       "js/analysis/index.js",
+      "js/analysis/pointsto/lattice.js",
       "js/analysis/shared-app-artifacts.js",
+      "js/analysis/summary/contract.js",
+      "js/analysis/summary/local-core.js",
       "js/analysis/types/constraints.js",
       "js/analysis/types/graph.js",
       "tests/phase7/discovery/layout-v6.test.mjs",
@@ -15,6 +18,11 @@
       "tests/phase7/foundation/issue-4387-local-summary-identity.test.mjs",
       "tests/phase7/foundation/issue-6243-pointsto-callee-summaries-dependency.test.mjs",
       "tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+      "tests/phase7/summary/issue-4064-region-proof-merge.test.mjs",
+      "tests/phase7/summary/issue-4314-4320-summary-consumer-validation.test.mjs",
+      "tests/phase7/summary/issue-5752-intrinsic-scope-completeness.test.mjs",
+      "tests/phase7/summary/issue-5851-call-fallback-replacement.test.mjs",
+      "tests/phase7/summary/issue-6069-provenance-strict-index.test.mjs",
       "tests/phase7/types/c3-aggregate-reconstruction-v6.test.mjs",
       "tests/phase7/types/c3-layout-review-v6.test.mjs",
       "tests/phase7/types/issue-4503-structural-array-claims.test.mjs"

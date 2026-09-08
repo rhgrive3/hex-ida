@@ -50,18 +50,6 @@ function optionalInteger(value, code) {
   if (typeof value === 'string' && /^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(value.trim())) return BigInt(value.trim());
   throw new TypeError(code);
 }
-function strictProvenanceIndex(value) {
-  if (typeof value === 'bigint') {
-    const number = Number(value);
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
-  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
-    const number = Number(value.trim());
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  return null;
-}
 function strictProvenanceOffset(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
@@ -94,8 +82,8 @@ function validateReturnProvenance(value) {
   if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
   const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
   if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
-  const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
-  const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
+  const argIndex = optionalIndex(value.argIndex, 'function-summary-invalid-return-provenance-arg-index');
+  const returnIndex = optionalIndex(value.returnIndex, 'function-summary-invalid-return-provenance-return-index');
   const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
   const root = value.rootEntityId == null ? null : nonEmptyString(value.rootEntityId, 'function-summary-invalid-return-provenance-identity');
   const allocation = value.allocationSiteId == null ? null : nonEmptyString(value.allocationSiteId, 'function-summary-invalid-return-provenance-identity');
