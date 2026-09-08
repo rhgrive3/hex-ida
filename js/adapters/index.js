@@ -83,7 +83,10 @@ function callsFromTrace(trace) {
   return out;
 }
 function returnsFromTrace(trace) {
-  return (trace || []).filter((e) => /^ret\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
+  // ARM64e authenticated returns `retaa`/`retab` are return instructions too
+  // (#5306): the bare `ret\b` boundary never held before the 'a'/'b' suffix,
+  // so the local sandbox's traceReturn surface dropped them.
+  return (trace || []).filter((e) => /^ret(aa|ab)?\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
 }
 function isConditionalBranch(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
 function isRegisterName(reg) { return /^(x([0-9]|[12][0-9]|30)|w([0-9]|[12][0-9]|30)|sp|pc)$/.test(reg); }
