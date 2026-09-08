@@ -131,23 +131,23 @@ function make(lines, opts = {}) {
   for (const addr of [0x10000049Cn, 0x1000004A0n, 0x1000004A4n, 0x1000004A8n, 0x1000004ACn]) {
     assert.ok(updateAddrs.includes(addr), `${addr.toString(16)} missing from ${fullDecompilerSourceText(update)}`);
   }
-  assert.equal(formatDecompilerSource(update), '00049C–0004AC');
+  assert.equal(formatDecompilerSource(update, { digits: 0 }), '00049C–0004AC');
 
   const cond = r.lines.find((l) => /if\s*\(/.test(l.text));
   assert.ok(cond);
   assert.ok(decompilerSourceAddresses(cond).includes(0x1000004B0n), fullDecompilerSourceText(cond));
   assert.ok(decompilerSourceAddresses(cond).includes(0x1000004B4n), fullDecompilerSourceText(cond));
-  assert.equal(formatDecompilerSource(cond), '0004B0–0004B4');
+  assert.equal(formatDecompilerSource(cond, { digits: 0 }), '0004B0–0004B4');
 
   const zeroStore = r.lines.find((l) => /self->hp\s*=\s*0;/.test(l.text));
   assert.ok(zeroStore);
-  assert.equal(formatDecompilerSource(zeroStore), '000498 · 0004B8–0004C0');
-  assert.equal(formatDecompilerSource(callLine), '0004C8–0004D0');
+  assert.equal(formatDecompilerSource(zeroStore, { digits: 0 }), '000498 · 0004B8–0004C0');
+  assert.equal(formatDecompilerSource(callLine, { digits: 0 }), '0004C8–0004D0');
   const returnLine = r.lines.find((l) => l.text === `return ${savedName};`);
   assert.ok(returnLine);
-  assert.equal(formatDecompilerSource(returnLine), '0004D4 · 0004DC');
+  assert.equal(formatDecompilerSource(returnLine, { digits: 0 }), '0004D4 · 0004DC');
 
-  assert.equal(formatDecompilerSource({ source: { addresses: [0x1000004C4n, 0x1000004D4n, 0x1000004D8n, 0x1000004DCn] } }),
+  assert.equal(formatDecompilerSource({ source: { addresses: [0x1000004C4n, 0x1000004D4n, 0x1000004D8n, 0x1000004DCn] } }, { digits: 0 }),
     '0004C4 · 0004D4–0004DC');
 }
 

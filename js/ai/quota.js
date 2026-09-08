@@ -15,8 +15,11 @@ export function normalizeQuotaSessionId(value) {
 }
 
 function finiteInt(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+  // Quota rate/concurrency/lease authorities adopt only primitive finite
+  // numbers; numeric strings, arrays, and booleans never become the
+  // enforcement value (#5429).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }
 
 function hasOwn(object, key) {
@@ -33,7 +36,9 @@ function setOwn(object, key, value) {
 }
 
 function normalizedSession(raw, windowStarted) {
-  if (!raw || Number(raw.windowStarted) !== windowStarted) return { windowStarted, count: 0 };
+  // Persisted session windows are numeric authorities too: a structured or
+  // non-matching windowStarted is corrupt state and starts fresh (#5429).
+  if (!raw || typeof raw.windowStarted !== 'number' || raw.windowStarted !== windowStarted) return { windowStarted, count: 0 };
   return { windowStarted, count: finiteInt(raw.count) };
 }
 
@@ -43,9 +48,20 @@ export function normalizeQuotaState(raw, now = Date.now(), config = AI_QUOTA) {
   const leaseMs = finiteInt(config.leaseMs, AI_QUOTA.leaseMs) || AI_QUOTA.leaseMs;
   let windowStarted = finiteInt(raw?.windowStarted, t);
   let count = finiteInt(raw?.count);
-  let sessions = raw?.sessions && typeof raw.sessions === 'object'
-    ? Object.fromEntries(Object.entries(raw.sessions))
-    : {};
+  let sessions = {};
+  if (raw?.sessions && typeof raw.sessions === 'object') {
+    for (const [sessionId, session] of Object.entries(raw.sessions)) {
+      if (!sessionId) continue;
+      // Session windows are numeric authorities as well: structured or
+      // non-matching windowStarted values are corrupt state and start fresh
+      // instead of laundering into the canonical state (#5429).
+      if (typeof session?.windowStarted !== 'number' || session.windowStarted !== windowStarted) {
+        setOwn(sessions, sessionId, { windowStarted, count: 0 });
+        continue;
+      }
+      setOwn(sessions, sessionId, { windowStarted, count: finiteInt(session.count) });
+    }
+  }
   const hadPriorWindow = raw?.windowStarted != null;
   const isRollback = hadPriorWindow && t < windowStarted;
   if (t - windowStarted >= windowMs) {

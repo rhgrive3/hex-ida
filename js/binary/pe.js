@@ -56,8 +56,11 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
   const offset = address - segment.address;
   if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
+  // RISC-V base ISA is IALIGN=32 (4-byte); the issue only demands rejecting
+  // non-instruction-boundary addresses, and 2 is the loosest legal IALIGN, so
+  // 2-byte alignment is the fail-closed floor for RISC-V entrypoints (#5545).
   const alignment = machine === 0xaa64 || machine === 0x01c0 ? 4n
-    : machine === 0x01c4 ? 2n
+    : machine === 0x5032 || machine === 0x5064 || machine === 0x01c4 ? 2n
     : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
   image.metadata.entrypointValid = true;

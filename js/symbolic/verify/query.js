@@ -40,6 +40,20 @@ const DEFAULT_QUERY_HASH_LIMITS = Object.freeze({
   maxIdentityDepth: 64,
 });
 
+const CANONICAL_EXPRESSION_KINDS = new Set([
+  'const',
+  'fresh_symbol',
+  'unknown_semantic',
+  'unary',
+  'binary',
+  'compare',
+  'connective',
+  'ite',
+  'extract',
+  'concat',
+  'cast',
+]);
+
 function requirePositiveSafeInteger(value, name) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${name} must be a primitive positive safe integer`);
@@ -193,14 +207,26 @@ function normalizeTargetEntity(value) {
   return value;
 }
 
+function expressionHashPayload(expression, hash) {
+  const payload = { hash };
+  // Canonical expression hashes intentionally exclude source/provenance and
+  // other metadata. A noncanonical constraint still needs content identity;
+  // otherwise distinct generic objects collapse to the same kind/sort hash
+  // (#5643).
+  if (!expression || typeof expression !== 'object' || !CANONICAL_EXPRESSION_KINDS.has(expression.kind)) {
+    payload.identity = stableDigest(expression);
+  }
+  return payload;
+}
+
 function queryHashPayload(query, constraintHashes, assertionHash) {
   return {
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind: query.kind,
     claimKind: query.claimKind,
     targetEntity: query.targetEntity ?? null,
-    constraints: constraintHashes.map((hash) => ({ hash })),
-    assertion: assertionHash ? { hash: assertionHash } : null,
+    constraints: constraintHashes.map((hash, index) => expressionHashPayload(query.constraints[index], hash)),
+    assertion: assertionHash ? expressionHashPayload(query.assertion, assertionHash) : null,
     assumptions: query.assumptions,
     completeness: query.completeness,
     requestedOutputs: query.requestedOutputs,

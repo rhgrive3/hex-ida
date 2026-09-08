@@ -765,9 +765,19 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   // #6314: validate container (duplicate architectures and slice range overlap)
   validateFatContainer(all);
 
-  const want = preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
-  if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
+  // Explicit sliceIndex is authoritative, mirroring the source-backed path
+  // (parseMachOSource): a resident parse must not silently fall back to the
+  // architecture priority when a specific slice was requested, and the
+  // architecture preference is only consulted without a sliceIndex (#5638).
+  const sliceIndex = opts.sliceIndex;
+  const requestedIndex = sliceIndex == null ? null : ((typeof sliceIndex === 'number' || (typeof sliceIndex === 'string' && sliceIndex.trim() !== '')) ? Number(sliceIndex) : NaN);
+  if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
+    throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
+  }
+  const indexed = requestedIndex == null ? null : all[requestedIndex];
+  const want = requestedIndex == null && preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
+  if (requestedIndex == null && preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
+  const chosen = indexed || want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
   return chosen ? { ...chosen, all } : null;
 }
 

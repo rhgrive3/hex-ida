@@ -133,7 +133,7 @@ export async function executeTurn(input = {}, options = {}) {
             ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
-            const maxTools = Math.max(1, Math.min(10, Number(caps.maxTools || 10)));
+            const maxTools = Math.max(1, Math.min(10, typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools > 0 ? Math.floor(caps.maxTools) : 10));
             const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;
             if (!tools.length) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
@@ -212,6 +212,10 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // A cancelled turn must surface as a cancelled rejection: it is never
+        // a fallback answer, and cancelled turns finalize/persist nothing
+        // (#5632). Timeout/budget limits keep the deterministic fallback.
+        if (normalized.type === 'cancelled') throw normalized;
         // Live-binding violations must never become a fallback decision.
         // The inner catch runs caller-supplied onActivity synchronously, so a
         // drift detected at the planner boundary could otherwise be masked by

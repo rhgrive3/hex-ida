@@ -1,6 +1,6 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../../analysis/status.js';
-import { createFunctionSummary, createMemoryEffect, createUnknownCallEffect } from '../../analysis/summary/contract.js';
+import { createFunctionSummary, createMemoryEffect, createUnknownCallEffect, createDirectCall } from '../../analysis/summary/contract.js';
 import { condenseCallGraph } from '../../analysis/summary/interprocedural.js';
 import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
@@ -44,7 +44,14 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(unknownCallEffects.length>0||hasLanguageThrow)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
   const status=createAnalysisStatus({snapshotId:options.snapshotId||'managed-summary-v1',analyzerId:'managed.method.summary',analyzerVersion:'1.0.0',completeness,stopReason:completeness==='complete'?null:'evidence-missing'});
-  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects});
+  // Confirmed direct calls are canonical summary effects, not bridge-side
+  // trivia: createFunctionSummary() hashes them into the dependency digest,
+  // and a caller that has not yet composed its callee effects must not see
+  // this method as call-free/pure (#5406). The target is the caller's own
+  // claim ('abi-rule': the direct dispatch was proven by this method's IR,
+  // not by a callee summary), so record it at the boundary.
+  const summaryDirectCalls=directCalls.map((call)=>createDirectCall({callSiteId:call.nodeId,targetEntityIds:[call.target],effectSource:'abi-rule'}));
+  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects,directCalls:summaryDirectCalls});
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}
