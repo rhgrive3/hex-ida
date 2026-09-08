@@ -418,7 +418,12 @@ async function applyPatch(app, args) {
   return { ok: true, output, size: output.size, patches: app.patches.list().map(serializePatch) };
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
-function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
+function byteArray(value) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  const raw = Array.from(value);
+  for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Uint8Array.from(raw);
+}
 function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
 
 function callRequired(target, method, ...args) {
