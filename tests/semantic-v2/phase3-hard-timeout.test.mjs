@@ -9,12 +9,14 @@ import { runPhase3Corpus } from '../support/phase3-corpus-runner.mjs';
 test('Phase 3 hard timeout settles after one grace period even with stubborn descendants', { timeout: 5_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-phase3-hard-timeout-'));
   try {
+    const readinessSignal = 'PHASE3_STUBBORN_READY\n';
     fs.writeFileSync(path.join(root, 'stubborn.mjs'), `
       import { spawn } from 'node:child_process';
       const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
       spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
       spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
       process.on('SIGTERM', () => {});
+      process.stdout.write(${JSON.stringify(readinessSignal)});
       setInterval(() => {}, 1000);
     `);
 
@@ -28,6 +30,7 @@ test('Phase 3 hard timeout settles after one grace period even with stubborn des
       env: { ...process.env, HEX_PHASE3_CORPUS_CONCURRENCY: '1' },
       timeoutMs,
       killGraceMs,
+      readinessSignal,
       availableParallelism: 1,
     });
     const wallMs = Number(process.hrtime.bigint() - started) / 1e6;

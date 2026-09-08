@@ -44,14 +44,21 @@ function signalProcessTree(child, signal) {
   }
 }
 
-function runOne({ suite, index, file, root, env, timeoutMs, killGraceMs, verbose }) {
+// A readiness marker is an opt-in fixture handshake. It is useful for a
+// process-startup-sensitive timeout regression: the command timeout remains
+// exactly `timeoutMs`, but starts after the fixture has installed its signal
+// handlers and completed its setup. Normal corpus leaves keep the historical
+// spawn-to-timeout boundary because they do not provide a marker.
+function runOne({ suite, index, file, root, env, timeoutMs, killGraceMs, readinessSignal, verbose }) {
   const display = `node ${file}`;
   const started = process.hrtime.bigint();
   return new Promise((resolve) => {
     let stdoutTail = '';
     let stderrTail = '';
+    let readinessTail = '';
     let timedOut = false;
     let settled = false;
+    let timer = null;
     let killTimer = null;
     const child = spawn(process.execPath, [path.join(root, file)], {
       cwd: root,
@@ -62,11 +69,38 @@ function runOne({ suite, index, file, root, env, timeoutMs, killGraceMs, verbose
       detached: process.platform !== 'win32',
     });
 
+    const startTimeout = () => {
+      if (timer || settled) return;
+      timer = setTimeout(() => {
+        timedOut = true;
+        signalProcessTree(child, 'SIGTERM');
+        killTimer = setTimeout(() => {
+          signalProcessTree(child, 'SIGKILL');
+          // Do not make proof completion depend on a hostile child's `close`
+          // event. We have issued the strongest platform cleanup and settle the
+          // failed leaf at one global deadline. Destroying pipes/unref prevents a
+          // stubborn descendant from retaining the runner event loop.
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref?.();
+          finish(null, 'SIGKILL', new Error(`phase3 corpus command timed out after ${timeoutMs}ms`));
+        }, killGraceMs);
+        killTimer.unref?.();
+      }, timeoutMs);
+      timer.unref?.();
+    };
+
     const consume = (stream, isError) => {
       stream?.on('data', (chunk) => {
         const text = chunk.toString('utf8');
         if (isError) stderrTail = appendTail(stderrTail, text);
-        else stdoutTail = appendTail(stdoutTail, text);
+        else {
+          stdoutTail = appendTail(stdoutTail, text);
+          if (readinessSignal && !timer) {
+            readinessTail = appendTail(readinessTail, text);
+            if (readinessTail.includes(readinessSignal)) startTimeout();
+          }
+        }
         if (verbose) (isError ? process.stderr : process.stdout).write(text);
       });
     };
@@ -97,23 +131,7 @@ function runOne({ suite, index, file, root, env, timeoutMs, killGraceMs, verbose
       }));
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      signalProcessTree(child, 'SIGTERM');
-      killTimer = setTimeout(() => {
-        signalProcessTree(child, 'SIGKILL');
-        // Do not make proof completion depend on a hostile child's `close`
-        // event. We have issued the strongest platform cleanup and settle the
-        // failed leaf at one global deadline. Destroying pipes/unref prevents a
-        // stubborn descendant from retaining the runner event loop.
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-        child.unref?.();
-        finish(null, 'SIGKILL', new Error(`phase3 corpus command timed out after ${timeoutMs}ms`));
-      }, killGraceMs);
-      killTimer.unref?.();
-    }, timeoutMs);
-    timer.unref?.();
+    if (!readinessSignal) startTimeout();
 
     child.once('error', (error) => finish(null, null, error));
     child.once('close', (status, signal) => finish(status, signal));
@@ -128,7 +146,7 @@ function digestEnvironment(env) {
   return hash.digest('hex');
 }
 
-export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, envName, concurrency } = {}) {
+export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, readinessSignal, envName, concurrency } = {}) {
   const token = String(env?.HEX_PHASE3_INPROCESS_REUSE_TOKEN ?? '').trim();
   if (!token) return null;
   const hash = createHash('sha256');
@@ -137,6 +155,7 @@ export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killG
   hash.update(path.resolve(root)); hash.update('\0');
   hash.update(String(timeoutMs)); hash.update('\0');
   hash.update(String(killGraceMs)); hash.update('\0');
+  hash.update(String(readinessSignal ?? '')); hash.update('\0');
   hash.update(String(envName)); hash.update('\0');
   hash.update(String(concurrency)); hash.update('\0');
   hash.update(digestEnvironment(env)); hash.update('\0');
@@ -144,7 +163,7 @@ export function phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killG
   return hash.digest('hex');
 }
 
-async function executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile }) {
+async function executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, readinessSignal, concurrency, priorityForFile }) {
   const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = outputMode === 'verbose' || outputMode === 'full';
   // The 25-leaf corpus is already an outer process pool. compiler-truth is one
@@ -169,6 +188,7 @@ async function executePhase3Corpus({ suite, files, root, env, timeoutMs, killGra
         env: childEnv,
         timeoutMs,
         killGraceMs,
+        readinessSignal,
         verbose,
       });
     }
@@ -188,6 +208,8 @@ async function executePhase3Corpus({ suite, files, root, env, timeoutMs, killGra
  * identical invocation only inside this Node process. The Semantic-v2 evidence
  * chain uses it to prestart the independent legacy corpus beside the v2 corpus.
  * Normal callers have no token and always execute fresh proof work.
+ * `readinessSignal` is reserved for process-startup-sensitive fixtures and does
+ * not alter the default spawn-to-timeout behavior.
  */
 export async function runPhase3Corpus({
   suite,
@@ -196,6 +218,7 @@ export async function runPhase3Corpus({
   env = process.env,
   timeoutMs = 600_000,
   killGraceMs = DEFAULT_KILL_GRACE_MS,
+  readinessSignal = null,
   envName = 'HEX_PHASE3_CORPUS_CONCURRENCY',
   availableParallelism,
   priorityForFile = phase3SchedulingPriority,
@@ -208,6 +231,9 @@ export async function runPhase3Corpus({
   }
   if (!Number.isSafeInteger(killGraceMs) || killGraceMs <= 0) {
     throw new TypeError('phase3 corpus runner killGraceMs must be a positive safe integer');
+  }
+  if (readinessSignal !== null && (typeof readinessSignal !== 'string' || !readinessSignal)) {
+    throw new TypeError('phase3 corpus runner readinessSignal must be a non-empty string or null');
   }
   const outputMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
   const verbose = outputMode === 'verbose' || outputMode === 'full';
@@ -222,14 +248,14 @@ export async function runPhase3Corpus({
     reserveCores: 0,
   }));
 
-  const reuseKey = phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, envName, concurrency });
+  const reuseKey = phase3CorpusReuseKey({ suite, files, root, env, timeoutMs, killGraceMs, readinessSignal, envName, concurrency });
   if (!reuseKey) {
-    return executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile });
+    return executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, readinessSignal, concurrency, priorityForFile });
   }
 
   let cached = inProcessRunCache.get(reuseKey);
   if (!cached) {
-    cached = executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, concurrency, priorityForFile });
+    cached = executePhase3Corpus({ suite, files, root, env, timeoutMs, killGraceMs, readinessSignal, concurrency, priorityForFile });
     inProcessRunCache.set(reuseKey, cached);
   }
   return cached;
