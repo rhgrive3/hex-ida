@@ -68,7 +68,7 @@ function parameterClass(parameter) {
   const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
-  const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
+  const aggregate = !x87 && !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
   const floating = !x87 && !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
@@ -558,12 +558,13 @@ function classifyReturn(prototype, options = {}) {
   if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
   }
-  const aggregate = prototype.aggregate === true || prototype.isAggregate === true
+  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
     || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
       && typeof prototype.returnAggregate !== 'boolean')
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   if (aggregate) {
     const explicitReturnBits = options.returnBits ?? prototype.returnBits ?? null;
     const returnBitsNumber = explicitReturnBits == null ? null : Number(explicitReturnBits);

@@ -6,7 +6,7 @@ import {
   classifyAAPCS64FunctionReturn,
 } from './aapcs64.js';
 
-const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ipados','macos','tvos','watchos','visionos']);
+const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
 
 function callPrototypeOf(insn, opts) {
   // Calls may arrive through the production functionPrototype field while
@@ -429,9 +429,17 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   classifyArguments:classifyDarwinArm64Arguments,
   classifyCallReturn:classifyDarwinArm64CallReturn,
   classifyFunctionReturn:classifyDarwinArm64FunctionReturn,
-  classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || ''))
-    ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) }
-    : { kind:'incoming-register-state', reg:String(reg || '') },
+  // v0-v7 and their b/h/s/d/q views are the FP/SIMD argument bank.
+  classifyEntryRegister:(reg) => {
+    const text = String(reg || '').trim().toLowerCase();
+    const integerArgument = /^x([0-7])$/.exec(text);
+    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]) };
+    const vectorArgument = /^v([0-7])$/.exec(text);
+    if (vectorArgument) return { kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]), view:'vector' };
+    const viewArgument = /^(?:[qbdsh])([0-7])$/.exec(text);
+    if (viewArgument) return { kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]), view:text.slice(0, 1) };
+    return { kind:'incoming-register-state', reg:text };
+  },
   callerSaved:()=>DARWIN_CALLER_SAVED,
   calleeSaved:()=>DARWIN_CALLEE_SAVED,
   stackRules:()=>Object.freeze({
