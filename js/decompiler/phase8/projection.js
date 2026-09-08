@@ -45,6 +45,8 @@ function collectTargets(source, proof) {
   for (const ref of source.ir || []) targets.push(`ir:${ref}`);
   for (const def of source.ssaDefs || []) targets.push(`ssa:def:${def}`);
   for (const row of source.rows || []) targets.push(`row:${row}`);
+  for (const address of source.addresses || []) targets.push(`addr:${address}`);
+  for (const use of source.ssaUses || []) targets.push(`ssa:use:${use}`);
   if (targets.length === 0) targets.push(`proof:${proof}`);
   return targets;
 }
