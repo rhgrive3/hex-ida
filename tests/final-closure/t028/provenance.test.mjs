@@ -77,6 +77,31 @@ test('T028 preserves stable IDs across rendering changes and rejects stale snaps
   assert.equal(resolveDecompilerProvenance(invalidated, invalidated.raw[0].id).status, 'stale');
 });
 
+test('T028 finalizes merged source refs before caching and freezes consumer tokens', () => {
+  const lineSource = { ir:['raw-a'] };
+  const mapSource = { ir:['raw-b'] };
+  const result = {
+    ir: { instructions: [
+      { id:'raw-a', row:1, address:0x1000n, op:'add' },
+      { id:'raw-b', row:2, address:0x1004n, op:'mov' },
+    ] },
+    cAst: { body:[{ kind:'stmt', text:'return x;', source:lineSource }] },
+    sourceMap:[{ outputStartLine:1, outputEndLine:1, source:mapSource }],
+    phase8:{ published:true, completeness:'complete', passes:[] },
+  };
+  const provenance = buildDecompilerProvenance(result);
+  const rendered = provenance.rendered[0];
+  assert.deepEqual(rendered.source.ir, ['raw-a', 'raw-b']);
+  assert.ok(provenance.mapping.rawToRendered['raw:instruction:raw-b']?.includes(rendered.id));
+  assert.equal(validateDecompilerProvenance(provenance).length, 0);
+
+  lineSource.ir.push('raw-c');
+  mapSource.ir.push('raw-c');
+  assert.deepEqual(rendered.source.ir, ['raw-a', 'raw-b'], 'caller mutation must not alter finalized refs');
+  assert.equal(Object.isFrozen(rendered.source.ir), true);
+  assert.throws(() => rendered.source.ir.push('raw-c'), TypeError, 'consumers cannot mutate cached refs');
+});
+
 test('T028 is wired into the real decompiler product and query-facing lines', () => {
   const base = 0x2000n;
   const raw = ['mov w0, #1', 'ret'].map((text, row) => {
