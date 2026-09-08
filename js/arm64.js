@@ -511,8 +511,11 @@ HANDLERS.sdiv = (o, ops) => {
 };
 HANDLERS.udiv = (o, ops) => {
   HANDLERS.sdiv(o, ops);
+  const [d, n, m] = ops;
   o.title = J('割り算（符号なし）', 'Unsigned divide');
-  o.summary = o.summary.replace(J('マイナスも扱えます。', ''), J('マイナスは扱いません（全部プラスとして計算）。', ''));
+  o.summary = J(
+    opShort(n) + ' を ' + opShort(m) + ' で割った商（小数は切り捨て）を ' + opShort(d) + ' に入れる。マイナスは扱いません（全部プラスとして計算）。',
+    'Divide ' + opShort(n) + ' by ' + opShort(m) + ' (truncating), unsigned.');
 };
 
 HANDLERS.madd = (o, ops) => {

@@ -23,6 +23,7 @@
 import assert from 'node:assert/strict';
 import { explain, referenceTarget, operandNotes } from '../js/arm64.js';
 import { buildBasicBlocks, makeInstruction } from '../js/blocks-base.js';
+import { lang, setLang } from '../js/i18n.js';
 
 console.log('Testing ARM64 explainer semantics...');
 
@@ -333,5 +334,36 @@ assert.ok(rev32Vector.terms.includes('simd'));
 assert.match(rev16Vector.summary, /レーン|lane/i);
 assert.match(rev32Vector.summary, /レーン|lane/i);
 console.log('  ok 9 SIMD encodings retain lane-specific semantics (#3627)');
+
+/* ── #3653 UDIV keeps unsigned wording in every display language ──────── */
+
+const previousLang = lang();
+const highBitDividend = 0xffffffffn;
+const divisor = 2n;
+try {
+  // This concrete 32-bit fixture is the semantic distinction that the
+  // presentation must not reverse: 0xffffffff is 2147483647 unsigned, but
+  // -1 divided by 2 truncates to 0 under signed ARM64 division.
+  assert.equal(highBitDividend / divisor, 2147483647n, 'the high-bit fixture must be unsigned 32-bit division');
+  assert.equal(-1n / divisor, 0n, 'the high-bit fixture must distinguish signed division');
+
+  setLang('en');
+  const unsignedEnglish = explain('udiv', 'w0, w1, w2', 0n, {});
+  const signedEnglish = explain('sdiv', 'w0, w1, w2', 0n, {});
+  assert.equal(unsignedEnglish.title, 'Unsigned divide');
+  assert.equal(unsignedEnglish.summary, 'Divide w1 by w2 (truncating), unsigned.');
+  assert.doesNotMatch(unsignedEnglish.summary, /\bsigned\b/i, 'English UDIV must not retain SDIV wording (#3653)');
+  assert.match(signedEnglish.summary, /\bsigned\b/i, 'English SDIV must retain signed wording (#3653)');
+
+  setLang('ja');
+  const unsignedJapanese = explain('udiv', 'w0, w1, w2', 0n, {});
+  const signedJapanese = explain('sdiv', 'w0, w1, w2', 0n, {});
+  assert.equal(unsignedJapanese.title, '割り算（符号なし）');
+  assert.match(unsignedJapanese.summary, /マイナスは扱いません/);
+  assert.match(signedJapanese.summary, /マイナスも扱えます/);
+} finally {
+  setLang(previousLang);
+}
+console.log('  ok 10 UDIV/SDIV presentation signedness stays distinct (#3653)');
 
 console.log('ARM64 explainer semantics: PASS');
