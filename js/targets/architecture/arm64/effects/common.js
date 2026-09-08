@@ -13,6 +13,24 @@ export const ARM64_INSTRUCTION_BYTES = 4n;
 
 const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
 
+// Canonical MachineEffects identity is a primitive string. Values that merely
+// survive `String()` coercion (arrays, objects, malformed wrappers) are
+// schema-invalid structured evidence and must fail closed instead of being
+// laundered into canonical instruction IDs, modes, or origin lists.
+export function canonicalIdentityString(value, errorCode) {
+  if (typeof value !== 'string') throw new TypeError(errorCode);
+  const text = value.trim();
+  if (!text) throw new TypeError(errorCode);
+  return text;
+}
+
+export function canonicalIdentityStringList(value, errorCode) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(errorCode);
+  return value.map((entry) => canonicalIdentityString(entry, errorCode));
+}
+
+
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
 }
@@ -142,14 +160,16 @@ export function decodedOperandTargetValues(instruction) {
 }
 
 function originInput(instruction, instructionId, operationIds) {
-  const base = instruction?.origin && typeof instruction.origin === 'object' && !Array.isArray(instruction.origin)
-    ? instruction.origin
-    : {};
+  const rawBase = instruction?.origin;
+  if (rawBase != null && (typeof rawBase !== 'object' || Array.isArray(rawBase))) {
+    throw new TypeError('arm64-effects-origin-invalid');
+  }
+  const base = rawBase ?? {};
   return {
     byteRanges: base.byteRanges || [],
     virtualRanges: base.virtualRanges || [],
-    instructionIds: [...new Set([...(base.instructionIds || []).map(String), instructionId])],
-    operationIds: [...new Set([...(base.operationIds || base.bytecodeOperationIds || []).map(String), ...operationIds])],
+    instructionIds: [...new Set([...canonicalIdentityStringList(base.instructionIds, 'arm64-effects-origin-instruction-ids-invalid'), instructionId])],
+    operationIds: [...new Set([...canonicalIdentityStringList(base.operationIds ?? base.bytecodeOperationIds, 'arm64-effects-origin-operation-ids-invalid'), ...operationIds])],
     sourceLocations: base.sourceLocations || [],
     parentEntityIds: base.parentEntityIds || [],
     transforms: base.transforms || [],
@@ -177,9 +197,8 @@ export function createArm64EffectContext(instruction, options = {}) {
   const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
     && Array.isArray(instruction?.ops)
     && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
-  const instructionId = String(instruction?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64-effects-instruction-id-required');
-  const mode = String(instruction?.mode || ARM64_MODE);
+  const instructionId = canonicalIdentityString(instruction?.instructionId ?? '', 'arm64-effects-instruction-id-required');
+  const mode = instruction?.mode == null ? ARM64_MODE : canonicalIdentityString(instruction.mode, 'arm64-effects-mode-invalid');
   const operations = [];
   const operationIds = [];
   let tempCounter = 0;
