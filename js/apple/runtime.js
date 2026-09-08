@@ -116,7 +116,12 @@ export function resolveAppleCall(index, call = {}) {
   const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
-  if (origin === 'objc' || isObjcMsgSendSymbol(name) || imp?.candidates?.length) {
+  // ObjC IMP evidence is origin inference for unknown origins only (the guard
+  // above): an explicit call.runtime (swift/rust/c, …) stays authoritative
+  // even when the numeric target happens to match a known IMP address, and
+  // the objc message path is entered for objc origins or real msgSend entry
+  // points (#5608).
+  if (origin === 'objc' || isObjcMsgSendSymbol(name)) {
     if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
