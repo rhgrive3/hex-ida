@@ -61,6 +61,7 @@ const IGNORABLE_MNEMONICS = new Set(['nop', 'bti', 'paciasp', 'pacibsp', 'autias
 const BRANCH_MNEMONICS = /^(b(\.|$)|bl$|blr$|cbn?z$|tbn?z$)/;
 const ADDRESS_MNEMONICS = /^(adrp?|ldr|str|ldp|stp)$/;
 const REGEX_REG = /\b([xwvsdqhb])(\d{1,2})\b/gi;
+const STRUCTURED_OPERAND_KINDS = new Set(['reg', 'imm', 'mem', 'cond', 'list', 'elem']);
 
 function registerFamily(cls) { return /^[xw]$/i.test(cls) ? 'gpr' : 'vec'; }
 function normalizeRegisters(text, options = {}) {
@@ -156,7 +157,8 @@ function canonicalMem(op, options) {
 
 function canonicalOperand(op, mnemonic, index, options) {
   if (options.strictStructured && (!op || typeof op !== 'object' || Array.isArray(op)
-    || typeof op.k !== 'string' || typeof op.text !== 'string' || !op.text.trim())) return null;
+    || typeof op.k !== 'string' || !STRUCTURED_OPERAND_KINDS.has(op.k)
+    || typeof op.text !== 'string' || !op.text.trim())) return null;
   const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index === (mnemonic.startsWith('cb') ? 1 : mnemonic.startsWith('tb') ? 2 : 0);
   const isAddressValue = /^adrp?$/.test(mnemonic) && index === 1;
   const rawNumeric = op?.k === 'imm' ? primitiveInteger(op.value) : numericOther(op);

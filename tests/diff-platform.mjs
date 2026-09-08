@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { compareFingerprints, diffFunctions, fingerprintFunction } from '../js/diff/index.js';
+import { normalizeInstruction } from '../js/fingerprint/index.js';
 
 const base = { address: 0x1000n, bytes: Uint8Array.from([1,2,3,4,5,6,7,8]), cfg: { blocks: 2, edges: 1, exits: 1 }, strings: ['coins'], imports: ['memcpy'], calls: ['helper'], constants: [100] };
 let diff = diffFunctions([base], [{ ...base }]);
@@ -94,6 +95,74 @@ assert.equal(diffFunctions([emptyA], [emptyB]).matches.length, 0);
   assert.equal(fresh.new.length,1);
   assert.equal(fresh.new[0].confidence,1);
   assert.equal(fresh.unresolved.length,0);
+}
+
+// #4520: structured decoder operands are an authority boundary. Unknown kinds and
+// structured type mismatches must not fall back to raw textual canonicalization.
+{
+  const validParsed = [
+    { k: 'reg', text: 'x0' },
+    { k: 'reg', text: 'x1' },
+    { k: 'imm', value: 1n, text: '#1' },
+  ];
+
+  assert.deepEqual(
+    normalizeInstruction({ mnemonic: 'add', parsedOperands: validParsed }),
+    normalizeInstruction('add x0, x1, #1'),
+  );
+  assert.deepEqual(
+    normalizeInstruction({ mnemonic: 'add', parsedOperands: [{ k: 'reg', text: 'x0', shift: { op: 'lsl', amount: 12 } }] }),
+    normalizeInstruction('add x0, lsl #12'),
+  );
+  assert.deepEqual(
+    normalizeInstruction({ mnemonic: 'b.eq', parsedOperands: [{ k: 'cond', text: 'eq' }] }),
+    { mnemonic: 'b.eq', operands: 'eq' },
+  );
+  assert.deepEqual(
+    normalizeInstruction({
+      mnemonic: 'fmov',
+      parsedOperands: [{ k: 'reg', text: 'd0' }, { k: 'imm', value: null, float: 1.5, text: '#1.5' }],
+    }),
+    normalizeInstruction('fmov d0, #1.5'),
+  );
+
+  for (const [label, parsedOperands] of [
+    ['register text', [{ k: 'reg', text: ['x0'] }]],
+    ['immediate value', [{ k: 'imm', value: ['1'], text: '#1' }]],
+    ['immediate text', [{ k: 'imm', value: 1n, text: ['#1'] }]],
+    ['condition text', [{ k: 'cond', text: ['eq'] }]],
+    ['shift amount', [{ k: 'reg', text: 'x0', shift: { op: 'lsl', amount: ['12'] } }]],
+    ['shift op', [{ k: 'reg', text: 'x0', shift: { op: ['lsl'], amount: 12 } }]],
+    ['float value', [{ k: 'imm', value: null, float: ['1'], text: '#1' }]],
+    ['operand kind', [{ k: 'bogus', text: 'x0' }]],
+  ]) {
+    assert.equal(
+      normalizeInstruction({ mnemonic: 'add', parsedOperands }),
+      null,
+      `${label} must fail closed instead of becoming canonical fingerprint evidence`,
+    );
+  }
+
+  const canonical = fingerprintFunction({
+    architecture: 'arm64', size: 4,
+    instructions: [{ mnemonic: 'add', parsedOperands: validParsed }],
+  });
+  const malformedType = fingerprintFunction({
+    architecture: 'arm64', size: 4,
+    instructions: [{ mnemonic: 'add', parsedOperands: [{ k: 'reg', text: ['x0'] }] }],
+  });
+  const unknownKind = fingerprintFunction({
+    architecture: 'arm64', size: 4,
+    instructions: [{ mnemonic: 'add', parsedOperands: [{ k: 'bogus', text: 'x0' }] }],
+  });
+  assert.ok(canonical.normalizedOperandsHash);
+  for (const malformed of [malformedType, unknownKind]) {
+    assert.equal(malformed.normalizedOperandsHash, null);
+    assert.equal(malformed.instructionSequenceHash, null);
+  }
+
+  // Raw textual parsing remains available for legacy callers.
+  assert.deepEqual(normalizeInstruction('add x0, x1, #0x20'), { mnemonic: 'add', operands: 'xR0, xR0, #32' });
 }
 
 console.log('diff-platform: PASS');
