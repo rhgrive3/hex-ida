@@ -36,8 +36,18 @@ function selectedSlice(local) {
 }
 
 export function createTurnSnapshot(local = {}, request = {}) {
-  const current = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
-  const range = resolveFunctionRange(local, current);
+  const cursor = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
+  const range = resolveFunctionRange(local, cursor);
+  // The cursor identifies the instruction the user is looking at; it is not
+  // necessarily the identity of the containing function. Prefer an explicit
+  // function identity, then an exact range boundary, and only use the cursor
+  // as the final fallback for contexts that have no function metadata.
+  const functionAddress = first(
+    local.activeFunction?.address,
+    local.currentFunction?.address,
+    range?.start,
+    cursor,
+  );
   const selection = snapshotSelection(local.selection);
   const identity = resolveBinaryIdentity(local, request);
   const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
@@ -53,17 +63,18 @@ export function createTurnSnapshot(local = {}, request = {}) {
     projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
-    currentFunction: current == null ? null : {
-      address: addressText(current),
+    currentAddress: cursor == null ? null : addressText(cursor),
+    currentFunction: functionAddress == null ? null : {
+      address: addressText(functionAddress),
       range,
-      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, current)),
+      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, functionAddress)),
     },
     selection,
     runtimeSessionIdentity: runtimeId,
     runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
-    neighborhood: snapshotNeighborhood(local, current),
+    neighborhood: snapshotNeighborhood(local, cursor),
   });
 }
 
@@ -80,7 +91,7 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
   frozen.binaryIdentity = snapshot.binaryIdentity;
   frozen.binaryId = snapshot.binaryId;
   frozen.projectId = snapshot.projectIdentity;
-  frozen.currentAddress = parseAddress(snapshot.currentFunction?.address);
+  frozen.currentAddress = parseAddress(snapshot.currentAddress ?? snapshot.currentFunction?.address);
   frozen.activeFunction = snapshot.currentFunction ? {
     address: parseAddress(snapshot.currentFunction.address),
     name: snapshot.currentFunction.name,
