@@ -73,15 +73,54 @@ function normalizeTargetEntity(value) {
 }
 
 export function isVerificationQuery(query) {
-  return (
-    !!query &&
-    typeof query === 'object' &&
-    typeof query.kind === 'string' &&
-    typeof query.claimKind === 'string' &&
-    Array.isArray(query.constraints) &&
-    query.schemaVersion === QUERY_SCHEMA_VERSION &&
-    typeof query.queryHash === 'string'
-  );
+  if (
+    !query ||
+    typeof query !== 'object' ||
+    typeof query.kind !== 'string' ||
+    typeof query.claimKind !== 'string' ||
+    !Array.isArray(query.constraints) ||
+    query.schemaVersion !== QUERY_SCHEMA_VERSION ||
+    typeof query.queryHash !== 'string'
+  ) {
+    return false;
+  }
+  // The canonical factory rejects unknown kinds/claim kinds, so the validator
+  // must reject them too; a producer/validator contract split would let forged
+  // queries reach the exact solver backend and the proof eligibility gate
+  // (#5643).
+  if (!Object.values(VERIFICATION_QUERY_KIND).includes(query.kind)) return false;
+  if (!Object.values(CLAIM_KIND).includes(query.claimKind)) return false;
+
+  // queryHash is the content identity of the query: it must be exactly the
+  // digest the factory would have computed for this shape. Accepting an
+  // unverified string lets two queries with different constraints share one
+  // identity. Non-query-shaped hash material simply hashes as-is, so this
+  // cannot throw on adversarial input.
+  try {
+    const recomputed = stableDigest(buildHashPayload(query));
+    return recomputed === query.queryHash;
+  } catch {
+    return false;
+  }
+}
+
+function buildHashPayload(query) {
+  return {
+    schemaVersion: QUERY_SCHEMA_VERSION,
+    kind: query.kind,
+    claimKind: query.claimKind,
+    targetEntity: query.targetEntity ?? null,
+    constraints: (Array.isArray(query.constraints) ? query.constraints : []).map((c) => ({ hash: computeStructuralHash(c), expression: c })),
+    assertion: query.assertion ? { hash: computeStructuralHash(query.assertion), expression: query.assertion } : null,
+    assumptions: Array.isArray(query.assumptions) ? [...query.assumptions] : [],
+    completeness: query.completeness || createCompleteness(),
+    requestedOutputs: Array.isArray(query.requestedOutputs) ? [...query.requestedOutputs] : [],
+    semanticIrVersion: query.semanticIrVersion,
+    translatorVersion: query.translatorVersion,
+    architecture: query.architecture,
+    bitWidth: query.bitWidth ?? null,
+    proofScope: query.proofScope || null,
+  };
 }
 
 export function createVerificationQuery({
@@ -130,26 +169,7 @@ export function createVerificationQuery({
   freezeDeep(normalizedCompleteness);
   freezeDeep(proofScope);
 
-  const hashPayload = {
-    schemaVersion: QUERY_SCHEMA_VERSION,
-    kind,
-    claimKind,
-    targetEntity: normalizedTargetEntity,
-    constraints: normalizedConstraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
-    assertion: assertion ? { hash: computeStructuralHash(assertion), expression: assertion } : null,
-    assumptions: normalizedAssumptions,
-    completeness: normalizedCompleteness,
-    requestedOutputs: normalizedOutputs,
-    semanticIrVersion: normalizedSemanticIrVersion,
-    translatorVersion: normalizedTranslatorVersion,
-    architecture: normalizedArchitecture,
-    bitWidth: normalizedBitWidth,
-    proofScope: proofScope || null,
-  };
-
-  const queryHash = stableDigest(hashPayload);
-
-  return Object.freeze({
+  const record = {
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
@@ -164,6 +184,12 @@ export function createVerificationQuery({
     architecture: normalizedArchitecture,
     bitWidth: normalizedBitWidth,
     proofScope: proofScope || null,
-    queryHash,
-  });
+  };
+
+  // The record itself is the hash material: the validator recomputes the
+  // digest from the exact same payload builder, so factory and validator
+  // cannot drift apart (#5643).
+  const queryHash = stableDigest(buildHashPayload(record));
+
+  return Object.freeze({ ...record, queryHash });
 }
