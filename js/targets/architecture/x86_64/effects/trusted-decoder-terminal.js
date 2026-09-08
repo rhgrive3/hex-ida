@@ -253,7 +253,12 @@ function promotedControlEffect(partial, instruction, ownerId) {
   if (groups.has('call')) return { kind:'call', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('ret')) return { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('jump')) return { kind:'indirect', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
-  if (groups.has('int') || groups.has('iret')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
+  if (groups.has('int')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
+  // IRET/IRETD/IRETQ are interrupt *returns*: the decoder group name is
+  // classification metadata, not a trap direction (#5563). No dedicated
+  // return-state proof exists yet, so no control effect may be promoted from
+  // the group; the upstream fail-closed `unknown` control must be kept.
+  if (groups.has('iret')) return null;
   if (ownerId === 'control') return null;
   return { kind:'fallthrough' };
 }
