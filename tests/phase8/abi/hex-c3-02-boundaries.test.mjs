@@ -1194,8 +1194,8 @@ test('C3-02 nested aggregate descriptors are the classifier source of truth', ()
       bits:128,
       bytes:16,
       members:[
-        { type:'uint64', bits:64, bytes:8, byteOffset:0 },
-        { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+        { type:'uint64', bits:64, bytes:8, byteOffset:0, alignmentBytes:8 },
+        { type:'uint64', bits:64, bytes:8, byteOffset:8, alignmentBytes:8 },
       ],
     },
   };
@@ -1219,8 +1219,8 @@ test('C3-02 nested aggregate descriptors are the classifier source of truth', ()
 
 test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and preserves nested returns', () => {
   const members = [
-    { type:'uint64', bits:64, bytes:8, byteOffset:0 },
-    { type:'uint64', bits:64, bytes:8, byteOffset:8 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:0, alignmentBytes:8 },
+    { type:'uint64', bits:64, bytes:8, byteOffset:8, alignmentBytes:8 },
   ];
   const base = { type:'struct MatrixPair', aggregate:true, bits:128, bytes:16, members };
   const profiles = [
@@ -1310,7 +1310,7 @@ test('C3-02 global interval matrix rejects scalar and malformed split duplicates
 test('C3-02 padded stack extents remain exact across integer aggregate profiles', () => {
   const padded = {
     type:'struct PaddedMatrix', aggregate:true, bits:64, bytes:16,
-    members:[{ bits:64, bytes:8, byteOffset:0 }], padding:[{ bytes:8, byteOffset:8 }],
+    members:[{ bits:64, bytes:8, byteOffset:0, alignmentBytes:8 }], padding:[{ bytes:8, byteOffset:8 }],
   };
   for (const [abi, options, prefix] of [
     [AAPCS64_ABI, { architecture:'arm64', platform:'linux' }, 8],

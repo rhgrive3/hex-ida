@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
-import { decompileEntry, observeCorpus } from '../../../tools/validation/phase8/decompile-corpus.mjs';
+import { corpusAbiIdForEntry, decompileEntry, observeCorpus } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 import { loadFrozenBaseline, qualityVector, safetyCounters } from '../../../tools/validation/phase8/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -21,6 +21,16 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const baseline = loadFrozenBaseline();
 const observations = observeCorpus();
 const byId = new Map(baseline.observations.map((observation) => [observation.id, observation]));
+
+test('the frozen RISC-V corpus binds its explicit compiler ABI profile', () => {
+  const corpus = loadCorpus();
+  const index = corpus.functions.findIndex((entry) => entry.architectureId === 'riscv64');
+  const entry = corpus.functions[index];
+  assert.equal(corpusAbiIdForEntry(corpus, entry), 'lp64');
+  const outcome = decompileEntry(entry, { index, abiId:corpusAbiIdForEntry(corpus, entry) });
+  assert.ok(outcome.result, outcome.failure);
+  assert.equal(outcome.result.semantic, true);
+});
 
 test('the frozen baseline was captured against the frozen corpus', () => {
   const corpus = loadCorpus();

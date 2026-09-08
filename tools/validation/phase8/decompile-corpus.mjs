@@ -599,6 +599,27 @@ export function createNativeArm64CaptureAdapter({ corpus = loadCorpus(), capture
   });
 }
 
+/**
+ * Resolve the ABI profile from the frozen compiler target, rather than
+ * guessing a RISC-V profile from the architecture name.  The generic ABI
+ * resolver deliberately rejects profile-less RISC-V inputs because lp64,
+ * lp64f, and lp64d have different calling conventions.  The corpus target is
+ * the authority here: it must name exactly one supported -mabi selector for
+ * the entry's architecture and target triple.
+ */
+export function corpusAbiIdForEntry(corpus, entry) {
+  if (entry?.architectureId !== 'riscv64') return null;
+  const targets = Array.isArray(corpus?.toolchain?.targets) ? corpus.toolchain.targets : [];
+  const target = targets.find((candidate) => candidate?.architectureId === entry.architectureId
+    && candidate?.target === entry.targetTriple);
+  if (!target || !Array.isArray(target.compilerArgs)) return null;
+  const selectors = target.compilerArgs
+    .map((argument) => /^-mabi=(lp64(?:f|d)?)$/.exec(String(argument)))
+    .filter(Boolean)
+    .map((match) => match[1]);
+  return selectors.length === 1 ? selectors[0] : null;
+}
+
 function decodedFor(entry, baseAddress) {
   const bytes = bytesOf(entry);
   if (entry.architectureId === 'x86_64') {
@@ -632,6 +653,7 @@ export function decompileEntry(entry, {
   decompilerTimeBudgetMs = 20000,
   phase8WorkBudget = undefined,
   index = 0,
+  abiId = null,
   deterministicTransforms = true,
   phase8Optimize = true,
 } = {}) {
@@ -665,6 +687,7 @@ export function decompileEntry(entry, {
       mode:decoded.mode,
       binaryId:`phase8-corpus:${entry.id}`,
       sliceId:`${entry.architectureId}:${entry.optimization}`,
+      ...(abiId == null ? {} : { abiId }),
       dataEndianness:'little',
       instructionEndianness:'little',
     }, {
@@ -759,6 +782,7 @@ export function observeCorpus({
     }
   }
   return corpus.functions.map((entry, index) => {
+    const abiId = corpusAbiIdForEntry(corpus, entry);
     if (entry.architectureId === 'arm64' && suppliedNativeCapture != null) {
       const outcome = nativeAdapterFailure == null
         ? nativeAdapter.decompile(entry, { decompilerTimeBudgetMs, phase8WorkBudget, index, deterministicTransforms, phase8Optimize })
@@ -769,6 +793,7 @@ export function observeCorpus({
       decompilerTimeBudgetMs,
       phase8WorkBudget,
       index,
+      abiId,
       deterministicTransforms,
       phase8Optimize,
     }));

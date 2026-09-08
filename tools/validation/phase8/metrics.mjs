@@ -24,7 +24,7 @@ import { providerAuthorityFailures, providerView } from '../../../js/decompiler/
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
-import { decompileEntry, observeCorpus, observationOf } from './decompile-corpus.mjs';
+import { corpusAbiIdForEntry, decompileEntry, observeCorpus, observationOf } from './decompile-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
@@ -644,7 +644,7 @@ export function structuringAccounting({ corpus = loadCorpus(), decompilerTimeBud
   let unknownEdgeCount = 0;
   let covered = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, abiId:corpusAbiIdForEntry(corpus, entry), decompilerTimeBudgetMs });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutIr.push(entry.id); continue; }
     const { ledger, analysis } = runPhase8Stage({ ir }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
@@ -693,7 +693,7 @@ export function aggregateCertainty({ corpus = loadCorpus(), decompilerTimeBudget
   let conflictCount = 0;
   let confirmedCount = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, abiId:corpusAbiIdForEntry(corpus, entry), decompilerTimeBudgetMs });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
     const { ledger, analysis } = runPhase8Stage({ ir, types: outcome.result.types ?? null }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
@@ -742,7 +742,7 @@ export function providerEvidence({ corpus = loadCorpus(), decompilerTimeBudgetMs
   let functionsWithHints = 0;
   let providerFailureCount = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, abiId:corpusAbiIdForEntry(corpus, entry), decompilerTimeBudgetMs });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
     const context = { ir, types: outcome.result.types ?? null };
@@ -824,9 +824,10 @@ export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = 
     const times = { cold:[], interactive:[], optimized:[] };
     for (const [index, entry] of corpus.functions.entries()) {
       const started = clock();
-      const initial = decompileEntry(entry, { index, deterministicTransforms:false, phase8Optimize:false });
+      const abiId = corpusAbiIdForEntry(corpus, entry);
+      const initial = decompileEntry(entry, { index, abiId, deterministicTransforms:false, phase8Optimize:false });
       const coldMs = clock() - started;
-      const optimizedResult = decompileEntry(entry, { index, deterministicTransforms:false, phase8Optimize:true });
+      const optimizedResult = decompileEntry(entry, { index, abiId, deterministicTransforms:false, phase8Optimize:true });
       const interactiveMs = elapsed(initial.result);
       const optimizedMs = elapsed(optimizedResult.result);
       // Frozen nonsemantic rows never entered Phase 8. Keep their whole-function
