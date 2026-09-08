@@ -98,9 +98,55 @@ export function createEscapeRecord(input = {}) {
  * The classification is derived from the canonical root kind supplied by the
  * address service, never from register names or mnemonics.
  */
+
+/**
+ * Published escape results are proof authority. `nonEscapingRoots` feeds the
+ * strong `distinct-non-escaping-allocation` alias proof and `rootOrigins`
+ * feeds every separation decision, so a consumer must never be able to forge
+ * or revoke a proof by mutating the returned collection (#5274). The facades
+ * expose the read-only view; every mutating operation fails closed.
+ */
+class PublishedRootSet {
+  constructor(source) {
+    this.#entries = new Set(source);
+    Object.freeze(this);
+  }
+  #entries;
+  get size() { return this.#entries.size; }
+  has(value) { return this.#entries.has(value); }
+  keys() { return this.#entries.keys(); }
+  values() { return this.#entries.values(); }
+  entries() { return this.#entries.entries(); }
+  forEach(callback, thisArg) { return this.#entries.forEach(callback, thisArg); }
+  [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
+  add() { fail('escape-result-immutable'); }
+  delete() { fail('escape-result-immutable'); }
+  clear() { fail('escape-result-immutable'); }
+}
+
+class PublishedRootOrigins {
+  constructor(source) {
+    this.#entries = new Map(source);
+    Object.freeze(this);
+  }
+  #entries;
+  get size() { return this.#entries.size; }
+  has(key) { return this.#entries.has(key); }
+  get(key) { return this.#entries.get(key); }
+  keys() { return this.#entries.keys(); }
+  values() { return this.#entries.values(); }
+  entries() { return this.#entries.entries(); }
+  forEach(callback, thisArg) { return this.#entries.forEach(callback, thisArg); }
+  [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
+  set() { fail('escape-result-immutable'); }
+  delete() { fail('escape-result-immutable'); }
+  clear() { fail('escape-result-immutable'); }
+}
+
 export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = {}) {
   if (!target) return 'unknown';
   if (allocationRootKeys.has(target.rootKey)) return 'local-allocation';
+  if (target.rootKind === 'allocation') return 'local-allocation';
   if (target.rootKind === 'stack-like') return 'local-frame';
   if (target.rootKind === 'absolute') return 'global';
   /* The canonical root descriptor's storage class is producer-held evidence
@@ -149,14 +195,14 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   });
 
   const cancelledResult = () => ({
-    escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(),
+    escapes: [], nonEscapingRoots: new PublishedRootSet([]), rootOrigins: new PublishedRootOrigins([]),
     status: analyzerStatus('partial', 'cancelled'),
   });
   if (options.signal?.aborted) return cancelledResult();
   if (!pointsToRun || pointsToRun.status.completeness === 'unsupported') {
     // Without points-to there is no root vocabulary to reason about. The only
     // sound report is "nothing is proven non-escaping".
-    return { escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(), status: analyzerStatus('unsupported', 'dependency-missing') };
+    return { escapes: [], nonEscapingRoots: new PublishedRootSet([]), rootOrigins: new PublishedRootOrigins([]), status: analyzerStatus('unsupported', 'dependency-missing') };
   }
 
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
@@ -358,8 +404,8 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   const completeness = pointsToComplete && !sawUnresolvedFlow ? 'complete' : 'partial';
   return {
     escapes: deepFreeze(canonicalEscapes),
-    nonEscapingRoots,
-    rootOrigins,
+    nonEscapingRoots: new PublishedRootSet(nonEscapingRoots),
+    rootOrigins: new PublishedRootOrigins(rootOrigins),
     sawUnresolvedFlow,
     status: analyzerStatus(completeness, completeness === 'complete' ? null : 'evidence-missing'),
   };
