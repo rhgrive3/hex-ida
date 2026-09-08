@@ -38,6 +38,31 @@ assert.equal(Object.getPrototypeOf(safeHostile), Object.prototype, 'jsonSafe mus
 assert.equal(Object.hasOwn(safeHostile, '__proto__'), true, 'jsonSafe must preserve __proto__ as an own data property');
 assert.equal(safeHostile.__proto__, '7');
 
+const inheritedSetterKey = 'jsonSafeInheritedSetter';
+const inheritedSetter = Object.getOwnPropertyDescriptor(Object.prototype, inheritedSetterKey);
+Object.defineProperty(Object.prototype, inheritedSetterKey, {
+  configurable: true,
+  set() {
+    throw new Error('jsonSafe invoked an inherited setter');
+  },
+});
+try {
+  const safeInheritedSetter = jsonSafe(JSON.parse(`{"${inheritedSetterKey}": 9}`));
+  assert.equal(safeInheritedSetter[inheritedSetterKey], 9, 'jsonSafe must define keys shadowing inherited setters');
+  assert.equal(Object.hasOwn(safeInheritedSetter, inheritedSetterKey), true, 'inherited-setter keys must remain own data');
+} finally {
+  if (inheritedSetter) Object.defineProperty(Object.prototype, inheritedSetterKey, inheritedSetter);
+  else delete Object.prototype[inheritedSetterKey];
+}
+
+const getterOrder = [];
+const getterInput = {};
+Object.defineProperty(getterInput, 'z', { enumerable: true, get: () => { getterOrder.push('z'); return 26; } });
+Object.defineProperty(getterInput, 'a', { enumerable: true, get: () => { getterOrder.push('a'); return 1; } });
+const safeGetterInput = jsonSafe(getterInput);
+assert.deepEqual(getterOrder, ['a', 'z'], 'jsonSafe must normalize getters in canonical key order');
+assert.deepEqual(Object.keys(safeGetterInput), ['a', 'z'], 'jsonSafe must retain canonical key order');
+
 const slice = createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64' });
 assert.equal(slice, createSliceId({ architecture: 'arm64', index: 0, binaryId: binaryA }), 'slice id must be deterministic');
 const unsafeSliceOffset = Number(9007199254740993n);

@@ -63,15 +63,19 @@ export function jsonSafe(value, seen = new WeakSet()) {
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
     out = {};
-    for (const key of Object.keys(value).sort()) {
+    const keys = Object.keys(value);
+    if (keys.length > 1) keys.sort();
+    for (const key of keys) {
       const normalized = jsonSafe(value[key], seen);
       if (normalized !== null || value[key] === null) {
-        Object.defineProperty(out, key, {
-          value: normalized,
-          enumerable: true,
-          configurable: true,
-          writable: true,
-        });
+        if (key in out) {
+          Object.defineProperty(out, key, {
+            value: normalized,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        } else out[key] = normalized;
       }
     }
   }
