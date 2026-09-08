@@ -200,6 +200,16 @@ export function validateRemotePacket(packet) {
   return packet;
 }
 
+// Listener isolation must cover async failures too: a listener returning a
+// promise that later rejects would otherwise leak an unhandledRejection
+// through the sync-only try/catch (#5931).
+function invokeListener(fn, packet) {
+  try {
+    const result = fn(packet);
+    if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => { /* listener isolation */ });
+  } catch { /* listener isolation */ }
+}
+
 function defaultMonotonicNow() {
   try {
     const perf = globalThis.performance;
@@ -353,12 +363,12 @@ export class RemoteProtocolClient {
         this.droppedEvents++;
         if (this.droppedEvents === 1) {
           const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
-          for (const fn of this.listeners) { try { fn(notice); } catch {} }
+          for (const fn of this.listeners) { invokeListener(fn, notice); }
         }
         return false;
       }
       this.eventWindowCount++; this.eventWindowBytes+=bytes;
-      for (const fn of this.listeners) { try { fn(packet); } catch { /* listener isolation */ } }
+      for (const fn of this.listeners) { invokeListener(fn, packet); }
       return true;
     }
     return false;
