@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseHexProject } from '../js/project/index.js';
+import { createHexProject, parseHexProject } from '../js/project/index.js';
 
 const projectWith = (currentFunction) => JSON.stringify({
   format: 'hexproj',
@@ -17,13 +17,28 @@ const projectWith = (currentFunction) => JSON.stringify({
 });
 
 test('#5953 malformed currentFunction is rejected at parse time', () => {
-  for (const bad of [{ malicious: true }, 'not-an-address', [], true]) {
+  for (const bad of [{ malicious: true }, 'not-an-address', [], true, -1, '-1']) {
     assert.throws(
       () => parseHexProject(projectWith(bad)),
       (error) => /currentFunction/.test(error?.message ?? ''),
       `expected parse rejection for ${JSON.stringify(bad)}`,
     );
   }
+});
+
+test('#5953 unsafe numeric currentFunction is rejected', () => {
+  const unsafe = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(
+    () => parseHexProject(projectWith(unsafe)),
+    (error) => /currentFunction/.test(error?.message ?? ''),
+  );
+});
+
+test('#5953 direct BigInt negative currentFunction is rejected', () => {
+  assert.throws(
+    () => createHexProject({ navigation: { currentFunction: -1n } }),
+    (error) => /currentFunction/.test(error?.message ?? ''),
+  );
 });
 
 test('#5953 valid currentFunction representations still parse', () => {
