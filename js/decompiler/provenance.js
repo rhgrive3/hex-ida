@@ -45,7 +45,10 @@ export function groupDecompilerAddresses(lineOrAddresses, step = 4n) {
 
 function hex(address, digits = 0, prefix = '') {
   const body = BigInt(address).toString(16).toUpperCase();
-  const visible = digits > 0 ? body.slice(-digits).padStart(digits, '0') : body;
+  // `digits` is the compact display's minimum width.  It must not turn into
+  // a maximum width: dropping significant high bits aliases distinct source
+  // instructions in the gutter.
+  const visible = digits > 0 ? body.padStart(digits, '0') : body;
   return prefix + visible;
 }
 

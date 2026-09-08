@@ -36,6 +36,11 @@ function providerIdentity(value, name) {
   return value;
 }
 
+function providerErrorIdentity(value, name) {
+  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('malformed-provider-data', `${name} must be a non-empty string`);
+  return value;
+}
+
 function facet(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new DebugAdapterError('malformed-provider-data', 'runtime facet must be a string');
@@ -111,6 +116,21 @@ export function validateProviderPacket(input) {
   if (packet.type === 'request') {
     packet.facet = facet(packet.facet);
     packet.method = validateMethod(packet.method, packet.facet);
+  }
+  if (packet.type === 'error') {
+    // Error identity fields are optional, but when present they are schema
+    // strings. Reject malformed remote packets before receive() can consume
+    // a pending request (#5757).
+    if (Object.hasOwn(packet, 'code')) packet.code = providerErrorIdentity(packet.code, 'provider error code');
+    if (Object.hasOwn(packet, 'message')) packet.message = providerErrorIdentity(packet.message, 'provider error message');
+  }
+
+  if (packet.type === 'response' && !Object.prototype.hasOwnProperty.call(packet, 'result')) {
+    // The wire codec cannot carry `undefined`, so a response packet without a
+    // `result` property is structurally malformed — admitting it resolved the
+    // pending request to a success `undefined` (#5755). An intentional null
+    // result is sent as `{ result: null }`.
+    throw new DebugAdapterError('malformed-provider-data', 'provider response requires a result property');
   }
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
@@ -250,6 +270,10 @@ export class RuntimeProviderProtocolClient {
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
       return true;
     }
+    // A peer-end close must not write a cancellation packet back through the
+    // transport: the peer has already closed its receive side. Local shutdown
+    // still uses the default notifyPeer=true path to cancel in-flight work.
+    if (packet.type === 'close') { this.close({ notifyPeer: false }); return true; }
     if (!['response', 'error'].includes(packet.type)) return false;
     const pending = this.pending.get(packet.id);
     if (!pending || packet.epoch !== pending.epoch || packet.epoch !== this.epoch) return false;
@@ -258,10 +282,22 @@ export class RuntimeProviderProtocolClient {
     return true;
   }
 
-  close() {
+  close({ notifyPeer = true } = {}) {
     if (this.closed) return;
     this.closed = true;
-    for (const [id, pending] of this.pending) this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+    for (const [id, pending] of [...this.pending]) {
+      this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+      if (!notifyPeer) continue;
+      try {
+        this.transport.send(validateProviderPacket({
+          protocol: RUNTIME_PROVIDER_PROTOCOL,
+          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+          type: 'cancel',
+          id,
+          epoch: pending.epoch,
+        }));
+      } catch {}
+    }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
     this.listeners.clear();

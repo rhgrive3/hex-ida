@@ -125,7 +125,10 @@ test('the floating-point ABI is selected from ELF flags, never assumed', () => {
 });
 
 test('the ABI resolves for riscv64 and never leaks across architectures', () => {
-  assert.equal(resolveABIPlugin({ architecture: 'riscv64', platform: 'linux' }).id, 'lp64');
+  // #6052: arch+platform alone cannot select among the soft/single/double
+  // float profiles, so an ambiguous target stays unknown instead of
+  // first-matching soft-float LP64.
+  assert.equal(resolveABIPlugin({ architecture: 'riscv64', platform: 'linux' }).id, 'unknown');
   assert.equal(resolveABIPlugin({ architecture: 'riscv64', abiId: 'lp64d' }).id, 'lp64d');
   for (const id of ['lp64', 'lp64f', 'lp64d']) assert.equal(abiPlugin(id).architectureId, 'riscv64');
   assert.notEqual(resolveABIPlugin({ architecture: 'x86_64', platform: 'linux' }).id, 'lp64');

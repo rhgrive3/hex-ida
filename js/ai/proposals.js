@@ -30,6 +30,7 @@ export class ProposalStore {
     if (input.evidenceIds != null && !Array.isArray(input.evidenceIds)) {
       throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     }
+    if (kind === 'struct-field') rejectStructFieldTargetOverride(input.after);
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -49,6 +50,14 @@ export class ProposalStore {
     const before = input.before;
     rejectUnstableProposalState(before);
     const executionPayload = snapshotProposalPayload(input, before);
+    // Uint8Array is an accepted wire representation of patch bytes, but the
+    // stale-state authority and the backend read both use plain arrays. Keep
+    // one canonical payload for either accepted container so equal bytes do
+    // not produce different revisions (#6171).
+    if (kind === 'patch' && (executionPayload.before instanceof Uint8Array || executionPayload.after instanceof Uint8Array)) {
+      executionPayload.before = proposalBytes(executionPayload.before);
+      executionPayload.after = proposalBytes(executionPayload.after);
+    }
     // The stale-state authority must fingerprint the same stable value that
     // execution will receive. Reading caller-controlled `input.before` again
     // after snapshotting would make an accessor-backed value a TOCTOU boundary:
@@ -184,9 +193,36 @@ export function proposalCapability(proposal) {
 export function proposalArguments(proposal) {
   const target = proposalTarget(proposal?.target);
   if (proposal?.kind === 'rename' || proposal?.kind === 'comment' || proposal?.kind === 'type') return { ...target, value: proposal.after };
-  if (proposal?.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
+  if (proposal?.kind === 'struct-field') return { ...target, ...structFieldValue(proposal.after) };
   if (proposal?.kind === 'patch') return { ...target, before: proposalBytes(proposal.before), after: proposalBytes(proposal.after) };
   return { ...target, value: proposal?.after };
+}
+
+/* The user approved (and the stale-state check verified) `proposal.target`; it
+   is the only mutation authority for a struct-field. Spreading `after` over it
+   let `after:{struct,offset}` redirect the mutation to a different field that
+   no approval or stale check had covered — and the postcondition then failed
+   against the original target while the side effect persisted (#5412). `after`
+   therefore supplies only the field's new value; target identity keys coming
+   from it are ignored, never executed. A created proposal that still declares
+   them is rejected up front: identity is target-only, never after-shaped. */
+function rejectStructFieldTargetOverride(after) {
+  if (!after || typeof after !== 'object' || Array.isArray(after)) return;
+  for (const key of ['struct', 'name', 'offset']) {
+    if (Object.prototype.hasOwnProperty.call(after, key)) {
+      throw new AIError('invalid_tool_call', 'A struct-field proposal must not override the approved target through after.');
+    }
+  }
+}
+
+function structFieldValue(after) {
+  if (!after || typeof after !== 'object' || Array.isArray(after)) return { type: after };
+  const value = {};
+  if (after.field != null) value.field = after.field;
+  if (after.fieldName != null) value.fieldName = after.fieldName;
+  if (after.type != null) value.type = after.type;
+  if (after.binaryId != null) value.binaryId = after.binaryId;
+  return value;
 }
 
 export function consumeProposalAuthorization(authorization, capability, args) {
@@ -258,7 +294,23 @@ function proposalSnapshot(proposal) {
 }
 
 function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
-function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function proposalBytes(value) {
+  // Patch bytes are mutation-authority input. Coercing each element (the old
+  // `Number` mapping) let string/boolean/null bytes reach the strict
+  // capability validator as canonical numbers, so the original type violation
+  // could never be detected and the approved identity was compared against a
+  // laundered view. Validate byte identity instead of laundering it (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
@@ -436,6 +488,14 @@ function canonicalIdentity(value, stack = new Set()) {
     return `d${JSON.stringify(value)};`;
   }
   if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type === 'symbol' || type === 'function') {
+    // Function and symbol identity cannot survive a String() encoding: distinct
+    // closures share source text (captures never appear in toString()) and
+    // distinct symbols share their description. Mapping them into the `x`
+    // domain aliased different approved states into one revision (#5754), so
+    // proposal state and binding snapshots refuse them fail-closed instead.
+    throw new AIError('tool_failed', 'Proposal state cannot contain function or symbol values.');
+  }
   if (type !== 'object') return `x${JSON.stringify(String(value))}`;
 
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');

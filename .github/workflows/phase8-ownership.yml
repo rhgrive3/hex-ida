@@ -26,6 +26,10 @@ on:
         description: 'Head SHA for the changed-file inventory'
         required: true
         type: string
+      head_ref:
+        description: 'Head branch name for an explicitly declared integration inventory'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -56,9 +60,16 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.inputs.base || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.head_ref || github.event.inputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          node tools/validation/phase8-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+          if [[ "$HEAD_REF" == "feat/analysis-roadmap-v8-current-main-20260907" ]]; then
+            FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \
+              --branch "$HEAD_REF" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+          else
+            node tools/validation/phase8-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+          fi
       - name: Prove the ownership gate still rejects an out-of-lane change
         run: |
           set -euo pipefail

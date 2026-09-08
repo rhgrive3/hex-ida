@@ -89,6 +89,14 @@ function signedIntegerString(value, code) {
   }
   fail(code);
 }
+// Canonical ordering must not depend on the host locale (#5756): default
+// localeCompare collation flips for non-ASCII ids across ICU locales. IDs are
+// arbitrary trimmed strings, so fixed code-unit comparison is the canonical
+// total order.
+function compareId(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function aliasRelation(value, code) {
   const relation = nonEmpty(value, code);
   if (!ALIAS_SET.has(relation)) fail(code);
@@ -147,6 +155,10 @@ export function createMemoryRegionRef(input) {
   } else if (kind === 'rooted-offset') {
     out.rootEntityId = nonEmpty(input.rootEntityId, 'memory-ssa-region-root-required');
     out.offset = signedIntegerString(input.offset ?? 0, 'memory-ssa-invalid-region-offset');
+    // A rooted-offset region may carry the storage domain its canonical proof
+    // proved (tls/io-rooted descriptors, #5901). Flat-memory rooted-offsets
+    // omit the field, matching the historical shape.
+    if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
     if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
@@ -173,7 +185,7 @@ function normalizeIncoming(value) {
         definitionId: nonEmpty(item.definitionId, 'memory-ssa-phi-definition-required'),
       };
     })
-    .sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.definitionId.localeCompare(b.definitionId));
+    .sort((a, b) => compareId(a.predecessorBlockId, b.predecessorBlockId) || compareId(a.definitionId, b.definitionId));
 }
 
 function normalizeDefinition(input) {
@@ -256,18 +268,22 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-cfg-function-mismatch');
   }
 
-  const regions = array(input.regions, 'memory-ssa-regions-required')
+  const rawRegions = array(input.regions, 'memory-ssa-regions-required');
+  const rawDefinitions = array(input.definitions, 'memory-ssa-definitions-required');
+  const rawUses = array(input.uses, 'memory-ssa-uses-required');
+  if (rawRegions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
+  if (rawDefinitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
+
+  const regions = rawRegions
     .map((region) => { work(); return createMemoryRegionRef(region); })
-    .sort((a, b) => a.id.localeCompare(b.id));
-  const definitions = array(input.definitions, 'memory-ssa-definitions-required')
+    .sort((a, b) => compareId(a.id, b.id));
+  const definitions = rawDefinitions
     .map((definition) => { work(); return normalizeDefinition(definition); })
-    .sort((a, b) => a.id.localeCompare(b.id));
-  const uses = array(input.uses, 'memory-ssa-uses-required')
+    .sort((a, b) => compareId(a.id, b.id));
+  const uses = rawUses
     .map((use) => { work(); return normalizeUse(use); })
-    .sort((a, b) => a.id.localeCompare(b.id));
-  if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
-  if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
+    .sort((a, b) => compareId(a.id, b.id));
 
   const regionById = new Map();
   for (const region of regions) {
@@ -337,7 +353,7 @@ export function createMemorySsaContract(input, options = {}) {
     }));
     work();
   }
-  reachingDefinitionLinks.sort((a, b) => a.useId.localeCompare(b.useId));
+  reachingDefinitionLinks.sort((a, b) => compareId(a.useId, b.useId));
 
   return deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,

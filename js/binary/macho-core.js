@@ -104,29 +104,44 @@ function parseThin(bytes, opts) {
       if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SYMTAB) {
-        if (cmdsize < 24) throw new Error(`invalid LC_SYMTAB size ${cmdsize}`);
+        requireExactCommandSize(cmdsize, 24, 'LC_SYMTAB');
         symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
       }
       else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) {
         if (cmdsize < 24) throw new Error(`invalid dylib command size ${cmdsize}`);
         parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
       }
-      else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      else if (cmd === LC_MAIN) {
+        requireExactCommandSize(cmdsize, 24, 'LC_MAIN');
+        linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      }
       else if ((cmd === LC_THREAD || cmd === LC_UNIXTHREAD) && cmdsize >= 16) {
         const pc = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
         if (pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = pc;
       }
       else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) {
-        if (cmdsize < 16) throw new Error(`invalid LC_VERSION_MIN size ${cmdsize}`);
+        requireExactCommandSize(cmdsize, 16, 'LC_VERSION_MIN');
         parseLegacyVersionMin(r, p, cmd, image);
       }
-      else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
-      else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
-      else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);
-      else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
+      else if (cmd === LC_FUNCTION_STARTS) {
+        requireExactCommandSize(cmdsize, 16, 'LC_FUNCTION_STARTS');
+        linkeditData.functionStarts = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_CHAINED_FIXUPS) {
+        requireExactCommandSize(cmdsize, 16, 'LC_DYLD_CHAINED_FIXUPS');
+        linkeditData.chainedFixups = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_EXPORTS_TRIE) {
+        requireExactCommandSize(cmdsize, 16, 'LC_DYLD_EXPORTS_TRIE');
+        linkeditData.exportsTrie = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) {
+        requireExactCommandSize(cmdsize, 48, 'LC_DYLD_INFO');
+        dyldInfos.push(parseDyldInfo(r, p));
+      }
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
-      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
       markMachOMetadataPartial(image, `load-command-0x${cmd.toString(16)}-parse-error`);
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
@@ -209,6 +224,55 @@ function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, im
   }
 }
 
+// A file-backed segment owns canonical bytes for [address, address + fileSize).
+// Two file-backed segments whose ownership extents intersect must agree on the
+// file offsets for the shared range, or the same VM address resolves to
+// different bytes depending on load-command order (#7064). Fail closed instead
+// of letting insertion order pick a winner.
+function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, fileSize, size) {
+  // A segment with no file-backed bytes is transparent: a zero-fill-only
+  // mapping may legitimately overlap a file-backed segment. Once both
+  // segments carry bytes, however, their complete VM extents are ownership
+  // claims. Compare every sub-interval so a zero-fill tail cannot hide
+  // another segment's file-backed bytes (#7064).
+  if (fileSize === 0n) return;
+  const newVmEnd = address + size;
+  const newFileEnd = address + fileSize;
+  for (const existing of image.segments) {
+    if (existing.fileSize === 0n) continue;
+    const existingVmEnd = existing.address + existing.size;
+    const overlapStart = address > existing.address ? address : existing.address;
+    const overlapEnd = newVmEnd < existingVmEnd ? newVmEnd : existingVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const boundaries = [...new Set([
+      overlapStart,
+      overlapEnd,
+      newFileEnd,
+      existing.address + existing.fileSize,
+    ].filter((point) => point > overlapStart && point < overlapEnd))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newFileBacked = point < newFileEnd;
+      const oldFileBacked = point < existing.address + existing.fileSize
+        && point >= existing.address;
+      if (!newFileBacked && !oldFileBacked) continue;
+      if (newFileBacked !== oldFileBacked) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with ambiguous file/zero ownership`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = fileOffset + (point - address);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with a different file mapping`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseSegment64(r, p, cmdsize, image, order) {
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
@@ -221,6 +285,7 @@ function parseSegment64(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -239,6 +304,10 @@ function parseSegment64(r, p, cmdsize, image, order) {
   }
 }
 
+function requireExactCommandSize(actual, expected, label) {
+  if (actual !== expected) throw new Error(`invalid ${label} size ${actual}; expected exactly ${expected}`);
+}
+
 function parseSegment32(r, p, cmdsize, image, order) {
   if (cmdsize < 56) throw new Error(`invalid LC_SEGMENT size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
@@ -251,6 +320,7 @@ function parseSegment32(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -434,7 +504,7 @@ function cpuName(cpu) {
 function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
 function cpuArchName(cpu, subtype) { return cpuName(cpu) === 'arm64' && subtypeBase(subtype) === 2 ? 'arm64e' : cpuName(cpu); }
 function sliceArchName(slice) { return cpuArchName(slice.cpu, slice.subtype); }
-function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
+function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 5: 'bridgeOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
 function machoKind(bytes) {
@@ -495,9 +565,19 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   // #6314: validate container (duplicate architectures and slice range overlap)
   validateFatContainer(all);
 
-  const want = preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
-  if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
+  // Explicit sliceIndex is authoritative, mirroring the source-backed path
+  // (parseMachOSource): a resident parse must not silently fall back to the
+  // architecture priority when a specific slice was requested, and the
+  // architecture preference is only consulted without a sliceIndex (#5638).
+  const sliceIndex = opts.sliceIndex;
+  const requestedIndex = sliceIndex == null ? null : ((typeof sliceIndex === 'number' || (typeof sliceIndex === 'string' && sliceIndex.trim() !== '')) ? Number(sliceIndex) : NaN);
+  if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
+    throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
+  }
+  const indexed = requestedIndex == null ? null : all[requestedIndex];
+  const want = requestedIndex == null && preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
+  if (requestedIndex == null && preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
+  const chosen = indexed || want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
   return chosen ? { ...chosen, all } : null;
 }
 

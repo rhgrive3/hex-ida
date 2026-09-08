@@ -1,404 +1,247 @@
 /**
- * P7-3a — FunctionSummary contract.
- *
- * A summary is immutable derived analysis about what a function does to state
- * and memory. Every consumer of call effects reads one of these rather than
- * re-deriving effects at the call site, so the shape has to make the dangerous
- * case impossible to spell.
- *
- * The dangerous case is P7-INV-004: a missing, stale, partial, cancelled or
- * identity-mismatched summary must never be equivalent to purity. So this
- * contract refuses to build a summary that claims no memory effects while also
- * admitting it did not resolve every call — `unknownCallEffects` and
- * `completeness: 'complete'` cannot coexist.
+ * Hardening boundary for the Phase 7 FunctionSummary wire contract.
+ * The implementation below delegates canonical construction to the existing
+ * core, then applies the stricter serialized-envelope rules added by
+ * #4314/#4320/#4695 without weakening any upstream checks.
  */
+import { deepFreeze } from '../../core/identity/index.js';
+import { isCompleteStatus } from '../status.js';
+import * as core from './contract-core.js';
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus } from '../status.js';
+export * from './contract-core.js';
 
-export const FUNCTION_SUMMARY_SCHEMA_VERSION = 2;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.0';
-
-/**
- * Where an effect's authority comes from, in the priority order P7-INV-004
- * fixes: a proven summary beats a versioned library model, which beats an
- * ABI/runtime rule, which beats the conservative unknown-call fallback.
- */
-export const EFFECT_SOURCES = Object.freeze([
-  'proven-summary',
-  'library-model',
-  'abi-rule',
-  'unknown-call-fallback',
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
+const CANONICAL_SUMMARIES = new WeakSet();
+const RETURN_PROVENANCE_FIELDS = new Set([
+  'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
 ]);
+const RETURN_PROVENANCE_KINDS = new Set(['arg', 'root', 'allocation', 'unknown']);
 
-export const UNKNOWN_CALL_REASONS = Object.freeze([
-  'unresolved-target',
-  'indirect-incomplete-target-set',
-  'summary-missing',
-  'summary-stale',
-  'summary-incomplete',
-  'summary-cancelled',
-  'library-model-missing',
-  'recursion-unconverged',
-]);
-
-const SOURCE_SET = new Set(EFFECT_SOURCES);
-const REASON_SET = new Set(UNKNOWN_CALL_REASONS);
-
-function fail(code) { throw new TypeError(code); }
-
-function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
-  if (!text) fail(code);
-  return text;
+function plainRecord(value, code) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(code);
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) throw new TypeError(code);
+  return value;
 }
-
-function canonicalEffectSource(value, fallback) {
-  const source = value ?? fallback;
-  if (typeof source !== 'string') fail('function-summary-invalid-effect-source');
-  const text = source.trim();
-  if (!text || !SOURCE_SET.has(text)) fail('function-summary-invalid-effect-source');
-  return text;
+function denseArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(code);
+  for (let i = 0; i < value.length; i++) if (!Object.hasOwn(value, i)) throw new TypeError(code);
+  return value;
 }
-
-function optionalReturnIdentity(value) {
+function nonEmptyString(value, code) {
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(code);
+  return value.trim();
+}
+function optionalBoolean(value, code) {
+  if (value == null) return false;
+  if (typeof value !== 'boolean') throw new TypeError(code);
+  return value;
+}
+function optionalIndex(value, code) {
   if (value == null) return null;
-  if (typeof value !== 'string') fail('function-summary-invalid-return-provenance-identity');
-  const text = value.trim();
-  if (!text) fail('function-summary-invalid-return-provenance-identity');
-  return text;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
 }
-
-function list(values, code) {
-  if (values == null) return [];
-  if (!Array.isArray(values)) fail(code);
-  return values;
+function optionalInteger(value, code) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(value.trim())) return BigInt(value.trim());
+  throw new TypeError(code);
 }
-
-function sortedIds(values, code) {
-  return [...new Set(list(values, code).map((value) => nonEmpty(value, code)))].sort();
-}
-
-function booleanKnowledge(value, code) {
-  if (value === true || value === false || value === 'unknown') return value;
-  fail(code);
+function strictProvenanceIndex(value) {
+  if (typeof value === 'bigint') {
+    const number = Number(value);
+    return Number.isSafeInteger(number) ? number : null;
+  }
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    return Number.isSafeInteger(number) ? number : null;
+  }
   return null;
 }
-
-/**
- * Canonical proof classification for a semantic call target universe.
- *
- * A singleton candidate is not proof that the universe is singleton. Direct
- * identity is exact when there is no runtime target value. An indirect target
- * set is exact only when the semantic call itself is complete; a partial call
- * must retain an unknown target outside the currently recovered candidates.
- * Summary construction and points-to recovery share this helper so the two
- * consumers cannot disagree about when a callee may be treated as exact.
- */
-export function classifyCallTargetProof(call = {}) {
-  if (!call || typeof call !== 'object' || Array.isArray(call)) {
-    return deepFreeze({ kind: 'unknown', candidateEntityIds: [], exhaustive: false, exactSingletonEntityId: null });
+function strictProvenanceOffset(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    try { return BigInt(text); } catch { return null; }
   }
-  const candidates = [];
-  let malformedIdentity = false;
-  const addIdentity = (value, target) => {
-    if (value == null) return;
-    if (typeof value !== 'string' || !value.trim()) {
-      malformedIdentity = true;
-      return;
-    }
-    target.push(value.trim());
-  };
-  if (call.targetEntityIds != null) {
-    if (!Array.isArray(call.targetEntityIds)) malformedIdentity = true;
-    else for (const value of call.targetEntityIds) addIdentity(value, candidates);
-  }
-  for (const value of [call.targetEntityId, call.callee, call.target]) addIdentity(value, candidates);
-  const candidateEntityIds = [...new Set(candidates)].sort();
-  const targetValueIds = [];
-  if (call.targetValueIds != null) {
-    if (!Array.isArray(call.targetValueIds)) malformedIdentity = true;
-    else for (const value of call.targetValueIds) addIdentity(value, targetValueIds);
-  }
-  const canonicalTargetValueIds = [...new Set(targetValueIds)].sort();
-  const indirect = canonicalTargetValueIds.length > 0;
-  const kind = indirect ? 'indirect' : candidateEntityIds.length ? 'direct' : 'unknown';
-  const exhaustive = !malformedIdentity && (kind === 'direct'
-    ? candidateEntityIds.length === 1
-    : kind === 'indirect' && call.completeness === 'complete');
-  return deepFreeze({
-    kind,
-    candidateEntityIds,
-    exhaustive,
-    exactSingletonEntityId: exhaustive && candidateEntityIds.length === 1 ? candidateEntityIds[0] : null,
-  });
+  return null;
 }
-
-/** One memory region a function reads or writes, with why we believe it. */
-export function createMemoryEffect(input = {}) {
-  const source = canonicalEffectSource(input.source, 'proven-summary');
-  return deepFreeze({
-    regionId: input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id'),
-    regionKind: nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind'),
-    // A `broad` effect covers every region in its address spaces. It is what an
-    // unresolved call contributes, and it is deliberately not expressible as a
-    // list of specific regions.
-    broad: input.broad === true,
-    addressSpaces: sortedIds(input.addressSpaces, 'function-summary-invalid-address-spaces'),
-    source,
-    evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
-  });
-}
-
-/** A call whose effects could not be resolved. Never silently dropped. */
-export function createUnknownCallEffect(input = {}) {
-  const reason = nonEmpty(input.reason, 'function-summary-unknown-call-reason-required');
-  if (!REASON_SET.has(reason)) fail('function-summary-invalid-unknown-call-reason');
-  return deepFreeze({
-    callSiteId: nonEmpty(input.callSiteId, 'function-summary-unknown-call-site-required'),
-    reason,
-    targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
-    evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
-  });
-}
-
-export function createDirectCall(input = {}) {
-  return deepFreeze({
-    callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
-    targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
-    summaryId: input.summaryId == null ? null : nonEmpty(input.summaryId, 'function-summary-invalid-summary-id'),
-    effectSource: canonicalEffectSource(input.effectSource, 'unknown-call-fallback'),
-  });
-}
-
-export function createIndirectCallSet(input = {}) {
-  return deepFreeze({
-    callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
-    candidateEntityIds: sortedIds(input.candidateEntityIds, 'function-summary-invalid-target-ids'),
-    // A candidate set that is not proven exhaustive contributes unknown-call
-    // effects on top of its candidates. Averaging the candidates and calling it
-    // the answer is exactly the mistake §9.4 names.
-    exhaustive: input.exhaustive === true,
-    evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
-  });
-}
-
-function createReturnProvenance(input = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid-return-provenance');
-  const kind = nonEmpty(input.kind, 'function-summary-invalid-return-provenance-kind');
-  const argIndex = input.argIndex == null ? null : Number(input.argIndex);
-  const returnIndex = input.returnIndex == null ? null : Number(input.returnIndex);
-  const offset = input.offset == null ? null : BigInt(input.offset);
-  const rootEntityId = optionalReturnIdentity(input.rootEntityId);
-  const allocationSiteId = optionalReturnIdentity(input.allocationSiteId);
-  if (input.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
-    fail('function-summary-invalid-return-provenance-arg-index');
-  }
-  if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
-    fail('function-summary-invalid-return-provenance-return-index');
-  }
-  const out = {
-    kind,
-    argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
-    offset: offset == null ? null : offset.toString(10),
-    rootEntityId,
-  };
-  if (input.allocationSiteId != null) out.allocationSiteId = allocationSiteId;
-  // Keep old summaries wire-compatible: an omitted returnIndex still means the
-  // primary return position. New producers set it explicitly for multi-return
-  // ABIs so alternatives from different return positions never get joined.
-  if (returnIndex != null) out.returnIndex = returnIndex;
-  return deepFreeze(out);
-}
-
-function canonicalReturnProvenance(values) {
-  const byKey = new Map();
-  for (const value of values) {
-    const key = [
-      value.returnIndex ?? 0,
-      value.kind,
-      value.argIndex ?? '',
-      value.offset ?? '',
-      value.rootEntityId ?? '',
-      value.allocationSiteId ?? '',
-    ].join('\u0000');
-    if (!byKey.has(key)) byKey.set(key, value);
-  }
-  return [...byKey.values()].sort((left, right) => {
-    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? ''].join('\u0000');
-    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? ''].join('\u0000');
-    return leftKey.localeCompare(rightKey);
-  });
-}
-
-/**
- * Checks the identity envelope before a consumer treats a summary as current.
- * Completeness is intentionally separate: a current partial summary is still
- * not an exact answer, while a complete summary from another snapshot is
- * stale evidence and must not be consumed at all.
- */
-export function summaryIdentityMatches(summary, {
-  functionId = null,
-  snapshotId = null,
-  analyzerId = null,
-  analyzerVersion = null,
-} = {}) {
-  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false;
-  if (summary.schemaVersion !== FUNCTION_SUMMARY_SCHEMA_VERSION
-    || summary.contractVersion !== FUNCTION_SUMMARY_CONTRACT_VERSION) return false;
-  // Identity alone is not enough to consume an untrusted serialized summary:
-  // a forged envelope with a non-array returnProvenance would otherwise pass
-  // this gate and make call-result transfer throw while inspecting it. Keep the
-  // consumer boundary fail-closed for malformed/future-shaped artifacts.
-  if (typeof summary.functionId !== 'string' || !summary.functionId.trim()) return false;
-  for (const field of [
-    'inputs', 'returnValues', 'returnProvenance', 'registerEffects',
-    'memoryReadRegions', 'memoryWriteRegions', 'escapes', 'allocations',
-    'frees', 'directCalls', 'indirectCallSets', 'unknownCallEffects',
-    'semanticFacts',
-  ]) {
-    if (!Array.isArray(summary[field])) return false;
-  }
-  if (!summary.returnProvenance.every((value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    for (const field of ['rootEntityId', 'allocationSiteId']) {
-      if (value[field] != null && (typeof value[field] !== 'string' || !value[field].trim())) return false;
-    }
-    if (value.kind === 'root' || value.kind === 'allocation') {
-      const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
-      if (typeof identity !== 'string' || !identity.trim()) return false;
-    }
+function sameCanonicalValue(raw, canonical) {
+  if (raw === canonical) return true;
+  if (!raw || !canonical || typeof raw !== 'object' || typeof canonical !== 'object') return false;
+  if (Array.isArray(raw) !== Array.isArray(canonical)) return false;
+  if (Array.isArray(raw)) {
+    if (raw.length !== canonical.length) return false;
+    for (let i = 0; i < raw.length; i++) if (!Object.hasOwn(raw, i) || !sameCanonicalValue(raw[i], canonical[i])) return false;
     return true;
-  })) return false;
-  if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
-  const status = summary.status;
-  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
-  if (typeof status.snapshotId !== 'string' || !status.snapshotId.trim()
-    || typeof status.analyzerId !== 'string' || !status.analyzerId.trim()
-    || typeof status.analyzerVersion !== 'string' || !status.analyzerVersion.trim()) return false;
-  if (snapshotId != null && (typeof snapshotId !== 'string' || status.snapshotId !== snapshotId)) return false;
-  if (analyzerId != null && (typeof analyzerId !== 'string' || status.analyzerId !== analyzerId)) return false;
-  if (analyzerVersion != null && (typeof analyzerVersion !== 'string' || status.analyzerVersion !== analyzerVersion)) return false;
+  }
+  try { plainRecord(raw, 'function-summary-invalid-record'); } catch { return false; }
+  const keys = Object.keys(canonical);
+  return Object.keys(raw).length === keys.length
+    && keys.every((key) => Object.hasOwn(raw, key) && sameCanonicalValue(raw[key], canonical[key]));
+}
+function validateStringList(values, code) {
+  return denseArray(values, code).map((value) => nonEmptyString(value, code));
+}
+function validateReturnProvenance(value) {
+  plainRecord(value, 'function-summary-invalid-return-provenance');
+  if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
+  const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
+  if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
+  const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
+  const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
+  const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
+  const root = value.rootEntityId == null ? null : nonEmptyString(value.rootEntityId, 'function-summary-invalid-return-provenance-identity');
+  const allocation = value.allocationSiteId == null ? null : nonEmptyString(value.allocationSiteId, 'function-summary-invalid-return-provenance-identity');
+  if (value.argIndex != null && (!Number.isSafeInteger(argIndex) || argIndex < 0)) {
+    throw new TypeError('function-summary-invalid-return-provenance-arg-index');
+  }
+  if (value.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
+    throw new TypeError('function-summary-invalid-return-provenance-return-index');
+  }
+  if (value.offset != null && offset == null) {
+    throw new TypeError('function-summary-invalid-return-provenance-offset');
+  }
+  if (kind === 'arg' && argIndex == null) throw new TypeError('function-summary-invalid-return-provenance-arg-index');
+  if ((kind === 'root' || kind === 'allocation') && root == null && allocation == null) throw new TypeError('function-summary-invalid-return-provenance-identity');
   return true;
 }
+function validateMemoryEffectInput(input) {
+  plainRecord(input, 'function-summary-invalid-memory-effect');
+  if (input.regionId != null) nonEmptyString(input.regionId, 'function-summary-invalid-region-id');
+  if (input.regionKind != null) nonEmptyString(input.regionKind, 'function-summary-invalid-region-kind');
+  optionalBoolean(input.broad, 'function-summary-invalid-broad-effect');
+  validateStringList(input.addressSpaces, 'function-summary-invalid-address-spaces');
+  validateStringList(input.evidenceIds, 'function-summary-invalid-evidence-ids');
+}
+function validateUnknownCallInput(input) {
+  plainRecord(input, 'function-summary-invalid-unknown-call');
+  nonEmptyString(input.callSiteId, 'function-summary-unknown-call-site-required');
+  nonEmptyString(input.reason, 'function-summary-unknown-call-reason-required');
+  validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  validateStringList(input.evidenceIds, 'function-summary-invalid-evidence-ids');
+}
+function validateDirectCallInput(input) {
+  plainRecord(input, 'function-summary-invalid-direct-call');
+  nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
+  validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  if (input.summaryId != null) nonEmptyString(input.summaryId, 'function-summary-invalid-summary-id');
+}
+function validateIndirectCallInput(input) {
+  plainRecord(input, 'function-summary-invalid-indirect-call');
+  nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
+  validateStringList(input.candidateEntityIds, 'function-summary-invalid-target-ids');
+  optionalBoolean(input.exhaustive, 'function-summary-invalid-exhaustive');
+}
+function detached(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const out = []; seen.set(value, out);
+    for (let i = 0; i < value.length; i++) if (Object.hasOwn(value, i)) out[i] = detached(value[i], seen);
+    return out;
+  }
+  const out = {}; seen.set(value, out);
+  for (const key of Object.keys(value)) out[key] = detached(value[key], seen);
+  return out;
+}
+function validateSummaryInput(input) {
+  plainRecord(input, 'function-summary-invalid');
+  if (input.functionId != null) nonEmptyString(input.functionId, 'function-summary-function-id-required');
+  for (const field of ['inputs','returnValues','registerEffects','allocations','frees']) validateStringList(input[field], `function-summary-invalid-${field}`);
+  for (const value of denseArray(input.returnProvenance, 'function-summary-invalid-return-provenance')) validateReturnProvenance(value);
+  for (const value of denseArray(input.memoryReadRegions, 'function-summary-invalid-read-regions')) {
+    validateMemoryEffectInput(value);
+    if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');
+  }
+  for (const value of denseArray(input.memoryWriteRegions, 'function-summary-invalid-write-regions')) {
+    validateMemoryEffectInput(value);
+    if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');
+  }
+  for (const value of denseArray(input.directCalls, 'function-summary-invalid-direct-calls')) validateDirectCallInput(value);
+  for (const value of denseArray(input.indirectCallSets, 'function-summary-invalid-indirect-calls')) validateIndirectCallInput(value);
+  for (const value of denseArray(input.unknownCallEffects, 'function-summary-invalid-unknown-calls')) validateUnknownCallInput(value);
+  denseArray(input.escapes, 'function-summary-invalid-escapes');
+  denseArray(input.semanticFacts, 'function-summary-invalid-semantic-facts');
+  if (input.stackDelta != null) optionalInteger(input.stackDelta, 'function-summary-invalid-stack-delta');
+}
 
-/**
- * Builds one function summary.
- *
- * The consistency checks at the end are the contract's whole point: they make
- * "we did not look" structurally distinguishable from "there is nothing there".
- */
+export function classifyCallTargetProof(call = {}) {
+  const result = core.classifyCallTargetProof(call);
+  if (result.kind !== 'indirect' || result.candidateEntityIds.length > 0 || !result.exhaustive) return result;
+  return deepFreeze({ ...result, exhaustive:false, exactSingletonEntityId:null });
+}
+export function createMemoryEffect(input = {}) {
+  validateMemoryEffectInput(input);
+  return core.createMemoryEffect(input);
+}
+export function createUnknownCallEffect(input = {}) {
+  validateUnknownCallInput(input);
+  return core.createUnknownCallEffect(input);
+}
+export function createDirectCall(input = {}) {
+  validateDirectCallInput(input);
+  return core.createDirectCall(input);
+}
+export function createIndirectCallSet(input = {}) {
+  validateIndirectCallInput(input);
+  return core.createIndirectCallSet(input);
+}
+export function isCanonicalReturnProvenance(value) {
+  try {
+    validateReturnProvenance(value);
+    const summary = core.createFunctionSummary({
+      functionId:'probe', returnProvenance:[value], unknownCallEffects:[], memoryReadRegions:[], memoryWriteRegions:[],
+      status:{ snapshotId:'probe', analyzerId:'probe', analyzerVersion:'1', completeness:'complete' },
+    });
+    return summary.returnProvenance.length === 1 && sameCanonicalValue(value, summary.returnProvenance[0]);
+  } catch { return false; }
+}
 export function createFunctionSummary(input = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('function-summary-invalid');
-  // A schema marker is not proof that the envelope came through the canonical
-  // constructor. Rebuild it here so forged/future-shaped objects cannot bypass
-  // completeness and stop-reason consistency checks at the summary boundary.
-  const status = createAnalysisStatus(input.status ?? {});
-
-  const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect);
-  const memoryReadRegions = list(input.memoryReadRegions, 'function-summary-invalid-read-regions').map(createMemoryEffect);
-  const memoryWriteRegions = list(input.memoryWriteRegions, 'function-summary-invalid-write-regions').map(createMemoryEffect);
-  const returnProvenance = canonicalReturnProvenance(
-    list(input.returnProvenance, 'function-summary-invalid-return-provenance').map(createReturnProvenance),
-  );
-
-  const summary = {
-    schemaVersion: FUNCTION_SUMMARY_SCHEMA_VERSION,
-    contractVersion: FUNCTION_SUMMARY_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'function-summary-function-id-required'),
-    inputs: sortedIds(input.inputs, 'function-summary-invalid-inputs'),
-    returnValues: sortedIds(input.returnValues, 'function-summary-invalid-return-values'),
-    returnProvenance: deepFreeze(returnProvenance),
-    registerEffects: sortedIds(input.registerEffects, 'function-summary-invalid-register-effects'),
-    memoryReadRegions: deepFreeze(memoryReadRegions),
-    memoryWriteRegions: deepFreeze(memoryWriteRegions),
-    escapes: deepFreeze(list(input.escapes, 'function-summary-invalid-escapes')),
-    allocations: sortedIds(input.allocations, 'function-summary-invalid-allocations'),
-    frees: sortedIds(input.frees, 'function-summary-invalid-frees'),
-    directCalls: deepFreeze(list(input.directCalls, 'function-summary-invalid-direct-calls').map(createDirectCall)),
-    indirectCallSets: deepFreeze(list(input.indirectCallSets, 'function-summary-invalid-indirect-calls').map(createIndirectCallSet)),
-    unknownCallEffects: deepFreeze(unknownCallEffects),
-    noreturn: booleanKnowledge(input.noreturn ?? 'unknown', 'function-summary-invalid-noreturn'),
-    mayThrow: booleanKnowledge(input.mayThrow ?? 'unknown', 'function-summary-invalid-may-throw'),
-    stackDelta: input.stackDelta == null ? null : String(input.stackDelta),
-    semanticFacts: deepFreeze(list(input.semanticFacts, 'function-summary-invalid-semantic-facts')),
-    status,
-  };
-
-  // An unresolved call is not purity. A summary that carries one may not also
-  // claim it looked at everything.
-  if (unknownCallEffects.length > 0 && isCompleteStatus(status)) {
-    fail('function-summary-unknown-call-cannot-be-complete');
-  }
-  // ...and it must actually contribute a broad effect, or downstream code that
-  // reads only the region lists would treat the call as harmless.
-  if (unknownCallEffects.length > 0
-    && !memoryWriteRegions.some((effect) => effect.broad)) {
-    fail('function-summary-unknown-call-requires-broad-write-effect');
-  }
-  if (unknownCallEffects.length > 0 && summary.noreturn !== 'unknown' && summary.mayThrow !== 'unknown') {
-    // Control-flow facts are as unresolvable as memory facts when the callee is
-    // unknown; claiming both are settled contradicts the unresolved call.
-    fail('function-summary-unknown-call-cannot-settle-control-facts');
-  }
-  const nonExhaustiveIndirect = summary.indirectCallSets.some((set) => !set.exhaustive);
-  if (nonExhaustiveIndirect && unknownCallEffects.length === 0) {
-    fail('function-summary-nonexhaustive-indirect-requires-unknown-effect');
-  }
-
-  return deepFreeze(summary);
+  validateSummaryInput(input);
+  const base = core.createFunctionSummary(detached(input));
+  const summary = deepFreeze({ ...base, contractVersion:FUNCTION_SUMMARY_CONTRACT_VERSION });
+  CANONICAL_SUMMARIES.add(summary);
+  return summary;
 }
-
-/** Stable identity for dependency edges between caller and callee summaries. */
-export function functionSummaryDigest(summary) {
-  // The digest is the semantic dependency identity. Every consumer-visible
-  // FunctionSummary field belongs here; otherwise a callee can change meaning
-  // without invalidating callers or advancing a recursive fixed point.
-  return stableDigest({
-    schemaVersion: summary.schemaVersion,
-    contractVersion: summary.contractVersion,
-    functionId: summary.functionId,
-    inputs: summary.inputs,
-    returnValues: summary.returnValues,
-    returnProvenance: summary.returnProvenance,
-    registerEffects: summary.registerEffects,
-    memoryReadRegions: summary.memoryReadRegions,
-    memoryWriteRegions: summary.memoryWriteRegions,
-    escapes: summary.escapes,
-    allocations: summary.allocations,
-    frees: summary.frees,
-    directCalls: summary.directCalls,
-    indirectCallSets: summary.indirectCallSets,
-    unknownCallEffects: summary.unknownCallEffects,
-    noreturn: summary.noreturn,
-    mayThrow: summary.mayThrow,
-    stackDelta: summary.stackDelta,
-    semanticFacts: summary.semanticFacts,
-    completeness: summary.status.completeness,
-    stopReason: summary.status.stopReason,
-    analyzerId: summary.status.analyzerId,
-    analyzerVersion: summary.status.analyzerVersion,
-  });
+export function summaryIdentityMatches(summary, expected = {}) {
+  try {
+    plainRecord(summary, 'function-summary-invalid');
+    if (summary.schemaVersion !== core.FUNCTION_SUMMARY_SCHEMA_VERSION
+      || summary.contractVersion !== FUNCTION_SUMMARY_CONTRACT_VERSION) return false;
+    let canonical = summary;
+    if (!CANONICAL_SUMMARIES.has(summary)) {
+      canonical = createFunctionSummary(summary);
+      if (!sameCanonicalValue(summary, canonical)) return false;
+    }
+    if (expected.functionId != null && (typeof expected.functionId !== 'string' || canonical.functionId !== expected.functionId)) return false;
+    const status = canonical.status;
+    if (expected.snapshotId != null && (typeof expected.snapshotId !== 'string' || status.snapshotId !== expected.snapshotId)) return false;
+    if (expected.analyzerId != null && (typeof expected.analyzerId !== 'string' || status.analyzerId !== expected.analyzerId)) return false;
+    if (expected.analyzerVersion != null && (typeof expected.analyzerVersion !== 'string' || status.analyzerVersion !== expected.analyzerVersion)) return false;
+    return true;
+  } catch { return false; }
 }
-
-/**
- * The only sanctioned way to ask "does this function write memory I care
- * about?". It answers `true` whenever the summary cannot prove otherwise,
- * which is what keeps an incomplete summary from reading as pure.
- */
-export function summaryMayWriteRegion(summary, regionId) {
-  if (!summary) return true;
-  if (!isCompleteStatus(summary.status)) return true;
-  if (summary.unknownCallEffects.length > 0) return true;
-  if (summary.memoryWriteRegions.some((effect) => effect.broad)) return true;
-  if (regionId == null) return summary.memoryWriteRegions.length > 0;
-  return summary.memoryWriteRegions.some((effect) => effect.regionId === regionId);
+export function functionSummaryDigest(summary) { return core.functionSummaryDigest(summary); }
+export function summaryMayWriteRegion(summary, regionOrId) {
+  if (!summaryIdentityMatches(summary)) return true;
+  return core.summaryMayWriteRegion(summary, regionOrId);
 }
-
 export function summaryIsPure(summary) {
-  return isCompleteStatus(summary?.status)
+  // Allocations and frees are canonical effect dimensions of their own: a
+  // `free` ends an object's lifetime even when no memory region read/write is
+  // recorded, so a summary carrying either is not pure (#5734).
+  return summaryIdentityMatches(summary) && isCompleteStatus(summary.status)
     && summary.unknownCallEffects.length === 0
     && summary.memoryWriteRegions.length === 0
     && summary.memoryReadRegions.length === 0
-    && summary.escapes.length === 0;
+    && summary.escapes.length === 0
+    && summary.allocations.length === 0
+    && summary.frees.length === 0;
 }

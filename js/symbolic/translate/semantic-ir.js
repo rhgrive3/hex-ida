@@ -209,7 +209,13 @@ export function translateSemanticIR(target, options = {}) {
     timeout = boundedLimit(options.timeoutMs, 250, 5000, 'timeoutMs');
     tick();
     if (!Number.isSafeInteger(defaultWidth) || defaultWidth < 1 || defaultWidth > 65536) throw new QueryFailure('invalid-default-width');
-    rootExpr = data(target, 'op') != null ? visitInstruction(target, defaultWidth, 0) : visitValue(target, defaultWidth, 0);
+    if (target == null || (data(target, 'op') == null && data(target, 'id') == null
+        && data(target, 'kind') == null && data(target, 'const') == null)) {
+      unknown(defaultWidth, 'missing-translation-target', target);
+      rootExpr = null;
+    } else {
+      rootExpr = data(target, 'op') != null ? visitInstruction(target, defaultWidth, 0) : visitValue(target, defaultWidth, 0);
+    }
     tick();
   } catch (error) {
     if (!(error instanceof QueryFailure || error instanceof TypeError || error instanceof RangeError)) throw error;

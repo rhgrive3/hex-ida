@@ -24,7 +24,8 @@ import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
-import { recoverSchemas } from './schema.js';
+import { normalizeSchemaRecoveryLimit, recoverSchemas } from './schema.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
 import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
@@ -36,6 +37,7 @@ import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
+import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 
 
 let _panelsModulePromise = null;
@@ -68,6 +70,14 @@ const showAccuracyNotes = lazyPanel('showAccuracyNotes');
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
+// Recognition coverage budgets are analysis authority (#5447): only a
+// primitive finite number may set them. Structured/junk values fall back to
+// the supplied default instead of being coerced through Number().
+function coverageBudgetNumber(value, fallback) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return value;
+}
+
 /**
  * Build the recognition state from the SymbolIndex function-start contract.
  *
@@ -86,8 +96,10 @@ export async function buildRecognitionState({
   isCurrent = () => true,
 } = {}) {
   if (!sym || sym === EMPTY_INDEX) return null;
-  const max = Math.min(500_000, Math.max(1_000, Number(maxFunctions) || 350_000));
-  const limit = Math.min(2_048, Math.max(0, Number(knowledgeLimit) || 0));
+  // Recognition coverage is analysis authority: only a primitive finite number
+  // may set the budgets, everything else falls back to the defaults (#5447).
+  const max = Math.min(500_000, Math.max(1_000, coverageBudgetNumber(maxFunctions, 350_000)));
+  const limit = Math.min(2_048, Math.max(0, coverageBudgetNumber(knowledgeLimit, 512)));
   const total = sym.functionCount || 0;
   const count = Math.min(total, max);
   const functions = new Array(count);
@@ -144,34 +156,46 @@ export async function buildRecognitionState({
 export async function ensureRecognitionState(app, options = {}) {
   const sym = app?.symbols;
   if (!sym || sym === EMPTY_INDEX) return null;
-  if (app.recognition && app.recognition.gen === sym.gen) return app.recognition;
-  if (app.recognitionBusy) return app.recognitionBusy;
+  // The recognition state bakes in knowledge propagation results, so a
+  // knowledge mutation must invalidate cached and in-flight recognition (#5723).
+  const knowledgeRev = Number(app.knowledge?.revision ?? 0);
+  const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
+  if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
+  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
   const epoch = app.backend.gen;
-  const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
-  const knowledgeLimit = Math.min(2048, Math.max(0, Number(options.knowledgeLimit ?? 512)));
+  const max = Math.min(500000, Math.max(1000, coverageBudgetNumber(options.maxFunctions, 350000)));
+  const knowledgeLimit = Math.min(2048, Math.max(0, coverageBudgetNumber(options.knowledgeLimit, 512)));
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
-    if (epoch !== app.backend.gen || sym !== app.symbols) return null;
+    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
     // Symbol metadata can change while the async state build yields. Pin the
     // generation after optional metadata producers finish and reject any
-    // snapshot that crosses a symbol-index mutation.
+    // snapshot that crosses a symbol-index or knowledge mutation.
     const symbolGen = sym.gen;
+    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
-      isCurrent:() => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen,
+      isCurrent,
     });
-    if (state == null || sym.gen !== symbolGen) return null;
-    if (epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen) app.recognition = state;
+    if (state == null || !isCurrent()) return null;
+    app.recognition = state;
+    app.recognitionKnowledgeRev = knowledgeRev;
     return state;
   })();
   app.recognitionBusy = pending;
+  app.recognitionBusyKnowledgeRev = knowledgeRev;
   try { return await pending; }
-  finally { if (app.recognitionBusy === pending) app.recognitionBusy = null; }
+  finally {
+    if (app.recognitionBusy === pending) {
+      app.recognitionBusy = null;
+      app.recognitionBusyKnowledgeRev = null;
+    }
+  }
 }
 
 
-class App {
+export class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
 
   constructor() {
@@ -668,6 +692,7 @@ class App {
   forgetSemantics(dropCache) {
     this.semantic = null;
     if (dropCache) {
+      clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
       this.autoReport = null;
@@ -852,8 +877,9 @@ class App {
    * 文字列と呼び出し関係が要るので、先にそちらを用意してから走る。
    */
   async ensureSchemas(onProgress) {
-    if (this.schemas) return this.schemas;
     const epoch = this.backend.gen;
+    const maxSchemas = normalizeSchemaRecoveryLimit();
+    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas)) return this.schemas;
     if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
     this.schemasBusyEpoch = epoch;
     this.schemasBusy = (async () => {
@@ -861,15 +887,22 @@ class App {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
-        if (!program) { this.schemas = []; return this.schemas; }
+        if (!program) {
+          this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+          return this.schemas;
+        }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
         const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
         const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
-          isCancelled: () => epoch !== this.backend.gen });
-        if (epoch === this.backend.gen) this.schemas = schemas;
+          limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+        }
       } catch {
-        if (epoch === this.backend.gen) this.schemas = [];
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas });
+        }
       } finally {
         if (this.schemasBusyEpoch === epoch) {
           this.schemasBusy = null;
@@ -886,6 +919,13 @@ class App {
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
   async ensureStrings(onProgress) {
+    // Positional `(onProgress)` is the canonical signature; an options object
+    // with an `onProgress` field is tolerated exactly like ensureProgram so a
+    // legacy caller can never register a non-function as the backend progress
+    // callback (#5719).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     if (this.stringIndex) return this.stringIndex;
     const epoch = this.backend.gen;
     if (this.stringsBusy && this.stringsBusyEpoch === epoch) return this.stringsBusy;
@@ -935,7 +975,7 @@ class App {
         const remaining = collectionBudget.requestLimit();
         if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
-          onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+          progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {

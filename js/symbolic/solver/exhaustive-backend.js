@@ -318,33 +318,37 @@ class ExhaustiveSolverSession extends SolverSession {
 
     let nodesEvaluated = 0;
     let found = null;
-    const visit = async (position) => {
+    const positions = freeSymbols.map(() => 0n);
+    const sizes = freeSymbols.map(domainSize);
+    for (const symbol of freeSymbols) assignments.set(symbol.key, domainValue(symbol, 0n));
+    let outcome = 'continue';
+    // Advance a mixed-radix counter in the same order as recursive enumeration.
+    // Only the existing task-queue yield creates a Promise; one Promise per
+    // valuation previously consumed much of the interactive proof deadline.
+    while (true) {
       const stopped = guard();
-      if (stopped) return stopped;
-      if (found) return 'found';
-      if (position >= freeSymbols.length) {
-        nodesEvaluated++;
-        const model = assignmentModel(collected.symbols, assignments);
-        if (evaluateAll(query, model)) found = model;
-        // Yield to the task queue (not only the microtask queue) so browser
-        // cancellation and host timeouts can be observed during enumeration.
-        if (nodesEvaluated % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
-        return found ? 'found' : 'continue';
+      if (stopped) { outcome = stopped; break; }
+      nodesEvaluated++;
+      // Reuse the private environment. Only a SAT witness is materialized.
+      if (evaluateAll(query, assignments)) found = assignmentModel(collected.symbols, assignments);
+      if (nodesEvaluated % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      const afterEvaluation = guard();
+      if (afterEvaluation) { outcome = afterEvaluation; break; }
+      if (found) { outcome = 'found'; break; }
+      let position = freeSymbols.length - 1;
+      for (; position >= 0; position--) {
+        const stopAdvance = guard();
+        if (stopAdvance) { outcome = stopAdvance; break; }
+        positions[position]++;
+        if (positions[position] < sizes[position]) {
+          assignments.set(freeSymbols[position].key, domainValue(freeSymbols[position], positions[position]));
+          break;
+        }
+        positions[position] = 0n;
+        assignments.set(freeSymbols[position].key, domainValue(freeSymbols[position], 0n));
       }
-      const symbol = freeSymbols[position];
-      const size = domainSize(symbol);
-      for (let index = 0n; index < size; index++) {
-        const stopped = guard();
-        if (stopped) return stopped;
-        assignments.set(symbol.key, domainValue(symbol, index));
-        const outcome = await visit(position + 1);
-        if (outcome === 'cancelled' || outcome === 'timeout' || outcome === 'found') return outcome;
-      }
-      assignments.delete(symbol.key);
-      return 'continue';
-    };
-
-    const outcome = await visit(0);
+      if (outcome !== 'continue' || position < 0) break;
+    }
     if (outcome === 'cancelled') {
       return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
     }

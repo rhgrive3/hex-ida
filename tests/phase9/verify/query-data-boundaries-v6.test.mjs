@@ -1,8 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as E from '../../../js/symbolic/expr/index.js';
-import { createVerificationQuery, validateVerificationQuery, VERIFICATION_QUERY_KIND as K, CLAIM_KIND as C } from '../../../js/symbolic/verify/query.js';
+import { createVerificationQuery, validateVerificationQuery, QUERY_METADATA_MAX_DEPTH, QUERY_METADATA_MAX_NODES, VERIFICATION_QUERY_KIND as K, CLAIM_KIND as C } from '../../../js/symbolic/verify/query.js';
 const fields={kind:K.BOUNDED_EQUIVALENCE,claimKind:C.EQUIVALENT,assertion:E.createBool(true)};
+test('current-main metadata ceilings survive v8 reconciliation without weakening expansion checks',()=>{
+  assert.equal(QUERY_METADATA_MAX_DEPTH,512);
+  assert.equal(QUERY_METADATA_MAX_NODES,65536);
+  let target={id:'leaf'};
+  for(let i=0;i<256;i++)target={child:target};
+  const query=createVerificationQuery({...fields,targetEntity:target});
+  assert.equal(validateVerificationQuery(structuredClone(query)).valid,true);
+  assert.equal(Object.isFrozen(query.targetEntity),true);
+  // The caller retains ownership; changes cannot alter the published identity.
+  target.child={id:'changed'};
+  assert.equal(validateVerificationQuery(query).valid,true);
+});
 test('query creation rejects accessor request fields without calling them',()=>{
   let calls=0;const input={...fields,get proofScope(){calls++;return {};}};
   assert.throws(()=>createVerificationQuery(input),/accessor/);assert.equal(calls,0);

@@ -2013,8 +2013,32 @@ test('EVIDENCE: 内訳の掛け算が、出している確からしさと一致�
    ──────────────────────────────────────────────────────────── */
 
 const {
-  verifyAccessor, fieldUse, verifyGuard, verifyFunctionHandlesField, selfRegisters,
+  verifyAccessor, fieldUse, verifyGuard, verifyFunctionHandlesField, selfRegisters, callsSelector,
 } = await import('../js/verify.js');
+
+test('VERIFY #3613: selector の正規表現は call ごとに独立し、呼出元の状態を保つ', () => {
+  const model = { calls: [{ selector: 'foo', row: 1 }, {}, null, { selector: 'foo', row: 2 }] };
+  for (const re of [/foo/, /foo/g, /foo/y, /foo/gy]) {
+    re.lastIndex = 2;
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const result = callsSelector(model, re);
+      eq(result.length, 2);
+      eq(result[0].row, 1);
+      eq(result[1].row, 2);
+      eq(re.lastIndex, 2, '呼出元の lastIndex を変更しない');
+    }
+  }
+});
+
+test('VERIFY #3613: sticky の先頭一致と通常検索の意味を保持する', () => {
+  const model = { calls: [{ selector: 'xfoo', row: 0 }, { selector: 'foo' }, { selector: '' }] };
+  eq(callsSelector(model, /foo/g).length, 2);
+  const sticky = callsSelector(model, /foo/y);
+  eq(sticky.length, 1);
+  eq(sticky[0].selector, 'foo');
+  eq(sticky[0].row, null);
+  eq(callsSelector(null, /foo/g).length, 0);
+});
 
 test('VERIFY: getter を逆アセンブルして、位置が合っているか確かめられる', () => {
   const getter = build(['ldr w0, [x0, #0x20]', 'ret']);
@@ -2228,6 +2252,45 @@ test('PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる', a
   ok(codes.includes('getter-verified'), 'getter を確かめた証拠が残っていない');
   ok(codes.includes('setter-verified'), 'setter を確かめた証拠が残っていない');
   ok(res.top.why.every((x) => proofText(x).length > 0), '文にできない証拠がある');
+});
+
+test('PINPOINT: caller limit は明示的に正規化し、判定メタデータを切り詰めない', async () => {
+  const w = battleWorld();
+  const battle = w.fields.classes.get('BattleManager');
+  for (let i = 0; i < 12; i++) {
+    battle.ivars.push({ name: `_extra${i}`, offset: 0x40 + i * 4, size: 4, type: INT4 });
+  }
+  const base = { goal: goalFromPreset('hp'), fields: w.fields, map: w.map };
+  const run = (limit) => pinpointField(limit === undefined ? base : { ...base, limit });
+  const summary = (res) => ({
+    verdict: res.verdict,
+    top: res.top?.key || null,
+    runnerUp: res.runnerUp?.key || null,
+    margin: res.margin,
+    marginRatio: res.marginRatio,
+    missing: res.missing,
+  });
+
+  const defaultResult = await run();
+  const explicitDefault = await run(12);
+  const one = await run(1);
+  const zero = await run(0);
+  const defaultCount = defaultResult.candidates.length;
+  eq(defaultCount, 12);
+  eq(explicitDefault.candidates.length, defaultCount);
+  eq(one.candidates.length, 1);
+  eq(zero.candidates.length, 0);
+  for (const limited of [explicitDefault, one, zero]) {
+    eq(JSON.stringify(summary(limited)), JSON.stringify(summary(defaultResult)));
+  }
+
+  // Invalid public limits fail closed to the same default instead of reaching
+  // Array#slice's relative-index or coercion semantics.
+  for (const invalid of [-1, -2, 1.5, NaN, Infinity, '2', true, {}, [], 1n]) {
+    const result = await run(invalid);
+    eq(result.candidates.length, defaultCount, `invalid limit ${String(invalid)} must use default`);
+    eq(JSON.stringify(summary(result)), JSON.stringify(summary(defaultResult)));
+  }
 });
 
 test('PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない', async () => {
@@ -2902,7 +2965,7 @@ test('ROLE: 動作の言葉と、足りない理由に、言い漏らしがな�
    LevelPlay（広告 SDK）の「動画報酬の数」が満点で当たってしまう。
    自信満々で間違えるのは、何も言わないより悪い。 */
 
-const { learnVendors, vendorOf, vendorConflicts, swiftModuleOf } =
+const { learnVendors, vendorOf, vendorConflicts, swiftModuleOf, vendorInText, classFromSymbol } =
   await import('../js/vendors.js');
 
 test('VENDORS: Swift の記号名からモジュール名を取り出せる', () => {
@@ -2910,6 +2973,48 @@ test('VENDORS: Swift の記号名からモジュール名を取り出せる', ()
   eq(swiftModuleOf('_TtC10IronSource21ISNHealthCheckFailure'), 'IronSource');
   eq(swiftModuleOf('BattleManager'), null, '関係ない名前にモジュール名を付けている');
   eq(swiftModuleOf('_TtC99Bogus'), null, '長さが合わないものを読んでいる');
+});
+
+test('VENDORS #4722: structured names never become vendor or class identity', () => {
+  let coercions = 0;
+  const coercibleAs = (text) => ({
+    valueOf() { coercions++; return text; },
+    toString() { coercions++; return text; },
+    [Symbol.toPrimitive]() { coercions++; return text; },
+  });
+  const vendorCoercible = coercibleAs('ironsource');
+  const swiftCoercible = coercibleAs('_TtC12VungleAdsSDK14FirstPartyData');
+  const classCoercible = coercibleAs('-[Player hp]');
+  const malformed = [
+    ['ironsource'],
+    vendorCoercible,
+    1,
+    true,
+    new String('ironsource'),
+  ];
+  for (const value of malformed) {
+    eq(vendorInText(value), null, 'structured text must not become a high-confidence vendor');
+    eq(swiftModuleOf(value), null, 'structured text must not become a Swift module');
+    eq(classFromSymbol(value), null, 'structured text must not become an Objective-C class');
+    eq(vendorOf(value), null, 'structured class name must not become a vendor');
+  }
+  eq(swiftModuleOf(['_TtC12VungleAdsSDK14FirstPartyData']), null,
+    'an array must not become a Swift module');
+  eq(classFromSymbol(['-[Player hp]']), null,
+    'an array must not become an Objective-C class');
+  eq(swiftModuleOf(swiftCoercible), null,
+    'a coercible Swift name must not become a Swift module');
+  eq(classFromSymbol(classCoercible), null,
+    'a coercible Objective-C symbol must not become a class');
+  eq(vendorInText(coercibleAs('ironsource')), null,
+    'a coercible vendor text must not become vendor evidence');
+  eq(vendorOf(coercibleAs('ironsource')), null,
+    'a coercible class name must not become a vendor');
+  eq(coercions, 0, 'vendor helpers must not invoke structured coercion hooks');
+
+  eq(vendorInText('ironsource')?.vendor, 'IronSource');
+  eq(classFromSymbol('-[Player hp]'), 'Player');
+  eq(swiftModuleOf('_TtC12VungleAdsSDK14FirstPartyData'), 'VungleAdsSDK');
 });
 
 test('VENDORS: 名前の分かる SDK は、接頭辞ごとまとめて見分けられる', () => {
@@ -3405,6 +3510,33 @@ test('EXPR: 条件つき代入の条件を、比べた式として書く', async
   const text = render(vg.defAt(1, 'x2'), {});
   has(text, '== 5');
   ok(!/flag_/.test(text), '比較を復元できていない: ' + text);
+});
+
+test('EXPR: AArch64 の NV は常に真として条件つき代入を選ぶ', async () => {
+  const { buildValues, constOf } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'mov w0, #0',
+    'cmp w0, #0',
+    'csel w8, w1, w2, nv',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(4, 'x8');
+  eq(constOf(v), 11n, 'NV は常に真なので真側を選ぶ');
+});
+
+test('EXPR: NZCV が不明な条件つき代入は条件を保ったままにする', async () => {
+  const { buildValues, constOf, render } = await import('../js/expr.js');
+  const m = build([
+    'mov w1, #11',
+    'mov w2, #22',
+    'csel w8, w1, w2, eq',
+    'ret',
+  ]);
+  const v = buildValues(m, {}).defAt(2, 'x8');
+  eq(constOf(v), null, 'NZCV 不明時に定数へ畳み込まない');
+  has(render(v, {}), 'flag_eq', 'NZCV 不明時の条件を保持する');
 });
 
 test('EXPR: 比べたものが分からなければ、min とは言わない', async () => {

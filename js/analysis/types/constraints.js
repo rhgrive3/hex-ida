@@ -111,13 +111,11 @@ function idList(values, code) {
 
 function toBigInt(val, fallback = 0n) {
   if (val == null) return fallback;
-  if (typeof val === 'bigint') return val;
-  if (typeof val === 'number') {
-    if (!Number.isSafeInteger(val)) return null;
-    return BigInt(val);
-  }
-  if (typeof val !== 'string' || val.length > 256 || !/^(?:[0-9]+|0x[0-9a-fA-F]+)$/.test(val.trim())) return null;
-  try { return BigInt(val); } catch { return null; }
+  /* Structural integer authority accepts only the same primitive forms used
+     by canonicalDescriptorMaterial(). Never invoke BigInt() on a structured
+     value: its ToPrimitive step would launder arrays/objects/booleans into
+     hard layout evidence. */
+  return canonicalInteger(val);
 }
 
 function canonicalInteger(val) {
@@ -130,7 +128,7 @@ function canonicalInteger(val) {
 // One descriptor bound also limits downstream canonical serialization's tree
 // expansion. Unique-node limits alone do not bound a highly shared DAG.
 export const TYPE_DESCRIPTOR_LIMITS = Object.freeze({ nodes:4096, expandedNodes:16384, depth:64, stringLength:4096 });
-function snapshotDescriptor(descriptor) {
+function snapshotDescriptor(descriptor, layer) {
   const seen = new WeakMap(), active = new WeakSet(), costs = new WeakMap(), heights = new WeakMap();
   let nodes = 0, expanded = 0;
   const reserve = (amount) => {
@@ -176,6 +174,10 @@ function snapshotDescriptor(descriptor) {
         if (typeof key !== 'string' || !property.enumerable) fail('type-claim-descriptor-invalid');
         if (!Object.hasOwn(property,'value')) fail('type-claim-descriptor-accessor');
         if (key === 'abiProfile' && property.value != null && typeof property.value !== 'string') fail('abi-profile-invalid');
+        if (layer === 'structural' && NUMERIC_DESCRIPTOR_FIELDS.has(key) && property.value != null
+            && canonicalInteger(property.value) == null) {
+          fail(`structural-${({sizeBytes:'size',alignBytes:'align',strideBytes:'stride',totalSizeBytes:'total-size',widthBits:'width'})[key] ?? key}-invalid`);
+        }
         const child = visit(property.value,depth + 1);
         height = Math.max(height,1 + ((property.value && typeof property.value === 'object') ? heights.get(property.value) : 0));
         Object.defineProperty(out,key,{value:child,enumerable:true,configurable:true,writable:true});
@@ -271,7 +273,7 @@ export function createTypeClaim(input = {}) {
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: snapshotDescriptor(descriptor),
+    descriptor: snapshotDescriptor(descriptor, layer),
   };
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
@@ -427,15 +429,46 @@ export function claimsConflict(left, right) {
     if (aKind != null && bKind != null && aKind !== bKind && aKind !== 'field' && bKind !== 'field') {
       return true;
     }
-    if (aKind === 'array' && bKind === 'array') {
-      for (const key of ['length','strideBytes','elementEntityId']) {
-        if (a[key] != null && b[key] != null && (key === 'elementEntityId' ? a[key] !== b[key] : numericValuesDiffer(a[key],b[key]))) return true;
-      }
-      if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType,b.elementType)) return true;
+
+    // Top-level array claims are complete structural candidates, not field
+    // fragments. Keep their identity intact and compare the array contract
+    // directly before the aggregate interval rules below.
+    if (aKind === 'array' || bKind === 'array') {
+      if (aKind !== bKind) return true;
+      if (a.strideBytes != null && b.strideBytes != null && numericValuesDiffer(a.strideBytes, b.strideBytes)) return true;
+      if (a.length != null && b.length != null && numericValuesDiffer(a.length, b.length)) return true;
+      if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+      if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
+      if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
+      return false;
     }
+
     // Check total size or alignment mismatch
     if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
     if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+
+    // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
+    // hard aggregate size N + hard field [offset, offset+size) with
+    // offset+size > N are hard facts that cannot both hold.
+    // Only an explicitly typed aggregate can supply a whole-object bound.
+    // Offset-less structural-field metadata is member evidence, not a bound.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
+    const extentBeyondAggregate = (aggregate, field) => {
+      if (!isExplicitAggregateDescriptor(aggregate)) return false;
+      if (field.offset == null || field.sizeBytes == null) return false;
+      const start = toBigInt(field.offset, null);
+      const size = toBigInt(field.sizeBytes, null);
+      const total = toBigInt(aggregate.sizeBytes, null);
+      if (start == null || size == null || total == null) return false;
+      return start + size > total;
+    };
+    if (extentBeyondAggregate(a, b) || extentBeyondAggregate(b, a)) return true;
 
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.

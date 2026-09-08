@@ -183,17 +183,28 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
+  return createConnectiveFromArray(op, args);
+}
+
+// Deserialization can admit more operands than the engine's call-argument
+// limit. Use the same constructor validation without a variadic call.
+export function createConnectiveFromArray(op, args) {
+  if (!Array.isArray(args)) throw new TypeError('createConnective: arguments must be an array');
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
   if (args.length === 0) {
     throw new TypeError(`createConnective (${op}): requires at least one argument`);
   }
+  const operands = [];
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+    const descriptor = Object.getOwnPropertyDescriptor(args, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('createConnective: dense data arguments required');
+    const a = descriptor.value;
     if (!a || !isBoolSort(a.sort)) {
       throw new TypeError(`createConnective (${op}): arg[${i}] must have Bool sort, got ${sortToString(a?.sort)}`);
     }
+    operands.push(a);
   }
   if (op === BOOL_CONNECTIVE_OP.NOT && args.length !== 1) {
     throw new TypeError(`createConnective (not): exactly one argument required, got ${args.length}`);
@@ -205,7 +216,7 @@ export function createConnective(op, ...args) {
     kind: EXPR_KIND.CONNECTIVE,
     sort: boolSort(),
     op,
-    args: Object.freeze([...args]),
+    args: Object.freeze(operands),
   });
 }
 

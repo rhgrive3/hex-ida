@@ -19,8 +19,29 @@ function fnv1a64State(bytes, seed = null) {
     hi = Number((seed >> 32n) & 0xffffffffn) >>> 0;
     lo = Number(seed & 0xffffffffn) >>> 0;
   } else if (typeof seed === 'object' && seed) {
-    hi = Number(seed.hi) >>> 0;
-    lo = Number(seed.lo) >>> 0;
+    // Only a record with own data properties may supply resumable limbs.
+    // Do not invoke accessors or coerce structured values while validating
+    // this hash identity boundary (#5922).
+    let proto, hiDescriptor, loDescriptor;
+    try {
+      proto = Object.getPrototypeOf(seed);
+      hiDescriptor = Object.getOwnPropertyDescriptor(seed, 'hi');
+      loDescriptor = Object.getOwnPropertyDescriptor(seed, 'lo');
+    } catch {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    if (Array.isArray(seed) || (proto !== Object.prototype && proto !== null)
+      || !hiDescriptor || !loDescriptor
+      || !Object.hasOwn(hiDescriptor, 'value') || !Object.hasOwn(loDescriptor, 'value')) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    const hiLimb = hiDescriptor.value, loLimb = loDescriptor.value;
+    if (!Number.isSafeInteger(hiLimb) || hiLimb < 0 || hiLimb > 0xffffffff
+      || !Number.isSafeInteger(loLimb) || loLimb < 0 || loLimb > 0xffffffff) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    hi = hiLimb >>> 0;
+    lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
   for (let i = 0; i < bytes.length; i++) {
@@ -60,8 +81,8 @@ function functionFingerprintResult(bytes, fn) {
 }
 
 function byteCountOption(value, fallback, minimum = 1) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? Math.max(minimum, n) : fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.max(minimum, value);
 }
 
 /**

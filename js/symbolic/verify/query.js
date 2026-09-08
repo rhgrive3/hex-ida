@@ -34,12 +34,35 @@ export const VERDICT = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+// Keep main's public metadata ceilings. Serialized expansion has its own
+// tighter work budget: raising object/depth ceilings must not admit DAG bombs.
+export const QUERY_METADATA_MAX_DEPTH = 512;
+export const QUERY_METADATA_MAX_NODES = 65536;
+const QUERY_IDENTITY_MAX_EXPANSION = 40000;
 const DEFAULT_QUERY_HASH_LIMITS = Object.freeze({
   maxExprNodes: 100000,
-  maxIdentityNodes: 10000,
-  maxIdentityEdges: 40000,
-  maxIdentityDepth: 64,
+  maxIdentityNodes: QUERY_METADATA_MAX_NODES,
+  maxIdentityEdges: QUERY_METADATA_MAX_NODES * 4,
+  maxIdentityDepth: QUERY_METADATA_MAX_DEPTH,
 });
+
+function checkMetadataBudget(roots) {
+  const seen = new WeakSet(), stack = roots.map(value => ({ value, depth: 1 }));
+  let nodes = 0;
+  while (stack.length) {
+    const { value, depth } = stack.pop();
+    if (!value || typeof value !== 'object') continue;
+    if (depth > QUERY_METADATA_MAX_DEPTH) throw new TypeError('createVerificationQuery: metadata depth budget exceeded');
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (++nodes > QUERY_METADATA_MAX_NODES) throw new TypeError('createVerificationQuery: metadata node budget exceeded');
+    const entries = ownDataEntries(value, DEFAULT_QUERY_HASH_LIMITS.maxIdentityEdges);
+    if (entries.length > DEFAULT_QUERY_HASH_LIMITS.maxIdentityEdges - stack.length) {
+      throw new TypeError('createVerificationQuery: metadata edge budget exceeded');
+    }
+    for (const [, child] of entries) stack.push({ value: child, depth: depth + 1 });
+  }
+}
 
 function requirePositiveSafeInteger(value, name) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
@@ -50,7 +73,7 @@ function requirePositiveSafeInteger(value, name) {
 
 function validateBoundedIdentityValues(values, { maxIdentityNodes, maxIdentityEdges, maxIdentityDepth }) {
   const result = inspectCanonicalData(values, { maxNodes: maxIdentityNodes, maxEdges: maxIdentityEdges,
-    maxDepth: maxIdentityDepth, maxExpansion: maxIdentityEdges });
+    maxDepth: maxIdentityDepth, maxExpansion: Math.min(maxIdentityEdges, QUERY_IDENTITY_MAX_EXPANSION) });
   if (!result.ok) {
     const compatibility = { 'noncanonical-data-prototype':'unsupported-query-identity-object',
       'data-depth-budget-exceeded':'query-identity-depth-exceeded', 'data-entry-budget-exceeded':'query-identity-edge-budget-exceeded',
@@ -224,6 +247,12 @@ export function createVerificationQuery(input = {}) {
   const normalizedTranslatorVersion = requireIdentityString(translatorVersion, 'translatorVersion');
   const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
   const normalizedBitWidth = normalizeBitWidth(bitWidth);
+  if (targetEntity != null && typeof targetEntity !== 'string') {
+    if (typeof targetEntity !== 'object' || Array.isArray(targetEntity)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(targetEntity))) {
+      throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object (unsupported-query-identity-object)');
+    }
+  }
 
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
@@ -238,6 +267,7 @@ export function createVerificationQuery(input = {}) {
   const normalizedAssumptions = Array.isArray(assumptions) ? [...assumptions] : [];
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
+  checkMetadataBudget([targetEntity, normalizedAssumptions, normalizedCompleteness, normalizedOutputs, proofScope]);
   const identities = validateBoundedIdentityValues([
     targetEntity,
     normalizedAssumptions,
@@ -269,7 +299,10 @@ export function createVerificationQuery(input = {}) {
   };
   const expressions = [...normalizedConstraints, ...(assertion ? [assertion] : [])];
   const structural = computeStructuralHashesBounded(expressions, { maxNodes: DEFAULT_QUERY_HASH_LIMITS.maxExprNodes });
-  if (!structural.ok) throw new TypeError(`createVerificationQuery: ${structural.reason}`);
+  if (!structural.ok) {
+    checkMetadataBudget(expressions);
+    throw new TypeError(`createVerificationQuery: ${structural.reason}`);
+  }
   const queryHash = stableDigest(queryHashPayload(
     unhashedQuery,
     structural.hashes.slice(0, normalizedConstraints.length),

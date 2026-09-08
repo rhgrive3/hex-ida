@@ -125,7 +125,104 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #6105 RTTI demangler non-string validation passed');
 }
 
-// --- Test 5: #6062 unified metadata dispatcher provider discovery parity ---
+// --- Test 5: #3608 Swift 4 legacy prefix survives Darwin normalization ---
+{
+  assert.equal(demangleSwift('_T04Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_T04Test3'), null, 'truncated legacy component must fail closed');
+  assert.equal(demangleSwift('_T00'), null, 'zero-length legacy component must fail closed');
+  assert.equal(demangleSwift('_T0C'), null, 'nameless legacy symbol must fail closed');
+  assert.equal(demangleSwift('_T4Test3Foo'), null, 'bare legacy marker must fail closed');
+  assert.equal(readableName('_T04Test3Foo'), 'Test.Foo');
+
+  // Existing modern Swift spellings keep their accepted normalization.
+  assert.equal(demangleSwift('_$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$S4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('_foo'), null);
+  console.log('✔ #3608 Swift legacy prefix normalization passed');
+}
+
+// --- Test 6: #5704 Swift length-prefixed identifiers require full input ---
+{
+  for (const symbol of ['$s5abc', '$s10Foo', '$s4Test5abc']) {
+    assert.equal(demangleSwift(symbol), null, `${symbol} must reject a truncated identifier`);
+    assert.equal(readableName(symbol), symbol, `${symbol} must keep its raw name when malformed`);
+  }
+
+  assert.equal(demangleSwift('$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$s4Test3Foo3Bar'), 'Test.Foo.Bar');
+  assert.equal(readableName('$s4Test3Foo3Bar'), 'Test.Foo.Bar');
+  console.log('✔ #5704 Swift truncated identifier boundaries passed');
+}
+
+// --- Test 7: #3632/#4046 canonical Itanium prefix survives Darwin normalization ---
+{
+  assert.equal(isMangled('_Z3foov'), true);
+  assert.equal(demangleCxx('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('__Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_Z1fv'), 'f()');
+  assert.equal(readableName('_Z3foov'), 'foo()');
+  assert.equal(demangleCxx('_foo'), null);
+  assert.equal(demangleCxx('___Z3foov'), null);
+  console.log('✔ #3632/#4046 canonical Itanium prefix normalization passed');
+}
+
+// --- Regression: #4040 nested-name volatile/restrict qualifiers ---
+{
+  // These encodings are accepted by the Itanium ABI demangler (c++filt).
+  for (const [name, expected] of [
+    ['_ZN1A1fEv', 'A::f()'],
+    ['_ZNr1A1fEv', 'A::f() restrict'],
+    ['_ZNV1A1fEv', 'A::f() volatile'],
+    ['_ZNK1A1fEv', 'A::f() const'],
+    ['_ZNrV1A1fEv', 'A::f() volatile restrict'],
+    ['_ZNrK1A1fEv', 'A::f() const restrict'],
+    ['_ZNVK1A1fEv', 'A::f() const volatile'],
+    ['_ZNrVK1A1fEv', 'A::f() const volatile restrict'],
+  ]) assert.equal(demangleCxx(name), expected, name);
+  assert.equal(demangleCxx('_ZNVV1A1fEv'), null, 'duplicate volatile qualifier must fail closed');
+  assert.equal(demangleCxx('_ZNKV1A1fEv'), null, 'out-of-order CV qualifiers must fail closed');
+  console.log('✔ #4040 Itanium nested-name CV qualifiers passed');
+}
+
+// --- Regression: #5238 Itanium non-virtual thunk call-offset and function type ---
+{
+  // g++ -std=c++20 -O0 -fno-inline emits _ZThn8_N1C1fEi for a
+  // non-virtual multiple-inheritance thunk; c++filt calls it a
+  // "non-virtual thunk to C::f(int)".
+  const target = 'thunk to C::f(int)';
+  assert.equal(demangleCxx('_ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('__ZThn8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZThn8_N1CD1Ev'), 'thunk to C::~C()');
+  assert.equal(demangleCxx('_ZThn8_NK1C1fEv'), 'thunk to C::f() const');
+
+  // The ABI's h <nv-offset> _ grammar also admits positive and zero offsets.
+  assert.equal(demangleCxx('_ZTh8_N1C1fEi'), target);
+  assert.equal(demangleCxx('_ZTh0_N1C1fEi'), target);
+
+  // A signed offset still needs digits and the target needs its bare function type.
+  assert.equal(demangleCxx('_ZThn_N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8N1C1fEi'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1fE'), null);
+  assert.equal(demangleCxx('_ZThn8_N1C1f'), null);
+  console.log('✔ #5238 Itanium non-virtual thunk parsing passed');
+}
+
+// --- Regression: #4036 Itanium Ds/Du builtin type mappings ---
+{
+  // These are compiler-emitted names (g++ -std=c++20), including pointer arguments.
+  assert.equal(demangleCxx('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(demangleCxx('_Z2f8Du'), 'f8(char8_t)');
+  assert.equal(demangleCxx('_Z3f32Di'), 'f32(char32_t)');
+  assert.equal(demangleCxx('_Z4fp16PDs'), 'fp16(char16_t *)');
+  assert.equal(demangleCxx('_Z3fp8PDu'), 'fp8(char8_t *)');
+  assert.equal(readableName('_Z3f16Ds'), 'f16(char16_t)');
+  assert.equal(readableName('_Z2f8Du'), 'f8(char8_t)');
+  console.log('✔ #4036 Itanium Ds/Du builtin mappings passed');
+}
+
+// --- Test 7: #6062 unified metadata dispatcher provider discovery parity ---
 {
   // Rust discovery via __R and ZN
   const rustV0 = await parseUnifiedLanguageMetadata({
@@ -386,3 +483,10 @@ import '../js/objc-stub-recovery.js';
 }
 
 console.log('\nAll metadata-apple consolidated regression tests PASSED!');
+
+// Keep ObjC provider cancellation regressions in the canonical metadata gate.
+await import('./issue-6270-objc-methodlist-cancellation.mjs');
+await import('./objc-provider-cancellation-3808.test.mjs');
+await import('./test-objc-metadata-demand-cancellation.mjs');
+await import('./issue-6199-std-symbol-runtime-classification.mjs');
+await import('./issue-6085-category-external-class.mjs');

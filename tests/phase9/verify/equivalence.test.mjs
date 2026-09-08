@@ -125,6 +125,27 @@ test('verifyBoundedEquivalence: rejects sort and width mismatches immediately', 
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
+});
+
+test('verifyBoundedEquivalence: reports symbolic sort mismatch before correspondence', async () => {
+  const beforeX = createFreshSymbol(bvSort(8), 'input_before');
+  const afterX = createFreshSymbol(bvSort(32), 'input_after');
+  const backend = new FakeSolverBackend();
+
+  const res = await verifyBoundedEquivalence({
+    beforeTarget: beforeX,
+    afterTarget: afterX,
+    correspondence: { symbols: { [afterX.symbolId]: beforeX.symbolId } },
+    backend,
+  });
+
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
+  assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
+  assert.equal(res.unresolvedSymbols, undefined);
 });

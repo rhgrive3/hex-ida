@@ -171,12 +171,12 @@ export class FunctionFixture {
   }
 
   /** A call with a fully known, empty effect summary. */
-  pureCall(id, { blockId = this.current } = {}) {
+  pureCall(id, { blockId = this.current, calleeId = 'function_pure_fixture_callee' } = {}) {
     const nodeId = `node_${id}`;
     this.#push({
       id: nodeId, kind: 'call', blockId, inputs: [], outputs: [],
       call: {
-        targetValueIds: [], targetEntityIds: [], arguments: [], returns: [], stateReads: [], stateWrites: [],
+        targetValueIds: [], targetEntityIds: [calleeId], arguments: [], returns: [], stateReads: [], stateWrites: [],
         memoryRead: { scope: 'none' }, memoryWrite: { scope: 'none' }, controlEffects: [],
         determinism: 'deterministic', noreturn: false, mayThrow: false, summarySource: 'fixture',
         completeness: 'complete',

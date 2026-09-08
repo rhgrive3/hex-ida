@@ -56,8 +56,9 @@ export class DiscoveryProducerRegistry {
     // Registry identity and evidence provenance must be the same canonical
     // string authority. A structured id must not coerce into a real registry
     // key (String(['p1']) === 'p1') while the raw value keeps flowing into
-    // evidence provenance.
-    if (typeof producer.id !== 'string' || !producer.id) throw new TypeError('discovery-producer-id-required');
+    // evidence provenance, and a whitespace-only or padded id must not
+    // manufacture a second "independent" producer (#5792).
+    if (typeof producer.id !== 'string' || producer.id.trim() === '' || producer.id.trim() !== producer.id) throw new TypeError('discovery-producer-id-required');
     const id = producer.id;
     this.producers.set(id, producer);
     return this;
@@ -67,7 +68,7 @@ export class DiscoveryProducerRegistry {
   for(architectureId) {
     return [...this.producers.values()]
       .filter((producer) => producer.architectureId == null || producer.architectureId === architectureId)
-      .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      .sort((left, right) => compareText(left.id, right.id));
   }
 
   collect(input, architectureId, options = {}) {
@@ -110,15 +111,28 @@ function regionSignature(item) {
   return item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
 
+/*
+ * Host-locale independent total order over strings (UTF-16 code units).
+ * Canonical/deterministic discovery ordering must not depend on the runtime
+ * ICU locale: default-locale localeCompare() ranks 'ä' vs 'z' differently
+ * under de_DE and sv_SE, which reordered evidence and changed which evidence
+ * a full budget retained (#5725).
+ */
+function compareText(left, right) {
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function compareEvidence(left, right) {
   return authorityRank(right.authority) - authorityRank(left.authority)
-    || String(left.start).localeCompare(String(right.start))
-    || String(left.producerId).localeCompare(String(right.producerId))
-    || String(left.kind).localeCompare(String(right.kind))
-    || String(left.name ?? '').localeCompare(String(right.name ?? ''))
-    || String(left.extentRole ?? '').localeCompare(String(right.extentRole ?? ''))
-    || String(left.architectureId ?? '').localeCompare(String(right.architectureId ?? ''))
-    || regionSignature(left).localeCompare(regionSignature(right));
+    || compareText(left.start, right.start)
+    || compareText(left.producerId, right.producerId)
+    || compareText(left.kind, right.kind)
+    || compareText(left.name ?? '', right.name ?? '')
+    || compareText(left.extentRole ?? '', right.extentRole ?? '')
+    || compareText(left.architectureId ?? '', right.architectureId ?? '')
+    || compareText(regionSignature(left), regionSignature(right));
 }
 
 /**
@@ -231,7 +245,7 @@ function fuseExtent(evidence) {
       const byStart = BigInt(left.start) < BigInt(right.start) ? -1 : BigInt(left.start) > BigInt(right.start) ? 1 : 0;
       if (byStart !== 0) return byStart;
       const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
-      return byEnd || left.ownership.localeCompare(right.ownership);
+      return byEnd || compareText(left.ownership, right.ownership);
     });
     return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
   }
@@ -328,43 +342,55 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
   for (const start of starts) {
     const entry = byStart.get(start);
-    const bucket = entry.items;
+    const fullBucket = entry.items;
     evidenceOverflow ||= entry.overflow;
-    const startState = fuseStartState(bucket);
-    let extent = fuseExtent(bucket);
-    const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
-    const conflicts = [...extent.conflicts];
-    if (entry.overflow) {
-      // Omitted evidence is not evidence of agreement. The start itself is still
-      // the bucket key and remains supported by the retained highest-authority
-      // evidence, but name/extent claims may have an omitted contradiction.
-      extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
-      conflicts.push({
-        kind: 'evidence-budget',
-        detail: 'candidate evidence exceeded maxEvidencePerCandidate',
-        alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
-      });
-    }
+    // Fusion is per-architecture: evidence naming distinct architectures
+    // never corroborates across that boundary — arm64 and x86_64 evidence
+    // sharing a numeric address is coincidence, not agreement (#5743).
+    // Generic (null-architecture) evidence carries no architecture claim, so
+    // it supports each hypothesis.
+    const distinctArchitectures = [...new Set(fullBucket.map((item) => item.architectureId).filter(Boolean))]
+      .sort((left, right) => compareText(left, right));
+    const partitions = distinctArchitectures.length <= 1
+      ? [fullBucket]
+      : distinctArchitectures.map((architectureId) => fullBucket.filter((item) => item.architectureId == null || item.architectureId === architectureId));
+    for (const bucket of partitions) {
+      const startState = fuseStartState(bucket);
+      let extent = fuseExtent(bucket);
+      const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
+      const conflicts = [...extent.conflicts];
+      if (entry.overflow) {
+        // Omitted evidence is not evidence of agreement. The start itself is still
+        // the bucket key and remains supported by the retained highest-authority
+        // evidence, but name/extent claims may have an omitted contradiction.
+        extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
+        conflicts.push({
+          kind: 'evidence-budget',
+          detail: 'candidate evidence exceeded maxEvidencePerCandidate',
+          alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
+        });
+      }
 
-    // Two authoritative sources naming the same address differently is a real
-    // disagreement about what this function is, and it is recorded rather than
-    // resolved by preference order.
-    const authoritativeNames = [...new Set(bucket.filter((item) => item.authority === 'authoritative' && item.name).map((item) => item.name))];
-    if (authoritativeNames.length > 1) {
-      conflicts.push({ kind: 'name', detail: 'authoritative sources disagree about the name', alternatives: authoritativeNames });
-    }
+      // Two authoritative sources naming the same address differently is a real
+      // disagreement about what this function is, and it is recorded rather than
+      // resolved by preference order.
+      const authoritativeNames = [...new Set(bucket.filter((item) => item.authority === 'authoritative' && item.name).map((item) => item.name))];
+      if (authoritativeNames.length > 1) {
+        conflicts.push({ kind: 'name', detail: 'authoritative sources disagree about the name', alternatives: authoritativeNames });
+      }
 
-    candidates.push(createFunctionCandidate({
-      start,
-      name: entry.overflow ? null : (names[0] ?? null),
-      regions: extent.regions,
-      startEvidence: bucket,
-      extentEvidence: bucket.filter((item) => item.regions.length > 0),
-      startState,
-      extentState: extent.state,
-      conflicts,
-      architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? options.architectureId ?? null,
-    }));
+      candidates.push(createFunctionCandidate({
+        start,
+        name: entry.overflow ? null : (names[0] ?? null),
+        regions: extent.regions,
+        startEvidence: bucket,
+        extentEvidence: bucket.filter((item) => item.regions.length > 0),
+        startState,
+        extentState: extent.state,
+        conflicts,
+        architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? options.architectureId ?? null,
+      }));
+    }
   }
 
   const reconciled = reconcileOverlaps(candidates, { signal: options.signal });

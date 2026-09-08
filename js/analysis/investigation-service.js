@@ -179,6 +179,14 @@ function needsShapeEvidence(goal) {
   const expects = goal?.expects || {};
   return !!(expects.numeric || expects.store || ['hp','attack','defense','damage','money','score','level','stamina','item'].includes(goal?.id));
 }
+// Escapes the tuple members so arbitrary goal id/text strings (including `:`
+// and `%`) cannot alias another goal's cache entry: `%` itself is escaped
+// first, so decoding is unique. Colon-free tuples keep their exact
+// pre-#5610 key strings; falsy id/text normalize to '' as before.
+function pinCacheKey(snapshotId, goal) {
+  const esc = (value) => String(value ?? '').replaceAll('%', '%25').replaceAll(':', '%3A');
+  return `${esc(snapshotId)}:${esc(goal?.id || '')}:${esc(goal?.text || '')}`;
+}
 function beats(next, current) {
   if (!next?.top) return false;
   if (!current?.top) return true;
@@ -367,18 +375,19 @@ export class InvestigationService {
     const profile = budgetProfileKey(config);
     return this.#shared(`strings:${epoch}:${profile}`, async (signal) => {
       const budget = new StringCollectionBudget(config);
+      // Section names are prioritization hints, not proof that other
+      // regions contain no strings. Scan every positive-size region so a
+      // complete result and its global cache cover the whole binary (#5801).
       const targets = stringTargets(this.app);
-      const current = storeValue(this.app, 'currentRegion');
+      const regions = (storeValue(this.app, 'regions') || []).filter((r) => BigInt(r?.size ?? 0) > 0n);
+      const hinted = new Set(targets);
+      const ordered = [...targets, ...regions.filter((region) => !hinted.has(region))];
       const use = [], skipped = [];
-      for (const region of targets) {
+      for (const region of ordered) {
         const bytes = budget.requestBytes(Number(region.size));
         if (bytes <= 0) { skipped.push(region); continue; }
         use.push({ region, bytes });
         if (bytes < Number(region.size)) skipped.push(region);
-      }
-      if (!use.length && current) {
-        const bytes = budget.requestBytes(Number(current.size));
-        if (bytes > 0) use.push({ region:current, bytes });
       }
       const rows = [];
       let scannedBytes = 0, backendPartial = false;
@@ -619,7 +628,12 @@ export class InvestigationService {
     });
     abortIfNeeded(options.signal);
     this.#syncPinSnapshot(context.snapshotId);
-    const cacheKey = `${context.snapshotId}:${goal?.id || ''}:${goal?.text || ''}`;
+    // Pin cache identity must encode the goal tuple without delimiter
+    // ambiguity: raw `:`-joined keys collide across distinct (id, text)
+    // pairs (e.g. {id:'a:b',text:'c'} vs {id:'a',text:'b:c'}), which let
+    // one goal's pinpoint result be reused as another's (#5610). A
+    // length-prefixed encoding makes the tuple decode unambiguously.
+    const cacheKey = pinCacheKey(context.snapshotId, goal);
     let pin = this.pinCache.get(cacheKey) || null;
     if (!pin) {
       const common = {
@@ -727,4 +741,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates, pinCacheKey });

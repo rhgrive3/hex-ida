@@ -272,7 +272,12 @@ export function parseGoFunctions(buf, header, options = {}) {
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
 
+  // Number of declared entries whose slot was actually examined. Iterations
+  // after an early break were never attempted and must not be counted (#5861).
+  let scanned = 0;
+
   for (let i = 0; i < maxFuncs; i++) {
+    scanned++;
     const slot = ftabOff + i * entrySize;
     if (slot + entrySize > buf.length) {
       unreadableEntries++;
@@ -349,7 +354,7 @@ export function parseGoFunctions(buf, header, options = {}) {
     completeness: {
       present: true,
       declared: header.nfunc,
-      scanned: maxFuncs,
+      scanned,
       parsed: functions.length,
       capped,
       unreadableEntries,
@@ -443,6 +448,15 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
 
   probe() {
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
+      // A section-table hit is metadata evidence even when its bytes were not
+      // supplied for scanning. Keep that state distinct from a stripped
+      // binary with no pclntab section (#5877).
+      const hasPclntabSection = this.sections.some((section) => {
+        const name = typeof section === 'string'
+          ? section
+          : (section?.name ?? section?.section ?? section?.sectname ?? '');
+        return typeof name === 'string' && name.includes('gopclntab');
+      });
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -456,10 +470,21 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'pclntab-probe',
-          detail: 'no pclntab section or buffer present',
+          detail: hasPclntabSection
+            ? 'pclntab section detected but its bytes were not supplied'
+            : 'no pclntab section or buffer present',
         }),
         sections: this.sections.map((s) => s.name || s.section || String(s)),
-        completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+        completeness: hasPclntabSection
+          ? {
+            present: true,
+            declared: 0,
+            scanned: 0,
+            parsed: 0,
+            complete: false,
+            reasons: ['pclntab-section-bytes-unavailable'],
+          }
+          : { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
       });
     }
 

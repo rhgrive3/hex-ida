@@ -32,6 +32,17 @@ function list(value) {
   return [...new Set(value.map((parent) => required(parent, 'operation-causal-parent-invalid')))].sort();
 }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
+function compareTombstones(a, b) {
+  if (a.key < b.key) return -1;
+  if (a.key > b.key) return 1;
+  if (a.operationId < b.operationId) return -1;
+  if (a.operationId > b.operationId) return 1;
+  return 0;
+}
+function sortTombstones(state) {
+  if (Array.isArray(state?.tombstones)) state.tombstones.sort(compareTombstones);
+  return state;
+}
 function payloadDigest(value) { return stableDigest(value); }
 // The identity an operationId is bound to: everything that decides state
 // semantics. Two operations sharing an ID must agree on all of it, otherwise
@@ -116,7 +127,13 @@ function rawActionRejection(input) {
   return reason ? Object.freeze({ status: 'rejected', reason }) : null;
 }
 
-function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
+export function compareOperationId(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function compareOperations(a, b) { return compareOperationId(a.operationId, b.operationId); }
 
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
@@ -182,6 +199,7 @@ export class ChangeLog {
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
     const restoredState = options.state == null ? emptyState(this.projectIdentity, this.binaryIdentity) : options.state;
     this.state = validateRestoredStateFactKeys(cloneState(restoredState), this.projectIdentity, this.binaryIdentity);
+    sortTombstones(this.state);
     this.operations = new Map();
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
@@ -236,7 +254,10 @@ export class ChangeLog {
     }
     if (operation.action === 'remove') {
       delete this.state.facts[key];
-      this.state.tombstones.push({ key, operationId: operation.operationId, targetEntityId: operation.targetEntityId, factKind: operation.factKind });
+      if (!this.state.tombstones.some((item) => item.operationId === operation.operationId)) {
+        this.state.tombstones.push({ key, operationId: operation.operationId, targetEntityId: operation.targetEntityId, factKind: operation.factKind });
+        this.state.tombstones.sort(compareTombstones);
+      }
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'tombstone' };
     }
@@ -256,7 +277,7 @@ export class ChangeLog {
     if (previous) { this.operations.set(operation.operationId, operation); return { status: 'applied', operationId: operation.operationId, effect: 'idempotent-value' }; }
     const record = current || { key, targetEntityId: operation.targetEntityId, factKind: operation.factKind, values: [], resolvedOperationId: null, stateFingerprint: null };
     record.values.push(candidate);
-    record.values.sort((a, b) => a.operationId.localeCompare(b.operationId));
+    record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
     record.stateFingerprint = payloadDigest(record.values.map((item) => ({ operationId: item.operationId, value: item.value })));
     this.state.facts[key] = record;
     if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
@@ -274,7 +295,7 @@ export class ChangeLog {
     let progressed = true;
     while (progressed) {
       progressed = false;
-      for (const [operationId, operation] of [...this.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      for (const [operationId, operation] of [...this.pending.entries()].sort(([a], [b]) => compareOperationId(a, b))) {
         if (!operation.causalParents.every((parent) => this.operations.has(parent))) continue;
         if (permanentlyBlockedOp(this, operationId)) continue;
         this.pending.delete(operationId);

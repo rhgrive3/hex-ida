@@ -51,7 +51,10 @@
     let cursor = 0;
     const legacy = new Set([0xf0,0xf2,0xf3,0x2e,0x36,0x3e,0x26,0x64,0x65,0x66,0x67]);
     while (cursor < rawBytes.length && legacy.has(rawBytes[cursor])) cursor++;
-    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) cursor++;
+    // REX cannot legally precede a VEX/XOP/EVEX escape prefix (#UD per
+    // AMD64 APM Vol.3); such a byte sequence is not a vector-prefixed
+    // instruction and must not produce vector prefix metadata.
+    if (cursor < rawBytes.length && rawBytes[cursor] >= 0x40 && rawBytes[cursor] <= 0x4f) return null;
     const lead = rawBytes[cursor];
     const width = lead === 0xc5 ? 2 : lead === 0xc4 ? 3 : lead === 0x62 ? 4 : 0;
     if (!width || cursor + width > rawBytes.length) return null;
@@ -171,6 +174,7 @@
       mnemonic,
       opStr,
       rawBytes,
+      origin:options.origin ?? null,
       architecture:'x86_64',
       mode:String(options.mode || 'long-64'),
       decoderContractVersion:'x86-64-decoded-instruction/v1',
@@ -232,5 +236,11 @@
     return Object.freeze({ ...base, detailAvailable:true, detailStatus:'complete', detail });
   }
 
-  root.HexX86CapstoneStructured = Object.freeze({ ABI, verifyVersion, parseInstruction });
+  const adapter = Object.freeze({ ABI, verifyVersion, parseInstruction });
+  Object.defineProperty(root, 'HexX86CapstoneStructured', {
+    value:adapter,
+    enumerable:true,
+    configurable:false,
+    writable:false,
+  });
 })(globalThis);

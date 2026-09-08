@@ -140,13 +140,54 @@ export class AnalysisCache {
     }
     if (!record) return null;
     if (this.#isCorruptOrStale(record, artifactId)) {
-      await this.delete(binaryHash, { artifactId });
+      await this.#deleteObservedCorruptRecord(key, record);
       return null;
     }
     if (!this.#validRecord(record, binaryHash, artifactId)) {
       return null;
     }
     return structuredCloneSafe(record.data);
+  }
+
+  /**
+   * Conditional cleanup for a corrupt record observed by get() (#5934).
+   *
+   * The read and the cleanup are separate transactions, and IndexedDB starts
+   * overlapping transactions in creation order — so an unconditional delete
+   * could run after a concurrent put() had already replaced the record and
+   * erase the fresh, valid entry. This cleanup re-reads the key inside its
+   * own readwrite transaction (atomic with the delete) and deletes only when
+   * the record it observed is still the one stored. Memory backends compare
+   * record identity for the same guarantee.
+   */
+  async #deleteObservedCorruptRecord(key, observed) {
+    if (this.memory) {
+      if (this.memory.get(key) === observed) this.memory.delete(key);
+      return;
+    }
+    const fingerprint = (record) => JSON.stringify([
+      record?.schemaVersion ?? null,
+      record?.analysisIdentity ?? null,
+      record?.binaryHash ?? null,
+      record?.canonicalArtifactId ?? null,
+      record?.updatedAt ?? null,
+    ]);
+    const expected = fingerprint(observed);
+    try {
+      const db = await this.#db();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('entries', 'readwrite');
+        const store = tx.objectStore('entries');
+        const reread = store.get(key);
+        reread.onerror = () => reject(reread.error || new Error('IndexedDB request failed'));
+        reread.onsuccess = () => {
+          if (fingerprint(reread.result) === expected) store.delete(key);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+      });
+    } catch (error) { this.#fallback(error).delete(key); }
   }
 
   async put(hash, data = {}, options = {}) {

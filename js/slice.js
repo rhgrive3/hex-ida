@@ -25,9 +25,15 @@ function positiveLimit(value, fallback, minimum = 1) {
   return Math.max(minimum, Math.floor(n));
 }
 
+function boundedMemoryLimit(value, fallback, maximum) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || (n === 0 && typeof value !== 'number')) return fallback;
+  return Math.max(1, Math.min(maximum, n));
+}
+
 export function memoryOrigins(node, opts = {}) {
-  const maxNodes=Math.max(1,Math.min(10000,Number(opts.maxNodes)||1024));
-  const maxEdges=Math.max(1,Math.min(20000,Number(opts.maxEdges)||2048));
+  const maxNodes=boundedMemoryLimit(opts.maxNodes,1024,10000);
+  const maxEdges=boundedMemoryLimit(opts.maxEdges,2048,20000);
   const seen=new Set(), stack=node?[node]:[], stores=[], clobbers=[];
   let edges=0,truncated=false,phiCount=0;
   while(stack.length){
@@ -187,8 +193,14 @@ function clampLike(inst) {
   const cmp = flags && flags.def;
   if (!cmp || cmp.op !== OP.CMP) return false;
   const cmpIds = new Set(cmp.args.map((a) => (a.value ? a.value.id : -1)));
-  const picked = inst.args.slice(0, 2).map((a) => (a.value ? a.value.id : -2));
-  return picked.filter((id) => cmpIds.has(id)).length === 2;
+  const pickedIds = new Set(inst.args.slice(0, 2).map((a) => (a.value ? a.value.id : -2)));
+  // A clamp selects two DIFFERENT compared operands. Picking the same value on
+  // both arms is an unconditional copy, so counting one id twice (or one value
+  // object twice) must not read as "both bounds used" (#5806).
+  if (pickedIds.size !== 2) return false;
+  let matched = 0;
+  for (const id of pickedIds) if (cmpIds.has(id)) matched++;
+  return matched === 2;
 }
 
 export function valueChain(ir, seed, opts) {
@@ -259,16 +271,24 @@ export function findPaths(graph, from, to, opts) {
   if (from == null || to == null) return [];
   const paths = [];
   const queue = [[from]];
+  let head = 0;
   let seen = 0;
-  while (queue.length && paths.length < maxPaths && seen < maxVisited) {
-    const path = queue.shift();
-    const head = path[path.length - 1];
+  while (head < queue.length && paths.length < maxPaths && seen < maxVisited) {
+    const path = queue[head++];
+    // Release the slot so a bounded frontier does not retain visited path objects.
+    queue[head - 1] = null;
+    const headNode = path[path.length - 1];
     seen++;
-    if (head === to) { paths.push(path); continue; }
+    if (headNode === to) { paths.push(path); continue; }
     if (path.length >= maxDepth) continue;
     let next = [];
-    try { next = graph.calleesOf(head) || []; } catch { next = []; }
+    try { next = graph.calleesOf(headNode) || []; } catch { next = []; }
     for (const item of next) {
+      // Bound the frontier by the same visited budget: never hold more
+      // pending paths than the remaining visit budget allows. Without this,
+      // one high fan-out expansion can allocate far beyond maxVisited.
+      if (seen + (queue.length - head) >= maxVisited) break;
+      if (paths.length >= maxPaths) break;
       const n = item && item.addr != null ? item.addr : item;
       if (n == null || path.some((p) => p === n)) continue;
       queue.push(path.concat([n]));

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { NodeBackend } from './harness.mjs';
+import { makeMachO64Fixture } from './universal-binary.mjs';
 
 const bytes = new Uint8Array(32);
 const file = {
@@ -102,6 +103,17 @@ function fileFromWords(name, words) {
   const raw = new Uint8Array(words.length * 4);
   const dv = new DataView(raw.buffer);
   for (let i = 0; i < words.length; i++) dv.setUint32(i * 4, words[i] >>> 0, true);
+  return {
+    name, size: raw.length,
+    slice(start, end) {
+      const part = raw.subarray(start, end);
+      return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+    },
+  };
+}
+
+function fileFromBytes(name, bytes) {
+  const raw = Uint8Array.from(bytes);
   return {
     name, size: raw.length,
     slice(start, end) {
@@ -246,3 +258,39 @@ function fileFromWords(name, words) {
 }
 
 // issues-814-816 ARM64 memory E2E
+
+// #5380: string listing and address text decoding must share the same ASCII
+// control-character policy, including escaped CR/CRLF and rejected C0 bytes.
+for (const [label, bytes, expected] of [
+  ['tab', [0x41, 0x09, 0x42, 0x00], 'A\\tB'],
+  ['lf', [0x41, 0x0a, 0x42, 0x00], 'A\\nB'],
+  ['cr', [0x41, 0x0d, 0x42, 0x00], 'A\\rB'],
+  ['crlf', [0x41, 0x0d, 0x0a, 0x42, 0x00], 'A\\r\\nB'],
+]) {
+  const b = new NodeBackend();
+  const image = makeMachO64Fixture();
+  image.set(bytes, 0x300);
+  const info = await b.open(fileFromBytes(`issue-5380-${label}.macho`, image));
+  const region = info.slices[0].regions.find((entry) => entry.section === '__text');
+  assert.ok(region, `${label}: Mach-O text region`);
+  const strings = await b.strings({ regionId: region.id, min: 2, limit: 8 });
+  assert.deepEqual(strings.results.map((entry) => entry.text), [expected], `${label}: scanStrings policy`);
+  const read = await b.readAt(region.vmAddr, bytes.length, true);
+  assert.equal(read.text, expected, `${label}: readAt policy`);
+}
+
+for (const control of [0x01, 0x08, 0x0b, 0x0c, 0x0e, 0x1f]) {
+  const bytes = [0x41, 0x41, control, 0x42, 0x42, 0x00];
+  const b = new NodeBackend();
+  const image = makeMachO64Fixture();
+  image.set(bytes, 0x300);
+  const info = await b.open(fileFromBytes(`issue-5380-c0-${control.toString(16)}.macho`, image));
+  const region = info.slices[0].regions.find((entry) => entry.section === '__text');
+  assert.ok(region, `C0 0x${control.toString(16)}: Mach-O text region`);
+  const strings = await b.strings({ regionId: region.id, min: 2, limit: 8 });
+  assert.deepEqual(strings.results.map((entry) => entry.text), ['AA', 'BB'], `C0 0x${control.toString(16)}: scanStrings boundary`);
+  const read = await b.readAt(region.vmAddr, bytes.length, true);
+  assert.equal(read.text, 'AA', `C0 0x${control.toString(16)}: readAt boundary`);
+}
+
+console.log('issue #5380 worker string control-character parity passed');

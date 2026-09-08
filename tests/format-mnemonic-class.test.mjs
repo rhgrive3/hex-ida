@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mnemonicClass } from '../js/format.js';
+import { mnemonicClass, parseHexPattern } from '../js/format.js';
 
 // --- Test 1: #6218 x86_64 control flow mnemonics ---
 {
@@ -34,10 +34,18 @@ import { mnemonicClass } from '../js/format.js';
   }
 
   // Classic ARM64 branch mnemonics
-  const armClassic = ['b', 'bl', 'blr', 'br', 'cbz', 'cbnz', 'tbz', 'tbnz', 'b.eq', 'b.ne', 'b.gt', 'b.lt', 'svc', 'brk', 'hlt', 'bti'];
+  const armClassic = ['b', 'bl', 'blr', 'br', 'cbz', 'cbnz', 'tbz', 'tbnz', 'b.eq', 'b.ne', 'b.gt', 'b.le', 'b.lt', 'svc', 'brk', 'hlt', 'bti'];
   for (const mn of armClassic) {
     assert.equal(mnemonicClass(mn), 'flow', `mnemonicClass('${mn}') must be 'flow'`);
   }
+
+  // #5258: ARM64 logical, bitfield, and SIMD mnemonics are not branches.
+  const armNonFlowB = ['bic', 'bfc', 'bfi', 'bif', 'bit', 'bsl'];
+  for (const mn of armNonFlowB) {
+    assert.equal(mnemonicClass(mn), '', `mnemonicClass('${mn}') must be empty`);
+    assert.equal(mnemonicClass(mn.toUpperCase()), '', `mnemonicClass('${mn.toUpperCase()}') must be empty`);
+  }
+  assert.equal(mnemonicClass('b.zz'), '', "mnemonicClass('b.zz') must reject unknown condition codes");
 
   // Non-flow ARM mnemonics
   const armNonFlow = ['mov', 'add', 'ldr', 'str', 'stp', 'ldp', 'adrp', 'csel'];
@@ -54,6 +62,35 @@ import { mnemonicClass } from '../js/format.js';
   assert.equal(mnemonicClass(''), '');
   assert.equal(mnemonicClass('.byte'), 'data');
   console.log('✔ Edge cases passed');
+}
+
+// --- Test 4: #4664 hex prefix grammar ---
+{
+  const shape = (text) => {
+    const parsed = parseHexPattern(text);
+    return parsed && { bytes: [...parsed.bytes], mask: [...parsed.mask] };
+  };
+
+  assert.deepEqual(shape('48 65 6C'), {
+    bytes: [0x48, 0x65, 0x6c], mask: [0xff, 0xff, 0xff],
+  });
+  assert.deepEqual(shape('4865??6C'), {
+    bytes: [0x48, 0x65, 0x00, 0x6c], mask: [0xff, 0xff, 0x00, 0xff],
+  });
+  assert.deepEqual(shape('A? ?B'), {
+    bytes: [0xa0, 0x0b], mask: [0xf0, 0x0f],
+  });
+  assert.deepEqual(shape('0x48,0X65'), {
+    bytes: [0x48, 0x65], mask: [0xff, 0xff],
+  });
+  assert.deepEqual(shape('48_65-6C'), {
+    bytes: [0x48, 0x65, 0x6c], mask: [0xff, 0xff, 0xff],
+  });
+
+  for (const malformed of ['10x2', 'A0xB', '0x48x65', '0x', '0x 48', '0x,48', '0x0x48', '0x48,0x']) {
+    assert.equal(parseHexPattern(malformed), null, `${malformed} must not be laundered into another pattern`);
+  }
+  console.log('✔ #4664 misplaced hex prefixes are rejected');
 }
 
 console.log('\nAll format mnemonic-class tests PASSED!');

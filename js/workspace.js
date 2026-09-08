@@ -1,6 +1,6 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
@@ -9,6 +9,8 @@ const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
 const MAX_PROJECT_FINDINGS=1000;
 const MAX_DIFF_FUNCTIONS=350000;
+const PROJECT_LANGUAGES=new Set(['ja','en']);
+const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
@@ -20,6 +22,21 @@ function identityKey(identity){
 }
 function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
 function throwIfAborted(signal){if(!signal?.aborted)return;if(signal.reason instanceof Error)throw signal.reason;const error=new Error(signal.reason==null?'Operation aborted':String(signal.reason));error.name='AbortError';error.code='ABORT_ERR';throw error;}
+function applyWorkspaceAnalysisSettings(app,settings){
+  if(!settings||typeof settings!=='object'||Array.isArray(settings))return;
+  if(PROJECT_LANGUAGES.has(settings.language)){
+    if(typeof app?.setLanguage==='function')app.setLanguage(settings.language);
+    else if(app?.prefs)app.prefs.lang=settings.language;
+  }
+  if(typeof settings.explain==='boolean'){
+    if(typeof app?.setExplain==='function')app.setExplain(settings.explain);
+    else if(app?.prefs)app.prefs.explain=settings.explain;
+  }
+  if(PROJECT_TEXT_SIZES.has(settings.textSize)){
+    if(typeof app?.setTextSize==='function')app.setTextSize(settings.textSize);
+    else if(app?.prefs)app.prefs.textSize=settings.textSize;
+  }
+}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -80,13 +97,26 @@ function aiTurns(){
   })):[];
 }
 
+// AI investigation sessions carry either the raw content hash or the strong
+// `content:<hash>[:<slice>]` binary identity. Project round-trips must match
+// both spellings, or valid sessions are dropped on export/import (#5652).
+function sessionMatchesBinaryHash(sessionBinaryId, hash) {
+  if (!sessionBinaryId || !hash) return false;
+  if (sessionBinaryId === hash) return true;
+  if (sessionBinaryId === `content:${hash}`) return true;
+  return sessionBinaryId.startsWith(`content:${hash}:`);
+}
+
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
   const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
-  const activeSessions = app?.aiRuntime?.sessionStore?.list?.(identity?.hash || identity?.binaryId)
+  const allSessions = app?.aiRuntime?.sessionStore?.list?.()
     || (app?.aiRuntime?.sessionStore?.sessions ? Array.from(app.aiRuntime.sessionStore.sessions.values()) : null)
     || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
+  const activeSessions = Array.isArray(allSessions)
+    ? allSessions.filter((session) => session?.binaryId == null || sessionMatchesBinaryHash(session.binaryId, identity?.hash))
+    : allSessions;
   const rawTurns = aiTurns();
   const safeTurns = rawTurns.map((turn) => stripSecrets(turn));
   const safeSessions = Array.isArray(activeSessions) && activeSessions.length
@@ -121,6 +151,10 @@ export function snapshotWorkspace(app, identity){
 export function applyWorkspaceProject(app, project){
   const notes=app.notes;
   if(!notes||!notes.id)throw new Error('notes-unavailable');
+  // Keep all navigation validation ahead of the first persistent mutation.
+  // Import callers already parse projects, but this exported apply boundary is
+  // also used directly by local restore and integration code (#5953).
+  const navigation=normalizeNavigation(project.navigation??{});
   const replaceVars = project.user?.varsPresent !== false;
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
@@ -147,42 +181,48 @@ export function applyWorkspaceProject(app, project){
     for(const session of project.findings.investigationSessions){
       if(session && typeof session === 'object'){
         const sessionBinaryId = session.binaryId || null;
-        if(sessionBinaryId && currentHash && sessionBinaryId !== currentHash) continue;
+        // Saved sessions may carry the raw hash or the strong
+        // `content:<hash>[:<slice>]` identity; both bind to the current
+        // binary, a raw comparison drops the strong ones (#5652).
+        if(sessionBinaryId && currentHash && !sessionMatchesBinaryHash(sessionBinaryId, currentHash)) continue;
         if(session.id && app?.aiRuntime?.sessionStore?.register){
           app.aiRuntime.sessionStore.register(session);
         }
       }
     }
   }
-  // Restore analysis settings
-  if(project.analysis?.settings){
-    const s = project.analysis.settings;
-    if(s.language && app.prefs) app.prefs.lang = s.language;
-    if(s.explain != null && app.prefs) app.prefs.explain = s.explain;
-    if(s.textSize && app.prefs) app.prefs.textSize = s.textSize;
-  }
   // Restore last query
-  if(project.navigation?.lastQuery){
-    app.lastGoal = { text: project.navigation.lastQuery };
+  if(navigation.lastQuery){
+    app.lastGoal = { text: navigation.lastQuery };
   }
   // Restore navigation history & cursor
-  const history=project.navigation?.history||[];
+  const history=navigation.history||[];
   if(app.navigation&&history.length){
     app.navigation.entries=history.slice(-app.navigation.limit);
     const droppedHistoryCount=history.length-app.navigation.entries.length;
-    const cursor = project.navigation?.cursorIndex;
+    const cursor = navigation.cursorIndex;
     app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
       ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)-droppedHistoryCount))
       : app.navigation.entries.length - 1;
     app.navigation.onChange?.(app.navigation.snapshot());
   }
   // Restore currentFunction if present and within valid range
-  if(project.navigation?.currentFunction != null){
-    const curAddr = BigInt(project.navigation.currentFunction);
-    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
-    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
-      app.store?.set?.({ currentAddress: curAddr });
-      app.viewer?.goToAddress?.(curAddr);
+  if(navigation.currentFunction != null){
+    const curAddr = navigation.currentFunction;
+    if(typeof app.goToAddress === 'function'){
+      // Saved positions can live in any region of the active slice. Route the
+      // restore through the app-level navigation so the owning region gets
+      // selected (secondary code sections, data regions, ...); invalid
+      // addresses stay silently skipped exactly as before (#5944).
+      const regions=app.store?.get?.('regions')||[];
+      const target=regions.find((r)=>r.size>0n&&curAddr>=r.vmAddr&&curAddr<r.vmAddr+r.size);
+      if(target)app.goToAddress(curAddr,{history:false});
+    }else{
+      const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+      if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+        app.store?.set?.({ currentAddress: curAddr });
+        app.viewer?.goToAddress?.(curAddr);
+      }
     }
   }
   // Restore bookmarks
@@ -191,6 +231,8 @@ export function applyWorkspaceProject(app, project){
     if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
     if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
   }
+  // Apply imported analysis settings only after the rest of the project restore succeeds.
+  applyWorkspaceAnalysisSettings(app,project.analysis?.settings);
   return true;
 }
 

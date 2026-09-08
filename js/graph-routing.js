@@ -121,7 +121,9 @@ export function layoutNodes(nodes, edges, byId) {
   return {
     pos, rank, rows, rowBounds, ranksSorted,
     width: contentWidth + GRAPH_PAD * 2,
-    height: y - GAP_Y + GRAPH_PAD + 18,
+    // With no ranks, the row loop never adds GAP_Y. Keep the canvas usable
+    // for an empty CFG instead of subtracting that absent trailing gap.
+    height: Math.max(GRAPH_PAD * 2, y - GAP_Y + GRAPH_PAD + 18),
   };
 }
 

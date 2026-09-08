@@ -50,8 +50,16 @@ function traceEventEpochAuthority(value) {
 
 function debugSessionId(value) {
   if (value == null) return `debug:${nextSession++}`;
-  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
-  return value;
+  if (typeof value !== 'string') throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  const text = value.trim();
+  if (!text) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  return text;
+}
+
+function sessionLookupId(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
 }
 
 export class DebugSession {
@@ -60,15 +68,26 @@ export class DebugSession {
     this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
-    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null; this._connectPromise=null; this._lifecycleGeneration=1;
   }
-  async connect(options = {}) {
-    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
-    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+  _connectIsCurrent(generation) { return !this.closed && this._lifecycleGeneration===generation; }
+  async _cleanupStaleConnect() {
+    const disconnecting=this._disconnecting;
+    if (disconnecting) { try { await disconnecting; } catch {} }
+    if (typeof this.adapter.disconnect==='function') { try { await this.adapter.disconnect(); } catch {} }
+  }
+  async _connectOnce(options, generation) {
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(this.epoch);
     let result;
+    let published=false;
+    let staleCleanup=false;
     try {
       result = await this.adapter.connect(options);
+      if (!this._connectIsCurrent(generation)) {
+        staleCleanup=true;
+        await this._cleanupStaleConnect();
+        throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      }
       if (typeof this.adapter.onEvent === 'function') {
         const subscriptionEpoch = this.epoch;
         const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
@@ -76,20 +95,36 @@ export class DebugSession {
         this._unsubscribe=unsubscribe || null;
       }
       this.connected=true;
+      published=true;
+      await this.refreshState(generation);
+      if (!this._connectIsCurrent(generation)) throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      return result;
     } catch (error) {
-      if (typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
-      this._unsubscribe=null; this.connected=false;
-      try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      if (!published && typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      if (!published) this._unsubscribe=null;
+      if (!published) this.connected=false;
+      if (!staleCleanup && !published) {
+        try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      }
       throw error;
     }
-    await this.refreshState();
-    return result;
   }
-  async refreshState() {
+  async connect(options = {}) {
+    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
+    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+    if (this._connectPromise) return this._connectPromise;
+    if (this._disconnecting) throw new DebugAdapterError('session-disconnecting','cannot connect while a debug session disconnect is in flight');
+    const generation=this._lifecycleGeneration;
+    const attempt=this._connectOnce(options,generation);
+    this._connectPromise=attempt;
+    try { return await attempt; }
+    finally { if (this._connectPromise===attempt) this._connectPromise=null; }
+  }
+  async refreshState(lifecycleGeneration = null) {
     const refreshToken={};
     const refreshEpoch=this.epoch;
     this._refreshToken=refreshToken;
-    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken;
+    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken&&(lifecycleGeneration==null||this._lifecycleGeneration===lifecycleGeneration);
     const snapshot=()=>({modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}});
     let modules=this.modules;
     let threads=this.threads;
@@ -169,12 +204,16 @@ export class DebugSession {
     return { ok:true, count:prepared.length };
   }
   newEpoch() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
     const next = this.epoch + 1;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
     this.epoch = next;
     this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
   }
-  controller() { const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c; }
+  controller() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot mint a controller on a closed debug session');
+    const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c;
+  }
   releaseController(controller) { this.controllers.delete(controller); }
   cancelAll(reason='cancelled') { for (const c of [...this.controllers]) c.abort(reason); this.controllers.clear(); }
   addExperiment(exp) { this.experiments.push(exp); if (this.experiments.length>256) this.experiments.shift(); }
@@ -190,12 +229,19 @@ export class DebugSession {
   }
   async disconnect() {
     if(this.closed)return;
-    this.closed=true; this.cancelAll('disconnected'); if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} } this._unsubscribe=null;
-    try{await this.adapter.disconnect();}finally{
-      this.connected=false;
-      const onClosed=this._onClosed; this._onClosed=null;
-      if(onClosed) { try { onClosed(this); } catch {} }
+    if(this._disconnecting)return this._disconnecting;
+    this._lifecycleGeneration++;
+    this.cancelAll('disconnected');
+    const attempt=(async()=>{ await this.adapter.disconnect(); })();
+    this._disconnecting=attempt;
+    try{
+      await attempt;
+      if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      this._unsubscribe=null; this.connected=false; this.closed=true;
     }
+    finally{ if(this._disconnecting===attempt) this._disconnecting=null; }
+    const onClosed=this._onClosed; this._onClosed=null;
+    if(onClosed) { try { onClosed(this); } catch {} }
   }
 }
 
@@ -204,8 +250,15 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
+    // Reserve anonymous ids in this manager's live namespace. Explicit ids
+    // remain caller-owned and still fail on a real duplicate; the counter is
+    // monotonic, so an id is not reused after close during this process (#5933).
+    const requested={...options};
+    if(requested.id==null){
+      do{ requested.id=`debug:${nextSession++}`; }while(this.sessions.has(requested.id));
+    }
     const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
+    const session=new DebugSession(adapter,{...requested,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }
@@ -213,7 +266,7 @@ export class DebugSessionManager {
     if(this.sessions.get(session.id)===session)this.sessions.delete(session.id);
     if(this.current===session)this.current=null;
   }
-  get(id){return this.sessions.get(id)||null;}
+  get(id){const key=sessionLookupId(id);return key==null?null:(this.sessions.get(key)||null);}
   switch(id){
     const next=this.get(id);if(!next)throw new DebugAdapterError('session-not-found',`debug session not found: ${id}`);
     // Selecting a session is UI/manager state and must not invalidate execution state.
@@ -221,7 +274,8 @@ export class DebugSessionManager {
   }
   async close(id){
     const s=this.get(id);if(!s)return false;
-    try{await s.disconnect();}finally{this._sessionClosed(s);}
+    await s.disconnect();
+    this._sessionClosed(s);
     return true;
   }
 }
