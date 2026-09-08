@@ -57,6 +57,18 @@ function requireDexMemberName(name, dexVersion, code) {
   return name;
 }
 
+// AOSP dex-format#class-def-item: class_idx and non-NO_INDEX superclass_idx
+// must be class types. type_ids legitimately hold primitives, arrays and void
+// for other roles, so the definer role resolves through its own contract —
+// a non-array object descriptor (L...;) — or the role violation is lost
+// after parsing and a primitive masquerades as a defined class (#7436).
+function requireClassType(types, idx, code) {
+  const descriptor = requireIndex(types, idx, code);
+  const info = dexTypeInfo(descriptor);
+  if (info.category !== 'object' || !descriptor.startsWith('L')) fail(code);
+  return descriptor;
+}
+
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
 
 export function probeDex(bytes) {
@@ -244,7 +256,7 @@ export function parseDex(bytes, options = {}) {
     requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
-    const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
+    const classType = requireClassType(types, classIdx, 'dex-invalid-class-definer-type');
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
@@ -306,7 +318,7 @@ export function parseDex(bytes, options = {}) {
         interfaceTypes.push(descriptor);
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
+    classes.push({classType,accessFlags,superType:superclassIdx!==0xffffffff?requireClassType(types,superclassIdx,'dex-invalid-superclass-type'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
   dexMethodDefinitions({ methods, classes });
