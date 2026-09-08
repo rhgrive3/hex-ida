@@ -232,6 +232,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x2a: // ret
           mnemonic = 'ret';
+          // A non-void `ret` returns the evaluation-stack top (ECMA-335 §III.3.57):
+          // the value must be consumed as the return operand so the bridge can
+          // connect it to the Semantic IR return node. An empty stack is the
+          // void-method shape; the return-shape contract is verified by the
+          // CIL stack validator against `returnStackSlots` (#7268).
+          if (currentStackHeight > 0) {
+            consumedValues.push({ id: 'top' });
+            currentStackHeight--;
+          }
           controlEffects.push({ kind: 'return' });
           break;
 
