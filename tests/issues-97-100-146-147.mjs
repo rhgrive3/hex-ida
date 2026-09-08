@@ -29,7 +29,8 @@ function minimalPE({ entry = 0, sectionName = '.text', longName = null } = {}) {
 }
 {
   const image = parsePE(minimalPE({ longName: 'very_long_text_section' }));
-  assert.equal(image.sections[0].name, 'very_long_text_section');
+  // PE image section names are literal; the COFF symbol long name remains a separate record.
+  assert.equal(image.sections[0].name, '/4');
 }
 {
   const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const u32 = (o, x) => v.setUint32(o, x, true); const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true); const enc = new TextEncoder();
