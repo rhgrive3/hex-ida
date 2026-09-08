@@ -77,6 +77,11 @@ function decodedAbsoluteTargetOf(op) {
   try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
 
+
+// Numeric `other` target text is canonical address evidence for ADR/ADRP.
+export function numericOtherTargetValue(op) {
+  return decodedAbsoluteTargetOf(op);
+}
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   // The condition code picks a canonical NZCV predicate: structured text must
