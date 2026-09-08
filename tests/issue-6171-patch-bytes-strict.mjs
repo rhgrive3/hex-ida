@@ -35,28 +35,30 @@ async function expectRejected(name, before, after) {
     reason: 'validity probe',
   });
   const executor = new ProposalExecutor({ store, capabilityExecutor, app });
+  const appliedBefore = applied.length;
   await assert.rejects(
     () => executor.approveAndApply(proposal.id),
-    (error) => error?.code === 'invalid_tool_call' || error?.type === 'invalid_tool_call' || /non-byte/.test(error?.message || ''),
+    (error) => error?.type === 'invalid_tool_call' || /non-byte|Array or Uint8Array/.test(error?.message || ''),
     `${name} must be rejected instead of laundered into canonical bytes`,
   );
-  assert.equal(applied.length, 0, `${name} must never reach the mutation authority`);
+  assert.equal(applied.length, appliedBefore, `${name} must never reach the mutation authority`);
 }
 
+// Element type and range remain strict.
+await expectRejected('string bytes', ['1'], ['2']);
+await expectRejected('boolean/null bytes', [true], [null]);
+await expectRejected('out-of-range byte', [256], [0]);
+
+// Only the two supported byte containers are accepted. Array.from() must not
+// silently broaden this contract to array-like objects, Sets, or other views.
+await expectRejected('array-like object', { 0: 1, length: 1 }, { 0: 2, length: 1 });
+await expectRejected('Set bytes', new Set([1]), new Set([2]));
+await expectRejected('Uint16Array bytes', new Uint16Array([1]), new Uint16Array([2]));
+await expectRejected('scalar bytes', 1, 2);
+await expectRejected('null bytes', null, null);
+
+// Valid Array bytes keep working end to end.
 {
-  // The issue's example: string bytes.
-  await expectRejected('string bytes', ['1'], ['2']);
-}
-{
-  // Booleans and null launder through Number() as 1/0.
-  await expectRejected('boolean/null bytes', [true], [null]);
-}
-{
-  // Out-of-range numbers are not bytes either.
-  await expectRejected('out-of-range byte', [256], [0]);
-}
-{
-  // Valid byte arrays keep working end to end.
   const store = patchStore();
   const proposal = store.create({
     kind: 'patch',
@@ -68,7 +70,29 @@ async function expectRejected(name, before, after) {
   });
   const executor = new ProposalExecutor({ store, capabilityExecutor, app });
   const { execution } = await executor.approveAndApply(proposal.id);
-  assert.ok(execution, 'a valid patch still executes');
-  assert.deepEqual(applied[0]?.args?.before, [1]);
-  assert.deepEqual(applied[0]?.args?.after, [2]);
+  assert.ok(execution, 'a valid Array patch still executes');
+  assert.deepEqual(applied.at(-1)?.args?.before, [1]);
+  assert.deepEqual(applied.at(-1)?.args?.after, [2]);
 }
+
+// Uint8Array is also part of the accepted internal contract. Its payload is
+// canonicalized once so revision checks compare the same bytes returned by the
+// backend and sent to the capability authority.
+{
+  const store = patchStore();
+  const proposal = store.create({
+    kind: 'patch',
+    target: { address: '0x1000' },
+    before: new Uint8Array([1]),
+    after: new Uint8Array([2]),
+    evidenceIds: ['ev1'],
+    reason: 'valid typed patch',
+  });
+  const executor = new ProposalExecutor({ store, capabilityExecutor, app });
+  const { execution } = await executor.approveAndApply(proposal.id);
+  assert.ok(execution, 'a valid Uint8Array patch still executes');
+  assert.deepEqual(applied.at(-1)?.args?.before, [1]);
+  assert.deepEqual(applied.at(-1)?.args?.after, [2]);
+}
+
+console.log('issue #6171 strict patch-byte regressions PASS');

@@ -96,7 +96,10 @@ function byteArray(value) {
   // will write. The old `Number` coercion turned string/boolean/null bytes
   // into canonical numbers, so malformed approved bytes were compared — and
   // executed — as valid bytes. Validate instead of laundering (#6171).
-  const raw = value instanceof Uint8Array ? value : Array.from(value ?? []);
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
   for (const byte of raw) {
     if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
       throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
@@ -113,6 +116,7 @@ function containsValue(actual, expected) {
   return same(actual, expected);
 }
 function normalize(value) {
+  if (value instanceof Uint8Array) return Array.from(value, normalize);
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const out = {}; for (const key of Object.keys(value).sort()) out[key] = normalize(value[key]); return out;
   }
