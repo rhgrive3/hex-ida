@@ -43,4 +43,36 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
 
+const objcBranch = 'fix/objc-protocol-class-properties-3979';
+const objcOwnedFiles = [
+  'tests/phase7/metadata/objc-protocol-class-properties-3979.test.mjs',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+  '.github/workflows/phase7-ownership.yml',
+];
+const objcForeignFiles = CROSS_LANE_ROUTES[objcBranch];
+const objcInventory = [...objcOwnedFiles, ...objcForeignFiles];
+
+for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml']) {
+  const workflow = readFileSync(file, 'utf8');
+  assert.match(workflow, /fix\/objc-protocol-class-properties-3979/);
+  assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
+}
+
+assert.deepEqual(
+  validateCrossLaneInventory(objcBranch, objcInventory),
+  [...objcOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the exact #6817 route must accept its three product files and policy files while returning only Phase 7-owned files',
+);
+assert.throws(
+  () => validateCrossLaneInventory(objcBranch, [...objcInventory, 'tests/phase6/elf/unrelated.test.mjs']),
+  /unexpected foreign paths/,
+  'the #6817 route must reject an unlisted foreign path instead of waiving ownership',
+);
+assert.throws(
+  () => validateCrossLaneInventory('fix/objc-protocol-class-properties-3979-similar', objcInventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar ObjC branch name must not activate the route',
+);
+
 console.log('phase7 cross-lane ownership routing: PASS');
