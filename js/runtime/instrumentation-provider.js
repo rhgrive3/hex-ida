@@ -200,6 +200,9 @@ export class InstrumentationProvider {
       return event;
     };
 
+    // Claim provider ownership before the first await. A second open must not
+    // race through while this session is still connecting or enumerating.
+    this.activeSession = session;
     try {
       if (options.connect !== false && typeof this.backend.connect === 'function') await this.backend.connect(options.connectOptions || request);
       if (typeof this.backend.onEvent === 'function') {
