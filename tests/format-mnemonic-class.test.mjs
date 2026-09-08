@@ -34,10 +34,18 @@ import { mnemonicClass } from '../js/format.js';
   }
 
   // Classic ARM64 branch mnemonics
-  const armClassic = ['b', 'bl', 'blr', 'br', 'cbz', 'cbnz', 'tbz', 'tbnz', 'b.eq', 'b.ne', 'b.gt', 'b.lt', 'svc', 'brk', 'hlt', 'bti'];
+  const armClassic = ['b', 'bl', 'blr', 'br', 'cbz', 'cbnz', 'tbz', 'tbnz', 'b.eq', 'b.ne', 'b.gt', 'b.le', 'b.lt', 'svc', 'brk', 'hlt', 'bti'];
   for (const mn of armClassic) {
     assert.equal(mnemonicClass(mn), 'flow', `mnemonicClass('${mn}') must be 'flow'`);
   }
+
+  // #5258: ARM64 logical, bitfield, and SIMD mnemonics are not branches.
+  const armNonFlowB = ['bic', 'bfc', 'bfi', 'bif', 'bit', 'bsl'];
+  for (const mn of armNonFlowB) {
+    assert.equal(mnemonicClass(mn), '', `mnemonicClass('${mn}') must be empty`);
+    assert.equal(mnemonicClass(mn.toUpperCase()), '', `mnemonicClass('${mn.toUpperCase()}') must be empty`);
+  }
+  assert.equal(mnemonicClass('b.zz'), '', "mnemonicClass('b.zz') must reject unknown condition codes");
 
   // Non-flow ARM mnemonics
   const armNonFlow = ['mov', 'add', 'ldr', 'str', 'stp', 'ldp', 'adrp', 'csel'];

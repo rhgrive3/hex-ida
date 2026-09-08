@@ -1,4 +1,4 @@
-import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, objcMessage } from './objc-runtime.js';
+import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, isObjcMsgSendSymbol, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
 import { classifyLanguageRuntimeCall } from '../metadata/index.js';
@@ -7,7 +7,12 @@ import { canonicalAddress } from '../core/identity/index.js';
 export function runtimeOriginForSymbol(name) {
   const n = typeof name === 'string' ? name : '';
   if (/^_?\$[sS]/.test(n) || /^_?swift_/.test(n)) return 'swift';
-  if (/^[+-]\[/.test(n) || /^_?objc_/.test(n) || /objc_msgSend/.test(n)) return 'objc';
+  // Keep the broad objc_ family for the other runtime helpers, but do not let
+  // malformed objc_msgSend-prefixed user symbols bypass the anchored entry
+  // point grammar in isObjcMsgSendSymbol().
+  if (/^[+-]\[/.test(n)
+    || (/^_?objc_/.test(n) && !/^_?objc_msgSend/.test(n))
+    || isObjcMsgSendSymbol(n)) return 'objc';
   if (/^runtime\./.test(n) || /^go:/.test(n)) return 'go';
   // `std::` is the C++ standard library namespace too, so it is ambiguous with
   // Rust's demangled `std::...`. Rust legacy symbols are distinguishable by
@@ -96,8 +101,8 @@ export function resolveAppleCall(index, call = {}) {
   const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
-  if (origin === 'objc' || /objc_msgSend/.test(name) || imp?.candidates?.length) {
-    if (imp?.candidates?.length && !/objc_msgSend/.test(name)) {
+  if (origin === 'objc' || isObjcMsgSendSymbol(name) || imp?.candidates?.length) {
+    if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,
