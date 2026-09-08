@@ -102,3 +102,45 @@ test('#5915 top-level functions and symbols are rejected as non-snapshot values'
     await assert.rejects(api.semanticIR(snap, 'fn:0'), /analysis-query-value-unclonable/);
   }
 });
+
+test('#5915 page and cost are detached from adapter-owned response metadata', async () => {
+  const pageOwned = {
+    cursor: { n: 1 },
+    offsets: new Uint8Array([7, 8]),
+  };
+  const costOwned = {
+    budget: { used: 1 },
+    buckets: new Map([['query', 1]]),
+  };
+  const metadataAdapter = {
+    async currentIdentity() {
+      return { binaryId: 'bin-5915', projectRevision: 0, analysisEpoch: 1, artifactVersions: {} };
+    },
+    async semanticIR() {
+      return {
+        value: { ok: true },
+        status: { completeness: 'complete' },
+        page: pageOwned,
+        cost: costOwned,
+      };
+    },
+  };
+  const api = new AnalysisQueryAPI(metadataAdapter);
+  const snap = await api.snapshot();
+  const result = await api.semanticIR(snap, 'fn:0');
+
+  assert.equal(Object.isFrozen(result.page), true);
+  assert.equal(Object.isFrozen(result.page.cursor), true);
+  assert.equal(Object.isFrozen(result.cost), true);
+  assert.equal(Object.isFrozen(result.cost.budget), true);
+  assert.throws(() => { result.page.cursor.n = 2; }, TypeError);
+  assert.throws(() => { result.cost.budget.used = 999; }, TypeError);
+
+  // Keyed/buffered collection facades may remain mutable, but must be detached.
+  result.page.offsets[0] = 99;
+  result.cost.buckets.set('query', 999);
+  assert.equal(pageOwned.cursor.n, 1);
+  assert.deepEqual([...pageOwned.offsets], [7, 8]);
+  assert.equal(costOwned.budget.used, 1);
+  assert.equal(costOwned.buckets.get('query'), 1);
+});

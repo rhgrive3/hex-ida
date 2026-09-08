@@ -169,14 +169,16 @@ export class AnalysisQueryAPI {
       ...(typeof result?.status === "object" && result.status !== null ? frozenQueryValue(result.status) : {}),
       completeness,
     });
+    const page = frozenQueryValue(result?.page ?? null);
+    const cost = frozenQueryValue(result?.cost ?? status.cost ?? null);
     return Object.freeze({
       snapshotId: snapshot.snapshotId,
       analysisEpoch: snapshot.analysisEpoch,
       completeness,
       value,
       status,
-      page: result?.page ?? null,
-      cost: result?.cost ?? status.cost ?? null,
+      page,
+      cost,
     });
   }
 
