@@ -60,10 +60,23 @@ const hfa2 = {
   const recoveredHfa = prototype.arguments.find((argument) => argument.aggregate === true);
   assert.ok(recoveredHfa);
   assert.equal(recoveredHfa.abiClass, 'hfa');
+  assert.equal(recoveredHfa.bankIndex, 1, 'aggregate bank index follows source parameter ordinal');
+  assert.equal(recoveredHfa.canonicalParameterIndex, 1, 'aggregate keeps its source parameter ordinal');
   assert.deepEqual(recoveredHfa.regs, ['v0', 'v1']);
   assert.deepEqual(recoveredHfa.pieces.map((piece) => piece.reg), ['v0', 'v1']);
+  assert.deepEqual(recoveredHfa.pieces.map((piece) => piece.pieceIndex), [0, 1]);
+  const recoveredInteger = prototype.arguments.find((argument) => argument.reg === 'x0');
+  assert.ok(recoveredInteger);
+  assert.equal(recoveredInteger.bankIndex, 0, 'integer bank index follows x0 physical bank');
+  assert.equal(recoveredInteger.canonicalParameterIndex, 0, 'x0 keeps source parameter ordinal zero');
   assert.deepEqual(prototype.argumentBanks.integer.map((argument) => argument.reg), ['x0']);
+  assert.deepEqual(prototype.argumentBanks.integer.map((argument) => argument.canonicalParameterIndex), [0]);
   assert.deepEqual(prototype.argumentBanks.fp.map((argument) => argument.reg), ['v0', 'v1']);
+  assert.deepEqual(prototype.argumentBanks.fp.map((argument) => argument.bankIndex), [1, 1]);
+  assert.deepEqual(prototype.argumentBanks.fp.map((argument) => argument.canonicalParameterIndex), [1, 1]);
+  assert.equal(AAPCS64_ABI.classifyEntryRegister('x0').index, 0, 'entry x0 index stays physical');
+  assert.equal(AAPCS64_ABI.classifyEntryRegister('v0').index, 8, 'entry v0 bank index stays physical');
+  assert.equal(AAPCS64_ABI.classifyEntryRegister('v1').index, 9, 'entry v1 bank index stays physical');
 }
 
 // Darwin inherits the same entry-bank contract, while registers outside v0-v7
