@@ -42,3 +42,34 @@ test('#5878 stale completion preserves new-epoch state and the previous replay r
   assert.deepEqual(calls, ['seed', 'stale', 'seed'], 'stale completion must not replace the previous replay recording');
   assert.equal(replay.recording.input.kind, 'seed');
 });
+
+
+test('#5878 cooperative engine cancellation preserves the new epoch state', async () => {
+  let started;
+  const entered = new Promise((resolve) => { started = resolve; });
+  let observedAbort = false;
+  const engine = {
+    execute(_input, { signal }) {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          observedAbort = true;
+          reject(new Error('engine cancelled'));
+        }, { once: true });
+        started();
+      });
+    },
+  };
+  const provider = new EmulatorProvider(engine);
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 'cooperative' }, { connect: false });
+  const originalEpoch = session.epoch;
+  const pending = session.facets.emulator.run({});
+  const rejected = assert.rejects(pending, (error) => error.code === 'runtime-session-stale'
+    && error.details.startedEpoch === originalEpoch
+    && error.details.currentEpoch === session.epoch);
+  await entered;
+  session.newEpoch();
+  session.setState('paused');
+  await rejected;
+  assert.equal(observedAbort, true);
+  assert.equal(session.state, 'paused');
+});
