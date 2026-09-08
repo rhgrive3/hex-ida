@@ -257,8 +257,12 @@ function parseX64UnwindDescriptor(r, image, runtimeFunction, budget, seen = new 
       return invalidExceptionRecord(image, kind, budget, 'x64-handler-tail', `Ignored truncated x64 handler RVA at unwind RVA 0x${unwind.toString(16)}`);
     }
     const handlerRva = r.u32(tail);
-    if (!handlerRva || !mappedFileRangeForRva(image, handlerRva)) {
-      return invalidExceptionRecord(image, kind, budget, 'x64-handler-rva', `Ignored x64 UNWIND_INFO with unmapped handler RVA 0x${handlerRva.toString(16)}`);
+    // The handler field is the address of the language-specific exception
+    // handler *routine*: it must live in an executable, file-backed mapping,
+    // not merely any mapped data section. Accepting data-section RVAs let
+    // malformed UNWIND_INFO mint 0.999-confidence function seeds (#5466).
+    if (!handlerRva || !mappedFileRangeForRva(image, handlerRva) || !executableRvaRange(image, handlerRva, 1)) {
+      return invalidExceptionRecord(image, kind, budget, 'x64-handler-not-executable', `Ignored x64 UNWIND_INFO whose handler RVA 0x${handlerRva.toString(16)} is not an executable file-backed routine`);
     }
   }
   return { primary:{ begin, finish, unwind }, fragments:[] };
