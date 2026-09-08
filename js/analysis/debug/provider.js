@@ -51,6 +51,22 @@ export const DEBUG_DEFAULT_BUDGET = Object.freeze({
   maxDepth: 64,
 });
 
+/**
+ * Canonicalizes a caller-supplied budget against the defaults. A partial or
+ * malformed budget object must merge over the defaults field-by-field, never
+ * disable a cap (comparisons against undefined are always false) nor zero out
+ * coverage (#5604) — the DWARF and PDB backends must agree on this contract.
+ */
+export function resolveDebugBudget(budget) {
+  const source = budget && typeof budget === 'object' ? budget : {};
+  const bounded = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
+  return Object.freeze({
+    maxBytesScanned: bounded(source.maxBytesScanned) ?? DEBUG_DEFAULT_BUDGET.maxBytesScanned,
+    maxRecords: bounded(source.maxRecords) ?? DEBUG_DEFAULT_BUDGET.maxRecords,
+    maxDepth: bounded(source.maxDepth) ?? DEBUG_DEFAULT_BUDGET.maxDepth,
+  });
+}
+
 function fail(code) { throw new TypeError(code); }
 
 function nonEmpty(value, code) {
