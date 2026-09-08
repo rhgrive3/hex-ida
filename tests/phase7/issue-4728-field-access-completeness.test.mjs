@@ -3,7 +3,7 @@ import {
   clearFieldAccessArtifacts,
   fieldAccessAcrossExecutableRegions,
   fieldAccessRegion,
-} from '../js/analysis/field-access-artifact.js';
+} from '../../js/analysis/field-access-artifact.js';
 
 const region = { id:'text', exec:true, size:16n };
 
