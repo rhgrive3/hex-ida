@@ -20,17 +20,17 @@ function optionalIdentity(value, name) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new DebugAdapterError('invalid-runtime-identity', `${name} must be a non-empty string`, { name, value });
   }
-  return value;
+  // Exact identity comparisons downstream assume the canonical spelling:
+  // keep the trimmed form so ' bin ' and 'bin' are the same identity (#5462).
+  return value.trim();
 }
 
 function safeSequence(value, name = 'sequence') {
   if (value == null) return null;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
   }
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) throw new DebugAdapterError('invalid-sequence', `${name} must be a non-negative safe integer`);
-  return n;
+  return value;
 }
 
 function positiveSize(value, name = 'runtimeSize') {
@@ -122,7 +122,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
     pathHint: optionalText(input.pathHint ?? input.path ?? input.name),
     binaryId,
     sliceId,
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     buildIdentity: input.buildIdentity == null ? null : ownedClone(input.buildIdentity),
     loadedSequence: safeSequence(input.loadedSequence, 'loadedSequence'),
     unloadedSequence: safeSequence(input.unloadedSequence, 'unloadedSequence'),
@@ -133,7 +133,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
 
 function matchIsStrong(match, targetBinaryId) {
   if (!match || typeof match !== 'object' || match.accepted !== true || match.ambiguous === true) return false;
-  if (targetBinaryId && match.targetBinaryId != null) {
+  if (targetBinaryId) {
     if (typeof match.targetBinaryId !== 'string' || !match.targetBinaryId.trim() || match.targetBinaryId !== targetBinaryId) return false;
   }
   const confidence = match.identityConfidence ?? match.confidence ?? match.score;
@@ -158,8 +158,12 @@ export class RuntimeModuleBindingTable {
     if (active && active.unloadedSequence == null) {
       throw new DebugAdapterError('module-binding-already-loaded', `runtime module binding is already loaded: ${bindingKey}`, { bindingKey, generation: active.generation });
     }
+    const bindingInput = { ...input, bindingKey };
+    if (bindingInput.unloadedSequence != null) {
+      throw new DebugAdapterError('invalid-module-sequence', 'runtime module load cannot include unloadedSequence', { bindingKey });
+    }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    const binding = normalizeBinding({ ...input, bindingKey }, this.runtimeSessionId, generation);
+    const binding = normalizeBinding(bindingInput, this.runtimeSessionId, generation);
     this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);
@@ -237,8 +241,14 @@ export class RuntimeModuleBindingTable {
       });
     }
 
-    if (targetSliceId && binding.sliceId && targetSliceId !== binding.sliceId) {
-      return createRuntimeAddressResolution({ ...binding, runtimeAddress: address, state: 'mismatch', method: 'slice-id-mismatch', evidenceIds: binding.identityEvidenceIds });
+    if (targetSliceId && binding.sliceId !== targetSliceId) {
+      return createRuntimeAddressResolution({
+        ...binding,
+        runtimeAddress: address,
+        state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+        method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
+        evidenceIds: binding.identityEvidenceIds,
+      });
     }
 
     if (!binding.binaryId || binding.staticBase == null || binding.identityState === 'unresolved') {
@@ -271,7 +281,7 @@ export function createRuntimeAddressResolution(input = {}) {
     runtimeAddress,
     binaryId: optionalIdentity(input.binaryId, 'binaryId'),
     sliceId: optionalIdentity(input.sliceId, 'sliceId'),
-    imageId: optionalText(input.imageId),
+    imageId: optionalIdentity(input.imageId, 'imageId'),
     staticAddress,
     targetEntityIds: freezeEntityIds(input.targetEntityIds),
     state,

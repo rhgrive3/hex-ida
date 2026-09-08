@@ -138,7 +138,7 @@ function renderCanonicalEvidence(app, router, route, meta) {
         ),
       });
       const nodes = [note.root, stack];
-      if (finalResult?.completeness !== 'complete' || finalResult?.page?.next != null || rows.length >= MAX_RENDERED_EVIDENCE) {
+      if (finalResult?.completeness !== 'complete' || finalResult?.page?.next != null || rows.length > MAX_RENDERED_EVIDENCE) {
         nodes.unshift(h('p', 'ui-partial-note', text(
           '根拠集合は部分的です。未取得の根拠を「存在しない」とは扱いません。',
           'The evidence set is partial; evidence outside the returned pages is not treated as absent.',

@@ -1,8 +1,20 @@
+import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMOperationId } from '../shared/identity.js';
+import { cilMetadataToken } from './metadata-layout.js';
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
+import { createCilMethodSignatureResolver } from './call-signatures.js';
 import { liftCilMethod } from './lifter.js';
 import { validateCilEffectFunction } from './validation.js';
 import { parseCil, probeCil } from './parser.js';
+
+function methodTokenText(bodyIndex, methodAuthority) {
+  const token = methodAuthority?.methodToken;
+  if (Number.isSafeInteger(token) && token >= 0x06000001 && token <= 0x06ffffff) {
+    return `0x${token.toString(16).padStart(8, '0')}`;
+  }
+  return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
+}
 
 export class CilFrontend {
   constructor(options = {}) {
@@ -31,31 +43,60 @@ export class CilFrontend {
   }
 
   async *enumerateTypes(image, options = {}) {
-    yield {
-      id: createManagedTypeId(image.moduleId, 'MainType'),
-      moduleId: image.moduleId,
-      name: 'MainType',
-    };
+    for (const type of image.types ?? []) {
+      yield {
+        ...type,
+        id: createManagedTypeId(image.moduleId, type.token),
+        moduleId: image.moduleId,
+      };
+    }
   }
 
   async *enumerateMethods(image, options = {}) {
-    for (let i = 0; i < image.methodBodies.length; i++) {
-      const token = `0x0600000${(i + 1).toString(16)}`;
-      const methodId = createManagedMethodId(image.moduleId, token);
+    const resolveMethodSignature = createCilMethodSignatureResolver(image);
+    const methods = image.methods?.length ? image.methods : image.methodBodies.map((body, i) => ({
+      bodyIndex: i,
+      token: body.token ?? methodTokenText(i, resolveMethodSignature(body)),
+      name: `Method_${i + 1}`,
+    }));
+    for (const method of methods) {
+      const body = method.bodyIndex == null ? null : image.methodBodies[method.bodyIndex];
+      const authority = body ? resolveMethodSignature(body) : null;
+      const token = method.token ?? methodTokenText(method.bodyIndex ?? 0, authority);
       yield {
-        id: methodId,
-        moduleId: image.moduleId,
-        bodyIndex: i,
+        ...method,
         token,
-        name: `Method_${i + 1}`,
+        id: createManagedMethodId(image.moduleId, token),
+        moduleId: image.moduleId,
+        declaringTypeId: method.declaringTypeToken
+          ? createManagedTypeId(image.moduleId, method.declaringTypeToken) : null,
       };
     }
   }
 
   async decodeMethod(method, context = {}) {
-    const cilImage = context.image;
-    if (!cilImage) throw new TypeError('cil-context-image-required');
-    return liftCilMethod(method.bodyIndex, cilImage, context);
+    const image = context.image;
+    if (!image) throw new TypeError('cil-context-image-required');
+    const hasDefinitions = Array.isArray(image.methods) && image.methods.length > 0;
+    const definition = hasDefinitions ? image.methods.find(row => row.token === method.token) : null;
+    if (hasDefinitions && (!definition || definition.bodyIndex !== method.bodyIndex)) {
+      throw new TypeError('cil-method-definition-mismatch');
+    }
+    if (definition?.bodyIndex === null) {
+      const methodId = createManagedMethodId(image.moduleId, definition.token);
+      const bundle = createVMEffectBundle({
+        operationId: createVMOperationId(methodId, 0, 0), methodId,
+        frontendId: 'cil', profileId: image.vmSpecEdition,
+        bytecodeOffset: 0, mnemonic: 'body-unavailable', completeness: 'unknown',
+        unknownEffects: [{ category: 'control', reason: 'cil-method-body-unavailable' }],
+      });
+      return createVMEffectFunction({ frontendId: 'cil', profileId: image.vmSpecEdition,
+        methodId, bundles: [bundle], aggregateCompleteness: 'unknown' }, context);
+    }
+    const body = image.methodBodies[method.bodyIndex];
+    if (!body) throw new TypeError('cil-invalid-method-body-index');
+    const authority = createCilMethodSignatureResolver(image)(body);
+    return liftCilMethod(method.bodyIndex, image, context, authority);
   }
 
   async validateMethod(decoded, context = {}) {

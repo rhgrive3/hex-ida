@@ -11,6 +11,26 @@ export const ARM64_ARCHITECTURE_ID = 'arm64';
 export const ARM64_MODE = 'a64';
 export const ARM64_INSTRUCTION_BYTES = 4n;
 
+const REGISTER_EXTEND_MNEMONICS = new Set(['add','adds','sub','subs']);
+
+// Canonical MachineEffects identity is a primitive string. Values that merely
+// survive `String()` coercion (arrays, objects, malformed wrappers) are
+// schema-invalid structured evidence and must fail closed instead of being
+// laundered into canonical instruction IDs, modes, or origin lists.
+export function canonicalIdentityString(value, errorCode) {
+  if (typeof value !== 'string') throw new TypeError(errorCode);
+  const text = value.trim();
+  if (!text) throw new TypeError(errorCode);
+  return text;
+}
+
+export function canonicalIdentityStringList(value, errorCode) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(errorCode);
+  return value.map((entry) => canonicalIdentityString(entry, errorCode));
+}
+
+
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
 }
@@ -44,9 +64,46 @@ export function instructionBits(op, fallback = 64) {
   return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
 }
 
+function strictInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
+
 export function immediateOf(op) {
   if (!op || op.k !== 'imm' || op.value == null) return null;
-  try { return BigInt(op.value); } catch { return null; }
+  return strictInteger(op.value);
+}
+
+// Structured A64 address evidence is authoritative only after strict canonicalization.
+const ADDRESS_EVIDENCE_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
+export function canonicalAddressValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && Number.isSafeInteger(value) ? BigInt(value) : null;
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!ADDRESS_EVIDENCE_TEXT.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
+  return null;
+}
+
+// Canonical target evidence carried by an ADR/ADRP target operand.
+export function adrTargetOperandValue(op) {
+  if (op?.k === 'imm') return canonicalAddressValue(op.value);
+  if (op?.k !== 'other' || typeof op.text !== 'string') return null;
+  const text = op.text.trim();
+  if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
 
 function decodedAbsoluteTargetOf(op) {
@@ -63,21 +120,26 @@ function decodedAbsoluteTargetOf(op) {
   try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
 
+
+// Numeric `other` target text is canonical address evidence for ADR/ADRP.
+export function numericOtherTargetValue(op) {
+  return decodedAbsoluteTargetOf(op);
+}
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   // The condition code picks a canonical NZCV predicate: structured text must
   // not coerce into a real condition identity.
   if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
+  // B.<cond> and FEAT_HBC BC.<cond> both key their condition after the dot.
+  if (mnemonic.startsWith('bc.')) return mnemonic.slice(3);
   if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
   return null;
 }
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) {
-    try { return BigInt(explicit); } catch { return null; }
-  }
+  if (explicit != null) return strictInteger(explicit);
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);
@@ -86,15 +148,30 @@ export function directTargetOf(instruction, kind = 'branch') {
   return null;
 }
 
+// Every operand that canonically parses into an absolute target. Structured
+// branch/call records may carry redundant target evidence; consumers that
+// mint exact control edges must require all of it to agree instead of
+// trusting the first parseable value.
+export function decodedOperandTargetValues(instruction) {
+  const targets = [];
+  for (const operand of instruction?.ops || []) {
+    const value = decodedAbsoluteTargetOf(operand);
+    if (value != null) targets.push(value);
+  }
+  return targets;
+}
+
 function originInput(instruction, instructionId, operationIds) {
-  const base = instruction?.origin && typeof instruction.origin === 'object' && !Array.isArray(instruction.origin)
-    ? instruction.origin
-    : {};
+  const rawBase = instruction?.origin;
+  if (rawBase != null && (typeof rawBase !== 'object' || Array.isArray(rawBase))) {
+    throw new TypeError('arm64-effects-origin-invalid');
+  }
+  const base = rawBase ?? {};
   return {
     byteRanges: base.byteRanges || [],
     virtualRanges: base.virtualRanges || [],
-    instructionIds: [...new Set([...(base.instructionIds || []).map(String), instructionId])],
-    operationIds: [...new Set([...(base.operationIds || base.bytecodeOperationIds || []).map(String), ...operationIds])],
+    instructionIds: [...new Set([...canonicalIdentityStringList(base.instructionIds, 'arm64-effects-origin-instruction-ids-invalid'), instructionId])],
+    operationIds: [...new Set([...canonicalIdentityStringList(base.operationIds ?? base.bytecodeOperationIds, 'arm64-effects-origin-operation-ids-invalid'), ...operationIds])],
     sourceLocations: base.sourceLocations || [],
     parentEntityIds: base.parentEntityIds || [],
     transforms: base.transforms || [],
@@ -119,9 +196,11 @@ function registerDescriptor(op) {
 
 export function createArm64EffectContext(instruction, options = {}) {
   const mnemonic = instructionMnemonic(instruction);
-  const instructionId = String(instruction?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64-effects-instruction-id-required');
-  const mode = String(instruction?.mode || ARM64_MODE);
+  const hasUnsupportedRegisterExtend = !REGISTER_EXTEND_MNEMONICS.has(mnemonic)
+    && Array.isArray(instruction?.ops)
+    && instruction.ops.some((op) => op?.k === 'reg' && op.extend != null);
+  const instructionId = canonicalIdentityString(instruction?.instructionId ?? '', 'arm64-effects-instruction-id-required');
+  const mode = instruction?.mode == null ? ARM64_MODE : canonicalIdentityString(instruction.mode, 'arm64-effects-mode-invalid');
   const operations = [];
   const operationIds = [];
   let tempCounter = 0;
@@ -260,6 +339,7 @@ export function createArm64EffectContext(instruction, options = {}) {
   }
 
   function readOperand(op, targetBits = instructionBits(op)) {
+    if (hasUnsupportedRegisterExtend) return null;
     if (!op) return null;
     if (op.k === 'imm') {
       const value = immediateOf(op);
@@ -268,7 +348,9 @@ export function createArm64EffectContext(instruction, options = {}) {
       return applyModifier(base, targetBits, op.shift || null, targetBits);
     }
     if (op.k === 'reg') {
-      const modifierKind = typeof op.shift?.op === 'string' ? op.shift.op.toLowerCase() : '';
+      if (op.shift != null && op.extend != null) return null;
+      const modifier = op.shift || op.extend || null;
+      const modifierKind = typeof modifier?.op === 'string' ? modifier.op.toLowerCase() : '';
       const widenedXModifier = (modifierKind === 'uxtx' || modifierKind === 'sxtx') && instructionBits(op, targetBits) === 32;
       const sourceOperand = widenedXModifier
         ? { ...op, bits:64, text:op.cls === 'zr' ? 'xzr' : `x${op.num}` }
@@ -276,7 +358,7 @@ export function createArm64EffectContext(instruction, options = {}) {
       const sourceBits = instructionBits(sourceOperand, targetBits);
       const base = readRegister(sourceOperand);
       if (!base) return null;
-      return applyModifier(base, sourceBits, op.shift || null, targetBits);
+      return applyModifier(base, sourceBits, modifier, targetBits);
     }
     return null;
   }

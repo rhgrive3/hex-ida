@@ -18,15 +18,19 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
-import { classifyCallTargetProof, summaryIdentityMatches } from '../summary/contract.js';
+import { createPhase7ArtifactDescriptor } from '../artifact-identity.js';
+import {
+  classifyCallTargetProof,
+  functionSummaryDigest,
+  summaryIdentityMatches,
+} from '../summary/contract.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
   deriveCanonicalAddressProof,
   normalizeRootIdentity,
 } from '../alias/canonical-address-v2.js';
-import { MEMORY_SSA_BUILD_VERSION } from '../../semantics/memoryssa/build.js';
-import { MEMORY_SSA_CONTRACT_VERSION } from '../../semantics/memoryssa/contract.js';
+import { validateMemorySsaBinding } from '../memoryssa-binding.js';
 import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
@@ -38,9 +42,11 @@ import { deterministicTraversal } from '../../semantics/cfg/index.js';
 import {
   BOTTOM_POINTS_TO,
   POINTS_TO_DEFAULT_BUDGET,
+  PROVEN_SEPARATION_CLASSES,
   addRange,
   createPointsToSet,
   createPointsToTarget,
+  createRootDescriptorSeparatedTarget,
   UNBOUNDED_RANGE,
   exactRange,
   joinPointsTo,
@@ -53,6 +59,73 @@ import {
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
 export const A2_ANALYZER_VERSION = '1.2.0';
+
+function configuredSummaryArtifactIds(options, calleeId) {
+  const ids = [];
+  for (const configured of [
+    options?.calleeSummaryArtifactIds,
+    options?.summaryArtifactIds,
+    options?.calleeSummaryIds,
+  ]) {
+    const value = configured instanceof Map
+      ? configured.get(String(calleeId))
+      : (configured && typeof configured === 'object' && !Array.isArray(configured)
+        && Object.hasOwn(configured, String(calleeId))
+        ? configured[String(calleeId)]
+        : null);
+    if (typeof value === 'string' && value.trim()) ids.push(value.trim());
+  }
+  return ids;
+}
+
+/**
+ * Returns every identity an A2 result must expose to its artifact descriptor.
+ *
+ * A cache-integrated caller may provide the upstream artifact id through
+ * `calleeSummaryArtifactIds`; that id is retained as an additional edge, but
+ * the canonical FunctionSummary digest is always included as well. An
+ * external label cannot prove that the summary's semantic contents stayed the
+ * same. Standalone summary providers have no ArtifactStore record to attach,
+ * so the digest is their dependency identity and is safe to pass through
+ * `dependencyIds`.
+ */
+function summaryDependencyIds(options, calleeId, summary) {
+  try {
+    const digest = functionSummaryDigest(summary);
+    if (typeof digest !== 'string' || !digest.trim()) return null;
+    const ids = new Set([`summary:${digest.trim()}`]);
+    for (const candidate of [
+      ...configuredSummaryArtifactIds(options, calleeId),
+      summary?.artifactId,
+      summary?.summaryArtifactId,
+      summary?.identity?.artifactId,
+    ]) {
+      if (typeof candidate === 'string' && candidate.trim()) ids.add(candidate.trim());
+    }
+    return [...ids].sort();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the canonical Phase 7 points-to descriptor from the exact summary
+ * identities observed by this run. The descriptor is opt-in so callers that
+ * only need the analysis result keep the historical result shape; artifact
+ * producers receive the dependency set actually consumed by A2.
+ */
+function artifactDescriptorForRun(options, calleeSummaryIds) {
+  const identity = options?.artifactIdentity;
+  if (identity == null) return null;
+  if (typeof identity !== 'object' || Array.isArray(identity)) {
+    throw new TypeError('phase7-artifact-identity-invalid');
+  }
+  return createPhase7ArtifactDescriptor({
+    ...identity,
+    kind: 'phase7.pointsto.local',
+    calleeSummaryIds,
+  });
+}
 
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
@@ -189,36 +262,14 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
     reason,
     binding,
   });
-  if (!memorySsa || typeof memorySsa !== 'object' || Array.isArray(memorySsa)) {
-    return failBoundary('unsupported', 'memoryssa-invalid');
-  }
-  if (typeof memorySsa.functionId !== 'string' || typeof ir.functionId !== 'string' || memorySsa.functionId !== ir.functionId) {
-    return failBoundary('stale', 'memoryssa-stale-function');
-  }
-  if (binding.functionId != null && (typeof binding.functionId !== 'string' || typeof ir.functionId !== 'string' || binding.functionId !== ir.functionId)) {
-    return failBoundary('stale', 'memoryssa-stale-function');
-  }
-  if (memorySsa.snapshotId != null && (typeof memorySsa.snapshotId !== 'string' || typeof (options.snapshotId ?? 'snapshot-unbound') !== 'string' || memorySsa.snapshotId !== (options.snapshotId ?? 'snapshot-unbound'))) {
-    return failBoundary('stale', 'memoryssa-stale-snapshot');
-  }
-  if (binding.snapshotId !== (options.snapshotId ?? 'snapshot-unbound')) {
-    return failBoundary('stale', 'memoryssa-stale-snapshot');
-  }
-  if (memorySsa.contractVersion !== MEMORY_SSA_CONTRACT_VERSION) {
-    return failBoundary('unsupported', 'memoryssa-contract-mismatch');
-  }
-  if (memorySsa.buildVersion !== MEMORY_SSA_BUILD_VERSION) {
-    return failBoundary('stale', 'memoryssa-build-mismatch');
-  }
-  if (binding.memorySsaBuildVersion != null && (typeof binding.memorySsaBuildVersion !== 'string' || typeof memorySsa.buildVersion !== 'string' || binding.memorySsaBuildVersion !== memorySsa.buildVersion)) {
-    return failBoundary('stale', 'memoryssa-build-mismatch');
-  }
-  if (binding.semanticIrVersion != null && (typeof binding.semanticIrVersion !== 'string' || typeof ir.contractVersion !== 'string' || binding.semanticIrVersion !== ir.contractVersion)) {
-    return failBoundary('stale', 'semantic-ir-version-mismatch');
-  }
-  if (binding.completeness !== 'complete') {
-    return failBoundary('unsupported', 'memoryssa-incomplete');
-  }
+  const bindingCheck = validateMemorySsaBinding({
+    memorySsa,
+    ir,
+    binding,
+    // The supplied binding is the value being checked, not current context.
+    snapshotId: options.snapshotId ?? options.memorySsaSnapshotId ?? 'snapshot-unbound',
+  });
+  if (!bindingCheck.valid) return failBoundary(bindingCheck.state, bindingCheck.reason);
 
   const definitions = Array.isArray(memorySsa.definitions) ? memorySsa.definitions : null;
   const uses = Array.isArray(memorySsa.uses) ? memorySsa.uses : null;
@@ -424,13 +475,26 @@ function targetFromCanonicalProof(proof, evidenceIds) {
     });
   }
   if (proof.kind === 'stack-like' || proof.kind === 'rooted') {
+    // A canonical proof that carries root-descriptor separation authority must
+    // cross the proof boundary (#6066); every other proof shape creates a
+    // plain target with no separation authority at all.
+    if (proof.separationAuthority === 'root-descriptor'
+      && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+      return createRootDescriptorSeparatedTarget({
+        addressSpace: proof.addressSpace,
+        rootKind: proof.kind,
+        rootIdentity: proof.rootIdentity,
+        rootEntityId: proof.rootEntityId ?? null,
+        offsetRange: exactRange(proof.offset),
+        widthBits: proof.widthBits,
+        evidenceIds,
+      }, proof);
+    }
     return createPointsToTarget({
       addressSpace: proof.addressSpace,
       rootKind: proof.kind,
       rootIdentity: proof.rootIdentity,
       rootEntityId: proof.rootEntityId ?? null,
-      separationClass: proof.separationClass ?? null,
-      separationAuthority: proof.separationAuthority ?? null,
       offsetRange: exactRange(proof.offset),
       widthBits: proof.widthBits,
       evidenceIds,
@@ -448,13 +512,24 @@ function targetFromCanonicalProof(proof, evidenceIds) {
  */
 function rootOnlySeed(proof, evidenceIds) {
   if (!proof || proof.kind !== 'root-only') return null;
+  // Same proof-boundary rule as `targetFromCanonicalProof` (#6066).
+  if (proof.separationAuthority === 'root-descriptor'
+    && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass)) {
+    return createRootDescriptorSeparatedTarget({
+      addressSpace: proof.addressSpace,
+      rootKind: proof.rootKind,
+      rootIdentity: proof.rootIdentity,
+      rootEntityId: proof.rootEntityId ?? null,
+      offsetRange: { min: null, max: null, exact: false },
+      widthBits: proof.widthBits,
+      evidenceIds,
+    }, proof);
+  }
   return createPointsToTarget({
     addressSpace: proof.addressSpace,
     rootKind: proof.rootKind,
     rootIdentity: proof.rootIdentity,
     rootEntityId: proof.rootEntityId ?? null,
-    separationClass: proof.separationClass ?? null,
-    separationAuthority: proof.separationAuthority ?? null,
     offsetRange: { min: null, max: null, exact: false },
     widthBits: proof.widthBits,
     evidenceIds,
@@ -484,13 +559,15 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
+  // Only canonical wire-contract fields are read here. Extra fields a forged
+  // serialized summary might carry (addressSpace/separationClass/
+  // separationAuthority) are not producer-emittable and must never become
+  // target authority (#5956).
   return createPointsToTarget({
-    addressSpace: provenance.addressSpace == null ? 'memory' : String(provenance.addressSpace),
+    addressSpace: 'memory',
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
     rootIdentity: provenance.rootIdentity ?? null,
     rootEntityId: String(rootEntityId),
-    separationClass: provenance.separationClass ?? null,
-    separationAuthority: provenance.separationAuthority ?? null,
     offsetRange: exactRange(offset),
     widthBits,
     evidenceIds,
@@ -536,12 +613,25 @@ function entryRootTarget(definition, functionId, values) {
  *
  * Returns the IR-value map plus the status describing how the run terminated. A
  * run that hits its iteration cap reports `truncated`, never `complete`.
+ * `status.dependencyIds` contains every callee summary identity consulted by
+ * the call transfer. A producer can pass that sorted set to the canonical
+ * `phase7.pointsto.local` descriptor as `calleeSummaryIds`. If the semantic
+ * digest of a consumed summary cannot be computed, the run is unsupported and
+ * cannot be published as a complete artifact.
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
+  const calleeSummaryDependencyIds = new Set();
+  let summaryDependencyFailure = false;
+  let summaryDependencyStopReason = null;
+
+  const markSummaryDependencyFailure = () => {
+    summaryDependencyFailure = true;
+    summaryDependencyStopReason = 'dependency-mismatch';
+  };
 
   const ssaDefinitions = new Map((ssa?.definitions ?? []).map((definition) => [String(definition.valueId), definition]));
   const ssaUsesByEntity = new Map();
@@ -558,6 +648,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     completeness,
     budgetClass: options.budgetClass ?? null,
     stopReason,
+    dependencyIds: [...calleeSummaryDependencyIds].sort(),
   });
 
   if (values.size > budget.maxValues) {
@@ -759,15 +850,25 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const calleeSummary = calleeId == null
         ? null
         : (options.summaries?.get(String(calleeId))
-          || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
+          ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
+      if (calleeId != null && calleeSummary != null) {
+        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+        if (dependencyIds == null) {
+          markSummaryDependencyFailure();
+          return topPointsTo('unresolved-call');
+        }
+        for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
+      }
       const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;
       const summaryIdentity = configuredSummaryIdentity
         && typeof configuredSummaryIdentity === 'object'
         && !Array.isArray(configuredSummaryIdentity)
         ? configuredSummaryIdentity
         : {};
-      if (!calleeSummary
-        || !summaryIdentityMatches(calleeSummary, {
+      let identityMatches = false;
+      let summaryUsable = false;
+      if (calleeSummary != null) {
+        identityMatches = summaryIdentityMatches(calleeSummary, {
           functionId: calleeId,
           snapshotId: options.snapshotId ?? 'snapshot-unbound',
           analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
@@ -775,22 +876,43 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
             ?? options.expectedSummaryAnalyzerVersion
             ?? summaryIdentity.analyzerVersion
             ?? null,
-        })
-        || !isCompleteStatus(calleeSummary.status)
-        || (calleeSummary.unknownCallEffects || []).length > 0) {
+        });
+        if (identityMatches) {
+          try {
+            summaryUsable = isCompleteStatus(calleeSummary.status)
+              && (calleeSummary.unknownCallEffects || []).length === 0;
+          } catch {
+            summaryUsable = false;
+            markSummaryDependencyFailure();
+          }
+        }
+      }
+      if (calleeSummary != null && !identityMatches) {
+        // A supplied summary for a different function/snapshot/analyzer is a
+        // dependency mismatch, not an ordinary unresolved call. Keep the
+        // known callee edge in the result but never publish this run complete.
+        markSummaryDependencyFailure();
+      }
+      if (!calleeSummary
+        || !identityMatches
+        || !summaryUsable) {
         return topPointsTo('unresolved-call');
       }
-
-      const returnIndex = Math.max(0, (node.outputs ?? []).indexOf(id));
+      if (!Array.isArray(node.outputs)) return topPointsTo('unresolved-call');
+      const returnIndex = node.outputs.indexOf(id);
+      if (returnIndex < 0) return topPointsTo('unresolved-call');
       const alternatives = (calleeSummary.returnProvenance ?? []).filter(
         (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
       );
       if (!alternatives.length) return topPointsTo('unresolved-call');
 
       // Canonical Semantic IR carries the argument list independently from a
-      // runtime target value. Old fixtures predate that field, so node.inputs is
-      // retained only as a compatibility fallback.
-      const argumentIds = node.call?.arguments?.length ? node.call.arguments : node.inputs;
+      // runtime target value; an explicit empty array means a zero-argument
+      // call, not a missing field. node.inputs is retained only as a legacy
+      // fallback for fixtures that predate the canonical field entirely.
+      const argumentIds = Array.isArray(node.call?.arguments)
+        ? node.call.arguments
+        : node.inputs;
       let merged = BOTTOM_POINTS_TO;
       for (const prov of alternatives) {
         let candidate;
@@ -855,6 +977,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   for (const [id, set] of ssaState) if (pointsToIsBottom(set)) ssaState.set(id, topPointsTo('unsupported-operation'));
 
   let completeness = stopReason == null ? 'complete' : stopReason === 'cancelled' ? 'partial' : 'truncated';
+  if (summaryDependencyFailure) {
+    completeness = 'unsupported';
+    stopReason = summaryDependencyStopReason ?? 'dependency-mismatch';
+  }
   if (stopReason == null && memoryBoundary.state === 'truncated') {
     completeness = 'truncated';
     stopReason = 'budget-exhausted';
@@ -899,11 +1025,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     proofs,
     diagnostics: diagnosticList,
   } : null;
+  const observedCalleeSummaryIds = [...calleeSummaryDependencyIds].sort();
+  const artifactDescriptor = artifactDescriptorForRun(options, observedCalleeSummaryIds);
   return {
     pointsTo: irState,
     ssaPointsTo: ssaState,
     iterations,
     status: fallbackStatus(completeness, stopReason),
+    // Compatibility alias for callers that consumed the producer-level field
+    // before dependencyIds became the shared Phase 7 status contract.
+    calleeSummaryIds: observedCalleeSummaryIds,
+    ...(artifactDescriptor == null ? {} : { artifactDescriptor }),
     ...(recovery == null ? {} : { recovery }),
   };
 }

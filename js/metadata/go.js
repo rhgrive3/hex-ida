@@ -134,6 +134,10 @@ function readUvarint(buf, off) {
   return null;
 }
 
+function isValidSectionOffset(value, length) {
+  return Number.isSafeInteger(value) && value >= 0 && value < length;
+}
+
 /**
  * Searches a byte buffer for Go build info (go1.x.y version).
  */
@@ -165,6 +169,14 @@ export function parsePclntabHeader(buf) {
   const magicInfo = GO_PCLNTAB_MAGICS[magic];
   const minLC = u8(buf, 6);
   const ptrSize = u8(buf, 7);
+
+  if (buf[4] !== 0 || buf[5] !== 0) {
+    return { valid: false, reason: 'invalid-header-padding' };
+  }
+
+  if (minLC !== 1 && minLC !== 2 && minLC !== 4) {
+    return { valid: false, reason: 'invalid-pc-quantum', minLC };
+  }
 
   if (ptrSize !== 4 && ptrSize !== 8) {
     return { valid: false, reason: 'invalid-pointer-size', ptrSize };
@@ -200,7 +212,6 @@ export function parsePclntabHeader(buf) {
     filetabOff = Number(readPtr(buf, 8 + 4 * ptrSize, ptrSize, little));
     pctabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
     pclnOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
-    ftabOff = 8 + 7 * ptrSize;
   } else {
     // 1.18 and 1.20+
     nfunc = Number(readPtr(buf, 8, ptrSize, little));
@@ -211,7 +222,16 @@ export function parsePclntabHeader(buf) {
     filetabOff = Number(readPtr(buf, 8 + 5 * ptrSize, ptrSize, little));
     pctabOff = Number(readPtr(buf, 8 + 6 * ptrSize, ptrSize, little));
     pclnOff = Number(readPtr(buf, 8 + 7 * ptrSize, ptrSize, little));
-    ftabOff = 8 + 8 * ptrSize;
+  }
+
+  if (magicInfo.version !== '1.2') {
+    const tableOffsets = { funcnametabOff, cutabOff, filetabOff, pctabOff, pclnOff };
+    for (const [offsetName, offset] of Object.entries(tableOffsets)) {
+      if (!isValidSectionOffset(offset, buf.length)) {
+        return { valid: false, reason: 'invalid-table-offset', offsetName, offset };
+      }
+    }
+    ftabOff = pclnOff;
   }
 
   return {
@@ -248,10 +268,16 @@ export function parseGoFunctions(buf, header, options = {}) {
   let invalidEntries = 0;
 
   const ftabOff = header.ftabOff;
+  const funcDataBase = header.version === '1.2' ? 0 : header.pclnOff;
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
 
+  // Number of declared entries whose slot was actually examined. Iterations
+  // after an early break were never attempted and must not be counted (#5861).
+  let scanned = 0;
+
   for (let i = 0; i < maxFuncs; i++) {
+    scanned++;
     const slot = ftabOff + i * entrySize;
     if (slot + entrySize > buf.length) {
       unreadableEntries++;
@@ -271,7 +297,8 @@ export function parseGoFunctions(buf, header, options = {}) {
       funcOff = Number(readPtr(buf, slot + header.ptrSize, header.ptrSize, header.little));
     }
 
-    if (funcOff < 0 || funcOff >= buf.length) {
+    const funcPos = funcDataBase + funcOff;
+    if (!Number.isSafeInteger(funcOff) || funcOff < 0 || !Number.isSafeInteger(funcPos) || funcPos >= buf.length) {
       invalidEntries++;
       continue;
     }
@@ -282,22 +309,22 @@ export function parseGoFunctions(buf, header, options = {}) {
     let argsSize = null;
 
     if (is118Plus) {
-      const nameOff = i32(buf, funcOff + 4, header.little);
-      argsSize = i32(buf, funcOff + 8, header.little);
+      const nameOff = i32(buf, funcPos + 4, header.little);
+      argsSize = i32(buf, funcPos + 8, header.little);
       if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
         name = readCString(buf, header.funcnametabOff + nameOff);
       }
     } else if (header.version === '1.16') {
-      const nameOff = i32(buf, funcOff + header.ptrSize, header.little);
-      argsSize = i32(buf, funcOff + header.ptrSize + 4, header.little);
+      const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
+      argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
       if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
         name = readCString(buf, header.funcnametabOff + nameOff);
       }
     } else {
       // 1.2
-      const nameOff = i32(buf, funcOff + header.ptrSize, header.little);
-      argsSize = i32(buf, funcOff + header.ptrSize + 4, header.little);
-      frameSize = i32(buf, funcOff + header.ptrSize + 8, header.little);
+      const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
+      argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
+      frameSize = i32(buf, funcPos + header.ptrSize + 8, header.little);
       if (nameOff != null && nameOff < buf.length) {
         name = readCString(buf, nameOff);
       }
@@ -327,7 +354,7 @@ export function parseGoFunctions(buf, header, options = {}) {
     completeness: {
       present: true,
       declared: header.nfunc,
-      scanned: maxFuncs,
+      scanned,
       parsed: functions.length,
       capped,
       unreadableEntries,
@@ -421,6 +448,15 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
 
   probe() {
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
+      // A section-table hit is metadata evidence even when its bytes were not
+      // supplied for scanning. Keep that state distinct from a stripped
+      // binary with no pclntab section (#5877).
+      const hasPclntabSection = this.sections.some((section) => {
+        const name = typeof section === 'string'
+          ? section
+          : (section?.name ?? section?.section ?? section?.sectname ?? '');
+        return typeof name === 'string' && name.includes('gopclntab');
+      });
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -434,10 +470,21 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'pclntab-probe',
-          detail: 'no pclntab section or buffer present',
+          detail: hasPclntabSection
+            ? 'pclntab section detected but its bytes were not supplied'
+            : 'no pclntab section or buffer present',
         }),
         sections: this.sections.map((s) => s.name || s.section || String(s)),
-        completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+        completeness: hasPclntabSection
+          ? {
+            present: true,
+            declared: 0,
+            scanned: 0,
+            parsed: 0,
+            complete: false,
+            reasons: ['pclntab-section-bytes-unavailable'],
+          }
+          : { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
       });
     }
 

@@ -1,4 +1,5 @@
 export const MAX_REQUEST_BYTES = 512 * 1024;
+export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const MAX_CONTEXT_CHARS = 160000;
 export const REQUEST_TIMEOUT_MS = 110000;
 export const MAX_UPSTREAM_ATTEMPTS = 3;
@@ -34,13 +35,33 @@ export async function readLimitedText(request, limit = MAX_REQUEST_BYTES) {
 
 export function quotaClientKey(request) { return boundedText(request.headers.get('cf-connecting-ip'), 128).trim() || 'unknown'; }
 export function quotaSessionId(value) { return boundedText(value, 128).trim() || 'anonymous'; }
+// Quota control-plane RPCs are bounded: a hung Durable Object must neither
+// outlive the turn deadline nor block the fail-closed response forever (#5617).
+export const QUOTA_RPC_TIMEOUT_MS = 10_000;
+function rpcTimeoutMs(env) {
+  const value = Number(env?.AI_QUOTA_RPC_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.min(value, QUOTA_RPC_TIMEOUT_MS) : QUOTA_RPC_TIMEOUT_MS;
+}
+function boundedRpc(promise, label, env) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`quota-${label}-timeout`)), rpcTimeoutMs(env)); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 export async function acquireDistributedQuota(request, env, sessionId) {
   const binding = env?.[AI_QUOTA_BINDING];
   if (!binding || typeof binding.getByName !== 'function') return { response: jsonError(503, 'quota_unavailable', 'AI quota enforcement is unavailable; requests are blocked fail-closed.'), lease: null };
   try {
     const stub = binding.getByName('ip:' + quotaClientKey(request));
     if (!stub || typeof stub.acquire !== 'function' || typeof stub.release !== 'function') throw new Error('invalid quota stub');
-    const result = await stub.acquire({ sessionId: quotaSessionId(sessionId) });
+    // A client disconnect while the quota wait is pending also ends the wait
+    // here: the turn must never start an upstream fetch after the client is
+    // gone (#5617/#5626).
+    const disconnect = request?.signal && !request.signal.aborted
+      ? new Promise((_resolve, reject) => { request.signal.addEventListener('abort', () => reject(new Error('quota-acquire-disconnected')), { once: true }); })
+      : (request?.signal?.aborted ? Promise.reject(new Error('quota-acquire-disconnected')) : null);
+    const result = await (disconnect
+      ? Promise.race([boundedRpc(stub.acquire({ sessionId: quotaSessionId(sessionId) }), 'acquire', env), disconnect])
+      : boundedRpc(stub.acquire({ sessionId: quotaSessionId(sessionId) }), 'acquire', env));
     if (!result?.allowed) {
       const retrySeconds = Math.max(1, Math.ceil(Number(result?.retryAfterMs || 1000) / 1000));
       const code = result?.reason === 'concurrency' ? 'concurrency_limited' : 'rate_limited';
@@ -48,14 +69,21 @@ export async function acquireDistributedQuota(request, env, sessionId) {
       return { response: jsonError(429, code, message, { 'retry-after': String(retrySeconds) }), lease: null };
     }
     if (!result.token) throw new Error('quota lease token missing');
-    return { response: null, lease: { stub, token: result.token } };
+    return { response: null, lease: { stub, token: result.token, env } };
   } catch (error) {
     console.error('[ai-quota] acquire failed', { message: error?.message || String(error) });
     return { response: jsonError(503, 'quota_unavailable', 'AI quota enforcement is temporarily unavailable; requests are blocked fail-closed.'), lease: null };
   }
 }
-export async function releaseDistributedQuota(lease) { if (!lease?.stub || !lease.token) return; try { await lease.stub.release(lease.token); } catch (error) { console.error('[ai-quota] release failed', { message: error?.message || String(error) }); } }
-export async function readUpstreamFailure(response) { let code = null; try { const body = await response.json(); if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null; } catch { try { await response.body?.cancel(); } catch {} } return { code: typeof code === 'string' ? code.slice(0, 80) : null }; }
+export async function releaseDistributedQuota(lease) { if (!lease?.stub || !lease.token) return; try { await boundedRpc(lease.stub.release(lease.token), 'release', lease.env); } catch (error) { console.error('[ai-quota] release failed', { message: error?.message || String(error) }); } }
+export async function readUpstreamFailure(response, limit = MAX_RESPONSE_BYTES) {
+  let code = null;
+  try {
+    const body = JSON.parse(await readLimitedText(response, limit));
+    if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null;
+  } catch { try { await response.body?.cancel(); } catch {} }
+  return { code: typeof code === 'string' ? code.slice(0, 80) : null };
+}
 export function isRetryableUpstreamFailure(status, code) { return RETRYABLE_UPSTREAM_STATUSES.has(status) && !(status === 429 && code === 'quota_exceeded'); }
 export function retryDelayMs(attempt, retryAfter) { const after = parseRetryAfterMs(retryAfter); if (after != null) return Math.min(after, RETRY_MAX_DELAY_MS); const exponential = Math.min(RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)), RETRY_MAX_DELAY_MS); return Math.min(exponential + Math.floor(Math.random() * Math.min(250, Math.max(1, exponential / 4))), RETRY_MAX_DELAY_MS); }
 export function parseRetryAfterMs(value) { if (typeof value !== 'string' || !value.trim()) return null; const seconds = Number(value); if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000); const when = Date.parse(value); return Number.isFinite(when) ? Math.max(0, when - Date.now()) : null; }

@@ -1,5 +1,6 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
+import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -99,7 +100,10 @@ function priorityName(value) {
   for (const [k, v] of Object.entries(ANALYSIS_PRIORITY)) {
     if (v === value) return k;
   }
-  return typeof value === 'string' ? value : 'current';
+  // Numeric priorities outside the named enum remain valid scheduler inputs.
+  // Preserve their canonical numeric identity in lifecycle telemetry instead
+  // of fabricating an unrelated current label.
+  return value;
 }
 
 export class AnalysisScheduler {
@@ -146,8 +150,10 @@ export class AnalysisScheduler {
   #request(request, ancestry, parentSignal, options = {}) {
     const descriptor=request?.descriptor;
     let artifactId;
-    try { artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required'); }
-    catch (error) { return Promise.reject(error); }
+    try {
+      artifactId=requireArtifactId(descriptor?.artifactId,'artifact-request-descriptor-required');
+      assertCanonicalArtifactDescriptor(descriptor);
+    } catch (error) { return Promise.reject(error); }
     const firstAttempt=options.retry!==true;
     if (firstAttempt) this.metrics.requests++;
     const priority = priorityValue(request.priority);
@@ -166,7 +172,23 @@ export class AnalysisScheduler {
     const alreadyAborted=consumerSignals.find((signal)=>signal.aborted);
     if (alreadyAborted) { this.metrics.cancelledConsumers++; return Promise.reject(abortError(alreadyAborted)); }
     if (ancestry.includes(artifactId)) { this.metrics.cycleErrors++; return Promise.reject(new SchedulerCycleError([...ancestry,artifactId])); }
-    const existing=this.inflight.get(artifactId);
+    let existing=this.inflight.get(artifactId);
+    if (existing?.controller.signal.aborted) {
+      // Publish cancellation has a durable-outcome contract (#4595): a store
+      // may have committed even though the last consumer left. Do not start a
+      // colliding generation until that publication outcome is known.
+      if (existing.phase==='publish'||existing.phase==='completed') {
+        return this.#waitForInflightSlot(existing,consumerSignals)
+          .then(()=>this.#request(request,ancestry,parentSignal,{...options,retry:true}));
+      }
+      // Outside publication an aborted task cannot become authoritative again.
+      // Detach it synchronously so a fresh consumer does not inherit the stale
+      // controller. The old finally is identity-guarded and cannot delete the
+      // replacement task.
+      existing.superseded=true;
+      if (this.inflight.get(artifactId)===existing) this.inflight.delete(artifactId);
+      existing=null;
+    }
     if (existing) {
       if (inflightRequirementsCompatible(existing.request,request)) {
         this.metrics.coalescedRequests++;
@@ -183,7 +205,7 @@ export class AnalysisScheduler {
     }
 
     const controller=new AbortController();
-    const task={ artifactId,descriptor,request,controller,priority,enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,consumerCount:0 };
+    const task={ artifactId,descriptor,request,controller,priority,enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,superseded:false,consumerCount:0 };
     controller.signal.addEventListener('abort',()=>this.#cancelQueuedTask(task),{once:true});
     task.promise=Promise.resolve()
       .then(()=>this.#execute(task,[...ancestry,artifactId]))
@@ -201,21 +223,44 @@ export class AnalysisScheduler {
     return new Promise((resolve,reject)=>{
       let settled=false;
       const listeners=[];
-      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
-        if (settled) return;
+      const detach=(orphaned=false)=>{
+        if (settled) return false;
         settled=true;
         removeSignalListeners(listeners);
         task.consumerCount--; this.activeConsumers--;
-        if (cancelled) this.metrics.cancelledConsumers++;
         if (orphaned&&task.consumerCount===0&&!task.settled&&!task.controller.signal.aborted) {
           this.metrics.orphanCancellations++;
           task.controller.abort(new DOMException('No active consumers','AbortError'));
         }
+        return true;
+      };
+      const finish=(fn,value,cancelled=false,orphaned=cancelled)=>{
+        if (!detach(orphaned)) return;
+        if (cancelled) this.metrics.cancelledConsumers++;
         fn(value);
+      };
+      const awaitPublishOutcome=(signal)=>{
+        const orphaned=signal!==task.controller.signal;
+        if (!detach(orphaned)) return;
+        task.promise.then(
+          resolve,
+          ()=>{
+            this.metrics.cancelledConsumers++;
+            reject(abortError(signal));
+          },
+        );
+      };
+      const handleAbort=(signal)=>{
+        if (task.phase==='completed') return;
+        if (task.phase==='publish'&&(signal===task.controller.signal||task.consumerCount===1)) {
+          awaitPublishOutcome(signal);
+          return;
+        }
+        finish(reject,abortError(signal),true);
       };
       try {
         for (const signal of active) {
-          const listener=()=>finish(reject,abortError(signal),true);
+          const listener=()=>handleAbort(signal);
           listeners.push([signal,listener]); signal.addEventListener('abort',listener,{once:true});
           if (settled) break;
         }
@@ -227,7 +272,7 @@ export class AnalysisScheduler {
       if (settled) { task.promise.catch(()=>{}); return; }
       task.promise.then((value)=>finish(resolve,value),(error)=>finish(reject,error));
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
-      if (abortedAfterRegistration) finish(reject,abortError(abortedAfterRegistration),true);
+      if (abortedAfterRegistration) handleAbort(abortedAfterRegistration);
     });
   }
 
@@ -275,13 +320,13 @@ export class AnalysisScheduler {
 
     task.phase='cache';
     const cached=await this.store.get(task.descriptor,{signal:task.controller.signal});
+    if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     if (cached.status==='hit') {
       this.metrics.cacheHits++;
       this.states.set(task.artifactId,'completed');
       this.#emit('cache.hit', task, { source:'store' });
       return {...cached,state:'completed',reused:true};
     }
-    if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     return this.#enqueue(task,dependencyResults);
   }
 
@@ -371,12 +416,18 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    budget.checkCancelled(); this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
 
   #recordFailure(task,error) {
+    if (task.superseded&&task.controller.signal.aborted) {
+      this.metrics.cancelledJobs++;
+      const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      this.#emit('job.cancelled', task, { phase, superseded:true });
+      return;
+    }
     if (error instanceof BudgetExceededError) {
       this.metrics.budgetExhaustions++;
       this.states.set(task.artifactId,'budget-exhausted');
@@ -390,7 +441,7 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       this.states.set(task.artifactId,'cancelled');
-      const phase = task.phase === 'producer' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
       this.#emit('job.cancelled', task, { phase });
       return;
     }

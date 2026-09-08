@@ -29,14 +29,19 @@ export function createInvestigationSession(input = {}) {
     scope: AI_SCOPES.includes(input.scope) ? input.scope : 'auto',
     effectiveScope: AI_SCOPES.includes(input.effectiveScope) ? input.effectiveScope : null,
     goal: String(input.goal || ''),
-    messages: Array.isArray(input.messages) ? input.messages.slice(-100) : [],
+    // Store-owned session state must not share array/object references with
+    // the caller's input: a post-create mutation of the caller object would
+    // silently rewrite the registered session without update()/persist()
+    // (#5705). Copy the owned arrays (message elements included) and their
+    // element objects.
+    messages: Array.isArray(input.messages) ? input.messages.slice(-100).map(cloneRecord) : [],
     summary: String(input.summary || ''), // legacy persistence only; no longer accumulates transcript data
     investigationMemory: createInvestigationMemory(input.investigationMemory || { goal: input.goal }),
     pinnedEvidence: Array.isArray(input.pinnedEvidence) ? Array.from(new Set(input.pinnedEvidence.map(String))) : [],
-    hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses : [],
-    confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings : [],
-    rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses : [],
-    proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions : [],
+    hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses.map(cloneRecord) : [],
+    confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : [],
+    rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses.map(cloneRecord) : [],
+    proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions.map(cloneRecord) : [],
     lastActivity: input.lastActivity || null,
     createdAt: input.createdAt || now,
     updatedAt: now,
@@ -63,8 +68,10 @@ export class InvestigationSessionStore {
 
   async create(input) {
     const session = createInvestigationSession(input);
-    this.sessions.set(session.id, session);
+    // Durability before visibility: a failed save must not leave the session
+    // in memory presenting a write that never landed (#5434).
     await this.persist(session);
+    this.sessions.set(session.id, session);
     return session;
   }
 
@@ -82,15 +89,20 @@ export class InvestigationSessionStore {
     const current = await this.get(id);
     if (!current) return null;
     const allowed = ['binaryId','binaryIdentity','projectId','conversationId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
-    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) current[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
+    // Work on a detached candidate and swap it in only after the durable save
+    // succeeded: a rejected write must leave the previous canonical state
+    // visible instead of a partially applied patch (#5434).
+    const candidate = { ...current };
+    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) candidate[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
     // rejected on the next turn because binaryId still contains filename:slice.
-    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) current.binaryId = String(patch.binaryIdentity.id);
-    if (current.binaryId != null) current.binaryId = String(current.binaryId);
-    current.updatedAt = new Date().toISOString();
-    await this.persist(current);
-    return current;
+    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
+    if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
+    candidate.updatedAt = new Date().toISOString();
+    await this.persist(candidate);
+    this.sessions.set(String(id), candidate);
+    return candidate;
   }
 
   async updateMemory(id, patch = {}) {
@@ -99,7 +111,7 @@ export class InvestigationSessionStore {
     const next = { ...current.investigationMemory };
     for (const key of MEMORY_KEYS) {
       if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
-      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key], key);
+      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key]);
     }
     return this.update(id, { investigationMemory: next });
   }
@@ -107,9 +119,18 @@ export class InvestigationSessionStore {
   async appendMessage(id, message) {
     const current = await this.get(id);
     if (!current) return null;
-    current.messages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 20000), timestamp: message.timestamp || new Date().toISOString() });
-    current.messages = current.messages.slice(-100);
-    return this.update(id, { messages: current.messages });
+    // Build the candidate without mutating the currently visible session. If
+    // persistence rejects the write, the old message list must remain the
+    // canonical in-memory state (#5434).
+    const messages = [
+      ...(Array.isArray(current.messages) ? current.messages : []),
+      {
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: String(message.content || '').slice(0, 20000),
+        timestamp: message.timestamp || new Date().toISOString(),
+      },
+    ].slice(-100);
+    return this.update(id, { messages });
   }
 
   async persist(session) { if (this.persistence && typeof this.persistence.save === 'function') await this.persistence.save(stripSecrets(session)); }
@@ -178,11 +199,23 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
 }
 
 function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit) : []; }
-function mergeUnique(current, incoming, key) {
+
+// A shallow element copy is enough to detach store-owned session arrays from
+// the caller's objects: the session contract treats these records as plain
+// JSON-safe data (see normalize/persist paths), never as live class instances.
+function cloneRecord(value) {
+  return value && typeof value === 'object' ? { ...value } : value;
+}
+
+function mergeUnique(current, incoming) {
   const values = [...bounded(current, 100), ...bounded(incoming, 100)];
-  const seen = new Set();
-  return values.filter((item) => {
+  const latest = new Map();
+  for (const item of values) {
     const id = typeof item === 'string' ? item : String(item?.id ?? item?.claim ?? item?.summary ?? JSON.stringify(item));
-    if (seen.has(id)) return false; seen.add(id); return true;
-  }).slice(-64);
+    // Refresh both the snapshot and its retention order. A recently updated
+    // item must not be evicted merely because its first occurrence was old.
+    latest.delete(id);
+    latest.set(id, item);
+  }
+  return [...latest.values()].slice(-64);
 }

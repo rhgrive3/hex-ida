@@ -103,13 +103,25 @@ function buildCallPe({
   const nonConstructorNameIndex = addString(buf, stringsOffset, stringCursor, 'NotCtor');
 
   const tablesOffset = metadataOffset + 0x100;
-  const valid = (1n << 6n) | (1n << 10n) | (1n << 43n);
+  // ECMA-335 II.22.26 rule 2: every MethodDef row has exactly one TypeDef
+  // owner, so this fixture declares a TypeDef table with one owning row (#7301).
+  const valid = (1n << 2n) | (1n << 6n) | (1n << 10n) | (1n << 43n);
   view.setUint32(tablesOffset + 8, Number(valid & 0xffffffffn), true);
   view.setUint32(tablesOffset + 12, Number(valid >> 32n), true);
   let tablePos = tablesOffset + 24;
+  view.setUint32(tablePos, 1, true); tablePos += 4; // TypeDef
   view.setUint32(tablePos, 5, true); tablePos += 4; // MethodDef
   view.setUint32(tablePos, 2, true); tablePos += 4; // MemberRef
   view.setUint32(tablePos, 1, true); tablePos += 4; // MethodSpec
+
+  // TypeDef row (14 bytes): Flags, Name, Namespace, Extends, FieldList, MethodList.
+  const fixtureTypeNameIndex = addString(buf, stringsOffset, stringCursor, 'FixtureType');
+  view.setUint32(tablePos, 0, true); tablePos += 4;
+  view.setUint16(tablePos, fixtureTypeNameIndex, true); tablePos += 2;
+  view.setUint16(tablePos, 0, true); tablePos += 2; // namespace
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Extends = null
+  view.setUint16(tablePos, 1, true); tablePos += 2; // FieldList
+  view.setUint16(tablePos, 1, true); tablePos += 2; // MethodList
 
   const addMethodDef = (rva, nameIndex, signatureIndex) => {
     view.setUint32(tablePos, rva, true);

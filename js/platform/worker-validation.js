@@ -1,12 +1,10 @@
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 function rejectMalformedIntegerScalar(value, message) {
-  if (value == null || typeof value === 'boolean') {
-    throw new RangeError(message);
-  }
-  if (typeof value === 'string' && value.trim() === '') {
-    throw new RangeError(message);
-  }
+  const type = typeof value;
+  if (type === 'number' || type === 'bigint') return;
+  if (type === 'string' && value.trim() !== '') return;
+  throw new RangeError(message);
 }
 
 export function checkedChunkIndex(value) {
@@ -70,9 +68,15 @@ export function utf8Len(buf, index) {
 
 export function isExactFunctionSeed(seed) {
   if (!seed) return false;
+  const exactConfidence = Number(seed.exactFunctionStartConfidence);
+  if (Number.isFinite(exactConfidence)) return exactConfidence >= 0.9;
   const confidence = Number(seed.confidence ?? 0);
   if (!Number.isFinite(confidence) || confidence < 0.9) return false;
   if (seed.exactFunctionStart === true) return true;
   const sources = new Set([seed.source, ...(seed.sources || [])]);
+  // A merged source union without per-source confidence is ambiguous; fail
+  // closed instead of allowing unrelated high-confidence evidence to promote
+  // an exact source (#5950).
+  if (Array.isArray(seed.sources)) return false;
   return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'tls-callback', 'guard-cf'].includes(s));
 }

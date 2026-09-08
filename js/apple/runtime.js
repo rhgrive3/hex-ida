@@ -1,4 +1,4 @@
-import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, objcMessage } from './objc-runtime.js';
+import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, isObjcMsgSendSymbol, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
 import { classifyLanguageRuntimeCall } from '../metadata/index.js';
@@ -7,9 +7,21 @@ import { canonicalAddress } from '../core/identity/index.js';
 export function runtimeOriginForSymbol(name) {
   const n = typeof name === 'string' ? name : '';
   if (/^_?\$[sS]/.test(n) || /^_?swift_/.test(n)) return 'swift';
-  if (/^[+-]\[/.test(n) || /^_?objc_/.test(n) || /objc_msgSend/.test(n)) return 'objc';
+  // Keep the broad objc_ family for the other runtime helpers, but do not let
+  // malformed objc_msgSend-prefixed user symbols bypass the anchored entry
+  // point grammar in isObjcMsgSendSymbol().
+  if (/^[+-]\[/.test(n)
+    || (/^_?objc_/.test(n) && !/^_?objc_msgSend/.test(n))
+    || isObjcMsgSendSymbol(n)) return 'objc';
   if (/^runtime\./.test(n) || /^go:/.test(n)) return 'go';
-  if (/^core::/.test(n) || /^alloc::/.test(n) || /^std::/.test(n) || /^_?rust_/.test(n) || /^_R/.test(n) || /^_ZN.*17h[0-9a-f]{16}E/.test(n)) return 'rust';
+  // `std::` is the C++ standard library namespace too, so it is ambiguous with
+  // Rust's demangled `std::...`. Rust legacy symbols are distinguishable by
+  // their symbol-name hash (`17h<16 hex>E`, `h<16 hex>E`, or the toolchain
+  // style `::h<16 hex>`), so a `std::` form without any hash falls through to
+  // the C++/C verdicts below instead of being pinned as Rust.
+  if (/^core::/.test(n) || /^alloc::/.test(n) || /^_?rust_/.test(n) || /^_R/.test(n)
+    || /^_ZN.*17h[0-9a-f]{16}E/.test(n)
+    || (/^std::/.test(n) && /(?:17h|h)[0-9a-f]{16}E?(@)?$|::h[0-9a-f]{16}$/.test(n))) return 'rust';
   if (/^__?Z|^_Z/.test(n)) return 'cpp';
   return n ? 'c' : 'unknown';
 }
@@ -55,9 +67,24 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
     const type = receiverType.replace(/\s*\*+\s*$/, '');
     const chain = new Set();
     let cur = type, guard = 0;
+    let hierarchyComplete = true;
     while (cur && guard++ < 64 && !chain.has(cur)) {
       chain.add(cur);
-      cur = objcIndex.classes?.get(cur)?.superName || null;
+      const cls = objcIndex.classes?.get(cur);
+      if (!cls) { hierarchyComplete = false; break; }
+      cur = cls.superName || null;
+    }
+    if (cur) hierarchyComplete = false;
+    if (!hierarchyComplete) {
+      return {
+        resolved: null,
+        candidates,
+        confidence: candidates.length ? 0.55 : 0,
+        reason: candidates.length
+          ? 'receiver class hierarchy is unavailable or incomplete; IMP candidates are inconclusive'
+          : 'IMP not found in parsed metadata',
+        partial: true,
+      };
     }
     candidates = candidates.filter((m) => chain.has(m.className));
   }
@@ -89,8 +116,13 @@ export function resolveAppleCall(index, call = {}) {
   const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
-  if (origin === 'objc' || /objc_msgSend/.test(name) || imp?.candidates?.length) {
-    if (imp?.candidates?.length && !/objc_msgSend/.test(name)) {
+  // ObjC IMP evidence is origin inference for unknown origins only (the guard
+  // above): an explicit call.runtime (swift/rust/c, …) stays authoritative
+  // even when the numeric target happens to match a known IMP address, and
+  // the objc message path is entered for objc origins or real msgSend entry
+  // points (#5608).
+  if (origin === 'objc' || isObjcMsgSendSymbol(name)) {
+    if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,

@@ -31,6 +31,11 @@ assert.equal(componentViolation.ok, false);
 assert.ok(componentViolation.violations.some((item) => item.category === 'unowned'));
 const integrationPass = validateFiles(['tools/validation/phase12/verify.mjs', 'package.json'], 'p12-integration', manifest);
 assert.equal(integrationPass.ok, true);
+const managedCilIntegrationPass = validateAggregateFiles([
+  'js/managed/cil/parser.js',
+  'tests/phase11/cil/cil-strings-utf8-3764.test.mjs',
+], manifest);
+assert.equal(managedCilIntegrationPass.ok, true);
 const generatedViolation = validateFiles(['reports/phase12/phase12-release-evidence.json'], 'p12-c', manifest);
 assert.equal(generatedViolation.ok, false);
 assert.ok(generatedViolation.violations.some((item) => item.category === 'generated' || item.category === 'release'));
@@ -45,6 +50,18 @@ const aggregatePass = validateAggregateFiles([
   'userscript/hex.user.template.js',
 ], manifest);
 assert.equal(aggregatePass.ok, true);
+
+const rustMirrorPath = 'tests/metadata-rust.test.mjs';
+const rustMirrorPass = validateAggregateFiles([rustMirrorPath], manifest);
+assert.equal(rustMirrorPass.ok, true, 'the Rust metadata mirror must be explicitly owned');
+assert.deepEqual(rustMirrorPass.violations, []);
+const rustNeighborPath = 'tests/metadata-rust-max-depth-3162.test.mjs';
+const rustNeighborViolation = validateAggregateFiles([rustNeighborPath], manifest);
+assert.equal(rustNeighborViolation.ok, false, 'ownership must not broaden to adjacent Rust metadata tests');
+assert.deepEqual(
+  rustNeighborViolation.violations.map(({ file, category }) => ({ file, category })),
+  [{ file: rustNeighborPath, category: 'unowned' }],
+);
 const aggregateViolation = validateAggregateFiles(['js/unknown-phase12-file.js'], manifest);
 assert.equal(aggregateViolation.ok, false);
 assert.ok(aggregateViolation.violations.some((item) => item.category === 'unowned'));

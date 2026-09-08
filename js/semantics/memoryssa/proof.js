@@ -198,11 +198,18 @@ export function canonicalAliasProof({
 }) {
   const provider = result?.proof;
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return null;
-  let issuerId = provider.analyzerId == null ? null : String(provider.analyzerId);
-  let issuerVersion = provider.analyzerVersion == null ? null : String(provider.analyzerVersion);
-  if (!issuerId || !CANONICAL_ALIAS_ISSUERS.has(issuerId) || !issuerVersion.trim()
+  /*
+   * The issuer identity and relation enum are the soundness authority of a
+   * canonical no/must-alias proof. String()-coercing structured values here
+   * let `relation:['no']` or an array analyzer id launder into a canonical
+   * proof issued by a "solver" that never existed (#5862).
+   */
+  const canonicalIssuerText = (value) => (typeof value === 'string' ? value : null);
+  let issuerId = provider.analyzerId == null ? null : canonicalIssuerText(provider.analyzerId);
+  let issuerVersion = provider.analyzerVersion == null ? null : canonicalIssuerText(provider.analyzerVersion);
+  if (!issuerId || !CANONICAL_ALIAS_ISSUERS.has(issuerId) || !issuerVersion || !issuerVersion.trim()
       || CANONICAL_ALIAS_ISSUER_VERSIONS[issuerId] !== issuerVersion) return null;
-  const relation = String(result.relation ?? '');
+  const relation = typeof result.relation === 'string' ? result.relation : '';
   if (!['must', 'no', 'may', 'unknown'].includes(relation)) return null;
   const base = {
     kind: 'canonical-memory-alias-proof',

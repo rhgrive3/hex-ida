@@ -1,10 +1,15 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
+import { validateDexMap } from './map-validation.js';
+import { checkedRange, fail } from './validation-utils.js';
+import { readDexUleb128 as readUleb128 } from './leb128.js';
+import { dexPrototypeShorty, dexTypeInfo } from './descriptor.js';
+import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
 
-function fail(code) { throw new TypeError(code); }
-
-function checkedRange(limit, offset, size, code) {
-  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > limit || size > limit - offset) fail(code);
+function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
+  if (offset === 0) return;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset % alignment !== 0) fail(code);
+  checkedRange(limit, offset, minSize, code);
 }
 
 function requireIndex(table, idx, code) {
@@ -12,53 +17,24 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
+
 export function probeDex(bytes) {
   if (!bytes || bytes.length < 40) return { supported: false, confidence: 0, reason: 'too-small' };
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (u8[0] === 0x64 && u8[1] === 0x65 && u8[2] === 0x78 && u8[3] === 0x0a && u8[7] === 0x00) {
-    const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
-    return { supported: true, confidence: 1.0, formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (u8[0] !== 0x64 || u8[1] !== 0x65 || u8[2] !== 0x78 || u8[3] !== 0x0a || u8[7] !== 0x00) {
+    return { supported: false, confidence: 0, reason: 'invalid-magic' };
   }
-  return { supported: false, confidence: 0, reason: 'invalid-magic' };
-}
-
-function readUleb128(bytes, offset) {
-  let result = 0;
-  let shift = 0;
-  let pos = offset;
-  let count = 0;
-  while (pos < bytes.length && count < 5) {
-    const byte = bytes[pos++];
-    count++;
-    result |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) return { value: result >>> 0, nextOffset: pos };
-    shift += 7;
+  if (u8[4] < 0x30 || u8[4] > 0x39 || u8[5] < 0x30 || u8[5] > 0x39 || u8[6] < 0x30 || u8[6] > 0x39) {
+    return { supported: false, confidence: 0, reason: 'invalid-version' };
   }
-  fail('dex-malformed-uleb128');
-}
 
-function readUleb128p1(bytes, offset) {
-  const { value, nextOffset } = readUleb128(bytes, offset);
-  return { value: value - 1, nextOffset };
-}
-
-function readSleb128(bytes, offset) {
-  let result = 0;
-  let shift = 0;
-  let pos = offset;
-  let count = 0;
-  let byte = 0;
-  while (pos < bytes.length && count < 5) {
-    byte = bytes[pos++];
-    count++;
-    result |= (byte & 0x7f) << shift;
-    shift += 7;
-    if ((byte & 0x80) === 0) {
-      if (shift < 32 && (byte & 0x40) !== 0) result |= (~0 << shift);
-      return { value: result | 0, nextOffset: pos };
-    }
+  const vStr = String.fromCharCode(u8[4], u8[5], u8[6]);
+  const versionInfo = { formatVersion: `dex-${vStr}`, vmSpecEdition: `dalvik-dex-${vStr}` };
+  if (!SUPPORTED_DEX_VERSIONS.has(vStr)) {
+    return { supported: false, confidence: 0, reason: 'unsupported-version', ...versionInfo };
   }
-  fail('dex-malformed-sleb128');
+  return { supported: true, confidence: 1.0, ...versionInfo };
 }
 
 function decodeMutf8(bytes, offset) {
@@ -145,13 +121,26 @@ export function parseDex(bytes, options = {}) {
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
 
+  // Validate the complete map topology before decoding payloads, while preserving
+  // established payload-specific error authority for malformed variable-size items.
+  validateDexMap(u8, { validateVariableItems: false });
+
+  const dataStart = view.getUint32(108, true);
+  const dataEnd = dataStart + view.getUint32(104, true);
+  const dataBytes = u8.subarray(0, dataEnd);
+  const dataRange = (offset, size, code, alignment = 1, optional = false) => {
+    if (optional && offset === 0) return;
+    if (offset < dataStart || offset % alignment !== 0) fail(code);
+    checkedRange(dataEnd, offset, size, code);
+  };
+
   const strings = [];
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;
     if (off+4>fileSize) fail('dex-truncated-string-ids');
     const dataOff=view.getUint32(off,true);
-    if (dataOff>=fileSize) fail('dex-invalid-string-data-offset');
-    strings.push(decodeMutf8(u8,dataOff));
+    dataRange(dataOff,1,'dex-invalid-string-data-offset');
+    strings.push(decodeMutf8(dataBytes,dataOff));
   }
 
   const types=[];
@@ -160,6 +149,7 @@ export function parseDex(bytes, options = {}) {
     if (off+4>u8.length) fail('dex-truncated-type-ids');
     const descriptorIdx=view.getUint32(off,true);
     if (descriptorIdx>=strings.length) fail('dex-invalid-type-descriptor-index');
+    dexTypeInfo(strings[descriptorIdx], { allowVoid:true });
     types.push(strings[descriptorIdx]);
   }
 
@@ -170,13 +160,16 @@ export function parseDex(bytes, options = {}) {
     const shortyIdx=view.getUint32(off,true), returnTypeIdx=view.getUint32(off+4,true), paramsOff=view.getUint32(off+8,true);
     const params=[];
     if (paramsOff>0) {
-      checkedRange(fileSize,paramsOff,4,'dex-invalid-proto-params-range');
+      dataRange(paramsOff,4,'dex-invalid-proto-params-range',4);
       const pSize=view.getUint32(paramsOff,true);
       if (pSize>Math.floor((fileSize-paramsOff-4)/2)) fail('dex-invalid-proto-params-range');
-      checkedRange(fileSize,paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
+      dataRange(paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
       for(let p=0;p<pSize;p++) params.push(requireIndex(types,view.getUint16(paramsOff+4+p*2,true),'dex-invalid-proto-param-type-index'));
     }
-    protos.push({shorty:requireIndex(strings,shortyIdx,'dex-invalid-proto-shorty-index'),returnType:requireIndex(types,returnTypeIdx,'dex-invalid-proto-return-type-index'),params});
+    const shorty = requireIndex(strings,shortyIdx,'dex-invalid-proto-shorty-index');
+    const returnType = requireIndex(types,returnTypeIdx,'dex-invalid-proto-return-type-index');
+    if (shorty !== dexPrototypeShorty(returnType, params)) fail('dex-invalid-proto-shorty');
+    protos.push({shorty,returnType,params});
   }
 
   const fields=[];
@@ -200,30 +193,62 @@ export function parseDex(bytes, options = {}) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
     const classIdx=view.getUint32(off,true),accessFlags=view.getUint32(off+4,true),superclassIdx=view.getUint32(off+8,true);
-    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true);
-    const directMethods=[],virtualMethods=[];
+    const interfacesOff=view.getUint32(off+12,true),sourceFileIdx=view.getUint32(off+16,true),annotationsOff=view.getUint32(off+20,true),classDataOff=view.getUint32(off+24,true),staticValuesOff=view.getUint32(off+28,true);
+    requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
+    requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
+    requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
+    dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4,true);
+    dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
+    dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
+    const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
+    const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
-      if(classDataOff>=fileSize) fail('dex-invalid-class-data-offset');
+      dataRange(classDataOff,4,'dex-invalid-class-data-offset');
       let cPos=classDataOff;
-      const {value:staticFieldsSize,nextOffset:sOff}=readUleb128(u8,cPos);
-      const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(u8,sOff);
-      const {value:directMethodsSize,nextOffset:dOff}=readUleb128(u8,iOff);
-      const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(u8,dOff); cPos=vOff;
-      for(let f=0;f<staticFieldsSize+instanceFieldsSize;f++) { const {nextOffset:f1}=readUleb128(u8,cPos); const {nextOffset:f2}=readUleb128(u8,f1); cPos=f2; }
+      const {value:staticFieldsSize,nextOffset:sOff}=readUleb128(dataBytes,cPos);
+      const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(dataBytes,sOff);
+      const {value:directMethodsSize,nextOffset:dOff}=readUleb128(dataBytes,iOff);
+      const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(dataBytes,dOff); cPos=vOff;
+      const fieldDefinitions = new Set();
+      for (const [count, output] of [[staticFieldsSize, staticFields], [instanceFieldsSize, instanceFields]]) {
+        let lastFieldIdx = 0;
+        for (let f = 0; f < count; f++) {
+          const delta = readUleb128(dataBytes, cPos);
+          const flags = readUleb128(dataBytes, delta.nextOffset); cPos = flags.nextOffset;
+          lastFieldIdx += delta.value;
+          const field = requireIndex(fields,lastFieldIdx,'dex-invalid-class-data-field-index');
+          if ((f > 0 && delta.value === 0) || fieldDefinitions.has(lastFieldIdx)) fail('dex-field-definition-order-invalid');
+          if (field.classType !== classType) fail('dex-field-definition-owner-mismatch');
+          fieldDefinitions.add(lastFieldIdx);
+          output.push({ fieldIdx:lastFieldIdx, accessFlags:flags.value });
+        }
+      }
+      const validateCode = (codeOff, accessFlags) => {
+        const error = dexDefinitionCodeError({codeOff, accessFlags});
+        if (error) fail(error);
+        if (codeOff === 0) return;
+        dataRange(codeOff,16,'dex-invalid-code-offset',4);
+        const instructionBytes = view.getUint32(codeOff+12,true)*2;
+        dataRange(codeOff+16,instructionBytes,'dex-invalid-code-range');
+        dataRange(view.getUint32(codeOff+8,true),1,'dex-invalid-debug-info-offset',1,true);
+      };
       let lastMethodIdx=0;
       for(let m=0;m<directMethodsSize;m++) {
-        const {value:delta,nextOffset:m1}=readUleb128(u8,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(u8,m1); const {value:codeOff,nextOffset:m3}=readUleb128(u8,m2); cPos=m3;
-        lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); if(codeOff!==0&&codeOff>=fileSize) fail('dex-invalid-code-offset'); directMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
+        const {value:delta,nextOffset:m1}=readUleb128(dataBytes,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(dataBytes,m1); const {value:codeOff,nextOffset:m3}=readUleb128(dataBytes,m2); cPos=m3;
+        lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); directMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
       lastMethodIdx=0;
       for(let m=0;m<virtualMethodsSize;m++) {
-        const {value:delta,nextOffset:m1}=readUleb128(u8,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(u8,m1); const {value:codeOff,nextOffset:m3}=readUleb128(u8,m2); cPos=m3;
-        lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); if(codeOff!==0&&codeOff>=fileSize) fail('dex-invalid-code-offset'); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
+        const {value:delta,nextOffset:m1}=readUleb128(dataBytes,cPos); const {value:mFlags,nextOffset:m2}=readUleb128(dataBytes,m1); const {value:codeOff,nextOffset:m3}=readUleb128(dataBytes,m2); cPos=m3;
+        lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,directMethods,virtualMethods});
+    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
+  dexMethodDefinitions({ methods, classes });
+  validateDexMap(u8);
+
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
-  return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,rawBytes:u8});
+  return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,dataSection:{offset:dataStart,size:dataEnd-dataStart},rawBytes:u8});
 }

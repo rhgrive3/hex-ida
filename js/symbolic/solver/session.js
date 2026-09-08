@@ -79,7 +79,18 @@ export class SolverSession {
     if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true });
     if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true });
     if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true });
-    if (options.signal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
+    const externalSignal = options.signal;
+    // Abort-signal compatibility is input validation. Require both listener
+    // methods before any query lifecycle side effect so malformed shapes never
+    // publish an in-flight record (#5395).
+    if (externalSignal != null && (
+      typeof externalSignal !== 'object' ||
+      typeof externalSignal.addEventListener !== 'function' ||
+      typeof externalSignal.removeEventListener !== 'function'
+    )) {
+      throw new TypeError('external signal must be AbortSignal-compatible');
+    }
+    if (externalSignal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
 
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
@@ -112,7 +123,9 @@ export class SolverSession {
       if (record.settled) return;
       record.settled = true;
       if (record.timer) clearTimeout(record.timer);
-      if (record.removeExternalAbort) record.removeExternalAbort();
+      if (record.removeExternalAbort) {
+        try { record.removeExternalAbort(); } catch { /* listener cleanup is best effort */ }
+      }
       this._inFlight.delete(token);
 
       let result = rawResult;
@@ -147,10 +160,10 @@ export class SolverSession {
       record.resolve(result);
     };
     record.settle = settle;
-    this._inFlight.set(token, record);
 
-    if (options.signal?.addEventListener) {
+    if (externalSignal) {
       const onAbort = () => {
+        if (record.settled) return;
         record.cancelled = true;
         this.currentQueryToken++;
         this.state = SESSION_STATE.CANCELLED;
@@ -158,9 +171,21 @@ export class SolverSession {
         Promise.resolve(this._onCancel()).catch(() => {});
         settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }));
       };
-      options.signal.addEventListener('abort', onAbort, { once: true });
-      record.removeExternalAbort = () => options.signal.removeEventListener?.('abort', onAbort);
+      // Subscribe before publishing the record. A hostile/custom EventTarget may
+      // throw from listener setup even when its method shape is callable.
+      record.removeExternalAbort = () => externalSignal.removeEventListener('abort', onAbort);
+      try {
+        externalSignal.addEventListener('abort', onAbort, { once: true });
+      } catch {
+        try { record.removeExternalAbort(); } catch { /* best effort */ }
+        record.removeExternalAbort = null;
+        throw new TypeError('external signal must be AbortSignal-compatible');
+      }
+      if (externalSignal.aborted) onAbort();
+      if (record.settled) return promise;
     }
+
+    this._inFlight.set(token, record);
 
     if (timeoutMs > 0) {
       record.timer = setTimeout(() => {
@@ -176,7 +201,7 @@ export class SolverSession {
     }
 
     Promise.resolve()
-      .then(() => this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
+      .then(() => record.settled ? undefined : this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
       .then((result) => { if (!record.settled) settle(result); })
       .catch((error) => {
         if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure'));

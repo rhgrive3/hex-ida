@@ -1,10 +1,12 @@
 import {
   ARM64_INSTRUCTION_BYTES,
   createArm64EffectContext,
+  decodedOperandTargetValues,
   directTargetOf,
   immediateOf,
   instructionBits,
 } from './common.js';
+import { arm64DecodedEncodingWord } from '../encoding-word.js';
 import { decorateArm64BtypeEffects } from './btype.js';
 import { emitArm64Condition } from './flags.js';
 
@@ -17,7 +19,8 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
   if (typeof mnemonic !== 'string') return false;
   const base = mnemonic.toLowerCase();
   return DIRECT_BRANCH.has(base) || INDIRECT_BRANCH.has(base) || COMPARE_BRANCH.has(base)
-    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
+    || TEST_BRANCH.has(base) || base === 'ret' || /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base)
+    || /^bc\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/.test(base);
 }
 
 function addressRef(address) {
@@ -25,8 +28,7 @@ function addressRef(address) {
 }
 
 function instructionAddress(instruction) {
-  try { return instruction?.address == null ? null : BigInt(instruction.address); }
-  catch { return null; }
+  return instruction?.address == null ? null : strictTargetInteger(instruction.address);
 }
 
 function fallthroughRef(instruction) {
@@ -36,29 +38,100 @@ function fallthroughRef(instruction) {
 
 function sameAbsoluteTarget(target, reference) {
   if (target == null || reference?.kind !== 'absolute-address' || reference.value == null) return false;
-  try { return BigInt(target) === BigInt(reference.value); }
-  catch { return false; }
+  const left = strictTargetInteger(target);
+  const right = strictTargetInteger(reference.value);
+  return left != null && right != null && left === right;
 }
 
 function isAlignedDirectTarget(target) {
-  try { return (BigInt(target) & 3n) === 0n; }
-  catch { return false; }
+  const value = strictTargetInteger(target);
+  return value != null && (value & 3n) === 0n;
 }
 
 function directBranchDisplacementBits(mnemonic) {
   if (mnemonic === 'b' || mnemonic === 'bl') return 26;
-  if (COMPARE_BRANCH.has(mnemonic) || /^b\./.test(mnemonic)) return 19;
+  // B.<cond> and FEAT_HBC BC.<cond> share the imm19 encoding space.
+  if (COMPARE_BRANCH.has(mnemonic) || /^bc?\./.test(mnemonic)) return 19;
   if (TEST_BRANCH.has(mnemonic)) return 14;
   return null;
+}
+
+const MIN_SIGNED_ADDRESS_64 = -(1n << 63n);
+const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
+
+function strictTargetInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
+
+function canonicalAbsoluteTarget64(value) {
+  const target = strictTargetInteger(value);
+  if (target == null || target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
+  return BigInt.asUintN(64, target);
+}
+
+// Direct branch/call records may carry redundant target evidence: the
+// encoding word (signed imm26/imm19/imm14 from PC), operand target(s), and
+// the structured `branchTarget`/`callTarget` field all describe the SAME
+// destination. The former explicit-field priority let one contradictory
+// field silently relocate an exact control edge. Every present evidence must
+// agree after canonical uint64 address normalization; `null` means
+// contradictory, out of the architectural address domain, or non-literal-class.
+function directTargetEvidenceCoherence(instruction, target, mnemonic) {
+  const canonicalTarget = canonicalAbsoluteTarget64(target);
+  if (canonicalTarget == null) return null;
+  const word = arm64DecodedEncodingWord(instruction);
+  if (word != null) {
+    // Direct-branch words: `opc 0101010 imm26` (B=000101 / BL=100101),
+    // `0101010 0 imm19 cond` (B.cond), `sf 011010 op imm19 Rt` (CBZ/CBNZ),
+    // `b5 011011 op b40 imm14 Rt` (TBZ/TBNZ).
+    const op26 = word >>> 26;
+    const topByte = word >>> 24;
+    const displacementBits = mnemonic === 'b' || mnemonic === 'bl'
+      ? ((op26 === 0b000101 || op26 === 0b100101) ? 26 : null)
+      : /^bc?\./.test(mnemonic)
+        ? (topByte === 0x54 ? 19 : null)
+        : mnemonic === 'cbz' || mnemonic === 'cbnz'
+          ? (topByte === 0x34 || topByte === 0x35 || topByte === 0xb4 || topByte === 0xb5 ? 19 : null)
+          : mnemonic === 'tbz' || mnemonic === 'tbnz'
+            ? (topByte === 0x36 || topByte === 0x37 || topByte === 0xb6 || topByte === 0xb7 ? 14 : null)
+            : null;
+    if (displacementBits == null) return null;
+    const shift = displacementBits === 26 ? 0 : 5;
+    let immediate = BigInt((word >>> shift) & ((1 << displacementBits) - 1));
+    if (immediate & (1n << BigInt(displacementBits - 1))) immediate -= 1n << BigInt(displacementBits);
+    const address = canonicalAbsoluteTarget64(instructionAddress(instruction));
+    if (address == null) return null;
+    const encodingTarget = BigInt.asUintN(64, address + (immediate << 2n));
+    if (encodingTarget !== canonicalTarget) return null;
+  }
+  // The operand-derived target is the label operand: the last operand for
+  // B/BL/B.cond, the second for CBZ/CBNZ, and the third for TBZ/TBNZ (the
+  // earlier immediates are the bit number, not a target).
+  const ops = instruction?.ops || [];
+  const labelIndex = mnemonic === 'cbz' || mnemonic === 'cbnz' ? 1
+    : mnemonic === 'tbz' || mnemonic === 'tbnz' ? 2
+      : ops.length - 1;
+  const operandTarget = decodedOperandTargetValues({ ops: ops[labelIndex] == null ? [] : [ops[labelIndex]] })[0];
+  if (operandTarget != null && canonicalAbsoluteTarget64(operandTarget) !== canonicalTarget) return null;
+  return canonicalTarget;
 }
 
 function directBranchEncodingStatus(instruction, target, mnemonic) {
   const address = instructionAddress(instruction);
   if (address == null) return { valid:false, reason:`arm64-${mnemonic}-address-unavailable-for-encoding` };
-  let destination;
-  try { destination = BigInt(target); }
-  catch { return { valid:false, reason:`arm64-${mnemonic}-target-unavailable` }; }
+  const destination = strictTargetInteger(target);
+  if (destination == null) return { valid:false, reason:`arm64-${mnemonic}-target-unavailable` };
   if ((destination & 3n) !== 0n) return { valid:false, reason:`arm64-${mnemonic}-target-misaligned-encoding` };
+  const coherent = directTargetEvidenceCoherence(instruction, destination, mnemonic);
+  if (coherent == null) return { valid:false, reason:`arm64-${mnemonic}-target-evidence-mismatch` };
   const bits = directBranchDisplacementBits(mnemonic);
   if (!bits) return { valid:true };
   // Disassembler targets may be sign-extended 64-bit addresses for backward
@@ -124,7 +197,7 @@ function isIndirectControlRegister(operand) {
 
 function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
   if (operand?.shift != null || operand?.extend != null) return false;
-  if (operand?.k === 'imm' && operand.value != null) return true;
+  if (operand?.k === 'imm' && operand.value != null) return immediateOf(operand) != null;
   if (operand?.k === 'other' && typeof operand.text === 'string' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(operand.text.trim())) return true;
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
   return operand?.k === 'other' && explicit != null;
@@ -142,7 +215,7 @@ function isBranchTestRegister(operand) {
 }
 
 function directBranchOperandShapeValid(instruction, mnemonic, ops) {
-  if (mnemonic === 'b' || /^b\./.test(mnemonic)) {
+  if (mnemonic === 'b' || /^bc?\./.test(mnemonic)) {
     return ops.length === 1 && directTargetOperandShapeValid(instruction, ops[0], 'branch');
   }
   if (mnemonic === 'bl') {
@@ -290,7 +363,8 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     });
   }
 
-  const conditionCode = mnemonic.slice(2);
+  // `bc.<cond>` carries its condition one character deeper than `b.<cond>`.
+  const conditionCode = mnemonic.startsWith('bc.') ? mnemonic.slice(3) : mnemonic.slice(2);
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
   return ctx.finish({

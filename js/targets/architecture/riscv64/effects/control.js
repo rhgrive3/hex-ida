@@ -17,6 +17,34 @@ function targetAlignmentFault(instructionAlignment) {
   return { kind: 'pc-alignment-fault', condition: { kind: 'riscv64-target-misaligned', alignmentBytes }, detail: { architecture: 'riscv64', instructionAlignment: alignmentBytes } };
 }
 function targetAlignmentFaults(ctx) { const fault = targetAlignmentFault(ctx.instructionAlignment); return fault == null ? [] : [fault]; }
+// Direct targets are statically known: only a misaligned target can fault.
+// Indirect (jalr) targets are runtime values, so the conditional fault is kept.
+function directTargetAlignmentFaults(ctx, target) {
+  const alignmentBytes = Number(ctx.instructionAlignment);
+  if (alignmentBytes <= 2) return [];
+  if (typeof target === 'bigint' && target % BigInt(alignmentBytes) === 0n) return [];
+  return targetAlignmentFaults(ctx);
+}
+function conditionalTargetAlignmentFaults(ctx, target, branchCondition) {
+  return directTargetAlignmentFaults(ctx, target).map((fault) => ({
+    ...fault,
+    condition: {
+      kind: 'and',
+      terms: [
+        { kind: 'riscv64-branch-taken', value: branchCondition },
+        fault.condition,
+      ],
+    },
+    detail: { ...fault.detail, conditionalOn: 'branch-taken' },
+  }));
+}
+function runtimeTargetAlignmentFaults(ctx, target) {
+  return targetAlignmentFaults(ctx).map((fault) => ({
+    ...fault,
+    condition: { ...fault.condition, target },
+    detail: { ...fault.detail, targetSource: 'runtime-expression' },
+  }));
+}
 
 export function liftRiscv64ControlEffects(decoded, context = {}) {
   const ctx = createRiscv64EffectContext(decoded, context);
@@ -39,7 +67,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const target = address + BigInt(fields.imm);
     return ctx.finish({
       controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough: addressRef(next), condition },
-      possibleFaults: target === next ? [] : targetAlignmentFaults(ctx),
+      possibleFaults: target === next ? [] : conditionalTargetAlignmentFaults(ctx, target, condition),
       family: 'control',
       metadata: {
         operation: op,
@@ -57,7 +85,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     return ctx.finish({
       controlEffect: isCallHint ? { kind: 'call', target: addressRef(target), fallthrough: addressRef(next) } : { kind: 'branch', target: addressRef(target) },
-      possibleFaults: targetAlignmentFaults(ctx),
+      possibleFaults: directTargetAlignmentFaults(ctx, target),
       family: 'control',
       metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
     });
@@ -73,7 +101,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';
     return ctx.finish({
       controlEffect: { kind, target, ...(kind === 'call' ? { fallthrough: addressRef(next) } : {}) },
-      possibleFaults: targetAlignmentFaults(ctx),
+      possibleFaults: runtimeTargetAlignmentFaults(ctx, target),
       family: 'control',
       metadata: { operation: op, indirect: true, linkRegister: linked ? fields.rd : null, returnAddressStackHint: isReturnHint ? fields.rs1 : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
     });

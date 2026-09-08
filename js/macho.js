@@ -737,10 +737,17 @@
           while (q < recordEnd && u8[q] !== 0 && augmentation.length < 64) augmentation += String.fromCharCode(u8[q++]);
           if (q >= recordEnd) { p = recordEnd; continue; }
           q++; // NUL
+          // CIE version 4 inserts address_size and segment_selector_size
+          // between the augmentation string and code_alignment_factor; in the
+          // 32-bit format those two ubytes would otherwise be misread as the
+          // code-align ULEB, derailing every FDE that references this CIE
+          // (#5519).
+          if (version >= 4) {
+            if (q + 2 > recordEnd) { p = recordEnd; continue; }
+            q += 2;
+          }
           const codeAlign = ehReadULEB(u8, q, recordEnd); if (!codeAlign) { p = recordEnd; continue; } q = codeAlign.next;
           const dataAlign = ehReadSLEB(u8, q, recordEnd); if (!dataAlign) { p = recordEnd; continue; } q = dataAlign.next;
-          // Version 1 encodes the return-address register as one byte; later
-          // versions use ULEB128.
           if (version === 1) q++;
           else { const ra = ehReadULEB(u8, q, recordEnd); if (!ra) { p = recordEnd; continue; } q = ra.next; }
           let fdeEncoding = 0x00;
@@ -883,10 +890,11 @@
     if (!indirectBuf || !indirectBuf.length || !sym) return out;
     const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
     const total = Math.floor(indirectBuf.length / 4);
+    const pointerSize = info.pointerBits === 32 ? 4 : 8;
     for (const seg of info.segments) {
       for (const sec of seg.sections) {
         if (!sec.stubs && !sec.pointers) continue;
-        const entSize = sec.stubs ? (sec.reserved2 || 12) : 8;
+        const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
         if (entSize <= 0) continue;
         const count = Number(sec.size / BigInt(entSize));
         for (let i = 0; i < count; i++) {

@@ -5,6 +5,7 @@ export const NT_GNU_PROPERTY_TYPE_0 = 5;
 export const GNU_PROPERTY_AARCH64_FEATURE_1_AND = 0xc0000000;
 export const GNU_PROPERTY_AARCH64_FEATURE_1_BTI = 1;
 export const GNU_PROPERTY_AARCH64_FEATURE_1_PAC = 2;
+export const GNU_PROPERTY_AARCH64_FEATURE_1_GCS = 1 << 2;
 
 const EM_AARCH64 = 183;
 const PN_XNUM = 0xffff;
@@ -34,6 +35,7 @@ function defaultResult(overrides = {}) {
     loaderPolicy:'feature-bit-absent',
     btiRequested:false,
     pacRequested:false,
+    gcsRequested:false,
     mappedPageGuarded:'unknown',
     mappedPageGuardedSource:'not-observed',
     evidence:Object.freeze([]),
@@ -55,20 +57,20 @@ export function parseAarch64GnuProperty(input, options = {}) {
       : input instanceof ArrayBuffer
         ? new Uint8Array(input)
         : null;
-  if (!bytes || bytes.byteLength < 64) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
+  if (!bytes || bytes.byteLength < 64) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
   if (bytes[0] !== 0x7f || bytes[1] !== 0x45 || bytes[2] !== 0x4c || bytes[3] !== 0x46) {
-    return defaultResult({ loaderPolicy:'not-elf', btiRequested:null, pacRequested:null });
+    return defaultResult({ loaderPolicy:'not-elf', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
   const cls = bytes[4];
   const data = bytes[5];
   if ((cls !== 1 && cls !== 2) || (data !== 1 && data !== 2)) {
-    return defaultResult({ loaderPolicy:'unsupported-elf-header', btiRequested:null, pacRequested:null });
+    return defaultResult({ loaderPolicy:'unsupported-elf-header', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
   const bits = cls === 2 ? 64 : 32;
   const littleEndian = data === 1;
   const r = new ByteView(bytes, { littleEndian });
   const machine = r.u16(18);
-  if (machine !== EM_AARCH64) return defaultResult({ loaderPolicy:'not-aarch64', btiRequested:null, pacRequested:null });
+  if (machine !== EM_AARCH64) return defaultResult({ loaderPolicy:'not-aarch64', btiRequested:null, pacRequested:null, gcsRequested:null });
   const phoff = bits === 64 ? r.u64(32) : BigInt(r.u32(28));
   const phentsize = bits === 64 ? r.u16(54) : r.u16(42);
   let phnum = bits === 64 ? r.u16(56) : r.u16(44);
@@ -79,16 +81,17 @@ export function parseAarch64GnuProperty(input, options = {}) {
   const warnings = [];
   if (phnum === PN_XNUM) {
     warnings.push('extended ELF program-header count is not re-read by the bounded GNU property parser');
-    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, warnings:Object.freeze(warnings) });
+    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
   }
   if (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
       || !boundedSpan(phoffNumber, phnum * phentsize, bytes.byteLength)) {
     warnings.push('ELF program-header table is unavailable or outside bounded input');
-    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, warnings:Object.freeze(warnings) });
+    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
   }
 
   const evidence = [];
   let featureBits = null;
+  let propertyIncomplete = false;
   for (let index = 0; index < phnum; index++) {
     const p = phoffNumber + index * phentsize;
     const type = r.u32(p);
@@ -97,6 +100,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
     const filesz = safeNumber(bits === 64 ? r.u64(p + 32) : BigInt(r.u32(p + 16)));
     if (offset == null || filesz == null || filesz > maxPropertyBytes
         || !boundedSpan(offset, filesz, bytes.byteLength)) {
+      propertyIncomplete = true;
       warnings.push(`PT_GNU_PROPERTY ${index} is outside bounded input`);
       continue;
     }
@@ -110,6 +114,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
       const descStart = align(nameStart + namesz, 4);
       const next = align(descStart + descsz, 4);
       if (!boundedSpan(nameStart, namesz, end) || !boundedSpan(descStart, descsz, end) || next <= cursor || next > end) {
+        propertyIncomplete = true;
         warnings.push(`malformed GNU property note at file offset ${cursor}`);
         break;
       }
@@ -127,11 +132,13 @@ export function parseAarch64GnuProperty(input, options = {}) {
           const dataSize = r.u32(propertyCursor + 4);
           const dataStart = propertyCursor + 8;
           if (!boundedSpan(dataStart, dataSize, descEnd)) {
+            propertyIncomplete = true;
             warnings.push(`malformed GNU property payload at file offset ${propertyCursor}`);
             break;
           }
           if (propertyType === GNU_PROPERTY_AARCH64_FEATURE_1_AND) {
             if (dataSize !== 4) {
+              propertyIncomplete = true;
               warnings.push(`malformed GNU_PROPERTY_AARCH64_FEATURE_1_AND size ${dataSize} at file offset ${propertyCursor}`);
             } else {
               const value = r.u32(dataStart);
@@ -147,29 +154,55 @@ export function parseAarch64GnuProperty(input, options = {}) {
             }
           }
           const advanced = align(dataStart + dataSize, propertyAlignment);
-          if (advanced <= propertyCursor) break;
+          if (advanced <= propertyCursor || advanced > descEnd) {
+            propertyIncomplete = true;
+            break;
+          }
           propertyCursor = advanced;
         }
+        if (propertyCursor < descEnd) propertyIncomplete = true;
       }
       cursor = next;
     }
+    if (cursor < end && cursor + 12 > end) {
+      const trailing = bytes.subarray(cursor, end);
+      const zeroPadding = trailing.length < 4 && trailing.every((byte) => byte === 0);
+      if (!zeroPadding) {
+        propertyIncomplete = true;
+        warnings.push(`truncated GNU property note header at file offset ${cursor}`);
+      }
+    }
   }
 
+  if (propertyIncomplete) {
+    return defaultResult({
+      loaderPolicy:'unknown',
+      btiRequested:null,
+      pacRequested:null,
+      gcsRequested:null,
+      ...(featureBits == null ? {} : { featureBits }),
+      evidence:Object.freeze(evidence),
+      warnings:Object.freeze(warnings),
+    });
+  }
   if (featureBits == null) {
     return defaultResult({
       loaderPolicy:'feature-bit-absent',
       btiRequested:false,
       pacRequested:false,
+      gcsRequested:false,
       evidence:Object.freeze(evidence),
       warnings:Object.freeze(warnings),
     });
   }
   const btiRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_BTI) !== 0;
   const pacRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_PAC) !== 0;
+  const gcsRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_GCS) !== 0;
   return defaultResult({
     loaderPolicy:btiRequested ? 'bti-requested' : 'bti-not-requested',
     btiRequested,
     pacRequested,
+    gcsRequested,
     featureBits,
     evidence:Object.freeze(evidence),
     warnings:Object.freeze(warnings),

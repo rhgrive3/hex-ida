@@ -186,14 +186,63 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
   }
 }
 
+function safeSeparatorIndexes(text, separator) {
+  const indexes = [];
+  let quote = null;
+  let escaped = false;
+  let blockComment = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote != null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '/') break;
+    if (text.startsWith(separator, index)) {
+      indexes.push(index);
+      index += separator.length - 1;
+    }
+  }
+  return indexes;
+}
+
 function splitLong(text, width, indent) {
   if (text.length + indent.length <= width) return [text];
   const candidates = [' && ', ' || ', ', ', ' + ', ' - '];
   for (const sep of candidates) {
-    const parts = text.split(sep);
-    if (parts.length <= 1) continue;
-    const out = [parts[0] + sep.trimEnd()];
-    for (let i = 1; i < parts.length; i++) out.push('    ' + parts[i] + (i < parts.length - 1 ? sep.trimEnd() : ''));
+    const indexes = safeSeparatorIndexes(text, sep);
+    if (indexes.length === 0) continue;
+    const out = [];
+    let start = 0;
+    for (const index of indexes) {
+      out.push(`${start === 0 ? '' : '    '}${text.slice(start, index)}${sep.trimEnd()}`);
+      start = index + sep.length;
+    }
+    out.push(`${start === 0 ? '' : '    '}${text.slice(start)}`);
     return out;
   }
   return [text];

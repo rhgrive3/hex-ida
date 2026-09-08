@@ -13,7 +13,7 @@
  */
 
 import { createAliasResult, mayAlias, unknownAlias } from '../alias/result.js';
-import { rangeRelation } from './lattice.js';
+import { provenSeparationAuthority, rangeRelation } from './lattice.js';
 
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
@@ -25,7 +25,22 @@ function widthBytes(widthBits) {
 }
 
 function isProvenAddressSpace(value) {
-  return typeof value === 'string' && value.length > 0 && value !== 'unknown';
+  // Canonical spelling only: a value that is not already trimmed was never
+  // canonicalized at the target boundary (e.g. a raw passthrough object), and
+  // must not mint a separation proof off a whitespace difference (#5717).
+  return typeof value === 'string' && value.length > 0 && value.trim() === value && value !== 'unknown';
+}
+
+// `nonEscapingRoots` is proof authority: a caller handing us a truthy
+// non-Set (array, string, plain object) would otherwise leak a raw
+// TypeError mid-comparison (#5453). Only Set-compatible shapes are
+// accepted; anything else fails closed with a contract error.
+function setNonEscaping(value) {
+  if (value == null) return new Set();
+  if (typeof value !== 'object' || typeof value.has !== 'function') {
+    throw new TypeError('phase7-alias-nonescaping-roots-set-required');
+  }
+  return value;
 }
 
 /**
@@ -39,7 +54,7 @@ export function pointsToAlias(left, right, options = {}) {
   const status = options.status;
   const widthA = widthBytes(options.widthBitsLeft);
   const widthB = widthBytes(options.widthBitsRight);
-  const nonEscaping = options.nonEscapingRoots ?? new Set();
+  const nonEscaping = setNonEscaping(options.nonEscapingRoots);
 
   if (!left || !right) return unknownAlias(status, ['unresolved-root']);
 
@@ -122,8 +137,11 @@ export function pointsToAlias(left, right, options = {}) {
         // A manually-constructed/root-name-only target therefore cannot mint
         // separation authority (#1806), while the Phase 7 frozen corpus keeps its
         // two exact distinct-storage cases through explicit provenance (#1848).
-        const descriptorSeparated = a.separationAuthority === 'root-descriptor'
-          && b.separationAuthority === 'root-descriptor'
+        // The authority is verified against the target's proof brand, not the
+        // stored string — a plain caller-supplied `separationAuthority` is not
+        // evidence (#6066).
+        const descriptorSeparated = provenSeparationAuthority(a) === 'root-descriptor'
+          && provenSeparationAuthority(b) === 'root-descriptor'
           && a.separationClass === b.separationClass
           && ['global-like', 'heap-like', 'tls-like'].includes(a.separationClass)
           && a.rootEntityId != null && b.rootEntityId != null

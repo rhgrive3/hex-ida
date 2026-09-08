@@ -77,6 +77,7 @@ function attach(entry, options) {
     const onAbort = () => finish(reject, abortError(options.signal), true);
     if (options.signal?.aborted) { onAbort(); return; }
     options.signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (options.signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -97,6 +98,7 @@ function requestWithSignal(request, signal) {
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -112,10 +114,15 @@ function yieldMainRealm(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     setTimeout(() => finish(resolve), 0);
   });
 }
 function epochOf(app) { return Number(app?.backend?.gen ?? app?.analysisEpoch ?? -1); }
+function symbolsGenerationOf(app) { return app?.symbols?.gen ?? 0; }
+function programCacheKey(epoch, symbolsGeneration, key) {
+  return `${epoch}:${symbolsGeneration}:${key}`;
+}
 function storeValue(app, key) { try { return app?.store?.get?.(key) ?? null; } catch { return null; } }
 function stringPriority(region) {
   const section = region?.section || '';
@@ -201,6 +208,21 @@ function statsFor(program, counts, scannedRefs, metadata = {}) {
     producerBudgetSupplied:metadata.budget != null,
   });
 }
+function canonicalStringResultRows(result) {
+  try {
+    const rows = result?.results;
+    return Array.isArray(rows) ? [...rows] : null;
+  } catch { return null; }
+}
+function canonicalStringResultRow(item) {
+  try {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+    const addr = item.addr;
+    const text = item.text;
+    if (typeof addr !== 'bigint' || addr < 0n || typeof text !== 'string') return null;
+    return { addr, text };
+  } catch { return null; }
+}
 
 function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
@@ -225,7 +247,7 @@ function createStringEntry(app, key, initialOptions = {}) {
       if (bytes > 0) use.push({ region:current, bytes });
     }
     const rows = [];
-    let scannedBytes = 0, backendIncomplete = false;
+    let scannedBytes = 0, backendIncomplete = false, backendMalformed = false;
     for (let index = 0; index < use.length; index++) {
       throwIfAborted(controller.signal);
       if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -243,11 +265,25 @@ function createStringEntry(app, key, initialOptions = {}) {
       const result = await requestWithSignal(request, controller.signal);
       scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) { backendIncomplete = true; if (!skipped.includes(region)) skipped.push(region); }
-      for (const item of result?.results || []) {
-        if (!budget.accept(item.text)) break;
-        rows.push({ addr:item.addr, text:item.text, region });
+      const resultRows = canonicalStringResultRows(result);
+      if (!resultRows) {
+        backendIncomplete = true;
+        backendMalformed = true;
+        if (!skipped.includes(region)) skipped.push(region);
+      } else {
+        for (const item of resultRows) {
+          const row = canonicalStringResultRow(item);
+          if (!row) {
+            backendIncomplete = true;
+            backendMalformed = true;
+            if (!skipped.includes(region)) skipped.push(region);
+            continue;
+          }
+          if (!budget.accept(row.text)) break;
+          rows.push({ addr:row.addr, text:row.text, region });
+        }
       }
-      if (result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
+      if (!backendMalformed && result?.capped && !budget.truncationReason) budget.truncationReason = result.truncationReason || 'result-budget';
     }
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared strings'), { stale:true });
@@ -255,7 +291,7 @@ function createStringEntry(app, key, initialOptions = {}) {
     Object.assign(rows, {
       complete:!truncated,
       truncated,
-      truncationReason:budget.truncationReason || (skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
+      truncationReason:budget.truncationReason || (backendMalformed ? 'backend-malformed' : skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null),
       scannedBytes,
       skippedRegions:[...new Set(skipped.map((region) => region.id))],
       unscannedRegions:[...new Set(skipped.map((region) => region.id))],
@@ -276,7 +312,10 @@ function createStringEntry(app, key, initialOptions = {}) {
     if (live.get(key) === entry) live.delete(key);
     throw error;
   }).finally(() => {
-    if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
+    if (app.stringsBusyEpoch === epoch && app.stringsBusy === entry.promise) {
+      app.stringsBusy = null;
+      app.stringsBusyEpoch = -1;
+    }
   });
   app.stringsBusyEpoch = epoch;
   app.stringsBusy = entry.promise;
@@ -291,6 +330,8 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
   };
   const epoch = epochOf(app);
+  const initialCacheKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
+  let cacheKey = initialCacheKey;
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     await app.ensureFunctions?.(primary, {
@@ -301,6 +342,13 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     });
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    const symbolsGeneration = symbolsGenerationOf(app);
+    cacheKey = programCacheKey(epoch, symbolsGeneration, key);
+    if (cacheKey !== initialCacheKey) {
+      const live = mapFor(PROGRAM_ENTRIES, app);
+      if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
+      if (!live.has(cacheKey)) live.set(cacheKey, entry);
+    }
     const scans = [], failures = [];
     const ranges = dataRanges(app);
     const counts = new Map();
@@ -338,6 +386,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
     const stats = statsFor(program, counts, scannedRefs, entry.producerOptions);
@@ -354,14 +403,17 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     return program;
   })().then((value) => { entry.settled = true; return value; }).catch((error) => {
     const live = mapFor(PROGRAM_ENTRIES, app);
-    if (live.get(`${epoch}:${key}`) === entry) live.delete(`${epoch}:${key}`);
+    if (live.get(cacheKey) === entry) live.delete(cacheKey);
     throw error;
   }).finally(() => {
-    if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
+    if (app.programBusyEpoch === epoch && app.programBusy === entry.promise) {
+      app.programBusy = null;
+      app.programBusyEpoch = -1;
+    }
   });
   app.programBusyEpoch = epoch;
   app.programBusy = entry.promise;
-  mapFor(PROGRAM_ENTRIES, app).set(`${epoch}:${key}`, entry);
+  mapFor(PROGRAM_ENTRIES, app).set(cacheKey, entry);
   return entry;
 }
 
@@ -378,7 +430,19 @@ export function installSharedAppArtifacts(app) {
     const key = String(epoch);
     const map = mapFor(STRING_ENTRIES, app);
     let entry = liveEntry(map, key, map.get(key));
-    if (!entry) entry = createStringEntry(app, key, options);
+    if (!entry) {
+      entry = createStringEntry(app, key, options);
+      // The producer IIFE starts synchronously inside createStringEntry, so a
+      // consumer abort during that window reaches attach() unregistered. A
+      // zero-waiter producer must be cancelled and detached, never left to
+      // publish into the shared cache (#5816).
+      if (options.signal?.aborted) {
+        entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
+        entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
+        if (map.get(key) === entry) map.delete(key);
+        if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
+      }
+    }
     return attach(entry, options);
   };
 
@@ -391,10 +455,20 @@ export function installSharedAppArtifacts(app) {
     if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats
       && app.program.completeness?.complete === true) return Promise.resolve(app.program);
     const epoch = epochOf(app);
-    const mapKey = `${epoch}:${key}`;
+    const mapKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
     const map = mapFor(PROGRAM_ENTRIES, app);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
-    if (!entry) entry = createProgramEntry(app, key, regions, options);
+    if (!entry) {
+      entry = createProgramEntry(app, key, regions, options);
+      // Same producer-start race as ensureStrings (#5816): invalidate a
+      // zero-waiter entry whose consumer aborted during producer start.
+      if (options.signal?.aborted) {
+        entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
+        entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
+        if (map.get(mapKey) === entry) map.delete(mapKey);
+        if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
+      }
+    }
     return attach(entry, options);
   };
 

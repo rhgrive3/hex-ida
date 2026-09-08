@@ -1,6 +1,6 @@
 import { TraceRingBuffer } from '../trace/ring-buffer.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { encodeWireValue } from '../debug/remote-protocol.js';
+import { decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
 
 let nextSession = 1;
 
@@ -12,10 +12,40 @@ function sessionSafe(value) {
   }
 }
 
+function wireSafeTraceEvent(value) {
+  try { return decodeWireValue(encodeWireValue(value)); }
+  catch { return null; }
+}
+
 function eventEpoch(value) {
   if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
+function traceEventEpochAuthority(value) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+    return { explicit:false, materialize:false, epoch:null, value:null };
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'epoch');
+    if (descriptor?.enumerable) {
+      return { explicit:true, materialize:false, epoch:null, value:null };
+    }
+    const rawEpoch = descriptor
+      ? Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? descriptor.value
+        : Reflect.get(value, 'epoch')
+      : Reflect.get(value, 'epoch');
+    if (rawEpoch == null) {
+      return { explicit:false, materialize:false, epoch:null, value:null };
+    }
+    const epoch = eventEpoch(rawEpoch);
+    if (epoch == null) return null;
+    return { explicit:true, materialize:true, epoch, value:rawEpoch };
+  } catch {
+    return null;
+  }
 }
 
 function debugSessionId(value) {
@@ -30,69 +60,152 @@ export class DebugSession {
     this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
-    this.refreshErrors={modules:null,threads:null}; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null;
+    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null; this._connectPromise=null; this._lifecycleGeneration=1;
   }
-  async connect(options = {}) {
-    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
-    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+  _connectIsCurrent(generation) { return !this.closed && this._lifecycleGeneration===generation; }
+  async _cleanupStaleConnect() {
+    const disconnecting=this._disconnecting;
+    if (disconnecting) { try { await disconnecting; } catch {} }
+    if (typeof this.adapter.disconnect==='function') { try { await this.adapter.disconnect(); } catch {} }
+  }
+  async _connectOnce(options, generation) {
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(this.epoch);
     let result;
+    let published=false;
+    let staleCleanup=false;
     try {
       result = await this.adapter.connect(options);
+      if (!this._connectIsCurrent(generation)) {
+        staleCleanup=true;
+        await this._cleanupStaleConnect();
+        throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      }
       if (typeof this.adapter.onEvent === 'function') {
-        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event));
+        const subscriptionEpoch = this.epoch;
+        const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
         if (unsubscribe != null && typeof unsubscribe !== 'function') throw new DebugAdapterError('event-subscription','adapter onEvent must return an unsubscribe function');
         this._unsubscribe=unsubscribe || null;
       }
       this.connected=true;
+      published=true;
+      await this.refreshState(generation);
+      if (!this._connectIsCurrent(generation)) throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      return result;
     } catch (error) {
-      if (typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
-      this._unsubscribe=null; this.connected=false;
-      try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      if (!published && typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      if (!published) this._unsubscribe=null;
+      if (!published) this.connected=false;
+      if (!staleCleanup && !published) {
+        try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      }
       throw error;
     }
-    await this.refreshState();
-    return result;
   }
-  async refreshState() {
+  async connect(options = {}) {
+    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
+    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+    if (this._connectPromise) return this._connectPromise;
+    if (this._disconnecting) throw new DebugAdapterError('session-disconnecting','cannot connect while a debug session disconnect is in flight');
+    const generation=this._lifecycleGeneration;
+    const attempt=this._connectOnce(options,generation);
+    this._connectPromise=attempt;
+    try { return await attempt; }
+    finally { if (this._connectPromise===attempt) this._connectPromise=null; }
+  }
+  async refreshState(lifecycleGeneration = null) {
+    const refreshToken={};
+    const refreshEpoch=this.epoch;
+    this._refreshToken=refreshToken;
+    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken&&(lifecycleGeneration==null||this._lifecycleGeneration===lifecycleGeneration);
+    const snapshot=()=>({modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}});
+    let modules=this.modules;
+    let threads=this.threads;
+    const errors={...this.refreshErrors};
     if (this.adapter.capabilities.modules) {
       try {
         const next=await this.adapter.getModules();
         if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getModules must return an array');
-        this.modules=next;
-        this.refreshErrors.modules=null;
+        if (!isCurrent()) return snapshot();
+        modules=next;
+        errors.modules=null;
       } catch (error) {
-        this.refreshErrors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
+        if (!isCurrent()) return snapshot();
+        errors.modules={code:error?.code||'refresh-failed',message:String(error?.message||error)};
       }
     }
     if (this.adapter.capabilities.threads) {
       try {
         const next=await this.adapter.getThreads();
         if (!Array.isArray(next)) throw new DebugAdapterError('refresh-failed','adapter getThreads must return an array');
-        this.threads=next;
-        this.refreshErrors.threads=null;
+        if (!isCurrent()) return snapshot();
+        threads=next;
+        errors.threads=null;
       } catch (error) {
-        this.refreshErrors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
+        if (!isCurrent()) return snapshot();
+        errors.threads={code:error?.code||'refresh-failed',message:String(error?.message||error)};
       }
     }
-    return {modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}};
+    if (!isCurrent()) return snapshot();
+    this.modules=modules;
+    this.threads=threads;
+    this.refreshErrors.modules=errors.modules;
+    this.refreshErrors.threads=errors.threads;
+    return snapshot();
   }
-  acceptEvent(event) {
-    if (this.closed) return false;
-    if (event && event.epoch != null) {
-      const epoch = eventEpoch(event.epoch);
-      if (epoch == null || epoch !== this.epoch) return false;
+  _prepareEvent(event, sourceEpoch = null) {
+    if (!event) return { ok:true, present:false, value:null };
+    const epochAuthority = traceEventEpochAuthority(event);
+    if (epochAuthority == null) return { ok:false, reason:'event-epoch-invalid' };
+    const safeEvent = wireSafeTraceEvent(event);
+    if (safeEvent == null) return { ok:false, reason:'wire-unsafe' };
+    let epoch;
+    if (epochAuthority.materialize) {
+      if (!safeEvent || typeof safeEvent !== 'object' || Array.isArray(safeEvent)) {
+        return { ok:false, reason:'event-epoch-invalid' };
+      }
+      Object.defineProperty(safeEvent,'epoch',{value:epochAuthority.value,enumerable:true,writable:true,configurable:true});
+      epoch = epochAuthority.epoch;
+    } else {
+      const hasSafeEpoch = safeEvent && typeof safeEvent === 'object'
+        && Object.prototype.hasOwnProperty.call(safeEvent, 'epoch');
+      if (epochAuthority.explicit && !hasSafeEpoch) return { ok:false, reason:'event-epoch-missing' };
+      const safeEpoch = hasSafeEpoch ? safeEvent.epoch : null;
+      epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
     }
-    if (event) this.traces.push(event);
+    if (epoch == null) return { ok:false, reason:'event-epoch-invalid' };
+    if (epoch !== this.epoch) return { ok:false, reason:'event-epoch-mismatch' };
+    return { ok:true, present:true, value:safeEvent };
+  }
+  acceptEvent(event, sourceEpoch = null) {
+    if (this.closed) return false;
+    const prepared = this._prepareEvent(event, sourceEpoch);
+    if (!prepared.ok) return false;
+    if (prepared.present) this.traces.push(prepared.value);
     return true;
   }
+  acceptEvents(events, sourceEpoch = null) {
+    if (this.closed) return { ok:false, reason:'closed-session' };
+    if (!Array.isArray(events)) return { ok:false, reason:'events-not-array' };
+    const prepared = [];
+    for (const event of events) {
+      const item = this._prepareEvent(event, sourceEpoch);
+      if (!item.ok) return item;
+      if (item.present) prepared.push(item.value);
+    }
+    for (const event of prepared) this.traces.push(event);
+    return { ok:true, count:prepared.length };
+  }
   newEpoch() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
     const next = this.epoch + 1;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
     this.epoch = next;
     this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
   }
-  controller() { const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c; }
+  controller() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot mint a controller on a closed debug session');
+    const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c;
+  }
   releaseController(controller) { this.controllers.delete(controller); }
   cancelAll(reason='cancelled') { for (const c of [...this.controllers]) c.abort(reason); this.controllers.clear(); }
   addExperiment(exp) { this.experiments.push(exp); if (this.experiments.length>256) this.experiments.shift(); }
@@ -108,12 +221,19 @@ export class DebugSession {
   }
   async disconnect() {
     if(this.closed)return;
-    this.closed=true; this.cancelAll('disconnected'); if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} } this._unsubscribe=null;
-    try{await this.adapter.disconnect();}finally{
-      this.connected=false;
-      const onClosed=this._onClosed; this._onClosed=null;
-      if(onClosed) { try { onClosed(this); } catch {} }
+    if(this._disconnecting)return this._disconnecting;
+    this._lifecycleGeneration++;
+    this.cancelAll('disconnected');
+    const attempt=(async()=>{ await this.adapter.disconnect(); })();
+    this._disconnecting=attempt;
+    try{
+      await attempt;
+      if(typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      this._unsubscribe=null; this.connected=false; this.closed=true;
     }
+    finally{ if(this._disconnecting===attempt) this._disconnecting=null; }
+    const onClosed=this._onClosed; this._onClosed=null;
+    if(onClosed) { try { onClosed(this); } catch {} }
   }
 }
 
@@ -139,7 +259,8 @@ export class DebugSessionManager {
   }
   async close(id){
     const s=this.get(id);if(!s)return false;
-    try{await s.disconnect();}finally{this._sessionClosed(s);}
+    await s.disconnect();
+    this._sessionClosed(s);
     return true;
   }
 }

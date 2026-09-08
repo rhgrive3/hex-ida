@@ -1,3 +1,4 @@
+import './issue-7084-knowledge-transaction.mjs';
 import assert from 'node:assert/strict';
 import { KnowledgeDB, fingerprintVendors } from '../js/knowledge/index.js';
 
@@ -12,3 +13,6 @@ const vendors = fingerprintVendors({ libraries: ['/Frameworks/UnityFramework.fra
 assert.equal(vendors.some((x) => x.name === 'Unity'), true);
 assert.equal(vendors.every((x) => x.confirmed === false), true, 'vendor fingerprinting must remain evidence-based, not asserted as fact');
 console.log('knowledge-platform: PASS');
+
+// Keep exact-address regressions on the canonical platform test path.
+await import('./issue-6135-knowledge-address-safe-integer.mjs');

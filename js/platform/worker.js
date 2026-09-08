@@ -26,6 +26,7 @@ let pointerImages = new Map();
 let currentEpoch = 0;
 let openChain = Promise.resolve();
 const active = new Map();
+const scheduled = new Set();
 
 function cooperativeYield() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
@@ -50,12 +51,20 @@ async function waitForForegroundDrain(epoch) {
   }
 }
 
+function cancellationMatches(msg, entry) {
+  return (msg.requestId == null || msg.requestId === entry.id)
+    && (msg.epoch == null || msg.epoch === entry.epoch);
+}
+
 self.onmessage = async (event) => {
   const msg = event.data;
   if (!msg || typeof msg.t !== 'string') return;
   if (msg.t === 'cancel') {
+    for (const entry of scheduled) {
+      if (cancellationMatches(msg, entry)) entry.cancelled = true;
+    }
     for (const entry of active.values()) {
-      if ((msg.requestId == null || msg.requestId === entry.id) && (msg.epoch == null || msg.epoch === entry.epoch)) entry.controller.abort();
+      if (cancellationMatches(msg, entry)) entry.controller.abort();
     }
     return;
   }
@@ -64,11 +73,15 @@ self.onmessage = async (event) => {
     currentEpoch = msg.epoch;
     for (const entry of active.values()) if (entry.epoch !== currentEpoch) entry.controller.abort();
   }
+  const scheduledEntry = { id:msg.id, epoch:msg.epoch, cancelled:false };
+  scheduled.add(scheduledEntry);
   const execute = async () => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
+    if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const priority = msg.priority === 'background' ? 'background' : 'current';
     if (priority === 'background') await waitForForegroundDrain(msg.epoch);
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
+    if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const controller = new AbortController();
     const requestKey = msg.id == null ? null : `${msg.epoch}:${msg.id}`;
     if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
@@ -78,7 +91,7 @@ self.onmessage = async (event) => {
   };
   try {
     const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
-    const resolved = await result;
+    const resolved = await result.finally(() => scheduled.delete(scheduledEntry));
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
     post({ t: 'err', id: msg.id, epoch: msg.epoch, error: error?.message || String(error) });
@@ -286,14 +299,15 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [];
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
     }
     runStart = null;
     runBytes = [];
+    runChars = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -315,6 +329,7 @@ async function scanStrings(msg, signal) {
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
       if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      runChars++;
       if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
       i += n - 1;
     }
@@ -346,7 +361,13 @@ async function runSearch(msg, signal) {
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
-    pattern = new TextEncoder().encode(q.toLowerCase());
+    // This is a byte-oriented search, so preserve the query's exact UTF-8
+    // encoding. Unicode toLowerCase() can change code points (including
+    // supplementary-plane characters) and cannot be mirrored safely on raw
+    // haystack bytes without decoding and retaining a byte/address map (#5940).
+    // Keep the established ASCII-insensitive contract by folding both byte
+    // operands with lower() during comparison; non-ASCII bytes remain exact.
+    pattern = new TextEncoder().encode(q);
   }
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
@@ -359,7 +380,7 @@ async function runSearch(msg, signal) {
       let ok = true;
       for (let j = 0; j < pattern.length; j++) {
         const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-        const expected = pattern[j];
+        const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
         if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
       }
       if (!ok) continue;

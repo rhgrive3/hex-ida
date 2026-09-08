@@ -3,6 +3,7 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
 } from '../../../../semantics/effects/index.js';
+import { X87_FAMILIES } from './extended-state-helpers.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -39,7 +40,12 @@ const IO_WRITE = /^(?:out|outs|outsb|outsd|outsw)$/;
 const STACK_READ = new Map([['popf',16],['popfq',64]]);
 const STACK_WRITE = new Map([['pushf',16],['pushfq',64]]);
 const BIT_STRING = new Set(['bt','btc','btr','bts']);
-const X87_FAMILY = /^f(?!s|x)/;
+// The x87 family decision selects how Capstone's union `eflags` slot is read:
+// FPU status-word bits vs. RFLAGS bits. A name-prefix regex leaked every
+// `fs*`/`fx*` member into the RFLAGS interpretation, so the terminal minted
+// wrong RFLAGS surfaces as exact-with-intrinsic. The canonical finite family
+// set shared with the extended-state owner is the authority instead.
+const X87_FAMILY = (family) => X87_FAMILIES.has(String(family ?? '').toLowerCase());
 
 function bit(mask, position) {
   return position != null && (mask & (1n << position)) !== 0n;
@@ -82,7 +88,7 @@ function flagSets(instruction, family) {
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
 
-  if (X87_FAMILY.test(family)) {
+  if (X87_FAMILY(family)) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {
       if (bit(raw, test)) reads.add(`fpsw.${name.toLowerCase()}`);
       if (bit(raw, modify) || bit(raw, reset) || bit(raw, set) || bit(raw, undef)) writes.add(`fpsw.${name.toLowerCase()}`);
@@ -211,7 +217,7 @@ function memorySummary(accesses) {
 }
 
 function hiddenState(ownerId, family, registersRead, registersWritten) {
-  if (X87_FAMILY.test(family)) {
+  if (X87_FAMILY(family)) {
     registersRead.add('x86.x87.environment');
     registersWritten.add('x86.x87.environment');
   }

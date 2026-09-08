@@ -65,6 +65,10 @@ function functionAddress(value) {
   throw new TypeError('analysis-product-function-id-invalid');
 }
 
+function canonicalRecognitionConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
+}
+
 async function assertCurrentSnapshot(app, snapshot, options = {}) {
   abortIfNeeded(options.signal);
   const current = await app.analysisQueries.snapshot(options);
@@ -137,7 +141,14 @@ function stringState(app) {
 }
 
 function waitForShared(entry, signal) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) {
+    // A signal that died before this waiter registered owns nothing, but the
+    // entry may be a just-started producer with no other consumer (#5793):
+    // leaving it running would keep a zero-waiter backend request alive with
+    // nobody able to cancel it.
+    if (entry.waiters === 0 && !entry.settled) entry.cancel?.();
+    throw abortError(signal);
+  }
   entry.waiters++;
   if (!signal) return entry.promise.finally(() => { entry.waiters = Math.max(0, entry.waiters - 1); });
   return new Promise((resolve, reject) => {
@@ -158,11 +169,11 @@ function waitForShared(entry, signal) {
       reject(abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
     if (signal.aborted) {
       onAbort();
       return;
     }
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
 
@@ -204,8 +215,16 @@ async function scanNextStringRegion(app, state, options = {}) {
       if (state.inFlight === entry) state.inFlight = null;
     });
     state.inFlight = entry;
+    if (options.signal?.aborted) {
+      // The consumer aborted between the outer check and waiter registration:
+      // cancel the just-started request and detach it, so no zero-waiter
+      // producer survives the race window (#5793).
+      entry.cancel?.();
+      if (state.inFlight === entry) state.inFlight = null;
+    }
   }
-  await waitForShared(state.inFlight, options.signal);
+  if (!state.inFlight) abortIfNeeded(options.signal);
+  else await waitForShared(state.inFlight, options.signal);
 }
 
 function matchingStrings(state, needle) {
@@ -398,7 +417,7 @@ export function createProductSurfaceQueries(app) {
       try { local = await app.analyzeFunctionAt(address, { signal:options.signal }); } catch (error) { if (options.signal?.aborted) throw error; }
       const baseResult = base ? {
         classification:base.classification || 'UNKNOWN',
-        confidence:Number(base.confidence || 0),
+        confidence:canonicalRecognitionConfidence(base.confidence),
         evidence:Array.isArray(base.evidence) ? base.evidence.slice() : [],
         knowledgeSourceId:base.knowledgeSourceId || null,
       } : null;

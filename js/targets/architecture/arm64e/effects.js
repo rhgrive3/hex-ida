@@ -6,6 +6,7 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
+import { isArm64eAuthenticatedLoadInstruction, liftArm64eAuthenticatedLoadEffects } from './effects-memory.js';
 
 export const ARM64E_EFFECTS_SEMANTIC_VERSION = '3';
 
@@ -658,6 +659,7 @@ export function arm64eMachineEffectFamilies() {
 
 export function liftArm64eEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
+  if (isArm64eAuthenticatedLoadInstruction(decoded)) return liftArm64eAuthenticatedLoadEffects(decoded, context);
   if (!isArm64ePointerAuthenticationInstruction(decoded)) return null;
   const instructionId = instructionIdOf(decoded, context);
 
