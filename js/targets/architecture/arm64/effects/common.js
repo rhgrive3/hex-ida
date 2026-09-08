@@ -131,6 +131,8 @@ export function conditionOf(instruction) {
   // not coerce into a real condition identity.
   if (typeof operand?.text === 'string') return operand.text.trim().toLowerCase() || null;
   const mnemonic = instructionMnemonic(instruction);
+  // B.<cond> and FEAT_HBC BC.<cond> both key their condition after the dot.
+  if (mnemonic.startsWith('bc.')) return mnemonic.slice(3);
   if (mnemonic.startsWith('b.')) return mnemonic.slice(2);
   return null;
 }

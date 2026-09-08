@@ -34,12 +34,19 @@ function throwIfAborted(signal) {
   throw error;
 }
 
+function positiveChunkSize(value, fallback) {
+  const requested = value ?? fallback;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new TypeError('chunkSize must be a positive safe integer');
+  }
+  return requested;
+}
+
 export async function hashByteSource(input, options = {}) {
   const source = asByteSource(input);
   const onProgress = optionalProgressCallback(options.onProgress);
   throwIfAborted(options.signal);
-  const chunkSize = Math.min(options.chunkSize ?? 1024 * 1024, source.maxReadLength);
-  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
+  const chunkSize = Math.min(positiveChunkSize(options.chunkSize, 1024 * 1024), source.maxReadLength);
   let hash = FNV_OFFSET;
   let offset = 0n;
   while (offset < source.size) {
@@ -95,8 +102,7 @@ export async function sha256TreeByteSource(input, options = {}) {
   // identical byte sequences hash to one identity no matter how the source
   // chunks its reads. Reads larger than maxReadLength are assembled from
   // multiple bounded reads before digesting.
-  const leafSize = options.chunkSize ?? 4 * 1024 * 1024;
-  if (!Number.isSafeInteger(leafSize) || leafSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
+  const leafSize = positiveChunkSize(options.chunkSize, 4 * 1024 * 1024);
   const readSize = Math.max(1, Math.min(leafSize, source.maxReadLength));
   const reportProgress = (done) => {
     if (onProgress) Reflect.apply(onProgress, options, [{ done, total: source.size }]);

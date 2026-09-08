@@ -301,9 +301,13 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
 }
 
 export function plainToExpr(plain) {
-  const budget = { nodes: 0 };
-  reserveCanonicalFreshSymbolIds(plain, new Map(), 0, budget);
-  return plainNodeToExpr(plain, 0, budget);
+  // The symbol-reservation pass and materialization pass are two traversals of
+  // the same logical DAG. Keep independent work counters so the public node
+  // budget describes input nodes rather than being consumed twice (#5489).
+  const reserveBudget = { nodes: 0 };
+  reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
+  const materializeBudget = { nodes: 0 };
+  return plainNodeToExpr(plain, 0, materializeBudget);
 }
 
 export function serializeExprDag(node, options = {}) {

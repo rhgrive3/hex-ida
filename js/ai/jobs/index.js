@@ -42,7 +42,7 @@ export class AgentJobManager {
         provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
         evidenceIds: [], hypothesisIds: [], completedTools: [], continuationRefs: [], unresolvedWork: [],
         budgetUsage: { slices: 0, modelCalls: 0, toolCalls: 0, elapsedMs: 0, contextBytes: 0 },
-        limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
+        limits: { maxSlices: bounded(input.maxSlices ?? this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs ?? this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
         request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
       };
       // Keep the ID reserved, but do not publish a runnable job until its

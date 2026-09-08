@@ -2254,6 +2254,45 @@ test('PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる', a
   ok(res.top.why.every((x) => proofText(x).length > 0), '文にできない証拠がある');
 });
 
+test('PINPOINT: caller limit は明示的に正規化し、判定メタデータを切り詰めない', async () => {
+  const w = battleWorld();
+  const battle = w.fields.classes.get('BattleManager');
+  for (let i = 0; i < 12; i++) {
+    battle.ivars.push({ name: `_extra${i}`, offset: 0x40 + i * 4, size: 4, type: INT4 });
+  }
+  const base = { goal: goalFromPreset('hp'), fields: w.fields, map: w.map };
+  const run = (limit) => pinpointField(limit === undefined ? base : { ...base, limit });
+  const summary = (res) => ({
+    verdict: res.verdict,
+    top: res.top?.key || null,
+    runnerUp: res.runnerUp?.key || null,
+    margin: res.margin,
+    marginRatio: res.marginRatio,
+    missing: res.missing,
+  });
+
+  const defaultResult = await run();
+  const explicitDefault = await run(12);
+  const one = await run(1);
+  const zero = await run(0);
+  const defaultCount = defaultResult.candidates.length;
+  eq(defaultCount, 12);
+  eq(explicitDefault.candidates.length, defaultCount);
+  eq(one.candidates.length, 1);
+  eq(zero.candidates.length, 0);
+  for (const limited of [explicitDefault, one, zero]) {
+    eq(JSON.stringify(summary(limited)), JSON.stringify(summary(defaultResult)));
+  }
+
+  // Invalid public limits fail closed to the same default instead of reaching
+  // Array#slice's relative-index or coercion semantics.
+  for (const invalid of [-1, -2, 1.5, NaN, Infinity, '2', true, {}, [], 1n]) {
+    const result = await run(invalid);
+    eq(result.candidates.length, defaultCount, `invalid limit ${String(invalid)} must use default`);
+    eq(JSON.stringify(summary(result)), JSON.stringify(summary(defaultResult)));
+  }
+});
+
 test('PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない', async () => {
   const w = battleWorld();
   const res = await pinpointField({
@@ -2926,7 +2965,7 @@ test('ROLE: 動作の言葉と、足りない理由に、言い漏らしがな�
    LevelPlay（広告 SDK）の「動画報酬の数」が満点で当たってしまう。
    自信満々で間違えるのは、何も言わないより悪い。 */
 
-const { learnVendors, vendorOf, vendorConflicts, swiftModuleOf } =
+const { learnVendors, vendorOf, vendorConflicts, swiftModuleOf, vendorInText, classFromSymbol } =
   await import('../js/vendors.js');
 
 test('VENDORS: Swift の記号名からモジュール名を取り出せる', () => {
@@ -2934,6 +2973,48 @@ test('VENDORS: Swift の記号名からモジュール名を取り出せる', ()
   eq(swiftModuleOf('_TtC10IronSource21ISNHealthCheckFailure'), 'IronSource');
   eq(swiftModuleOf('BattleManager'), null, '関係ない名前にモジュール名を付けている');
   eq(swiftModuleOf('_TtC99Bogus'), null, '長さが合わないものを読んでいる');
+});
+
+test('VENDORS #4722: structured names never become vendor or class identity', () => {
+  let coercions = 0;
+  const coercibleAs = (text) => ({
+    valueOf() { coercions++; return text; },
+    toString() { coercions++; return text; },
+    [Symbol.toPrimitive]() { coercions++; return text; },
+  });
+  const vendorCoercible = coercibleAs('ironsource');
+  const swiftCoercible = coercibleAs('_TtC12VungleAdsSDK14FirstPartyData');
+  const classCoercible = coercibleAs('-[Player hp]');
+  const malformed = [
+    ['ironsource'],
+    vendorCoercible,
+    1,
+    true,
+    new String('ironsource'),
+  ];
+  for (const value of malformed) {
+    eq(vendorInText(value), null, 'structured text must not become a high-confidence vendor');
+    eq(swiftModuleOf(value), null, 'structured text must not become a Swift module');
+    eq(classFromSymbol(value), null, 'structured text must not become an Objective-C class');
+    eq(vendorOf(value), null, 'structured class name must not become a vendor');
+  }
+  eq(swiftModuleOf(['_TtC12VungleAdsSDK14FirstPartyData']), null,
+    'an array must not become a Swift module');
+  eq(classFromSymbol(['-[Player hp]']), null,
+    'an array must not become an Objective-C class');
+  eq(swiftModuleOf(swiftCoercible), null,
+    'a coercible Swift name must not become a Swift module');
+  eq(classFromSymbol(classCoercible), null,
+    'a coercible Objective-C symbol must not become a class');
+  eq(vendorInText(coercibleAs('ironsource')), null,
+    'a coercible vendor text must not become vendor evidence');
+  eq(vendorOf(coercibleAs('ironsource')), null,
+    'a coercible class name must not become a vendor');
+  eq(coercions, 0, 'vendor helpers must not invoke structured coercion hooks');
+
+  eq(vendorInText('ironsource')?.vendor, 'IronSource');
+  eq(classFromSymbol('-[Player hp]'), 'Player');
+  eq(swiftModuleOf('_TtC12VungleAdsSDK14FirstPartyData'), 'VungleAdsSDK');
 });
 
 test('VENDORS: 名前の分かる SDK は、接頭辞ごとまとめて見分けられる', () => {

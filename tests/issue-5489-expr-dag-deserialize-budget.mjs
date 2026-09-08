@@ -5,6 +5,7 @@ import {
   deserializeExprDag,
   serializeExprDag,
   EXPR_DAG_MAX_DEPTH,
+  EXPR_DAG_MAX_NODES,
 } from '../js/symbolic/expr/serialize.js';
 import { createBv, createFreshSymbol, createUnary } from '../js/symbolic/expr/factory.js';
 import { bvSort } from '../js/symbolic/expr/kinds.js';
@@ -66,6 +67,23 @@ test('#5489 node budget rejects wide DAGs at shallow depth', () => {
     () => deserializeExprDag({ schemaVersion: '1.0.0', expressionDagVersion: '1.0.0', metadata: {}, root: wide }),
     (error) => error instanceof TypeError && /node budget exceeded/.test(error.message),
   );
+});
+
+
+test('#5489 an in-budget wide DAG is not rejected after the reservation pass', () => {
+  const childCount = Math.floor(EXPR_DAG_MAX_NODES / 2) + 1024;
+  const wide = {
+    kind: 'connective',
+    op: 'and',
+    sort: { kind: 'bool' },
+    args: Array.from({ length: childCount }, () => ({ kind: 'const', sort: { kind: 'bool' }, value: true })),
+  };
+  assert.doesNotThrow(() => deserializeExprDag({
+    schemaVersion: '1.0.0',
+    expressionDagVersion: '1.0.0',
+    metadata: {},
+    root: wide,
+  }));
 });
 
 test('#5489 escape-heavy JSON strings do not trip the nesting scan', () => {
