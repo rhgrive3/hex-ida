@@ -54,27 +54,35 @@ assert.doesNotMatch(executor, /Date\.now\(\) - started/,
 assert.doesNotMatch(runtime, /Date\.now\(\) - started/,
   'reported turn elapsed time must use the protected clock');
 
-// Injected-clock arithmetic mirrors the protected runtime-support authority:
-//   elapsed = max(0, nowFn() - started)
-//   remaining = max(1, min(initial timeout, timeoutMs - elapsed))
+// Exercise the real runtime-support helpers at the early, rollback, and
+// deadline boundaries rather than copying their arithmetic in this test.
 {
   const started = 10_000;
   const timeoutMs = 30_000;
-  const elapsed = (now) => Math.max(0, now - started);
-  const remaining = (now) => Math.max(1, Math.min(timeoutMs, timeoutMs - elapsed(now)));
-  const exceeded = (now) => elapsed(now) >= timeoutMs;
 
-  // Wall clock +1h must stop at the deadline, not produce a larger budget.
-  assert.equal(exceeded(3_610_000), true, 'formula sanity: +1h exceeds');
-  const monotonicEarly = 10_005;
-  assert.equal(exceeded(monotonicEarly), false, 'monotonic elapsed below timeout must continue');
-  assert.equal(remaining(monotonicEarly), 29_995);
+  assert.doesNotThrow(
+    () => ensureRunning(null, started, timeoutMs, () => 10_005),
+    'a monotonic elapsed value below the timeout must continue',
+  );
+  assert.equal(remainingTime(started, timeoutMs, () => 10_005), 29_995);
 
   // A backward injected reading cannot produce negative elapsed time or grow
   // the remaining budget past the initial timeout.
-  const monotonicRollback = 0;
-  assert.equal(elapsed(monotonicRollback), 0, 'rollback elapsed must clamp at zero');
-  assert.equal(remaining(monotonicRollback), timeoutMs, 'rollback remaining must stay at the initial timeout');
+  assert.doesNotThrow(
+    () => ensureRunning(null, started, timeoutMs, () => 0),
+    'a rollback must not stop a still-live turn',
+  );
+  assert.equal(remainingTime(started, timeoutMs, () => 0), timeoutMs,
+    'rollback remaining must stay at the initial timeout');
+
+  // The actual helper must stop exactly at the deadline and clamp its output.
+  assert.throws(
+    () => ensureRunning(null, started, timeoutMs, () => 40_000),
+    /timed out/,
+    'deadline arrival must stop the turn',
+  );
+  assert.equal(remainingTime(started, timeoutMs, () => 40_000), 1,
+    'remaining time must clamp instead of going negative');
 
   // The production wrapper preserves the last observation on rollback or
   // an invalid clock sample.
@@ -84,16 +92,6 @@ assert.doesNotMatch(runtime, /Date\.now\(\) - started/,
     [protectedClock(), protectedClock(), protectedClock(), protectedClock()],
     [10_000, 10_000, 10_000, 10_005],
   );
-  assert.equal(remainingTime(started, timeoutMs, () => 0), timeoutMs,
-    'the production helper must cap rollback remaining time');
-  assert.doesNotThrow(
-    () => ensureRunning(null, started, timeoutMs, () => 0),
-    'a rollback must not stop a still-live turn',
-  );
-
-  // Deadline arrival stops the turn.
-  assert.equal(exceeded(40_000), true, 'monotonic deadline arrival must stop');
-  assert.equal(remaining(40_000), 1, 'remaining clamps instead of going negative');
 }
 
 // Exercise the public executeTurn path with a caller clock and a wall-clock
@@ -131,6 +129,62 @@ assert.doesNotMatch(runtime, /Date\.now\(\) - started/,
     'a live monotonic turn must complete normally');
   assert.equal(result.usage.elapsedMs, 25,
     'executeTurn usage must report protected monotonic elapsed time');
+}
+
+// Exercise the actual planner callback with the same turn clock. A planner
+// that observes the deadline must be able to stop its work without a wall-clock
+// calculation in the orchestrator.
+{
+  let now = 1_000;
+  let plannerTimeout;
+  let plannerWasRunning;
+  const runtime = new AIRuntime({
+    context: { binaryId: 'fixture:6095-planner', currentAddress: 0x1000n },
+    planner: async (_goal, _context, options) => {
+      plannerTimeout = options.timeoutMs;
+      plannerWasRunning = options.isCancelled();
+      now = 31_000;
+      assert.equal(options.isCancelled(), true,
+        'planner cancellation must observe the shared turn deadline');
+      return { candidates: [], evidence: [], best: null, missingEvidence: [], exhausted: true };
+    },
+  });
+  await runtime.turn(
+    { mode: 'agent', scope: 'auto', goal: 'find function normally', budget: { timeoutMs: 30_000, maxModelCalls: 1 } },
+    { monotonicNow: () => now },
+  );
+  assert.equal(plannerTimeout, 15_000, 'planner receives its bounded sub-timeout');
+  assert.equal(plannerWasRunning, false, 'planner starts before the shared deadline');
+}
+
+// An invalid provider response must use the same remaining-time authority for
+// the one permitted repair retry.
+{
+  let now = 5_000;
+  let calls = 0;
+  const repairTimeouts = [];
+  const runtime = new AIRuntime({
+    context: { binaryId: 'fixture:6095-repair', currentAddress: 0x1000n },
+    planner: false,
+    provider: {
+      async nextTurn(_request, options) {
+        repairTimeouts.push(options.timeoutMs);
+        calls++;
+        if (calls === 1) {
+          now = 5_005;
+          return { type: 'invalid' };
+        }
+        return { type: 'final', answer: 'ok', confidence: 0.2, evidenceIds: [], suggestedActions: [] };
+      },
+    },
+  });
+  const result = await runtime.turn(
+    { mode: 'chat', scope: 'auto', goal: 'normal repair path', budget: { timeoutMs: 60_000, maxModelCalls: 2 } },
+    { monotonicNow: () => now },
+  );
+  assert.deepEqual(repairTimeouts, [60_000, 59_995],
+    'provider and repair retry must share the turn clock');
+  assert.equal(result.limits.exhausted, false, 'a valid repair retry must complete normally');
 }
 
 console.log('issue #6095 executeTurn monotonic clock regressions PASS');
