@@ -201,6 +201,10 @@ export function parseDex(bytes, options = {}) {
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
     const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
+    // A DEX class_def_item defines a class: AOSP dex-format requires its
+    // class_idx to resolve to a non-array class type ('L...;'). Primitive and
+    // array descriptors are valid type_ids but never valid definers (#7436).
+    if(!classType.startsWith('L')||!classType.endsWith(';')) fail('dex-invalid-class-def-type');
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
