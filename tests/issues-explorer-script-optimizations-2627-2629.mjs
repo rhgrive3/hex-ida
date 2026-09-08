@@ -61,6 +61,20 @@ import { classItems, externalItems } from '../js/ui/product.js';
   assert.equal(noMatch.truncationReason, 'scan-budget');
   assert.equal(noMatch.scannedItems, 1000);
 
+  // Malformed/non-string entries still consume the hard item denominator, and
+  // the candidate getter is never touched after that denominator is exhausted.
+  let malformedAccessed = 0;
+  const malformed = Array.from({ length: 2000 }, () => ({
+    get text() { malformedAccessed++; return null; },
+  }));
+  const { api: malformedHex } = createApi({ stringIndex: malformed }, out);
+  const malformedResult = malformedHex.findStrings('__never_exists__', 1, { scanLimit: 37 });
+  assert.equal(malformedResult.scannedItems, 37);
+  assert.equal(malformedAccessed, 37, 'item budget must be charged before candidate.text access');
+  assert.equal(malformedResult.scannedTextBytes, 0, 'non-string text must not consume the text-byte denominator');
+  assert.equal(malformedResult.complete, false);
+  assert.equal(malformedResult.truncationReason, 'scan-budget');
+
   // context.scanLimit can lower but never raise the default budget.
   let raiseAccessed = 0;
   const small = Array.from({ length: 3000 }, (_, i) => ({
@@ -93,6 +107,25 @@ import { classItems, externalItems } from '../js/ui/product.js';
   const controller = new AbortController();
   controller.abort();
   assert.throws(() => hex2.findStrings('needle', 5, { signal: controller.signal }), (e) => e.name === 'AbortError');
+
+  // A timer-scheduled abort must be deliverable after scanning starts. The
+  // signal-aware path yields every chunk, so it stops before the raw scan cap.
+  let cancelAccessed = 0;
+  const rawCap = 10_000;
+  const cancellable = Array.from({ length: rawCap }, (_, i) => ({
+    addr: BigInt(0x9000 + i * 8),
+    get text() { cancelAccessed++; return `row_${i}`; },
+  }));
+  const { api: cancellableHex } = createApi({ stringIndex: cancellable }, out);
+  const midController = new AbortController();
+  const abortTimer = setTimeout(() => midController.abort(), 0);
+  await assert.rejects(
+    cancellableHex.findStrings('__never_exists__', 1, { signal: midController.signal, scanLimit: rawCap }),
+    (e) => e.name === 'AbortError'
+  );
+  clearTimeout(abortTimer);
+  assert.ok(cancelAccessed > 0, 'mid-scan regression must begin scanning before cancellation');
+  assert.ok(cancelAccessed < rawCap, `scheduled abort must stop before raw cap; accessed ${cancelAccessed}`);
 }
 
 // ── #2628: Product Explorer Classes caching and filtering ──

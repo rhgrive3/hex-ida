@@ -422,31 +422,61 @@ export function createApi(app, out, options = {}) {
       const results = [];
       let visited = 0;
       let truncationReason = null;
-      for (const s of source) {
-        visited += 1;
+
+      const finish = () => {
+        Object.assign(results, {
+          complete: truncationReason == null,
+          completeness: truncationReason == null ? 'complete' : 'partial',
+          truncationReason,
+          reason: truncationReason,
+          scannedItems: budget.scannedItems,
+          scannedTextBytes: budget.scannedTextBytes,
+        });
+        return results;
+      };
+
+      const visit = (s) => {
         throwIfAborted(signal);
-        if (budget.exhausted) { truncationReason = 'scan-budget'; break; }
+        if (budget.exhausted) { truncationReason = 'scan-budget'; return false; }
+        if (!budget.consumeItem()) { truncationReason = 'scan-budget'; return false; }
+        visited += 1;
         const text = s?.text;
-        if (typeof text !== 'string') continue;
-        budget.consume(text);
+        if (typeof text !== 'string') return true;
+        budget.consumeText(text);
         if (!q || text.toLowerCase().includes(q)) {
           results.push(s);
           if (results.length >= max) {
             // Result limit hit. Only a truncation if the index has entries left.
             truncationReason = Array.isArray(source) && visited >= source.length ? null : 'result-limit';
-            break;
+            return false;
           }
         }
+        return true;
+      };
+
+      // Preserve the legacy synchronous return shape for direct callers that
+      // have no cancellation signal. Signal-aware sandbox calls use a chunked
+      // async path so timer/AbortController callbacks can run during the scan.
+      if (!signal) {
+        for (const s of source) {
+          if (!visit(s)) break;
+        }
+        return finish();
       }
-      Object.assign(results, {
-        complete: truncationReason == null,
-        completeness: truncationReason == null ? 'complete' : 'partial',
-        truncationReason,
-        reason: truncationReason,
-        scannedItems: budget.scannedItems,
-        scannedTextBytes: budget.scannedTextBytes,
-      });
-      return results;
+
+      return (async () => {
+        let sinceYield = 0;
+        for (const s of source) {
+          if (!visit(s)) break;
+          sinceYield += 1;
+          if (sinceYield >= 256) {
+            sinceYield = 0;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            throwIfAborted(signal);
+          }
+        }
+        return finish();
+      })();
     },
 
     /* ── Objective-C ──────────────────────────────────── */

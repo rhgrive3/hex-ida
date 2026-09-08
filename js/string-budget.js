@@ -5,10 +5,10 @@ export const STRING_SCAN_BUDGET = Object.freeze({
 });
 
 /*
- * findStrings() walks the collected string index synchronously on the main
- * thread, so the scan work needs its own budget independent of the result
- * limit: without one, a no-match query over a large index walks every entry
- * and neither the result limit nor an abort signal can stop it (#5900).
+ * findStrings() walks the collected string index under an independent work
+ * budget. Signal-aware scans yield in chunks so cancellation can be delivered;
+ * the item/text budgets remain hard bounds independent of the result limit
+ * (#5900).
  */
 export const FIND_STRINGS_SCAN_BUDGET = Object.freeze({
   items: 1_000_000,
@@ -76,15 +76,26 @@ export class SearchScanBudget {
     return this.itemsRemaining <= 0 || this.textBytesRemaining <= 0;
   }
 
-  /*
-   * Charge one candidate entry. Callers must check `exhausted` before reading
-   * the entry, so budget exhaustion never pays for one extra text read.
-   */
-  consume(text) {
+  /* Charge the candidate before callers read candidate.text. */
+  consumeItem() {
+    if (this.itemsRemaining <= 0) return false;
     this.itemsRemaining -= 1;
     this.scannedItems += 1;
-    const bytes = typeof text === 'string' ? text.length * 2 : 0;
+    return true;
+  }
+
+  /* Text-byte work is charged only for string-valued text. */
+  consumeText(text) {
+    if (typeof text !== 'string') return;
+    const bytes = text.length * 2;
     this.textBytesRemaining -= bytes;
     this.scannedTextBytes += bytes;
+  }
+
+  /* Backward-compatible combined charge for existing direct callers. */
+  consume(text) {
+    if (!this.consumeItem()) return false;
+    this.consumeText(text);
+    return true;
   }
 }
