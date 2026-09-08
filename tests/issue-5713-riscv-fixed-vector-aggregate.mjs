@@ -148,6 +148,72 @@ import { RISCV_LP64_ABI, RISCV_LP64D_ABI } from '../js/targets/abi/riscv-lp64.js
   assert.equal(ret.reason, 'vector-return-calling-convention-unknown');
 }
 
+// Integer registers exhausted: a large fixed vector goes by reference on the
+// incoming stack, and the stack entry must be projected into stackArguments.
+{
+  const classified = RISCV_LP64_ABI.classifyArguments({
+    callPrototype: {
+      args: [
+        ...Array.from({ length: 8 }, () => ({ type: 'unsigned long long', bits: 64 })),
+        { type: 'fixed vector', vector: true, fixedLengthVector: true, bits: 256 },
+      ],
+    },
+  });
+  const byRef = classified.arguments[8];
+  assert.equal(byRef.location, 'stack');
+  assert.equal(byRef.abiClass, 'aggregate-by-reference');
+  assert.equal(byRef.offset, 0);
+  assert.equal(byRef.bytes, 8);
+  assert.equal(byRef.hiddenIndirection, true);
+  assert.equal(byRef.pointeeBits, 256);
+  assert.equal(classified.stackArguments.length, 1, 'by-reference stack entry must appear in stackArguments');
+  assert.equal(classified.stackArguments[0], byRef);
+  assert.equal(classified.stackArgsMayContainPointers, true);
+}
+
+// Fully-stack fixed vector: an XLEN-sized vector with no registers left is a
+// memory aggregate on the incoming stack, projected into stackArguments.
+{
+  const classified = RISCV_LP64_ABI.classifyArguments({
+    callPrototype: {
+      args: [
+        ...Array.from({ length: 8 }, () => ({ type: 'unsigned long long', bits: 64 })),
+        { type: 'fixed vector', vector: true, fixedLengthVector: true, bits: 64 },
+      ],
+    },
+  });
+  const stackArg = classified.arguments[8];
+  assert.equal(stackArg.location, 'stack');
+  assert.equal(stackArg.abiClass, 'aggregate-memory');
+  assert.equal(stackArg.offset, 0);
+  assert.equal(stackArg.bytes, 8);
+  assert.equal(stackArg.aggregate, true);
+  assert.equal(classified.stackArguments.length, 1);
+  assert.equal(classified.stackArguments[0], stackArg);
+}
+
+// One register left: the 128-bit fixed vector splits into a register and the
+// high tail on the stack; the tail must be projected into stackArguments.
+{
+  const classified = RISCV_LP64_ABI.classifyArguments({
+    callPrototype: {
+      args: [
+        ...Array.from({ length: 7 }, () => ({ type: 'unsigned long long', bits: 64 })),
+        { type: 'fixed vector', vector: true, fixedLengthVector: true, bits: 128 },
+      ],
+    },
+  });
+  const split = classified.arguments[7];
+  assert.equal(split.location, 'register-and-stack');
+  assert.equal(split.reg, 'x16');
+  assert.equal(split.stackOffset, 0);
+  assert.equal(split.bytes, 16);
+  assert.equal(classified.stackArguments.length, 1, 'the split high tail must appear in stackArguments');
+  assert.equal(classified.stackArguments[0].location, 'stack');
+  assert.equal(classified.stackArguments[0].offset, 0);
+  assert.equal(classified.stackArguments[0].bits, 64);
+}
+
 // The fix must hold for every standard RISC-V profile, not just lp64.
 for (const abi of [RISCV_LP64_ABI, RISCV_LP64D_ABI]) {
   const classified = abi.classifyArguments({

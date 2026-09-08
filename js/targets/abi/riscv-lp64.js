@@ -480,7 +480,10 @@ function createClassifier(profile) {
           if (classified.vector.fixedLength && classified.bits > 0) {
             const placement = placeFixedVectorAsAggregate(index, classified, integerIndex, stackOffset);
             arguments_.push(placement.entry);
-            for (const part of placement.stackParts) if (part !== placement.entry) stackArguments.push(part);
+            // Every stack part is a real incoming-stack argument: fully-stack
+            // and by-reference entries appear in both arrays, matching the
+            // ordinary aggregate path (#5713).
+            for (const part of placement.stackParts) stackArguments.push(part);
             integerIndex = placement.integerIndexAfter;
             stackOffset = placement.stackOffsetAfter;
             aggregateProven = true;
