@@ -330,7 +330,10 @@ export class KnowledgeDB {
         if (out.size>=limit) break;
       }
     }
-    if (!out.size) {
+    // The multiEntry index only answers exact-key lookups.  It is a seed for
+    // the same substring semantics used by the memory backend, not a reason
+    // to skip the cursor scan when one exact record was found.
+    if (out.size < limit) {
       await new Promise((resolve,reject) => {
         let scanned=0; const req=store.openCursor();
         req.onsuccess=()=>{ const c=req.result; if (!c || out.size>=limit || scanned>=2000) return resolve(); scanned++; const record=c.value; const hay=record.searchTerms?.length?record.searchTerms:searchTermsOf(record); if (hay.some((value)=>value.includes(query)||terms.some((term)=>value.includes(term)))) out.set(record.id,record); c.continue(); };
