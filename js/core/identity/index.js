@@ -84,12 +84,26 @@ export function stableStringify(value) {
 }
 
 function fnv64(text, seed) {
-  let hash = BigInt.asUintN(64, seed);
+  // The FNV-1a prime is 0x100000001b3 = (0x100 << 32) + 0x1b3.
+  // Keep the hash as two unsigned 32-bit words.  The 16-bit limbs keep every
+  // intermediate product below 2^53, so Number arithmetic remains exact while
+  // avoiding a BigInt multiply for every UTF-16 code unit.
+  const normalized = BigInt.asUintN(64, seed);
+  let high = Number(normalized >> 32n) >>> 0;
+  let low = Number(normalized & 0xffffffffn) >>> 0;
   for (let i = 0; i < text.length; i++) {
-    hash ^= BigInt(text.charCodeAt(i));
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    low = (low ^ text.charCodeAt(i)) >>> 0;
+    const inputLow = low;
+    const lowLimb = inputLow & 0xffff;
+    const highLimb = inputLow >>> 16;
+    const lowProduct = lowLimb * 0x1b3;
+    const middle = (lowProduct >>> 16) + highLimb * 0x1b3;
+    low = ((lowProduct & 0xffff) | ((middle & 0xffff) << 16)) >>> 0;
+    high = ((Math.imul(high, 0x1b3) >>> 0)
+      + ((inputLow << 8) >>> 0)
+      + (middle >>> 16)) >>> 0;
   }
-  return hash.toString(16).padStart(16, '0');
+  return `${high.toString(16).padStart(8, '0')}${low.toString(16).padStart(8, '0')}`;
 }
 
 export function stableDigest(value) {
