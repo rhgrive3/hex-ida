@@ -32,8 +32,8 @@ function descriptorBoolean(parameter, key) {
   if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
   const values = owners.filter((owner) => Object.hasOwn(owner, key)).map((owner) => owner[key]);
   if (!values.length) return { present:false, value:false };
-  const normalized = values.map((value) => value === true);
-  return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+  if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
+  return { present:true, value:values.every((value) => value === values[0]) ? values[0] : null };
 }
 
 function vectorRegister(index, bits) {
@@ -506,8 +506,16 @@ function vectorcallReturn(prototype, options = {}) {
     return { reg:null, partial:true, reason:'microsoft-vectorcall-wide-vector-return-unsupported' };
   }
   if (/float|double|\bfp\b/.test(`${type} ${abiClass}`)) {
-    const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, 64));
+    const words = `${type} ${abiClass}`.split(/[^a-z0-9]+/);
+    const canonical = words.includes('float') && !words.includes('double') ? 32
+      : words.includes('double') && !words.includes('float') ? 64 : null;
+    const explicit = options.returnBits ?? prototype.returnBits ?? prototype.bits;
+    const bits = Number(explicit ?? typeBits(type, 64));
     if (!Number.isSafeInteger(bits) || bits <= 0) return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-invalid' };
+    if (canonical != null && explicit != null && bits !== canonical) {
+      return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-contradicts-type' };
+    }
+    if (bits > 128) return { reg:null, partial:true, reason:'microsoft-vectorcall-wide-fp-return-unsupported' };
     return { reg:'xmm0', bits, abiClass:'fp' };
   }
   const aggregate = prototype.aggregate === true

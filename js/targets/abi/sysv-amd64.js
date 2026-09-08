@@ -67,8 +67,8 @@ function parameterClass(parameter) {
   const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
   const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
-  const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const aggregate = !x87 && !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
   const floating = !x87 && !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
@@ -77,7 +77,7 @@ function parameterClass(parameter) {
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
   return {
@@ -340,7 +340,12 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
         return;
       }
       const bytes = align(Math.max(8, physicalBytes), 8);
-      stackOffset = align(stackOffset, Math.min(16, Math.max(8, Number(parameter?.alignment || 8))));
+      // psABI requires a MEMORY-class argument to respect its declared alignment,
+      // including alignments larger than 16; malformed values fail safe to 8.
+      const declaredAlignment = Number(parameter?.alignment);
+      const stackAlignment = Math.max(8,
+        Number.isSafeInteger(declaredAlignment) && declaredAlignment > 8 ? declaredAlignment : 8);
+      stackOffset = align(stackOffset, stackAlignment);
       const pieces = physicalBytes > logicalBytes
         ? [{ index:0, pieceIndex:0, order:0, stackOffset,
           bits:classified.bits, bytes, byteOffset:0, abiClass:'aggregate-memory' }]
@@ -558,12 +563,13 @@ function classifyReturn(prototype, options = {}) {
   if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
   }
-  const aggregate = prototype.aggregate === true || prototype.isAggregate === true
+  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
     || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
       && typeof prototype.returnAggregate !== 'boolean')
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   if (aggregate) {
     const explicitReturnBits = options.returnBits ?? prototype.returnBits ?? null;
     const returnBitsNumber = explicitReturnBits == null ? null : Number(explicitReturnBits);
@@ -603,7 +609,7 @@ function classifyReturn(prototype, options = {}) {
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
   const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   if (vector && saneBits > 128) {
     const reg = vectorRegisterView(0, saneBits, options);

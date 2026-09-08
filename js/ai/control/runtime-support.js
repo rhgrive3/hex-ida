@@ -95,8 +95,18 @@ export function deterministicDecision(plan, request, error = null) {
 export function fallbackEvidence(store, plan) { const planIds = new Set(plan?.evidence || []), exact = store.all().filter((item) => planIds.has(item.id)); if (exact.length) return exact.slice(0, 50); const planned = store.all().filter((item) => item.sourceTool === 'deterministic-goal-planner'); if (planned.length) return planned.slice(-50); return store.all().filter((item) => item.status === 'verified').slice(-50); }
 export function deterministicConfidence(plan) { if (plan?.best?.verification?.verified) return 0.98; if (plan?.best?.semanticFacts?.length) return 0.78; return plan?.best ? 0.45 : 0; }
 export function presentAnswer(answer, style, evidence, plan) { if (style === 'analyst') return answer; const suffix = evidence.length ? `\n\nHex が確認できた根拠は ${evidence.length} 件です。` : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。'; return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`; }
-export function ensureRunning(signal, started, timeoutMs) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (Date.now() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
-export function remainingTime(started, timeoutMs) { return Math.max(1, timeoutMs - (Date.now() - started)); }
+export function defaultMonotonicNow() {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  } catch { /* fall through to the wall clock */ }
+  return Date.now();
+}
+export function resolveMonotonicClock(...candidates) {
+  for (const candidate of candidates) if (typeof candidate === 'function') return candidate;
+  return defaultMonotonicNow;
+}
+export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonotonicNow) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (nowFn() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
+export function remainingTime(started, timeoutMs, nowFn = defaultMonotonicNow) { return Math.max(1, timeoutMs - (nowFn() - started)); }
 export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }
 export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
 function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }

@@ -159,12 +159,30 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
+export function isEvidenceApplicableToClaim(evidence, claim) {
+  if (!evidence || typeof evidence !== 'object') return false;
+  if (!claim || typeof claim !== 'object') return false;
+  if (evidence.binaryId != null && claim.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
+  if (claim.scope != null) {
+    const evidenceScope = evidence.scope !== undefined ? evidence.scope : evidence.payload?.scope;
+    if (evidenceScope == null || !equalValue(evidenceScope, claim.scope)) return false;
+  }
+  const claimTargets = Array.isArray(claim.targetEntityIds) ? claim.targetEntityIds : [];
+  if (claimTargets.length) {
+    const evidenceTargets = Array.isArray(evidence.targetEntityIds) ? evidence.targetEntityIds : [];
+    if (!evidenceTargets.length) return true;
+    return evidenceTargets.some((id) => claimTargets.includes(id));
+  }
+  return true;
+}
+
 export function canConfirmClaim(evidence, claim) {
   if (!evidence || typeof evidence !== 'object') return false;
   if (evidence.deterministic !== true) return false;
   if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
     return false;
   }
+  if (!isEvidenceApplicableToClaim(evidence, claim)) return false;
   return true;
 }
 
@@ -261,14 +279,22 @@ export class EvidenceGraph {
     for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
       if (!this.#nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
     }
-    const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
-    const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const existingContradictionIds = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const knownContradictions = existingContradictionIds.filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node && isEvidenceApplicableToClaim(node, claim);
+    });
+    const knownSupport = [...supporting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node && isEvidenceApplicableToClaim(node, claim);
+    });
     const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => {
       const node = this.#nodes.get(evidenceId);
       return canConfirmClaim(node, claim);
     });
     let verdict = claim.verdict;
-    if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
+    if (knownContradictions.length) verdict = 'contradicted';
+    else if (claim.verdict === 'contradicted' && existingContradictionIds.length === 0) verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
     else if (knownSupport.length) verdict = 'supported';
     else if (supporting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';

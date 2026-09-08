@@ -27,8 +27,19 @@ export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
+// Instruction origin evidence carries the same primitive non-empty string
+// contract as the canonical origin set (#5776): a structured value must never
+// launder into a canonical instruction evidence ID via String(), so malformed
+// evidence fails closed instead of joining summary provenance.
 function evidenceOf(node) {
-  return [...(node.origin?.instructionIds ?? [])].map(String);
+  const raw = node.origin?.instructionIds ?? [];
+  if (!Array.isArray(raw)) throw new TypeError('summary-invalid-instruction-evidence');
+  const evidenceIds = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || !value) throw new TypeError('summary-invalid-instruction-evidence');
+    if (!evidenceIds.includes(value)) evidenceIds.push(value);
+  }
+  return evidenceIds;
 }
 
 function regionsFor(node, resolveRegion) {

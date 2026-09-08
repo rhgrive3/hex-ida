@@ -60,15 +60,26 @@ export class DebugSession {
     this.id = debugSessionId(options.id); this.adapter = adapter; this.backend = adapter.kind;
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
-    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null;
+    this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null; this._connectPromise=null; this._lifecycleGeneration=1;
   }
-  async connect(options = {}) {
-    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
-    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+  _connectIsCurrent(generation) { return !this.closed && this._lifecycleGeneration===generation; }
+  async _cleanupStaleConnect() {
+    const disconnecting=this._disconnecting;
+    if (disconnecting) { try { await disconnecting; } catch {} }
+    if (typeof this.adapter.disconnect==='function') { try { await this.adapter.disconnect(); } catch {} }
+  }
+  async _connectOnce(options, generation) {
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(this.epoch);
     let result;
+    let published=false;
+    let staleCleanup=false;
     try {
       result = await this.adapter.connect(options);
+      if (!this._connectIsCurrent(generation)) {
+        staleCleanup=true;
+        await this._cleanupStaleConnect();
+        throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      }
       if (typeof this.adapter.onEvent === 'function') {
         const subscriptionEpoch = this.epoch;
         const unsubscribe = this.adapter.onEvent((event)=>this.acceptEvent(event,subscriptionEpoch));
@@ -76,20 +87,36 @@ export class DebugSession {
         this._unsubscribe=unsubscribe || null;
       }
       this.connected=true;
+      published=true;
+      await this.refreshState(generation);
+      if (!this._connectIsCurrent(generation)) throw new DebugAdapterError('stale-session-connect','debug session connect completed after the session lifecycle changed');
+      return result;
     } catch (error) {
-      if (typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
-      this._unsubscribe=null; this.connected=false;
-      try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      if (!published && typeof this._unsubscribe==='function') { try { this._unsubscribe(); } catch {} }
+      if (!published) this._unsubscribe=null;
+      if (!published) this.connected=false;
+      if (!staleCleanup && !published) {
+        try { if (this.adapter.connected && typeof this.adapter.disconnect==='function') await this.adapter.disconnect(); } catch {}
+      }
       throw error;
     }
-    await this.refreshState();
-    return result;
   }
-  async refreshState() {
+  async connect(options = {}) {
+    if (this.closed) throw new DebugAdapterError('session-closed','cannot reconnect a closed debug session');
+    if (this.connected) return { adapter:this.adapter.id, capabilities:this.adapter.capabilities, reused:true };
+    if (this._connectPromise) return this._connectPromise;
+    if (this._disconnecting) throw new DebugAdapterError('session-disconnecting','cannot connect while a debug session disconnect is in flight');
+    const generation=this._lifecycleGeneration;
+    const attempt=this._connectOnce(options,generation);
+    this._connectPromise=attempt;
+    try { return await attempt; }
+    finally { if (this._connectPromise===attempt) this._connectPromise=null; }
+  }
+  async refreshState(lifecycleGeneration = null) {
     const refreshToken={};
     const refreshEpoch=this.epoch;
     this._refreshToken=refreshToken;
-    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken;
+    const isCurrent=()=>!this.closed&&this.epoch===refreshEpoch&&this._refreshToken===refreshToken&&(lifecycleGeneration==null||this._lifecycleGeneration===lifecycleGeneration);
     const snapshot=()=>({modules:this.modules,threads:this.threads,errors:{...this.refreshErrors}});
     let modules=this.modules;
     let threads=this.threads;
@@ -191,6 +218,7 @@ export class DebugSession {
   async disconnect() {
     if(this.closed)return;
     if(this._disconnecting)return this._disconnecting;
+    this._lifecycleGeneration++;
     this.cancelAll('disconnected');
     const attempt=(async()=>{ await this.adapter.disconnect(); })();
     this._disconnecting=attempt;

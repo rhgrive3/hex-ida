@@ -24,6 +24,7 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
+import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
   reachingMemoryDefinition,
@@ -87,6 +88,18 @@ export function createAnalysisSurface({
     stopReason,
   });
 
+  // Public MemorySSA queries enforce the same dependency identity floor as
+  // the solver boundary. A serialized snapshot is optional on canonical
+  // artifacts, but when present it is authoritative.
+  function memorySsaQueryBindingIsCurrent() {
+    return validateMemorySsaBinding({
+      memorySsa,
+      ir,
+      binding: solverOptions.memorySsaBinding,
+      snapshotId,
+    }).valid;
+  }
+
   /** Alias relation with proof and completeness. */
   function alias(leftRegion, rightRegion, context = {}) {
     return solver.alias(leftRegion, rightRegion, context);
@@ -94,7 +107,7 @@ export function createAnalysisSurface({
 
   /** The reaching memory definition for one load, with its status. */
   function reachingMemoryDef(useOrId) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { definition: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     const definition = reachingMemoryDefinition(memorySsa, useOrId);
@@ -109,7 +122,7 @@ export function createAnalysisSurface({
 
   /** The evidence path between a memory source and a sink. */
   function explainMemoryPath(useOrId, pathOptions = {}) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { path: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     return { path: explainMemoryPathQuery(memorySsa, useOrId, pathOptions), status: status('complete') };

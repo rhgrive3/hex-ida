@@ -52,11 +52,38 @@ function sameIdentity(bound, live) {
   if (live.snapshotId && bound.snapshotId !== live.snapshotId) return false;
   return true;
 }
+function isWellFormedSourceIdentity(identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return false;
+  if (![identity.analysisEpoch, identity.projectRevision]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) return false;
+  if (!(Number.isSafeInteger(identity.sliceIndex) && identity.sliceIndex >= -1)) return false;
+  if (identity.binaryId != null && typeof identity.binaryId !== 'string') return false;
+  if (identity.snapshotId != null && typeof identity.snapshotId !== 'string') return false;
+  return true;
+}
 function bindValue(app, value, currentSnapshotId = null) {
   if (!value || typeof value !== 'object') return { value, identity:null };
   const report = value.report && typeof value.report === 'object' ? value.report : null;
   const wrapperSnapshotId = value.snapshotId ?? null;
   const reportSnapshotId = report?.snapshotId ?? null;
+  // An existing sourceIdentity is producer-time authority. It is validated and
+  // preserved verbatim, never re-derived from the setter-time live identity: a
+  // report that was produced against another binary/epoch must not be relabelled
+  // by landing in a different app state (#5796).
+  const existingSourceIdentity = isWellFormedSourceIdentity(value.sourceIdentity)
+    ? value.sourceIdentity
+    : isWellFormedSourceIdentity(report?.sourceIdentity) ? report.sourceIdentity : null;
+  if (value.sourceIdentity != null || report?.sourceIdentity != null) {
+    if (!existingSourceIdentity) return { value, identity:null };
+    const liveAtBind = liveIdentity(app, currentSnapshotId);
+    if (!sameIdentity(existingSourceIdentity, liveAtBind)) return { value, identity:null };
+    const existingSnapshotId = existingSourceIdentity.snapshotId ?? null;
+    if ((wrapperSnapshotId != null && wrapperSnapshotId !== existingSnapshotId)
+      || (reportSnapshotId != null && reportSnapshotId !== existingSnapshotId)) {
+      return { value, identity:null };
+    }
+    return { value:{ ...value, snapshotId:existingSnapshotId, sourceIdentity:existingSourceIdentity }, identity:existingSourceIdentity };
+  }
   if (wrapperSnapshotId != null && reportSnapshotId != null && wrapperSnapshotId !== reportSnapshotId) {
     return { value, identity:null };
   }
@@ -107,7 +134,10 @@ export function installAutoReportIdentityBoundary(app) {
       return state.bound.value;
     },
     set(value) {
-      state.bound = value == null ? null : bindValue(app, value, state.currentSnapshotId);
+      const bound = value == null ? null : bindValue(app, value, state.currentSnapshotId);
+      // A value that failed producer-identity validation was never current, so
+      // it must not be retained — not as bound and not as historical evidence.
+      state.bound = bound && bound.identity ? bound : null;
       if (value != null) state.stale = null;
     },
   });

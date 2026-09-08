@@ -43,6 +43,16 @@ function normalizeInteger(value, bits, signed) {
   return n;
 }
 
+// Machine-integer boundary for caller-provided experiment values: an unsafe
+// number has already been rounded by IEEE-754 at the call site, so freezing it
+// into a BigInt would publish silently wrong machine values (#5724). Such
+// inputs fail closed exactly like asAddress()/strictMachineInteger().
+function machineIntegerOrThrow(value, name) {
+  const converted = strictMachineInteger(value);
+  if (converted == null) throw new DebugAdapterError('invalid-machine-integer', `${name} must be a machine integer (exact BigInt, safe number, or integer string)`);
+  return converted;
+}
+
 export function generateDifferentialInputs(spec = {}) {
   const bits = spec.bits === 32 ? 32 : 64;
   const signed = spec.signed !== false;
@@ -52,10 +62,10 @@ export function generateDifferentialInputs(spec = {}) {
   if (signed) values.push(-1n);
   values.push(2n, 7n, 16n, 127n, 255n, 1024n);
   if (spec.boundary != null) {
-    const b = BigInt(spec.boundary); values.push(b - 1n, b, b + 1n);
+    const b = machineIntegerOrThrow(spec.boundary, 'boundary'); values.push(b - 1n, b, b + 1n);
   }
   if (spec.expected != null) {
-    const b = BigInt(spec.expected); values.push(b - 1n, b, b + 1n);
+    const b = machineIntegerOrThrow(spec.expected, 'expected'); values.push(b - 1n, b, b + 1n);
   }
   values.push(max);
   if (signed) values.push(min);
@@ -82,8 +92,8 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
   result = normalizeInteger(result, bits, signed);
-  if (hypothesis.clampMin != null && result < BigInt(hypothesis.clampMin)) result = BigInt(hypothesis.clampMin);
-  if (hypothesis.clampMax != null && result > BigInt(hypothesis.clampMax)) result = BigInt(hypothesis.clampMax);
+  if (hypothesis.clampMin != null && result < machineIntegerOrThrow(hypothesis.clampMin, 'clampMin')) result = machineIntegerOrThrow(hypothesis.clampMin, 'clampMin');
+  if (hypothesis.clampMax != null && result > machineIntegerOrThrow(hypothesis.clampMax, 'clampMax')) result = machineIntegerOrThrow(hypothesis.clampMax, 'clampMax');
   return normalizeInteger(result, bits, signed);
 }
 
@@ -95,7 +105,7 @@ export function compileExperiment(hypothesis, options = {}) {
   const fieldBits = fieldSize * 8;
   const signed = hypothesis.signed !== false;
   const objectBase = asAddress(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n, 'objectBase');
-  const initial = normalizeInteger(hypothesis.initial ?? options.initial ?? 100, fieldBits, signed);
+  const initial = normalizeInteger(machineIntegerOrThrow(hypothesis.initial ?? options.initial ?? 100, 'initial'), fieldBits, signed);
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;

@@ -112,11 +112,20 @@ export function decodeWireValue(value, depth = 0) {
     if (
       Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
       typeof value.value !== 'string' ||
-      !/^-?\d+$/.test(value.value)
+      // Canonical spelling only: encodeWireValue() emits BigInt.toString(10),
+      // so the wire can carry `0`, `1`, `-1` … but never leading zeros (`01`),
+      // negative zero (`-0`, which BigInt() would alias onto 0), or padded
+      // negatives (`-01`). Accepting those spellings aliased non-canonical
+      // packets onto canonical values (#5709).
+      !/^(0|-?[1-9]\d*)$/.test(value.value)
     ) {
       throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
     }
-    return BigInt(value.value);
+    const decoded = BigInt(value.value);
+    if (decoded.toString(10) !== value.value) {
+      throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
+    }
+    return decoded;
   }
   if (value[WIRE_TAG] === BYTES_TAG) {
     if (Object.keys(value).some((k) => ![WIRE_TAG, 'value', 'length'].includes(k)) || typeof value.value !== 'string') {
