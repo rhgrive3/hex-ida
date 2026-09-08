@@ -20,6 +20,9 @@ function adapterWith(capabilities) {
     async request(method, params) { sent.push({ method, params }); return { events: [{ type: 'call', address: '0x1004' }] }; },
     close() {},
   };
+  // #5807 (merged): every remote request is gated on a completed connect
+  // handshake, so these authorization tests connect before exercising gates.
+  remote.connected = true;
   return { remote, sent };
 }
 
