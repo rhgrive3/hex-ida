@@ -149,6 +149,10 @@ export class EvidenceStore {
 
   add(input, authority = null) {
     if (!input || typeof input !== 'object') return null;
+    // All validations that can reject the record must run before any state
+    // mutation: an id-based rejection after sourceData persistence would leave
+    // an orphaned payload behind (#5405).
+    if (input.id != null && typeof input.id !== 'string') return null;
     // Validate before either source-data persistence path can create durable state.
     // The same normalized value is reused for the canonical record (#5946).
     const timestamp = evidenceTimestamp(input.timestamp);
@@ -179,7 +183,6 @@ export class EvidenceStore {
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ]));
-    if (input.id && typeof input.id !== 'string') return null;
     const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
