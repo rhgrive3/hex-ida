@@ -46,6 +46,14 @@ export const PROVENANCE_LOSS_REASONS = Object.freeze([
 
 function fail(code) { throw new TypeError(code); }
 
+function maxTargetsPerSet(budget) {
+  const value = budget?.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    fail('points-to-invalid-max-targets-per-set');
+  }
+  return value;
+}
+
 function big(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
@@ -129,9 +137,8 @@ export function widenRange(previous, next) {
  * an interval.
  */
 function signedBounds(widthBits) {
-  const bits = Number(widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 1 || bits > 512) return null;
-  const half = 1n << BigInt(bits - 1);
+  if (typeof widthBits !== 'number' || !Number.isSafeInteger(widthBits) || widthBits <= 1 || widthBits > 512) return null;
+  const half = 1n << BigInt(widthBits - 1);
   return { min: -half, max: half - 1n };
 }
 
@@ -153,7 +160,7 @@ export function addRange(range, delta, widthBits) {
   const min = range.min + d;
   const max = range.max + d;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -167,7 +174,7 @@ export function addRanges(a, b, widthBits) {
   const min = a.min + b.min;
   const max = a.max + b.max;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -376,6 +383,7 @@ export function pointsToIsBottom(set) {
  * silently dropping a target (dropping one would falsely prove separation).
  */
 export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (a.top || b.top) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons] });
   }
@@ -390,7 +398,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
       evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
     }));
   }
-  if (byRoot.size > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (byRoot.size > targetLimit) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons, 'target-cap'] });
   }
   return createPointsToSet({
@@ -401,6 +409,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
 
 /** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (next.top) return next;
   if (previous == null) return next;
   if (previous.top) return previous;
@@ -418,7 +427,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     }
     return createPointsToTarget({ ...target, offsetRange: widenedRange });
   });
-  if (targets.length > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (targets.length > targetLimit) {
     return topPointsTo('target-cap');
   }
   return createPointsToSet({
