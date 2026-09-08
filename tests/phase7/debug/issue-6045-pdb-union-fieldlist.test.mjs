@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseTpiStream } from '../../../js/analysis/debug/pdb.js';
+import { parseTpiStream, PdbDebugInfoProvider } from '../../../js/analysis/debug/pdb.js';
 
 // #6045: CodeView LF_UNION carries MemberCount/Properties/FieldList/Size/Name
 // (LLVM UnionRecord). The parser must keep the union's declared FieldList type
@@ -68,6 +68,26 @@ test('#6045: union member layout resolves through the declared FieldList', () =>
   // with the fix the union exposes its member, with the old fieldList:0 it did not.
   const union = parsed.types.get(0x1000);
   assert.equal(parsed.types.get(union.fieldList), fields);
+  const aggregates = new PdbDebugInfoProvider().aggregates({ parsed: { tpi: parsed } });
+  assert.equal(aggregates.length, 1);
+  assert.equal(aggregates[0].name, 'U');
+  assert.equal(aggregates[0].sizeBytes, 4);
+  assert.equal(aggregates[0].members.length, union.memberCount);
+  assert.deepEqual(aggregates[0].members.map(({ name, offset }) => ({ name, offset })), [{ name: 'x', offset: 0 }]);
+});
+
+test('#6045: forward declarations and unresolved field lists do not publish layouts', () => {
+  for (const mode of ['forward', 'missing-fields']) {
+    const bytes = header(UNION_RECORD.length + FIELDLIST_RECORD.length, { lastIndex: 0x1002 });
+    bytes.set(UNION_RECORD, 56);
+    bytes.set(FIELDLIST_RECORD, 56 + UNION_RECORD.length);
+    const view = new DataView(bytes.buffer);
+    if (mode === 'forward') view.setUint16(56 + 6, 0x80, true);
+    else view.setUint32(56 + 8, 0x1002, true);
+    const parsed = parseTpiStream(bytes);
+    assert.equal(parsed.types.get(0x1000).forwardReference, mode === 'forward');
+    assert.deepEqual(new PdbDebugInfoProvider().aggregates({ parsed: { tpi: parsed } }), [], mode);
+  }
 });
 
 test('#6045: struct and class records keep reading FieldList at body+4', () => {
@@ -92,4 +112,8 @@ test('#6045: struct and class records keep reading FieldList at body+4', () => {
   const parsed = parseTpiStream(bytes);
   assert.equal(parsed.complete, true);
   assert.equal(parsed.types.get(0x1000)?.fieldList, 0x1001);
+  new DataView(bytes.buffer).setUint16(58, 0x1504, true); // LF_CLASS
+  const classParsed = parseTpiStream(bytes);
+  assert.equal(classParsed.complete, true);
+  assert.equal(classParsed.types.get(0x1000)?.fieldList, 0x1001);
 });
