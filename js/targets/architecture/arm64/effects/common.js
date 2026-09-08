@@ -46,9 +46,21 @@ export function instructionBits(op, fallback = 64) {
   return typeof bits === 'number' && Number.isInteger(bits) && (bits === 32 || bits === 64) ? bits : 0;
 }
 
+function strictInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
+
 export function immediateOf(op) {
   if (!op || op.k !== 'imm' || op.value == null) return null;
-  try { return BigInt(op.value); } catch { return null; }
+  return strictInteger(op.value);
 }
 
 function decodedAbsoluteTargetOf(op) {
@@ -65,6 +77,11 @@ function decodedAbsoluteTargetOf(op) {
   try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
 }
 
+
+// Numeric `other` target text is canonical address evidence for ADR/ADRP.
+export function numericOtherTargetValue(op) {
+  return decodedAbsoluteTargetOf(op);
+}
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   // The condition code picks a canonical NZCV predicate: structured text must
@@ -77,15 +94,26 @@ export function conditionOf(instruction) {
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) {
-    try { return BigInt(explicit); } catch { return null; }
-  }
+  if (explicit != null) return strictInteger(explicit);
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);
     if (value != null) return value;
   }
   return null;
+}
+
+// Every operand that canonically parses into an absolute target. Structured
+// branch/call records may carry redundant target evidence; consumers that
+// mint exact control edges must require all of it to agree instead of
+// trusting the first parseable value.
+export function decodedOperandTargetValues(instruction) {
+  const targets = [];
+  for (const operand of instruction?.ops || []) {
+    const value = decodedAbsoluteTargetOf(operand);
+    if (value != null) targets.push(value);
+  }
+  return targets;
 }
 
 function originInput(instruction, instructionId, operationIds) {

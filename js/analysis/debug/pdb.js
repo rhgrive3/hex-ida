@@ -50,6 +50,12 @@ const LF_ENUM = 0x1507;
 const LF_ARRAY = 0x1503;
 const LF_MEMBER = 0x150d;
 
+/** CodeView LF_MODIFIER flags. These are independent bits, not an enum. */
+const MODIFIER_CONST = 0x0001;
+const MODIFIER_VOLATILE = 0x0002;
+const MODIFIER_UNALIGNED = 0x0004;
+const MODIFIER_KNOWN_MASK = MODIFIER_CONST | MODIFIER_VOLATILE | MODIFIER_UNALIGNED;
+
 /** CV_PUBSYMFLAGS: bit 1 marks a function. */
 const CVPSF_FUNCTION = 0x00000002;
 
@@ -390,19 +396,35 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const headerSize = view.getUint32(4, true);
   const firstIndex = view.getUint32(8, true);
+  const lastIndex = view.getUint32(12, true);
+  const typeRecordBytes = view.getUint32(16, true);
   if (headerSize < 56 || headerSize > bytes.length) {
     return { types, unmodelled, complete: false, firstIndex };
   }
-  let offset = headerSize;
+  // The header owns the record range: record data starts at HeaderSize and
+  // covers exactly TypeRecordBytes bytes, and the declared index window
+  // (TypeIndexEnd - TypeIndexBegin) must match what is actually parsed.
+  // Anything past that range is not a type record and must never become one
+  // (#5845).
+  const typeDataStart = headerSize;
+  const typeDataEnd = typeDataStart + typeRecordBytes;
+  if (typeRecordBytes > bytes.length - typeDataStart) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
+  const expectedCount = lastIndex >= firstIndex ? lastIndex - firstIndex : -1;
+  if (expectedCount < 0) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
+  let offset = typeDataStart;
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= bytes.length && types.size < budget.maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < budget.maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
-    if (end > bytes.length) break;
+    if (end > typeDataEnd) break;
     const body = offset + 4;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
@@ -470,8 +492,16 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     index += 1;
   }
   // An incomplete field-list child (unsupported subrecord) fails the stream
-  // closed (#5773).
-  return { types, unmodelled, complete: fieldListsComplete && offset >= bytes.length, firstIndex };
+  // closed (#5773). Complete also only when the declared record extent was
+  // fully consumed and the parsed record count matches TypeIndexEnd -
+  // TypeIndexBegin; trailing bytes beyond TypeRecordBytes (e.g. hash data)
+  // are not type records and do not block completeness (#5845).
+  return {
+    types,
+    unmodelled,
+    complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
+    firstIndex,
+  };
 }
 
 /**
@@ -616,8 +646,18 @@ export function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'modifier') {
     const target = describeTypeIndex(record.underlying, types, depth + 1);
-    const qualifier = (record.modifiers & 0x0001) ? 'const' : (record.modifiers & 0x0002) ? 'volatile' : '';
-    return { ...target, name: qualifier ? `${qualifier} ${target.name}` : target.name };
+    const modifiers = record.modifiers;
+    const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
+    const qualifiers = [];
+    if (validModifiers && (modifiers & MODIFIER_CONST)) qualifiers.push('const');
+    if (validModifiers && (modifiers & MODIFIER_VOLATILE)) qualifiers.push('volatile');
+    if (validModifiers && (modifiers & MODIFIER_UNALIGNED)) qualifiers.push('unaligned');
+    // A future CodeView flag must not be dropped while retaining complete:true:
+    // the rendered name is useful context, but the modifier set is not fully
+    // understood and therefore cannot support an exact type claim.
+    const hasUnknownModifiers = !validModifiers || (modifiers & ~MODIFIER_KNOWN_MASK) !== 0;
+    const name = qualifiers.length ? `${qualifiers.join(' ')} ${target.name}` : target.name;
+    return { ...target, name, complete: target.complete && !hasUnknownModifiers };
   }
   if (record.kind === 'procedure') {
     const returns = describeTypeIndex(record.returnType, types, depth + 1);

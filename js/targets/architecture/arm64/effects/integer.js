@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { createArm64EffectContext, immediateOf } from './common.js';
+import { createArm64EffectContext, immediateOf, numericOtherTargetValue } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -227,6 +227,10 @@ function validAddressEncoding(instruction, ops) {
   try { address = BigInt(rawAddress); } catch { return false; }
   try { target = BigInt(rawTarget); } catch { return false; }
   if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) return false;
+  if (targetOperand?.k === 'other') {
+    const otherValue = numericOtherTargetValue(targetOperand);
+    if (otherValue != null && otherValue !== target) return false;
+  }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta >= -(1n << 20n) && delta <= (1n << 20n) - 1n;

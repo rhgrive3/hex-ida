@@ -3,6 +3,7 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
@@ -30,23 +31,10 @@ function branchSuccessors(ir, block, term, opts) {
   return { yes, no: successors.find((x) => x !== yes) ?? null, exact: true };
 }
 
-function canReach(ir, start, target, blocked, cap = 256) {
-  if (start == null || target == null) return false;
-  const queue = [start];
-  const seen = new Set();
-  while (queue.length && cap-- > 0) {
-    const current = queue.shift();
-    if (current === target) return true;
-    if (current === blocked || seen.has(current)) continue;
-    seen.add(current);
-    for (const next of ir.blocks?.[current]?.succ || []) if (!seen.has(next)) queue.push(next);
-  }
-  return false;
-}
-
 function armIndex(ir, controller, successor, mergeBlock, predecessors) {
-  if (successor === mergeBlock) return predecessors.indexOf(controller.index);
-  return predecessors.findIndex((pred) => canReach(ir, successor, pred, mergeBlock));
+  return uniqueReachableMergePredecessorIndex(
+    ir, controller.index, successor, mergeBlock, predecessors,
+  );
 }
 
 function dominates(ir, candidate, node) {

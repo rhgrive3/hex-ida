@@ -21,6 +21,7 @@ export class CapabilityExecutor {
     assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
+    this.verifyScope(entry, options);
     if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
     if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
     if (entry.actionKind) return this.executeAction(entry, executionArgs);
@@ -36,6 +37,21 @@ export class CapabilityExecutor {
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
     if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+  }
+
+  verifyScope(entry, options = {}) {
+    const scope = options?.scope || 'auto';
+    if (scope === 'auto') return;
+    let allowedScopes;
+    if (entry.agentTool) {
+      const record = this.toolRegistry?.get?.(entry.agentTool);
+      allowedScopes = record?.scopeSupport || entry.scopeSupport || [];
+    } else {
+      allowedScopes = entry.scopeSupport || [];
+    }
+    if (!allowedScopes.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
   }
 
   executeTool(entry, args, options) {

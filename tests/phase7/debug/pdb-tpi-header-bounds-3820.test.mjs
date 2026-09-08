@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 
 import { parseTpiStream } from '../../../js/analysis/debug/pdb.js';
 
-const makeTpi = (length, headerSize, firstIndex = 0x1000) => {
+const makeTpi = (length, headerSize, firstIndex = 0x1000, { lastIndex = firstIndex, recordBytes = 0 } = {}) => {
   const bytes = new Uint8Array(length);
   const view = new DataView(bytes.buffer);
   view.setUint32(4, headerSize, true);
   view.setUint32(8, firstIndex, true);
+  view.setUint32(12, lastIndex, true);
+  view.setUint32(16, recordBytes, true);
   return bytes;
 };
 
@@ -39,7 +41,7 @@ test('the canonical 56-byte empty TPI header remains complete', () => {
 });
 
 test('a bounded extended header still starts records at its declared offset', () => {
-  const bytes = makeTpi(64, 60);
+  const bytes = makeTpi(64, 60, 0x1000, { lastIndex: 0x1001, recordBytes: 4 });
   // length=2, LF_ARGLIST. The four extension bytes at 56..59 are skipped.
   bytes.set([0x02, 0x00, 0x01, 0x12], 60);
 

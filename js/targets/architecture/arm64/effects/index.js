@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic, numericOtherTargetValue } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -355,7 +355,11 @@ function literalMemoryEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
-  const displacement = target - address;
+  // Literal PC-relative offsets are SignExtend(imm19:'00', 64) added to the
+  // 64-bit PC: valid encodings may wrap the 64-bit address boundary, so the
+  // architectural displacement is the modulo-2^64 signed difference, not the
+  // raw BigInt subtraction.
+  const displacement = BigInt.asIntN(64, target - address);
   if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
   return null;
 }
@@ -395,6 +399,11 @@ function addressImmediateEncodingFailure(instruction) {
   if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
+  if (targetOperand?.k === 'other') {
+    const otherValue = numericOtherTargetValue(targetOperand);
+    if (otherValue != null && otherValue !== target) return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
+
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
