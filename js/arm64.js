@@ -153,7 +153,7 @@ cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp l
 cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
-cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
+cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
@@ -1404,6 +1404,14 @@ for (const n of ['pacia1716', 'pacib1716']) {
     o.terms = ['pac', 'security'];
   };
 }
+for (const n of ['paciaz', 'pacibz']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('戻り先アドレスにゼロ修飾値で封をする', 'Sign the return address with zero modifier');
+    o.pseudo = 'lr = sign(lr, 0)';
+    o.summary = J('戻り先アドレス (x30) を修飾値 0 で署名し、書き換えを検出できるようにする。', 'Sign the return address in x30 with a zero modifier.');
+    o.terms = ['pac', 'security', 'lr'];
+  };
+}
 for (const n of ['autiasp', 'autibsp']) {
   HANDLERS[n] = (o) => {
     o.title = J('戻り先アドレスの封を確かめる', 'Authenticate the return address');
@@ -1436,6 +1444,14 @@ for (const n of ['autia1716', 'autib1716']) {
     o.pseudo = 'x17 = authenticate(x17, x16)';
     o.summary = J('x17 のポインタを x16 を修飾値として認証する。', 'Authenticate the pointer in x17 using x16 as the modifier.');
     o.terms = ['pac', 'security'];
+  };
+}
+for (const n of ['autiaz', 'autibz']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('戻り先アドレスの封をゼロ修飾値で確かめる', 'Authenticate the return address with zero modifier');
+    o.pseudo = 'lr = authenticate(lr, 0)';
+    o.summary = J('修飾値 0 で戻り先アドレス (x30) の署名を検証する。', 'Authenticate the return address in x30 with a zero modifier.');
+    o.terms = ['pac', 'security', 'lr'];
   };
 }
 for (const n of ['xpaci', 'xpacd']) {

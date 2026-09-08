@@ -16,7 +16,10 @@ assert.match(panels, /signal: controller\.signal/);
 
 const region = { id: 'text', vmAddr: 0x1000n, size: 0x4000n };
 const app = {
-  store: { get: (key) => key === 'canDisassemble' },
+  // The legacy fallback requires a proven 4-byte ARM64 stream (#5818); this
+  // test exercises signal plumbing through analyzeFunctionCached, so the
+  // fixture declares an ARM64 capability.
+  store: { get: (key) => (key === 'canDisassemble' ? true : key === 'architecture' ? 'arm64' : { architecture: 'arm64', fixedInstructionSize: 4 }) },
   symbols: { gen: 1 },
   backend: {},
 };
