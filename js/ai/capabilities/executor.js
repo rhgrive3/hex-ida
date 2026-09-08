@@ -156,7 +156,10 @@ export class CapabilityExecutor {
       case 'runtime.step-out': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepOut(options); }
       case 'runtime.registers': return runtimeAdapter(runtimePlatform).readRegisters(args.threadId);
       case 'runtime.memory-read': return boundedMemoryRead(runtimeAdapter(runtimePlatform), args);
-      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args, commitGuard);
+      case 'runtime.memory-write': {
+        const session = captureRuntimeWriteTarget(runtimePlatform);
+        return boundedMemoryWrite(session.adapter, args, commitGuard, () => assertRuntimeWriteTarget(runtimePlatform, session));
+      }
       case 'runtime.experiment': commitGuard?.(); return runtimePlatform.runExperiment(args.experiment, options);
       case 'project.save': return callRequired(app?.workspace, 'autosave');
       case 'project.snapshot': return callRequired(app?.workspace, 'snapshot');
@@ -227,11 +230,12 @@ async function boundedMemoryRead(adapter, args) {
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
 }
-async function boundedMemoryWrite(adapter, args, commitGuard = null) {
+async function boundedMemoryWrite(adapter, args, commitGuard = null, targetGuard = null) {
   const bytes = byteArray(args.bytes), expected = byteArray(args.expectedBefore);
   if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
   const before = await adapter.readMemory(args.address, expected.length);
   if (!equalBytes(before, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+  targetGuard?.();
   commitGuard?.();
   await adapter.writeMemory(args.address, bytes);
   const after = await adapter.readMemory(args.address, bytes.length);
@@ -466,6 +470,7 @@ async function previewPatch(app, args) {
 async function createPatch(app, args, commitGuard = null) {
   const patchSet = app?.patches;
   const validated = await validatePatchTarget(app, args, patchSet), after = byteArray(args.after);
+  assertPatchTargetCurrent(app, patchSet);
   commitGuard?.();
   patchSet?.add?.(validated.fileOffset, validated.before, after, { addr: validated.address, label: args.label || null, reason: args.reason || null, expectedBefore: validated.before, createdAt: new Date().toISOString() });
   const stored = patchSet?.at?.(validated.fileOffset);
@@ -491,8 +496,23 @@ async function applyPatch(app, args, commitGuard = null) {
   const source = args.file || app?.file;
   const output = await patchSet?.apply?.(source);
   if (!(output instanceof Blob)) throw new AIError('tool_failed', 'Patch application did not produce an output Blob.');
+  assertPatchTargetCurrent(app, patchSet);
   commitGuard?.();
   return { ok: true, output, size: output.size, patches: patchSet.list().map(serializePatch) };
+}
+function assertPatchTargetCurrent(app, patchSet) {
+  if (app?.patches !== patchSet) throw new AIError('scope_violation', 'The approved patch set was replaced before the mutation committed.');
+}
+function captureRuntimeWriteTarget(platform) {
+  const session = platform?.currentSession?.(false);
+  if (!session?.adapter) throw new AIError('scope_violation', 'The approved runtime session was replaced before the memory write.');
+  return session;
+}
+function assertRuntimeWriteTarget(platform, expected) {
+  const current = platform?.currentSession?.(false);
+  if (!current || current.adapter !== expected.adapter || current.id !== expected.id || current.binaryHash !== expected.binaryHash) {
+    throw new AIError('scope_violation', 'The approved runtime session was replaced before the memory write.');
+  }
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
 function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
