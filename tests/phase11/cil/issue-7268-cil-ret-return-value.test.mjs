@@ -165,7 +165,14 @@ test('#7268 enclosing MethodDef identity, not bodyIndex, owns non-void ret seman
 
   const lowered = lowerVMEffectsToSemanticIr(lifted);
   assert.equal(lowered.semanticIr.completeness, 'complete');
-  assert.equal(returnNode(lowered).inputs.length, 1);
+  const returned = returnNode(lowered);
+  assert.equal(returned.inputs.length, 1);
+  const constant = lowered.semanticIr.values.find((value) => value.metadata?.constant === '1');
+  assert.ok(constant, 'constant 1 value is present');
+  const returnedValue = lowered.semanticIr.values.find((value) => value.id === returned.inputs[0]);
+  assert.ok(returnedValue, 'return input resolves to a Semantic IR value');
+  assert.equal(returnedValue.id, constant.id,
+    'the return input must be the value produced by ldc.i4.1');
   assert.equal(lowered.semanticIr.nodes.filter((node) => node.kind === 'state-write'
     && String(node.variable?.key || '').includes('stack')).length, 0);
 });
@@ -203,6 +210,26 @@ test('#7268 unresolved fallback method tokens retain a valid six-digit RID', asy
   for await (const method of frontend.enumerateMethods(image)) methods.push(method);
   assert.equal(methods[15].token, '0x06000010');
   assert.equal(liftCilMethod(15, image).methodId, methods[15].id);
+});
+
+test('#7268 branch returns retain their path-specific stack values', () => {
+  const lifted = liftCilMethod(0, imageFor(
+    [0x00, 0x00, 0x08],
+    [0x16, 0x2d, 0x02, 0x17, 0x2a, 0x18, 0x2a], // brtrue.s to the second return
+  ));
+  assert.equal(validateCilEffectFunction(lifted).status, 'valid');
+
+  const lowered = lowerVMEffectsToSemanticIr(lifted);
+  const returnNodes = lowered.semanticIr.nodes.filter((node) => node.kind === 'return');
+  assert.equal(returnNodes.length, 2);
+  const constants = returnNodes.map((node) => {
+    assert.equal(node.inputs.length, 1);
+    const value = lowered.semanticIr.values.find((candidate) => candidate.id === node.inputs[0]);
+    assert.ok(value, 'each return input resolves to a Semantic IR value');
+    assert.ok(value.definitionNodeId, 'each return input has a defining node');
+    return value.metadata?.constant;
+  }).sort();
+  assert.deepEqual(constants, ['1', '2']);
 });
 
 test('#7268 declared void with stray stack value is invalid', () => {
@@ -252,6 +279,8 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
     assert.equal(node.inputs.length, 1);
     const value = lowered.semanticIr.values.find((candidate) => candidate.id === node.inputs[0]);
     assert.ok(value, 'return input resolves to a Semantic IR value');
+    assert.ok(value.definitionNodeId, 'return value retains its defining node');
+    assert.ok(value.origin, 'return value retains origin provenance');
     assert.equal(value.machineType.widthBits, 64);
     assert.equal(lowered.semanticIr.completeness, 'complete');
   }
