@@ -5,10 +5,15 @@
 // request with its own timeout and rejects fail-closed.
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, webcrypto } from 'node:crypto';
-import { RemoteCanonicalHttpTransport } from '../js/collaboration/remote-transport.js';
+import { stableStringify } from '../js/core/identity/index.js';
+import {
+  REMOTE_CANONICAL_RESPONSE_SCHEMA,
+  RemoteCanonicalHttpTransport,
+} from '../js/collaboration/remote-transport.js';
 
-const { publicKey } = generateKeyPairSync('ed25519');
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const serverVerificationKey = await webcrypto.subtle.importKey('spki', publicKey.export({ type: 'spki', format: 'der' }), { name: 'Ed25519' }, false, ['verify']);
+const serverSigningKey = await webcrypto.subtle.importKey('pkcs8', privateKey.export({ type: 'pkcs8', format: 'der' }), { name: 'Ed25519' }, false, ['sign']);
 const sessionEncryptionKey = await webcrypto.subtle.importKey('raw', new Uint8Array(32).fill(7), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 const serverKeyId = 'ed25519:test';
 
@@ -18,6 +23,54 @@ const input = {
   operations: [{ operationId: 'operation:1', targetEntityId: 'function:1', factKind: 'name', action: 'set', payload: 'main' }],
   egress: { userAuthorized: true, rawBinaryBytes: false, derivedDataOnly: true },
 };
+
+async function signedResponse(init) {
+  const request = JSON.parse(init.body);
+  const signed = {
+    schemaVersion: REMOTE_CANONICAL_RESPONSE_SCHEMA,
+    requestId: request.requestId,
+    bindingDigest: request.bindingDigest,
+    keyId: request.keyId,
+  };
+  const signature = await webcrypto.subtle.sign(
+    { name: 'Ed25519' },
+    serverSigningKey,
+    new TextEncoder().encode(stableStringify(signed)),
+  );
+  return {
+    ok: true,
+    status: 200,
+    headers: { get() { return null; } },
+    text: async () => JSON.stringify({
+      ...signed,
+      signature: Buffer.from(signature).toString('base64'),
+    }),
+  };
+}
+
+async function withDelayedVerification(delayMs, onVerifyStarted, run) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const originalCrypto = globalThis.crypto ?? webcrypto;
+  const originalSubtle = originalCrypto.subtle;
+  assert.ok(descriptor?.configurable, 'Node crypto binding must be replaceable for the delayed-verification fixture');
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      getRandomValues: (...args) => originalCrypto.getRandomValues(...args),
+      subtle: {
+        digest: (...args) => originalSubtle.digest(...args),
+        encrypt: (...args) => originalSubtle.encrypt(...args),
+        verify: async (...args) => {
+          onVerifyStarted?.();
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          return originalSubtle.verify(...args);
+        },
+      },
+    },
+  });
+  try { return await run(); }
+  finally { Object.defineProperty(globalThis, 'crypto', descriptor); }
+}
 
 {
   // The issue's repro shape: a fetchImpl that never settles must not keep
@@ -94,6 +147,36 @@ const input = {
   assert.equal(unhandledRejections, 0, 'reader cancellation rejection must be absorbed');
 }
 
+{
+  // A synchronous reader.cancel failure must not mask the timeout error.
+  let cancelled = 0;
+  const response = {
+    ok: true,
+    status: 200,
+    headers: { get() { return null; } },
+    body: {
+      getReader() {
+        return {
+          read() { return new Promise(() => {}); },
+          cancel() { cancelled += 1; throw new Error('reader-cancel-threw'); },
+        };
+      },
+    },
+  };
+  const transport = new RemoteCanonicalHttpTransport({
+    endpoint: 'https://collab.example/transport',
+    serverVerificationKey, sessionEncryptionKey, serverKeyId,
+    authorizationTimeoutMs: 50,
+    fetchImpl: async () => response,
+  });
+  await assert.rejects(
+    transport.authorizeEnvelope(input),
+    (error) => /remote-transport-authorization-timeout/.test(error?.message || ''),
+    'a synchronous reader cancellation failure must not replace the timeout',
+  );
+  assert.equal(cancelled, 1);
+}
+
 // A response that already exceeds the body budget must return the budget error
 // even when reader.cancel() itself never settles.
 {
@@ -126,4 +209,59 @@ const input = {
   );
   assert.equal(cancelled, 1, 'body-budget rejection must attempt to cancel the reader');
   assert.ok(Date.now() - started < 200, 'body-budget rejection must remain prompt');
+}
+
+
+{
+  // Caller cancellation is composed with the internal controller and reaches
+  // fetch without changing the one-argument API used by existing callers.
+  let requestSignal = null;
+  let fetchStarted;
+  const fetchReady = new Promise((resolve) => { fetchStarted = resolve; });
+  const transport = new RemoteCanonicalHttpTransport({
+    endpoint: 'https://collab.example/transport',
+    serverVerificationKey, sessionEncryptionKey, serverKeyId,
+    authorizationTimeoutMs: 1000,
+    fetchImpl: async (_url, init) => {
+      requestSignal = init.signal;
+      fetchStarted();
+      return new Promise(() => {});
+    },
+  });
+  const caller = new AbortController();
+  const reason = new Error('caller-cancelled');
+  const pending = transport.authorizeEnvelope(input, { signal: caller.signal });
+  await fetchReady;
+  caller.abort(reason);
+  await assert.rejects(
+    pending,
+    (error) => error === reason,
+    'caller cancellation must preserve its reason',
+  );
+  assert.notEqual(requestSignal, caller.signal, 'the transport must pass its composed request signal');
+  assert.equal(requestSignal.aborted, true, 'caller cancellation must abort fetch');
+}
+
+{
+  // A cancellation that arrives while signature verification is pending must
+  // not publish a proof that can authorize a later send.
+  let verifyStarted;
+  const verificationReady = new Promise((resolve) => { verifyStarted = resolve; });
+  const transport = new RemoteCanonicalHttpTransport({
+    endpoint: 'https://collab.example/transport',
+    serverVerificationKey, sessionEncryptionKey, serverKeyId,
+    authorizationTimeoutMs: 1000,
+    fetchImpl: async (_url, init) => signedResponse(init),
+  });
+  const caller = new AbortController();
+  await withDelayedVerification(100, verifyStarted, async () => {
+    const pending = transport.authorizeEnvelope(input, { signal: caller.signal });
+    await verificationReady;
+    caller.abort(new Error('late-cancel'));
+    await assert.rejects(
+      pending,
+      (error) => error?.message === 'late-cancel',
+      'late caller cancellation must reject before proof publication',
+    );
+  });
 }
