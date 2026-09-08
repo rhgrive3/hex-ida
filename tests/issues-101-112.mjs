@@ -24,8 +24,8 @@ function fixture(size=0x400){
 }
 // #102 reserved relocation types stay unsupported evidence, never real relocations.
 {
-  const {view,r,image}=fixture(); view.setUint32(0x40,0x200,true); view.setUint32(0x44,10,true); view.setUint16(0x48,0xf000,true);
-  parseBaseRelocations(r,{rva:0x40,size:10},image,0x8664);
+  const {view,r,image}=fixture(); view.setUint32(0x40,0x200,true); view.setUint32(0x44,12,true); view.setUint16(0x48,0xf000,true); view.setUint16(0x4a,0,true); // ABSOLUTE padding keeps the block aligned.
+  parseBaseRelocations(r,{rva:0x40,size:12},image,0x8664);
   assert.equal(image.relocations.length,0); assert.ok(image.warnings.some((w)=>/unsupported PE base relocation type 15/.test(w)));
 }
 // #103 PE32+ TLS callback VA table contributes only executable function seeds.

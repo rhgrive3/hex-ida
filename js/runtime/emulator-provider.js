@@ -115,8 +115,8 @@ export class EmulatorProvider {
       provider: this,
       request,
       close: async () => {
-        try { if (typeof this.engine.disconnect === 'function') await this.engine.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (typeof this.engine.disconnect === 'function') await this.engine.disconnect();
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});

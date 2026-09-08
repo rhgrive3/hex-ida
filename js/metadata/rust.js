@@ -160,11 +160,22 @@ function parseV0Identifier(str, pos) {
     p++;
   }
 
-  // Length integer
-  const lenMatch = str.slice(p).match(/^(\d+)/);
-  if (!lenMatch) return null;
-  const len = Number(lenMatch[1]);
-  p += lenMatch[1].length;
+  /*
+   * v0 decimal-number: the value zero is encoded as the single byte `0` and
+   * must never be concatenated with a following digit (rustc v0 spec warns
+   * about exactly this). `_RC03foo` is `C` + length 0 + trailing `3foo`, not
+   * `C` + length 3 (#5875).
+   */
+  let len;
+  if (p < str.length && str[p] === '0') {
+    len = 0;
+    p += 1;
+  } else {
+    const lenMatch = str.slice(p).match(/^[1-9][0-9]*/);
+    if (!lenMatch) return null;
+    len = Number(lenMatch[0]);
+    p += lenMatch[0].length;
+  }
   if (p < str.length && str[p] === '_') {
     p++;
   }
@@ -314,6 +325,12 @@ function parseV0Path(str, state, depth = 0) {
     const ns = str[state.pos++]; // namespace character
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
+    // NOTE (#5864): a missing identifier here still resolves to the parent
+    // path. Tightening this would break the established repo contract tested
+    // by tests/metadata-rust.test.mjs, tests/phase12/integration/
+    // metadata-rust.test.mjs and tests/issues-unlinked-batch-20260901.mjs
+    // (identifier-less N followed by a `.llvm.N` vendor suffix), so the
+    // lenient behavior stays until the demangler contract is revisited.
     const ident = parseV0Identifier(str, state.pos);
     if (!ident) return parent;
     state.pos = ident.nextPos;
@@ -334,11 +351,15 @@ function parseV0Path(str, state, depth = 0) {
   }
 
   if (tag === 'X') {
+    // All three components of `X` impl-path type trait-path are mandatory;
+    // `<type as trait>` placeholders would admit truncated symbols (#5866).
     const implPath = parseV0ImplPath(str, state, depth + 1);
     if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
+    if (!typeName) return null;
     const traitPath = parseV0Path(str, state, depth + 1);
-    return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
+    if (!traitPath) return null;
+    return `<${typeName} as ${traitPath}>`;
   }
 
   if (tag === 'I') {

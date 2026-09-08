@@ -53,8 +53,13 @@ for (const switchToLocal of [false, true]) {
   const symbolic = await platform.startSession({ adapter: 'symbolic', binaryHash: local.binaryHash, connect: false });
   local.adapter.disconnect = async () => { throw new Error('disconnect boom'); };
   await resetAppRuntime(app);
-  assert.equal(local.closed, true);
+  assert.equal(local.closed, false, 'a failed disconnect remains retryable');
   assert.equal(symbolic.closed, true);
+  assert.equal(platform.sessions.get(local.id), local, 'the failed session remains owned by its manager');
+  assert.equal(platform.sessions.sessions.size, 1);
+  local.adapter.disconnect = async () => {};
+  await platform.sessions.close(local.id);
+  assert.equal(local.closed, true);
   assert.equal(platform.sessions.sessions.size, 0);
 }
 

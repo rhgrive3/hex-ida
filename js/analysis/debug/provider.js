@@ -124,8 +124,32 @@ export function createDebugIdentity(input = {}) {
     providerVersion: identity.providerVersion,
     observed: identity.observed,
     expected: identity.expected,
+    // Coverage decides which records a matched-partial identity treats as hard
+    // authority, so two identities with different coverage domains must not
+    // share a canonical digest (#5849). Selector lists carry set semantics, so
+    // element order must not change the digest either.
+    coverage: canonicalCoverageDigest(identity.coverage),
   });
   return deepFreeze(identity);
+}
+
+/**
+ * Set-canonical view of a matched-partial coverage domain (#5849).
+ *
+ * Selector lists are membership constraints, so their element order must not
+ * influence the canonical digest. Known selectors are sorted; unknown keys are
+ * kept (sorted) so a coverage object that adds an unrecognized selector still
+ * changes the digest rather than silently collapsing into a known one.
+ */
+function canonicalCoverageDigest(coverage) {
+  if (coverage == null) return null;
+  if (typeof coverage !== 'object' || Array.isArray(coverage)) return coverage;
+  const out = {};
+  for (const key of Object.keys(coverage).sort()) {
+    const value = coverage[key];
+    out[key] = Array.isArray(value) ? [...value].sort() : value;
+  }
+  return out;
 }
 
 /** True when this identity may create authoritative (hard) facts. */

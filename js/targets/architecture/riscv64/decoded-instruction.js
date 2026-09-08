@@ -19,7 +19,14 @@ function strictToken(value, code) {
   return out;
 }
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  // Structured inputs must be typed values: BigInt() would launder booleans,
+  // arrays and numeric strings into a canonical address (#5813).
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^-?(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value.trim())) {
+    try { return BigInt(value.trim()); } catch { throw new TypeError(code); }
+  }
+  throw new TypeError(code);
 }
 
 // `rawBytes` are the architectural authority for every decoded field, so each
@@ -71,7 +78,11 @@ function rawBytesOf(input, expectedLength) {
 export function createRiscv64DecodedInstruction(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid');
   const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
-  const size = Number(input.size ?? input.length);
+  // size/alignment are typed fields: Number() coercion would promote arrays
+  // and booleans into a valid encoding geometry (#5813).
+  const rawSize = input.size ?? input.length;
+  if (typeof rawSize !== 'number' || !Number.isInteger(rawSize)) throw new TypeError('riscv64-decoded-instruction-invalid-length');
+  const size = rawSize;
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
   const rawBytes = rawBytesOf(input.rawBytes ?? [], size);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
@@ -82,12 +93,27 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const mode = strictToken(input.mode === undefined ? 'rv64imc' : input.mode, 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
-  const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
+  const rawAlignment = input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2);
+  if (typeof rawAlignment !== 'number' || !Number.isInteger(rawAlignment)) throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
+  const instructionAlignment = rawAlignment;
   if (!Number.isSafeInteger(instructionAlignment) || ![2,4].includes(instructionAlignment)) {
     throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
+  // ISA/profile evidence must agree: `rv64im` is the no-C profile and `rv64imc`
+  // carries compressed capability, so an explicit `compressedInstructions` flag
+  // that contradicts the mode publishes contradictory ISA facts (#5999).
+  let compressedInstructions = null;
+  if (input.compressedInstructions != null) {
+    if (typeof input.compressedInstructions !== 'boolean') {
+      throw new TypeError('riscv64-decoded-instruction-invalid-compressed-instructions');
+    }
+    if (input.compressedInstructions !== (mode === 'rv64imc')) {
+      throw new TypeError('riscv64-decoded-instruction-compressed-capability-conflict');
+    }
+    compressedInstructions = input.compressedInstructions;
+  }
 
   // `rawBytes` is authoritative for `fields`, so the canonical bytes must
   // never share mutable storage with any caller. `Object.freeze` cannot seal
@@ -97,9 +123,12 @@ export function createRiscv64DecodedInstruction(input = {}) {
     architecture: 'riscv64',
     mode,
     instructionAlignment,
-    ...(input.isaIdentity == null ? {} : { isaIdentity:String(input.isaIdentity) }),
-    ...(input.isaEvidence == null ? {} : { isaEvidence:String(input.isaEvidence) }),
-    ...(input.compressedInstructions == null ? {} : { compressedInstructions:input.compressedInstructions === true }),
+    // Identity/provenance fields are typed strings, not display text: a
+    // structured value must not launder into a canonical-looking id through
+    // String() coercion (#5990).
+    ...(input.isaIdentity == null ? {} : { isaIdentity: strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity') }),
+    ...(input.isaEvidence == null ? {} : { isaEvidence: strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence') }),
+    ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
     length: size,
@@ -122,7 +151,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     compressed: fields.supported ? fields.compressed === true : null,
     detailAvailable: fields.supported === true,
     detailStatus: fields.supported ? 'complete' : 'unsupported-encoding',
-    ...(input.instructionId == null ? {} : { instructionId: String(input.instructionId) }),
+    ...(input.instructionId == null ? {} : { instructionId: strictToken(input.instructionId, 'riscv64-decoded-instruction-invalid-instruction-id') }),
     ...(input.origin == null ? {} : { origin: input.origin }),
   });
 }

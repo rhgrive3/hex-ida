@@ -549,11 +549,19 @@ export function createAppAnalysisQueryAdapter(app) {
       const request = range && typeof range === 'object' ? range : { functionId:range };
       let start = addressOf(request.start ?? request.address);
       let end = addressOf(request.end);
+      // A functionId projection must inherit the function-range completeness:
+      // `ok:true` means a safe bounded window exists, not that the whole
+      // function body was proven (#5996). An explicit caller-supplied
+      // {start,end} range keeps the read-completeness contract of that range.
+      let rangeComplete = true;
+      let rangeReason = null;
       if (start == null && request.functionId != null) {
         const fnRange = rangeFor(app, request.functionId);
         if (!fnRange.ok) return unsupported(request.functionId, fnRange.reason);
         start = fnRange.start;
         end = fnRange.end;
+        rangeComplete = fnRange.complete !== false;
+        rangeReason = fnRange.reason ?? null;
       }
       if (start == null) return unsupported(null, 'instruction-range-start-required');
       const rawLength = request.length ?? (end == null ? 4096 : end - start);
@@ -565,7 +573,8 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          return paged(rows, page, truncated ? 'truncated' : 'complete', { reason:truncated ? 'instruction-read-budget' : null });
+          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
@@ -650,7 +659,11 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const { offset, limit } = pageOf(page);
       const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
-      const result = paged(Array.from(source || []), page, source?.complete === false ? 'partial' : 'complete', { reason:source?.incompleteReason ?? null });
+      // The scan only covers the validated range; an unproven function extent
+      // (analysis window or region clip) keeps the query partial (#5991).
+      const rangeIncomplete = range.complete === false;
+      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
+      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
       return result;
     },
@@ -769,12 +782,21 @@ export function createAppAnalysisQueryAdapter(app) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (typeof app?.querySearch === 'function') {
         const value = await app.querySearch(query, options);
+        if (value?.unsupported === true || value?.status?.completeness === 'unsupported'
+          || value?.completeness === 'unsupported') {
+          return unsupportedPage(null, page,
+            value?.reason ?? value?.unsupportedReason ?? value?.status?.reason ?? 'search-kind-unsupported');
+        }
         return paged(Array.isArray(value) ? value : value?.results || [], page, completenessOf(value));
       }
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported(null, 'typed-search-producer-unavailable');
       throwIfAborted(options.signal);
       const request = app.backend.search(query, options.onProgress);
       const value = await requestWithSignal(request, options.signal);
+      // An explicit backend `unsupported` must survive the query boundary:
+      // "the backend cannot run this search" is not a complete empty result
+      // (#5840, #5833).
+      if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
       return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 
