@@ -4,6 +4,7 @@ const MASK64 = 0xffffffffffffffffn;
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 export const FUNCTION_FINGERPRINT_VERSION = 4;
+const INTEGER_PATTERN = /^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
 
 export class FingerprintVersionError extends Error {
   constructor(version, schema) {
@@ -77,9 +78,19 @@ function normalizeRegisters(text, options = {}) {
   });
 }
 
+function primitiveInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'string' && value === value.trim() && INTEGER_PATTERN.test(value)) {
+    try { return BigInt(value); } catch {}
+  }
+  return null;
+}
+
 function canonicalRegister(op, options) {
-  if (!op) return '?';
-  const text = String(op.text || '').toLowerCase();
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return options.strictStructured ? null : '?';
+  if (options.strictStructured && (typeof op.text !== 'string' || !op.text.trim())) return null;
+  const text = options.strictStructured ? op.text.toLowerCase() : String(op.text || '').toLowerCase();
   if (text === 'fp' || text === 'x29') return 'FP';
   if (text === 'lr' || text === 'x30') return 'LR';
   if (text === 'sp' || text === 'wsp') return 'SP';
@@ -99,24 +110,44 @@ function numericOther(op) {
   } catch { return null; }
 }
 
-function canonicalImmediate(op) {
-  if (op?.float != null) return String(op.float);
-  const value = op?.value != null ? BigInt(op.value) : numericOther(op);
+function canonicalImmediate(op, options) {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return options.strictStructured ? null : '';
+  if (op.float != null) {
+    if (options.strictStructured && (typeof op.float !== 'number' || !Number.isFinite(op.float) || op.value != null)) return null;
+    return String(op.float);
+  }
+  if (options.strictStructured && op.value == null) return null;
+  const value = op.value != null ? primitiveInteger(op.value) : numericOther(op);
+  if (options.strictStructured && value == null) return null;
   return value == null ? String(op?.text || '') : '#' + value.toString(10);
 }
 
-function canonicalShift(shift) {
-  if (!shift || !shift.op) return '';
-  return shift.amount == null ? shift.op : `${shift.op} #${Number(shift.amount)}`;
+function canonicalShift(shift, options) {
+  if (!shift || typeof shift !== 'object' || Array.isArray(shift)) return options.strictStructured ? null : '';
+  if (options.strictStructured && (typeof shift.op !== 'string' || !shift.op.trim())) return null;
+  if (!shift.op) return '';
+  if (shift.amount == null) return shift.op;
+  if (options.strictStructured && (typeof shift.amount !== 'number' || !Number.isSafeInteger(shift.amount))) return null;
+  return `${shift.op} #${options.strictStructured ? shift.amount : Number(shift.amount)}`;
 }
 
 function canonicalMem(op, options) {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return options.strictStructured ? null : '[]';
   const base = canonicalRegister(op.base, options);
+  if (base == null) return null;
+  const displacement = op.disp ? canonicalImmediate(op.disp, options) : '';
+  if (displacement == null) return null;
+  const shift = op.shift ? canonicalShift(op.shift, options) : '';
+  if (shift == null) return null;
   if ((base === 'SP' || base === 'FP') && op.disp) return `[${base},@stack]${op.mode === 'pre' ? '!' : op.mode === 'post' ? ',@post' : ''}`;
   const parts = [base];
-  if (op.index) parts.push(canonicalRegister(op.index, options));
-  if (op.disp) parts.push(canonicalImmediate(op.disp));
-  if (op.shift) parts.push(canonicalShift(op.shift));
+  if (op.index) {
+    const index = canonicalRegister(op.index, options);
+    if (index == null) return null;
+    parts.push(index);
+  }
+  if (op.disp) parts.push(displacement);
+  if (op.shift) parts.push(shift);
   let text = '[' + parts.join(',') + ']';
   if (op.mode === 'pre') text += '!';
   else if (op.mode === 'post') text += ',@post';
@@ -124,17 +155,36 @@ function canonicalMem(op, options) {
 }
 
 function canonicalOperand(op, mnemonic, index, options) {
+  if (options.strictStructured && (!op || typeof op !== 'object' || Array.isArray(op)
+    || typeof op.k !== 'string' || typeof op.text !== 'string' || !op.text.trim())) return null;
   const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index === (mnemonic.startsWith('cb') ? 1 : mnemonic.startsWith('tb') ? 2 : 0);
   const isAddressValue = /^adrp?$/.test(mnemonic) && index === 1;
-  const rawNumeric = op?.k === 'imm' ? op.value : numericOther(op);
+  const rawNumeric = op?.k === 'imm' ? primitiveInteger(op.value) : numericOther(op);
   if ((isBranchTarget || isAddressValue) && rawNumeric != null) return isBranchTarget ? '@branch' : '@address';
-  if (ADDRESS_MNEMONICS.test(mnemonic) && op?.k !== 'mem' && rawNumeric != null && BigInt(rawNumeric < 0n ? -rawNumeric : rawNumeric) >= 0x1000n) return '@address';
-  if (op?.k === 'reg') return canonicalRegister(op, options) + (op.shift ? ',' + canonicalShift(op.shift) : '');
-  if (op?.k === 'imm') return canonicalImmediate(op) + (op.shift ? ',' + canonicalShift(op.shift) : '');
+  if (ADDRESS_MNEMONICS.test(mnemonic) && op?.k !== 'mem' && rawNumeric != null && (rawNumeric < 0n ? -rawNumeric : rawNumeric) >= 0x1000n) return '@address';
+  if (op?.k === 'reg') {
+    const register = canonicalRegister(op, options);
+    const shift = op.shift ? canonicalShift(op.shift, options) : '';
+    return register == null || shift == null ? null : register + (op.shift ? ',' + shift : '');
+  }
+  if (op?.k === 'imm') {
+    const immediate = canonicalImmediate(op, options);
+    const shift = op.shift ? canonicalShift(op.shift, options) : '';
+    return immediate == null || shift == null ? null : immediate + (op.shift ? ',' + shift : '');
+  }
   if (op?.k === 'mem') return canonicalMem(op, options);
-  if (op?.k === 'cond') return String(op.text || '').toLowerCase();
-  if (op?.k === 'list') return '{' + (op.regs || []).map((r) => canonicalOperand(r, mnemonic, index, options)).join(',') + '}';
-  if (op?.k === 'elem') return String(op.text || '').toLowerCase();
+  if (op?.k === 'cond') {
+    if (options.strictStructured && !/^(eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/i.test(op.text)) return null;
+    return String(op.text || '').toLowerCase();
+  }
+  if (op?.k === 'list') {
+    if (options.strictStructured && !Array.isArray(op.regs)) return null;
+    const members = (op.regs || []).map((r) => canonicalOperand(r, mnemonic, index, options));
+    return members.some((member) => member == null) ? null : '{' + members.join(',') + '}';
+  }
+  if (op?.k === 'elem') {
+    return String(op.text || '').toLowerCase();
+  }
   const text = String(op?.text || '').replace(/\b(fp|x29)\b/gi, 'FP').replace(/\b(lr|x30)\b/gi, 'LR').replace(/\bsp\b/gi, 'SP');
   return normalizeRegisters(text, options);
 }
@@ -161,7 +211,9 @@ export function normalizeInstruction(instruction, options = {}) {
   if (!mnemonic) return null;
   if (options.ignoreCompilerNoise !== false && IGNORABLE_MNEMONICS.has(mnemonic)) return null;
   const parsed = structured || parseOperands(operandText);
-  const normalizedOperands = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, options));
+  const canonicalOptions = { ...options, strictStructured: structured !== null };
+  const normalizedOperands = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, canonicalOptions));
+  if (normalizedOperands.some((operand) => operand == null)) return null;
   // Stack-frame size is compiler layout noise, not function identity. Preserve
   // the v3 contract when using the v4 structured-operand canonicalizer.
   if (/^(add|sub)$/.test(mnemonic) && normalizedOperands[0] === 'SP' && normalizedOperands[1] === 'SP' &&
