@@ -568,8 +568,8 @@ function scalarConditionKey(instruction, argumentKeys, valueKey) {
   if (predicate != null && (predicate.bits !== 1
       || predicateKey == null || predicateKey === INVALID_CONGRUENCE_KEY)) return null;
 
-  if (hasConditionCode) {
-    const code = instruction.cond;
+  const code = hasConditionCode ? instruction.cond : null;
+  if (code != null) {
     const normalizedCode = scalarNonEmptyString(code) ? code.trim() : '';
     if (!normalizedCode || ['unknown', '?'].includes(normalizedCode.toLowerCase())) return null;
     if (predicate == null && argumentKeys.length < 3) return null;

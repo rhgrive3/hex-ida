@@ -632,6 +632,59 @@ test('selection condition and state-read identity cannot be omitted from congrue
   assert.equal(congruent(stateFacts, r0, r1), false);
 });
 
+test('null or absent select condition codes fall back to explicit and generic predicates', () => {
+  for (const mode of ['null', 'absent']) {
+    const f = fixture(`scalar-selection-predicate-${mode}`);
+    f.block(0);
+    const left = f.opaque(32);
+    const right = f.opaque(32);
+    const predicate = f.opaque(1);
+    const first = f.binary('add', left, right, 32);
+    const second = f.binary('add', left, right, 32);
+    Object.assign(first.def, { op:'sel', sub:'sel', conditionValue:predicate });
+    Object.assign(second.def, { op:'sel', sub:'sel', conditionValue:predicate });
+    if (mode === 'null') {
+      first.def.cond = null;
+      second.def.cond = null;
+    }
+    f.ret();
+    const facts = analyze(f.build()).facts;
+    assert.equal(congruent(facts, first, second), true, `${mode} condition code must preserve explicit predicate identity`);
+  }
+
+  const generic = fixture('scalar-selection-generic-null-condition');
+  generic.block(0);
+  const predicate = generic.opaque(1);
+  const left = generic.opaque(32);
+  const right = generic.opaque(32);
+  const first = generic.select(predicate, left, right, 32);
+  const second = generic.select(predicate, left, right, 32);
+  first.def.cond = null;
+  second.def.cond = null;
+  generic.ret();
+  const genericFacts = analyze(generic.build()).facts;
+  assert.equal(congruent(genericFacts, first, second), true,
+    'null condition code must preserve a valid predicate-first select');
+
+  const flags = fixture('scalar-selection-null-condition-no-predicate');
+  flags.block(0);
+  const flagsLeft = flags.opaque(32);
+  const flagsRight = flags.opaque(32);
+  const flagValue = flags.opaque(4);
+  const malformedFirst = flags.binary('add', flagsLeft, flagsRight, 32);
+  const malformedSecond = flags.binary('add', flagsLeft, flagsRight, 32);
+  for (const instruction of [malformedFirst.def, malformedSecond.def]) {
+    instruction.op = 'sel';
+    instruction.sub = 'sel';
+    instruction.args.push({ value: flagValue });
+    instruction.cond = null;
+  }
+  flags.ret();
+  const malformedFacts = analyze(flags.build()).facts;
+  assert.equal(congruent(malformedFacts, malformedFirst, malformedSecond), false,
+    'null condition code without a one-bit predicate must stay singleton');
+});
+
 test('float constants and non-bitvector machine types never reuse bitvector classes', () => {
   const f = fixture('scalar-machine-types');
   f.block(0);
