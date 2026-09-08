@@ -45,8 +45,12 @@ const ARM64_REFERENCE_VERSION = 'machine-effects-a2-denominator/v1';
 const ARM64_CONFIGURATION = 'arm64-a64-complete-registry-v1';
 const ARM64_SOURCE_FILES = Object.freeze([
   'js/targets/architecture/coverage.js',
+  'js/targets/architecture/registry.js',
+  'js/arm64.js',
+  'js/semantics/effects/index.js',
   'js/targets/architecture/arm64/effects/index.js',
   'js/targets/architecture/arm64/effects/common.js',
+  'js/targets/architecture/arm64/effects/bti-guard-state.js',
   'js/targets/architecture/arm64/effects/control.js',
   'js/targets/architecture/arm64/effects/flags.js',
   'js/targets/architecture/arm64/effects/fp.js',
