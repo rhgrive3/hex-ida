@@ -932,6 +932,8 @@ function createRiscvAbi(profile) {
       const id = String(reg || '').toLowerCase();
       const index = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
       if (index >= 0) return { kind:'argument', reg:id, abiName:ABI_ALIAS[id], index, abiClass:'integer' };
+      const floatIndex = abiFlenBits > 0 ? FLOAT_ARGUMENT_REGISTERS.indexOf(id) : -1;
+      if (floatIndex >= 0) return { kind:'argument', reg:id, abiName:`fa${floatIndex}`, index:floatIndex, abiClass:'float' };
       if (id === 'x2') return { kind:'stack-pointer', reg:id, abiName:'sp' };
       if (id === 'x1') return { kind:'return-address', reg:id, abiName:'ra' };
       if (UNALLOCATABLE.includes(id)) return { kind:'reserved-register-state', reg:id, abiName:ABI_ALIAS[id] ?? 'zero' };
