@@ -1,6 +1,6 @@
 # Development debt and next actions
 
-Current batch: 2026-09-08, **44/61** tasks checked. Stage A implementation is
+Current batch: 2026-09-08, **45/61** tasks checked. Stage A implementation is
 7/7; Stage B implementation is 10/11. Physical-device execution is deferred
 until development is finished. Historical observations are retained below;
 current results take precedence.
@@ -10,6 +10,10 @@ T019 is complete as an exact-head development/recovery review at
 convergence `CLEAN`). T021 full gates, external assets, final performance,
 deployment, and physical-device evidence remain deferred to their owning tasks.
 
+T037 is complete for the authoritative 12 T025 terminal-existing rows on the
+same product source. The focused packet is recorded in `evidence/roadmap-matrix.md`;
+T026/C0-01 and release-only gates remain open.
+
 | Area | Current state | Next action |
 | --- | --- | --- |
 | Local integration | The exact `ea5d05b24` check failed after261.7 s at semantic-v2 integration (`1.0.1` actual versus stale `1.0.0` expected). Focused repair `6ff3b7b22` was followed by a Phase4 stale invalid-binary fixture stop; `b230b0a4a` repaired that fixture and suffix PID545932 reached Phase5. No full PASS is claimed. | Retain each exact observation and finish the current full check from the repaired suffix; do not convert focused repairs into a full-gate result. |
@@ -17,7 +21,7 @@ deployment, and physical-device evidence remain deferred to their owning tasks.
 | Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Immutable SemanticIR/MemorySSA reuse is integrated at880f16572 and focused tests pass; one representative call improved38.9%, which is not full acceptance. Shared-host activity limits attribution. Task-local GSettings repair passes all Chromium/WebKit viewports; remaining navigation/mobile/accessibility/AI chain also passes107.4 s on unchanged runtime. Physical execution is deferred; retain browser/runtime requirements. |
 | Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published f853691e5 head passes all six CircleCI jobs. | The published71bf992ab head also passed all six CircleCI jobs. Publish the current test-runner fixes after focused validation; retain current full/UI failures separately. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
-| Additional review | Async mutation target guards, exact legacy cancellation, frozen P8 reference authority repairs, and the current T019 exact-head independent review are integrated; focused regressions and affected Phase 11/12 plus T0–T2 reruns pass. | Keep T021 full gates, external asset/measurement, deployment, and physical-device proof separate. No speculative release completion. |
+| Additional review | Async mutation target guards, exact legacy cancellation, frozen P8 reference authority repairs, T019 exact-head review, and T037 terminal-row revalidation are integrated; focused regressions and affected Phase 11/12 plus T0–T2/roadmap-row checks pass. | Keep T021 full gates, T026 external asset/measurement, deployment, and physical-device proof separate. No speculative release completion. |
 | Historical administration | T047/T049/T050/T061 remain retired unchecked history. | No checkpoint receipt reconstruction under the owner's speed amendment. |
 | T045 physical numeric contract | Collector, fourteen-row validation and Stage2 scenario/numeric binding implemented and tested. | Collect actual device evidence only after development, per owner instruction. |
 

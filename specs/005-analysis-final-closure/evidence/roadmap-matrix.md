@@ -1,8 +1,11 @@
 # Stage B Roadmap Reconciliation Matrix
 
-Current development source: `571e46c0037363ba859b09c8119642dfed38152d` (`perf/development-gate-policy`).
+Current development source under T037 review: product commit
+`459dfe5bc7345d1ad3a7693738f6f73d5db66d9b`, tree
+`239c8035f06b3e089c2daef186f3028e3f8c8d18`, with evidence base
+`fce943f5e58990ce223971af270d5fca7b976b6e` (`perf/development-gate-policy`).
 Canonical roadmap: `docs/解析ツール改善.md.txt` (unchanged by this reconciliation).
-Reconciliation date: 2026-09-07.
+Reconciliation date: 2026-09-08.
 
 The development-speed amendment permits this reconciliation on the combined
 branch before main promotion. `DONE` below means implementation and focused
@@ -72,4 +75,49 @@ The development batch ran Phase 7 (789/792 initially, then the three corrected
 files passed), runtime identity/event and recognition/rebuild checks (16 passing
 cases), and the real F6 fixture with the actual LLVM 18.1.3 oracle (PASS after
 restoring tool resolution). These observations support development reconciliation;
-T037 still owns the final combined-tree revalidation. No full release pass is claimed.
+the exact T037 terminal-row revalidation is recorded below. No full release pass
+is claimed.
+
+## T037 terminal-existing revalidation — 2026-09-08
+
+The authoritative T025 packet is the pre-Stage-A matrix at
+`47f8a44469a5826b6199501a153a12439a280d13`. Its terminal-existing denominator
+is **12** (`DONE`), not the later 22-row development matrix: C1-01, C1-02,
+C1-03, C2-01, C2-02, C3-01, C3-02, C3-03, C4-01, X-01, S2-01, and S2-02.
+The one current `PARTIAL` row, C0-01/T026, and all T026–T036 residual rows are
+excluded from T037. The user-authorized speed amendment retires T050's old
+rolling-checkpoint receipt topology for development; no checkpoint history was
+reconstructed.
+
+All commands below used the pinned Node 22.20 toolchain on the product source
+commit/tree above. The grouped current focused results are the proof packet for
+the 12 terminal rows:
+
+| T025 row | Current focused proof at the combined source | Result |
+| --- | --- | --- |
+| HEX-C1-01 | `loaded-pointer-recovery` 11, `strict-boundaries` 3, and `issue-6068-offset-range` 4 | 18/18 pass |
+| HEX-C1-02 | Summary contract 12, local 9, interprocedural 24, target matrix 22, return identity 4 | 71/71 pass |
+| HEX-C1-03 | Point-to strict/offset plus alias-floor 1, region classification 1, lattice laws 18, separation authority 7 | 34/34 pass |
+| HEX-C2-01 | Semantic V2 SSA/MemorySSA contract 1, memory integration 1, strict CFG 4, plus current MemorySSA identity/cache 5 | 11/11 pass |
+| HEX-C2-02 | Range 34, SCCP 47, adversarial matrix 72, downstream range 5 | 158/158 pass |
+| HEX-C3-01 | Counterexamples 14, constraint graph 19, graph bounds 8, structural oracle 2 | 43/43 pass |
+| HEX-C3-02 | ABI boundaries 64 and profile matrix 4 | 68/68 pass |
+| HEX-C3-03 | Provider contract, Go, Rust, Apple, and downstream metadata suites | 5/5 pass |
+| HEX-C4-01 | Substrate completeness 4, invalidation 10, pass contract 9, vertical 16 | 39/39 pass |
+| HEX-X-01 | Stage2 rebuild transaction and independent Mach-O/ELF/PE oracle checks | Both pass |
+| HEX-S2-01 | Runtime binding 6, runtime events 5, provider identity 1, strict event boundary 1 | 13/13 pass |
+| HEX-S2-02 | Recognition ambiguity window and package checks | 2/2 pass |
+
+Two stale owner-test expectations were observed before repair and then corrected
+with no production change. Before repair, `tests/metadata-rust.test.mjs:120`
+reported `0 !== 1` because lexical vtable names no longer carry structural
+authority; the three test-only vtable fixtures now set `isVtable: true`. Before
+repair, `tests/stage2/rebuild-transaction.test.mjs:239` expected
+`independent-oracle-contract-invalid`, while the intentional fail-closed
+status-token normalization returns `validator-status-rejected`; the assertion
+now records that current contract. After these minimal fixture/expectation
+repairs, both tests pass under Node 22.
+
+T037 is **DONE** for terminal-existing-row revalidation with no production
+regression found. This does not close T026/C0-01, T038, final performance,
+external-asset, deployment, physical-device, or protected-main release gates.

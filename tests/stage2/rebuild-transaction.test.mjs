@@ -236,7 +236,7 @@ const contradictoryOracleStatus = await validateRebuildTransaction(transaction, 
   independentOracle: ({ output }) => independentEvidence(output, true, { status: 'rejected' }),
   validators: external,
 });
-assert.equal(contradictoryOracleStatus.validators.find((item) => item.validator === 'independent-differential').reason, 'independent-oracle-contract-invalid');
+assert.equal(contradictoryOracleStatus.validators.find((item) => item.validator === 'independent-differential').reason, 'validator-status-rejected');
 const sameIdentity = await validateRebuildTransaction(transaction, materialized, {
   original: source,
   loaderReparse: () => ({ ok: true }),
