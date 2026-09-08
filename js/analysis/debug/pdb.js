@@ -23,6 +23,7 @@ import {
   createDebugPage,
   createDebugProviderResult,
   createDebugRecord,
+  resolveDebugBudget,
 } from './provider.js';
 
 export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
@@ -329,13 +330,14 @@ export function parseSectionHeaders(bytes) {
  * unlike DWARF forms, which have no self-describing length.
  */
 export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
   const symbols = [];
   const unmodelled = new Set();
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
   let recordCount = 0;
-  while (offset + 4 <= bytes.length && recordCount < budget.maxRecords) {
+  while (offset + 4 <= bytes.length && recordCount < maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
@@ -390,6 +392,7 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
 
 /** Walks the TPI stream's leaf records. */
 export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
   const types = new Map();
   const unmodelled = new Set();
   if (!bytes || bytes.length < 56) return { types, unmodelled, complete: false, firstIndex: 0x1000 };
@@ -419,7 +422,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < budget.maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
