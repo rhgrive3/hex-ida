@@ -327,6 +327,13 @@ export function translateSemanticIR(target, options = {}) {
       rootExpr = translateValue(target, defaultWidth);
     }
   }
+  // A missing/untranslatable target must fail closed: reporting no expression
+  // as `exact`/complete mints a self-contradictory translation artifact that
+  // downstream proof gates would treat as an exact translation (#5499).
+  if (!rootExpr) {
+    semanticUnknowns++;
+    unsupportedEntities.push({ id: target?.id ?? null, op: 'translation-target', reason: 'missing-translation-target' });
+  }
 
   // Determine overall translation status
   let status = TRANSLATION_STATUS.EXACT;
