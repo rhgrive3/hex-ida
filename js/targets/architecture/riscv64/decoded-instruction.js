@@ -101,6 +101,19 @@ export function createRiscv64DecodedInstruction(input = {}) {
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
+  // ISA/profile evidence must agree: `rv64im` is the no-C profile and `rv64imc`
+  // carries compressed capability, so an explicit `compressedInstructions` flag
+  // that contradicts the mode publishes contradictory ISA facts (#5999).
+  let compressedInstructions = null;
+  if (input.compressedInstructions != null) {
+    if (typeof input.compressedInstructions !== 'boolean') {
+      throw new TypeError('riscv64-decoded-instruction-invalid-compressed-instructions');
+    }
+    if (input.compressedInstructions !== (mode === 'rv64imc')) {
+      throw new TypeError('riscv64-decoded-instruction-compressed-capability-conflict');
+    }
+    compressedInstructions = input.compressedInstructions;
+  }
 
   // `rawBytes` is authoritative for `fields`, so the canonical bytes must
   // never share mutable storage with any caller. `Object.freeze` cannot seal
@@ -115,7 +128,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     // String() coercion (#5990).
     ...(input.isaIdentity == null ? {} : { isaIdentity: strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity') }),
     ...(input.isaEvidence == null ? {} : { isaEvidence: strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence') }),
-    ...(input.compressedInstructions == null ? {} : { compressedInstructions:input.compressedInstructions === true }),
+    ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
     length: size,
