@@ -145,3 +145,40 @@ experiment stays outside the published handoff. The existing measured cold
 result remains 379.479 ms against 250 ms and is not relabeled as a result for the
 handoff source. T040–T044 retain their remaining performance/runtime/admission
 requirements. Physical-device verification is DEFERRED until development ends.
+
+## Non-performance reconciliation batch — 2026-09-08
+
+Source merge `2d1d1b14b9943aedbda5d847d8d2e123cd05c0ac` incorporated pinned
+main `5ba6f468e7fc2ff59f383146a1ebe3a2ca50cf71` into the development branch.
+Six conflicts and the additional ABI/symbolic regressions were resolved; the
+focused results and review inventory are recorded in `final-github.md`.
+
+The generated product tested afterward is
+`374a95719b4c67c872fcb6af92cd9faafb66c394`, tree
+`a922116252a24601585152270f6a70efc0a89669`:
+
+| Check | Result |
+| --- | --- |
+| Canonical lint | PASS, 7.2s |
+| Local Chromium/WebKit browser matrix | PASS, 86.2s |
+| Canonical userscript tests in an isolated copy | PASS, 50.6s |
+| Template/release metadata after the test's canonical rebuild | Zero tracked diff against 374a95719 |
+
+Browser summary: `/mnt/workspace/.dev-state/hex-development-batch/reconciled-374a95719-browser-summary.log`,
+SHA-256 `60ea65d7d551c42ac8544567826b116e1414d20ad5e057c56c08e5c65d7b14ab`.
+Userscript summary: `/mnt/workspace/.dev-state/hex-development-batch/reconciled-374a95719-userscript-ready-summary.log`,
+SHA-256 `81f826ad1c7e563031341be88bef2b2a207c4aaf6ce03549f997f637cf163847`.
+The first isolated userscript attempt stopped after 7.4s because its clone lacked
+esbuild; after connecting the existing matching dependencies and verifying the
+import, the canonical command was rerun and passed. No test was skipped.
+The test's null-deployment comment-format overlay was preserved externally and
+restored to the tracked local-unbound form; no deployed identity was assigned.
+Primary remained clean during browser execution; the isolated test copy was
+clean after that cleanup.
+
+No new full `npm run check` or performance collector was run for this batch.
+The earlier canonical full PASS remains bound to 97621. The next final full
+verification belongs to the combined candidate after the external performance
+work returns, not to repeated documentation commits or unrelated main movement.
+The published performance handoff remains fixed at 1b6d3eebf. Performance work
+and physical-device execution are not resumed by goal continuation.
