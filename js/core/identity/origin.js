@@ -13,6 +13,7 @@ const ORIGIN_FIELDS = ['byteRanges', 'virtualRanges', 'instructionIds', 'operati
 // Weak ownership lets both the list and its key/value entries be collected.
 const CANONICAL_LIST_ENTRIES = new WeakMap();
 const EMPTY_LIST = Object.freeze([]);
+const ORIGINAL_ARRAY_MAP = Array.prototype.map;
 CANONICAL_LIST_ENTRIES.set(EMPTY_LIST, []);
 
 function fail(code) { throw new TypeError(code); }
@@ -119,9 +120,21 @@ function normalizedList(values, code, normalize) {
     ordinary = Object.getPrototypeOf(input) === Array.prototype
       && !Object.hasOwn(input, 'map') && !Object.hasOwn(input, 'constructor');
   } catch { /* Reflection failure means replay, not a new input error. */ }
-  const result = uniqueSorted(input.map(normalize));
+  // Keep custom map/species behavior unchanged, but do not brand its output
+  // for reuse. Only the original Array#map with an ordinary result proves that
+  // every list value passed through the field normalizer.
+  const mapper = input.map;
+  const mapped = Reflect.apply(mapper, input, [normalize]);
+  const result = uniqueSorted(mapped);
+  let standardMapped = false;
+  try {
+    standardMapped = mapper === ORIGINAL_ARRAY_MAP
+      && Array.prototype.map === ORIGINAL_ARRAY_MAP
+      && Object.getPrototypeOf(mapped) === Array.prototype
+      && !Object.hasOwn(mapped, 'map') && !Object.hasOwn(mapped, 'constructor');
+  } catch { /* Reflection failure means replay, not a new input error. */ }
   // An overridden mapper/species can bypass the field normalizer altogether.
-  if (!ordinary && result !== EMPTY_LIST) CANONICAL_LIST_ENTRIES.delete(result);
+  if ((!ordinary || !standardMapped) && result !== EMPTY_LIST) CANONICAL_LIST_ENTRIES.delete(result);
   return result;
 }
 function sortedList(byKey, cacheable = true) {

@@ -230,6 +230,21 @@ test('custom field mappers still revalidate invalid ranges and numbers during a 
   }
 });
 
+test('proxy field mappers cannot bless values that skipped normalization', () => {
+  const makeInput = () => ({
+    byteRanges: new Proxy([{ start: 0, end: 1 }], {
+      get(target, key, receiver) {
+        if (key === 'map') return () => [{ notARange: true }];
+        return Reflect.get(target, key, receiver);
+      },
+    }),
+  });
+  const actual = candidate.createOriginSet(makeInput());
+  const expected = oracle.createOriginSet(makeInput());
+  assert.deepEqual(resultOf(() => candidate.mergeOriginSets(actual)), resultOf(() => oracle.mergeOriginSets(expected)));
+  assert.equal(resultOf(() => candidate.mergeOriginSets(actual)).ok, false);
+});
+
 test('accessor-bearing normalized payloads replay getter reads instead of caching them', () => {
   function input(log) {
     const external=Object.freeze({get line(){log.push('line');return log.length;}});
