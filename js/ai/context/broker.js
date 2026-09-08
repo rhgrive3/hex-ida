@@ -214,6 +214,26 @@ function trimToBudget(context, maxBytes) {
     context.investigation.rejectedHypotheses = [];
     context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-4);
     if (byteLength(context) <= maxBytes) return;
+    // #5635: confirmedFacts/activeHypotheses/userConstraints are the largest
+    // investigation memory components but only count-bounded at creation, so
+    // ordinary session growth can exceed the budget by themselves. The
+    // semantic budget outranks retained memory: degrade deterministically
+    // (oldest entries first, newest kept longest), never silently.
+    const compactList = (key, keep) => {
+      const list = context.investigation[key];
+      context.investigation[key] = Array.isArray(list) ? list.slice(-keep) : [];
+    };
+    compactList('confirmedFacts', 1);
+    compactList('activeHypotheses', 1);
+    if (byteLength(context) <= maxBytes) return;
+    compactList('confirmedFacts', 0);
+    compactList('activeHypotheses', 0);
+    compactList('userConstraints', 1);
+    if (byteLength(context) <= maxBytes) return;
+    compactList('userConstraints', 0);
+    context.investigation.goal = String(context.investigation.goal || '').slice(0, 200);
+    if (byteLength(context) <= maxBytes) return;
+    context.investigation.goal = '';
   }
   if (context.conversationSummary) {
     context.conversationSummary = context.conversationSummary.slice(0, 500);
