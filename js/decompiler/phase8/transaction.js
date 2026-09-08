@@ -51,6 +51,10 @@ function admission(result, descriptor) {
 }
 
 function coreResultOf(result, descriptor, admitted) {
+  const withheldCount = result.transforms.length - admitted.transforms.length;
+  if (withheldCount > 0 && result.produced.length > 0) {
+    throw new RewriteRefusal('withheld-rewrite-has-produced-artifacts');
+  }
   const retainedChange = admitted.transforms.length > 0 || result.produced.length > 0;
   return createPassResult({
     descriptor,

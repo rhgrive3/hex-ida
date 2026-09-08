@@ -142,6 +142,35 @@ test('C4-04 unknown-only rewrite becomes an unchanged no-op and preserves state'
   assert.ok(outcome.result.diagnostics.some((item) => item.code === 'phase8-rewrite-not-adopted'));
 });
 
+test('C4-04 withheld rewrite cannot publish staged analysis products', () => {
+  const d = descriptor({ produces:['ranges'] });
+  const state = createAnalysisState(FULL_STATE);
+  const beforeState = state.snapshot();
+  const beforeRanges = state.get('ranges');
+  const pass = {
+    descriptor:d,
+    run(_context, _budget, area) {
+      area.stage('ranges', { completeness:'complete', derivedFrom:'candidate-rewrite' });
+      return createValidatedPassResult({
+        descriptor:d, status:'changed', changed:true, produced:['ranges'],
+        transforms:[{
+          kind:'probe', targets:['value_1'], proof:'withheld-product',
+          validation:{ validation:'unknown', reason:'budget-exhausted' },
+        }],
+      });
+    },
+  };
+
+  const outcome = runPassTransaction(state, pass, {}, {});
+
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^withheld-rewrite-has-produced-artifacts:/);
+  assert.deepEqual(outcome.invalidated, []);
+  assert.deepEqual(outcome.staged, []);
+  assert.deepEqual(state.snapshot(), beforeState);
+  assert.equal(state.get('ranges'), beforeRanges);
+});
+
 test('C4-04 proof binding distinguishes BigInt from string payloads', async () => {
   const x = createFreshSymbol(bvSort(4), 'x');
   const before = createBinary(BV_BINARY_OP.ADD, x, x);
