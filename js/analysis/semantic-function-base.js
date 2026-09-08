@@ -167,7 +167,12 @@ function controlKind(plugin, instruction) {
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null ? null : BigInt(target);
+    if (target == null) return null;
+    // Same strict primitive-address contract as the instruction addresses:
+    // a blank string or structured value would launder into address 0 and
+    // mint a fake branch edge into the CFG authority (#5741).
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 

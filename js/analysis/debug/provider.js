@@ -124,6 +124,9 @@ export function createDebugIdentity(input = {}) {
     providerVersion: identity.providerVersion,
     observed: identity.observed,
     expected: identity.expected,
+    // coverage constrains `matched-partial` authority, so two identities with
+    // different authoritative record sets must not share a digest (#5732).
+    coverage: identity.coverage,
   });
   return deepFreeze(identity);
 }
