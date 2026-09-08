@@ -16,12 +16,12 @@ export function proofFixture(bits=8) {
 
 // The real representation producer, rather than a manually asserted AST/ID map.
 import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
-export function projectionFixture(bits=8) {
+export function projectionFixture(bits=8, targetOperator='xor') {
  const f=fixture('solver_mba');f.block(0);
  const input=f.opaque(bits);input.index=0;input.reg='x0';
  const other=f.opaque(bits);other.index=1;other.reg='x1';
  const left=f.binary('xor',input,other,bits), right=f.binary('xor',other,input,bits);
- const target=f.binary('xor',left,right,bits), output=f.copy(target,bits);f.ret();
+ const target=f.binary(targetOperator,left,right,bits), output=f.copy(target,bits);f.ret();
  const ir=f.build();ir.instructions=ir.blocks.flatMap(b=>[...b.phis,...b.insts]);
  ir.instructions.forEach((inst,i)=>{inst.address=0x1000n+BigInt(i*4);inst.id=`ir_${i}`;});
  const ret=ir.instructions.at(-1);ret.args=[{value:output}];

@@ -65,6 +65,19 @@ test('v8 forged semantic projection must not consume a genuine IR proof',async()
  const r=await optimizeSemanticDecompilation(f.result,f.options);
  assert.equal(r.proofOptimization.status,'partial');assert.equal(r.proofOptimization.adopted,0);
 });
+test('v8 producer projection rejects same-id IR mutation before proof planning',async()=>{
+ const f=projectionFixture(8,'or'),original=f.result.pseudocode,targetId=f.target.id;
+ assert.match(original,/\|/);
+ // Keep the same IR/value objects and SSA id while changing the definition from
+ // the producer-rendered OR into an XOR that the later solver can prove zero.
+ f.target.def.sub='xor';
+ assert.equal(f.target.id,targetId);
+ const r=await optimizeSemanticDecompilation(f.result,f.options);
+ assert.equal(r.proofOptimization.status,'partial');
+ assert.equal(r.proofOptimization.reason,'unissued-or-stale-projection');
+ assert.equal(r.proofOptimization.adopted,0);
+ assert.equal(r.pseudocode,original);
+});
 test('v8 final optimizer callback cannot change canonical IR while publishing an eligible projection',async()=>{
  const first=projectionFixture();let calls=0;
  const control=await optimizeSemanticDecompilation(first.result,{...first.options,isCancelled(){calls++;return false;}});

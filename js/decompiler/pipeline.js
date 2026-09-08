@@ -5,7 +5,7 @@ import { expr, mapChildren, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
-import { captureProjectionData } from './phase8/projection-origin.js';
+import { captureProjectionData, captureProjectionIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
 import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import {
@@ -18,11 +18,34 @@ export { buildExpressionForTesting } from './pipeline-core.js';
 // Only this existing producer issues a usable projection. Neither a serialized
 // AST nor a caller-supplied valueId map establishes the IR -> rendered binding.
 const producerProjections = new WeakMap();
+function producerIrRoots(result) {
+  const irValues = queryArray(queryRecord(result?.ir,null,128).values ?? [],null,10000);
+  const byId = new Map();
+  for (const value of irValues) {
+    const id = queryRecord(value,null,128).id;
+    if (id == null || byId.has(id)) throw new TypeError('projection-ir-value-identity-invalid');
+    byId.set(id,value);
+  }
+  const rendered = queryArray(queryRecord(result?.semanticAst,null,128).values ?? [],null,10000);
+  const roots = [];
+  for (const item of rendered) {
+    const valueId = queryRecord(item,null,64).valueId;
+    if (!byId.has(valueId)) throw new TypeError('projection-ir-value-binding-missing');
+    roots.push(byId.get(valueId));
+  }
+  return Object.freeze(roots);
+}
+function sameProducerIrRoots(result, expected) {
+  const current = producerIrRoots(result);
+  return current.length === expected.length && current.every((value,index) => value === expected[index]);
+}
 function rememberProducerProjection(result, options) {
   if (options.phase8PrepareProof !== true || !result?.semanticAst || !result?.cAst) return result;
   try {
     const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
-    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation});
+    const irRoots = producerIrRoots(result);
+    const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);
+    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation});
   } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
   return result;
 }
@@ -33,7 +56,8 @@ export function producerExpressionToken(result, expression) {
 export function isProducerProjection(result) {
   try {
     const raw = queryRecord(result,null,256), record = producerProjections.get(raw.semanticAst);
-    return !!record && record.ir===raw.ir && record.cAst===raw.cAst && record.observation.matches();
+    return !!record && record.ir===raw.ir && record.cAst===raw.cAst
+      && sameProducerIrRoots(raw,record.irRoots) && record.irObservation.matches() && record.observation.matches();
   } catch { return false; }
 }
 
