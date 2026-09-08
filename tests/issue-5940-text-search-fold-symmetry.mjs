@@ -1,7 +1,7 @@
-// Issue #5940 regression: platform text search case folding must agree on both
-// sides. The query folds with Unicode toLowerCase(); the haystack now folds the
-// same characters per byte, so a query containing a non-ASCII cased letter
-// finds the exact same string in the region (and keeps ASCII insensitivity).
+// Issue #5940 regression: byte-oriented text search must preserve the exact
+// UTF-8 query bytes for non-ASCII text while applying the same ASCII-only fold
+// to both sides. This guarantees exact matches for every UTF-8 sequence without
+// pretending to implement Unicode case folding without code-point/address maps.
 // Driven end-to-end through the platform worker message protocol.
 import assert from 'node:assert/strict';
 
@@ -32,7 +32,7 @@ const posts = [];
 globalThis.self = { postMessage: (message) => posts.push(message) };
 await import('../js/platform/worker.js');
 
-const fileBytes = machoFixture('xÄyABCÄ');
+const fileBytes = machoFixture('xÄyABCÄ𐐀𐐨');
 const file = {
   size: fileBytes.length,
   read: async (offset, length) => fileBytes.subarray(Number(offset), Number(offset) + length),
@@ -50,35 +50,48 @@ const opened = await request({ id: 1, t: 'open', file });
 assert.ok(opened, 'open must succeed');
 await request({ id: 2, t: 'setRegions', regions: [{ id: 'raw', fileOffset: 0, vmAddr: 0, size: fileBytes.length }] });
 
-// 1. The issue repro: exact 'Ä' in the region is found by the 'Ä' query.
+// 1. The issue repro: an exact non-ASCII BMP query finds the identical bytes.
 {
   const result = await request({ id: 3, t: 'search', regionId: 'raw', kind: 'text', query: 'Ä', from: 0 });
   const offsets = result.results.map((r) => r.byteOff);
   assert.deepEqual(offsets, [105, 111], `exact non-ASCII match must be found, got ${JSON.stringify(offsets)}`);
 }
 
-// 2. Unicode case-insensitivity is retained: 'ä' finds the same hits.
+// 2. Byte-oriented search does not claim Unicode case-insensitivity. A
+// lowercase non-ASCII query must not be laundered into the uppercase bytes.
 {
   const result = await request({ id: 4, t: 'search', regionId: 'raw', kind: 'text', query: 'ä', from: 0 });
-  assert.deepEqual(result.results.map((r) => r.byteOff), [105, 111]);
+  assert.deepEqual(result.results.map((r) => r.byteOff), []);
 }
 
-// 3. ASCII case-insensitivity is retained.
+// 3. Supplementary-plane cased characters are encoded as whole code points;
+// exact uppercase/lowercase spellings each find only their own UTF-8 sequence.
 {
-  const result = await request({ id: 5, t: 'search', regionId: 'raw', kind: 'text', query: 'abc', from: 0 });
+  const upper = await request({ id: 5, t: 'search', regionId: 'raw', kind: 'text', query: '𐐀', from: 0 });
+  assert.deepEqual(upper.results.map((r) => r.byteOff), [113]);
+  const lowerCase = await request({ id: 6, t: 'search', regionId: 'raw', kind: 'text', query: '𐐨', from: 0 });
+  assert.deepEqual(lowerCase.results.map((r) => r.byteOff), [117]);
+}
+
+// 4. ASCII case-insensitivity is retained by applying the byte fold to both
+// haystack and query bytes.
+{
+  const result = await request({ id: 7, t: 'search', regionId: 'raw', kind: 'text', query: 'abc', from: 0 });
   assert.deepEqual(result.results.map((r) => r.byteOff), [108]);
+  const upper = await request({ id: 8, t: 'search', regionId: 'raw', kind: 'text', query: 'ABC', from: 0 });
+  assert.deepEqual(upper.results.map((r) => r.byteOff), [108]);
 }
 
-// 4. Hex search is untouched by text folding.
+// 5. Hex search is untouched by text folding.
 {
-  const result = await request({ id: 6, t: 'search', regionId: 'raw', kind: 'hex', hex: { bytes: [0xc3, 0x84], mask: [0xff, 0xff] }, from: 0 });
+  const result = await request({ id: 9, t: 'search', regionId: 'raw', kind: 'hex', hex: { bytes: [0xc3, 0x84], mask: [0xff, 0xff] }, from: 0 });
   assert.deepEqual(result.results.map((r) => r.byteOff), [105, 111]);
 }
 
-// 5. No match for a genuinely absent string (sanity).
+// 6. No match for a genuinely absent string (sanity).
 {
-  const result = await request({ id: 7, t: 'search', regionId: 'raw', kind: 'text', query: 'zzz', from: 0 });
+  const result = await request({ id: 10, t: 'search', regionId: 'raw', kind: 'text', query: 'zzz', from: 0 });
   assert.equal(result.results.length, 0);
 }
 
-console.log('issue #5940 text search case-fold symmetry regressions: PASS');
+console.log('issue #5940 text search exact UTF-8 / ASCII-fold regressions: PASS');

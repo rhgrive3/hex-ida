@@ -351,7 +351,7 @@ async function runSearch(msg, signal) {
   if (msg.kind !== 'hex' && msg.kind !== 'text') return { cancelled: false, results: [], scanned: 0, capped: false, unsupported: true };
   const total = regionSize(region.size);
   const start = boundedOffset(msg.from ?? 0, total, 'search start');
-  let pattern, mask = null, foldNonAscii = null;
+  let pattern, mask = null;
   if (msg.kind === 'hex') {
     pattern = msg.hex?.bytes;
     mask = msg.hex?.mask;
@@ -359,25 +359,13 @@ async function runSearch(msg, signal) {
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
-    // Case folding must agree on both sides (#5940): the query folds with
-    // Unicode toLowerCase(), so the haystack folds the same characters per
-    // byte — ASCII-only byte folding would miss exact matches containing
-    // non-ASCII cased letters (Ä vs ä encoded differently). The map registers
-    // each query character and its uppercase variant so either case in the
-    // haystack folds onto the folded query bytes.
-    const foldMap = new Map();
-    const lowered = q.toLowerCase();
-    for (let i = 0; i < q.length; i++) {
-      const ch = q[i], low = lowered[i], upper = ch.toUpperCase();
-      if (ch === low && ch === upper) continue; // caseless: no folding applies
-      const lowEnc = new TextEncoder().encode(low);
-      for (const variant of new Set([ch, upper])) {
-        const enc = new TextEncoder().encode(variant);
-        for (let b = 0; b < enc.length; b++) foldMap.set(enc[b], lowEnc[Math.min(b, lowEnc.length - 1)]);
-      }
-    }
-    pattern = new TextEncoder().encode(lowered);
-    foldNonAscii = foldMap.size ? (byte) => foldMap.get(byte) ?? byte : null;
+    // This is a byte-oriented search, so preserve the query's exact UTF-8
+    // encoding. Unicode toLowerCase() can change code points (including
+    // supplementary-plane characters) and cannot be mirrored safely on raw
+    // haystack bytes without decoding and retaining a byte/address map (#5940).
+    // Keep the established ASCII-insensitive contract by folding both byte
+    // operands with lower() during comparison; non-ASCII bytes remain exact.
+    pattern = new TextEncoder().encode(q);
   }
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
@@ -389,10 +377,8 @@ async function runSearch(msg, signal) {
     for (let i = 0; i <= joined.length - pattern.length; i++) {
       let ok = true;
       for (let j = 0; j < pattern.length; j++) {
-        const actual = msg.kind === 'text'
-          ? (foldNonAscii ? foldNonAscii(lower(joined[i + j])) : lower(joined[i + j]))
-          : joined[i + j];
-        const expected = pattern[j];
+        const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
+        const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
         if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
       }
       if (!ok) continue;
