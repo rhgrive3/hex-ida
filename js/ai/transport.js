@@ -104,6 +104,9 @@ function normalizeTimeout(value) {
 }
 
 function normalizeLimit(value) {
+  // Only primitive finite positive numbers may become the response byte
+  // authority; structured/boolean values fall back to the default (#5430).
+  if (typeof value !== 'number') return DEFAULT_MAX_RESPONSE_BYTES;
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_RESPONSE_BYTES;
   return Math.max(1024, Math.min(16 * 1024 * 1024, Math.floor(n)));
