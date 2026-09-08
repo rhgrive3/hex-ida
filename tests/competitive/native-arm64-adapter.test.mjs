@@ -12,10 +12,17 @@ import {
 import {
   collectCompetitiveMeasurements,
   measurePhase8Quality,
+  phase8NativeAdapterIdentity,
   phase8CurrentObservations,
+  validateCompetitiveMeasurement,
 } from '../../tools/validation/competitive/measurements.mjs';
 import { extractElfFunctionRecord, loadCorpus } from '../../tools/validation/phase8/build-corpus.mjs';
-import { loadFrozenBaseline } from '../../tools/validation/phase8/metrics.mjs';
+import {
+  loadFrozenBaseline,
+  loadNativeAuthority,
+  PHASE8_NATIVE_ARM64_OBSERVATION_METHOD,
+  PHASE8_REFERENCE_MODES,
+} from '../../tools/validation/phase8/metrics.mjs';
 
 test('native ARM64 artifact identity stays separate from frozen function ids', () => {
   assert.equal(nativeArm64ArtifactIdFor({
@@ -72,6 +79,16 @@ test('competitive phase 8 observation entry point forwards native capture identi
   assert.deepEqual(observations.map((row) => row.id), [entry.id]);
   assert.match(observations[0].failure, /phase8-native-arm64-capture-/);
   assert.equal(observations[0].semantic, undefined);
+});
+
+test('native paired authority is a complete additive 135-function reference', () => {
+  const authority = loadNativeAuthority();
+  assert.equal(authority.baseline.reference.mode, PHASE8_REFERENCE_MODES.NATIVE_PAIRED);
+  assert.equal(authority.baseline.observations.length, 135);
+  assert.equal(authority.provenance.observations.length, 135);
+  assert.equal(authority.baseline.observations.filter((row) => row.observationMethod === PHASE8_NATIVE_ARM64_OBSERVATION_METHOD).length, 45);
+  assert.equal(authority.baseline.observations.filter((row) => row.failure != null).length, 0);
+  assert.equal(authority.baseline.baseCommit, 'bd03d1a860863814dbdcc00559709794d460189d');
 });
 
 const trustedP8CaptureFixture = process.env.HEX_COMPETITIVE_P8_CAPTURE_FIXTURE;
@@ -136,6 +153,62 @@ test('validated native ARM64 adapter admits one full-corpus row and rejects iden
   });
   assert.equal(collected['decompiler-quality-gotos'].status, 'UNMEASURED');
   assert.equal(collected['decompiler-quality-gotos'].reason, 'phase8-reference-method-mismatch');
+
+  const nativeCandidate = candidate.map((observation, index) => frozen.functions[index].architectureId === 'arm64'
+    ? { ...observation, observationMethod:PHASE8_NATIVE_ARM64_OBSERVATION_METHOD }
+    : observation);
+  const nativeMeasured = measurePhase8Quality({
+    metricId:'decompiler-quality-gotos',
+    observations:nativeCandidate,
+    capture,
+    corpus:frozen,
+    referenceMode:PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+    nativeAdapterIdentity:phase8NativeAdapterIdentity(),
+  });
+  assert.equal(nativeMeasured.status, 'MEASURED');
+  assert.equal(nativeMeasured.referenceMode, PHASE8_REFERENCE_MODES.NATIVE_PAIRED);
+  assert.equal(nativeMeasured.referenceTool, 'phase8-native-paired-baseline');
+  assert.doesNotThrow(() => validateCompetitiveMeasurement(nativeMeasured, { expectedMetricId:nativeMeasured.metricId, capture }));
+  const nativeCollected = collectCompetitiveMeasurements({
+    capturesByMetric:{ 'decompiler-quality-gotos':capture },
+    phase8Observations:nativeCandidate,
+    phase8Corpus:frozen,
+    phase8ObservationMethod:PHASE8_NATIVE_ARM64_OBSERVATION_METHOD,
+    phase8ReferenceMode:PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+    phase8NativeAdapterIdentity:phase8NativeAdapterIdentity(),
+  });
+  assert.equal(nativeCollected['decompiler-quality-gotos'].status, 'MEASURED');
+  assert.equal(nativeCollected['decompiler-quality-gotos'].referenceMode, PHASE8_REFERENCE_MODES.NATIVE_PAIRED);
+  assert.equal(nativeCollected['decompiler-quality-assembly-fallbacks'].status, 'MEASURED');
+  assert.equal(nativeCollected['decompiler-quality-assembly-fallbacks'].referenceMode, PHASE8_REFERENCE_MODES.NATIVE_PAIRED);
+  assert.doesNotThrow(() => validateCompetitiveMeasurement(nativeCollected['decompiler-quality-assembly-fallbacks'], {
+    expectedMetricId:'decompiler-quality-assembly-fallbacks',
+    capture,
+  }));
+
+  const mutatedCorpus = structuredClone(frozen);
+  mutatedCorpus.functions[0].function = `${mutatedCorpus.functions[0].function}.foreign`;
+  const mutatedCorpusResult = measurePhase8Quality({
+    metricId:'decompiler-quality-gotos',
+    observations:nativeCandidate,
+    capture,
+    corpus:mutatedCorpus,
+    referenceMode:PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+    nativeAdapterIdentity:phase8NativeAdapterIdentity(),
+  });
+  assert.equal(mutatedCorpusResult.status, 'UNMEASURED');
+  assert.equal(mutatedCorpusResult.reason, 'phase8-native-corpus-authority-mismatch');
+
+  const wrongAdapter = measurePhase8Quality({
+    metricId:'decompiler-quality-gotos',
+    observations:nativeCandidate,
+    capture,
+    corpus:frozen,
+    referenceMode:PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+    nativeAdapterIdentity:{ ...phase8NativeAdapterIdentity(), sourceSha256:'0'.repeat(64) },
+  });
+  assert.equal(wrongAdapter.status, 'UNMEASURED');
+  assert.equal(wrongAdapter.reason, 'phase8-native-adapter-identity-mismatch');
 
   const artifact = capture.artifacts.find((candidate) => candidate.id === 'arm64-native-quality.c-O0');
   assert.ok(artifact);

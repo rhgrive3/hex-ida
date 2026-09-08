@@ -6,8 +6,11 @@ import { provenanceFromSourceMap } from '../../../tools/validation/phase8/decomp
 import {
   loadFrozenBaseline,
   loadFrozenProvenance,
+  loadNativeAuthority,
   provenanceCoverageFailures,
+  validateNativeBaseline,
   validateFrozenProvenance,
+  validateNativeProvenance,
 } from '../../../tools/validation/phase8/metrics.mjs';
 
 const baseline = loadFrozenBaseline();
@@ -49,6 +52,35 @@ test('the frozen provenance sidecar is self-consistent and immutable', () => {
   assert.equal(Object.isFrozen(frozen.observations[0].sourceAddresses), true);
   assert.equal(frozen.observationsDigest, stableDigest(frozen.observations));
   assert.equal(stableDigest(frozen.toolchain), stableDigest(baseline.toolchain));
+});
+
+test('the native paired authority is bound to its adapter and 135-row provenance', () => {
+  const native = loadNativeAuthority();
+  assert.deepEqual(validateNativeBaseline(native.baseline, { corpus:native.corpus, frozenBaseline:baseline }), []);
+  assert.deepEqual(validateNativeProvenance(native.provenance, native.baseline, { corpus:native.corpus }), []);
+  assert.equal(native.baseline.observations.length, 135);
+  assert.equal(native.provenance.observations.length, 135);
+
+  const swappedAdapter = structuredClone(native.baseline);
+  swappedAdapter.reference.adapter.sourceSha256 = '0'.repeat(64);
+  assert.ok(validateNativeBaseline(swappedAdapter, { corpus:native.corpus, frozenBaseline:baseline })
+    .includes('native baseline adapter identity mismatch'));
+
+  const mutatedCorpus = structuredClone(native.corpus);
+  mutatedCorpus.functions[0].function = `${mutatedCorpus.functions[0].function}.foreign`;
+  assert.throws(() => loadNativeAuthority({ corpus:mutatedCorpus }), /supplied corpus differs from repository corpus/);
+
+  const swappedObservation = structuredClone(native.provenance);
+  swappedObservation.observations[0].observationMethod = 'frozen-legacy-assembly';
+  swappedObservation.observationsDigest = stableDigest(swappedObservation.observations);
+  swappedObservation.provenanceDigest = stableDigest({
+    schemaVersion:swappedObservation.schemaVersion,
+    referenceDigest:swappedObservation.referenceDigest,
+    baselineObservationsDigest:swappedObservation.baselineObservationsDigest,
+    observationsDigest:swappedObservation.observationsDigest,
+  });
+  assert.ok(validateNativeProvenance(swappedObservation, native.baseline, { corpus:native.corpus })
+    .includes('native provenance quality.aggregate_array_stride.O0 method mismatch'));
 });
 
 test('provenance extraction preserves coalesced 44-address / 166-IR identity sets', () => {

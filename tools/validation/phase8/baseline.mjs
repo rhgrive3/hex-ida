@@ -7,6 +7,12 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 
 import { loadCorpus } from './build-corpus.mjs';
 import { observeCorpus } from './decompile-corpus.mjs';
+import {
+  PHASE8_REFERENCE_MODES,
+  loadFrozenBaseline,
+  validateNativeBaseline,
+  validateNativeProvenance,
+} from './metrics.mjs';
 
 /**
  * Captures the frozen Phase 8 baseline.
@@ -28,6 +34,8 @@ import { observeCorpus } from './decompile-corpus.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const TARGET = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
 const PROVENANCE_TARGET = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-provenance.json');
+const NATIVE_TARGET = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-native-observations.json');
+const NATIVE_PROVENANCE_TARGET = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-native-provenance.json');
 
 function emptyProvenance() {
   const sourceAddresses = [];
@@ -111,10 +119,114 @@ export function captureBaseline({ target = TARGET, baseCommit = git(['rev-parse'
   return { target, provenanceTarget, ledger, provenance };
 }
 
+function nativeProvenanceEntry(observation) {
+  const provenance = observation?.provenance;
+  const sourceAddresses = provenance?.sourceAddresses == null ? [] : [...provenance.sourceAddresses];
+  const irProvenance = provenance?.irProvenance == null ? [] : [...provenance.irProvenance];
+  return {
+    id:observation.id,
+    architectureId:observation.architectureId,
+    observationMethod:observation.observationMethod ?? null,
+    available:provenance != null,
+    sourceAddresses,
+    sourceAddressesDigest:stableDigest(sourceAddresses),
+    irProvenance,
+    irProvenanceDigest:stableDigest(irProvenance),
+    irProvenanceCount:irProvenance.length,
+  };
+}
+
+function atomicJson(target, value) {
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(target), { recursive:true });
+  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(temporary, target);
+}
+
+/**
+ * Persist the additive native paired authority produced from the historical
+ * product. The legacy baseline is never read as an observation substitute;
+ * this function only reuses its product/corpus identity as a binding floor.
+ */
+export function captureNativeBaseline({ source, target = NATIVE_TARGET, provenanceTarget = NATIVE_PROVENANCE_TARGET, corpus = loadCorpus(), frozenBaseline = loadFrozenBaseline() } = {}) {
+  const input = typeof source === 'string' ? JSON.parse(fs.readFileSync(source, 'utf8')) : source;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('phase8 native baseline source must be an object');
+  const reference = {
+    ...input.reference,
+    mode:PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+  };
+  const observations = Array.isArray(input.observations) ? input.observations : [];
+  const ledger = {
+    schemaVersion:1,
+    kind:'phase8-native-paired-baseline',
+    note:'Additive native ARM64 paired reference captured from the exact historical pre-Phase-8 product with the reviewed byte-backed adapter overlay. The frozen legacy baseline remains immutable and is not relabelled.',
+    baseCommit:reference.baseProductSha,
+    corpusId:reference.corpus?.corpusId,
+    corpusVersion:reference.corpus?.corpusVersion,
+    corpusDigest:reference.corpus?.corpusDigest,
+    sourceDigest:reference.corpus?.sourceDigest,
+    functionCount:reference.corpus?.functionCount,
+    functionIdsDigest:reference.corpus?.functionIdsDigest,
+    toolchain:reference.corpus?.toolchain,
+    reference,
+    observations,
+  };
+  ledger.observationsDigest = stableDigest(ledger.observations);
+  ledger.referenceDigest = stableDigest(ledger.reference);
+  ledger.digest = stableDigest({
+    schemaVersion:ledger.schemaVersion,
+    referenceDigest:ledger.referenceDigest,
+    observationsDigest:ledger.observationsDigest,
+  });
+  const provenanceObservations = observations.map(nativeProvenanceEntry);
+  const provenance = {
+    schemaVersion:1,
+    kind:'phase8-native-paired-provenance',
+    note:'Identity-bearing source/IR provenance for the additive native ARM64 paired authority. It is bound to the native baseline and adapter/capture identity; it does not alter the frozen legacy provenance sidecar.',
+    baseCommit:ledger.baseCommit,
+    referenceDigest:ledger.referenceDigest,
+    baselineObservationsDigest:ledger.observationsDigest,
+    reference:ledger.reference,
+    observations:provenanceObservations,
+  };
+  provenance.observationsDigest = stableDigest(provenance.observations);
+  provenance.provenanceDigest = stableDigest({
+    schemaVersion:provenance.schemaVersion,
+    referenceDigest:provenance.referenceDigest,
+    baselineObservationsDigest:provenance.baselineObservationsDigest,
+    observationsDigest:provenance.observationsDigest,
+  });
+  const baselineErrors = validateNativeBaseline(ledger, { corpus, frozenBaseline });
+  if (baselineErrors.length) throw new TypeError(`phase8 native baseline rejected: ${baselineErrors.join('; ')}`);
+  const provenanceErrors = validateNativeProvenance(provenance, ledger, { corpus });
+  if (provenanceErrors.length) throw new TypeError(`phase8 native provenance rejected: ${provenanceErrors.join('; ')}`);
+  atomicJson(target, ledger);
+  atomicJson(provenanceTarget, provenance);
+  return { target, provenanceTarget, ledger, provenance };
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
-  if (fs.existsSync(TARGET) && !argv.includes('--force')) {
+  if (argv.includes('--native')) {
+    const inputIndex = argv.indexOf('--input');
+    const input = inputIndex >= 0 ? argv[inputIndex + 1] : null;
+    if (!input) {
+      console.error('phase8 baseline: --native requires --input <historical-native-ledger.json>');
+      process.exitCode = 2;
+    } else {
+      try {
+        const result = captureNativeBaseline({ source:input });
+        console.log(`phase8 native baseline written: ${path.relative(ROOT, result.target)}`);
+        console.log(`phase8 native provenance written: ${path.relative(ROOT, result.provenanceTarget)}`);
+        console.log(`native corpus digest: ${result.ledger.corpusDigest}`);
+        console.log(`native observations digest: ${result.ledger.observationsDigest} (${result.ledger.observations.length} functions)`);
+      } catch (error) {
+        console.error(error?.stack || error?.message || String(error));
+        process.exitCode = 1;
+      }
+    }
+  } else if (fs.existsSync(TARGET) && !argv.includes('--force')) {
     console.error('phase8 baseline: a frozen baseline already exists. Re-capturing it invalidates every Phase 8 comparison derived from it; pass --force if that is genuinely intended.');
     process.exitCode = 2;
   } else {

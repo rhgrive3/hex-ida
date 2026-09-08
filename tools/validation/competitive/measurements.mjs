@@ -24,7 +24,16 @@ import {
 } from './workload-twins.mjs';
 import { extractElfFunctionBytes, loadCorpus } from '../phase8/build-corpus.mjs';
 import { observeCorpus } from '../phase8/decompile-corpus.mjs';
-import { loadFrozenBaseline, loadFrozenProvenance, qualityVector } from '../phase8/metrics.mjs';
+import {
+  loadFrozenBaseline,
+  loadFrozenProvenance,
+  loadNativeAuthority,
+  nativeCaptureIdentity,
+  PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY,
+  PHASE8_NATIVE_ARM64_OBSERVATION_METHOD,
+  PHASE8_REFERENCE_MODES,
+  qualityVector,
+} from '../phase8/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'tests/phase8/corpus/sources');
@@ -33,7 +42,6 @@ export const COMPETITIVE_MEASUREMENT_SCHEMA = 'hex-competitive-measurement/v1';
 export const MEASURED_STATUS = 'MEASURED';
 export const UNMEASURED_STATUS = 'UNMEASURED';
 const AUTHORITY = 'same-binary-twin';
-const NATIVE_ARM64_OBSERVATION_METHOD = 'validated-native-arm64-capture';
 const COMPARISONS = new Set(['WIN', 'TIE', 'LOSS', UNMEASURED_STATUS]);
 const BINARY_METRICS = Object.freeze([
   'machine-effects-x86_64-coverage',
@@ -50,6 +58,7 @@ const MEASUREMENT_CONFIG = Object.freeze({
 const HEX32_RE = /^[0-9a-f]{32}$/i;
 const HEX40_RE = /^[0-9a-f]{40}$/i;
 const HEX64_RE = /^[0-9a-f]{64}$/i;
+const PHASE8_QUALITY_METRICS = new Set(['decompiler-quality-gotos', 'decompiler-quality-assembly-fallbacks']);
 
 function runtimeIdentity() {
   return {
@@ -57,6 +66,16 @@ function runtimeIdentity() {
     architecture: process.arch,
     platform: process.platform,
   };
+}
+
+/** Return the exact reviewed adapter source identity used by native collection. */
+export function phase8NativeAdapterIdentity() {
+  const sourcePath = path.join(ROOT, PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY.sourcePath);
+  const sourceSha256 = fs.existsSync(sourcePath) ? sha256Bytes(fs.readFileSync(sourcePath)) : null;
+  return Object.freeze({
+    ...PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY,
+    sourceSha256,
+  });
 }
 
 function producerIdentity() {
@@ -135,10 +154,18 @@ export function validateCompetitiveMeasurement(value, {
     if (!HEX40_RE.test(value.producerGitSha) || !HEX40_RE.test(value.producerTreeSha)) measurementError('producer-identity', value.metricId);
     if (!capture || typeof capture !== 'object' || Array.isArray(capture)) measurementError('capture-required', value.metricId);
     if (replayArtifacts) {
-      try { validateCompetitiveTwinCapture(capture, { replayArtifacts: true, expectedMetricId: value.metricId }); }
+      try {
+        validateCompetitiveTwinCapture(capture, {
+          replayArtifacts: true,
+          expectedMetricId: value.referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED ? null : value.metricId,
+        });
+      }
       catch (error) { measurementError('capture-replay', `${value.metricId}:${error.message}`); }
     }
-    const captureIdentityValue = captureIdentity(capture, { expectedMetricId: value.metricId });
+    const captureIdentityValue = captureIdentity(capture, {
+      expectedMetricId: value.metricId,
+      allowSharedPhase8Capture: value.referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+    });
     if (!captureIdentityValue.ok) measurementError('capture-invalid', `${value.metricId}:${captureIdentityValue.reason}`);
     if (value.captureDigest !== captureIdentityValue.captureDigest
         || value.artifactIdsDigest !== captureIdentityValue.artifactIdsDigest
@@ -153,7 +180,10 @@ export function validateCompetitiveMeasurement(value, {
     if (value.semanticOracle == null || typeof value.semanticOracle !== 'object' || Array.isArray(value.semanticOracle)) measurementError('oracle', value.metricId);
     validateMeasuredDenominator(value, metricConfig, capture);
     validateMeasuredOracle(value, metricConfig, capture);
-    if (metricConfig.kind === 'phase8-frozen-function-corpus') validateMeasuredPhase8Authority(value);
+    if (metricConfig.kind === 'phase8-frozen-function-corpus') {
+      if (value.referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED) validateMeasuredNativePhase8Authority(value);
+      else validateMeasuredPhase8Authority(value);
+    }
   } else {
     if (value.candidateValue !== null || value.referenceValue !== null || value.comparison !== UNMEASURED_STATUS) {
       measurementError('unmeasured-values', value.metricId);
@@ -265,6 +295,10 @@ function validateMeasuredDenominator(value, metricConfig, capture) {
 
 function validateMeasuredOracle(value, metricConfig, capture) {
   const oracle = value.semanticOracle;
+  if (value.referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED) {
+    validateMeasuredNativeOracle(value, metricConfig, capture);
+    return;
+  }
   if (oracle.schemaVersion !== 'hex-competitive-semantic-oracle/v1') measurementError('oracle-schema', value.metricId);
   if (metricConfig.kind === 'pipeline-tuples') {
     if (oracle.kind !== 'llvm-boundary-and-capstone-differential') measurementError('oracle-kind', value.metricId);
@@ -324,12 +358,18 @@ function comparison(direction, candidateValue, referenceValue) {
   return UNMEASURED_STATUS;
 }
 
-function captureIdentity(capture, { expectedMetricId = null } = {}) {
+function captureIdentity(capture, { expectedMetricId = null, allowSharedPhase8Capture = false } = {}) {
   if (capture == null) return { ok: false, reason: 'twin-capture-missing' };
   try {
-    validateCompetitiveTwinCapture(capture, { replayArtifacts: false, expectedMetricId });
+    validateCompetitiveTwinCapture(capture, {
+      replayArtifacts: false,
+      expectedMetricId: allowSharedPhase8Capture ? null : expectedMetricId,
+    });
   } catch (error) {
     return { ok: false, reason: `twin-capture-invalid:${error.message}` };
+  }
+  if (allowSharedPhase8Capture && !PHASE8_QUALITY_METRICS.has(capture.metricId)) {
+    return { ok: false, reason: `twin-capture-invalid:phase8-shared-capture-metric:${capture.metricId}` };
   }
   if (capture.status !== 'READY') return { ok: false, reason: `twin-capture-${String(capture.status).toLowerCase()}` };
   const artifacts = new Map((capture.artifacts || []).map((artifact) => [artifact.id, artifact]));
@@ -356,7 +396,13 @@ export function captureContainsTwinManifest(capture, manifest) {
 }
 
 function unmeasured(metricId, capture, reason, details = {}) {
-  const identity = captureIdentity(capture, { expectedMetricId: metricId });
+  const allowSharedPhase8Capture = PHASE8_QUALITY_METRICS.has(metricId)
+    && PHASE8_QUALITY_METRICS.has(capture?.metricId)
+    && (String(reason).startsWith('phase8-native-') || reason === 'phase8-reference-method-mismatch');
+  const identity = captureIdentity(capture, {
+    expectedMetricId: metricId,
+    allowSharedPhase8Capture,
+  });
   return Object.freeze({
     schemaVersion: COMPETITIVE_MEASUREMENT_SCHEMA,
     metricId,
@@ -394,9 +440,13 @@ function measured({
   semanticOracle,
   evidenceRefs = [],
   producer: producerOverride = null,
+  referenceMode = PHASE8_REFERENCE_MODES.FROZEN_LEGACY,
   details = {},
 }) {
-  const identity = captureIdentity(capture, { expectedMetricId: metricId });
+  const identity = captureIdentity(capture, {
+    expectedMetricId: metricId,
+    allowSharedPhase8Capture: referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+  });
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
   if (!finiteNumber(candidateValue) || !finiteNumber(referenceValue)) {
     return unmeasured(metricId, capture, 'measurement-value-not-finite');
@@ -429,6 +479,7 @@ function measured({
     producerTreeSha: producer.treeSha,
     denominator,
     semanticOracle,
+    referenceMode,
     evidenceRefs: sortedUnique([...identity.evidenceRefs, ...evidenceRefs]),
     reason: 'independent-oracle-and-same-binary-twin-identity-bound',
     ...clone(details),
@@ -1135,26 +1186,199 @@ function validateMeasuredPhase8Authority(value) {
   }
 }
 
-/** Bind P8 candidate observations to the frozen source/corpus baseline. */
-export function measurePhase8Quality({ metricId, observations, baseline, provenance, corpus, capture, observationMethod = null, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
+function validateMeasuredNativePhase8Authority(value) {
+  let authority;
+  try { authority = loadNativeAuthority(); }
+  catch (error) { measurementError('native-authority', `${value.metricId}:${error?.message || String(error)}`); }
+  const baseline = authority.baseline;
+  const denominator = value.denominator;
+  const oracle = value.semanticOracle;
+  const lineage = phase8AuthorityLineage({ corpus:authority.corpus });
+  const referenceQuality = qualityVector(baseline.observations);
+  const referenceField = MEASUREMENT_CONFIG[value.metricId].field;
+  if (value.referenceMode !== PHASE8_REFERENCE_MODES.NATIVE_PAIRED
+      || value.referenceTool !== 'phase8-native-paired-baseline'
+      || value.referenceVersion !== baseline.referenceDigest) {
+    measurementError('native-baseline-identity', value.metricId);
+  }
+  if (denominator.corpusDigest !== authority.corpus.corpusDigest
+      || denominator.functionCount !== authority.corpus.functions.length
+      || denominator.sourceDigest !== lineage.sourceDigest
+      || denominator.functionIdsDigest !== lineage.functionIdsDigest
+      || denominator.machineFunctionCount !== lineage.machineFunctionCount
+      || denominator.machineFunctionBytesDigest !== lineage.machineFunctionBytesDigest
+      || denominator.machineArtifactIdsDigest !== lineage.machineArtifactIdsDigest
+      || denominator.nativeArtifactIdsDigest !== lineage.nativeArtifactIdsDigest
+      || denominator.baselineObservationsDigest !== baseline.observationsDigest
+      || denominator.baselineProvenanceDigest !== authority.provenance.observationsDigest
+      || denominator.baselineCommit !== baseline.baseCommit) {
+    measurementError('native-baseline-denominator', value.metricId);
+  }
+  if (value.referenceValue !== referenceQuality[referenceField]) measurementError('native-baseline-value', value.metricId);
+  if (oracle.nativeReferenceDigest !== baseline.referenceDigest
+      || oracle.nativeAdapterId !== baseline.reference.adapter?.id
+      || oracle.nativeAdapterSourceSha256 !== baseline.reference.adapter?.sourceSha256
+      || oracle.nativeCaptureDigest !== baseline.reference.capture?.captureDigest
+      || oracle.nativeArtifactIdentityDigest !== baseline.reference.capture?.artifactIdentityDigest
+      || oracle.nativeCaptureMetricId !== baseline.reference.capture?.metricId) {
+    measurementError('native-baseline-oracle', value.metricId);
+  }
+}
+
+function validateMeasuredNativeOracle(value, metricConfig, capture) {
+  const oracle = value.semanticOracle;
+  if (oracle.schemaVersion !== 'hex-competitive-semantic-oracle/v1') measurementError('oracle-schema', value.metricId);
+  if (oracle.kind !== 'native-paired-source-corpus-observation' || oracle.metricField !== metricConfig.field) {
+    measurementError('native-oracle-kind', value.metricId);
+  }
+  if (oracle.referenceMode !== PHASE8_REFERENCE_MODES.NATIVE_PAIRED) measurementError('native-oracle-mode', value.metricId);
+  const authority = loadNativeAuthority();
+  const baseline = authority.baseline;
+  const corpus = authority.corpus;
+  if (capture.metricId !== baseline.reference.capture?.metricId) {
+    measurementError('native-oracle-capture-metric', value.metricId);
+  }
+  if (oracle.corpusId !== capture.corpusId || oracle.corpusVersion !== capture.corpusVersion
+      || oracle.corpusId !== corpus.corpusId || oracle.corpusDigest !== corpus.corpusDigest) {
+    measurementError('native-oracle-corpus-mismatch', value.metricId);
+  }
+  for (const key of ['sourceDigest', 'functionIdsDigest', 'machineFunctionBytesDigest', 'candidateObservationDigest', 'baselineObservationDigest', 'baselineLedgerDigest', 'baselineProvenanceDigest']) {
+    if (!HEX32_RE.test(String(oracle[key] || ''))) measurementError(`native-oracle-${key}`, value.metricId);
+  }
+  if (oracle.baselineObservationDigest !== baseline.observationsDigest
+      || oracle.baselineLedgerDigest !== baseline.observationsDigest
+      || oracle.baselineProvenanceDigest !== authority.provenance.observationsDigest
+      || oracle.baselineCommit !== baseline.baseCommit
+      || oracle.provenanceBaseCommit !== baseline.baseCommit
+      || oracle.nativeReferenceDigest !== baseline.referenceDigest
+      || oracle.nativeAdapterId !== baseline.reference.adapter?.id
+      || oracle.nativeAdapterSourceSha256 !== baseline.reference.adapter?.sourceSha256
+      || oracle.nativeCaptureDigest !== baseline.reference.capture?.captureDigest
+      || oracle.nativeArtifactIdentityDigest !== baseline.reference.capture?.artifactIdentityDigest
+      || oracle.nativeCaptureMetricId !== baseline.reference.capture?.metricId) {
+    measurementError('native-oracle-identity', value.metricId);
+  }
+  if (!Array.isArray(oracle.nativeCaptureCompilerIdentities)
+      || stableDigest(oracle.nativeCaptureCompilerIdentities) !== stableDigest(baseline.reference.capture?.compilerIdentities)
+      || !Array.isArray(oracle.nativeCaptureSourceIdentities)
+      || stableDigest(oracle.nativeCaptureSourceIdentities) !== stableDigest(baseline.reference.capture?.sourceIdentities)
+      || !Array.isArray(oracle.nativeCaptureLinkerIdentities)
+      || stableDigest(oracle.nativeCaptureLinkerIdentities) !== stableDigest(baseline.reference.capture?.linkerIdentities)) {
+    measurementError('native-oracle-toolchain', value.metricId);
+  }
+  if (oracle.corpusVersion !== corpus.corpusVersion || !Number.isSafeInteger(oracle.corpusVersion) || oracle.corpusVersion < 0) {
+    measurementError('oracle-corpus-version', value.metricId);
+  }
+}
+
+/** Bind P8 candidate observations to the selected immutable source/corpus authority. */
+export function measurePhase8Quality({ metricId, observations, baseline, provenance, corpus, capture, observationMethod = null, referenceMode = PHASE8_REFERENCE_MODES.FROZEN_LEGACY, nativeAdapterIdentity = null, direction = 'lower', sourceDirectory = PHASE8_SOURCE_DIRECTORY } = {}) {
   const field = qualityMetric(metricId);
-  const authority = phase8FrozenAuthority();
-  const binding = bindPhase8FrozenAuthority({ baseline, provenance, corpus }, authority);
-  if (!binding.ok) return unmeasured(metricId, capture, binding.reason, {
-    expectedDigest: binding.expectedDigest,
-    observedDigest: binding.observedDigest,
-    expectedBaseCommit: binding.expectedBaseCommit,
-    observedBaseCommit: binding.observedBaseCommit,
+  const nativeObservationRows = (Array.isArray(observations) ? observations : [])
+    .filter((observation) => observation?.observationMethod === PHASE8_NATIVE_ARM64_OBSERVATION_METHOD);
+  const nativeReference = referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED;
+  const nativeRequested = nativeReference
+    || observationMethod === PHASE8_NATIVE_ARM64_OBSERVATION_METHOD
+    || nativeObservationRows.length > 0;
+  let binding;
+  let nativeAuthority = null;
+  let nativeAdapterBinding = null;
+  if (nativeReference) {
+    if (nativeObservationRows.length === 0) {
+      return unmeasured(metricId, capture, 'phase8-native-observation-method-missing', {
+        expectedObservationMethod: PHASE8_NATIVE_ARM64_OBSERVATION_METHOD,
+      });
+    }
+    try {
+      // Load the repository-owned corpus independently.  A caller-supplied
+      // object is input evidence and must be compared against that authority;
+      // passing it into the loader would make a mutated object self-authorize.
+      nativeAuthority = loadNativeAuthority();
+    } catch (error) {
+      return unmeasured(metricId, capture, 'phase8-native-baseline-unavailable', {
+        detail: firstLine(error?.message || error),
+      });
+    }
+    if (baseline !== undefined && digestOrNull(baseline) !== digestOrNull(nativeAuthority.baseline)) {
+      return unmeasured(metricId, capture, 'phase8-native-baseline-authority-mismatch', {
+        expectedDigest: digestOrNull(nativeAuthority.baseline),
+        observedDigest: digestOrNull(baseline),
+        expectedBaseCommit: nativeAuthority.baseline.baseCommit,
+        observedBaseCommit: baseline?.baseCommit ?? null,
+      });
+    }
+    if (provenance !== undefined && digestOrNull(provenance) !== digestOrNull(nativeAuthority.provenance)) {
+      return unmeasured(metricId, capture, 'phase8-native-provenance-authority-mismatch', {
+        expectedDigest: digestOrNull(nativeAuthority.provenance),
+        observedDigest: digestOrNull(provenance),
+      });
+    }
+    if (corpus !== undefined && digestOrNull(corpus) !== digestOrNull(nativeAuthority.corpus)) {
+      return unmeasured(metricId, capture, 'phase8-native-corpus-authority-mismatch', {
+        expectedDigest: digestOrNull(nativeAuthority.corpus),
+        observedDigest: digestOrNull(corpus),
+      });
+    }
+    baseline = nativeAuthority.baseline;
+    provenance = nativeAuthority.provenance;
+    corpus = nativeAuthority.corpus;
+    binding = { ok: true, baseline, provenance, corpus };
+    nativeAdapterBinding = nativeAdapterIdentity;
+    const expectedAdapter = baseline.reference?.adapter;
+    const observedAdapter = nativeAdapterBinding;
+    const observedAdapterCommit = observedAdapter?.captureOverlayCommit ?? observedAdapter?.commit;
+    if (observedAdapter == null
+        || observedAdapter.id !== expectedAdapter?.id
+        || observedAdapter.sourcePath !== expectedAdapter?.sourcePath
+        || observedAdapter.sourceSha256 !== expectedAdapter?.sourceSha256
+        || observedAdapterCommit !== expectedAdapter?.commit) {
+      return unmeasured(metricId, capture, 'phase8-native-adapter-identity-mismatch', {
+        expectedAdapter: expectedAdapter ?? null,
+        observedAdapter: observedAdapter ?? null,
+      });
+    }
+    const expectedArmIds = corpus.functions
+      .filter((entry) => entry?.architectureId === 'arm64')
+      .map((entry) => entry.id);
+    const observationsById = new Map((Array.isArray(observations) ? observations : [])
+      .filter((observation) => observation?.id != null)
+      .map((observation) => [observation.id, observation]));
+    const missingNativeIds = expectedArmIds.filter((id) => observationsById.get(id)?.observationMethod !== PHASE8_NATIVE_ARM64_OBSERVATION_METHOD);
+    const foreignNativeIds = (Array.isArray(observations) ? observations : [])
+      .filter((observation) => observation?.observationMethod === PHASE8_NATIVE_ARM64_OBSERVATION_METHOD
+        && !expectedArmIds.includes(observation.id))
+      .map((observation) => observation.id);
+    if (missingNativeIds.length > 0 || foreignNativeIds.length > 0) {
+      return unmeasured(metricId, capture, 'phase8-native-observation-denominator-mismatch', {
+        expectedNativeObservationCount: expectedArmIds.length,
+        observedNativeObservationCount: nativeObservationRows.length,
+        missingNativeIds,
+        foreignNativeIds,
+      });
+    }
+  } else {
+    const authority = phase8FrozenAuthority();
+    binding = bindPhase8FrozenAuthority({ baseline, provenance, corpus }, authority);
+    if (!binding.ok) return unmeasured(metricId, capture, binding.reason, {
+      expectedDigest: binding.expectedDigest,
+      observedDigest: binding.observedDigest,
+      expectedBaseCommit: binding.expectedBaseCommit,
+      observedBaseCommit: binding.observedBaseCommit,
+    });
+    baseline = binding.baseline;
+    provenance = binding.provenance;
+    corpus = binding.corpus;
+  }
+  const identity = captureIdentity(capture, {
+    expectedMetricId: metricId,
+    allowSharedPhase8Capture: nativeReference,
   });
-  baseline = binding.baseline;
-  corpus = binding.corpus;
-  const identity = captureIdentity(capture, { expectedMetricId: metricId });
   if (!identity.ok) return unmeasured(metricId, capture, identity.reason);
   if (identity.capture.corpusId !== corpus.corpusId || identity.capture.corpusVersion !== corpus.corpusVersion) {
     return unmeasured(metricId, capture, 'phase8-corpus-identity-mismatch', { captureCorpusId: identity.capture.corpusId, corpusId: corpus.corpusId });
   }
   if (baseline?.corpusId !== corpus.corpusId || baseline?.corpusVersion !== corpus.corpusVersion || baseline?.corpusDigest !== corpus.corpusDigest) {
-    return unmeasured(metricId, capture, 'phase8-frozen-baseline-identity-mismatch');
+    return unmeasured(metricId, capture, nativeReference ? 'phase8-native-baseline-identity-mismatch' : 'phase8-frozen-baseline-identity-mismatch');
   }
   const frozenCompiler = compilerVersionToken(corpus.toolchain?.compiler);
   const capturedCompilers = sortedUnique((capture.artifacts || [])
@@ -1168,18 +1392,32 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
   }
   const lineage = validatePhase8CaptureLineage(corpus, capture, { sourceDirectory });
   if (!lineage.ok) return unmeasured(metricId, capture, lineage.reason, { identityFailure: lineage });
+  if (nativeReference) {
+    const observedCapture = nativeCaptureIdentity(identity.capture);
+    const expectedCapture = baseline.reference?.capture;
+    if (observedCapture == null
+        || observedCapture.captureDigest !== expectedCapture?.captureDigest
+        || observedCapture.artifactIdsDigest !== expectedCapture?.artifactIdsDigest
+        || observedCapture.artifactIdentityDigest !== expectedCapture?.artifactIdentityDigest
+        || digestOrNull(observedCapture.compilerIdentities) !== digestOrNull(expectedCapture?.compilerIdentities)
+        || digestOrNull(observedCapture.sourceIdentities) !== digestOrNull(expectedCapture?.sourceIdentities)
+        || digestOrNull(observedCapture.linkerIdentities) !== digestOrNull(expectedCapture?.linkerIdentities)) {
+      return unmeasured(metricId, capture, 'phase8-native-capture-authority-mismatch', {
+        expectedCapture: expectedCapture ?? null,
+        observedCapture,
+      });
+    }
+  }
   const recomputedBaselineDigest = Array.isArray(baseline?.observations) ? stableDigest(baseline.observations) : null;
   if (typeof baseline?.observationsDigest !== 'string' || recomputedBaselineDigest == null || baseline.observationsDigest !== recomputedBaselineDigest) {
-    return unmeasured(metricId, capture, 'phase8-frozen-baseline-digest-mismatch', {
+    return unmeasured(metricId, capture, nativeReference ? 'phase8-native-baseline-digest-mismatch' : 'phase8-frozen-baseline-digest-mismatch', {
       expected: recomputedBaselineDigest,
       observed: baseline?.observationsDigest ?? null,
     });
   }
-  const nativeObservationRows = (Array.isArray(observations) ? observations : [])
-    .filter((observation) => observation?.observationMethod === NATIVE_ARM64_OBSERVATION_METHOD);
-  if (observationMethod === NATIVE_ARM64_OBSERVATION_METHOD || nativeObservationRows.length > 0) {
+  if (nativeRequested && !nativeReference) {
     return unmeasured(metricId, capture, 'phase8-reference-method-mismatch', {
-      candidateObservationMethod: NATIVE_ARM64_OBSERVATION_METHOD,
+      candidateObservationMethod: PHASE8_NATIVE_ARM64_OBSERVATION_METHOD,
       referenceObservationMethod: 'frozen-legacy-assembly',
       nativeObservationCount: nativeObservationRows.length,
       nativeObservationIds: nativeObservationRows.map((observation) => observation.id),
@@ -1202,6 +1440,57 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
     candidateIdentity,
     baselineIdentity,
   } = compared;
+  const referenceTool = nativeReference
+    ? 'phase8-native-paired-baseline'
+    : 'phase8-frozen-source-baseline';
+  const referenceVersion = nativeReference
+    ? String(baseline.referenceDigest || 'unknown')
+    : String(baseline.baseCommit || 'unknown');
+  const semanticOracle = {
+    schemaVersion: 'hex-competitive-semantic-oracle/v1',
+    kind: nativeReference ? 'native-paired-source-corpus-observation' : 'frozen-source-corpus-observation',
+    metricField: field,
+    referenceMode,
+    runtime: runtimeIdentity(),
+    frozenCompiler,
+    capturedCompilers,
+    corpusId: corpus.corpusId,
+    corpusVersion: corpus.corpusVersion,
+    corpusDigest: corpus.corpusDigest,
+    sourceDigest: lineage.sourceDigest,
+    functionIdsDigest: lineage.functionIdsDigest,
+    machineFunctionBytesDigest: lineage.machineFunctionBytesDigest,
+    candidateObservationDigest: candidateIdentity.digest,
+    baselineObservationDigest: baselineIdentity.digest,
+    baselineLedgerDigest: baseline.observationsDigest,
+    baselineProvenanceDigest: binding.provenance.observationsDigest,
+    baselineCommit: baseline.baseCommit,
+    provenanceBaseCommit: binding.provenance.baseProductSha ?? binding.provenance.baseCommit ?? baseline.baseCommit,
+    ...(nativeReference ? {
+      nativeReferenceDigest: baseline.referenceDigest,
+      nativeAdapterId: nativeAdapterBinding.id,
+      nativeAdapterSourceSha256: nativeAdapterBinding.sourceSha256,
+      nativeCaptureDigest: baseline.reference.capture.captureDigest,
+      nativeArtifactIdentityDigest: baseline.reference.capture.artifactIdentityDigest,
+      nativeCaptureMetricId: baseline.reference.capture.metricId,
+      nativeCaptureCompilerIdentities: baseline.reference.capture.compilerIdentities,
+      nativeCaptureSourceIdentities: baseline.reference.capture.sourceIdentities,
+      nativeCaptureLinkerIdentities: baseline.reference.capture.linkerIdentities,
+    } : {}),
+  };
+  const evidenceRefs = nativeReference
+    ? [
+      'tests/phase8/corpus/pre-phase8-native-observations.json',
+      'tests/phase8/corpus/pre-phase8-native-provenance.json',
+      'tools/validation/phase8/decompile-corpus.mjs',
+      'tools/validation/phase8/metrics.mjs',
+    ]
+    : [
+      'tests/phase8/corpus/**',
+      'tests/phase8/corpus/pre-phase8-provenance.json',
+      'tools/validation/phase8/decompile-corpus.mjs',
+      'tools/validation/phase8/metrics.mjs',
+    ];
   return measured({
     metricId,
     capture,
@@ -1224,40 +1513,17 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
       baselineProvenanceDigest: binding.provenance.observationsDigest,
       baselineCommit: baseline.baseCommit,
     },
-    referenceTool: 'phase8-frozen-source-baseline',
-    referenceVersion: String(baseline.baseCommit || 'unknown'),
-    semanticOracle: {
-      schemaVersion: 'hex-competitive-semantic-oracle/v1',
-      kind: 'frozen-source-corpus-observation',
-      metricField: field,
-      runtime: runtimeIdentity(),
-      frozenCompiler,
-      capturedCompilers,
-      corpusId: corpus.corpusId,
-      corpusVersion: corpus.corpusVersion,
-      corpusDigest: corpus.corpusDigest,
-      sourceDigest: lineage.sourceDigest,
-      functionIdsDigest: lineage.functionIdsDigest,
-      machineFunctionBytesDigest: lineage.machineFunctionBytesDigest,
-      candidateObservationDigest: candidateIdentity.digest,
-      baselineObservationDigest: baselineIdentity.digest,
-      baselineLedgerDigest: baseline.observationsDigest,
-      baselineProvenanceDigest: binding.provenance.observationsDigest,
-      baselineCommit: baseline.baseCommit,
-      provenanceBaseCommit: binding.provenance.baseProductSha,
-    },
-    evidenceRefs: [
-      'tests/phase8/corpus/**',
-      'tests/phase8/corpus/pre-phase8-provenance.json',
-      'tools/validation/phase8/decompile-corpus.mjs',
-      'tools/validation/phase8/metrics.mjs',
-    ],
+    referenceTool,
+    referenceVersion,
+    referenceMode,
+    semanticOracle,
+    evidenceRefs,
     details: { candidateQuality: candidate, referenceQuality: reference },
   });
 }
 
 /** Collect all four binary records from already captured evidence. */
-export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null, phase8ObservationMethod = null } = {}) {
+export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null, phase8ObservationMethod = null, phase8ReferenceMode = PHASE8_REFERENCE_MODES.FROZEN_LEGACY, phase8NativeAdapterIdentity = null } = {}) {
   const records = {};
   records['machine-effects-x86_64-coverage'] = measurePhase56Coverage({
     metricId: 'machine-effects-x86_64-coverage',
@@ -1270,13 +1536,21 @@ export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Le
     capture: capturesByMetric['machine-effects-riscv64-coverage'],
   });
   for (const metricId of ['decompiler-quality-gotos', 'decompiler-quality-assembly-fallbacks']) {
+    const sharedNativeCapture = phase8ReferenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED
+      ? capturesByMetric['decompiler-quality-gotos']
+      : null;
     records[metricId] = measurePhase8Quality({
       metricId,
       observations: phase8Observations,
       baseline: phase8Baseline || undefined,
       corpus: phase8Corpus || undefined,
-      capture: capturesByMetric[metricId] || capturesByMetric['decompiler-quality-gotos'],
+      // The paired authority is one exact native corpus capture shared by both
+      // quality fields.  A native result may use that capture under either
+      // quality metric only after the digest and artifact identity match.
+      capture: sharedNativeCapture || capturesByMetric[metricId] || capturesByMetric['decompiler-quality-gotos'],
       observationMethod: phase8ObservationMethod,
+      referenceMode: phase8ReferenceMode,
+      nativeAdapterIdentity: phase8NativeAdapterIdentity,
     });
   }
   return Object.freeze(records);
@@ -1340,6 +1614,33 @@ function writeJson(filePath, value) {
   fs.renameSync(temporary, filePath);
 }
 
+function readJsonInput(value, label) {
+  if (value == null) return null;
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label}-path-invalid`);
+  const target = path.resolve(value);
+  if (!fs.existsSync(target)) throw new Error(`${label}-missing:${target}`);
+  try { return JSON.parse(fs.readFileSync(target, 'utf8')); }
+  catch (error) { throw new Error(`${label}-json-invalid:${error.message}`); }
+}
+
+function nativeCaptureAuthorityMatches(capture) {
+  try {
+    const authority = loadNativeAuthority();
+    const observed = nativeCaptureIdentity(capture);
+    const expected = authority.baseline.reference?.capture;
+    return observed != null
+      && observed.captureDigest === expected?.captureDigest
+      && observed.artifactIdsDigest === expected?.artifactIdsDigest
+      && observed.artifactIdentityDigest === expected?.artifactIdentityDigest
+      && digestOrNull(observed.compilerIdentities) === digestOrNull(expected?.compilerIdentities)
+      && digestOrNull(observed.sourceIdentities) === digestOrNull(expected?.sourceIdentities)
+      && digestOrNull(observed.linkerIdentities) === digestOrNull(expected?.linkerIdentities);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Run the bounded repository-owned collection path.  P5/P6 are built once as
  * debug twins and the focused oracle tests reuse those exact files.  P8 uses
@@ -1352,12 +1653,22 @@ export function collectCompetitiveMeasurementsFromRepository({
   p8Clang = process.env.CLANG || 'clang',
   p8ExpectedCompilerVersion,
   p8NativeArm64 = true,
-  p8UseNativeArm64 = false,
-  p8NativeArm64Capture = null,
+  p8UseNativeArm64 = null,
+  p8ReferenceMode = process.env.HEX_PHASE8_REFERENCE_MODE || PHASE8_REFERENCE_MODES.NATIVE_PAIRED,
+  p8NativeArm64Capture = process.env.HEX_PHASE8_NATIVE_CAPTURE || null,
   decompilerTimeBudgetMs = 20000,
 } = {}) {
   if (typeof outputRoot !== 'string' || !outputRoot.trim()) throw new TypeError('competitive-measurement-output-root-required');
+  if (![PHASE8_REFERENCE_MODES.FROZEN_LEGACY, PHASE8_REFERENCE_MODES.NATIVE_PAIRED].includes(p8ReferenceMode)) {
+    throw new TypeError(`competitive-phase8-reference-mode-unsupported:${p8ReferenceMode}`);
+  }
   const root = path.resolve(outputRoot);
+  const corpus = loadCorpus();
+  const useNativeReference = p8ReferenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED;
+  const useNativeArm64 = p8UseNativeArm64 == null ? useNativeReference : p8UseNativeArm64 === true;
+  const expectedCompilerVersion = p8ExpectedCompilerVersion
+    ?? (useNativeReference ? compilerVersionToken(corpus.toolchain?.compiler) : undefined);
+  const suppliedNativeCapture = readJsonInput(p8NativeArm64Capture, 'phase8-native-capture');
   const captures = {};
   const captureSpecs = [
     ['machine-effects-x86_64-coverage', capturePhase5TwinWorkload, 'p5'],
@@ -1393,27 +1704,37 @@ export function collectCompetitiveMeasurementsFromRepository({
     ['decompiler-quality-gotos', 'p8-gotos'],
     ['decompiler-quality-assembly-fallbacks', 'p8-fallbacks'],
   ]) {
-    captures[metricId] = capturePhase8TwinWorkload({
-      metricId,
-      artifactRoot: path.join(root, name),
-      artifactDirectory: path.join(root, name, 'debug'),
-      clang: p8Clang,
-      ...(p8ExpectedCompilerVersion == null ? {} : { expectedCompilerVersion: p8ExpectedCompilerVersion }),
-      nativeArm64: p8NativeArm64,
-    });
+    // Native bytes contain debug provenance whose hashes depend on the exact
+    // capture.  A preserved capture is therefore consumed verbatim and
+    // independently replayed by the adapter; rebuilding it in another
+    // checkout would silently produce a different authority identity.
+    captures[metricId] = useNativeReference && suppliedNativeCapture != null
+      ? suppliedNativeCapture
+      : capturePhase8TwinWorkload({
+        metricId,
+        artifactRoot: path.join(root, name),
+        artifactDirectory: path.join(root, name, 'debug'),
+        clang: p8Clang,
+        ...(expectedCompilerVersion == null ? {} : { expectedCompilerVersion }),
+        nativeArm64: p8NativeArm64,
+      });
     writeJson(path.join(root, `${name}-capture.json`), captures[metricId]);
   }
-  const corpus = loadCorpus();
-  const p8Ready = captures['decompiler-quality-gotos'].status === 'READY'
+  const p8ArtifactsReady = captures['decompiler-quality-gotos'].status === 'READY'
     || captures['decompiler-quality-assembly-fallbacks'].status === 'READY';
-  // Keep the legacy observation path as the default until the native byte
-  // authority has its own reviewed baseline. An explicitly supplied capture,
-  // or the opt-in gotos capture, is validated before any ARM64 row is used.
-  const nativeArm64Capture = p8NativeArm64Capture
-    ?? (p8UseNativeArm64 ? captures['decompiler-quality-gotos'] : null);
+  const p8Ready = p8ArtifactsReady
+    && (!useNativeReference || nativeCaptureAuthorityMatches(captures['decompiler-quality-gotos']));
+  // Native paired authority is the normal T026 collection path now that its
+  // historical baseline is repository-owned.  Callers can retain the original
+  // frozen assembly question by selecting FROZEN_LEGACY explicitly.
+  const nativeArm64Capture = suppliedNativeCapture
+    ?? (useNativeArm64 ? captures['decompiler-quality-gotos'] : null);
   const phase8ObservationMethod = nativeArm64Capture == null
     ? null
-    : NATIVE_ARM64_OBSERVATION_METHOD;
+    : PHASE8_NATIVE_ARM64_OBSERVATION_METHOD;
+  const phase8NativeAdapterBinding = nativeArm64Capture == null
+    ? null
+    : phase8NativeAdapterIdentity();
   const observations = p8Ready ? phase8CurrentObservations({ corpus, nativeArm64Capture, decompilerTimeBudgetMs }) : null;
   const measurements = collectCompetitiveMeasurements({
     capturesByMetric: captures,
@@ -1422,6 +1743,8 @@ export function collectCompetitiveMeasurementsFromRepository({
     phase8Observations: observations,
     phase8Corpus: corpus,
     phase8ObservationMethod,
+    phase8ReferenceMode: useNativeReference ? PHASE8_REFERENCE_MODES.NATIVE_PAIRED : PHASE8_REFERENCE_MODES.FROZEN_LEGACY,
+    phase8NativeAdapterIdentity: phase8NativeAdapterBinding,
   });
   writeJson(path.join(root, 'measurements.json'), measurements);
   return Object.freeze({ captures, measurements, outputRoot: root });
@@ -1438,7 +1761,18 @@ if (isMain) {
     const outputIndex = process.argv.indexOf('--output');
     const outputRoot = outputIndex >= 0 ? process.argv[outputIndex + 1] : null;
     try {
-      const result = collectCompetitiveMeasurementsFromRepository({ outputRoot });
+      const referenceMode = process.argv.includes('--legacy')
+        ? PHASE8_REFERENCE_MODES.FROZEN_LEGACY
+        : process.argv.includes('--native') || process.argv.includes('--native-capture')
+          ? PHASE8_REFERENCE_MODES.NATIVE_PAIRED
+          : process.env.HEX_PHASE8_REFERENCE_MODE || PHASE8_REFERENCE_MODES.NATIVE_PAIRED;
+      const captureIndex = process.argv.indexOf('--native-capture');
+      const nativeCapture = captureIndex >= 0 ? process.argv[captureIndex + 1] : null;
+      const result = collectCompetitiveMeasurementsFromRepository({
+        outputRoot,
+        p8ReferenceMode:referenceMode,
+        ...(nativeCapture == null ? {} : { p8NativeArm64Capture:nativeCapture }),
+      });
       console.log(JSON.stringify({ outputRoot: result.outputRoot, measurements: Object.fromEntries(Object.entries(result.measurements).map(([metricId, measurement]) => [metricId, { status: measurement.status, candidateValue: measurement.candidateValue, referenceValue: measurement.referenceValue, comparison: measurement.comparison, reason: measurement.reason }])) }, null, 2));
     } catch (error) {
       console.error(error?.stack || error?.message || String(error));

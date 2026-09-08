@@ -29,7 +29,24 @@ import { decompileEntry, observeCorpus, observationOf } from './decompile-corpus
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
 const FROZEN_PROVENANCE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-provenance.json');
+const NATIVE_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-native-observations.json');
+const NATIVE_PROVENANCE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-native-provenance.json');
 const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'js/decompiler/phase8');
+
+export const PHASE8_REFERENCE_MODES = Object.freeze({
+  FROZEN_LEGACY: 'frozen-legacy-assembly',
+  NATIVE_PAIRED: 'native-arm64-paired-historical',
+});
+export const PHASE8_NATIVE_ARM64_OBSERVATION_METHOD = 'validated-native-arm64-capture';
+export const PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY = Object.freeze({
+  id: 'validated-native-arm64-capture-adapter/v1',
+  sourcePath: 'tools/validation/phase8/decompile-corpus.mjs',
+  // This digest is the reviewed adapter overlay used to capture the paired
+  // authority. A source change must create a new adapter identity and paired
+  // baseline rather than silently reusing historical native rows.
+  sourceSha256: 'e839995ca69491de9463d7e615f6f8127ff4243ccb1b1e42bf2963e6eb876d32',
+  captureOverlayCommit: 'a9f333df51d5c8ca04e14f8933b72183ccf13371',
+});
 
 export function loadFrozenBaseline(target = FROZEN_BASELINE) {
   if (!fs.existsSync(target)) throw new Error(`phase8: frozen baseline missing at ${path.relative(ROOT, target)}`);
@@ -112,6 +129,213 @@ export function loadFrozenProvenance(target = FROZEN_PROVENANCE, baseline = load
   const errors = validateFrozenProvenance(provenance, baseline);
   if (errors.length) throw new TypeError(`phase8: invalid frozen provenance sidecar: ${errors.join('; ')}`);
   return deepFreeze(provenance);
+}
+
+function nativeArtifactIdentityRows(capture) {
+  const artifacts = Array.isArray(capture?.artifacts)
+    ? capture.artifacts
+    : Array.isArray(capture?.artifactIdentity) ? capture.artifactIdentity : [];
+  return artifacts.map((artifact) => {
+    const manifest = artifact?.manifest || artifact;
+    const options = manifest?.compileOptions || {};
+    return {
+      id: artifact?.id ?? null,
+      manifestDigest: manifest?.manifestDigest ?? null,
+      debugArtifactSha256: manifest?.debugArtifactSha256 ?? null,
+      strippedArtifactSha256: manifest?.strippedArtifactSha256 ?? null,
+      targetTriple: manifest?.targetTriple ?? null,
+      optimization: options.optimization ?? manifest?.optimization ?? null,
+      captureOnly: options.captureOnly === true || artifact?.captureOnly === true,
+    };
+  }).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+}
+
+/** Identity of the complete native twin, including every debug/stripped artifact. */
+export function nativeCaptureIdentity(capture) {
+  if (capture == null || typeof capture !== 'object' || Array.isArray(capture)
+      || !Array.isArray(capture.artifacts) || typeof capture.captureDigest !== 'string'
+      || typeof capture.denominator?.artifactIdsDigest !== 'string') return null;
+  return Object.freeze({
+    captureDigest:capture.captureDigest,
+    artifactIdsDigest:capture.denominator.artifactIdsDigest,
+    artifactIdentityDigest:stableDigest(nativeArtifactIdentityRows(capture)),
+    compilerIdentities:sortedUniqueStrings(capture.identity?.compilerIdentities || []),
+    sourceIdentities:sortedUniqueStrings(capture.identity?.sourceIdentities || []),
+    linkerIdentities:sortedUniqueStrings(capture.identity?.linkerIdentities || []),
+  });
+}
+
+function expectedNativeArtifactIds(corpus) {
+  return corpus.functions.map((entry) => {
+    const optimization = String(entry.optimization).replace(/^-/, '');
+    return entry.architectureId === 'arm64'
+      ? `arm64-native-${entry.source}-${optimization}`
+      : `${entry.architectureId}-${entry.source}-${optimization}`;
+  }).filter((id, index, values) => values.indexOf(id) === index).sort();
+}
+
+function nativeObservationIdentityErrors(observations, corpus) {
+  const errors = [];
+  const expectedIds = corpus.functions.map((entry) => entry.id);
+  if (!Array.isArray(observations)) return ['native baseline observations must be an array'];
+  if (observations.length !== expectedIds.length) errors.push('native baseline denominator count mismatch');
+  for (const [index, observation] of observations.entries()) {
+    const expectedId = expectedIds[index];
+    if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
+      errors.push(`native observation ${index} must be an object`);
+      continue;
+    }
+    if (observation.id !== expectedId) errors.push(`native observation ${index} id/order mismatch`);
+    const entry = corpus.functions[index];
+    if (entry && observation.architectureId !== entry.architectureId) errors.push(`native observation ${observation.id ?? index} architecture mismatch`);
+    if (observation.failure != null) errors.push(`native observation ${observation.id ?? index} contains a failure`);
+    if (typeof observation.semantic !== 'boolean') errors.push(`native observation ${observation.id ?? index} semantic status missing`);
+    const isArm64 = entry?.architectureId === 'arm64';
+    if (isArm64 && observation.observationMethod !== PHASE8_NATIVE_ARM64_OBSERVATION_METHOD) {
+      errors.push(`native observation ${observation.id ?? index} is not adapter-backed`);
+    }
+    if (!isArm64 && observation.observationMethod === PHASE8_NATIVE_ARM64_OBSERVATION_METHOD) {
+      errors.push(`native observation ${observation.id ?? index} has an invalid native method`);
+    }
+  }
+  return errors;
+}
+
+/** Validate the additive native paired authority without touching the legacy baseline. */
+export function validateNativeBaseline(baseline, { corpus = loadCorpus(), frozenBaseline = loadFrozenBaseline() } = {}) {
+  const errors = [];
+  if (!baseline || typeof baseline !== 'object' || Array.isArray(baseline)) return ['native baseline must be an object'];
+  if (baseline.schemaVersion !== 1) errors.push('native baseline schemaVersion mismatch');
+  if (baseline.kind !== 'phase8-native-paired-baseline') errors.push('native baseline kind mismatch');
+  if (baseline.baseCommit !== frozenBaseline.baseCommit) errors.push('native baseline historical product mismatch');
+  if (baseline.corpusId !== corpus.corpusId || baseline.corpusVersion !== corpus.corpusVersion || baseline.corpusDigest !== corpus.corpusDigest) {
+    errors.push('native baseline corpus identity mismatch');
+  }
+  if (baseline.sourceDigest !== corpus.sourceDigest || baseline.functionCount !== corpus.functions.length
+      || baseline.functionIdsDigest !== stableDigest(corpus.functions.map((entry) => entry.id))) {
+    errors.push('native baseline source/denominator identity mismatch');
+  }
+  if (stableDigest(baseline.toolchain) !== stableDigest(corpus.toolchain)) errors.push('native baseline toolchain mismatch');
+  const reference = baseline.reference;
+  if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
+    errors.push('native baseline reference identity missing');
+  } else {
+    if (reference.mode !== PHASE8_REFERENCE_MODES.NATIVE_PAIRED) errors.push('native baseline reference mode mismatch');
+    if (reference.baseProductSha !== frozenBaseline.baseCommit) errors.push('native baseline reference product mismatch');
+    if (reference.adapter?.id !== PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY.id
+        || reference.adapter?.commit !== PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY.captureOverlayCommit
+        || reference.adapter?.sourcePath !== PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY.sourcePath
+        || reference.adapter?.sourceSha256 !== PHASE8_NATIVE_ARM64_ADAPTER_IDENTITY.sourceSha256) {
+      errors.push('native baseline adapter identity mismatch');
+    }
+    if (reference.corpus?.corpusId !== corpus.corpusId
+        || reference.corpus?.corpusVersion !== corpus.corpusVersion
+        || reference.corpus?.corpusDigest !== corpus.corpusDigest
+        || reference.corpus?.sourceDigest !== corpus.sourceDigest
+        || reference.corpus?.functionCount !== corpus.functions.length
+        || reference.corpus?.functionIdsDigest !== stableDigest(corpus.functions.map((entry) => entry.id))
+        || stableDigest(reference.corpus?.toolchain) !== stableDigest(corpus.toolchain)) {
+      errors.push('native baseline reference corpus mismatch');
+    }
+    const capture = reference.capture;
+    const artifactIds = Array.isArray(capture?.artifactIdentity)
+      ? capture.artifactIdentity.map((artifact) => artifact?.id).sort()
+      : [];
+    if (capture?.schemaVersion !== 'hex-competitive-twin-capture/v1'
+        || capture?.metricId !== 'decompiler-quality-gotos'
+        || capture?.workloadId !== 'phase8-decompiler-quality-corpus'
+        || capture?.captureDigest !== reference.adapter?.captureDigest
+        || capture?.artifactIdsDigest !== reference.adapter?.artifactIdsDigest
+        || capture?.artifactIdentityDigest !== stableDigest(capture?.artifactIdentity)
+        || stableDigest(artifactIds) !== stableDigest(expectedNativeArtifactIds(corpus))
+        || !Array.isArray(capture?.compilerIdentities) || capture.compilerIdentities.length === 0
+        || !Array.isArray(capture?.sourceIdentities) || capture.sourceIdentities.length === 0
+        || !Array.isArray(capture?.linkerIdentities) || capture.linkerIdentities.length === 0) {
+      errors.push('native baseline capture/artifact identity mismatch');
+    }
+  }
+  errors.push(...nativeObservationIdentityErrors(baseline.observations, corpus));
+  if (baseline.observationsDigest !== stableDigest(baseline.observations)) errors.push('native baseline observations digest mismatch');
+  if (baseline.referenceDigest !== stableDigest(baseline.reference)) errors.push('native baseline reference digest mismatch');
+  if (baseline.digest !== stableDigest({
+    schemaVersion:baseline.schemaVersion,
+    referenceDigest:baseline.referenceDigest,
+    observationsDigest:baseline.observationsDigest,
+  })) errors.push('native baseline digest mismatch');
+  return errors;
+}
+
+export function loadNativeBaseline(target = NATIVE_BASELINE, options = {}) {
+  if (!fs.existsSync(target)) throw new Error(`phase8: native baseline missing at ${path.relative(ROOT, target)}`);
+  const baseline = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const errors = validateNativeBaseline(baseline, options);
+  if (errors.length) throw new TypeError(`phase8: invalid native baseline: ${errors.join('; ')}`);
+  return deepFreeze(baseline);
+}
+
+/** Validate the native provenance sidecar against its paired native ledger. */
+export function validateNativeProvenance(provenance, baseline, { corpus = loadCorpus() } = {}) {
+  const errors = [];
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return ['native provenance must be an object'];
+  if (provenance.schemaVersion !== 1) errors.push('native provenance schemaVersion mismatch');
+  if (provenance.kind !== 'phase8-native-paired-provenance') errors.push('native provenance kind mismatch');
+  if (provenance.baseCommit !== baseline.baseCommit
+      || provenance.referenceDigest !== baseline.referenceDigest
+      || provenance.baselineObservationsDigest !== baseline.observationsDigest) {
+    errors.push('native provenance authority identity mismatch');
+  }
+  if (stableDigest(provenance.reference) !== baseline.referenceDigest) errors.push('native provenance reference mismatch');
+  const expectedIds = corpus.functions.map((entry) => entry.id);
+  if (!Array.isArray(provenance.observations) || provenance.observations.length !== expectedIds.length) {
+    errors.push('native provenance denominator mismatch');
+  } else {
+    for (const [index, observation] of provenance.observations.entries()) {
+      const expectedId = expectedIds[index];
+      if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
+        errors.push(`native provenance observation ${index} must be an object`);
+        continue;
+      }
+      if (observation.id !== expectedId) errors.push(`native provenance observation ${index} id/order mismatch`);
+      const entry = corpus.functions[index];
+      if (observation.architectureId !== entry?.architectureId) errors.push(`native provenance ${observation.id ?? index} architecture mismatch`);
+      const expectedMethod = entry?.architectureId === 'arm64' ? PHASE8_NATIVE_ARM64_OBSERVATION_METHOD : null;
+      if ((observation.observationMethod ?? null) !== expectedMethod) errors.push(`native provenance ${observation.id ?? index} method mismatch`);
+      if (typeof observation.available !== 'boolean') errors.push(`native provenance ${observation.id ?? index} availability missing`);
+      errors.push(...validateProvenanceSet(observation.sourceAddresses, `native provenance ${observation.id ?? index} sourceAddresses`));
+      errors.push(...validateProvenanceSet(observation.irProvenance, `native provenance ${observation.id ?? index} irProvenance`));
+      if (observation.sourceAddressesDigest !== stableDigest(observation.sourceAddresses)) errors.push(`native provenance ${observation.id ?? index} source digest mismatch`);
+      if (observation.irProvenanceDigest !== stableDigest(observation.irProvenance)) errors.push(`native provenance ${observation.id ?? index} IR digest mismatch`);
+      if (observation.irProvenanceCount !== observation.irProvenance.length) errors.push(`native provenance ${observation.id ?? index} IR count mismatch`);
+    }
+  }
+  if (provenance.observationsDigest !== stableDigest(provenance.observations)) errors.push('native provenance observations digest mismatch');
+  if (provenance.provenanceDigest !== stableDigest({
+    schemaVersion:provenance.schemaVersion,
+    referenceDigest:provenance.referenceDigest,
+    baselineObservationsDigest:provenance.baselineObservationsDigest,
+    observationsDigest:provenance.observationsDigest,
+  })) errors.push('native provenance digest mismatch');
+  return errors;
+}
+
+export function loadNativeProvenance(target = NATIVE_PROVENANCE, baseline = loadNativeBaseline()) {
+  if (!fs.existsSync(target)) throw new Error(`phase8: native provenance missing at ${path.relative(ROOT, target)}`);
+  const provenance = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const errors = validateNativeProvenance(provenance, baseline);
+  if (errors.length) throw new TypeError(`phase8: invalid native provenance: ${errors.join('; ')}`);
+  return deepFreeze(provenance);
+}
+
+export function loadNativeAuthority({ baselineTarget = NATIVE_BASELINE, provenanceTarget = NATIVE_PROVENANCE, corpus: suppliedCorpus = null, frozenBaseline = loadFrozenBaseline() } = {}) {
+  // The repository corpus is the authority.  A caller may provide a corpus as
+  // an assertion, but it can never become the object used to validate itself.
+  const corpus = loadCorpus();
+  if (suppliedCorpus != null && stableDigest(suppliedCorpus) !== stableDigest(corpus)) {
+    throw new TypeError('phase8: native authority supplied corpus differs from repository corpus');
+  }
+  const baseline = loadNativeBaseline(baselineTarget, { corpus, frozenBaseline });
+  const provenance = loadNativeProvenance(provenanceTarget, baseline, { corpus });
+  return Object.freeze({ baseline, provenance, corpus });
 }
 
 function sum(values) {
