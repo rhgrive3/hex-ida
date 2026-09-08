@@ -26,8 +26,11 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const phase = choosePhase({ intent, observations, hypotheses, effectiveScope });
   const preferred = WINDOWS[phase] || WINDOWS.current;
   const byName = new Map(available.map((tool) => [tool.name, tool]));
-  const requestedLimit = Number(maxTools);
-  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.max(1, Math.floor(requestedLimit)) : 1;
+  // The model-visible tool limit adopts only primitive finite positive
+  // numbers; structured/boolean capability metadata falls back to 1 (#5423).
+  const limit = typeof maxTools === 'number' && Number.isFinite(maxTools) && maxTools > 0
+    ? Math.max(1, Math.floor(maxTools))
+    : 1;
   const selected = [];
 
   // Auto escape is a control-plane liveness guarantee, not an ordinary phase

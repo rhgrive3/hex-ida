@@ -65,6 +65,14 @@ function narrowedPriorCount(candidates, universe) {
   return Math.max(1, universe || candidates.length);
 }
 
+// The public facade accepts only safe, non-negative integer limits. Explicit
+// zero is meaningful; malformed values use the historical default rather than
+// reaching Array#slice coercion or relative-index semantics.
+function resultLimit(value, fallback = 12) {
+  if (value == null) return fallback;
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
 function timeoutMs(opts) {
   const requested = Number(opts?.analysisTimeoutMs);
   if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS;
@@ -309,7 +317,7 @@ function hydrateShapeChangeSites(pin, opts) {
 }
 
 export async function pinpointField(opts = {}) {
-  const requestedLimit = opts.limit || 12;
+  const requestedLimit = resultLimit(opts.limit);
   /* The preserved implementation internally keeps at most 400 candidates.
      Ask it to return that whole ranked set so the prior is not inferred from a
      UI-truncated top-12 list. */

@@ -369,7 +369,13 @@ export function createPointsToSet(input = {}) {
   // and pointsToDigest() for the identical semantic set (#5715). UTF-16
   // code-unit order is the same total order stableDigest's string encoding
   // already uses elsewhere in the identity stack.
-  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
+  // Rebuild every target before sorting so caller-supplied derived rootKey
+  // values cannot become same-root proof authority (#4712). This also keeps
+  // set construction safe when a producer passes a plain target object rather
+  // than one returned by createPointsToTarget().
+  const targets = top ? [] : [...(input.targets ?? [])]
+    .map((target) => createPointsToTarget(target))
+    .sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
   const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
   // A loss reason outside the declared vocabulary would be an unexplainable
   // imprecision: the alias layer maps these onto proof reasons, and a free-form

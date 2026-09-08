@@ -25,9 +25,15 @@ function positiveLimit(value, fallback, minimum = 1) {
   return Math.max(minimum, Math.floor(n));
 }
 
+function boundedMemoryLimit(value, fallback, maximum) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || (n === 0 && typeof value !== 'number')) return fallback;
+  return Math.max(1, Math.min(maximum, n));
+}
+
 export function memoryOrigins(node, opts = {}) {
-  const maxNodes=Math.max(1,Math.min(10000,Number(opts.maxNodes)||1024));
-  const maxEdges=Math.max(1,Math.min(20000,Number(opts.maxEdges)||2048));
+  const maxNodes=boundedMemoryLimit(opts.maxNodes,1024,10000);
+  const maxEdges=boundedMemoryLimit(opts.maxEdges,2048,20000);
   const seen=new Set(), stack=node?[node]:[], stores=[], clobbers=[];
   let edges=0,truncated=false,phiCount=0;
   while(stack.length){

@@ -192,6 +192,14 @@ export function classifyHypothesis(caseResults, coverage = null) {
 export class HypothesisVerifier {
   constructor(adapter, evidenceFactory = null) { this.adapter = adapter; this.evidenceFactory = evidenceFactory; }
   async verify(experiment, options = {}) {
+    // A zero-case experiment is a normal inconclusive outcome, not an input
+    // error: classifyHypothesis() already defines the empty shape, so return
+    // it without touching the adapter or the maxCases bound (#5658).
+    if (!experiment.cases.length) {
+      const coverage = { planned:0, executed:0, complete:true, truncated:false, cancelled:false, stoppedOnContradiction:false, unsupported:0, reasons:[] };
+      const verdict = classifyHypothesis([], coverage);
+      return { experimentId:experiment.id, verdict, coverage, cases:[] };
+    }
     const results = []; const maxCases = boundedInteger(options.maxCases, experiment.cases.length, 1, 64, 'maxCases');
     const maxSteps = executionBound(options.maxSteps, 20000, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? undefined : executionBound(options.timeoutMs, undefined, 60000, 'timeoutMs');

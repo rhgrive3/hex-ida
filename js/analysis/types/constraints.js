@@ -111,12 +111,11 @@ function idList(values, code) {
 
 function toBigInt(val, fallback = 0n) {
   if (val == null) return fallback;
-  if (typeof val === 'bigint') return val;
-  if (typeof val === 'number') {
-    if (!Number.isSafeInteger(val)) return null;
-    return BigInt(val);
-  }
-  try { return BigInt(val); } catch { return null; }
+  /* Structural integer authority accepts only the same primitive forms used
+     by canonicalDescriptorMaterial(). Never invoke BigInt() on a structured
+     value: its ToPrimitive step would launder arrays/objects/booleans into
+     hard layout evidence. */
+  return canonicalInteger(val);
 }
 
 function canonicalInteger(val) {

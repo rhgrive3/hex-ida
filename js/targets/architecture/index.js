@@ -17,7 +17,11 @@ function arm64ControlFlow(instruction) {
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
   if (op === 'b.al' || op === 'b.nv') return 'branch';
-  if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
+  // FEAT_HBC `BC.<cond>` is a PC-relative conditional branch: the same
+  // control family as `B.<cond>` (Capstone 5 prints the B.cond space as
+  // `bc.<cond>` when HBC is enabled), so its decoded branchTarget must
+  // surface as a direct conditional-control target.
+  if (op.startsWith('b.') || op.startsWith('bc.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
   if (/^(?:eret|eretaa|eretab|drps|brk|hlt|svc|hvc|smc)$/.test(op)) return 'unknown';
   return 'fallthrough';
 }

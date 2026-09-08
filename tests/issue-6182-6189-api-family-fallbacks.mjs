@@ -9,15 +9,36 @@
 //   effect by the apple_ui_media namespace regex; it is a separate
 //   memory-transform family now.
 import assert from 'node:assert/strict';
+import { extraApiInfo } from '../js/api-cross-binary-families.js';
 import { apiInfo } from '../js/blocks.js';
 
-// 1. #6189: vImage* must not be a UI effect, with or without a leading
-//    underscore, and must classify to the image-transform family.
-for (const name of ['vImageScale_ARGB8888', '_vImageScale_ARGB8888', 'vImageConvert_16Uto8', '_vImageHistogramCalculation_ARGB8888']) {
+// 1. #6189: the representative scale entry keeps its precise ABI contract,
+//    while the broad family remains available for unknown operations.
+for (const name of ['vImageScale_ARGB8888', '_vImageScale_ARGB8888']) {
+  const extra = extraApiInfo(name);
+  assert.ok(extra, `${name} must stay in a known extra family`);
+  assert.equal(extra.id, 'accelerate_vimage_scale');
+  assert.deepEqual(extra.args, ['src', 'dest', 'tempBuffer', 'flags']);
+  assert.equal(extra.ret, 'status');
+  assert.equal(extra.effect, 'convert');
+
   const info = apiInfo(name);
   assert.ok(info, `${name} must stay in a known family`);
   assert.notEqual(info.effect, 'ui', `${name} must not claim a UI effect`);
-  assert.equal(info.id, 'vimage_transform', `${name} must classify as the Accelerate image-transform family`);
+  assert.equal(info.id, 'accelerate_vimage_scale', `${name} must use the precise scale contract`);
+  assert.deepEqual(info.args, ['src', 'dest', 'tempBuffer', 'flags']);
+  assert.equal(info.ret, 'status');
+  assert.equal(info.effect, 'convert');
+}
+
+// Unknown vImage operations retain the merged conservative fallback.
+for (const name of ['vImageConvert_16Uto8', '_vImageHistogramCalculation_ARGB8888']) {
+  const info = apiInfo(name);
+  assert.ok(info, `${name} must stay in a known family`);
+  assert.notEqual(info.effect, 'ui', `${name} must not claim a UI effect`);
+  assert.equal(info.id, 'accelerate_vimage', `${name} must use the broad Accelerate image-transform family`);
+  assert.equal(info.cat, 'memory');
+  assert.equal(info.effect, null);
 }
 
 // 2. #6189: genuinely UI-shaped families keep their UI effect.
@@ -30,6 +51,9 @@ for (const name of ['UIApplicationMain', 'UIRectFill', 'UIAccessibilityPostNotif
 // 3. #6182: non-crypto Security.framework retrieval APIs must not claim a
 //    crypto effect from the broad fallback.
 for (const name of ['SecCertificateCopyData', '_SecCertificateCopyData', 'SecRequirementCopyData', '_SecRequirementCopyData']) {
+  const extra = extraApiInfo(name);
+  assert.ok(extra, `${name} must stay covered by the public fallback`);
+  assert.equal(extra.cat, 'crypto');
   const info = apiInfo(name);
   assert.ok(info, `${name} must stay covered`);
   assert.notEqual(info.effect, 'crypto', `${name} must not claim a crypto effect`);
@@ -38,12 +62,22 @@ for (const name of ['SecCertificateCopyData', '_SecCertificateCopyData', 'SecReq
 // 4. #6182: the specified retrieval APIs gain precise contracts (base table
 //    precedence) with a read effect instead of crypto.
 {
+  const certificateExtra = extraApiInfo('SecCertificateCopyData');
+  assert.equal(certificateExtra.id, 'security_certificate_copy_data');
+  assert.equal(certificateExtra.ret, 'ptr');
+  assert.equal(certificateExtra.effect, 'read');
   const info = apiInfo('SecCertificateCopyData');
   assert.equal(info.id, 'security_cert_data');
+  assert.equal(info.ret, 'object');
   assert.equal(info.effect, 'read');
   assert.deepEqual(info.args, ['certificate']);
+  const requirementExtra = extraApiInfo('_SecRequirementCopyData');
+  assert.equal(requirementExtra.id, 'security_framework');
+  assert.equal(requirementExtra.effect, null);
   const req = apiInfo('_SecRequirementCopyData');
   assert.equal(req.id, 'security_requirement_data');
+  assert.equal(req.ret, 'object');
+  assert.deepEqual(req.args, ['requirement']);
   assert.equal(req.effect, 'read');
 }
 

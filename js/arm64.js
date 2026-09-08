@@ -154,7 +154,7 @@ cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
-cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
+cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtmu fcvtns fcvtnu fcvtps fcvtpu scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
 cat('udf .byte', 'data');
@@ -371,17 +371,73 @@ HANDLERS.mov = (o, ops) => {
   addRegRoles(o, ops);
 };
 
+function moveWideInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, immediate] = ops;
+  const destinationIsGp = destination && destination.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const bits = destinationIsGp && (destination.bits === 32 || destination.bits === 64)
+    ? destination.bits
+    : null;
+  if (bits == null || destination.shift || !immediate || immediate.k !== 'imm' ||
+      immediate.value == null || immediate.value < 0n || immediate.value > 0xffffn ||
+      /^#-/i.test(immediate.text || '')) return null;
+
+  const shift = immediate.shift;
+  if (!shift) return { bits, shift: null };
+  if (shift.op !== 'lsl' || !Number.isInteger(shift.amount)) return null;
+  const legalShift = bits === 32
+    ? shift.amount === 0 || shift.amount === 16
+    : shift.amount === 0 || shift.amount === 16 || shift.amount === 32 || shift.amount === 48;
+  return legalShift ? { bits, shift: shift.amount } : null;
+}
+
+function unknownMoveWide(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('ワイド即値命令（未解釈）', 'Unknown move-wide form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では値や宛先幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs are not assigned a guessed value or destination width.');
+  o.detail.push(J(
+    '説明できるのは W/X レジスタ、16 ビット即値、合法な LSL 位置を組み合わせた形だけです。',
+    'Only W/X destinations, a 16-bit immediate, and legal move-wide LSL positions are explained.'));
+  o.terms = [];
+}
+
+function moveWideMask(bits) {
+  return bits === 32 ? '0xFFFFFFFF' : '0xFFFFFFFFFFFFFFFF';
+}
+
 HANDLERS.movz = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movz');
+    return;
+  }
   const [d, s] = ops;
+  const { bits, shift: sh } = info;
   o.title = J('代入（上を 0 で埋める）', 'Move with zero');
   o.pseudo = opShort(d) + ' = ' + opShort(s);
-  o.summary = J(
-    opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
-    'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
-  o.detail.push(J(
-    'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
-    'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
-    'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  if (sh == null) {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
+    o.detail.push(J(
+      'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
+        'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
+      'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  } else {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を ' + sh + ' ビット左へずらした値を入れ、' +
+        bits + ' ビット幅の残りは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ' shifted left by ' + sh +
+        ' bits, zeroing the remaining bits of its ' + bits + '-bit width.');
+    o.detail.push(J(
+      '16 ビットの即値を ' + sh + ' ビット目から置き、' + bits + ' ビット幅の値にします。' +
+        '大きな定数は、後続の movk で別の 16 ビット部分を足して組み立てます。',
+      'Place the 16-bit immediate at bit ' + sh + ' in the ' + bits + '-bit result; later movk instructions can fill other 16-bit fields.'));
+  }
   o.terms = ['immediate', 'register'];
 };
 
@@ -401,12 +457,30 @@ HANDLERS.movk = (o, ops) => {
 };
 
 HANDLERS.movn = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movn');
+    return;
+  }
   const [d, s] = ops;
+  const { bits, shift: sh } = info;
   o.title = J('ビットを反転して代入', 'Move NOT');
-  o.pseudo = opShort(d) + ' = ~' + opShort(s);
-  o.summary = J(
-    immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
-    'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  if (sh == null) {
+    o.pseudo = opShort(d) + ' = ~' + opShort(s);
+    o.summary = J(
+      immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  } else {
+    o.pseudo = opShort(d) + ' = ~(' + opShort(s) + ') & ' + moveWideMask(bits);
+    o.summary = J(
+      immText(s) + ' を ' + sh + ' ビット左へずらした値を ' + bits + ' ビット幅で反転して ' +
+        opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' shifted left by ' + sh + ' bits into ' +
+        opShort(d) + ', limited to ' + bits + ' bits — how small negative constants are made.');
+    o.detail.push(J(
+      '反転は ' + bits + ' ビット幅に限ります。W レジスタなら下位 32 ビット、X レジスタなら 64 ビットだけを使います。',
+      'The NOT is limited to ' + bits + ' bits: W registers use 32 bits and X registers use 64 bits.'));
+  }
   o.terms = ['immediate', 'twoscomplement'];
 };
 
@@ -1378,7 +1452,118 @@ HANDLERS.bti = (o) => {
     'Marks a legitimate branch target, so an attacker cannot jump into the middle of code.');
   o.terms = ['security'];
 };
-HANDLERS.hint = HANDLERS.bti;
+
+// HINT is an immediate-selected architectural hint space.  Only the finite
+// aliases below are given a specific presentation; an unknown or malformed
+// immediate must not be promoted to BTI merely because it uses the HINT
+// mnemonic.
+const GENERIC_HINT_INFO = new Map([
+  [0, {
+    titleJa: 'NOP ヒント', titleEn: 'NOP hint',
+    summaryJa: 'HINT #0 は何もしない NOP です。BTI の目印ではありません。',
+    summaryEn: 'HINT #0 is the NOP hint; it does not mark a branch target.',
+    terms: [],
+  }],
+  [1, {
+    titleJa: '実行時間を譲るヒント', titleEn: 'Yield hint',
+    summaryJa: 'HINT #1 (YIELD) は、ほかの処理に実行時間を譲るヒントです。BTI ではありません。',
+    summaryEn: 'HINT #1 (YIELD) lets another thread or processor run; it is not BTI.',
+    terms: ['thread'],
+  }],
+  [2, {
+    titleJa: 'イベント待ち', titleEn: 'Wait for event hint',
+    summaryJa: 'HINT #2 (WFE) はイベントが来るまで待つヒントです。',
+    summaryEn: 'HINT #2 (WFE) waits for an event.',
+    terms: ['thread'],
+  }],
+  [3, {
+    titleJa: '割り込み待ち', titleEn: 'Wait for interrupt hint',
+    summaryJa: 'HINT #3 (WFI) は割り込みが来るまで待つヒントです。',
+    summaryEn: 'HINT #3 (WFI) waits for an interrupt.',
+    terms: [],
+  }],
+  [4, {
+    titleJa: 'イベントを送るヒント', titleEn: 'Send event hint',
+    summaryJa: 'HINT #4 (SEV) はシステム全体へイベントを送るヒントです。',
+    summaryEn: 'HINT #4 (SEV) sends an event to the system.',
+    terms: ['thread'],
+  }],
+  [5, {
+    titleJa: 'ローカルイベントを送るヒント', titleEn: 'Send local event hint',
+    summaryJa: 'HINT #5 (SEVL) は現在のプロセッサへイベントを送るヒントです。',
+    summaryEn: 'HINT #5 (SEVL) sends a local event on the current processor.',
+    terms: [],
+  }],
+  [16, {
+    titleJa: 'エラー同期ヒント', titleEn: 'Error synchronization hint',
+    summaryJa: 'HINT #16 (ESB) はエラー同期のためのヒントです。',
+    summaryEn: 'HINT #16 (ESB) is an error-synchronization hint.',
+    terms: [],
+  }],
+  [20, {
+    titleJa: '投機実行を制約するヒント', titleEn: 'Speculation constraint hint',
+    summaryJa: 'HINT #20 (CSDB) は投機的なデータ利用を制約するヒントです。',
+    summaryEn: 'HINT #20 (CSDB) constrains speculative data use.',
+    terms: ['security'],
+  }],
+]);
+
+const BTI_HINT_NAMES = new Map([
+  [32, 'BTI'],
+  [34, 'BTI c'],
+  [36, 'BTI j'],
+  [38, 'BTI jc'],
+]);
+
+function hintOperandText(ops) {
+  if (!Array.isArray(ops)) return '';
+  return ops.map((op) => typeof op?.text === 'string' ? op.text.trim() : opShort(op)).join(', ');
+}
+
+function hintImmediate(ops) {
+  if (!Array.isArray(ops) || ops.length !== 1) return null;
+  const operand = ops[0];
+  // parseOperands folds a trailing shift/extend token into the preceding
+  // operand.  HINT's selector is a plain imm7; treating that decorated shape
+  // as the selector would turn malformed text such as "#32, lsl #1" into BTI.
+  if (operand?.k !== 'imm' || typeof operand.value !== 'bigint' || operand.shift) return null;
+  if (operand.value < 0n || operand.value > 0x7fn) return null;
+  return Number(operand.value);
+}
+
+HANDLERS.hint = (o, ops) => {
+  const raw = hintOperandText(ops);
+  const display = raw || '<immediate unavailable>';
+  const immediate = hintImmediate(ops);
+  const btiName = immediate == null ? null : BTI_HINT_NAMES.get(immediate);
+  o.pseudo = 'hint(' + raw + ')';
+
+  if (btiName) {
+    o.title = J('分岐先を示す目印（' + btiName + '）', 'Branch target marker (' + btiName + ')');
+    o.summary = J(
+      'HINT #' + immediate + ' は ' + btiName + ' のエンコーディングで、正規の分岐先を示す目印です。',
+      'HINT #' + immediate + ' is the ' + btiName + ' encoding, marking a legitimate branch target.');
+    o.terms = ['security'];
+    return;
+  }
+
+  const known = immediate == null ? null : GENERIC_HINT_INFO.get(immediate);
+  if (known) {
+    o.title = J(known.titleJa, known.titleEn);
+    o.summary = J(known.summaryJa, known.summaryEn);
+    o.terms = known.terms.slice();
+    return;
+  }
+
+  o.title = J('アーキテクチャのヒント', 'Architectural hint');
+  o.summary = J(
+    'HINT ' + display + ' はアーキテクチャのヒントです。具体的な割り当ては解釈せず、BTI と決めつけません。',
+    'HINT ' + display + ' is an architectural hint; its allocation is not interpreted here, so it is not assumed to be BTI.');
+  o.detail.push(J(
+    'HINT の即値には複数の割り当てと未割り当て値があります。即値が解釈できないときは、特定の動作を断定しません。',
+    'The HINT immediate has multiple allocated meanings and unallocated values; when it is not interpreted here, no specific behavior is asserted.'));
+  o.terms = ['immediate'];
+};
 
 for (const n of ['paciasp', 'pacibsp']) {
   HANDLERS[n] = (o) => {
@@ -1487,17 +1672,130 @@ HANDLERS.pacga = (o, ops) => {
   o.terms = ['pac', 'security'];
 };
 
-for (const n of ['dmb', 'dsb', 'isb']) {
-  HANDLERS[n] = (o) => {
-    o.title = J('順番を守らせる', 'Memory barrier');
-    o.pseudo = 'barrier()';
+const DATA_BARRIER_OPTION_INFO = Object.freeze({
+  sy: Object.freeze({ ja: 'sy（システム全体の読み書き）', en: 'sy (full-system loads/stores)' }),
+  st: Object.freeze({ ja: 'st（システム全体のストア）', en: 'st (full-system stores)' }),
+  ld: Object.freeze({ ja: 'ld（システム全体のロード）', en: 'ld (full-system loads)' }),
+  ish: Object.freeze({ ja: 'ish（Inner Shareable の読み書き）', en: 'ish (inner-shareable loads/stores)' }),
+  ishst: Object.freeze({ ja: 'ishst（Inner Shareable のストア）', en: 'ishst (inner-shareable stores)' }),
+  ishld: Object.freeze({ ja: 'ishld（Inner Shareable のロード）', en: 'ishld (inner-shareable loads)' }),
+  nsh: Object.freeze({ ja: 'nsh（Non-shareable の読み書き）', en: 'nsh (non-shareable loads/stores)' }),
+  nshst: Object.freeze({ ja: 'nshst（Non-shareable のストア）', en: 'nshst (non-shareable stores)' }),
+  nshld: Object.freeze({ ja: 'nshld（Non-shareable のロード）', en: 'nshld (non-shareable loads)' }),
+  osh: Object.freeze({ ja: 'osh（Outer Shareable の読み書き）', en: 'osh (outer-shareable loads/stores)' }),
+  oshst: Object.freeze({ ja: 'oshst（Outer Shareable のストア）', en: 'oshst (outer-shareable stores)' }),
+  oshld: Object.freeze({ ja: 'oshld（Outer Shareable のロード）', en: 'oshld (outer-shareable loads)' }),
+});
+
+const DSB_OPTION_INFO = Object.freeze({
+  ...DATA_BARRIER_OPTION_INFO,
+  ssbb: Object.freeze({ kind: 'speculation', ja: 'ssbb（ストアバイパス投機の抑制）', en: 'ssbb (store-bypass speculation barrier)' }),
+  pssbb: Object.freeze({ kind: 'speculation', ja: 'pssbb（特権ストアバイパス投機の抑制）', en: 'pssbb (privileged store-bypass speculation barrier)' }),
+  oshnxs: Object.freeze({ ja: 'oshnxs（Outer Shareable の nXS アクセス）', en: 'oshnxs (outer-shareable nXS accesses)' }),
+  nshnxs: Object.freeze({ ja: 'nshnxs（Non-shareable の nXS アクセス）', en: 'nshnxs (non-shareable nXS accesses)' }),
+  ishnxs: Object.freeze({ ja: 'ishnxs（Inner Shareable の nXS アクセス）', en: 'ishnxs (inner-shareable nXS accesses)' }),
+  synxs: Object.freeze({ ja: 'synxs（システム全体の nXS アクセス）', en: 'synxs (full-system nXS accesses)' }),
+});
+
+const BARRIER_OPTION_INFO = Object.freeze({
+  dmb: DATA_BARRIER_OPTION_INFO,
+  dsb: DSB_OPTION_INFO,
+  isb: Object.freeze({
+    sy: Object.freeze({ ja: 'sy（命令同期の指定）', en: 'sy (instruction-synchronization option)' }),
+  }),
+});
+
+function barrierOptionInfo(mnemonic, ops) {
+  const operands = Array.isArray(ops) ? ops : [];
+  if (operands.length === 0) {
+    return {
+      raw: '',
+      known: true,
+      defaulted: true,
+      kind: 'data',
+      ja: 'オプション省略（AArch64 の既定値 sy）',
+      en: 'option omitted (AArch64 architectural default: sy)',
+    };
+  }
+  const raw = operands.map((operand) => typeof operand?.text === 'string' ? operand.text.trim() : '').join(', ');
+  const optionTable = BARRIER_OPTION_INFO[mnemonic];
+  const optionKey = raw.toLowerCase();
+  const descriptor = operands.length === 1 && optionTable &&
+    Object.prototype.hasOwnProperty.call(optionTable, optionKey)
+    ? optionTable[optionKey]
+    : null;
+  if (descriptor) {
+    return {
+      raw,
+      known: true,
+      defaulted: false,
+      kind: descriptor.kind || 'data',
+      ja: 'オプション ' + descriptor.ja,
+      en: 'option ' + descriptor.en,
+    };
+  }
+  const display = raw || '<unparsed>';
+  return {
+    raw: display,
+    known: false,
+    defaulted: false,
+    kind: 'unknown',
+    ja: 'オプション ' + display + ' は未解釈（範囲・種別は不明）',
+    en: 'option ' + display + ' is not interpreted (scope/type unknown)',
+  };
+}
+
+for (const mnemonic of ['dmb', 'dsb', 'isb']) {
+  HANDLERS[mnemonic] = (o, ops) => {
+    const option = barrierOptionInfo(mnemonic, ops);
+    const optionNote = J(option.ja, option.en);
+    const pseudo = mnemonic + '(' + option.raw + ')';
+    o.pseudo = pseudo;
+
+    if (mnemonic === 'dmb') {
+      o.title = J('データメモリアクセスの順序付けバリア', 'Data memory ordering barrier');
+      o.summary = J(
+        'DMB はデータメモリアクセスの順序をこの地点の前後で保つ。アクセスの完了を待つ命令ではない。' + optionNote + '。',
+        'DMB orders data-memory accesses across this point; it does not wait for those accesses to complete. ' + optionNote + '.');
+      o.detail.push(J(
+        'DMB は指定されたデータアクセスを順序付けする。DSB のような完了待ちや、ISB のような命令取得の同期は行わない。' + optionNote + '。',
+        'DMB orders the selected data accesses; unlike DSB it does not add completion/wait semantics, and unlike ISB it does not synchronize instruction fetch. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    if (mnemonic === 'dsb' && option.kind === 'speculation') {
+      o.title = J('ストアバイパス投機を抑える同期バリア', 'Store-bypass speculation barrier');
+      o.summary = J(
+        'DSB の ' + option.raw + ' はストアバイパス投機を抑える特殊な指定で、通常のデータアクセス範囲や完了待ちとしては解釈しない。' + optionNote + '。',
+        'DSB ' + option.raw + ' is a specialized store-bypass speculation barrier; its data-access scope and completion behavior are not interpreted here. ' + optionNote + '.');
+      o.detail.push(J(
+        'この特殊な指定は通常の DSB のデータアクセス範囲と同じものとして扱わない。' + optionNote + '。',
+        'Do not treat this specialized option as the ordinary DSB data-access scope. ' + optionNote + '.'));
+      o.terms = [];
+      return;
+    }
+
+    if (mnemonic === 'dsb') {
+      o.title = J('データ同期バリア', 'Data synchronization barrier');
+      o.summary = J(
+        'DSB はデータメモリアクセスの順序を保ち、対象アクセスの完了を待ってから後続命令を進める。' + optionNote + '。',
+        'DSB orders data-memory accesses and waits for covered accesses to complete before later instructions proceed. ' + optionNote + '.');
+      o.detail.push(J(
+        'DSB は DMB の順序付けに加えて、指定されたアクセスなどの完了を待つ。ISB のような命令取得の同期ではない。' + optionNote + '。',
+        'DSB adds completion/wait semantics to DMB-style ordering for the selected accesses; it is not ISB instruction-fetch synchronization. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    o.title = J('命令ストリーム同期バリア', 'Instruction synchronization barrier');
     o.summary = J(
-      'CPU が勝手に順番を入れ替えないよう、ここで一度そろえる。',
-      'Stop the CPU from reordering memory operations across this point.');
+      'ISB は前のコンテキスト変更の効果を後続命令の取得・実行に反映させるため、命令ストリームを同期する。データメモリアクセスの順序付けを行う命令ではない。' + optionNote + '。',
+      'ISB synchronizes the instruction stream so later instruction fetch and execution observe earlier context-changing operations; it is not a data-memory ordering barrier. ' + optionNote + '.');
     o.detail.push(J(
-      'CPU は速度のために命令の順番を入れ替えます。複数のスレッドが同じデータを触るときは、それが困るのでここで止めます。',
-      'CPUs reorder for speed; with multiple threads that is unsafe, so this pins the order.'));
-    o.terms = ['thread'];
+      'ISB はシステムレジスタ更新などの後で、後続命令を新しい実行コンテキストから取得・実行する境界を作る。スレッド間のデータ順序付けとして説明しない。' + optionNote + '。',
+      'ISB synchronizes instruction fetch and execution after a context-changing operation such as a system-register update; it is not thread data-memory ordering. ' + optionNote + '.'));
+    o.terms = [];
   };
 }
 HANDLERS.mrs = (o, ops) => {
@@ -1551,26 +1849,290 @@ HANDLERS.fcmp = (o, ops) => {
     'Compare two floating-point values, updating the flags.');
   o.terms = ['float', 'flags'];
 };
-for (const n of ['fcvtzs', 'fcvtzu', 'fcvtas', 'fcvtau', 'fcvtms', 'fcvtns', 'fcvtps']) {
-  HANDLERS[n] = (o, ops) => {
-    o.title = J('小数を整数にする', 'Float to integer');
-    o.pseudo = opShort(ops[0]) + ' = (int)' + opShort(ops[1]);
+const FCVT_FLOAT_TO_INTEGER_INFO = Object.freeze({
+  fcvtzs: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1、−1.9 → −1',
+    exampleEn: '1.9 → 1, −1.9 → −1',
+  }),
+  fcvtzu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtas: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2、−1.5 → −2',
+    exampleEn: '1.5 → 2, −1.5 → −2',
+  }),
+  fcvtau: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2',
+    exampleEn: '1.5 → 2',
+  }),
+  fcvtms: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1、−1.1 → −2',
+    exampleEn: '1.9 → 1, −1.1 → −2',
+  }),
+  fcvtmu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtns: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtnu: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtps: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2、−1.9 → −1',
+    exampleEn: '1.1 → 2, −1.9 → −1',
+  }),
+  fcvtpu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2',
+    exampleEn: '1.1 → 2',
+  }),
+});
+
+function scalarFcvtFloatToIntegerInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, source] = ops;
+  const destinationIsGp = destination?.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const sourceIsScalarFloat = source?.k === 'reg' && source.cls === 'fp' &&
+    /^[sd]\d+$/i.test(source.text || '');
+  if (!destinationIsGp || ![32, 64].includes(destination.bits) || destination.shift ||
+      !sourceIsScalarFloat || ![32, 64].includes(source.bits) || source.shift) {
+    return null;
+  }
+  return { destination, source };
+}
+
+function unknownFcvtFloatToInteger(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('小数→整数（未解釈）', 'Unknown float-to-integer form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では、丸め方・符号・幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs do not guess rounding, signedness, or width.');
+  o.detail.push(J(
+    '説明できるのは、スカラーの W/X 宛先と S/D 浮動小数点ソースを 2 個だけ使う形です。固定小数点の #fbits、SIMD レーン、余分なオペランドは解釈しません。',
+    'Only the two-operand scalar form with a W/X destination and S/D floating-point source is explained. Fixed-point #fbits, SIMD lanes, and extra operands are not interpreted.'));
+  o.terms = [];
+}
+
+function fcvtFloatToIntegerHandler(mnemonic) {
+  return (o, ops) => {
+    const info = FCVT_FLOAT_TO_INTEGER_INFO[mnemonic];
+    const shape = scalarFcvtFloatToIntegerInfo(ops);
+    if (!info || !shape) {
+      unknownFcvtFloatToInteger(o, mnemonic);
+      return;
+    }
+    const { destination, source } = shape;
+    const destinationText = opShort(destination);
+    const sourceText = opShort(source);
+    const destinationType = (info.signed ? 'int' : 'uint') + destination.bits + '_t';
+    const sourcePrecisionJa = source.bits === 64 ? '倍精度' : '単精度';
+    const sourcePrecisionEn = source.bits === 64 ? 'double-precision' : 'single-precision';
+    const signedJa = info.signed ? '符号付き' : '符号なし';
+    const signedEn = info.signed ? 'signed' : 'unsigned';
+    const integerArticleEn = info.signed ? 'a' : 'an';
+    const roundingClauseEn = info.roundingEn.startsWith('nearest')
+      ? 'to the nearest integer (' + info.roundingEn + ')'
+      : info.roundingEn;
+
+    o.title = J(
+      '小数を' + signedJa + '整数にする（' + info.roundingJa + '）',
+      'Float to ' + signedEn + ' integer (' + info.roundingEn + ')');
+    o.pseudo = destinationText + ' = (' + destinationType + ')' + info.functionName + '(' + sourceText + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の小数を整数に変換して ' + opShort(ops[0]) + ' に入れる（小数点以下は切り捨て）。',
-      'Convert the float in ' + opShort(ops[1]) + ' to an integer.');
+      sourceText + ' の' + sourcePrecisionJa + '（' + source.bits + ' ビット）値を' + info.roundingJa + 'に丸め、' +
+        signedJa + '整数（' + destination.bits + ' ビット、' + destinationType + '）として ' + destinationText + ' に入れる。',
+      'Round the ' + sourcePrecisionEn + ' (' + source.bits + '-bit) value in ' + sourceText + ' ' + roundingClauseEn +
+        ', then store it as ' + integerArticleEn + ' ' + signedEn + ' integer (' + destination.bits + '-bit, ' + destinationType + ') in ' + destinationText + '.');
+    o.detail.push(J(
+      'この丸め方は命令名で固定されます。例: ' + info.exampleJa + '。',
+      'The mnemonic fixes this rounding rule. For example: ' + info.exampleEn + '.'));
     o.terms = ['float'];
   };
 }
-for (const n of ['scvtf', 'ucvtf']) {
-  HANDLERS[n] = (o, ops) => {
+for (const mnemonic of Object.keys(FCVT_FLOAT_TO_INTEGER_INFO)) {
+  HANDLERS[mnemonic] = fcvtFloatToIntegerHandler(mnemonic);
+}
+const INT_FLOAT_VECTOR_SHAPES = Object.freeze({
+  '4h': Object.freeze({ lanes: 4, bits: 16, precision: 'half' }),
+  '8h': Object.freeze({ lanes: 8, bits: 16, precision: 'half' }),
+  '2s': Object.freeze({ lanes: 2, bits: 32, precision: 'float' }),
+  '4s': Object.freeze({ lanes: 4, bits: 32, precision: 'float' }),
+  '2d': Object.freeze({ lanes: 2, bits: 64, precision: 'double' }),
+});
+
+function intFloatRegister(op) {
+  return op?.k === 'reg' && Number.isInteger(op.num) && op.num >= 0 && op.num < 32;
+}
+
+function intFloatScalarFpRegister(op) {
+  return intFloatRegister(op) && op.cls === 'fp' && (op.bits === 32 || op.bits === 64);
+}
+
+function intFloatScalarIntegerRegister(op) {
+  if (!intFloatRegister(op) || !['gp', 'zr'].includes(op.cls) || ![32, 64].includes(op.bits)) return false;
+  return op.cls !== 'gp' || op.num < 31;
+}
+
+function intFloatVectorShape(op) {
+  if (!intFloatRegister(op) || op.cls !== 'vec' || op.bits !== 128 || typeof op.arr !== 'string') return null;
+  const arrangement = op.arr.toLowerCase();
+  const shape = INT_FLOAT_VECTOR_SHAPES[arrangement];
+  return shape ? { ...shape, arrangement } : null;
+}
+
+function intFloatScale(op, maximum) {
+  if (op?.k !== 'imm' || op.shift != null || typeof op.value !== 'bigint') return null;
+  if (op.value < 1n || op.value > BigInt(maximum)) return null;
+  return Number(op.value);
+}
+
+function intFloatShape(ops) {
+  if (!Array.isArray(ops) || ops.length < 2 || ops.some((op) => op?.shift != null || op?.extend != null)) return null;
+  const [d, s] = ops;
+  const destinationVector = intFloatVectorShape(d);
+  const sourceVector = intFloatVectorShape(s);
+  if (destinationVector && sourceVector && destinationVector.arrangement === sourceVector.arrangement) {
+    if (ops.length === 2) return { kind: 'vector', d, s, ...destinationVector, scale: null };
+    if (ops.length === 3) {
+      const scale = intFloatScale(ops[2], destinationVector.bits);
+      return scale == null ? null : { kind: 'vector', d, s, ...destinationVector, scale };
+    }
+    return null;
+  }
+
+  if (intFloatScalarFpRegister(d) && intFloatScalarFpRegister(s) && d.bits === s.bits) {
+    const scalarShape = { kind: 'scalar-simd', d, s, bits: d.bits, precision: d.bits === 64 ? 'double' : 'float' };
+    if (ops.length === 2) return { ...scalarShape, scale: null };
+    if (ops.length !== 3) return null;
+    const scale = intFloatScale(ops[2], d.bits);
+    return scale == null ? null : { ...scalarShape, scale };
+  }
+
+  if (!intFloatScalarFpRegister(d) || !intFloatScalarIntegerRegister(s)) return null;
+  if (ops.length === 2) return { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale: null };
+  if (ops.length !== 3) return null;
+  const scale = intFloatScale(ops[2], s.bits);
+  return scale == null ? null : { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale };
+}
+
+function intFloatPrecision(precision) {
+  return precision === 'double'
+    ? { ja: '倍精度の小数', en: 'double-precision floating point' }
+    : precision === 'half'
+      ? { ja: '半精度の小数', en: 'half-precision floating point' }
+      : { ja: '単精度の小数', en: 'single-precision floating point' };
+}
+
+function intFloatUnknown(o, mnemonic, ops) {
+  const shown = typeof o.operands === 'string' && o.operands.trim()
+    ? o.operands.trim()
+    : ops.map((op) => opShort(op) || '?').join(', ') || '(missing operands)';
+  o.title = J('整数→小数（オペランド形状不明）', 'Integer to float (operand shape unknown)');
+  o.pseudo = mnemonic.toUpperCase() + '(' + shown + ')';
+  o.summary = J(
+    mnemonic.toUpperCase() + ' のこのオペランド形状は未解釈です。符号・幅・精度を推測していません。',
+    'The operand shape for ' + mnemonic.toUpperCase() + ' is not interpreted; signedness, width, and precision are left unknown.');
+  o.detail.push(J(
+    '対応している W/X から S/D、または SIMD の同じレーン形状ではないため、整数の型変換を断定しません。',
+    'This is not a supported W/X-to-S/D or same-shape SIMD form, so no integer cast is asserted.'));
+  o.terms = ['float'];
+}
+
+function intToFloatHandler(mnemonic, signed) {
+  return (o, ops) => {
+    const shape = intFloatShape(ops);
+    if (!shape) {
+      intFloatUnknown(o, mnemonic, ops);
+      return;
+    }
+
+    const signedLabelJa = signed ? '符号付き' : '符号なし';
+    const signedLabelEn = signed ? 'signed' : 'unsigned';
+    const precision = intFloatPrecision(shape.precision);
+    const scaleNoteJa = shape.scale == null ? '' : '。固定小数点の小数部は ' + shape.scale + ' ビット（2^' + shape.scale + ' で割る）';
+    const scaleNoteEn = shape.scale == null ? '' : ' Fixed-point scale #' + shape.scale + ' divides the value by 2^' + shape.scale + '.';
+
     o.title = J('整数を小数にする', 'Integer to float');
-    o.pseudo = opShort(ops[0]) + ' = (double)' + opShort(ops[1]);
+    if (shape.kind === 'scalar-integer') {
+      const sourceType = (signed ? 'int' : 'uint') + shape.bits + '_t';
+      o.pseudo = shape.scale == null
+        ? shape.d.text + ' = (' + shape.precision + ')(' + sourceType + ')' + shape.s.text
+        : shape.d.text + ' = ((' + shape.precision + ')(' + sourceType + ')' + shape.s.text + ') / 2^' + shape.scale;
+      o.summary = J(
+        shape.s.text + ' の' + signedLabelJa + '整数（' + sourceType + '）を' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' integer (' + sourceType + ') in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn);
+      o.terms = ['float'];
+      return;
+    }
+
+    const lane = shape.bits + '-bit';
+    if (shape.kind === 'scalar-simd') {
+      const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lane_to_' + shape.precision;
+      o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
+      o.summary = J(
+        'SIMD スカラー ' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + 'レーンを' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' ' + lane + ' SIMD scalar lane in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn,
+      );
+      o.terms = ['float', 'simd'];
+      return;
+    }
+
+    const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lanes_to_' + shape.precision;
+    o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の整数を小数の形に変換して ' + opShort(ops[0]) + ' に入れる。',
-      'Convert the integer in ' + opShort(ops[1]) + ' to floating point.');
-    o.terms = ['float'];
+      shape.d.text + ' の各レーンを、' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + '整数レーンから' + precision.ja + 'へ変換する' + scaleNoteJa + '。',
+      'Convert each ' + signedLabelEn + ' ' + lane + ' integer lane in ' + shape.s.text + ' to ' + precision.en + ' lanes in ' + shape.d.text + '.' + scaleNoteEn);
+    o.terms = ['float', 'simd'];
   };
 }
+HANDLERS.scvtf = intToFloatHandler('scvtf', true);
+HANDLERS.ucvtf = intToFloatHandler('ucvtf', false);
 HANDLERS.fcvt = (o, ops) => {
   o.title = J('小数の精度を変える', 'Convert float precision');
   o.pseudo = opShort(ops[0]) + ' = (' + (ops[0] && ops[0].bits === 64 ? 'double' : 'float') + ')' + opShort(ops[1]);

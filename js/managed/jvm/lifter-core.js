@@ -42,10 +42,31 @@ function appendJvmBranchEffect(
   return true;
 }
 
+// JVM verification constraint: a local-variable instruction may only name a
+// slot inside the Code attribute's local frame. A category-2 value occupies
+// two consecutive slots, so its index must leave room for the second half
+// (#5394). Publishing an out-of-frame access as `exact` would turn malformed
+// bytecode into a fabricated dataflow fact.
+function requireLocalAccess(maxLocals, index, slots, unknownEffects) {
+  const locals = Number(maxLocals);
+  const valid = Number.isSafeInteger(index) && index >= 0
+    && Number.isSafeInteger(locals) && locals > 0
+    && index + slots <= locals;
+  if (!valid) {
+    // The location access itself is withheld; the verifier maps this finding
+    // onto jvm-local-index-out-of-range (branch-target precedent, #3899).
+    unknownEffects.push({
+      category: 'other',
+      reason: `jvm-local-index-out-of-frame:${index}:${slots}`,
+    });
+    return false;
+  }
+  return true;
+}
+
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
   if (!method) fail('jvm-invalid-method-index');
-
   const methodId = createManagedMethodId(jvmClass.moduleId, methodIdx, method.name);
   const isNative = (method.accessFlags & 0x0100) !== 0; // ACC_NATIVE
 
@@ -182,9 +203,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x16 || opcode === 0x18;
           const names = { 0x15: 'iload', 0x16: 'lload', 0x17: 'fload', 0x18: 'dload', 0x19: 'aload' };
           mnemonic = names[opcode];
-          locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-          producedValues.push({ bits: isCategory2 ? 64 : 32 });
-          currentStackHeight += isCategory2 ? 2 : 1;
+          if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
+          else {
+            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
+            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            currentStackHeight += isCategory2 ? 2 : 1;
+          }
         }
         break;
 
@@ -200,9 +224,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lload' || prefix === 'dload';
           mnemonic = `${prefix}_${locIdx}`;
-          locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-          producedValues.push({ bits: isCategory2 ? 64 : 32 });
-          currentStackHeight += isCategory2 ? 2 : 1;
+          if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
+          else {
+            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
+            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            currentStackHeight += isCategory2 ? 2 : 1;
+          }
         }
         break;
 
@@ -213,9 +240,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x37 || opcode === 0x39;
           const names = { 0x36: 'istore', 0x37: 'lstore', 0x38: 'fstore', 0x39: 'dstore', 0x3a: 'astore' };
           mnemonic = names[opcode];
-          locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-          consumedValues.push({ id: 'top' });
-          currentStackHeight -= isCategory2 ? 2 : 1;
+          if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
+          else {
+            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
+            consumedValues.push({ id: 'top' });
+            currentStackHeight -= isCategory2 ? 2 : 1;
+          }
         }
         break;
 
@@ -231,9 +261,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lstore' || prefix === 'dstore';
           mnemonic = `${prefix}_${locIdx}`;
-          locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-          consumedValues.push({ id: 'top' });
-          currentStackHeight -= isCategory2 ? 2 : 1;
+          if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
+          else {
+            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
+            consumedValues.push({ id: 'top' });
+            currentStackHeight -= isCategory2 ? 2 : 1;
+          }
         }
         break;
 
@@ -271,9 +304,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           let imm = bytecode[pc++];
           if (imm >= 128) imm -= 256;
           mnemonic = 'iinc';
-          locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
-          locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
-          producedValues.push({ bits: 32, constant: imm });
+          if (!requireLocalAccess(codeAttr.maxLocals, locIdx, 1, unknownEffects)) completeness = 'partial';
+          else {
+            locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
+            locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
+            producedValues.push({ bits: 32, constant: imm });
+          }
         }
         break;
 

@@ -1983,7 +1983,7 @@ function decodeUtf8Text(bytes) {
     const c = bytes[n];
     let need;
     if (c < 0x80) {
-      if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10)) break;
+      if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13)) break;
       need = 0;
     } else if (c >= 0xc2 && c <= 0xdf) need = 1;
     else if (c >= 0xe0 && c <= 0xef) need = 2;
