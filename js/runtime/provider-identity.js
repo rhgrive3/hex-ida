@@ -20,7 +20,9 @@ function optionalIdentity(value, name) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new DebugAdapterError('invalid-runtime-identity', `${name} must be a non-empty string`, { name, value });
   }
-  return value;
+  // Exact identity comparisons downstream assume the canonical spelling:
+  // keep the trimmed form so ' bin ' and 'bin' are the same identity (#5462).
+  return value.trim();
 }
 
 function safeSequence(value, name = 'sequence') {
