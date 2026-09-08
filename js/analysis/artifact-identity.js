@@ -162,7 +162,17 @@ export function createPhase7ArtifactDescriptor(input = {}) {
   if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
   const classes = dependencyClassFor(kind);
 
-  const budgetClass = optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
+  // Budget class only belongs in the key when completeness can depend on it.
+  // An artifact produced under an exhaustive budget is not interchangeable with
+  // one truncated under an interactive budget. When budget relevance is not
+  // explicitly denied, the budget generation is a required dependency: a
+  // descriptor whose producer did not bind which budget produced it must fail
+  // closed rather than publish an identity that silently drops the budget
+  // dimension from the cache key (#5751).
+  const budgetAffectsCompleteness = input.budgetAffectsCompleteness !== false;
+  const budgetClass = budgetAffectsCompleteness
+    ? nonEmpty(input.budgetClass, 'phase7-artifact-budget-class-required')
+    : optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
   const architectureSemanticVersion = classes.includes('semantic')
     ? nonEmpty(input.architectureSemanticVersion, 'phase7-artifact-architecture-semantic-version-required')
     : optional(input.architectureSemanticVersion, 'phase7-artifact-invalid-architecture-semantic-version');
@@ -187,7 +197,7 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     memorySsaVersion: classes.includes('memoryssa')
       ? nonEmpty(input.memorySsaVersion, 'phase7-artifact-memoryssa-version-required')
       : null,
-    budgetClass: input.budgetAffectsCompleteness === false ? null : budgetClass,
+    budgetClass: budgetAffectsCompleteness ? budgetClass : null,
     calleeSummaryIds: classes.includes('calleeSummaries')
       ? sortedIds(input.calleeSummaryIds, 'phase7-artifact-invalid-callee-summary-id')
       : [],
