@@ -28,8 +28,11 @@ function minimalPE({ entry = 0, sectionName = '.text', longName = null } = {}) {
   assert.equal(image.functions.some((f) => f.source === 'entrypoint'), false);
 }
 {
+  // #5624: executable images never resolve section names through the COFF
+  // string table — the "/NNN" indirection is object-file-only per the PE/COFF
+  // spec, so the literal header bytes stay authoritative even with a
+  // resolvable string table present.
   const image = parsePE(minimalPE({ longName: 'very_long_text_section' }));
-  // PE image section names are literal; the COFF symbol long name remains a separate record.
   assert.equal(image.sections[0].name, '/4');
 }
 {
