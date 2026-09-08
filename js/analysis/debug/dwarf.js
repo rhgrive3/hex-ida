@@ -178,7 +178,11 @@ function cstring(bytes, offset) {
 /** Parses `.debug_abbrev` into `code -> { tag, hasChildren, attributes }`. */
 function parseAbbrev(bytes, tableOffset) {
   const table = new Map();
-  if (!bytes || tableOffset >= bytes.length) return table;
+  // DWARF §7.5.3: an abbreviation code is unique within one table. A duplicate
+  // declaration makes the DIE→declaration mapping ambiguous, so the table is
+  // marked malformed and its duplicates must not silently overwrite (#5728).
+  let duplicateCode = false;
+  if (!bytes || tableOffset >= bytes.length) return { table, duplicateCode };
   const cursor = new Cursor(bytes, tableOffset);
   while (!cursor.eof) {
     const code = Number(cursor.uleb());
@@ -193,9 +197,10 @@ function parseAbbrev(bytes, tableOffset) {
       if (attribute === 0 && form === 0) break;
       attributes.push({ attribute, form, implicitConst });
     }
-    table.set(code, { tag, hasChildren, attributes });
+    if (table.has(code)) duplicateCode = true;
+    else table.set(code, { tag, hasChildren, attributes });
   }
-  return table;
+  return { table, duplicateCode };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -386,13 +391,17 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     }
 
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
-    const abbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset);
+    const { table: abbrev, duplicateCode } = parseAbbrev(sections.debug_abbrev, abbrevOffset);
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
       complete = false;
       cursor.offset = unitEnd;
       cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
+    }
+    if (duplicateCode) {
+      diagnostics.push(`duplicate abbreviation code in table at 0x${abbrevOffset.toString(16)}`);
+      complete = false;
     }
 
     const stack = [];
@@ -425,7 +434,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
         break;
       }
       const attributes = new Map();
-      let dieComplete = true;
+      // Keep the first declaration for deterministic decoding, but never
+      // publish a DIE from an ambiguous abbreviation table as complete
+      // evidence (#5728).
+      let dieComplete = !duplicateCode;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);

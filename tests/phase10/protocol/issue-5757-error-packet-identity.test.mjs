@@ -2,12 +2,13 @@
 // `message` passed packet validation and flowed straight into
 // DebugAdapterError, so `error.code` could be an Array/Object sent by the
 // remote peer. Only primitive strings are adopted as error identity; anything
-// else falls back to the canonical provider-failure identity.
+// else is rejected; omitted fields use the canonical provider-failure identity.
 import assert from 'node:assert/strict';
 import {
   RUNTIME_PROVIDER_PROTOCOL,
   RUNTIME_PROVIDER_PROTOCOL_VERSION,
   RuntimeProviderProtocolClient,
+  validateProviderPacket,
 } from '../../../js/runtime/provider-protocol.js';
 
 function packet(type, extra = {}) {
@@ -27,10 +28,48 @@ class FakeTransport {
   const pending = client.request('debugger.readMemory', {}, { facet: 'debugger' });
   const request = transport.sent[0];
 
-  transport.receive(packet('error', { id: request.id, epoch: 1, code: ['timeout'], message: { text: 'failed' } }));
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1, code: ['timeout'], message: { text: 'failed' } })), false,
+    'structured error identity fields must be rejected at the protocol boundary');
+  assert.equal(client.pending.size, 1, 'a malformed error packet must not consume the pending request');
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1, code: 'timeout', message: 'failed' })), true);
   const error = await pending.catch((value) => value);
-  assert.equal(error?.code, 'provider-failure', 'a structured code must not become the error identity');
-  assert.equal(error?.message, 'provider request failed', 'a structured message must not become the error message');
+  assert.equal(error?.code, 'timeout', 'the supplied code must not be replaced by the fallback');
+  assert.equal(error?.message, 'failed', 'the supplied message must not be replaced by the fallback');
+  client.close();
+}
+
+for (const malformed of [
+  { code: null, message: 'failed', label: 'present-null code' },
+  { code: 'timeout', message: null, label: 'present-null message' },
+  { code: '', message: 'failed', label: 'empty code' },
+  { code: 'timeout', message: '', label: 'empty message' },
+  { code: '   ', message: 'failed', label: 'whitespace-only code' },
+  { code: 'timeout', message: '   ', label: 'whitespace-only message' },
+]) {
+  const transport = new FakeTransport();
+  const client = new RuntimeProviderProtocolClient(transport, { timeoutMs: 60_000 });
+  const pending = client.request('debugger.readMemory', {}, { facet: 'debugger' });
+  const request = transport.sent[0];
+
+  const { label, ...fields } = malformed;
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1, ...fields })), false,
+    `${label} must be rejected at the protocol boundary`);
+  assert.equal(client.pending.size, 1, 'present-null identity must not consume the pending request');
+  client.close();
+  await pending.catch(() => {});
+}
+
+{
+  // Fully omitted optional identities retain the canonical fallback.
+  const transport = new FakeTransport();
+  const client = new RuntimeProviderProtocolClient(transport, { timeoutMs: 60_000 });
+  const pending = client.request('debugger.readMemory', {}, { facet: 'debugger' });
+  const request = transport.sent[0];
+
+  assert.equal(transport.receive(packet('error', { id: request.id, epoch: 1 })), true);
+  const error = await pending.catch((value) => value);
+  assert.equal(error?.code, 'provider-failure');
+  assert.equal(error?.message, 'provider request failed');
   client.close();
 }
 
@@ -47,4 +86,20 @@ class FakeTransport {
   assert.equal(error?.message, 'provider gave up');
   assert.deepEqual(error?.details, { extra: 1 });
   client.close();
+}
+
+// Validation must preserve omission through transport validation and receipt.
+for (const fields of [{}, { code: 'timeout' }, { message: 'failed' }]) {
+  const first = validateProviderPacket(packet('error', { id: 1, epoch: 1, ...fields }));
+  assert.deepEqual(validateProviderPacket(first), first);
+  assert.equal(Object.hasOwn(first, 'code'), Object.hasOwn(fields, 'code'));
+  assert.equal(Object.hasOwn(first, 'message'), Object.hasOwn(fields, 'message'));
+}
+
+for (const field of ['code', 'message']) {
+  for (const value of [[], {}, true, false, 1, null, '', '   ']) {
+    assert.throws(() => validateProviderPacket(packet('error', {
+      id: 1, epoch: 1, code: 'timeout', message: 'failed', [field]: value,
+    })), (error) => error.code === 'malformed-provider-data');
+  }
 }

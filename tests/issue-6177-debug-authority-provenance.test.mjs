@@ -53,10 +53,10 @@ function typeRecord(overrides = {}) {
   });
 }
 
-test('issue #6177 - same source/build canonical record stays authoritative', () => {
+test('issue #6177 - same source/build stays authoritative; omitted build identity does not', () => {
   const result = authoritativeResult();
   assert.equal(isDebugRecordAuthoritative(result, typeRecord()), true);
-  assert.equal(isDebugRecordAuthoritative(result, typeRecord({ buildIdentity: null })), true);
+  assert.equal(isDebugRecordAuthoritative(result, typeRecord({ buildIdentity: null })), false);
 });
 
 test('issue #6177 - matched-authoritative rejects foreign provider, version, and build records', () => {
