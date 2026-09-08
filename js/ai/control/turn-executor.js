@@ -78,9 +78,15 @@ export async function executeTurn(input = {}, options = {}) {
       }
 
       const stores = this.storesFor(session, snapshot.binaryId);
-      this.evidenceStore = stores.evidenceStore; this.hypothesisStore = stores.hypothesisStore; this.proposalStore = stores.proposalStore;
+      // Turn-local store references: the shared `this.*Store` projection below
+      // is only a post-turn introspection pointer. Every execution read in this
+      // turn uses the captured references — a concurrent turn on the same
+      // runtime re-points the shared fields across awaits, and this turn must
+      // never read or write the other turn's stores (#6216).
+      const evidenceStore = stores.evidenceStore, hypothesisStore = stores.hypothesisStore, proposalStore = stores.proposalStore;
+      this.evidenceStore = evidenceStore; this.hypothesisStore = hypothesisStore; this.proposalStore = proposalStore;
       const registry = createHexToolRegistry(snapshotContext, {
-        evidenceStore: this.evidenceStore, maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly, onActivity: addActivity,
+        evidenceStore: evidenceStore, maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly, onActivity: addActivity,
       });
 
       await this.sessionStore.update(session.id, {
@@ -106,7 +112,7 @@ export async function executeTurn(input = {}, options = {}) {
             tools: registry.legacyTools,
           });
           assertLiveBindingsUnchanged(this.localContext, snapshot);
-          const plannedEvidence = this.evidenceStore.ingestPlan(plan);
+          const plannedEvidence = evidenceStore.ingestPlan(plan);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
             data: { candidates: (plan.candidates || []).slice(0, 20).map(compactCandidate), best: plan.best ? { address: addressString(plan.best.address), name: plan.best.name, verified: !!plan.best.verification?.verified } : null, missingEvidence: plan.missingEvidence || [] },
@@ -127,13 +133,13 @@ export async function executeTurn(input = {}, options = {}) {
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
             const maxTools = Math.max(1, Math.min(10, Number(caps.maxTools || 10)));
-            const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: this.hypothesisStore.all(), maxTools });
+            const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;
             if (!tools.length) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
             const messages = session.messages.slice(-8).map(({ role, content }) => ({ role, content }));
             const semanticBytes = semanticBudgetFor({ messages, tools, meta: wireMeta(request, scopeController, intent, session.id), capabilities: caps, configuredBytes: budget.contextBytes });
             const built = this.contextBroker.buildModelContext({
-              request, session, evidenceStore: this.evidenceStore, hypotheses: this.hypothesisStore.all(), observations,
+              request, session, evidenceStore: evidenceStore, hypotheses: hypothesisStore.all(), observations,
               budgetBytes: semanticBytes, snapshot, effectiveScope: scopeController.effectiveScope, includeHistory: false,
             });
             contextBytes = Math.max(contextBytes, built.bytes);
@@ -217,7 +223,7 @@ export async function executeTurn(input = {}, options = {}) {
 
       assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
-      const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
       // a persistence adapter is awaiting cannot turn this turn into a normal
@@ -242,10 +248,10 @@ export async function executeTurn(input = {}, options = {}) {
         importantPriorActions: result.actions,
       }));
       await persistWithBindingCheck(() => this.sessionStore.update(session.id, {
-        effectiveScope: scopeController.effectiveScope, hypotheses: this.hypothesisStore.all(),
-        confirmedFindings: typeof this.evidenceStore.byStatus === 'function'
-          ? this.evidenceStore.byStatus('verified')
-          : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
+        effectiveScope: scopeController.effectiveScope, hypotheses: hypothesisStore.all(),
+        confirmedFindings: typeof evidenceStore.byStatus === 'function'
+          ? evidenceStore.byStatus('verified')
+          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.all(),
         lastActivity: activity[activity.length - 1] || null,
       }));
       result.sessionId = session.id;

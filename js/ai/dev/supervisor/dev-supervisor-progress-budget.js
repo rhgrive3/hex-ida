@@ -62,6 +62,9 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
   }
 
   async run(input = {}) {
+    if (this.progressRunActive) {
+      throw new Error('DevSupervisorEngine run is already in progress');
+    }
     this.progressDecisionCount = 0;
     this.maxDecisions = this.progressDecisionWindow;
     this.progressRunActive = true;

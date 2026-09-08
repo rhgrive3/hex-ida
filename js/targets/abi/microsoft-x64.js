@@ -71,19 +71,33 @@ export function parameterClass(parameter) {
   const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter)
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-  const vector = parameter?.vector === true || /vector|simd|sse|__m128|__m256/.test(`${type} ${abiClass}`);
+  /* AVX-512 intrinsics are vector types exactly like `__m128`/`__m256`;
+   * omitting `__m512` sent 512-bit values down the integer scalar path. */
+  const intrinsicBits = /__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null;
+  const vector = parameter?.vector === true || intrinsicBits != null
+    || /vector|simd|sse|__m128|__m256|__m512/.test(`${type} ${abiClass}`);
   const floating = !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const aggregateLayoutPresent = aggregate && aggregateLayoutDescriptorPresent(parameter);
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
-  const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, /__m256/.test(type) ? 256 : vector ? 128 : 64)));
+  // A declared width is authoritative only when it is a primitive,
+  // positive safe integer equal to the intrinsic spelling. Any other present
+  // value is contradictory evidence and must not be laundered by Number().
+  const intrinsicBitsConflict = intrinsicBits != null && declaredBits != null
+    && !(typeof declaredBits === 'number'
+      && Number.isSafeInteger(declaredBits)
+      && declaredBits > 0
+      && declaredBits === intrinsicBits);
+  const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, intrinsicBits ?? (vector ? 128 : 64))));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const trivialForCalls = parameter?.trivialForCalls === true || parameter?.pod === true;
   return {
     type, abiClass, pointer, aggregate, vector, floating, bits,
-    bitsProven:declaredBits != null || aggregateLayout != null || /__m128|__m256/.test(type),
+    bitsProven:!intrinsicBitsConflict
+      && (declaredBits != null || aggregateLayout != null || intrinsicBits != null),
+    intrinsicBitsConflict,
     aggregateLayoutPresent, aggregateLayoutProven, aggregateLayout,
     aggregateBytes:aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : null),
     nonTrivialForCalls, trivialForCalls,
@@ -160,6 +174,71 @@ function conservativeUnknownArguments(extra = {}) {
   };
 }
 
+/* The standard x64 aggregate-return decision, shared with conventions that
+ * inherit it (for example __vectorcall returns integer-type results of
+ * 8 bytes or less by value in RAX). Requires an already-canonicalized
+ * descriptor so each convention keeps its own layout-evidence rules. */
+export function microsoftX64AggregateReturnDecision(descriptor, prototype, options = {}) {
+  if (descriptor.malformed) {
+    return { kind:'unknown', partial:true, aggregate:true,
+      pointeeBits:descriptor.bits ?? null, hiddenResultPossible:true,
+      reason:'microsoft-x64-aggregate-return-layout-not-proven' };
+  }
+  const declaredBits = descriptor.bits ?? prototype?.bits;
+  const bits = Number(declaredBits);
+  const bitsProven = Number.isSafeInteger(bits) && bits > 0;
+  const physicalBytes = descriptor.layout?.bytes ?? (bitsProven ? Math.ceil(bits / 8) : null);
+  const physicalPadding = bitsProven && Number.isSafeInteger(physicalBytes)
+    && physicalBytes > Math.ceil(bits / 8);
+  const trivial = options.returnTrivialForCalls === true || prototype?.returnTrivialForCalls === true || prototype?.trivialForCalls === true || prototype?.pod === true;
+  const nonTrivial = options.returnNonTrivialForCalls === true || prototype?.returnNonTrivialForCalls === true || prototype?.nonTrivialForCalls === true || prototype?.nonTrivial === true;
+  if (bitsProven && !physicalPadding && trivial && [8,16,32,64].includes(bits)) {
+    const bytes = Math.max(8, Math.ceil(bits / 8));
+    return {
+      kind:'direct', reg:'rax', bits, bytes, aggregate:true, abiClass:'integer-aggregate',
+      pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
+    };
+  }
+  if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
+    return {
+      kind:'indirect', bits:64, aggregate:true,
+      pointeeBits:bitsProven ? bits : null,
+      reason:nonTrivial ? 'nontrivial-aggregate-result' : 'aggregate-result-not-direct-size',
+    };
+  }
+  return {
+    kind:'unknown', partial:true, aggregate:true,
+    pointeeBits:bitsProven ? bits : null,
+    hiddenResultPossible:true,
+    reason:'microsoft-x64-aggregate-return-classification-not-proven',
+  };
+}
+
+/* Maps a return decision onto the published return-location shape. */
+export function microsoftX64ReturnResult(decision) {
+  if (decision.kind === 'void') return null;
+  if (decision.kind === 'indirect') {
+    return {
+      reg:'rax', bits:64, indirect:true,
+      aggregate:decision.aggregate === true,
+      pointeeBits:decision.pointeeBits ?? undefined,
+      hiddenResultPointer:{ input:'rcx', returned:'rax', callerAllocated:true },
+      reason:decision.reason,
+    };
+  }
+  if (decision.kind === 'direct') {
+    const { kind:_kind, ...result } = decision;
+    return result;
+  }
+  return {
+    reg:null,
+    partial:true,
+    unsupported:decision.unsupported === true,
+    reason:decision.reason,
+    hiddenResultPossible:decision.hiddenResultPossible === true,
+  };
+}
+
 export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   if (!prototype) return { kind:'unknown', reason:'prototype-missing' };
   const convention = prototypeCallingConvention(prototype, options);
@@ -184,40 +263,7 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
       && typeof prototype.returnAggregate !== 'boolean')
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
   if (aggregate) {
-    const descriptor = aggregateReturnDescriptor(prototype, options);
-    if (descriptor.malformed) {
-      return { kind:'unknown', partial:true, aggregate:true,
-        pointeeBits:descriptor.bits ?? null, hiddenResultPossible:true,
-        reason:'microsoft-x64-aggregate-return-layout-not-proven' };
-    }
-    const declaredBits = descriptor.bits ?? prototype.bits;
-    const bits = Number(declaredBits);
-    const bitsProven = Number.isSafeInteger(bits) && bits > 0;
-    const physicalBytes = descriptor.layout?.bytes ?? (bitsProven ? Math.ceil(bits / 8) : null);
-    const physicalPadding = bitsProven && Number.isSafeInteger(physicalBytes)
-      && physicalBytes > Math.ceil(bits / 8);
-    const trivial = options.returnTrivialForCalls === true || prototype.returnTrivialForCalls === true || prototype.trivialForCalls === true || prototype.pod === true;
-    const nonTrivial = options.returnNonTrivialForCalls === true || prototype.returnNonTrivialForCalls === true || prototype.nonTrivialForCalls === true || prototype.nonTrivial === true;
-    if (bitsProven && !physicalPadding && trivial && [8,16,32,64].includes(bits)) {
-      const bytes = Math.max(8, Math.ceil(bits / 8));
-      return {
-        kind:'direct', reg:'rax', bits, bytes, aggregate:true, abiClass:'integer-aggregate',
-        pieces:[{ pieceIndex:0, order:0, reg:'rax', abiClass:'integer-aggregate', bits, bytes, byteOffset:0 }],
-      };
-    }
-    if (nonTrivial || (bitsProven && !physicalPadding && ![8,16,32,64].includes(bits))) {
-      return {
-        kind:'indirect', bits:64, aggregate:true,
-        pointeeBits:bitsProven ? bits : null,
-        reason:nonTrivial ? 'nontrivial-aggregate-result' : 'aggregate-result-not-direct-size',
-      };
-    }
-    return {
-      kind:'unknown', partial:true, aggregate:true,
-      pointeeBits:bitsProven ? bits : null,
-      hiddenResultPossible:true,
-      reason:'microsoft-x64-aggregate-return-classification-not-proven',
-    };
+    return microsoftX64AggregateReturnDecision(aggregateReturnDescriptor(prototype, options), prototype, options);
   }
   const vector = /vector|simd|sse|__m128/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
@@ -276,6 +322,21 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
     const classified = parameterClass(parameter);
     const position = index + positionBias;
     const registerPosition = position < 4;
+    /* An intrinsic vector spelling and a conflicting declared width cannot
+     * both be true; fail closed instead of publishing a placement for an
+     * impossible type. */
+    if (classified.intrinsicBitsConflict) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', candidateRegisters:registerPosition
+          ? [INTEGER_ARGUMENT_REGISTERS[position], VECTOR_ARGUMENT_REGISTERS[position]] : [],
+        stackPossible:true, abiClass:'vector-width-conflict', pointer:false,
+        bits:classified.bits, partial:true, possible:true, mustUse:false,
+        exact:false, certainty:'unknown',
+        reason:'microsoft-x64-intrinsic-vector-width-conflict',
+      });
+      return;
+    }
     if (classified.aggregate && !classified.aggregateLayoutProven) {
       aggregatePartial = true;
       const entry = {
@@ -442,28 +503,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
 }
 
 function classifyReturn(prototype, options = {}) {
-  const decision = classifyMicrosoftX64ReturnDecision(prototype, options);
-  if (decision.kind === 'void') return null;
-  if (decision.kind === 'indirect') {
-    return {
-      reg:'rax', bits:64, indirect:true,
-      aggregate:decision.aggregate === true,
-      pointeeBits:decision.pointeeBits ?? undefined,
-      hiddenResultPointer:{ input:'rcx', returned:'rax', callerAllocated:true },
-      reason:decision.reason,
-    };
-  }
-  if (decision.kind === 'direct') {
-    const { kind:_kind, ...result } = decision;
-    return result;
-  }
-  return {
-    reg:null,
-    partial:true,
-    unsupported:decision.unsupported === true,
-    reason:decision.reason,
-    hiddenResultPossible:decision.hiddenResultPossible === true,
-  };
+  return microsoftX64ReturnResult(classifyMicrosoftX64ReturnDecision(prototype, options));
 }
 
 export function classifyMicrosoftX64CallReturn(instruction, options = {}) {

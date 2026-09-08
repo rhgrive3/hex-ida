@@ -168,12 +168,17 @@ function resolveFunctionRange(local, current) {
 
 function snapshotSelection(value) {
   if (!value) return null;
-  const instructions = Array.isArray(value.instructions) ? value.instructions.slice(0, 80).map((item) => ({
+  // compactSelection() (and the workbench) accept the selection both as
+  // `{ instructions: [...] }` and as a bare instruction array; only the
+  // object form here dropped the array form, so the turn snapshot lost the
+  // selection boundaries and broke selection scope (#5759).
+  const source = Array.isArray(value) ? { instructions: value } : value;
+  const instructions = Array.isArray(source.instructions) ? source.instructions.slice(0, 80).map((item) => ({
     address: addressText(item?.address), mnemonic: String(item?.mnemonic || ''), operands: String(item?.operands || ''),
   })) : [];
-  const start = addressText(first(value.start, instructions[0]?.address));
-  const end = addressText(first(value.end, instructions[instructions.length - 1]?.address, start));
-  return deepFreeze({ start, end, instructions, truncated: !!value.truncated || (Array.isArray(value.instructions) && value.instructions.length > 80) });
+  const start = addressText(first(source.start, instructions[0]?.address));
+  const end = addressText(first(source.end, instructions[instructions.length - 1]?.address, start));
+  return deepFreeze({ start, end, instructions, truncated: !!source.truncated || (Array.isArray(source.instructions) && source.instructions.length > 80) });
 }
 
 function snapshotCapabilities(local) {
