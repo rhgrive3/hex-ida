@@ -608,7 +608,13 @@ function registerArguments(ir, types, opts, ctx) {
         : ctx.classifierState
         ? null
         : classified?.kind === 'argument'
-        ? { reg, bankIndex:Number.isInteger(Number(classified.index)) ? Number(classified.index) : null, abiClass:classified.abiClass ?? null }
+        ? { reg, bankIndex:Number.isInteger(Number(classified.index)) ? Number(classified.index) : null,
+          // AAPCS64 entry-register classification intentionally exposes the
+          // canonical v-register plus a narrow view (`vector`, `d`, `s`, ...)
+          // without duplicating the ABI class. Route those views to the
+          // FP/SIMD argument bank while preserving that public shape.
+          abiClass:classified.abiClass
+            ?? (/^(?:vector|q|b|d|s|h)$/.test(String(classified.view || '')) ? 'fp' : null) }
         : candidates.get(reg) || null;
     if (!candidate || seen.has(reg)) continue;
     seen.add(reg);

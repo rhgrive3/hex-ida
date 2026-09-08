@@ -274,6 +274,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
+          ...(forceStack ? { variadicAnonymous:true } : {}),
         };
       if (reg) srcs.push(registerSource(reg, 64));
       else { stackArguments.push(entry); stackOffset = stackPointerOffset + 8; }
