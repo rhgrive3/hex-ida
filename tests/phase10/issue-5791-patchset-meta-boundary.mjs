@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { PatchSet } from '../js/patch.js';
+import { PatchSet } from '../../js/patch.js';
 
 test('#5791 meta.before cannot overwrite the validated before-bytes guard', async () => {
   const patches = new PatchSet();
@@ -28,15 +28,30 @@ test('#5791 meta cannot overwrite offset, after, or their lengths', () => {
   assert.deepEqual([...item.after], [0x42, 0x42]);
 });
 
+test('#5791 metadata cannot move a stored patch out of overlap validation', () => {
+  const patches = new PatchSet();
+  patches.add(0n, new Uint8Array([0x41, 0x41]), new Uint8Array([0x42, 0x42]), {
+    offset: 100n,
+    before: new Uint8Array([0x00]),
+    after: new Uint8Array([0x00]),
+  });
+  assert.equal(patches.at(0n).offset, 0n);
+  assert.throws(
+    () => patches.add(1n, new Uint8Array([0x43]), new Uint8Array([0x44])),
+    /overlaps existing patch/,
+  );
+});
+
 test('#5791 descriptive meta is preserved and __proto__ cannot retarget the item', () => {
   const patches = new PatchSet();
-  patches.add(0n, new Uint8Array([0x41]), new Uint8Array([0x42]), { note: 'legit', __proto__: { evil: true } });
+  const hostileMeta = JSON.parse('{"note":"legit","__proto__":{"evil":true}}');
+  patches.add(0n, new Uint8Array([0x41]), new Uint8Array([0x42]), hostileMeta);
   const [item] = patches.list();
   assert.equal(item.note, 'legit');
-  assert.equal(item.evil, undefined);
-  assert.ok(!Object.hasOwn(item, 'evil'));
+  assert.ok(Object.hasOwn(item, '__proto__'));
+  assert.deepEqual(item.__proto__, { evil: true });
+  assert.equal(Object.getPrototypeOf(item), Object.prototype);
   assert.deepEqual([...item.before], [0x41]);
-  assert.equal(item.__proto__, Object.prototype);
 });
 
 test('#5791 a normal patch still applies end to end', async () => {

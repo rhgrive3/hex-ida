@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { assemble } from '../js/patch.js';
+import { assemble } from '../../js/patch.js';
 
 function hex(result) {
   return [...result.bytes].map((b) => b.toString(16).padStart(2, '0')).join(' ');
