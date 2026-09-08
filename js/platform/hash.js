@@ -127,12 +127,17 @@ export async function sha256TreeByteSource(input, options = {}) {
     offset += BigInt(bytes.byteLength);
   }
 
+  // The leaf boundary is part of the digest algorithm.  The previous v1
+  // implementation silently used maxReadLength as that boundary, so changing
+  // it while retaining the v1 marker would make old persisted v1 identities
+  // indistinguishable from this algorithm.  Keep the fixed-leaf contract
+  // explicitly versioned; note migration handles existing v1 namespaces.
   const header = new TextEncoder().encode(
-    `hex-sha256-tree-v1\0${source.size.toString()}\0${leafSize}\0${digests.length}\0`);
+    `hex-sha256-tree-v2\0${source.size.toString()}\0${leafSize}\0${digests.length}\0`);
   const manifest = new Uint8Array(header.byteLength + digests.length * 32);
   manifest.set(header, 0);
   let at = header.byteLength;
   for (const digest of digests) { manifest.set(digest, at); at += digest.byteLength; }
   const root = new Uint8Array(await subtle.digest('SHA-256', manifest));
-  return `sha256tree:v1:${source.size.toString(16)}:${bytesHex(root)}`;
+  return `sha256tree:v2:${source.size.toString(16)}:${bytesHex(root)}`;
 }

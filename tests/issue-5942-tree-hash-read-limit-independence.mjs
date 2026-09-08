@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { MemoryByteSource, asByteSource } from '../js/binary/source.js';
 import { sha256TreeByteSource } from '../js/platform/hash.js';
+import { findLegacyV3NoteKey, noteKeyFor, noteKeyFromBinaryId, NoteStore } from '../js/names.js';
 
 const bytes = new Uint8Array([1, 2, 3, 4, 5]);
 
@@ -104,6 +105,52 @@ class TracingSource extends MemoryByteSource {
   for (const bad of [0, -1, 1.5, Number.NaN]) {
     await assert.rejects(sha256TreeByteSource(source, { chunkSize: bad }), TypeError);
   }
+}
+
+// 9. A cached current v2 key must not hide one persisted v1 namespace that
+// needs migration. Multiple legacy candidates remain ambiguous and fail
+// closed, matching the existing v3 migration contract.
+{
+  const source = new MemoryByteSource(bytes, { maxReadLength: 2 });
+  const info = { slices: [{ offset: 0n, size: BigInt(bytes.length), info: { uuid: 'u', cpu: 'arm64', cpuSub: '0' } }] };
+  const current = await noteKeyFor(source, info, 0);
+  assert.match(current, /sha256tree:v2:/, 'new note identities must use the new tree-hash version');
+  const old = 'v3|5|u|arm64|0|0|5|sha256tree:v1:5:3602fe09d0b9ac321538144552b485afcf8959f8b99bf9ffc1257041e04dc3d4';
+  const storage = new Map([[`hex.notes.${old}`, JSON.stringify({ names: { '16': 'legacyName' } })]]);
+  const storageView = {
+    get length() { return storage.size; },
+    key(index) { return [...storage.keys()][index] ?? null; },
+    getItem(key) { return storage.get(String(key)) ?? null; },
+    setItem(key, value) { storage.set(String(key), String(value)); },
+    removeItem(key) { storage.delete(String(key)); },
+  };
+  assert.equal(findLegacyV3NoteKey(source, info, 0, storageView), old,
+    'cached v2 identity must leave a unique old v1 namespace discoverable');
+
+  // Exercise the persisted app boundary as well: the active namespace is a
+  // v4 binary-id key, while the discovered v3 key is offered to NoteStore as
+  // an explicit migration candidate.  This proves the old payload remains
+  // recoverable after noteKeyFor has populated its current-key cache.
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = storageView;
+  try {
+    const currentId = noteKeyFromBinaryId(source, info, 0, 'binary:sha256:current');
+    const discovered = findLegacyV3NoteKey(source, info, 0);
+    assert.equal(discovered, old,
+      'the app-side default storage lookup must discover the old v1 namespace');
+    const notes = new NoteStore(currentId, [discovered]);
+    assert.equal(notes.legacyCandidate?.sourceId, old,
+      'the v4 app namespace must retain a unique old v1 migration candidate');
+    assert.equal(notes.importLegacyCandidate({ save: false }), true);
+    assert.equal(notes.nameOf(0x10n), 'legacyName');
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+
+  storage.set('hex.notes.v3|5|u|arm64|0|0|5|sha256tree:v1:5:another', '{}');
+  assert.equal(findLegacyV3NoteKey(source, info, 0, storageView), null,
+    'ambiguous old v1 namespaces must remain unresolved');
 }
 
 console.log('issue #5942 tree hash maxReadLength independence regressions: PASS');

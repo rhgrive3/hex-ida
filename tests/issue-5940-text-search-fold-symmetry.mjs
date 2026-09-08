@@ -111,4 +111,19 @@ await request({ id: 2, t: 'setRegions', regions: [{ id: 'raw', fileOffset: 0, vm
   assert.equal(result.results[0].addr, 0x700000n + BigInt(boundaryOffset));
 }
 
+// 8. A lowercase non-ASCII haystack/query pair must also match exactly.  A
+// separate bounded fixture keeps this positive case independent of the
+// uppercase haystack/lowercase query negative control above.
+{
+  const lowerFileBytes = machoFixture('xäy');
+  const lowerFile = {
+    size: lowerFileBytes.length,
+    read: async (offset, length) => lowerFileBytes.subarray(Number(offset), Number(offset) + length),
+  };
+  await request({ id: 14, t: 'open', file: lowerFile });
+  await request({ id: 15, t: 'setRegions', regions: [{ id: 'lower', fileOffset: 0, vmAddr: 0, size: lowerFileBytes.length }] });
+  const lower = await request({ id: 16, t: 'search', regionId: 'lower', kind: 'text', query: 'ä', from: 0 });
+  assert.deepEqual(lower.results.map((r) => r.byteOff), [105]);
+}
+
 console.log('issue #5940 text search exact UTF-8 / ASCII-fold regressions: PASS');

@@ -4,6 +4,7 @@
 // resolveABIPlugin degraded an explicitly-named ABI profile to 'unknown'.
 import assert from 'node:assert/strict';
 import { resolveABIPlugin } from '../js/targets/abi/index.js';
+import { RISCV_VECTOR_CALLING_CONVENTION_ALIASES } from '../js/targets/abi/riscv-lp64.js';
 
 for (const abiId of ['lp64', 'lp64f', 'lp64d']) {
   const withArch = resolveABIPlugin({ abiId, callingConvention: 'riscv_vector_cc', architecture: 'riscv64' });
@@ -24,17 +25,52 @@ for (const abiId of ['lp64', 'lp64f', 'lp64d']) {
   assert.equal(unknown.id, 'unknown');
 }
 
-// The claimed alias reaches the vector-variant classifier path: the resolved
-// plugin recognizes the legacy spelling as a vector-variant request.
+// The registry, argument classifier, call-return classifier, and function
+// return classifier must share the same vocabulary.  Exercise an actual
+// vector-shaped prototype at both the legacy and canonical spellings so a
+// registry-only alias cannot drift from either classification boundary.
 {
-  const abi = resolveABIPlugin({ abiId: 'lp64d', callingConvention: 'riscv_vector_cc', architecture: 'riscv64' });
-  const classified = abi.classifyArguments({
-    callTarget: 0x1000n,
-    callingConvention: 'riscv_vector_cc',
-    callPrototype: { args: [{ type: 'int32' }, { type: 'float' }] },
-  }, { architecture: 'riscv64' });
-  assert.ok(classified, 'the resolved plugin must classify arguments');
-  assert.equal(abi.architectureId, 'riscv64');
+  for (const abiId of ['lp64', 'lp64f', 'lp64d']) {
+    const abi = resolveABIPlugin({ abiId, callingConvention: 'riscv_vector_cc', architecture: 'riscv64' });
+    assert.equal(abi.architectureId, 'riscv64');
+    for (const alias of RISCV_VECTOR_CALLING_CONVENTION_ALIASES) {
+      assert.ok(abi.callingConventions().includes(alias), `${abiId} must claim ${alias}`);
+      const vectorPrototype = {
+        callingConvention: alias,
+        args: [{ type: 'vector', vector: true, lmul: 1, tupleCount: 1 }],
+      };
+      const classified = abi.classifyArguments({
+        callTarget: 0x1000n,
+        callingConvention: alias,
+        callPrototype: vectorPrototype,
+      }, { architecture: 'riscv64' });
+      assert.equal(classified.arguments[0].reg, 'v8', `${abiId}/${alias} vector argument must use v8`);
+      assert.equal(classified.arguments[0].abiClass, 'vector-data');
+      assert.equal(classified.callingConvention, 'riscv-vector-variant');
+
+      const callReturn = abi.classifyCallReturn({
+        callingConvention: alias,
+        callPrototype: {
+          returnType: 'vector',
+          returnsValue: true,
+          returnVector: { vector: true, lmul: 1, tupleCount: 1 },
+        },
+      });
+      assert.deepEqual(callReturn.regs, ['v8'], `${abiId}/${alias} call return must use v8`);
+      assert.equal(callReturn.callingConvention, 'riscv-vector-variant');
+
+      const functionReturn = abi.classifyFunctionReturn({
+        functionPrototype: {
+          callingConvention: alias,
+          returnType: 'vector',
+          returnsValue: true,
+          returnVector: { vector: true, lmul: 1, tupleCount: 1 },
+        },
+      });
+      assert.deepEqual(functionReturn.regs, ['v8'], `${abiId}/${alias} function return must use v8`);
+      assert.equal(functionReturn.callingConvention, 'riscv-vector-variant');
+    }
+  }
 }
 
 console.log('issue #6026 riscv_vector_cc registry alias regressions: PASS');
