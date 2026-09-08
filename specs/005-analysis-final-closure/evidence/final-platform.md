@@ -139,3 +139,30 @@ performance measurement. This observation supersedes older CPU timings for this
 source without asserting a controlled speedup or changing thresholds. It does not
 close T040's external-binary, H9, or deployed-runtime requirements. Physical-device
 execution remains deferred by the owner.
+
+
+## Combined-source CPU measurement 97621 — 2026-09-08
+
+After integrating the FNV arithmetic, provenance cache/sort, and CIL repairs,
+source `97621a38e2f7fd18556faeaee79b6e1f97b8a8af` (tree
+`dffc125f95794237327b9c3ce3d6e10f752e3b43`) completed the same 405-sample
+measurement in 351.668 seconds. Both the 135-function and 125-applicable-function
+denominators are unchanged. The source remained clean.
+
+- Cold median: **379.479 ms > 250 ms — FAIL**.
+- Interactive median: **0.467 ms <= 5 ms — PASS**.
+- Optimizer median: **106.739 ms <= 150 ms — PASS**.
+- Unpublished optimizer count: **0**.
+
+`current-cpu-performance.json` now records this observation and all raw samples.
+The full packet SHA-256 is
+`1031b672a1a537dc6916345849b5e4ab4681a5274766356291289b90efd457a0`.
+Aggregate improvement has not been established. The next action is to profile
+the repaired source and verify a causal cold-path improvement before another
+complete measurement. No threshold, denominator, or release claim changed.
+
+The collector's output-directory argument was corrected by temporarily relocating
+its open log directory while the process continued; the completed JSON was then
+restored without changing its content. The command completed with exit 0. The
+external `output-path-recovery.txt` preserves that recovery, and the corrected
+reusable launcher fixes the output filename before starting expensive work.
