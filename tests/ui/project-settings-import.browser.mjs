@@ -7,7 +7,12 @@ let chromium;
 try {
   ({ chromium } = await import('playwright'));
 } catch {
-  console.log('Playwright is not installed; project settings browser regression was not executed.');
+  const message = 'Playwright is not installed; project settings browser regression was not executed.';
+  if (process.env.CI) {
+    console.error(message);
+    process.exit(1);
+  }
+  console.log(message);
   process.exit(0);
 }
 
@@ -58,7 +63,7 @@ async function run() {
       app.setLanguage('ja');
       app.setExplain(true);
       app.setTextSize('m');
-      const initialOpenLabel = document.querySelector('#btn-open')?.textContent || '';
+      const initialOpenLabel = document.querySelector('#btn-open-2')?.textContent || '';
 
       const exported = await app.exportProjectFile();
       const baseProject = JSON.parse(await exported.text());
@@ -75,7 +80,7 @@ async function run() {
       const valid = {
         prefs: { language: app.prefs.lang, explain: app.prefs.explain, textSize: app.prefs.textSize },
         activeLanguage: i18n.lang(),
-        openLabel: document.querySelector('#btn-open')?.textContent || '',
+        openLabel: document.querySelector('#btn-open-2')?.textContent || '',
         expectedOpenLabel: i18n.t('btn.open'),
         initialOpenLabel,
         explainAria: document.querySelector('#btn-explain')?.getAttribute('aria-pressed'),
@@ -89,7 +94,7 @@ async function run() {
       const invalid = {
         prefs: { language: app.prefs.lang, explain: app.prefs.explain, textSize: app.prefs.textSize },
         activeLanguage: i18n.lang(),
-        openLabel: document.querySelector('#btn-open')?.textContent || '',
+        openLabel: document.querySelector('#btn-open-2')?.textContent || '',
         explainAria: document.querySelector('#btn-explain')?.getAttribute('aria-pressed'),
         viewerShowNotes: app.viewer.showNotes,
         withNotes: root.classList.contains('with-notes'),
