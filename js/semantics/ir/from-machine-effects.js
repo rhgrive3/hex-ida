@@ -576,10 +576,32 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function lowerValueOperation(effect) {
     const operation = effect.operation;
     const nodeId = nodeIdFor(effect, 'value-operation');
-    const inputs = operation.inputs.map((value, index) => resolveMachineInput(effect, value, 'value-input', index)).filter(Boolean);
+    const inputResults = operation.inputs.map((value, index) => resolveMachineInputDetailed(effect, value, 'value-input', index));
+    const inputs = inputResults.flatMap((result) => result.valueId == null ? [] : [result.valueId]);
+    const unresolvedInputs = inputResults.flatMap((result, ordinal) => result.exact === false ? [{
+      role: 'value-input',
+      ordinal,
+      reason: result.reason ?? 'value-input-not-exactly-representable',
+      valueId: result.valueId ?? null,
+      machineValue: operation.inputs[ordinal],
+    }] : []);
     const outputs = operation.outputs.map((value, index) => createDefinitionValue(effect, nodeId, value, 'value-output', index));
     const classification = classifyMachineValueOpcode(operation.opcode);
+    const exact = unresolvedInputs.length === 0;
     const origin = effectOrigin(effect, `value-${classification.kind}`, [nodeId, ...outputs]);
+    const issueDetail = {
+      opcode: operation.opcode,
+      unresolvedInputs,
+    };
+    if (!exact) addIssue('value-operation-input-not-exactly-representable', ['value'], issueDetail);
+    const partial = exact ? {} : {
+      completeness: 'partial',
+      unknown: {
+        reason: 'value-operation-input-not-exactly-representable',
+        categories: ['value'],
+        knownParts: issueDetail,
+      },
+    };
     if (classification.kind === 'intrinsic') {
       addNode({
         id: nodeId,
@@ -599,6 +621,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           determinism: 'deterministic',
           symbolicDetail: 'summary-only',
         },
+        ...partial,
         attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
         sourceEffectIds: [effect.sourceEffectId],
         origin,
@@ -612,6 +635,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       inputs,
       outputs,
       operator: classification.operator,
+      ...partial,
       attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
