@@ -229,7 +229,7 @@ function semanticDescriptorCandidates(value, node, variable) {
     node?.metadata?.canonicalRoot,
     node?.attributes?.canonicalRoot,
     variable?.metadata?.canonicalRoot,
-  ].filter(Boolean);
+  ].filter((candidate) => candidate != null);
 }
 
 function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace) {
@@ -239,8 +239,8 @@ function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace
      * All proof-grade candidates participate. The old first-match-wins
      * priority made the same contradictory evidence set yield different
      * exact roots depending on which slot (value/node/attributes/variable
-     * metadata) each descriptor was stored in (#5802). Policy: malformed
-     * candidates are ignored (existing safe side), a single valid candidate
+     * metadata) each descriptor was stored in (#5802). Malformed candidates
+     * invalidate the result; a single valid candidate
      * (or several that normalize identically) is used, and genuinely
      * conflicting candidates fail closed.
      */

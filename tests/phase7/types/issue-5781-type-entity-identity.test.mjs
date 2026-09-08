@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { TypeConstraintGraph } from '../js/analysis/types/graph.js';
+import {
+  TypeConstraintGraph,
+  createTypeResult,
+  reconstructStructuralType,
+} from '../../../js/analysis/types/graph.js';
 
 const hard = (entityId, widthBits) => ({
   kind: 'access-width',
@@ -27,6 +31,24 @@ test('#5781 structured entity ids are rejected without laundering the result lab
   assert.equal(structured.status.completeness, 'unsupported');
   assert.equal(structured.status.stopReason, 'unsupported-input');
   assert.deepEqual(structured.layers, {});
+});
+
+test('#5781 structural reconstruction keeps the rejected lookup identity empty', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 's1' });
+  graph.addHardConstraint(hard('A', 32));
+  const reconstructed = reconstructStructuralType(graph, ['A']);
+  assert.equal(reconstructed.kind, 'unknown');
+  assert.equal(reconstructed.entityId, '');
+  assert.equal(reconstructed.status.stopReason, 'unsupported-input');
+});
+
+test('#5781 the result envelope does not coerce structured identities', () => {
+  const result = createTypeResult({
+    entityId: ['A'],
+    status: { completeness: 'unsupported', stopReason: 'unsupported-input' },
+    layers: {},
+  });
+  assert.equal(result.entityId, '');
 });
 
 test('#5781 non-string primitive entity ids are rejected the same way', () => {

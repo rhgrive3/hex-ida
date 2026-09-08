@@ -10,6 +10,7 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const LANE = 'codex/lane5-6633-abi-a8b2';
 const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
+const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -27,6 +28,26 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'js/apple/objc-metadata.js',
     'tests/issue-6270-objc-methodlist-cancellation.mjs',
   ]),
+  [ANALYSIS_BATCH_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/ai/ui/hex-context-query-base.js',
+    'js/semantics/ir/function.js',
+    'tests/semantic-v2/issue-5765-locale-free-serialization.test.mjs',
+  ]),
+});
+
+// Git reports a path move as both the old and new name in a name-only
+// inventory. These are Phase 7 regression moves, so their sources are
+// accepted only when the exact Phase 7 destination is present as well. They
+// are kept separate from CROSS_LANE_ROUTES: the latter remains the exact
+// foreign-file allowlist for the branch.
+export const CROSS_LANE_RENAMES = Object.freeze({
+  [ANALYSIS_BATCH_LANE]: Object.freeze({
+    'tests/issue-5765-semantic-ir-locale-free-serialization.mjs': 'tests/semantic-v2/issue-5765-locale-free-serialization.test.mjs',
+    'tests/issue-5781-type-entity-identity.mjs': 'tests/phase7/types/issue-5781-type-entity-identity.test.mjs',
+    'tests/issue-5800-search-unsupported-region-completeness.mjs': 'tests/phase7/integration/issue-5800-search-unsupported-region-completeness.test.mjs',
+    'tests/issue-5802-canonical-root-conflict.mjs': 'tests/phase7/alias/issue-5802-canonical-root-conflict.test.mjs',
+  }),
 });
 
 function phase7Owned(file, patterns) {
@@ -43,7 +64,13 @@ export function validateCrossLaneInventory(branch, files, { manifest = loadManif
 
   const unique = [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
   const owned = unique.filter((file) => phase7Owned(file, manifest.lanes.p7));
-  const foreign = unique.filter((file) => !phase7Owned(file, manifest.lanes.p7));
+  const renameMap = CROSS_LANE_RENAMES[branch] ?? {};
+  const renameSources = new Set(Object.keys(renameMap));
+  const incompleteRenames = unique.filter((file) => renameSources.has(file) && !unique.includes(renameMap[file]));
+  if (incompleteRenames.length) {
+    throw new TypeError(`cross-lane route has incomplete renamed paths: ${incompleteRenames.join(', ')}`);
+  }
+  const foreign = unique.filter((file) => !phase7Owned(file, manifest.lanes.p7) && !renameSources.has(file));
   const allowedForeign = new Set(CROSS_LANE_ROUTES[branch]);
   const unexpected = foreign.filter((file) => !allowedForeign.has(file));
   if (unexpected.length) {

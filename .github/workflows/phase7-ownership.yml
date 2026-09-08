@@ -80,6 +80,15 @@ jobs:
               --base-sha "$BASE_SHA" \
               --head-sha "$HEAD_SHA")"
             node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/analysis-batch-20260907-l62" ]]; then
+            # #7079 pairs Phase 7 analysis fixes with four explicitly-owned
+            # Semantic IR/AI/config paths. The exact helper rejects every
+            # foreign path outside that list before Phase 7 validation.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
           elif [[ "$HEAD_REF" == "fix/unlinked-demand-analysis-2502-2518" || "$HEAD_REF" == "fix/unlinked-top10-r3-20260830" || "$HEAD_REF" == "fix/close-audit-2520-2545-20260830" || "$HEAD_REF" == "fix/reopened-audit-final-20260830" || "$HEAD_REF" == "fix/open-issues-final-20260830-r4" || "$HEAD_REF" == "fix/unlinked-batch-20260901-r2" ]]; then
             # These issue batches intentionally integrate Phase 7 analysis producers
             # with UI/binary/diff consumers. Validate only the Phase 7-owned subset;
