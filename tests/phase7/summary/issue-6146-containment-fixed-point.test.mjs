@@ -14,23 +14,27 @@ const target = (rootKey, rootKind = 'rooted') => ({ rootKey, rootKind });
 const setFor = (rootKey) => ({ top:false, targets:[target(rootKey)] });
 const setGlobal = () => ({ top:false, targets:[target('global:G', 'absolute')] });
 
+const strongEscape = () => (
+  { id:'store-a-global', kind:'store', inputs:['vG','vA'], memory:{ addressExpr:{ valueId:'vG' } }, origin:{ instructionIds:['insn:global'] } }
+);
+const weakEscape = () => (
+  { id:'call-b', kind:'call', inputs:['vB'], call:{ completeness:'complete', arguments:[] }, origin:{ instructionIds:['insn:call'] } }
+);
+const containmentChain = () => [
+  { id:'store-b-into-a', kind:'store', inputs:['vA','vB'], memory:{ addressExpr:{ valueId:'vA' } }, origin:{ instructionIds:[] } },
+  { id:'store-c-into-b', kind:'store', inputs:['vB','vC'], memory:{ addressExpr:{ valueId:'vB' } }, origin:{ instructionIds:[] } },
+];
+
 // Containment chain A -> B -> C over three local allocations, with direct
 // escapes recorded in exactly the order the issue describes: A observes
 // stored-to-global first, then B observes passed-to-known-call. escapedRoots
 // insertion order is [A, B], so main's LIFO worklist processes B (propagating
 // only the weak reason to C) before A's strong reason lands on B — and B is
 // never re-scanned on main.
-const buildIr = () => ({
-  nodes:[
-    // 1. A stored-to-global: direct strong escape on A (escapedRoots #1).
-    { id:'store-a-global', kind:'store', inputs:['vG','vA'], memory:{ addressExpr:{ valueId:'vG' } }, origin:{ instructionIds:[] } },
-    // 2. B passed-to-known-call: direct weak escape on B (escapedRoots #2).
-    { id:'call-b', kind:'call', inputs:['vB'], call:{ completeness:'complete', arguments:[] }, origin:{ instructionIds:[] } },
-    // 3. B stored into A (A local → containment edge A->B).
-    { id:'store-b-into-a', kind:'store', inputs:['vA','vB'], memory:{ addressExpr:{ valueId:'vA' } }, origin:{ instructionIds:[] } },
-    // 4. C stored into B (B local → containment edge B->C).
-    { id:'store-c-into-b', kind:'store', inputs:['vB','vC'], memory:{ addressExpr:{ valueId:'vB' } }, origin:{ instructionIds:[] } },
-  ],
+const buildIr = ({ reverseDirectEscapes = false } = {}) => ({
+  nodes: reverseDirectEscapes
+    ? [weakEscape(), strongEscape(), ...containmentChain()]
+    : [strongEscape(), weakEscape(), ...containmentChain()],
 });
 
 const buildPointsTo = () => new Map([
@@ -42,13 +46,26 @@ const buildPointsTo = () => new Map([
   ['vG', setGlobal()],
 ]);
 
-const run = () => analyzeEscape(buildIr(), {}, {}, {
-  status:{ completeness:'complete' },
-  pointsTo:buildPointsTo(),
-}, {
-  snapshotId:'snap',
-  allocationRootKeys:new Set(['alloc:A', 'alloc:B', 'alloc:C']),
-});
+const runIr = (ir, allocationRootKeys = new Set(['alloc:A', 'alloc:B', 'alloc:C']), pointsTo = buildPointsTo()) => analyzeEscape(
+  ir,
+  {},
+  {},
+  { status:{ completeness:'complete' }, pointsTo },
+  { snapshotId:'snap', allocationRootKeys },
+);
+
+const run = (options = {}) => runIr(buildIr(options));
+
+const factIdentity = (record) => JSON.stringify([
+  record.rootKey,
+  record.rootOrigin,
+  record.reason,
+  record.boundary,
+  record.siteId ?? null,
+  record.evidenceIds ?? [],
+]);
+
+const canonicalFacts = (result) => [...new Set(result.escapes.map(factIdentity))].sort();
 
 test('a late strong escape reason propagates through an already-escaped intermediate root (#6146)', () => {
   const result = run();
@@ -66,4 +83,42 @@ test('proof invalidation for the contained root sees the strong reason (#6146)',
   const cRecords = result.escapes.filter((esc) => esc.rootKey === 'alloc:C');
   assert.ok(cRecords.some((esc) => invalidatesNonEscapeProof(esc)),
     'C must have at least one record that invalidates non-escape proofs (stored-to-global), not only passed-to-known-call');
+});
+
+test('direct escape observation order does not change the canonical fixed point (#6146)', () => {
+  assert.deepEqual(
+    canonicalFacts(run()),
+    canonicalFacts(run({ reverseDirectEscapes:true })),
+    'the same containment graph and direct fact set must converge to one canonical escape set regardless of insertion order',
+  );
+});
+
+test('a containment cycle converges without re-minting the same fact (#6146)', () => {
+  const ir = {
+    nodes:[
+      strongEscape(),
+      // A contains B and B contains A.
+      { id:'store-b-into-a', kind:'store', inputs:['vA','vB'], memory:{ addressExpr:{ valueId:'vA' } }, origin:{ instructionIds:[] } },
+      { id:'store-a-into-b', kind:'store', inputs:['vB','vA'], memory:{ addressExpr:{ valueId:'vB' } }, origin:{ instructionIds:[] } },
+    ],
+  };
+  const pointsTo = new Map([
+    ['vA', setFor('alloc:A')],
+    ['vB', setFor('alloc:B')],
+    ['vG', setGlobal()],
+  ]);
+  const result = runIr(ir, new Set(['alloc:A', 'alloc:B']), pointsTo);
+  const propagatedGlobal = result.escapes.filter(
+    (record) => record.reason === 'stored-to-global' && record.siteId === 'store-a-global',
+  );
+
+  assert.deepEqual(
+    propagatedGlobal.map((record) => record.rootKey).sort(),
+    ['alloc:A', 'alloc:B'],
+    'one global-publication fact must reach each root in the cycle exactly once',
+  );
+  assert.equal(result.escapes.length, canonicalFacts(result).length,
+    'cycle propagation must not grow duplicate canonical facts');
+  assert.equal(result.escapes.length, 2,
+    'the two-root cycle with one direct fact has a finite two-fact fixed point');
 });

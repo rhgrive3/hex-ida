@@ -120,6 +120,15 @@ function evidenceOf(node) {
   return [...(node.origin?.instructionIds ?? [])].map(String);
 }
 
+function escapeFactIdentity(record) {
+  return JSON.stringify([
+    record.reason,
+    record.boundary,
+    record.siteId ?? null,
+    record.evidenceIds ?? [],
+  ]);
+}
+
 /**
  * Runs escape analysis over one function.
  *
@@ -281,7 +290,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   }
 
   const worklist = [...escapedRoots];
-  const visitedTransitive = new Map();
+  const propagatedFactsByEdge = new Map();
   // Propagation must reach a fixed point over each root's escape-fact SET, not
   // stop at the first time a root becomes escaped: a stronger reason arriving
   // later at an already-escaped intermediate root (e.g. stored-to-global after
@@ -292,21 +301,20 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     const currentRoot = worklist.pop();
     const children = containment.get(currentRoot);
     if (!children) continue;
-    let parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
+    const parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
     for (const childRoot of children) {
       const edgeKey = `${currentRoot}->${childRoot}`;
-      const seen = visitedTransitive.get(edgeKey);
-      if (seen) {
-        // Re-run the edge only when the parent gained facts since the last
-        // propagation across it.
-        if (seen.size === parentEscapes.length) continue;
-        if (parentEscapes.every((esc) => seen.has(esc))) continue;
-      }
-      visitedTransitive.set(edgeKey, new Set(parentEscapes));
+      if (!propagatedFactsByEdge.has(edgeKey)) propagatedFactsByEdge.set(edgeKey, new Set());
+      const propagatedFacts = propagatedFactsByEdge.get(edgeKey);
       const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
-      const knownChildRecords = new Set(escapeRecordsByRoot.get(childRoot) ?? []);
+      const knownChildFacts = new Set(
+        (escapeRecordsByRoot.get(childRoot) ?? []).map(escapeFactIdentity),
+      );
       let addedNewFact = false;
       for (const parentEsc of parentEscapes) {
+        const parentIdentity = escapeFactIdentity(parentEsc);
+        if (propagatedFacts.has(parentIdentity)) continue;
+        propagatedFacts.add(parentIdentity);
         const childRecord = createEscapeRecord({
           rootKey: childRoot,
           rootOrigin: childOrigin,
@@ -315,12 +323,12 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
           siteId: parentEsc.siteId,
           evidenceIds: parentEsc.evidenceIds,
         });
-        // The child fact is identified by (reason, boundary, siteId): the
-        // propagation itself contributes no new evidence identity, so this
-        // comparison is what makes the fixed point terminate.
-        const identity = `${childRecord.reason}|${childRecord.boundary}|${childRecord.siteId ?? ''}`;
-        if (knownChildRecords.has(identity)) continue;
-        knownChildRecords.add(identity);
+        // Propagation carries the same canonical fact; object identity is not
+        // part of the proof. Keep distinct evidence sets distinct, while
+        // preventing cycles from re-minting the same fact indefinitely.
+        const childIdentity = escapeFactIdentity(childRecord);
+        if (knownChildFacts.has(childIdentity)) continue;
+        knownChildFacts.add(childIdentity);
         escapes.push(childRecord);
         if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
         escapeRecordsByRoot.get(childRoot).push(childRecord);
