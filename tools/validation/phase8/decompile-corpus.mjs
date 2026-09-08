@@ -507,24 +507,32 @@ export function decodeNativeArm64Function(bytes, { baseAddress = 0x100000n, inst
   return Object.freeze(instructions);
 }
 
+export function validateNativeArm64FunctionRecord(functionRecord, functionId = 'unknown') {
+  if (functionRecord == null
+      || !(functionRecord.bytes instanceof Uint8Array)
+      || functionRecord.bytes.length === 0
+      || functionRecord.bytes.length % 4 !== 0) {
+    nativeCaptureFailure('function-unmapped', functionId);
+  }
+  if (functionRecord.elfType !== 2 || functionRecord.address == null || functionRecord.relocationSectionCount !== 0) {
+    nativeCaptureFailure('function-relocations-or-address-unavailable', functionId);
+  }
+  return Object.freeze({
+    bytes:functionRecord.bytes,
+    address:BigInt(functionRecord.address),
+  });
+}
+
 function nativeFunctionBytes(record, entry) {
   let functionRecord = record.functions?.get(entry.function);
   if (functionRecord != null) return functionRecord;
   try { functionRecord = extractElfFunctionRecord(record.debugBytes, entry.function); } catch (error) {
     nativeCaptureFailure('function-bytes-unreadable', `${entry.id}:${error?.message || String(error)}`);
   }
-  if (functionRecord == null
-      || !(functionRecord.bytes instanceof Uint8Array)
-      || functionRecord.bytes.length === 0
-      || functionRecord.bytes.length % 4 !== 0) {
-    nativeCaptureFailure('function-unmapped', entry.id);
-  }
-  if (functionRecord.elfType !== 2 || functionRecord.address == null || functionRecord.relocationSectionCount !== 0) {
-    nativeCaptureFailure('function-relocations-or-address-unavailable', entry.id);
-  }
+  const linked = validateNativeArm64FunctionRecord(functionRecord, entry.id);
   const copy = {
-    bytes:Uint8Array.from(functionRecord.bytes),
-    address:BigInt(functionRecord.address),
+    bytes:Uint8Array.from(linked.bytes),
+    address:linked.address,
   };
   record.functions.set(entry.function, copy);
   return copy;
