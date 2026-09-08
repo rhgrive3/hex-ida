@@ -6,10 +6,10 @@
 // closed (unsupported + semanticUnknowns + unsupportedEntities); present
 // discriminators keep the exact contract.
 import assert from 'node:assert/strict';
-import { OP, VK } from '../js/ir-base.js';
-import { EXPR_KIND, BV_BINARY_OP, BV_COMPARE_OP } from '../js/symbolic/expr/kinds.js';
-import { classifyOpSupport, TRANSLATION_STATUS } from '../js/symbolic/translate/support-matrix.js';
-import { translateSemanticIR } from '../js/symbolic/translate/semantic-ir.js';
+import { OP, VK } from '../../../js/ir-base.js';
+import { EXPR_KIND, BV_BINARY_OP, BV_COMPARE_OP } from '../../../js/symbolic/expr/kinds.js';
+import { classifyOpSupport, TRANSLATION_STATUS } from '../../../js/symbolic/translate/support-matrix.js';
+import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 
 const argA = { kind: VK.ARG, id: 'a', reg: 'x0' };
 const argB = { kind: VK.ARG, id: 'b', reg: 'x1' };

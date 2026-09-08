@@ -4,7 +4,7 @@
 // canonical Evidence families. Family authority now reads only primitive
 // strings; malformed provenance falls back to the default family.
 import assert from 'node:assert/strict';
-import { legacyAiEvidenceToCanonical } from '../js/core/evidence/compat.js';
+import { legacyAiEvidenceToCanonical } from '../../../js/core/evidence/compat.js';
 
 function familyOf(sourceTool, source, kind = 'observation') {
   return legacyAiEvidenceToCanonical({ id: 'ev-x', kind, sourceTool, source, status: 'supported' }).family;

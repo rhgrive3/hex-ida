@@ -7,8 +7,8 @@
 // per-session sequence, so identical writes get distinct ids and each record
 // carries its own acknowledgedResult.
 import assert from 'node:assert/strict';
-import { DebugAdapter } from '../js/debug/adapter.js';
-import { DebuggerProvider } from '../js/runtime/debugger-provider.js';
+import { DebugAdapter } from '../../../js/debug/adapter.js';
+import { DebuggerProvider } from '../../../js/runtime/debugger-provider.js';
 
 const binaryId = 'bin_sha256_' + 'aa'.repeat(32);
 
