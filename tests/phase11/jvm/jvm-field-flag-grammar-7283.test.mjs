@@ -49,10 +49,25 @@ test('#7283 multiple visibility bits are rejected', () => {
 });
 
 test('#7283 interface fields require exactly public static final', () => {
-  assert.deepEqual(validateJvmFieldFlags(0x0019, { ownerAccessFlags: 0x0641 }).errors, []);
+  assert.deepEqual(validateJvmFieldFlags(0x0019, { ownerAccessFlags: 0x0641, majorVersion: 61 }).errors, []);
   for (const bad of [0x0011, 0x0019 | 0x0040, 0x0019 | 0x0080, 0x0009]) {
-    const result = validateJvmFieldFlags(bad, { ownerAccessFlags: 0x0641 });
+    const result = validateJvmFieldFlags(bad, { ownerAccessFlags: 0x0641, majorVersion: 61 });
     assert.ok(result.errors.length > 0, `interface field flags 0x${bad.toString(16)} must fail`);
+  }
+});
+
+test('#7283 interface enum bit follows its class-file version', () => {
+  const enumField = 0x4019; // public static final plus ACC_ENUM
+  for (const major of [45, 48]) {
+    const image = parseJvm(makeClass(enumField, { major, interfaceOwner: true }), { binaryId: `p-7283-interface-enum-${major}` });
+    assert.equal(image.fields[0].accessFlags, enumField);
+    assert.deepEqual(validateJvmFieldFlags(enumField, { ownerAccessFlags: 0x0641, majorVersion: major }).errors, []);
+  }
+  for (const major of [49, 61]) {
+    assert.throws(() => parseJvm(makeClass(enumField, { major, interfaceOwner: true }), { binaryId: `p-7283-interface-enum-${major}` }),
+      /jvm-interface-field-flag-conflict/);
+    assert.deepEqual(validateJvmFieldFlags(enumField, { ownerAccessFlags: 0x0641, majorVersion: major }).errors,
+      ['jvm-interface-field-flag-conflict']);
   }
 });
 
