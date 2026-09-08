@@ -592,11 +592,27 @@ export function describeFunction(res, name) {
   const ja = pick(true, false);
   const who = name ? '「' + name + '」' : 'この関数';
   if (!ja) {
+    const directCalls = Array.isArray(res.calls) ? res.calls : [];
+    const indirectCalls = Number.isSafeInteger(res.indirectCalls) && res.indirectCalls > 0
+      ? res.indirectCalls
+      : 0;
+    const hasCalls = directCalls.length > 0 || indirectCalls > 0;
     lines.push(`${name || 'This function'} spans ${res.instructions} instructions.`);
-    if (res.savesLr) lines.push('It saves the return address, so it calls other functions.');
+    if (res.savesLr) lines.push('It saves the return address.');
+    else if (hasCalls) lines.push('It never saves the return address.');
     else lines.push('It never saves the return address — a leaf function that calls nothing.');
     if (res.loops.length) lines.push(`There are ${res.loops.length} backward branches, so it loops.`);
-    if (res.calls.length) lines.push('It calls: ' + res.calls.slice(0, 8).map((c) => c.name || '0x' + c.target?.toString(16)).join(', '));
+    if (directCalls.length) {
+      lines.push('It calls: ' + directCalls.slice(0, 8).map((c) => {
+        if (typeof c?.name === 'string' && c.name) return c.name;
+        if (typeof c?.target === 'bigint') return '0x' + c.target.toString(16);
+        if (typeof c?.target === 'number' && Number.isSafeInteger(c.target)) return '0x' + c.target.toString(16);
+        return 'an unknown target';
+      }).join(', '));
+    }
+    if (indirectCalls) {
+      lines.push(`It makes ${indirectCalls} indirect call${indirectCalls === 1 ? '' : 's'}; the target is not known statically.`);
+    }
     return lines;
   }
   if (res.instructions <= 6) lines.push(who + 'はとても短く、命令は ' + res.instructions + ' 個だけです。値をそのまま返すだけ、といった小さな処理でしょう。');
