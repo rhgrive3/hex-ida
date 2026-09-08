@@ -9,6 +9,7 @@ import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import { buildSemanticSsa } from '../../js/semantics/ssa/build.js';
 import { buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
+import { deriveCanonicalAddressProof } from '../../js/analysis/alias/index-v2.js';
 import { classifySemanticMemoryRegion } from '../../js/analysis/alias/regions-v2.js';
 import { createPhase7AliasSolver } from '../../js/analysis/alias/solver.js';
 import { stableDigest } from '../../js/core/identity/index.js';
@@ -57,12 +58,16 @@ function buildFixture({ armBOffset }) {
     { id: 'node_slot_load', kind: 'load', blockId: 'b3', inputs: ['base'], outputs: ['loaded1'], memory: memory('base'), origin: origin('node_slot_load') },
     { id: 'node_tmp_sw', kind: 'state-write', blockId: 'b3', inputs: ['loaded1'], outputs: [], variable: { key: 'state:tmp', kind: 'physical-state', scope: 'function' }, origin: origin('node_tmp_sw') },
     { id: 'node_tmp_read', kind: 'state-read', blockId: 'b3', inputs: [], outputs: ['tmpread'], variable: { key: 'state:tmp', kind: 'physical-state', scope: 'function' }, origin: origin('node_tmp_read') },
-    { id: 'node_outer_load', kind: 'load', blockId: 'b3', inputs: ['tmpread'], outputs: ['loaded2'], memory: memory('tmpread'), origin: origin('node_outer_load') },
+    { id: 'node_outer_off', kind: 'const', blockId: 'b3', inputs: [], outputs: ['outer_off'], attributes: { constant: { value: '4', widthBits: 64 } }, origin: origin('node_outer_off') },
+    { id: 'node_outer_addr', kind: 'binary', blockId: 'b3', inputs: ['tmpread', 'outer_off'], outputs: ['outer_addr'], operator: 'add', origin: origin('node_outer_addr') },
+    { id: 'node_outer_load', kind: 'load', blockId: 'b3', inputs: ['outer_addr'], outputs: ['loaded2'], memory: memory('outer_addr'), origin: origin('node_outer_load') },
   );
   values.push(
     { id: 'pvread', kind: 'definition', machineType: addressType, definitionNodeId: 'node_pread', origin: origin('pvread') },
     { id: 'loaded1', kind: 'definition', machineType: addressType, definitionNodeId: 'node_slot_load', origin: origin('loaded1') },
     { id: 'tmpread', kind: 'definition', machineType: addressType, definitionNodeId: 'node_tmp_read', origin: origin('tmpread') },
+    { id: 'outer_off', kind: 'definition', machineType: bitvector64, definitionNodeId: 'node_outer_off', metadata: { constant: { kind: 'bitvector', value: '4', widthBits: 64 } }, origin: origin('outer_off') },
+    { id: 'outer_addr', kind: 'definition', machineType: addressType, definitionNodeId: 'node_outer_addr', origin: origin('outer_addr') },
     { id: 'loaded2', kind: 'definition', machineType: addressType, definitionNodeId: 'node_outer_load', origin: origin('loaded2') },
   );
   blocks.push(
@@ -86,7 +91,7 @@ function buildFixture({ armBOffset }) {
     entryBlockId: 'b0',
     blocks: armBOffset == null
       ? [
-          { id: 'b0', successors: [{ to: 'b1', kind: 'conditional-true' }, { to: 'b3', kind: 'conditional-false' }] },
+          { id: 'b0', successors: [{ to: 'b1', kind: 'fallthrough' }] },
           { id: 'b1', successors: [{ to: 'b3', kind: 'fallthrough' }] },
           { id: 'b3', successors: [] },
         ]
@@ -119,34 +124,53 @@ function irOriginName(armBOffset) {
   return armBOffset == null ? 'fn_5729_exact' : 'fn_5729_rootonly';
 }
 
-function outerLoadRegion(fixture) {
+function outerLoadRegion(fixture, options = {}) {
   const outerLoad = fixture.ir.nodes.find((node) => node.id === 'node_outer_load');
   const region = classifySemanticMemoryRegion(fixture.ir, outerLoad, {
     binaryId: 'binary_5729',
     ssa: fixture.ssa,
     canonicalMemorySsa: fixture.memorySsa,
+    ...options,
   });
   return Array.isArray(region) ? region[0] : region;
 }
 
-test('#5729 a root-only proof must not become an exact offset-0 region', () => {
+const stackOptions = {
+  rootDescriptors: {
+    'state:sp': { kind: 'stack-like', baseOffset: 0, linearOffsets: true },
+  },
+};
+
+test('#5729 exact rooted proofs preserve reload refinement and displacement', () => {
+  const fixture = buildFixture({ armBOffset: null });
+  const region = outerLoadRegion(fixture);
+  assert.equal(region.kind, 'rooted-offset');
+  assert.equal(region.offset, '12', 'proven root+8 plus outer +4 must stay exact');
+});
+
+test('#5729 exact stack-like proofs preserve reload refinement and displacement', () => {
+  const fixture = buildFixture({ armBOffset: null });
+  const region = outerLoadRegion(fixture, stackOptions);
+  assert.equal(region.kind, 'stack-fixed');
+  assert.equal(region.offset, '12', 'proven stack +8 plus outer +4 must stay exact');
+});
+
+test('#5729 root-only rooted proof stays unknown with nonzero outer displacement', () => {
   const fixture = buildFixture({ armBOffset: '16' });
+  const proof = deriveCanonicalAddressProof(fixture.ir, 'pvread', { ssa: fixture.ssa });
+  assert.equal(proof.kind, 'root-only');
+  assert.equal(proof.rootKind, 'rooted');
   const region = outerLoadRegion(fixture);
   assert.ok(region, 'classification must still produce a region object');
-  if (region.kind === 'rooted-offset' || region.kind === 'stack-fixed') {
-    assert.fail(`root-only proof was promoted to precise ${region.kind}@${region.offset}`);
-  }
   assert.equal(region.kind, 'unknown');
 });
 
-test('#5729 exact-offset proofs keep refining through the reload path', () => {
-  const fixture = buildFixture({ armBOffset: null });
-  const region = outerLoadRegion(fixture);
+test('#5729 root-only stack-like proof stays unknown with nonzero outer displacement', () => {
+  const fixture = buildFixture({ armBOffset: '16' });
+  const proof = deriveCanonicalAddressProof(fixture.ir, 'pvread', { ssa: fixture.ssa, ...stackOptions });
+  assert.equal(proof.kind, 'root-only');
+  assert.equal(proof.rootKind, 'stack-like');
+  const region = outerLoadRegion(fixture, stackOptions);
   assert.ok(region, 'classification must produce a region object');
-  assert.ok(region.kind === 'rooted-offset' || region.kind === 'stack-fixed' || region.kind === 'unknown',
-    `unexpected region kind ${region.kind}`);
-  // The exact single-arm fixture reaches this path with an exact root+8 proof;
-  // when the refinement engages, the offset must be the proven 8 — never 0.
-  if (region.kind === 'rooted-offset') assert.equal(region.offset, '8');
-  if (region.kind === 'stack-fixed') assert.notEqual(region.offset, '0');
+  assert.equal(region.kind, 'unknown');
 });
