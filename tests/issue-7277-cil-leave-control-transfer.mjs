@@ -97,4 +97,59 @@ test('#7277 leave inside a protected region still lowers its target edge', () =>
   assert.ok(kinds.includes('bb_0x5:leave'), `leave edge must survive inside a protected region: ${JSON.stringify(kinds)}`);
   assert.ok(kinds.includes('bb_0x4:exception'), `handler edge must stay wired: ${JSON.stringify(kinds)}`);
   assert.ok(!kinds.some((s) => s.startsWith('bb_0x2:')), `no fallthrough may survive a leave: ${JSON.stringify(kinds)}`);
+  assert.equal(lowered.semanticIr.completeness, 'partial',
+    'finally sequencing is not modeled by the shared bridge yet');
+  assert.ok(lowered.semanticIr.unknowns.some((unknown) =>
+    unknown.reason === 'cil-leave-finally-transfer-unmodeled'),
+  'the unmodeled finally transfer must be explicit');
+});
+
+test('#7277 long-form leave preserves its unconditional target', () => {
+  // 00: leave +2 => target 07 (five-byte instruction)
+  // 05: ldc.i4.1; 06: ret (unreachable fallthrough)
+  // 07: ldc.i4.2; 08: ret (target)
+  const bytecode = Uint8Array.from([0xdd, 0x02, 0x00, 0x00, 0x00, 0x17, 0x2a, 0x18, 0x2a]);
+  const lowered = lowerVMEffectsToSemanticIr(liftCilMethod(0, cilImage(bytecode)));
+  const entry = lowered.cfg.blocks.find((b) => b.id === 'bb_0x0');
+  assert.deepEqual(entry.successors, [{ to: 'bb_0x7', kind: 'leave' }]);
+  const leaveNode = lowered.semanticIr.nodes.find((n) => n.metadata?.mnemonic === 'leave');
+  assert.equal(leaveNode.kind, 'branch');
+  assert.deepEqual(leaveNode.targets, ['bb_0x7']);
+});
+
+test('#7277 leave empties stale source evaluation-stack state', () => {
+  // 00: ldc.i4.1; 01: leave.s +2 => target 05
+  // 03: ldc.i4.1; 04: ret (unreachable fallthrough)
+  // 05: ldc.i4.2; 06: ret (target)
+  const bytecode = Uint8Array.from([0x17, 0xde, 0x02, 0x17, 0x2a, 0x18, 0x2a]);
+  const lowered = lowerVMEffectsToSemanticIr(liftCilMethod(0, cilImage(bytecode)));
+  const sourceStackWrites = lowered.semanticIr.nodes.filter((node) =>
+    node.blockId === 'bb_0x0'
+      && node.kind === 'state-write'
+      && node.variable?.key === 'vm:cil:stack:0');
+  assert.deepEqual(sourceStackWrites, [], 'leave must not publish a stale source stack value');
+  const targetStackReads = lowered.semanticIr.nodes.filter((node) =>
+    node.blockId === 'bb_0x5'
+      && node.kind === 'state-read'
+      && node.variable?.key === 'vm:cil:stack:0');
+  assert.deepEqual(targetStackReads, [], 'leave target starts with an empty evaluation stack');
+});
+
+test('#7277 leave across catch preserves the explicit target without false incompleteness', () => {
+  // 00: leave.s +2 => target 04 (inside the try)
+  // 02: ldc.i4.1; 03: ret (catch handler path, not leave fallthrough)
+  // 04: ldc.i4.2; 05: ret (target)
+  const bytecode = Uint8Array.from([0xde, 0x02, 0x17, 0x2a, 0x18, 0x2a]);
+  const region = {
+    kind: 'catch',
+    tryOffset: 0,
+    tryLength: 2,
+    handlerOffset: 2,
+    handlerLength: 2,
+    classTokenOrFilter: 0x01000001,
+  };
+  const lowered = lowerVMEffectsToSemanticIr(liftCilMethod(0, cilImage(bytecode, [region])));
+  const entry = lowered.cfg.blocks.find((b) => b.id === 'bb_0x0');
+  assert.ok(entry.successors.some((edge) => edge.to === 'bb_0x4' && edge.kind === 'leave'));
+  assert.equal(lowered.semanticIr.completeness, 'complete');
 });
