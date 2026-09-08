@@ -119,9 +119,18 @@ export class InvestigationSessionStore {
   async appendMessage(id, message) {
     const current = await this.get(id);
     if (!current) return null;
-    current.messages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '').slice(0, 20000), timestamp: message.timestamp || new Date().toISOString() });
-    current.messages = current.messages.slice(-100);
-    return this.update(id, { messages: current.messages });
+    // Build the candidate without mutating the currently visible session. If
+    // persistence rejects the write, the old message list must remain the
+    // canonical in-memory state (#5434).
+    const messages = [
+      ...(Array.isArray(current.messages) ? current.messages : []),
+      {
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: String(message.content || '').slice(0, 20000),
+        timestamp: message.timestamp || new Date().toISOString(),
+      },
+    ].slice(-100);
+    return this.update(id, { messages });
   }
 
   async persist(session) { if (this.persistence && typeof this.persistence.save === 'function') await this.persistence.save(stripSecrets(session)); }

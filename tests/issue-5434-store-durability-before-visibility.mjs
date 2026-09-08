@@ -22,9 +22,14 @@ import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
   await store.create({ id: 's2', goal: 'old' });
   fail = true;
   await assert.rejects(store.update('s2', { goal: 'new' }), /temporary save failure/);
+  await assert.rejects(
+    store.appendMessage('s2', { role: 'user', content: 'must not leak' }),
+    /temporary save failure/,
+  );
   fail = false;
   const visible = await store.get('s2');
   assert.equal(visible.goal, 'old', 'the previous state stays canonical after a rejected write');
+  assert.deepEqual(visible.messages, [], 'a rejected append must not mutate visible messages');
   const retried = await store.update('s2', { goal: 'new' });
   assert.equal(retried.goal, 'new', 'a retry after recovery succeeds');
   assert.equal(durable.get('s2').goal, 'new');
