@@ -29,10 +29,27 @@ function searchTermsOf(input = {}) {
 }
 function addrText(value) {
   if (value == null) return 'unknown';
-  const type = typeof value;
-  if (type !== 'number' && type !== 'bigint' && type !== 'string') throw new TypeError('address must be an integer primitive');
-  if (type === 'string' && !value.trim()) throw new TypeError('address must be a non-empty integer string');
-  return BigInt(value).toString(16);
+  if (typeof value === 'number') {
+    // A number above 2^53-1 has already lost address bits before reaching this
+    // boundary; accepting it would pin a rounded value as canonical address
+    // identity and collide distinct addresses (#6135). Callers must pass
+    // BigInt or an integer string for such addresses.
+    if (!Number.isSafeInteger(value)) throw new TypeError('address number must be a safe integer');
+    return BigInt(value).toString(16);
+  }
+  if (typeof value === 'bigint') return value.toString(16);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) throw new TypeError('address must be a non-empty integer string');
+    return BigInt(text).toString(16);
+  }
+  throw new TypeError('address must be an integer primitive');
+}
+function validateAddressSources(input) {
+  if (input == null || (typeof input !== 'object' && typeof input !== 'function')) return;
+  for (const value of [input.address, input.fingerprint?.address]) {
+    if (value != null) addrText(value);
+  }
 }
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
 function transactionPromise(transaction) {
@@ -65,6 +82,7 @@ export class KnowledgeDB {
   }
 
   async remember(input = {}) {
+    validateAddressSources(input);
     const fingerprint = input.fingerprint?.schema ? fingerprintFunction(input.fingerprint) : fingerprintFunction(input.fingerprint || input);
     const sourceBinaryHash = input.sourceBinaryHash || 'unknown';
     const address = input.address ?? fingerprint.address;
@@ -92,6 +110,7 @@ export class KnowledgeDB {
   }
 
   async reject(input = {}) {
+    validateAddressSources(input);
     const targetFingerprint = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
     const key = input.id || [input.sourceBinaryHash || 'unknown', input.candidateName || input.candidateIdentity || 'unknown', targetFingerprint?.semanticHash || targetFingerprint?.normalizedBytesHash || targetFingerprint?.hash || addrText(input.address)].join(':');
     const targetAddress = input.address ?? targetFingerprint?.address ?? null;
@@ -104,6 +123,7 @@ export class KnowledgeDB {
   }
 
   async isRejected(input = {}) {
+    validateAddressSources(input);
     const name = input.candidateName || null, identity = input.candidateIdentity || null;
     const fp = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
     const records = this.negativeMemory ? [...this.negativeMemory.values()] : await this.#negativeCandidates(name, identity, fp);
@@ -122,6 +142,7 @@ export class KnowledgeDB {
   }
 
   async findMatches(input, options = {}) {
+    validateAddressSources(input);
     const fingerprint = fingerprintFunction(input);
     const limit = Math.min(50, Math.max(1, Number(options.limit) || 10));
     const records = this.memory ? this.#memoryCandidates(fingerprint) : await this.#candidateRecords(fingerprint, this.maxCandidates);
