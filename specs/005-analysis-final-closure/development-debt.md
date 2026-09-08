@@ -1,6 +1,6 @@
 # Development debt and next actions
 
-Current batch: 2026-09-08, **47/61** tasks checked. Stage A implementation is
+Current batch: 2026-09-08, **48/61** tasks checked. Stage A implementation is
 7/7; Stage B implementation is 11/11. Physical-device execution is deferred
 until development is finished. Historical observations are retained below;
 current results take precedence.
@@ -25,7 +25,7 @@ T025 rows remain source-equivalent to the retained `459dfe5bc` packet. Current
 delta proof is core identity **14/14**, T012 identity publication **3/3**, and
 the two filtered C2-02 origin cases **2/2**; the owner packet additionally
 records cache **6/6**, adversarial **72/72**, and five fresh boundaries. The
-retained implementation count is now 47/61. The bounded origin-leaf timing observation
+retained implementation count is now 48/61. The bounded origin-leaf timing observation
 is representative evidence only; aggregate performance and the whole benchmark
 are not proven, and release completion is not claimed.
 
