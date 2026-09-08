@@ -45,9 +45,11 @@ function fakeCapstoneRow({ opcodeId = 1, opcodeName = 'nop', byte = 0x90, origin
   return adapter.parseInstruction(M, 1, 0, { address:0n, mode:'long-64', origin });
 }
 
+const fixtureInstructionId = 'issue-5082:fake-parser';
 const origin = Object.freeze({
   byteRanges:Object.freeze([{ binaryId:'binary:issue-5082', start:0n, length:1 }]),
   virtualRanges:Object.freeze([{ sliceId:'slice:0', start:0n, length:1 }]),
+  instructionIds:Object.freeze([fixtureInstructionId]),
 });
 
 // Exact review counterexample: public parseInstruction() remains a useful
@@ -66,7 +68,7 @@ assert.equal(
   true,
   'even parser-produced rows require receiver byte revalidation after transport',
 );
-const fakeParsedResult = liftX86MachineEffects(fakeParsedMov, { instructionId:'issue-5082:fake-parser' });
+const fakeParsedResult = liftX86MachineEffects(fakeParsedMov, { instructionId:fixtureInstructionId });
 assert.equal(fakeParsedResult?.completeness, 'partial', 'fake-M parser row must not reach terminal exactness');
 assert.notEqual(fakeParsedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
@@ -77,7 +79,7 @@ assert.equal(
   x86SemanticFunctionRequiresDecoderRevalidation({ architecture:'x86_64', instructions:[transportedRow] }),
   true,
 );
-const transportedResult = liftX86MachineEffects(transportedRow, { instructionId:'issue-5082:transported' });
+const transportedResult = liftX86MachineEffects(transportedRow, { instructionId:fixtureInstructionId });
 assert.equal(transportedResult?.completeness, 'partial');
 assert.notEqual(transportedResult?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
 
