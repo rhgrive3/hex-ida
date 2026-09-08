@@ -28,7 +28,7 @@ async function testMachOSelectedSliceSingleFlight() {
   const readsAfterFirst = spy.reads.length;
   assert.ok(readsAfterFirst > 0, 'first selected-slice parse must read source bytes');
   const second = await parseMachOSource(spy, options);
-  assert.equal(second, first, 'same source/slice must reuse the immutable BinaryImage artifact');
+  assert.notEqual(second, first, 'same source/slice must reuse the parsed artifact without sharing a mutable BinaryImage result');
   assert.equal(spy.reads.length, readsAfterFirst, 'cached selected slice must not re-read source bytes');
 }
 
