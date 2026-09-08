@@ -115,11 +115,18 @@ export function parseMsf(bytes) {
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const blockSize = view.getUint32(32, true);
+  // FreeBlockMapBlock names the active free-block map block; the MSF spec only
+  // permits 1 or 2. Any other value means the container is not a structurally
+  // valid MSF 7.00 file and must never be admitted with complete:true (#5672).
+  const freeBlockMapBlock = view.getUint32(36, true);
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
   if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
+  }
+  if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
+    return { streams: [], diagnostics: ['invalid MSF free block map index'], complete: false };
   }
   if (numBlocks * blockSize > data.length + blockSize) {
     return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
