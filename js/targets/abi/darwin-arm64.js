@@ -193,7 +193,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       });
       continue;
     }
-    if (c.fp) {
+    if (c.fp || c.hva) {
       const regsNeeded = c.homogeneous ? c.members : 1;
       if (fp + regsNeeded <= 8) {
         const regs = [];
@@ -229,6 +229,11 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         });
         continue;
       }
+      /* AAPCS64 Stage C: an HFA/HVA that cannot fit the remaining SIMD/FP
+       * registers sets NSRN to 8 before the stack allocation. Without this
+       * cursor exhaustion a later scalar FP argument could re-enter the
+       * v-register path with registers the spilled aggregate never used. */
+      if (c.homogeneous) fp = 8;
     } else {
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
       // A padded aggregate needs a physical lane proof that differs from its
