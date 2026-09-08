@@ -85,7 +85,10 @@ function fixedInstructionSize(app) {
 function isLegacyArm64Candidate(app) {
   const arch = activeArchitecture(app);
   const fixed = fixedInstructionSize(app);
-  if (arch && !supportsArm64SemanticAnalysis(arch)) return false;
+  // Positive proof only: the row-based fallback is valid for proven 4-byte
+  // ARM64/AArch64 streams, so an absent/unknown architecture is not ARM64
+  // evidence and must fail closed (#5818).
+  if (!supportsArm64SemanticAnalysis(arch)) return false;
   if (fixed != null && fixed !== 4) return false;
   return true;
 }
