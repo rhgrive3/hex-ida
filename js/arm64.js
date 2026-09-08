@@ -164,12 +164,12 @@ cat('udf .byte', 'data');
 // for exclusive operations and barriers. These are the read-modify-write families
 // that this facade already classifies as atomic; all ordering/size variants belong
 // to the same category (#1827).
-const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
 // Store-only LSE aliases discard the loaded value, so Arm exposes only the
 // relaxed/release spellings plus the byte/halfword size suffixes. They remain
 // atomic read-modify-write instructions even though they have no GPR result
 // (#4495; operand read/write ownership is a separate #3702 contract).
-const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set)l?(?:b|h)?$/;
+const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 
 export function categoryOf(mn) {
   if (!mn) return '';
