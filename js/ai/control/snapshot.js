@@ -182,7 +182,7 @@ function resolveFunctionRange(local, current) {
     } catch { range = null; continue; }
     if (range) break;
   }
-  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.start, local.currentFunction?.start, current);
+  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.address, local.currentFunction?.address, local.activeFunction?.start, local.currentFunction?.start, current);
   const end = first(range?.end, range?.endAddr, local.activeFunction?.end, local.currentFunction?.end);
   return { start: addressText(start), end: addressText(end) };
 }

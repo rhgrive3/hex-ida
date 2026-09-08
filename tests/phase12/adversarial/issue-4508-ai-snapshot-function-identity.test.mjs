@@ -47,6 +47,18 @@ assert.equal(rangeOnly.currentAddress, '0x2010');
 assert.equal(rangeOnly.currentFunction.address, '0x2000');
 assert.deepEqual(rangeOnly.currentFunction.range, { start: '0x2000', end: '0x2100' });
 
+// With no functionRange/functionAt provider, an explicit function object still
+// defines the function identity. Its address must anchor range.start rather
+// than the interior cursor, while its end remains the fallback range end.
+const objectBoundaryOnly = createTurnSnapshot({
+  currentAddress: 0x4010n,
+  activeFunction: { address: 0x4000n, end: 0x4100n, name: 'fallback' },
+}, { scope: 'function' });
+const objectBoundaryScope = new ScopeController(objectBoundaryOnly, 'function');
+assert.equal(objectBoundaryOnly.currentFunction.address, '0x4000');
+assert.deepEqual(objectBoundaryOnly.currentFunction.range, { start: '0x4000', end: '0x4100' });
+assert.equal(objectBoundaryScope.scopeContainsAddress('function', '0x4005'), true, 'addresses before the cursor but inside the function remain in scope');
+
 const atFunctionStart = createTurnSnapshot({
   currentAddress: 0x3000n,
   activeFunction: { address: 0x3000n, name: 'entry' },
