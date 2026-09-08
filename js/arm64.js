@@ -689,7 +689,36 @@ HANDLERS.ubfiz = (o, ops) => {
     'Take the low bits and place them at bit ' + immShort(lsb) + '.');
   o.terms = ['bitfield'];
 };
-HANDLERS.sbfiz = HANDLERS.ubfiz;
+
+// These aliases have the same operand shape, but SBFIZ sign-extends its field
+// while UBFIZ zero-fills the destination above it (#3612).
+function bitfieldSpan(start, width) {
+  if (!start || start.value == null || !width || width.value == null || width.value <= 0n) return null;
+  return { first: start.value, last: start.value + width.value - 1n, width: width.value };
+}
+
+function bitfieldRange(span) {
+  if (!span) return '…';
+  return span.first.toString(10) + '..' + span.last.toString(10);
+}
+
+HANDLERS.sbfiz = (o, ops) => {
+  const [d, n, lsb, width] = ops;
+  const inserted = bitfieldSpan(lsb, width);
+  const source = width && width.value != null ? bitfieldSpan({ value: 0n }, width) : null;
+  const destBits = bitfieldRange(inserted);
+  const sourceBits = bitfieldRange(source);
+  const bits = d && d.bits ? d.bits : '?';
+  o.title = J('符号つきビットフィールドを左に置く', 'Signed bitfield insert in zeros');
+  o.pseudo = opShort(d) + ' = sign_extend(' + opShort(n) + '[' + sourceBits + '], ' + bits + ') << ' + immShort(lsb);
+  o.summary = J(
+    opShort(n) + ' の下 ' + immShort(width) + ' ビット（' + sourceBits + '）を取り、最上位ビットの符号を広げて ' + opShort(d) + ' の ' + destBits + ' に置く。下は 0、上は符号ビットで埋める。',
+    'Take ' + immShort(width) + ' low bits (' + sourceBits + ') of ' + opShort(n) + ', sign-extend their top bit, and place them in ' + opShort(d) + ' at bits ' + destBits + '. Lower bits are zero; upper bits copy the sign bit.');
+  o.detail.push(J(
+    'UBFIZ と違い、フィールドの一番上のビットを符号として使います。幅が ' + bits + ' ビットのレジスタ全体に符号が広がります。',
+    'Unlike UBFIZ, the field\'s top bit is treated as a sign bit and extended across the ' + bits + '-bit destination.'));
+  o.terms = ['bitfield'];
+};
 HANDLERS.bfi = (o, ops) => {
   const [d, n, lsb, width] = ops;
   o.title = J('ビットを差し込む', 'Bit field insert');
@@ -699,7 +728,24 @@ HANDLERS.bfi = (o, ops) => {
     'Insert bits of ' + opShort(n) + ' into ' + opShort(d) + ' without touching the rest.');
   o.terms = ['bitfield'];
 };
-HANDLERS.bfxil = HANDLERS.bfi;
+// BFXIL reads from the source lsb and writes at destination bit zero; BFI reads
+// the source low bits and writes at the destination lsb (#3612).
+HANDLERS.bfxil = (o, ops) => {
+  const [d, n, lsb, width] = ops;
+  const source = bitfieldSpan(lsb, width);
+  const destination = width && width.value != null ? bitfieldSpan({ value: 0n }, width) : null;
+  const sourceBits = bitfieldRange(source);
+  const destinationBits = bitfieldRange(destination);
+  o.title = J('ビットを切り出して下位へ入れる', 'Bitfield extract and insert at low end');
+  o.pseudo = opShort(d) + '[' + destinationBits + '] = ' + opShort(n) + '[' + sourceBits + ']';
+  o.summary = J(
+    opShort(n) + ' の ' + immShort(lsb) + ' ビット目から ' + immShort(width) + ' ビット（' + sourceBits + '）を抜き出し、' + opShort(d) + ' の下位 ' + immShort(width) + ' ビット（' + destinationBits + '）に入れる。それより上のビットはそのまま。',
+    'Extract ' + immShort(width) + ' bits (' + sourceBits + ') from ' + opShort(n) + ' and insert them into the low bits (' + destinationBits + ') of ' + opShort(d) + '; higher destination bits stay unchanged.');
+  o.detail.push(J(
+    'BFI はソースの下位ビットを宛先の指定位置へ入れますが、BFXIL はソースの指定位置から読み、宛先の 0 ビット目から入れます。',
+    'Unlike BFI, BFXIL reads from the specified source bit and always writes at destination bit 0.'));
+  o.terms = ['bitfield'];
+};
 
 HANDLERS.extr = (o, ops) => {
   const [d, n, m, lsb] = ops;

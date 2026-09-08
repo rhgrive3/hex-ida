@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 6 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 7 つの確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -9,6 +9,7 @@
  *   #1289  無関係な adrp + add から実在しない参照先を作る
  *   #1293  アドレスの前後関係だけでループと断定する
  *   #1294  ld2/3/4・st2/3/4 の転送量を常に 16 バイトと説明する
+ *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
  *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
@@ -167,6 +168,39 @@ assert.ok(!vectorSavedPair.terms.includes('calleesaved'), 'SIMD q19/q20 must not
 const gpSavedPair = explain('stp', 'x19, x20, [sp, #-16]!');
 assert.ok(gpSavedPair.terms.includes('calleesaved'), 'GP x19/x20 must retain callee-saved explanation');
 console.log('  ok 7 pair register identity is class-sensitive (#6271)');
+
+/* ── #3612 SBFIZ/BFXIL は似た形でも別の bitfield semantics ───── */
+
+const sbfizX = explain('sbfiz', 'x0, x1, #8, #8');
+const ubfizX = explain('ubfiz', 'x0, x1, #8, #8');
+assert.equal(sbfizX.handlerError, undefined, 'SBFIZ X handler must not throw');
+assert.equal(ubfizX.handlerError, undefined, 'UBFIZ X handler must not throw');
+assert.notEqual(sbfizX.pseudo, ubfizX.pseudo, 'SBFIZ must not reuse UBFIZ presentation');
+assert.match(sbfizX.pseudo, /sign_extend\(x1\[0\.\.7\], 64\)/, 'SBFIZ must expose signed low-field extension');
+assert.match(sbfizX.pseudo, /<< 8$/, 'SBFIZ must place the signed field at its destination lsb');
+assert.match(sbfizX.summary + ' ' + sbfizX.detail.join(' '), /符号|sign/i, 'SBFIZ explanation must mention sign extension');
+assert.match(ubfizX.pseudo, /x1 & mask\) << 8/, 'UBFIZ zero-fill explanation must remain unchanged');
+
+const bfxilX = explain('bfxil', 'x0, x1, #8, #8');
+const bfiX = explain('bfi', 'x0, x1, #8, #8');
+assert.equal(bfxilX.handlerError, undefined, 'BFXIL X handler must not throw');
+assert.equal(bfiX.handlerError, undefined, 'BFI X handler must not throw');
+assert.notEqual(bfxilX.pseudo, bfiX.pseudo, 'BFXIL must not reuse BFI presentation');
+assert.equal(bfxilX.pseudo, 'x0[0..7] = x1[8..15]', 'BFXIL must map source bits 8..15 to destination bits 0..7');
+assert.match(bfxilX.summary, /上のビットはそのまま|higher destination bits stay unchanged/i, 'BFXIL must preserve higher destination bits');
+assert.ok(bfiX.pseudo.includes('x0[8…]'), 'BFI must retain its destination insertion position');
+
+const sbfizW = explain('sbfiz', 'w0, w1, #24, #8');
+const bfxilW = explain('bfxil', 'w0, w1, #24, #8');
+assert.match(sbfizW.pseudo, /sign_extend\(w1\[0\.\.7\], 32\) << 24/, 'SBFIZ W boundary must use 32-bit signed extension');
+assert.equal(bfxilW.pseudo, 'w0[0..7] = w1[24..31]', 'BFXIL W boundary must retain source/destination direction');
+
+const sbfizXBoundary = explain('sbfiz', 'x0, x1, #56, #8');
+const bfxilXBoundary = explain('bfxil', 'x0, x1, #56, #8');
+assert.match(sbfizXBoundary.pseudo, /sign_extend\(x1\[0\.\.7\], 64\) << 56/, 'SBFIZ X boundary must retain 64-bit width');
+assert.equal(bfxilXBoundary.pseudo, 'x0[0..7] = x1[56..63]', 'BFXIL X boundary must retain source/destination direction');
+console.log('  ok 8 SBFIZ/BFXIL aliases preserve signedness and bit direction (#3612)');
+
 
 /* ── #3627 width and signedness semantics must not collapse into aliases ─── */
 
