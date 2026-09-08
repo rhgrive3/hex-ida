@@ -78,7 +78,9 @@ export function createSemanticMemoryAccess(input) {
     ordering: input.ordering == null ? 'unknown' : enumValue(input.ordering, SEMANTIC_SETS.orderings, 'semantic-ir-invalid-memory-ordering'),
     faults: normalizeFaults(input.faults),
   };
-  if (out.atomic === false && out.ordering !== 'unknown') fail('semantic-ir-memory-ordering-requires-atomic');
+  // A concrete memory ordering is only a canonical fact for a proven-atomic
+  // access; an access whose atomicity is merely unknown must not carry one (#5974).
+  if (out.ordering !== 'unknown' && out.atomic !== true) fail('semantic-ir-memory-ordering-requires-atomic');
   return deepFreeze(out);
 }
 
