@@ -123,8 +123,12 @@ uncommitted merge tree. These failures are not waived as unrelated. Diagnose
 them against the exact base and already-existing owner PRs before changing
 production code, denominator sets or test expectations.
 
-Full Phase 8 remains running. Poll its live handle before any restart. Passing
-selected tests does not satisfy the full gate.
+The pre-commit full Phase 8 run terminated after 920.3 s with eight failing
+tests. Log: `/tmp/hex-roadmap-p8-J5ReJR/full.log`. The first failure is
+`phase8-measurement-abi-unavailable:riscv64` across 45 frozen corpus entries;
+the downstream provenance/edge/provider counters report those missing runs.
+This diagnostic run spanned source reconciliation and is not exact-head
+release evidence. Repair the first divergence, then rerun on a frozen head.
 
 The source merge may be committed locally as an IN-PROGRESS resume point;
 that commit does not complete the locked generated-output transaction and is
@@ -153,7 +157,7 @@ additional exact ownership paths are the ARM64e effect provider and
 `tests/machine-effects/arm64e-retained-provider-union.test.mjs`; no blanket
 architecture or verifier exemption was added. The new canonical-discovered
 regression requires both merged contributions on the same product and the
-full unchanged PAuth denominator. It failed 0/2 before restoration:
+full unchanged PAuth denominator. It passed 0/2 before restoration:
 `/tmp/hex-roadmap-arm64e-union-before-ORLqpU/full.log`.
 
 After restoration, the new union test plus existing zero-modifier,
@@ -163,6 +167,42 @@ first diagnosed divergence, not all 20 full-gate failures; the complete gate
 still requires a new run on the next exact candidate. The LLVM oracle check
 also confirmed this environment has LLVM MC 14 while the AArch64 CSSC tests
 require LLVM MC 18; substituting an older oracle cannot count as proof.
+
+### Generated-output dependency resolved through main
+
+The ARM64e restoration is committed locally at
+`01ff25c034db476ec80aa0a33a64c3a94c29e103` (tree
+`b7407be43d80c73f6a9275491253c598cb6da298`). The full canonical Phase 9 suite
+with the existing serial option passed on that clean source head (149.0 s).
+
+Main then merged the existing #7503 as
+`058177e3ba15511aae290495fa98e7129fda2583`. Its six-file delta was inspected
+and reconciled into this same integration lane without a replacement PR or
+reimplementation. The canonical userscript build now passes (3.4 s).
+Generated release serial: `2322242153`; protected build ID:
+`aad2e431ec27488ffca245b2`; release identity:
+`563ec8ef0f149c372fa23c38396dc7d203266c0a59400b429577f2af2d700c0c`.
+Commit/rebuild-zero-diff and current-head runtime tests are the next checks;
+this successful build alone does not unlock the integration checkpoint.
+
+The canonical `npm run userscript:test` passed on the reconciled candidate
+(55.0 s). Its final tests rewrite the deployment-identity stub to an equivalent
+null export, so a subsequent canonical build restored the canonical generated
+source before staging; that transient test output is not a new owned path.
+The generated-runtime Chromium/WebKit sandbox E2E also passed (9.4 s), with
+actual decoder/semantic Workers. Re-run it sequentially after final generated
+synchronization before using it as exact-candidate evidence.
+
+The existing local LLVM distribution was verified as Ubuntu LLVM 18.1.3 at
+`/mnt/workspace/.local/hex-stage-a-llvm18/bin/llvm-mc-18`. The previously absent
+`/usr/bin/llvm-mc-18` now links to that verified launcher so the unchanged
+canonical tests select their required LLVM 18 oracle. No LLVM 14 executable
+was replaced and no test fallback/denominator was changed.
+The same verified distribution supplies the previously absent
+`/usr/bin/clang-18` and `/usr/bin/llvm-objdump-18` names. LLVM 18 then passed the
+unchanged integer denominator (68,899 Capstone forms plus two LLVM CSSC forms)
+and the complete 267-case memory denominator. The prior memory-oracle count
+failure was the LLVM 14 disassembly format, not permission to reduce cases.
 
 ## Ownership and regression policy
 

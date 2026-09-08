@@ -2,7 +2,7 @@
   "version": 1,
   "branch": "feat/analysis-roadmap-v8-current-main-20260907",
   "inputHead": "8254ebe98bf6060bd902837d3751428a4fc15860",
-  "reconciliationBase": "404537698d019abe9c1c685718689a34ff5ebb4d",
+  "reconciliationBase": "058177e3ba15511aae290495fa98e7129fda2583",
   "owners": {
     "phase7": [
       "js/analysis/discovery/layout.js",
