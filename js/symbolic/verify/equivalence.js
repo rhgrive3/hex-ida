@@ -285,12 +285,19 @@ export async function verifyBoundedEquivalence({
     if (statuses.includes(COMPLETENESS_STATUS.PARTIAL)) return COMPLETENESS_STATUS.PARTIAL;
     return COMPLETENESS_STATUS.COMPLETE;
   };
+  // #6093: memoryRegions declare an observable memory scope in the proof, but
+  // this query encodes only the before/after output difference — memory state
+  // equality is never translated into a solver constraint. A non-empty
+  // memoryRegions list must therefore fail closed: the affected completeness
+  // dimensions cannot be complete, so UNSAT on the output difference alone can
+  // never mint a PROVED equivalence that silently ignores declared memory.
+  const memoryScopeClaimed = Array.isArray(memoryRegions) && memoryRegions.length > 0;
   const completeness = createCompleteness({
     translation: allUnknowns > 0 || allUnsupported.length > 0 ? COMPLETENESS_STATUS.UNSUPPORTED : mergeCompleteness('translation'),
     controlFlow: mergeCompleteness('controlFlow'),
-    memoryEffects: mergeCompleteness('memoryEffects'),
+    memoryEffects: memoryScopeClaimed ? COMPLETENESS_STATUS.PARTIAL : mergeCompleteness('memoryEffects'),
     pathCoverage: mergeCompleteness('pathCoverage'),
-    queryScope: mergeCompleteness('queryScope'),
+    queryScope: memoryScopeClaimed ? COMPLETENESS_STATUS.PARTIAL : mergeCompleteness('queryScope'),
   });
 
   const query = createVerificationQuery({

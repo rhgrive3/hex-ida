@@ -310,8 +310,13 @@ export class KnowledgeDB {
 
   async #negativeCandidates(name,identity) {
     const db=await this.#dbOpen(); const store=db.transaction('negative','readonly').objectStore('negative');
-    if (name && store.indexNames.contains('candidateName')) return requestPromise(store.index('candidateName').getAll(name,200));
+    // The identity index is strictly more selective: a name-prefixed retrieval
+    // is capped before the queried identity's record may appear, which made an
+    // explicit rejection invisible once enough same-name records existed
+    // (#6134). Look the identity up first and fall back to the name index only
+    // when no identity was provided.
     if (identity && store.indexNames.contains('candidateIdentity')) return requestPromise(store.index('candidateIdentity').getAll(identity,200));
+    if (name && store.indexNames.contains('candidateName')) return requestPromise(store.index('candidateName').getAll(name,200));
     return [];
   }
 }
