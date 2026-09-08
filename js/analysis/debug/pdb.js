@@ -50,6 +50,12 @@ const LF_ENUM = 0x1507;
 const LF_ARRAY = 0x1503;
 const LF_MEMBER = 0x150d;
 
+/** CodeView LF_MODIFIER flags. These are independent bits, not an enum. */
+const MODIFIER_CONST = 0x0001;
+const MODIFIER_VOLATILE = 0x0002;
+const MODIFIER_UNALIGNED = 0x0004;
+const MODIFIER_KNOWN_MASK = MODIFIER_CONST | MODIFIER_VOLATILE | MODIFIER_UNALIGNED;
+
 /** CV_PUBSYMFLAGS: bit 1 marks a function. */
 const CVPSF_FUNCTION = 0x00000002;
 
@@ -640,8 +646,18 @@ export function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'modifier') {
     const target = describeTypeIndex(record.underlying, types, depth + 1);
-    const qualifier = (record.modifiers & 0x0001) ? 'const' : (record.modifiers & 0x0002) ? 'volatile' : '';
-    return { ...target, name: qualifier ? `${qualifier} ${target.name}` : target.name };
+    const modifiers = record.modifiers;
+    const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
+    const qualifiers = [];
+    if (validModifiers && (modifiers & MODIFIER_CONST)) qualifiers.push('const');
+    if (validModifiers && (modifiers & MODIFIER_VOLATILE)) qualifiers.push('volatile');
+    if (validModifiers && (modifiers & MODIFIER_UNALIGNED)) qualifiers.push('unaligned');
+    // A future CodeView flag must not be dropped while retaining complete:true:
+    // the rendered name is useful context, but the modifier set is not fully
+    // understood and therefore cannot support an exact type claim.
+    const hasUnknownModifiers = !validModifiers || (modifiers & ~MODIFIER_KNOWN_MASK) !== 0;
+    const name = qualifiers.length ? `${qualifiers.join(' ')} ${target.name}` : target.name;
+    return { ...target, name, complete: target.complete && !hasUnknownModifiers };
   }
   if (record.kind === 'procedure') {
     const returns = describeTypeIndex(record.returnType, types, depth + 1);
