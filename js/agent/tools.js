@@ -216,6 +216,11 @@ export function createAgentTools(context, opts = {}) {
       try { range = ctx.program.functionRange(addr); }
       catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method:'functionRange', cause:String(error?.message ?? error) }); }
     }
+    if (!ctx.program || typeof ctx.program !== 'object') {
+      const offset = bounded(options?.offset, 0, 0, 1000000);
+      return { tool:'get_callees', address:addr, supported:false, results:[], offset, returned:0,
+        total:null, complete:false, truncated:true, reason:'unsupported-program-query', cost:{ functions:0, disassembly:0 } };
+    }
     const end = asAddress(range?.end);
     const start = range?.start == null ? null : asAddress(range.start);
     if (addr == null || end == null || end <= addr || (range?.start != null && (start == null || start > addr))) {
