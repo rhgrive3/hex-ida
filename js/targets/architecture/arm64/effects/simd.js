@@ -8,6 +8,7 @@ import {
   createTemporaryValue,
   createVectorValue,
 } from '../../../../semantics/effects/index.js';
+import { canonicalIdentityString } from './common.js';
 
 const ARCHITECTURE_ID = 'arm64';
 const MODE = 'a64';
@@ -121,7 +122,7 @@ function hasScalarSimdOperand(ops) {
 function instructionIdOf(instruction, context) {
   const id = instruction?.instructionId ?? context?.instructionId;
   if (!id) throw new TypeError('arm64-simd-machine-effects-instruction-id-required');
-  return String(id);
+  return canonicalIdentityString(id, 'arm64-simd-machine-effects-instruction-id-invalid');
 }
 function originOf(instruction, context, instructionId) {
   return instruction?.origin ?? context?.origin ?? { instructionIds:[instructionId] };
