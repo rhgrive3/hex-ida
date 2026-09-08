@@ -25,9 +25,18 @@ export class CapabilityExecutor {
     // scope (#6150). The check runs before approval consumption so a
     // scope-violating request cannot burn a single-use authorization, and
     // capabilities without declared scope support keep their behavior.
+    // agentTool capabilities keep the executeTool() registry-override
+    // contract: the tool record's scopeSupport wins over the catalog
+    // declaration, so the common gate resolves that same effective
+    // authority instead of rejecting on the declaration alone.
     const scope = options?.scope || 'auto';
-    if (scope !== 'auto' && Array.isArray(entry.scopeSupport) && entry.scopeSupport.length > 0 && !entry.scopeSupport.includes(scope)) {
-      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    if (scope !== 'auto') {
+      const effectiveScopeSupport = entry.agentTool
+        ? (this.toolRegistry?.get?.(entry.agentTool)?.scopeSupport || entry.scopeSupport)
+        : entry.scopeSupport;
+      if (Array.isArray(effectiveScopeSupport) && effectiveScopeSupport.length > 0 && !effectiveScopeSupport.includes(scope)) {
+        throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+      }
     }
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
