@@ -3,10 +3,11 @@
   "inputZipSha256": "f56ecdfb29b7b147e69abc85df459483130e6e16e6032a63f9574aeceab57612",
   "handoffBase": "1b6d3eebf14e59a051169b1eb86220b05d303acf",
   "preIntegrationHead": "07a2b6973337116392c4a850929e41d46f4e1938",
-  "sourceCommit": "0b84189c4",
-  "generatedCommit": "2d10f8eed33a15329bf3b01ce0f88603ce636dbe",
-  "generatedTree": "ab918c94744e34f676e30eb64dba8fac81ee5869",
-  "files": {
+  "scope": "Performance work ended by owner; only actual bug fixes, verification and development completion. Imported timings describe the supplying environment, not this checkout. External release and physical-device acceptance excluded.",
+  "initialSourceCommit": "0b84189c4",
+  "initialGeneratedCommit": "2d10f8eed33a15329bf3b01ce0f88603ce636dbe",
+  "initialGeneratedTree": "ab918c94744e34f676e30eb64dba8fac81ee5869",
+  "initialFiles": {
     "js/core/identity/origin.js": "0df739defb107c94dd330c82999c3209d08a6fd7f469855cd439281e0e7a57cc",
     "tests/core-identity-contracts.mjs": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b",
     "tests/core-origin-canonical-reuse.test.mjs": "ebc6774ce3b2932da4871df7b540455fb50202ad1bbbdd29966230baedf7b101",
@@ -14,5 +15,47 @@
     "userscript/hex.user.template.js": "a93d61d04de2c245d4da2a889292d03204a1e7ddf8aaf144178e021a12ab82ac",
     "userscript/release-version.json": "a106fe04ce0fab8bb870d764149e7395605e520e6b6440dc888c74e716094f0b"
   },
-  "scope": "Performance work ended by owner; only actual bug fixes, verification and development completion. Imported timings describe the supplying environment, not this checkout. External release and physical-device acceptance excluded."
+  "sourceCommit": "f9cb38d33e7ba5e199ff8e4f648eb19edae7b015",
+  "generatedCommit": "4b04bfa266e9d00a0c6ededd7899de3e1327968d",
+  "generatedTree": "edef6fbb43bf07df4b7a2301ad11ea0679be83cd",
+  "files": {
+    "js/core/identity/origin.js": "d2d529115bba98e5c8033074a784f46ba42ea1f0415d92ea5eccb60961210ad1",
+    "tests/core-identity-contracts.mjs": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b",
+    "tests/core-origin-canonical-reuse.test.mjs": "d6b62a946d7e61d7b06f220cb78f29646699224b25be84e0d5966fc89f2642e4",
+    "tests/helpers/origin-normalization-oracle.mjs": "3b9f6170573d396d7dffc89524dec6c06a2c7aa68e4933179421ab83fa4a477f",
+    "userscript/hex.user.template.js": "b83cfe6bd690d01be7c26ab7a98dafce1df38ba451ccf7dd24348f7911daabdb",
+    "userscript/release-version.json": "c1c7896b81fa1d79643a7d3cbc5751ba2cad40b1dd703b070729dcdc67b3a3bb",
+    "js/binary/elf-core.js": "fd9759f77e0910d1bf0252cc7b8f196342f055ff765a8c21d8685d77b7dbda15",
+    "js/analysis/shared-app-artifacts.js": "41c705c074bb86b33298f700c8f26d35ef4f36867b888a4173da5590becc3fe4"
+  },
+  "localBugFix": "Origin list reuse now rejects optional cache qualification for overridden array mappers; the legacy normalizer revalidates their ranges. New regression plus the existing 15 tests passed, core:test passed.",
+  "originRepairCandidate": {
+    "sourceCommit": "22fbcb66cd2a40555de7368764ae2bf33bd9e718",
+    "generatedCommit": "be4e74f2a253de35029867ce577d52d098f5615c",
+    "generatedTree": "7818b161cd53fe30e1e850db9541dc7b4b24c704",
+    "files": {
+      "js/core/identity/origin.js": "d2d529115bba98e5c8033074a784f46ba42ea1f0415d92ea5eccb60961210ad1",
+      "tests/core-identity-contracts.mjs": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b",
+      "tests/core-origin-canonical-reuse.test.mjs": "d6b62a946d7e61d7b06f220cb78f29646699224b25be84e0d5966fc89f2642e4",
+      "tests/helpers/origin-normalization-oracle.mjs": "3b9f6170573d396d7dffc89524dec6c06a2c7aa68e4933179421ab83fa4a477f",
+      "userscript/hex.user.template.js": "44e377dc1766fdd183f93dfd0d23a5f8374b1ff422f0f96caf350313cee8d62a",
+      "userscript/release-version.json": "29e808e9bdf4b18f57a85637d875de4e14002083311ffcb877eb17a04f127200"
+    }
+  },
+  "additionalVerifiedBug": "Existing #4472 ELF parser tests found malformed extended-symbol-index tables accepted. Require exactly four-byte entries, aligned table length and enough entries for the parsed symbols; existing #4472 3/3 and #4475 2/2 pass.",
+  "elfRepairCandidate": {
+    "sourceCommit": "d1b2929d2ab4ddb8683a46be23e3b6cf807a3966",
+    "generatedCommit": "bedca214ad2dd6f94ac95f3ed00023987a7f5a3b",
+    "generatedTree": "bd098744367ed368e3833395df55bc6dbccf2856",
+    "files": {
+      "js/core/identity/origin.js": "d2d529115bba98e5c8033074a784f46ba42ea1f0415d92ea5eccb60961210ad1",
+      "tests/core-identity-contracts.mjs": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b",
+      "tests/core-origin-canonical-reuse.test.mjs": "d6b62a946d7e61d7b06f220cb78f29646699224b25be84e0d5966fc89f2642e4",
+      "tests/helpers/origin-normalization-oracle.mjs": "3b9f6170573d396d7dffc89524dec6c06a2c7aa68e4933179421ab83fa4a477f",
+      "userscript/hex.user.template.js": "f8c1171267167a93fa2dd0f8631a6cb22731f71eccabf3d57cb35dc7e4db4c5d",
+      "userscript/release-version.json": "c6a000507bdeb58cfa434218562423b0b23b7c5fcfbe1aae04bbcec36dcc4812",
+      "js/binary/elf-core.js": "fd9759f77e0910d1bf0252cc7b8f196342f055ff765a8c21d8685d77b7dbda15"
+    }
+  },
+  "sharedCacheBugFix": "Existing #4486/#4487 failures repaired: remove obsolete cache epochs and reject a producer displaced by a newer symbol generation while preserving mandatory discovery updates. Full phase7 PASS162.5s."
 }

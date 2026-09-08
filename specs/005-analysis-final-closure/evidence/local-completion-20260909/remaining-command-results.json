@@ -1,0 +1,49 @@
+{
+  "source": "bedca214ad2dd6f94ac95f3ed00023987a7f5a3b",
+  "scope": "diagnostic remaining canonical steps; not a full final-candidate PASS",
+  "results": [
+    {
+      "command": "npm run phase8:test",
+      "exitCode": 0,
+      "elapsedSeconds": 744.6,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase8-test.log"
+    },
+    {
+      "command": "npm run phase9:test",
+      "exitCode": 0,
+      "elapsedSeconds": 89.9,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase9-test.log"
+    },
+    {
+      "command": "npm run phase10:test",
+      "exitCode": 0,
+      "elapsedSeconds": 53.9,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase10-test.log"
+    },
+    {
+      "command": "npm run phase11:test",
+      "exitCode": 0,
+      "elapsedSeconds": 3.9,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase11-test.log"
+    },
+    {
+      "command": "npm run phase12:test",
+      "exitCode": 0,
+      "elapsedSeconds": 5.7,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase12-test.log"
+    },
+    {
+      "command": "npm test",
+      "exitCode": 0,
+      "elapsedSeconds": 230.8,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/test.log"
+    },
+    {
+      "command": "npm run benchmark:baseline",
+      "exitCode": 0,
+      "elapsedSeconds": 0.7,
+      "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/benchmark-baseline.log"
+    }
+  ],
+  "complete": true
+}

@@ -1,6 +1,10 @@
 # Development debt and next actions
 
-Current batch: 2026-09-08, **49/61** tasks checked. Stage A implementation is
+**2026-09-09: current local development COMPLETE, 53/53.** See
+[evidence](evidence/local-completion-20260909/README.md). Historical release debt
+below is outside this handoff; it must not restart performance or external work.
+
+Historical batch: 2026-09-08, **49/61** tasks checked. Stage A implementation is
 7/7; Stage B implementation is 11/11. Physical-device execution is deferred
 until development is finished. Historical observations are retained below;
 current results take precedence.

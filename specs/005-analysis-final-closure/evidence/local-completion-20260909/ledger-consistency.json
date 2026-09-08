@@ -1,0 +1,32 @@
+{
+  "status": "COMPLETE_LOCAL_DEVELOPMENT",
+  "originalTaskIds": 61,
+  "applicable": 53,
+  "checked": 53,
+  "pending": [],
+  "excluded": {
+    "T049": "RETIRED_ADMINISTRATIVE_HISTORY",
+    "T022": "OUT_OF_SCOPE_BY_OWNER_20260909",
+    "T024": "OUT_OF_SCOPE_BY_OWNER_20260909",
+    "T047": "RETIRED_ADMINISTRATIVE_HISTORY",
+    "T050": "RETIRED_ADMINISTRATIVE_HISTORY",
+    "T043": "OUT_OF_SCOPE_BY_OWNER_20260909",
+    "T044": "OUT_OF_SCOPE_BY_OWNER_20260909",
+    "T061": "RETIRED_ADMINISTRATIVE_HISTORY"
+  },
+  "requirementsQuality": {
+    "release-evidence.md": {
+      "checked": 28,
+      "total": 28
+    },
+    "requirements.md": {
+      "checked": 16,
+      "total": 16
+    }
+  },
+  "scope": "2026-09-09 user instructions: performance work finished; external release inputs excluded. Scope dispositions are not test PASS.",
+  "productCandidate": "4b04bfa266e9d00a0c6ededd7899de3e1327968d",
+  "taskLedgerSha256": "b4ecad2391d6094b9f9e0b46babe217de0dd69295b770d61e8b1209e5b814b3f",
+  "sourceChange": "One origin reuse optimization imported and one verified normalization bug repaired; no new feature requirement or performance work opened.",
+  "hooks": "No .specify/extensions.yml; no before/after implement hooks registered."
+}

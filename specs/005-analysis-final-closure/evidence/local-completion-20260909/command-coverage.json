@@ -1,0 +1,114 @@
+{
+  "scope": "Local development completion under owner 2026-09-09 amendment, not protected-main/release acceptance",
+  "canonicalSingleRunFinalHead": "NOT_CLAIMED: earlier serial attempts failed at defects subsequently repaired; no failed run is relabeled PASS",
+  "canonicalCommands": [
+    "npm run lint",
+    "npm run invariants:test",
+    "npm run migration:test",
+    "npm run module-boundaries:test",
+    "npm run evidence-writers:test",
+    "npm run semantic-v2:test",
+    "npm run phase4:test",
+    "npm run phase5:test",
+    "npm run phase6:test",
+    "npm run effects:test",
+    "npm run phase7:test",
+    "npm run phase8:test",
+    "npm run phase9:test",
+    "npm run phase10:test",
+    "npm run phase11:test",
+    "npm run phase12:test",
+    "npm test",
+    "npm run benchmark:baseline"
+  ],
+  "completedPrefix": {
+    "source": "bedca214ad2dd6f94ac95f3ed00023987a7f5a3b",
+    "commands": [
+      "npm run lint",
+      "npm run invariants:test",
+      "npm run migration:test",
+      "npm run module-boundaries:test",
+      "npm run evidence-writers:test",
+      "npm run semantic-v2:test",
+      "npm run phase4:test",
+      "npm run phase5:test",
+      "npm run phase6:test",
+      "npm run effects:test"
+    ],
+    "evidence": "&& canonical chain reached phase7; first ten commands completed with zero exit status",
+    "wholeRunExit": 1,
+    "wholeRunSeconds": 993.9,
+    "logPath": "/tmp/hex-final-elf-check-Z2nrcv/full.log",
+    "logSha256": "f8b03919f47aa23fb99e0bea943e71dda0f420fa85969d543fb632e9505349b0"
+  },
+  "correctedPhase7": {
+    "source": "f9cb38d33e7ba5e199ff8e4f648eb19edae7b015",
+    "exitCode": 0,
+    "seconds": 162.5,
+    "summary": "corrected-shared-phase7-summary.log"
+  },
+  "remaining": {
+    "source": "bedca214ad2dd6f94ac95f3ed00023987a7f5a3b",
+    "scope": "diagnostic remaining canonical steps; not a full final-candidate PASS",
+    "results": [
+      {
+        "command": "npm run phase8:test",
+        "exitCode": 0,
+        "elapsedSeconds": 744.6,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase8-test.log"
+      },
+      {
+        "command": "npm run phase9:test",
+        "exitCode": 0,
+        "elapsedSeconds": 89.9,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase9-test.log"
+      },
+      {
+        "command": "npm run phase10:test",
+        "exitCode": 0,
+        "elapsedSeconds": 53.9,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase10-test.log"
+      },
+      {
+        "command": "npm run phase11:test",
+        "exitCode": 0,
+        "elapsedSeconds": 3.9,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase11-test.log"
+      },
+      {
+        "command": "npm run phase12:test",
+        "exitCode": 0,
+        "elapsedSeconds": 5.7,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/phase12-test.log"
+      },
+      {
+        "command": "npm test",
+        "exitCode": 0,
+        "elapsedSeconds": 230.8,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/test.log"
+      },
+      {
+        "command": "npm run benchmark:baseline",
+        "exitCode": 0,
+        "elapsedSeconds": 0.7,
+        "log": "/mnt/workspace/.dev-state/hex-development-batch/remaining-checks-20260909/benchmark-baseline.log"
+      }
+    ],
+    "complete": true
+  },
+  "reuseBasis": "After bedca, the only production-source delta is js/analysis/shared-app-artifacts.js. Its full phase7 and targeted regressions passed on the corrected source; final npm test, generated output and UI/userscript runtime are revalidated. Earlier unrelated subsystem results remain source-bound development evidence, not an exact-final release receipt.",
+  "finalRegression": {
+    "source": "4b04bfa266e9d00a0c6ededd7899de3e1327968d",
+    "command": "npm test",
+    "exitCode": 0,
+    "seconds": 182.0,
+    "summary": "final-shared-test-summary.log"
+  },
+  "finalCandidate": "4b04bfa266e9d00a0c6ededd7899de3e1327968d",
+  "status": "COMPLETE_LOCAL_DEVELOPMENT",
+  "canonicalCommandCoverage": {
+    "passed": 18,
+    "total": 18,
+    "method": "Source-bound constituent results plus corrected Phase7 and final changed-product regression; not a single exact-final npm run check PASS."
+  }
+}

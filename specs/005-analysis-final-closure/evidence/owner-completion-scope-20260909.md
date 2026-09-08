@@ -1,6 +1,6 @@
 # Owner development-completion scope — 2026-09-09
 
-**Status:** scope amendment recorded; no release or protected-main pass claimed.
+**Status:** COMPLETE_LOCAL_DEVELOPMENT — 53/53 applicable tasks complete. See [final local evidence](local-completion-20260909/README.md). No release or protected-main pass claimed.
 
 The owner changed the current handoff boundary to the local combined product:
 root-owned improvement-ZIP integration, applicable local source/runtime checks,
@@ -20,7 +20,7 @@ may justify a source change; an unmet target alone does not start new work.
 
 ## Eight current task rows
 
-| Task | Current mapping | Evidence still needed before any local-scope checkbox change |
+| Task | Current mapping | Applicable evidence / exclusion |
 | --- | --- | --- |
 | T022 | External review/CI is out of scope; a development-branch snapshot is informational. | None for the scope change; do not claim external approval. |
 | T023 | Local candidate/source and improvement-ZIP integration. | Exact local source SHA/tree, ZIP input/output hashes, and root integration note. |
@@ -33,9 +33,8 @@ may justify a source change; an unmet target alone does not start new work.
 
 The four external release rows and four retired administrative rows are retained
 as non-checkbox history in tasks.md. No applicable task is marked passing by
-this scope record; the current development denominator is 53. Root must fill
-the local evidence fields from the final ZIP integration and check only rows
-whose applicable local contract is actually demonstrated.
+this scope record; the current development denominator is 53. The completed local evidence fields and source-bound results are recorded in
+`local-completion-20260909/`; the four applicable rows are now checked.
 
 ## Retired administrative rows
 

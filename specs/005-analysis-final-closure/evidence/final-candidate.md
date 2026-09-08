@@ -1,5 +1,7 @@
 # T041–T042 final-candidate evidence
 
+**Current development record (2026-09-09):** [local completion](local-completion-20260909/README.md), under the [owner scope](owner-completion-scope-20260909.md). The dated receipts below are history and do not reopen performance or external work.
+
 **Observation date:** 2026-09-08
 **Disposition:** `PENDING` — this record supplies exact local gate, browser, generated-output, and convergence inputs; it does not claim final-candidate acceptance.
 

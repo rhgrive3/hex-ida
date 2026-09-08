@@ -3,3 +3,21 @@ imported-core: PASS (5.5s)
 imported-build: PASS (4.6s)
 imported-build-repeat: PASS (3.1s)
 Second build git diff --exit-code over template and release-version: exit 0.
+
+Repaired source 22fbcb66c / generated candidate be4e74f2a:
+Origin regression suite: PASS (16/16; Luna Max bug-fix owner).
+core:test: PASS (Luna Max bug-fix owner).
+final-repaired-build: PASS (2.9s)
+final-repaired-userscript: PASS (55.1s)
+final-platform-contract: PASS (2.1s)
+After userscript:test, git diff --exit-code over template/release-version: exit 0.
+Test-generated deployment binding was preserved in a local patch then restored to committed null; this is not a deployment.
+
+Final shared-cache corrective candidate 4b04bfa266e9d00a0c6ededd7899de3e1327968d:
+corrected-shared-phase7: PASS (162.5s)
+final-shared-build: PASS (7.6s)
+final-shared-lint: PASS (3.8s)
+final-shared-test: PASS (182.0s)
+final-shared-userscript: PASS (61.6s)
+final-shared-browser: PASS (87.2s)
+Final template/release-version second diff: zero. Local deployment binding restored to null.
