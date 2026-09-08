@@ -173,12 +173,17 @@ function snapshotSelection(value) {
   // object form here dropped the array form, so the turn snapshot lost the
   // selection boundaries and broke selection scope (#5759).
   const source = Array.isArray(value) ? { instructions: value } : value;
-  const instructions = Array.isArray(source.instructions) ? source.instructions.slice(0, 80).map((item) => ({
+  const rawInstructions = Array.isArray(source.instructions) ? source.instructions : [];
+  // The display payload is truncated to 80 entries, but the selection
+  // boundaries authorize the scope: they must derive from the original
+  // instruction list before truncation, or the scope shrinks with the
+  // display payload (#5437).
+  const start = addressText(first(source.start, rawInstructions[0]?.address));
+  const end = addressText(first(source.end, rawInstructions[rawInstructions.length - 1]?.address, start));
+  const instructions = rawInstructions.slice(0, 80).map((item) => ({
     address: addressText(item?.address), mnemonic: String(item?.mnemonic || ''), operands: String(item?.operands || ''),
-  })) : [];
-  const start = addressText(first(source.start, instructions[0]?.address));
-  const end = addressText(first(source.end, instructions[instructions.length - 1]?.address, start));
-  return deepFreeze({ start, end, instructions, truncated: !!source.truncated || (Array.isArray(source.instructions) && source.instructions.length > 80) });
+  }));
+  return deepFreeze({ start, end, instructions, truncated: !!source.truncated || (rawInstructions.length > 80) });
 }
 
 function snapshotCapabilities(local) {
