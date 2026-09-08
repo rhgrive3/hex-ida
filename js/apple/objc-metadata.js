@@ -200,18 +200,117 @@ async function parseProtocol(get, address, opts = {}) {
   return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: prefixComplete ? await decodedPointer(get, u64(b, 56), address + 56n) : null, classPropertiesAddress, completeness };
 }
 
+function canonicalExternalClassName(name) {
+  if (typeof name !== 'string') return null;
+  const m = /^_OBJC_CLASS_\$_([A-Za-z_][A-Za-z0-9_]*)$/.exec(name);
+  return m ? m[1] : null;
+}
+
+function classNameFromReference(value) {
+  if (typeof value === 'string') {
+    const canonical = canonicalExternalClassName(value);
+    if (canonical) return canonical;
+    const plain = value.trim();
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(plain) ? plain : null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  if (value.complete !== undefined && value.complete !== true) return null;
+  if (value.completeness && typeof value.completeness === 'object'
+    && value.completeness.complete !== undefined && value.completeness.complete !== true) return null;
+  const candidate = value.className ?? value.targetClass ?? value.target ?? value.name;
+  return typeof candidate === 'string' ? classNameFromReference(candidate) : null;
+}
+
+function classNameFromBinding(value) {
+  const rawName = typeof value === 'string'
+    ? value
+    : value && typeof value === 'object'
+      ? (value.name ?? value.symbol ?? value.import ?? null)
+      : null;
+  return canonicalExternalClassName(rawName);
+}
+
+async function resolveExternalCategoryClassName(get, storageAddress) {
+  if (get == null || storageAddress == null) return null;
+  if (typeof get.resolveClassReference === 'function') {
+    try {
+      const resolved = await get.resolveClassReference(storageAddress);
+      const className = classNameFromReference(resolved);
+      if (className) return className;
+    } catch { /* fail closed */ }
+  }
+  const bindingAt = typeof get.bindingAt === 'function' ? get.bindingAt : null;
+  if (!bindingAt) return null;
+  let binding = null;
+  try { binding = await bindingAt(storageAddress); } catch { return null; }
+  if (!binding) return null;
+  if (typeof binding === 'object' && binding.complete !== true) return null;
+  return classNameFromBinding(binding);
+}
+
+function collectCategoryBindImports(sections, opts) {
+  const out = [];
+  for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const imports = src?.imports;
+    if (Array.isArray(imports)) out.push(...imports);
+  }
+  return out;
+}
+
+function categoryBindImportsAreComplete(sections, opts) {
+  for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const imports = src?.imports;
+    if (!Array.isArray(imports) || imports.length === 0) continue;
+    const chainedFixups = src?.metadata?.chainedFixups;
+    if (!chainedFixups || typeof chainedFixups !== 'object'
+      || chainedFixups.complete !== true
+      || chainedFixups.importsComplete !== true
+      || chainedFixups.bindingSitesComplete !== true) return false;
+  }
+  return true;
+}
+
+function buildBindingAtFromImports(imports) {
+  const byAddress = new Map();
+  for (const imp of imports) {
+    if (!imp || typeof imp.name !== 'string' || !Array.isArray(imp.sites)) continue;
+    for (const site of imp.sites) {
+      try {
+        if (site?.address == null) continue;
+        const key = BigInt(site.address).toString();
+        const binding = { name: imp.name, complete: true };
+        if (!byAddress.has(key)) byAddress.set(key, binding);
+        else if (byAddress.get(key)?.name !== imp.name) byAddress.set(key, null);
+      } catch { /* ignore malformed site address */ }
+    }
+  }
+  return (address) => {
+    try { return byAddress.get(BigInt(address).toString()) || null; }
+    catch { return null; }
+  };
+}
+
 async function parseCategory(get, address, classByAddress, opts = {}) {
   if (opts?.signal?.aborted) return null;
   const b = await get(address, 56, true); if (!b || b.length < 48) return null;
   const name = await cstring(get, await decodedPointer(get, u64(b, 0), address)); if (!name) return null;
-  const classAddress = await decodedPointer(get, u64(b, 8), address + 8n);
-  const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null, className = target?.name || null;
+  const rawClassPointer = u64(b, 8);
+  const classAddress = await decodedPointer(get, rawClassPointer, address + 8n);
+  const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null;
+  let className = target?.name || null;
+  // Keep numeric pointer decoding fail-closed. Symbolic recovery is only
+  // considered for a non-zero pointer that the numeric resolver identified as
+  // an unresolved bind, never for an unknown ordinary address or null pointer.
+  if (!className && classAddress == null && rawClassPointer !== 0n) {
+    const external = await resolveExternalCategoryClassName(get, address + 8n);
+    if (external) className = external;
+  }
   const methods = await methodList(get, await decodedPointer(get, u64(b, 16), address + 16n), className, false, 'category', opts);
   const classMethods = await methodList(get, await decodedPointer(get, u64(b, 24), address + 24n), className, true, 'category', opts);
   const protocols = await protocolRefs(get, await decodedPointer(get, u64(b, 32), address + 32n), opts);
   const methodCompleteness = { instanceMethods: methods.completeness, classMethods: classMethods.completeness };
   const completeness = { methods: methodCompleteness, protocols: protocols.completeness, complete: !opts?.signal?.aborted && protocols.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await decodedPointer(get, u64(b, 40), address + 40n), classPropertiesAddress: b.length >= 56 ? await decodedPointer(get, u64(b, 48), address + 48n) : null, completeness };
+  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, targetClass: className, target: className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await decodedPointer(get, u64(b, 40), address + 40n), classPropertiesAddress: b.length >= 56 ? await decodedPointer(get, u64(b, 48), address + 48n) : null, completeness };
 }
 
 function pointerTableSize(value) {
@@ -280,6 +379,18 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;
   get.requireImplementationProof = opts.requireImplementationProof === true;
+  if (typeof opts.resolveClassReference === 'function') get.resolveClassReference = opts.resolveClassReference;
+  else if (typeof sections?.resolveClassReference === 'function') get.resolveClassReference = sections.resolveClassReference;
+  else if (typeof opts.binaryImage?.resolveClassReference === 'function') get.resolveClassReference = opts.binaryImage.resolveClassReference;
+  else if (typeof sections?.binaryImage?.resolveClassReference === 'function') get.resolveClassReference = sections.binaryImage.resolveClassReference;
+  if (typeof opts.bindingAt === 'function') get.bindingAt = opts.bindingAt;
+  else if (typeof sections?.bindingAt === 'function') get.bindingAt = sections.bindingAt;
+  else {
+    const bindImports = collectCategoryBindImports(sections, opts);
+    if (bindImports.length && categoryBindImportsAreComplete(sections, opts)) {
+      get.bindingAt = buildBindingAtFromImports(bindImports);
+    }
+  }
   const classByAddress = new Map(
     (Array.isArray(opts.classes) ? opts.classes : [])
       .map((c) => [pointerTableAddress(c?.addr), c])
