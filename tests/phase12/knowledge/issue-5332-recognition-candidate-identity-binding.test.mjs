@@ -12,7 +12,7 @@ import {
   createMatchResult,
   recognitionCanClaimUnique,
   promoteKnowledgeSuggestion,
-} from '../js/knowledge/phase12-recognition.js';
+} from '../../../js/knowledge/phase12-recognition.js';
 
 function expectIdentityMismatch(fn, label) {
   assert.throws(fn, (error) => {
@@ -126,7 +126,7 @@ expectIdentityMismatch(() => createMatchResult({
   assert.equal(result.unique, true);
 
   async function recognize(db) {
-    const { recognizeWithKnowledgeDB } = await import('../js/knowledge/phase12-recognition.js');
+    const { recognizeWithKnowledgeDB } = await import('../../../js/knowledge/phase12-recognition.js');
     return recognizeWithKnowledgeDB({ db, input: { sourceEntityId: 'function:A', packageEntryId: 'pkg' } });
   }
 }
