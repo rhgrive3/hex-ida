@@ -43,6 +43,18 @@ const VECTOR_VARIANT_CALLER_SAVED = Object.freeze([
   'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat', 'vstart',
 ]);
 
+// Keep the registry vocabulary and both argument/return classifiers on one
+// alias set. LLVM/Clang commonly emits the underscore spelling while the
+// repository's canonical ABI identity uses the hyphen spelling.
+export const RISCV_VECTOR_CALLING_CONVENTION_ALIASES = Object.freeze([
+  'riscv-vector-variant', 'riscv_vector_cc',
+]);
+
+function canonicalRiscvVectorCallingConvention(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text === 'riscv_vector_cc' ? 'riscv-vector-variant' : text;
+}
+
 const ABI_ALIAS = Object.freeze({
   x1:'ra', x2:'sp', x3:'gp', x4:'tp', x5:'t0', x6:'t1', x7:'t2', x8:'s0', x9:'s1',
   x10:'a0', x11:'a1', x12:'a2', x13:'a3', x14:'a4', x15:'a5', x16:'a6', x17:'a7',
@@ -159,8 +171,10 @@ function callSymbol(instruction, options) {
 }
 
 function vectorVariantRequested(instruction, options, prototype) {
-  const explicit = String(instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention || '').toLowerCase();
-  if (explicit === 'riscv-vector-variant' || explicit === 'riscv_vector_cc') return true;
+  const explicit = canonicalRiscvVectorCallingConvention(
+    instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention,
+  );
+  if (explicit === 'riscv-vector-variant') return true;
   return callSymbol(instruction, options)?.riscvVariantCc === true;
 }
 
@@ -181,7 +195,8 @@ function parameterList(prototype) {
 function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
+  const pointer = parameter?.pointer === true || parameter?.isPointer === true
+    || /\*|\b(?:pointer|ptr|object)\b/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
@@ -330,8 +345,21 @@ function createClassifier(profile) {
      * psABI: a return value larger than 2*XLEN is returned in memory, and the
      * caller passes the destination pointer as an implicit first integer
      * argument, consuming a0.
+     *
+     * The argument list must share the return classifier's canonical decision:
+     * a proven memory result inserts the hidden a0 and shifts every user
+     * argument, without requiring the provider to duplicate the derived
+     * `indirectResult`/`returnClass` metadata. Those provider flags stay
+     * authoritative overrides. When the return size itself is unproven, the
+     * hidden-result presence is unknown and argument placement must fail
+     * closed to unknown instead of minting exact slots.
      */
-    const indirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+    const explicitIndirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+    const returnDecision = explicitIndirectResult ? null : classifyReturn(prototype, options);
+    const derivedIndirectResult = returnDecision?.indirect === true;
+    const returnSizeUnproven = returnDecision?.partial === true
+      && returnDecision?.aggregate === true && returnDecision?.bits == null;
+    const indirectResult = explicitIndirectResult || derivedIndirectResult;
     if (indirectResult) {
       const reg = INTEGER_ARGUMENT_REGISTERS[0];
       useInteger(reg, { purpose:'indirect-result' });
@@ -354,6 +382,13 @@ function createClassifier(profile) {
         arguments_.push({ index, location:'unknown', abiClass:'allocation-after-unproven-argument', bits:classified.bits,
           partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown' });
         partial = true;
+        return;
+      }
+
+      if (returnSizeUnproven) {
+        unknownArgument(index, classified, 'return-size-layout-unproven-hidden-result-unknown', {
+          returnClassification:'partial-hidden-result-possible',
+        });
         return;
       }
 
@@ -678,6 +713,8 @@ function createClassifier(profile) {
         location:'unknown', possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'anonymous-vararg-frontier-not-source-prototyped',
       } : undefined,
+      returnClassification:indirectResult ? 'indirect' : returnSizeUnproven ? 'partial' : undefined,
+      hiddenResultPointer:indirectResult ? { input:'x10', location:'register', pointerBits:XLEN } : undefined,
       partial:partial || aggregatePartial || variadic,
       scope:profile.scope,
       evidence:`prototype-${profile.id}`,
@@ -734,11 +771,14 @@ function createClassifier(profile) {
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
     if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
+      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
       return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
-    const vectorVariant = String(prototype.callingConvention || options.callingConvention || '').toLowerCase().replace('_cc','-variant') === 'riscv-vector-variant';
+    const vectorVariant = canonicalRiscvVectorCallingConvention(
+      prototype.callingConvention || options.callingConvention,
+    ) === 'riscv-vector-variant';
     if (returnVector) {
       if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
@@ -846,9 +886,18 @@ function createRiscvAbi(profile) {
     semanticVersion:'1',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
-    callingConventions:()=>Object.freeze([profile.id, 'riscv-vector-variant']),
+    // The classifier's vectorVariantRequested() accepts both the canonical
+    // 'riscv-vector-variant' and the legacy 'riscv_vector_cc' alias; the
+    // registry must claim the same spellings so an explicit ABI id resolves
+    // instead of degrading to 'unknown' (#6026).
+    callingConventions:()=>Object.freeze([profile.id, ...RISCV_VECTOR_CALLING_CONVENTION_ALIASES]),
     classifyArguments,
-    classifyCallReturn:(instruction, options = {}) => classifyReturn(callPrototypeOf(instruction, options), options),
+    classifyCallReturn:(instruction, options = {}) => classifyReturn(
+      callPrototypeOf(instruction, options),
+      instruction?.callingConvention == null
+        ? options
+        : { ...options, callingConvention:instruction.callingConvention },
+    ),
     classifyFunctionReturn:(options = {}) => classifyReturn(options.functionPrototype || options.prototype || {}, options),
     classifyEntryRegister:(reg) => {
       const id = String(reg || '').toLowerCase();

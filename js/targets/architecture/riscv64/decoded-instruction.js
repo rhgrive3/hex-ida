@@ -89,6 +89,17 @@ export function createRiscv64DecodedInstruction(input = {}) {
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
 
+  // ISA profile metadata must agree with the C-extension capability the
+  // record itself asserts (#5999). `mode:'rv64imc'` (and any compressed
+  // encoding) already requires compressed-instruction capability, so a
+  // `compressedInstructions:false` claim is a self-contradiction that must
+  // fail closed instead of minting contradictory canonical ISA evidence.
+  const compressedInstructions = input.compressedInstructions == null
+    ? null : input.compressedInstructions === true;
+  if (compressedInstructions === false && (mode === 'rv64imc' || size === 2 || fields.compressed === true)) {
+    throw new TypeError('riscv64-decoded-instruction-compressed-profile-contradiction');
+  }
+
   // `rawBytes` is authoritative for `fields`, so the canonical bytes must
   // never share mutable storage with any caller. `Object.freeze` cannot seal
   // typed-array elements, so every read publishes a fresh defensive copy and
@@ -99,7 +110,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     instructionAlignment,
     ...(input.isaIdentity == null ? {} : { isaIdentity:String(input.isaIdentity) }),
     ...(input.isaEvidence == null ? {} : { isaEvidence:String(input.isaEvidence) }),
-    ...(input.compressedInstructions == null ? {} : { compressedInstructions:input.compressedInstructions === true }),
+    ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
     length: size,

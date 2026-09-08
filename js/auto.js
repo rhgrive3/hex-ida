@@ -460,9 +460,15 @@ export function memoizeAnalysis(analyze) {
     const keyPart = (value) => {
       if (value == null) return 'null';
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
-      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return `structured:opaque:${typeof value}`; }
+      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return null; }
     };
-    const key = `${keyPart(addr)}:${keyPart(end)}`;
+    const addrPart = keyPart(addr);
+    const endPart = keyPart(end);
+    // An uncanonicalizable value has no safe cache identity. Running it without
+    // memoization preserves the analyzer's actual input and avoids sharing one
+    // opaque sentinel across unrelated cyclic values (#3309).
+    if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
+    const key = `${addrPart}:${endPart}`;
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))

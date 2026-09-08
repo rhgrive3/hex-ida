@@ -31,7 +31,7 @@ const imm = (value) => ({ k:'imm', value:BigInt(value), text:`#${value}` });
   assert.equal(effect.operations.length, 1);
   assert.equal(effect.operations[0].kind, 'barrier');
   assert.equal(effect.operations[0].scope.barrier, 'dmb');
-  assert.equal(effect.operations[0].scope.domain, 'ish');
+  assert.equal(effect.operations[0].scope.domain, 'inner-shareable');
 }
 
 {

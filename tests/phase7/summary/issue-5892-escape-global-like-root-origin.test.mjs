@@ -3,26 +3,52 @@ import test from 'node:test';
 
 import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { classifyRootOrigin, analyzeEscape } from '../../../js/analysis/summary/escape.js';
-import { createPointsToTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
+import { deriveCanonicalAddressProof } from '../../../js/analysis/alias/canonical-address-v2.js';
+import { createPointsToTarget, createRootDescriptorSeparatedTarget, exactRange } from '../../../js/analysis/pointsto/lattice.js';
 import { fixture } from '../helpers/fixtures.mjs';
 import { buildFixture } from '../corpus/fixtures.mjs';
 
+function canonicalProof(rootEntityId, separationClass) {
+  const valueId = `proof-${separationClass}-${rootEntityId}`;
+  const proof = deriveCanonicalAddressProof({
+    functionId: 'issue-5892-canonical-proof',
+    values: [{
+      id: valueId,
+      kind: 'entry',
+      variableKey: `root-${rootEntityId}`,
+      machineType: { kind: 'address', widthBits: 64 },
+      metadata: {
+        canonicalRoot: {
+          kind: separationClass,
+          rootEntityId,
+          baseOffset: 0,
+          addressSpace: 'memory',
+          linearOffsets: true,
+        },
+      },
+    }],
+    nodes: [],
+    blocks: [],
+  }, valueId);
+  assert.equal(proof.kind, 'rooted');
+  return proof;
+}
 /* A canonical root descriptor's storage class is producer-held evidence
  * (issue #5892): `global-like` normalizes to a `rooted` proof, but escape must
  * not demote it to an incoming argument. Only descriptor-backed authority
  * (`separationAuthority:'root-descriptor'`) counts. */
 
 test('classifyRootOrigin: descriptor-backed global-like rooted target is global', () => {
-  const target = createPointsToTarget({
+  // The authority must cross the proof boundary (#6066); a plain string input
+  // no longer mints descriptor-backed separation.
+  const target = createRootDescriptorSeparatedTarget({
     addressSpace:'memory',
     rootKind:'rooted',
     rootEntityId:'global:G',
-    separationClass:'global-like',
-    separationAuthority:'root-descriptor',
     offsetRange:exactRange(0n),
     widthBits:64,
     evidenceIds:['addr'],
-  });
+  }, canonicalProof('global:G', 'global-like'));
   assert.equal(classifyRootOrigin(target), 'global');
 });
 

@@ -30,7 +30,7 @@ async function assertDuplicateSnapshotRejected(duplicateSnapshot, sessionNonce) 
     duplicateSnapshot,
   ]);
   const provider = new DebuggerProvider(adapter);
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce }, { connect: true });
   const before = session.modules.get('stable');
   assert.ok(before);
   assert.equal(before.generation, 1);

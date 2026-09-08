@@ -54,4 +54,25 @@ const calleeSaved = await analyzeLines([
 ]);
 assert.equal(calleeSaved.stringRefs.some((ref) => ref.addr === 0x200000020n), true);
 
+// #3583 — no-destination ARM64 stores and indirect branch/call forms must
+// retain their source/target register reads. Exclusive stores keep their
+// operand-0 status-result write semantics.
+for (const mnemonic of ['sttr', 'str']) {
+  const result = await analyzeLines([`${mnemonic} x0, [x1]`, 'ret']);
+  assert.deepEqual(result.argRegs, [0, 1], `${mnemonic} must read its value and address registers`);
+  assert.equal(result.setsReturnValue, false, `${mnemonic} must not report an x0 destination write`);
+}
+
+for (const mnemonic of ['blr', 'braaz', 'brabz', 'blraaz', 'blrabz']) {
+  const result = await analyzeLines([`${mnemonic} x0`, 'ret']);
+  assert.deepEqual(result.argRegs, [0], `${mnemonic} must read its target register`);
+  assert.equal(result.setsReturnValue, false, `${mnemonic} must not report an x0 destination write`);
+}
+
+for (const mnemonic of ['stxr', 'stlxr']) {
+  const result = await analyzeLines([`${mnemonic} w0, x1, [x2]`, 'ret']);
+  assert.deepEqual(result.argRegs, [1, 2], `${mnemonic} must retain its status-result destination`);
+  assert.equal(result.setsReturnValue, true, `${mnemonic} must preserve an x0 status-result write`);
+}
+
 // Exact-head CI trigger after current-main reconciliation.
