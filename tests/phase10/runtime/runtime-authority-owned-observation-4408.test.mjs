@@ -150,18 +150,26 @@ test('P10 runtime authority tracker isolates Uint8Array and ArrayBuffer payloads
 
   const accepted = tracker.accept(canonical);
   assert.equal(accepted.status, 'accepted');
+  assert.equal(tracker.observations[0].payload.bytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.deepEqual(tracker.observations[0].payload.bytes.bytes, [1, 2, 3]);
+  assert.equal(tracker.observations[0].payload.buffer.$hexRuntimeBinary, 'ArrayBuffer');
+  assert.deepEqual(tracker.observations[0].payload.buffer.bytes, [4, 5]);
 
   // Post-accept mutation of source typed array cannot affect tracker
   rawBytes[0] = 99;
-  assert.equal(tracker.observations[0].payload.bytes[0], 1);
+  assert.equal(tracker.observations[0].payload.bytes.bytes[0], 1);
 
   // Post-snapshot mutation cannot alter stored tracker bytes or committed identity
   const snapshot = tracker.snapshot();
-  snapshot.observations[0].payload.bytes[0] = 77;
-  new Uint8Array(snapshot.observations[0].payload.buffer)[0] = 88;
+  assert.throws(() => {
+    snapshot.observations[0].payload.bytes.bytes[0] = 77;
+  }, TypeError);
+  assert.throws(() => {
+    snapshot.observations[0].payload.buffer.bytes[0] = 88;
+  }, TypeError);
 
-  assert.equal(tracker.observations[0].payload.bytes[0], 1);
-  assert.equal(new Uint8Array(tracker.observations[0].payload.buffer)[0], 4);
-  assert.equal(tracker.snapshot().observations[0].payload.bytes[0], 1);
+  assert.equal(tracker.observations[0].payload.bytes.bytes[0], 1);
+  assert.equal(tracker.observations[0].payload.buffer.bytes[0], 4);
+  assert.equal(tracker.snapshot().observations[0].payload.bytes.bytes[0], 1);
   assert.equal(tracker.observations[0].observationId, accepted.observationId);
 });

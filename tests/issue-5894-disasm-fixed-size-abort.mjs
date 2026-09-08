@@ -41,8 +41,11 @@ test('#5894 abort during a hung fixed-size fetchChunk rejects with AbortError', 
 
 test('#5894 an already-aborted signal rejects before fetching', async () => {
   const app = makeApp();
+  let fetches = 0;
+  app.backend.fetchChunk = () => { fetches += 1; return new Promise(() => {}); };
   const controller = new AbortController();
   controller.abort('stop');
   const { api } = createApi(app, () => {});
   await assert.rejects(api.disasm(0x1000n, 4, { signal: controller.signal }), (error) => /abort|cancelled/i.test(error?.message ?? '') || error?.name === 'AbortError');
+  assert.equal(fetches, 0, 'already-aborted disassembly must not fetch');
 });
