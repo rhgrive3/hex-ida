@@ -69,7 +69,7 @@ function fileLike(bytes, name = 'game.bin') {
   const newA = await noteKeyFor(fa, info, 0);
   const newB = await noteKeyFor(fb, info, 0);
   assert.notEqual(newA, newB, 'full active-slice content must affect the v3 key');
-  assert.match(newA, /sha256tree:v1:/, 'modern runtime should use cryptographic tree SHA-256');
+  assert.match(newA, /sha256tree:v2:/, 'modern runtime should use the versioned cryptographic tree SHA-256');
 }
 
 // #478 / #2572: a weak legacy identity is recoverable but cannot be promoted
