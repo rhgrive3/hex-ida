@@ -25,7 +25,10 @@ function widthBytes(widthBits) {
 }
 
 function isProvenAddressSpace(value) {
-  return typeof value === 'string' && value.length > 0 && value !== 'unknown';
+  // Canonical spelling only: a value that is not already trimmed was never
+  // canonicalized at the target boundary (e.g. a raw passthrough object), and
+  // must not mint a separation proof off a whitespace difference (#5717).
+  return typeof value === 'string' && value.length > 0 && value.trim() === value && value !== 'unknown';
 }
 
 /**
