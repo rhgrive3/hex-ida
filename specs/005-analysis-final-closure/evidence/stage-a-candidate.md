@@ -541,3 +541,51 @@ Passing development checks are reused only for unchanged relevant code. In
 particular, the full Phase 7/8 results above predate the narrow discovery repair;
 its focused discovery/T016/T035 checks and Phase 10 suite cover that repair.
 These are not a clean immutable release-candidate receipt.
+
+
+# Current c32 candidate binding — 2026-09-08
+
+This current-product observation binds the open Stage A candidate records to
+primary/generated head `c32ba8db0f93a98af084be52c67a263a7f2eaa00`, tree
+`86509430e5bbd40fc66ef09176cb324ecc3ad5d4`. The generated-output parent and
+authority commit is `78c9163af92ac69551833c11ef674c988ebcc109`.
+
+- PR #7097 is observed at head `c32ba8db0f93a98af084be52c67a263a7f2eaa00`
+  against GitHub `main` base `8847eaa04e69fb528d6ebe6825a15d1dd4257f04`; the
+  captured packet is
+  `/mnt/workspace/.dev-state/hex-development-batch/t043-github-c32ba8/`.
+  The PR is open and Draft. Seven status contexts are successful, including
+  six CircleCI contexts; CodeRabbit is the documented draft-review skip. The
+  packet contains 13 historical commented reviews, 6 issue comments, and no
+  inline reviews. No protected merge or approval is inferred.
+- The exact c32 UI/browser result is recorded at
+  `/mnt/workspace/.dev-state/hex-development-batch/t040-browser-c32ba8-evidence/receipt.md`:
+  `tests/ui/browser.mjs` PASS, exit 0, 102.1 seconds, under the task browser
+  environment. It proves the local browser projection for this exact tree; it
+  does not prove active deployment or a physical device.
+- The exact c32 T045/T039 shadow result is recorded at
+  `/mnt/workspace/.dev-state/hex-development-batch/t023-t039-shadow-c32ba8db-receipt.md`:
+  the six locked cases MATCH and all seven bounded counters are zero with the
+  locked non-zero denominators.
+- The c32 canonical full-check command terminated **FAIL after 709.9 seconds**
+  at issue #5990 (`tests/issue-5990-riscv-identity-string-coercion.mjs`) after
+  the Phase 6 corpus reached 334/334. No c32 full-check PASS is claimed; the
+  retained failure is a real current-head result. The earlier `8e045`
+  full-check receipt remains historical and is not relabeled as c32 evidence.
+
+These facts satisfy current identity/browser/shadow evidence preparation for
+T023. T023 remains **PENDING** because c32 failed; the repaired successor
+requires a new exact-head canonical result and candidate-tree/admission
+classification. The Draft PR and absent protected merge do not support a DONE
+checkbox.
+
+## Successor after c32 failure — 2026-09-08
+
+The focused #5990 repair is integrated locally into the primary and candidate
+at `5d46d550f5b999e662f07a70c5407b2877c8d82e`. The Node 22 repair packet records
+10 focused passing subtests across #5990, #6026, and #5994 at
+`/mnt/workspace/.dev-state/hex-development-batch/t023-issue5990-repair-c32-focused.log`;
+the two direct Phase 10 suffix checks (#5755 and #5760) pass at
+`/mnt/workspace/.dev-state/hex-development-batch/t023-phase10-suffix-5d46.log`.
+The generated userscript refresh is pending for this source successor; these
+focused results do not replace the required repaired-candidate canonical gate.

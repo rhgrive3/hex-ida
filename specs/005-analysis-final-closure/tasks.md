@@ -457,3 +457,46 @@ T051–T057 rows retain any T049 references as historical evidence only.
 
 - [ ] T061 [CAMP] Revalidate the reviewed T052 fixture correction through an immutable maintenance transaction
   - **Contract** — Objective: historical maintenance transaction for the pre-amendment integration receipt topology. The current development-speed amendment retires this administrative transaction and does not require its receipt reconstruction. Owner/model: primary integration agent implementation, independent Luna Max review. Risk: RELEASE. Dependencies: none under the current amendment. Owned paths: historical maintenance evidence only. Delta: retain the reviewed fixture/denominator history for provenance without executing a new maintenance transaction. Negative counterexample: treating this retired row as a current implementation or release blocker. Tests and completion evidence: historical identities remain preserved; current release proof is owned by T040–T044. Status: RETIRED_ADMINISTRATIVE_HISTORY under the current development-speed amendment.
+
+
+## Current c32 constituent evidence — 2026-09-08
+
+The following updates bind current evidence without changing the 61-task
+denominator or promoting an unproved release checkbox:
+
+- **T023 remains unchecked/PENDING.** PR #7097 is observed at c32
+  (`c32ba8db0f93a98af084be52c67a263a7f2eaa00`, tree
+  `86509430e5bbd40fc66ef09176cb324ecc3ad5d4`), against GitHub main base
+  `8847eaa04e69fb528d6ebe6825a15d1dd4257f04`; six CircleCI contexts are
+  successful and CodeRabbit is a draft-review skip. The current c32 browser
+  receipt and T039 shadow receipt are available, but the PR is Draft, no
+  protected merge is recorded, and the c32 canonical check terminated FAIL at issue #5990 after 709.9 seconds,
+  following Phase 6 corpus 334/334. Candidate-tree/admission proof therefore
+  remains open. See
+  `evidence/stage-a-candidate.md` and the packet under
+  `/mnt/workspace/.dev-state/hex-development-batch/t043-github-c32ba8/`.
+- **T040 remains unchecked/PENDING.** Current c32 browser PASS and T039
+  shadow zero-counter evidence are recorded, while the fourteen H9 numeric
+  rows, current-head external performance/provenance identities, and active
+  deployment/runtime binding remain absent. Physical-device execution is
+  `DEFERRED_BY_OWNER`, with no physical PASS claimed.
+- **T041 remains unchecked/PENDING.** c32 contains the generated artifact
+  refresh and its exact hashes/build identity; the post-c32 build retained a
+  zero tracked diff over the generated paths. The local deployment identity is
+  null, and the 5d46 source successor still needs a generated refresh and
+  active deployment binding.
+- **T042 remains unchecked/PENDING.** The roadmap implementation overlay is
+  23/23, current c32 browser/shadow constituent evidence is bound, and the
+  canonical check terminated FAIL at issue #5990 after Phase 6 corpus 334/334.
+  The older `8e045` full-check PASS
+  is not relabeled as c32. Record the c32 terminal check and Spec Kit
+  convergence before considering the T042 checkbox; a local PASS does not waive
+  T040/T041 or other release dependencies.
+
+The current successor is integrated locally at
+`5d46d550f5b999e662f07a70c5407b2877c8d82e`. Its Node 22 focused packet has 10
+passing subtests across #5990, #6026, and #5994, and the two direct Phase 10
+suffix checks #5755/#5760 pass. Generated refresh and a repaired-candidate
+canonical gate remain pending; these facts do not change any checkbox.
+
+These are constituent facts and next closure criteria, not a release PASS.

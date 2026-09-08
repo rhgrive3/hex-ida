@@ -56,3 +56,62 @@ The existing stage-a evidence records two canonical builds with no second-run tr
 5. Physical iPad execution is **DEFERRED** under the owner-authorized guardrail amendment. No physical PASS is claimed.
 
 T040 remains pending until the exact final-product measurement and required runtime/device identity fields are present; no threshold or denominator is waived here.
+
+
+## Current c32 constituent evidence — 2026-09-08
+
+The current generated candidate is `c32ba8db0f93a98af084be52c67a263a7f2eaa00`,
+tree `86509430e5bbd40fc66ef09176cb324ecc3ad5d4`; its generated-output parent
+and source authority is `78c9163af92ac69551833c11ef674c988ebcc109`.
+
+The current exact-head local browser packet
+(`/mnt/workspace/.dev-state/hex-development-batch/t040-browser-c32ba8-evidence/receipt.md`)
+records `tests/ui/browser.mjs` PASS, exit 0, in 102.1 seconds with Node
+22.20.0, Playwright 1.62.1, and the task-owned browser environment. The
+current exact-source T039/T045 shadow packet
+(`/mnt/workspace/.dev-state/hex-development-batch/t023-t039-shadow-c32ba8db-receipt.md`)
+records six locked projection MATCH results and seven zero counters. These
+are current local/browser/shadow constituent proofs; neither is deployment or
+physical-device activation evidence.
+
+The c32 generated artifact packet records these current hashes and local build
+identity:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `userscript/hex.user.template.js` | `c163b4df69884a9c84c40c80d418d57aa59d19107df355248319fb00ee09d2af` |
+| `userscript/release-version.json` | `07dc2f6cd20268890a0964b033ea6af1fe08303e0fd64bc9888064e3315c607e` |
+| `js/userscript/deployment-identity.generated.js` | `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252` |
+
+The release file identifies build `ebc8b17d089137d2a79c8e98` and release
+identity `58779cf6aea475b3a00b07e8f0a134e86c5ee3dd41fa713015574d0e7d316710`;
+the local generated deployment binding remains `DEPLOYMENT_COMMIT = null`.
+The exact captured hashes are also retained at
+`/mnt/workspace/.dev-state/hex-development-batch/t043-github-c32ba8/generated-hashes.json`.
+
+The post-c32 canonical userscript build retained the same tracked generated
+files, and `git diff --exit-code` over the two generated paths exited 0. The
+build output is retained at
+`/mnt/workspace/.dev-state/hex-development-batch/t023-userscript-build-second-c32ba8db0.log`.
+This second-build result is bound to c32; the later 5d46 source repair requires
+a new generated refresh.
+
+T040 remains **PENDING**. The fourteen H9 numeric rows, current-head
+P-COMPETITIVE/P5/P6/native-P8 measurements and external provenance, and
+production-faithful active deployment/runtime identity are still absent.
+Physical iPad execution remains **DEFERRED_BY_OWNER** under the guardrail
+amendment; no physical PASS is claimed. The c32 canonical full-check command
+terminated **FAIL after 709.9 seconds** at issue #5990
+(`tests/issue-5990-riscv-identity-string-coercion.mjs`) after Phase 6 corpus
+334/334; this is a real current-head failure, not a measurement or gate PASS.
+
+## Successor after c32 failure — 2026-09-08
+
+The focused successor fix is integrated locally at
+`5d46d550f5b999e662f07a70c5407b2877c8d82e`. Node 22 evidence records 10
+focused passing subtests across #5990, #6026, and #5994, plus direct Phase 10
+suffix passes for #5755 and #5760. The focused logs are
+`/mnt/workspace/.dev-state/hex-development-batch/t023-issue5990-repair-c32-focused.log`
+and `/mnt/workspace/.dev-state/hex-development-batch/t023-phase10-suffix-5d46.log`.
+Generated output must be refreshed for this successor before any new exact-head
+candidate gate; T040 remains **PENDING**.

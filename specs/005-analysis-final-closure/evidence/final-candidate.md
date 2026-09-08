@@ -52,3 +52,54 @@ These are exact source-equivalent development results for `b75874dbf`, because o
 - T044 remains blocked on T043 and requires a protected merge, refetched-main ancestry, post-merge smoke/generated/runtime proof, and original-workspace/recovery-ref preservation.
 
 This record intentionally records completed local evidence and exact remaining dependencies without changing task checkboxes or representing local development proof as release acceptance.
+
+
+## Current c32 readiness binding — 2026-09-08
+
+The final-candidate evidence now has a current identity packet for generated
+head `c32ba8db0f93a98af084be52c67a263a7f2eaa00`, tree
+`86509430e5bbd40fc66ef09176cb324ecc3ad5d4`, with source/generated parent
+`78c9163af92ac69551833c11ef674c988ebcc109`.
+
+The exact c32 browser receipt
+(`/mnt/workspace/.dev-state/hex-development-batch/t040-browser-c32ba8-evidence/receipt.md`)
+records the local UI browser gate PASS (102.1 seconds, exit 0). The exact c32
+shadow receipt
+(`/mnt/workspace/.dev-state/hex-development-batch/t023-t039-shadow-c32ba8db-receipt.md`)
+records the six-case T045 proof and seven zero counters.
+
+The committed generated outputs at c32 have these hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `userscript/hex.user.template.js` | `c163b4df69884a9c84c40c80d418d57aa59d19107df355248319fb00ee09d2af` |
+| `userscript/release-version.json` | `07dc2f6cd20268890a0964b033ea6af1fe08303e0fd64bc9888064e3315c607e` |
+| `js/userscript/deployment-identity.generated.js` | `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252` |
+
+The local release identity is `58779cf6aea475b3a00b07e8f0a134e86c5ee3dd41fa713015574d0e7d316710`,
+build `ebc8b17d089137d2a79c8e98`, and local
+`DEPLOYMENT_COMMIT` is `null`. The first and post-c32 generation logs are
+retained at
+`/mnt/workspace/.dev-state/hex-development-batch/t023-userscript-build-78c9163af.log`
+and
+`/mnt/workspace/.dev-state/hex-development-batch/t023-userscript-build-second-c32ba8db0.log`;
+they agree on release/build identity, and the post-c32 `git diff --exit-code`
+over the two tracked generated paths exited 0. This second-build result is
+bound to c32. The local deployment binding remains absent, so T041 remains
+**PENDING** rather than being promoted from these constituent facts; the 5d46
+source successor also requires a new generated refresh.
+
+PR #7097 is open and Draft at c32 against base
+`8847eaa04e69fb528d6ebe6825a15d1dd4257f04`; its captured status/review packet
+is `/mnt/workspace/.dev-state/hex-development-batch/t043-github-c32ba8/`.
+No protected-main admission is inferred.
+
+The c32 canonical full-check command terminated **FAIL after 709.9 seconds** at issue #5990 (`tests/issue-5990-riscv-identity-string-coercion.mjs`) after the Phase 6 corpus reached 334/334. No c32 full-check PASS is claimed. The focused repair is integrated locally at `5d46d550f5b999e662f07a70c5407b2877c8d82e`; T042 remains **PENDING** until the repaired candidate receives a new exact-head canonical result and Spec Kit convergence is recorded. That result would close only the local-gate constituent of T042, subject to the task contract's T040 and T041 dependencies; it would not waive missing performance, deployment, external-provenance, or deferred-device evidence.
+
+## Successor after c32 failure — 2026-09-08
+
+The 5d46 successor has 10 focused passing subtests across #5990, #6026, and
+#5994, plus direct Phase 10 suffix passes for #5755 and #5760. Evidence is
+retained at `/mnt/workspace/.dev-state/hex-development-batch/t023-issue5990-repair-c32-focused.log`
+and `/mnt/workspace/.dev-state/hex-development-batch/t023-phase10-suffix-5d46.log`.
+Generated refresh and the repaired-candidate canonical gate remain pending.
