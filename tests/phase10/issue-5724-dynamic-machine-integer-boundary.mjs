@@ -53,3 +53,15 @@ test('#5724 canonical machine-integer inputs keep working', () => {
   const exp = compileExperiment({ id: 'ok', functionAddress: 0x1000n, fieldOffset: 0n, fieldSize: 8, initial: 100n, argumentIndex: 1, operation: 'add' });
   assert.ok(exp.cases.length >= 6);
 });
+
+test('#5724 exact string, BigInt, and safe-number initial values are preserved', () => {
+  const make = (initial) => compileExperiment({
+    id: 'exact-initial', functionAddress: 0x1000n, fieldOffset: 0n, fieldSize: 8,
+    signed: false, initial, argumentIndex: 1, operation: 'set',
+  });
+  const exact = 9007199254740993n;
+  assert.equal(make('9007199254740993').cases[0].initialState.fields[0].value, exact);
+  assert.equal(make(exact).cases[0].initialState.fields[0].value, exact);
+  const safe = 9007199254740991;
+  assert.equal(make(safe).cases[0].initialState.fields[0].value, BigInt(safe));
+});
