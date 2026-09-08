@@ -80,14 +80,35 @@ async function expectUnmapped(fn, label) {
   await expectUnmapped(() => emu.load(0x8090n, 1), 'beyond real extent and window');
 }
 
-// 7. FunctionSandbox objectBase path: unaligned object mapping is exact.
+// 7. FunctionSandbox with an unaligned objectBase: the sandbox's own
+//    synthetic object mapping is exact (the issue's integration boundary).
+//    maxObjectSize is clamped to a 0x100 minimum by the sandbox contract.
 {
-  const emu = new Emulator({});
-  emu.mapZero(0x9010n, 0x18n, 'sandbox-object');
+  const { FunctionSandbox } = await import('../js/symbolic/function-sandbox.js');
+  const sandbox = new FunctionSandbox({}, { objectBase: 0x9010n, maxObjectSize: 0x18 });
+  await sandbox.setup(0x8000n, {});
+  const emu = sandbox.emulator;
+  // The sandbox object was mapped by FunctionSandbox itself via mapZero,
+  // clamped to [0x9010, 0x9110) by the 0x100 minimum object size.
+  const objectEnd = 0x9010n + 0x100n;
   await emu.store(0x9020n, 4, 0x11223344n);
   assert.equal(await emu.load(0x9020n, 4), 0x11223344n, 'field write inside the object works');
+  await emu.store(0x9108n, 8, 0x42n);
+  assert.equal(await emu.load(0x9108n, 8), 0x42n, 'the last object field reads back');
   await expectUnmapped(() => emu.load(0x900fn, 1), 'byte before the object');
-  await expectUnmapped(() => emu.load(0x9028n + 0x10n, 1), 'byte after the object');
+  await expectUnmapped(() => emu.load(objectEnd, 1), 'byte after the object');
+}
+
+// 8. A run through FunctionSandbox cannot read/write outside the declared
+//    object: a guest store past the object end faults instead of hitting
+//    whole-page synthetic backing.
+{
+  const { FunctionSandbox } = await import('../js/symbolic/function-sandbox.js');
+  const sandbox = new FunctionSandbox({}, { objectBase: 0xa010n, maxObjectSize: 0x100 });
+  await sandbox.setup(0x8000n, {});
+  const emu = sandbox.emulator;
+  await expectUnmapped(() => emu.store(0xa120n, 4, 1n), 'guest write past the object end');
+  await expectUnmapped(() => emu.load(0xa120n, 4), 'guest read past the object end');
 }
 
 console.log('issue-5685 emu mapZero exact synthetic range: ok');
