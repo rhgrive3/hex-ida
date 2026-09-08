@@ -162,7 +162,17 @@ export function createPhase7ArtifactDescriptor(input = {}) {
   if (!KIND_SET.has(kind)) fail('phase7-artifact-unknown-kind');
   const classes = dependencyClassFor(kind);
 
-  const budgetClass = optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
+  // Budget class only belongs in the key when completeness can depend on it.
+  // An artifact produced under an exhaustive budget is not interchangeable with
+  // one truncated under an interactive budget. When budget relevance is not
+  // explicitly denied, the budget generation is a required dependency: a
+  // descriptor whose producer did not bind which budget produced it must fail
+  // closed rather than publish an identity that silently drops the budget
+  // dimension from the cache key (#5751).
+  const budgetAffectsCompleteness = input.budgetAffectsCompleteness !== false;
+  const budgetClass = budgetAffectsCompleteness
+    ? nonEmpty(input.budgetClass, 'phase7-artifact-budget-class-required')
+    : optional(input.budgetClass, 'phase7-artifact-invalid-budget-class');
   const architectureSemanticVersion = classes.includes('semantic')
     ? nonEmpty(input.architectureSemanticVersion, 'phase7-artifact-architecture-semantic-version-required')
     : optional(input.architectureSemanticVersion, 'phase7-artifact-invalid-architecture-semantic-version');
@@ -187,15 +197,29 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     memorySsaVersion: classes.includes('memoryssa')
       ? nonEmpty(input.memorySsaVersion, 'phase7-artifact-memoryssa-version-required')
       : null,
-    budgetClass: input.budgetAffectsCompleteness === false ? null : budgetClass,
+    budgetClass: budgetAffectsCompleteness ? budgetClass : null,
     calleeSummaryIds: classes.includes('calleeSummaries')
       ? sortedIds(input.calleeSummaryIds, 'phase7-artifact-invalid-callee-summary-id')
       : [],
     libraryModelId: classes.includes('libraryModel') ? optional(input.libraryModelId, 'phase7-artifact-invalid-library-model-id') : null,
-    debugProviderVersion: classes.includes('debugProvider') || classes.includes('debugIdentity')
+    // A declared dependency must be bound in the key: a producer that derives
+    // from debug sources has to name which provider version and matched build
+    // identity it used. Omitting them would drop the debug dimension from the
+    // cache key entirely (#5836).
+    debugProviderVersion: classes.includes('debugProvider')
+      ? nonEmpty(input.debugProviderVersion, 'phase7-artifact-debug-provider-version-required')
+      : classes.includes('debugIdentity')
       ? optional(input.debugProviderVersion, 'phase7-artifact-invalid-debug-provider-version')
       : null,
-    debugBuildIdentity: classes.includes('debugIdentity') ? optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity') : null,
+    debugBuildIdentity: kind === 'phase7.debug.facts'
+      ? nonEmpty(input.debugBuildIdentity, 'phase7-artifact-debug-build-identity-required')
+      : optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity'),
+    // The debug identity digest binds the full canonical debug identity —
+    // including the matched-partial coverage domain that decides which
+    // records are hard evidence — into the key (#5849).
+    debugIdentityDigest: classes.includes('debugIdentity')
+      ? nonEmpty(input.debugIdentityDigest, 'phase7-artifact-debug-identity-digest-required')
+      : null,
     loaderEvidenceId: classes.includes('loaderEvidence') ? optional(input.loaderEvidenceId, 'phase7-artifact-invalid-loader-evidence-id') : null,
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
