@@ -157,6 +157,31 @@ function makeEntry(profile, metricId, fields) {
   };
 }
 
+function fieldsWithMeasurement(metricId, fields, measurementsByMetric) {
+  const measurement = measurementsByMetric[metricId] ?? null;
+  if (measurement == null) return fields;
+  const evidenceRefs = [
+    ...(fields.evidenceRefs ?? []),
+    `measurement:${stableDigest(measurement)}`,
+    ...measurement.evidenceRefs,
+  ];
+  return {
+    ...fields,
+    corpusId: measurement.corpusId ?? fields.corpusId,
+    inputIdentity: measurement.inputIdentity ?? fields.inputIdentity,
+    referenceTool: measurement.referenceTool ?? fields.referenceTool,
+    referenceVersion: measurement.referenceVersion ?? fields.referenceVersion,
+    configuration: measurement.configuration ?? fields.configuration,
+    runPolicy: measurement.runPolicy ?? fields.runPolicy,
+    evidenceRefs,
+    measurement,
+    ...(measurement.status === 'MEASURED' ? {
+      hexValue: measurement.candidateValue,
+      referenceValue: measurement.referenceValue,
+    } : {}),
+  };
+}
+
 function atomicWriteJson(filePath, value) {
   const parent = path.dirname(filePath);
   fs.mkdirSync(parent, { recursive: true });
@@ -255,10 +280,6 @@ function validateRepositoryEvidence({ profile, captures, measurements, expectedP
     } else {
       validateCompetitiveMeasurement(measurement, { expectedMetricId: metricId });
     }
-    if (measurement?.status === 'MEASURED'
-        && profile.metrics[metricId]?.groundTruth?.binaryScored !== true) {
-      repositoryEvidenceError('nonbinary-measured-unsupported', metricId);
-    }
   }
 }
 
@@ -268,6 +289,20 @@ function profileFromRepositoryEvidence(profile, captures, measurements) {
     if (measurement.status !== 'MEASURED') continue;
     const config = effectiveProfile.metrics[metricId];
     const capture = captures[metricId];
+    if (config.groundTruth?.binaryScored !== true) {
+      const existingWorkloads = Array.isArray(config.corpusWorkloadIds) ? config.corpusWorkloadIds : [];
+      config.corpusWorkloadIds = [
+        measurement.corpusId,
+        ...existingWorkloads.filter((workloadId) => workloadId !== measurement.corpusId),
+      ];
+      config.groundTruth = {
+        ...config.groundTruth,
+        status: 'measured',
+        binaryScored: false,
+        twinManifest: null,
+      };
+      continue;
+    }
     if (capture?.status !== 'READY' || !Array.isArray(capture.artifacts) || capture.artifacts.length === 0) {
       repositoryEvidenceError('measured-capture-required', metricId);
     }
@@ -294,7 +329,7 @@ function twinEvidenceFromRepositoryCaptures(measurements, captures) {
   for (const [metricId, measurement] of Object.entries(measurements)) {
     if (measurement.status !== 'MEASURED') continue;
     const artifact = captures[metricId]?.artifacts?.[0];
-    if (artifact == null) repositoryEvidenceError('measured-artifact-required', metricId);
+    if (artifact == null) continue;
     evidence[metricId] = {
       debugArtifactPath: artifact.debugArtifactPath,
       strippedArtifactPath: artifact.strippedArtifactPath,
@@ -336,7 +371,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
         replayArtifacts: true,
       } : {}),
     });
-    if (measurement.status === 'MEASURED') {
+    if (measurement.status === 'MEASURED' && profile.metrics[metricId].groundTruth?.binaryScored === true) {
       if (capture?.status !== 'READY') throw new TypeError(`competitive-measurement-capture-required:${metricId}`);
       if (measurement.captureDigest !== capture.captureDigest
           || measurement.artifactIdsDigest !== capture.denominator?.artifactIdsDigest) {
@@ -402,11 +437,11 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   };
   const arm64Coverage = measureMachineEffectsCoverage('arm64', [sampleInstruction]);
 
-  // 3. Normalized metric comparisons. These five historical rows retain
-  // their old values. makeEntry marks their synthetic/legacy comparisons as
-  // UNMEASURED until a real same-binary twin is bound in the profile.
+  // 3. Normalized metric comparisons. Source-fixture measurements replace
+  // these rows only after their independent oracle is validated; absent rows
+  // retain their historical values only as non-authoritative context.
   const entries = [
-    makeEntry(profile, 'alias-v2-exact-precision', {
+    makeEntry(profile, 'alias-v2-exact-precision', fieldsWithMeasurement('alias-v2-exact-precision', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
       hexVersion: headCommit,
@@ -417,8 +452,8 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       hexValue: aliasV2Candidate.exactPrecision ?? 0,
       referenceValue: aliasV2Baseline.exactPrecision ?? 0,
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    }),
-    makeEntry(profile, 'alias-v2-exact-recall', {
+    }, measurementsByMetric)),
+    makeEntry(profile, 'alias-v2-exact-recall', fieldsWithMeasurement('alias-v2-exact-recall', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
       hexVersion: headCommit,
@@ -429,8 +464,8 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       hexValue: aliasV2Candidate.exactRecall ?? 0,
       referenceValue: aliasV2Baseline.exactRecall ?? 0,
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    }),
-    makeEntry(profile, 'alias-v2-false-must-alias', {
+    }, measurementsByMetric)),
+    makeEntry(profile, 'alias-v2-false-must-alias', fieldsWithMeasurement('alias-v2-false-must-alias', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
       hexVersion: headCommit,
@@ -441,8 +476,8 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       hexValue: aliasV2Candidate.falseMustAlias,
       referenceValue: aliasV2Baseline.falseMustAlias,
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    }),
-    makeEntry(profile, 'alias-v2-false-no-alias', {
+    }, measurementsByMetric)),
+    makeEntry(profile, 'alias-v2-false-no-alias', fieldsWithMeasurement('alias-v2-false-no-alias', {
       corpusId: 'phase7-alias-memory-corpus-v2',
       inputIdentity: 'alias-v2-30-queries',
       hexVersion: headCommit,
@@ -453,8 +488,8 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       hexValue: aliasV2Candidate.falseNoAlias,
       referenceValue: aliasV2Baseline.falseNoAlias,
       evidenceRefs: ['tests/phase7/corpus/fixtures.mjs', 'tools/validation/phase7/scoring.mjs'],
-    }),
-    makeEntry(profile, 'machine-effects-arm64-coverage', {
+    }, measurementsByMetric)),
+    makeEntry(profile, 'machine-effects-arm64-coverage', fieldsWithMeasurement('machine-effects-arm64-coverage', {
       corpusId: 'arm64-effects-corpus',
       inputIdentity: 'arm64-effects-sample',
       hexVersion: headCommit,
@@ -465,7 +500,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
       hexValue: arm64Coverage.coverageRate ?? 1.0,
       referenceValue: 0.0,
       evidenceRefs: ['tests/stage1/a2-machine-effects-coverage.test.mjs'],
-    }),
+    }, measurementsByMetric)),
   ];
 
   // The profile owns the denominator. Rows that do not yet have a measured

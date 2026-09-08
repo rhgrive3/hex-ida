@@ -3,10 +3,10 @@
  *
  * A twin capture proves which bytes were built and stripped.  It does not by
  * itself prove a semantic score, so this module accepts the independent P5/P6
- * LLVM/Capstone ledgers and the frozen P8 observation ledger separately.  A
- * value is emitted only when the ledger denominator and artifact/source
- * identities agree with the capture.  A failed identity check is represented
- * as UNMEASURED rather than being repaired with a guessed number.
+ * LLVM/Capstone ledgers and the frozen P8 observation ledger separately.  The
+ * source-fixture rows use the same envelope with their declared truth and
+ * source-content oracle. A failed identity check is represented as UNMEASURED
+ * rather than being repaired with a guessed number.
  */
 
 import crypto from 'node:crypto';
@@ -34,6 +34,11 @@ import {
   PHASE8_REFERENCE_MODES,
   qualityVector,
 } from '../phase8/metrics.mjs';
+import {
+  SOURCE_FIXTURE_METRIC_CONFIG,
+  collectCompetitiveSourceMeasurements,
+  validateSourceFixtureMeasurement,
+} from './source-fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'tests/phase8/corpus/sources');
@@ -54,6 +59,7 @@ const MEASUREMENT_CONFIG = Object.freeze({
   'machine-effects-riscv64-coverage': Object.freeze({ direction: 'higher', kind: 'pipeline-tuples' }),
   'decompiler-quality-gotos': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'gotos' }),
   'decompiler-quality-assembly-fallbacks': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'rawAssemblyFallbacks' }),
+  ...SOURCE_FIXTURE_METRIC_CONFIG,
 });
 const HEX32_RE = /^[0-9a-f]{32}$/i;
 const HEX40_RE = /^[0-9a-f]{40}$/i;
@@ -137,7 +143,10 @@ export function validateCompetitiveMeasurement(value, {
   const metricConfig = MEASUREMENT_CONFIG[value.metricId];
   if (metricConfig == null) measurementError('metric-unsupported', value.metricId);
   if (![MEASURED_STATUS, UNMEASURED_STATUS].includes(value.status)) measurementError('status', String(value.status));
-  if (value.authority !== AUTHORITY) measurementError('authority', String(value.authority));
+  const allowedAuthorities = metricConfig.kind === 'source-fixture'
+    ? new Set(['deterministic-fixture', 'source-spec'])
+    : new Set([AUTHORITY]);
+  if (!allowedAuthorities.has(value.authority)) measurementError('authority', String(value.authority));
   if (!COMPARISONS.has(value.comparison)) measurementError('comparison', String(value.comparison));
   for (const key of ['candidateValue', 'referenceValue']) {
     if (value[key] != null && !finiteNumber(value[key])) measurementError('value', `${value.metricId}:${key}`);
@@ -146,6 +155,17 @@ export function validateCompetitiveMeasurement(value, {
     if (!finiteNumber(value.candidateValue) || !finiteNumber(value.referenceValue)) measurementError('measured-values', value.metricId);
     if (value.comparison !== comparison(metricConfig.direction, value.candidateValue, value.referenceValue)) {
       measurementError('comparison-forged', value.metricId);
+    }
+    if (metricConfig.kind === 'source-fixture') {
+      try {
+        validateSourceFixtureMeasurement(value, { expectedMetricId, expectedProducerIdentity });
+      } catch (error) {
+        measurementError('source-fixture', `${value.metricId}:${error.message}`);
+      }
+      if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+        measurementError('evidence-refs', value.metricId);
+      }
+      return Object.freeze(value);
     }
     for (const key of ['corpusId', 'inputIdentity', 'referenceTool', 'referenceVersion', 'configuration', 'runPolicy', 'captureDigest', 'artifactIdsDigest', 'producerGitSha', 'producerTreeSha']) {
       if (typeof value[key] !== 'string' || !value[key].trim()) measurementError('identity', `${value.metricId}:${key}`);
@@ -1761,16 +1781,19 @@ export function collectCompetitiveMeasurementsFromRepository({
     ? null
     : phase8NativeAdapterIdentity();
   const observations = p8Ready ? phase8CurrentObservations({ corpus, nativeArm64Capture, decompilerTimeBudgetMs }) : null;
-  const measurements = collectCompetitiveMeasurements({
-    capturesByMetric: captures,
-    phase5Ledger: ledgers['machine-effects-x86_64-coverage'] || null,
-    phase6Ledger: ledgers['machine-effects-riscv64-coverage'] || null,
-    phase8Observations: observations,
-    phase8Corpus: corpus,
-    phase8ObservationMethod,
-    phase8ReferenceMode: useNativeReference ? PHASE8_REFERENCE_MODES.NATIVE_PAIRED : PHASE8_REFERENCE_MODES.FROZEN_LEGACY,
-    phase8NativeAdapterIdentity: phase8NativeAdapterBinding,
-  });
+  const measurements = {
+    ...collectCompetitiveMeasurements({
+      capturesByMetric: captures,
+      phase5Ledger: ledgers['machine-effects-x86_64-coverage'] || null,
+      phase6Ledger: ledgers['machine-effects-riscv64-coverage'] || null,
+      phase8Observations: observations,
+      phase8Corpus: corpus,
+      phase8ObservationMethod,
+      phase8ReferenceMode: useNativeReference ? PHASE8_REFERENCE_MODES.NATIVE_PAIRED : PHASE8_REFERENCE_MODES.FROZEN_LEGACY,
+      phase8NativeAdapterIdentity: phase8NativeAdapterBinding,
+    }),
+    ...collectCompetitiveSourceMeasurements(),
+  };
   writeJson(path.join(root, 'measurements.json'), measurements);
   return Object.freeze({ captures, measurements, outputRoot: root });
 }
