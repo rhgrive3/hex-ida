@@ -1,5 +1,5 @@
 import { ABIPlugin } from './registry.js';
-import { MICROSOFT_X64_ABI, callPrototypeOf, parameterClass, typeBits } from './microsoft-x64.js';
+import { MICROSOFT_X64_ABI, callPrototypeOf, parameterClass, typeBits, microsoftX64AggregateReturnDecision, microsoftX64ReturnResult } from './microsoft-x64.js';
 import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
 
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['rcx','rdx','r8','r9']);
@@ -181,6 +181,18 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
 
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
+    /* An intrinsic vector spelling and a conflicting declared width cannot
+     * both be true; fail closed instead of publishing an exact register or
+     * stack placement for an impossible type. */
+    if (classified.intrinsicBitsConflict) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'vector-width-conflict',
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'microsoft-vectorcall-intrinsic-vector-width-conflict',
+      });
+      return;
+    }
     const hva = hvaInfo(parameter, classified);
     const uncertainHvaBefore = vectorAllocationUnknown;
     if (hva.metadataInvalid) {
@@ -505,7 +517,37 @@ function vectorcallReturn(prototype, options = {}) {
     || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
       && typeof prototype.returnAggregate !== 'boolean')
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-  if (aggregate) return { reg:null, partial:true, reason:'microsoft-vectorcall-non-hva-aggregate-return-requires-layout-proof' };
+  if (aggregate) {
+    /* __vectorcall inherits the standard x64 integer-return rule: results of
+     * integer type, including structs/unions of 8 bytes or less, return by
+     * value in RAX. Reuse the shared standard-x64 decision instead of an
+     * unconditional partial so a proven trivial small aggregate classifies
+     * exactly like Win64 (#5590). The hidden-result path additionally
+     * requires its own profile proof: the physical pointee layout plus an
+     * asserted copy-semantics intent (trivial or non-trivial). Without both
+     * the sret contract stays conservative. */
+    const descriptor = aggregateReturnDescriptor(prototype, options);
+    const decision = microsoftX64AggregateReturnDecision(descriptor, prototype, options);
+    if (decision.kind === 'direct' && !descriptor.layout) {
+      return { reg:null, partial:true, aggregate:true,
+        reason:'microsoft-vectorcall-non-hva-aggregate-return-requires-layout-proof' };
+    }
+    if (decision.kind === 'indirect') {
+      const layoutProven = !!descriptor.layout;
+      const copySemanticsAsserted = options.returnTrivialForCalls === true
+        || prototype?.returnTrivialForCalls === true || prototype?.trivialForCalls === true
+        || prototype?.pod === true
+        || options.returnNonTrivialForCalls === true
+        || prototype?.returnNonTrivialForCalls === true
+        || prototype?.nonTrivialForCalls === true || prototype?.nonTrivial === true;
+      if (!layoutProven || !copySemanticsAsserted) {
+        return { reg:null, partial:true, aggregate:true,
+          pointeeBits:decision.pointeeBits ?? null, hiddenResultPossible:true,
+          reason:'microsoft-vectorcall-non-hva-aggregate-return-requires-layout-proof' };
+      }
+    }
+    return microsoftX64ReturnResult(decision);
+  }
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) {
     const bits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? 64);
     if (!Number.isSafeInteger(bits) || bits <= 0) return { reg:null, partial:true, reason:'microsoft-vectorcall-return-width-invalid' };
@@ -517,7 +559,6 @@ function vectorcallReturn(prototype, options = {}) {
 export function classifyMicrosoftVectorcallCallReturn(instruction, options = {}) {
   return vectorcallReturn(callPrototypeOf(instruction, options), options);
 }
-
 export function classifyMicrosoftVectorcallFunctionReturn(options = {}) {
   return vectorcallReturn(options.functionPrototype || options.prototype || {}, options);
 }
