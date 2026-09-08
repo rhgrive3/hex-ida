@@ -280,7 +280,10 @@ export function createPointsToTarget(input = {}) {
     addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
-    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
+    // Canonical root token, not the raw spelling (#6063): 'A' and '  A  ' are
+    // the same root, and storing the raw string split one root into two
+    // identities — a false strong NoAlias between them.
+    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId.trim() : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: proven ? 'root-descriptor' : null,
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
