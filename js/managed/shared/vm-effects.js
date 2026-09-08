@@ -262,11 +262,27 @@ export function createVMEffectFunction(input, options = {}) {
   }
 
   const outBundles = bundles.map((b) => createVMEffectBundle(b, options));
-  const aggregateCompleteness = nonEmpty(input.aggregateCompleteness ?? (
+  const derivedAggregateCompleteness =
     outBundles.some((b) => b.completeness === 'unknown') ? 'unknown' :
     outBundles.some((b) => b.completeness === 'partial') ? 'partial' :
-    outBundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact'
-  ), 'vm-effect-aggregate-completeness-required');
+    outBundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
+  /* #5404: an explicitly supplied aggregate must not out-claim the bundles it
+     summarizes — 'exact' over a partial bundle is exactly the laundering this
+     field exists to prevent. The explicit value is also enum-checked instead
+     of being adopted as raw text. */
+  const AGGREGATE_STRENGTH = Object.freeze({ unknown: 0, partial: 1, 'exact-with-intrinsic': 2, exact: 3 });
+  let aggregateCompleteness;
+  if (input.aggregateCompleteness != null) {
+    const declared = String(input.aggregateCompleteness);
+    if (!VM_EFFECT_COMPLETENESS.includes(declared)) fail('vm-effect-aggregate-completeness-invalid');
+    aggregateCompleteness =
+      AGGREGATE_STRENGTH[declared] > AGGREGATE_STRENGTH[derivedAggregateCompleteness]
+        ? derivedAggregateCompleteness
+        : declared;
+  } else {
+    aggregateCompleteness = derivedAggregateCompleteness;
+  }
+  nonEmpty(aggregateCompleteness, 'vm-effect-aggregate-completeness-required');
 
   const out = {
     methodId,
@@ -289,5 +305,7 @@ export function validateVMEffectFunction(fn) {
   if (!fn || typeof fn !== 'object') fail('vm-effect-function-invalid');
   if (!fn.methodId || !fn.frontendId || !Array.isArray(fn.bundles)) fail('vm-effect-function-invalid-structure');
   for (const b of fn.bundles) validateVMEffectBundle(b);
+  // #5404: the aggregate field is part of the validated contract, not free text.
+  if (!VM_EFFECT_COMPLETENESS.includes(fn.aggregateCompleteness)) fail('vm-effect-aggregate-completeness-invalid');
   return true;
 }

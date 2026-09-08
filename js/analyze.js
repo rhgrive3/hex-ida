@@ -47,6 +47,15 @@ function isAbort(error, signal) {
   return !!(signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR');
 }
 
+function assertAbortSignalCompatible(signal) {
+  // #5402: a truthy malformed signal ({aborted:false}, etc.) would reach the
+  // listener registration inside awaitAbortable() AFTER the backend operation
+  // started, so operation.cancel() was never reachable. AbortSignal
+  // compatibility is input validation and happens before any backend work —
+  // the canonical producer-wait validation is reused at both entry points.
+  analysisAbortSignalMethods(signal);
+}
+
 async function awaitAbortable(operation, signal) {
   if (!signal) return operation;
   if (signal.aborted) {
@@ -125,6 +134,7 @@ function arm64AddSubImmediateValue(op) {
 
 export async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
   const signal = opts?.signal || null;
+  assertAbortSignalCompatible(signal);
   throwIfAborted(signal);
   const requestedRows = Math.max(0, endRow - startRow + 1);
   const rows = Math.min(requestedRows, rowBudget(opts));
