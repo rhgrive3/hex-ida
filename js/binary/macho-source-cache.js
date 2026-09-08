@@ -122,8 +122,14 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
      provide stable source identity. */
   const effectiveRangeOptions = rangeOptions ?? options.ranges ?? {};
   const source = input && (typeof input === 'object' || typeof input === 'function') ? input : null;
+  // Only immutable ByteSources have stable identity worth caching: a mutable
+  // Uint8Array/ArrayBuffer input (MemoryByteSource keeps the caller's buffer
+  // by reference) can change between calls while the cached image still
+  // reflects the old bytes — the cache would launder that mismatch into a
+  // "confirmed" parse (#5536).
+  const cacheable = !!source && !(input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input) || (typeof Blob !== 'undefined' && input instanceof Blob));
   const selected = options.sliceIndex != null;
-  if (!source || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
+  if (!source || !cacheable || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
 
   const signal = options.signal ?? null;
   // An already-aborted caller must not mint a cache entry: the producer would
