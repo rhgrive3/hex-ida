@@ -48,10 +48,22 @@ test('#3654 does not explain every generic HINT as BTI', () => {
   assert.equal(omitted.pseudo, 'hint()');
   assert.match(omitted.summary, /immediate unavailable/);
   assert.doesNotMatch(omitted.summary, /Branch target marker/);
+
+  for (const [operands, expectedShift, expectedLength] of [
+    ['#32, lsl #1', 'lsl', 1],
+    ['#32, uxtx #1', 'uxtx', 1],
+    ['#32, #1', null, 2],
+  ]) {
+    const result = explainIn('en', 'hint', operands);
+    assert.equal(result.parsed.length, expectedLength);
+    if (expectedShift) assert.equal(result.parsed[0].shift?.op, expectedShift);
+    assert.match(result.title, /Architectural hint/);
+    assert.doesNotMatch(result.summary, /Branch target marker/);
+  }
 });
 
 test('#3654 keeps generic BTI encodings and decoded BTI mnemonics distinct from other HINTs', () => {
-  for (const [operand, name] of [['#32', 'BTI'], ['#34', 'BTI c'], ['#36', 'BTI j'], ['#38', 'BTI jc']]) {
+  for (const [operand, name] of [['#32', 'BTI'], ['#0x20', 'BTI'], ['#34', 'BTI c'], ['#36', 'BTI j'], ['#38', 'BTI jc']]) {
     const result = explainIn('en', 'hint', operand);
     assert.match(result.title, /Branch target marker/);
     assert.match(result.summary, new RegExp(name.replace(' ', '\\s+')));

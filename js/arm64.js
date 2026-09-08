@@ -1490,7 +1490,10 @@ function hintOperandText(ops) {
 function hintImmediate(ops) {
   if (!Array.isArray(ops) || ops.length !== 1) return null;
   const operand = ops[0];
-  if (operand?.k !== 'imm' || typeof operand.value !== 'bigint') return null;
+  // parseOperands folds a trailing shift/extend token into the preceding
+  // operand.  HINT's selector is a plain imm7; treating that decorated shape
+  // as the selector would turn malformed text such as "#32, lsl #1" into BTI.
+  if (operand?.k !== 'imm' || typeof operand.value !== 'bigint' || operand.shift) return null;
   if (operand.value < 0n || operand.value > 0x7fn) return null;
   return Number(operand.value);
 }
