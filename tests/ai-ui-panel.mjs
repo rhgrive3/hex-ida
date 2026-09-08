@@ -32,6 +32,61 @@ await run(async ({ browser }) => {
   const base = await page.evaluate(() => ({ hash: location.hash, screen: !!document.querySelector('#viewport') }));
   check('opening a file lands on the code workspace, not a question screen', base.hash.startsWith('#/code'), base.hash);
 
+  const storeFilter = await page.evaluate(async () => {
+    const panel = window.__hexAi.panel;
+    const originalUpdate = panel.update;
+    let updates = 0;
+    panel.update = (...args) => {
+      updates++;
+      return originalUpdate.apply(panel, args);
+    };
+    try {
+      window.__hexAi.open();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      updates = 0;
+
+      const app = window.__app;
+      const originalTheme = app.store.get('theme');
+      const originalAddress = app.store.get('currentAddress');
+      const theme = app.store.get('theme') === 'dark' ? 'light' : 'dark';
+      const address = app.store.get('currentAddress');
+      app.store.set({ theme });
+      app.store.set({ currentAddress: typeof address === 'bigint' ? address + 1n : 0n });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const irrelevantUpdates = updates;
+
+      const beforeContext = document.querySelector('.ai-context-chip')?.textContent || '';
+      const total = app.viewer.totalRows;
+      const selected = app.viewer.selectedRow;
+      const originalViewerSelected = selected;
+      const storedSelected = app.store.get('selectedRow');
+      let target = selected >= 0 && total > 1 ? (selected + 1) % total : 0;
+      if (target === storedSelected && total > 1) target = (target + 1) % total;
+      app.viewer.select(target, false);
+      app.store.set({ selectedRow: target });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const result = {
+        irrelevantUpdates,
+        contextUpdates: updates,
+        beforeContext,
+        afterContext: document.querySelector('.ai-context-chip')?.textContent || '',
+      };
+      if (originalViewerSelected >= 0) app.viewer.select(originalViewerSelected, false);
+      else app.viewer.deselect();
+      app.store.set({ selectedRow: storedSelected });
+      app.store.set({ theme: originalTheme });
+      app.store.set({ currentAddress: originalAddress });
+      return result;
+    } finally {
+      panel.update = originalUpdate;
+      window.__hexAi.close();
+    }
+  });
+  check('unrelated Store changes do not rerender the AI panel', storeFilter.irrelevantUpdates === 0, JSON.stringify(storeFilter));
+  check('a real selection Store change refreshes the context chip',
+    storeFilter.contextUpdates >= 1 && storeFilter.afterContext !== storeFilter.beforeContext,
+    JSON.stringify(storeFilter));
+
   const real = await page.evaluate(() => {
     const region = window.__app.codeRegion();
     return { fn: '0x' + region.vmAddr.toString(16), insn: '0x' + (region.vmAddr + 8n).toString(16) };
