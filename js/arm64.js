@@ -371,17 +371,44 @@ HANDLERS.mov = (o, ops) => {
   addRegRoles(o, ops);
 };
 
+function moveWideShift(op) {
+  const shift = op && op.shift;
+  return shift && shift.op === 'lsl' && Number.isInteger(shift.amount) ? shift.amount : null;
+}
+
+function moveWideWidth(op) {
+  return op && op.bits === 32 ? 32 : 64;
+}
+
+function moveWideMask(bits) {
+  return bits === 32 ? '0xFFFFFFFF' : '0xFFFFFFFFFFFFFFFF';
+}
+
 HANDLERS.movz = (o, ops) => {
   const [d, s] = ops;
+  const sh = moveWideShift(s);
+  const bits = moveWideWidth(d);
   o.title = J('代入（上を 0 で埋める）', 'Move with zero');
   o.pseudo = opShort(d) + ' = ' + opShort(s);
-  o.summary = J(
-    opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
-    'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
-  o.detail.push(J(
-    'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
-    'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
-    'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  if (sh == null) {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
+    o.detail.push(J(
+      'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
+        'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
+      'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  } else {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を ' + sh + ' ビット左へずらした値を入れ、' +
+        bits + ' ビット幅の残りは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ' shifted left by ' + sh +
+        ' bits, zeroing the remaining bits of its ' + bits + '-bit width.');
+    o.detail.push(J(
+      '16 ビットの即値を ' + sh + ' ビット目から置き、' + bits + ' ビット幅の値にします。' +
+        '大きな定数は、後続の movk で別の 16 ビット部分を足して組み立てます。',
+      'Place the 16-bit immediate at bit ' + sh + ' in the ' + bits + '-bit result; later movk instructions can fill other 16-bit fields.'));
+  }
   o.terms = ['immediate', 'register'];
 };
 
@@ -402,11 +429,25 @@ HANDLERS.movk = (o, ops) => {
 
 HANDLERS.movn = (o, ops) => {
   const [d, s] = ops;
+  const sh = moveWideShift(s);
+  const bits = moveWideWidth(d);
   o.title = J('ビットを反転して代入', 'Move NOT');
-  o.pseudo = opShort(d) + ' = ~' + opShort(s);
-  o.summary = J(
-    immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
-    'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  if (sh == null) {
+    o.pseudo = opShort(d) + ' = ~' + opShort(s);
+    o.summary = J(
+      immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  } else {
+    o.pseudo = opShort(d) + ' = ~(' + opShort(s) + ') & ' + moveWideMask(bits);
+    o.summary = J(
+      immText(s) + ' を ' + sh + ' ビット左へずらした値を ' + bits + ' ビット幅で反転して ' +
+        opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' shifted left by ' + sh + ' bits into ' +
+        opShort(d) + ', limited to ' + bits + ' bits — how small negative constants are made.');
+    o.detail.push(J(
+      '反転は ' + bits + ' ビット幅に限ります。W レジスタなら下位 32 ビット、X レジスタなら 64 ビットだけを使います。',
+      'The NOT is limited to ' + bits + ' bits: W registers use 32 bits and X registers use 64 bits.'));
+  }
   o.terms = ['immediate', 'twoscomplement'];
 };
 

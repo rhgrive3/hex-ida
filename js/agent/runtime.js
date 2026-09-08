@@ -172,6 +172,17 @@ function instructionCost(model) {
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
+const RUN_SIGNAL_OPTION_TOOLS = new Set(['search_strings', 'search_functions']);
+
+function toolArgsWithRunSignal(tool, args, signal) {
+  if (!RUN_SIGNAL_OPTION_TOOLS.has(tool)) return args;
+  const next = args.slice();
+  const options = next[1];
+  if (options == null) next[1] = { signal };
+  else if (typeof options === 'object' && !Array.isArray(options)) next[1] = { ...options, signal };
+  return next;
+}
+
 /** Deterministic mode: no model required. */
 export async function runDeterministicAgent(goal, context, opts) {
   const plan = await planAnalysisGoal(goal, context, opts);
@@ -199,6 +210,45 @@ export async function runAgent(config) {
   const externallyCancelled = () => cfg.signal?.aborted === true;
   const cancelled = () => externallyCancelled() || budget.isCancelled() || deadlineExceeded();
   const cancellationReason = () => externallyCancelled() || budget.isCancelled() ? 'cancelled' : 'timeout';
+  const awaitRunBudget = async (startOperation) => {
+    if (cancelled()) throw new Error(cancellationReason());
+    const remainingMs = Math.max(1, budget.timeoutMs - elapsedMs());
+    const controller = new AbortController();
+    const external = cfg.signal;
+    let rejectExternalAbort;
+    const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
+    let abortHandled = false;
+    const abort = () => {
+      if (abortHandled) return;
+      abortHandled = true;
+      controller.abort(external?.reason ?? 'cancelled');
+      rejectExternalAbort(new Error('cancelled'));
+    };
+    if (external?.aborted) abort();
+    else {
+      external?.addEventListener?.('abort', abort, { once:true });
+      if (external?.aborted) abort();
+    }
+    let timer;
+    const operation = Promise.resolve().then(() => startOperation(controller.signal, remainingMs));
+    try {
+      const value = await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort('timeout');
+            reject(new Error('timeout'));
+          }, remainingMs);
+        }),
+        externalAbortPromise,
+      ]);
+      if (cancelled()) throw new Error(cancellationReason());
+      return value;
+    } finally {
+      clearTimeout(timer);
+      external?.removeEventListener?.('abort', abort);
+    }
+  };
   let disassembly = 0;
   const countedContext = typeof context.analyze === 'function' ? {
     ...context,
@@ -226,41 +276,15 @@ export async function runAgent(config) {
     if (cancelled()) { stopReason = cancellationReason(); break; }
     let step;
     try {
-      const remainingMs = Math.max(1, budget.timeoutMs - (elapsedMs()));
-      const controller = new AbortController();
-      const external = cfg.signal;
-      let rejectExternalAbort;
-      const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
-      let abortHandled = false;
-      const abort = () => {
-        if (abortHandled) return;
-        abortHandled = true;
-        controller.abort(external?.reason ?? 'cancelled');
-        rejectExternalAbort(new Error('cancelled'));
-      };
-      if (external?.aborted) abort();
-      else {
-        external?.addEventListener?.('abort', abort, {once:true});
-        if (external?.aborted) abort();
-      }
-      let timer;
-      try {
-        step = await Promise.race([
-          Promise.resolve(llm.next({
-            goal, query, observations: observations.slice(), availableTools, signal:controller.signal,
-            budget: {
-              remainingToolCalls: budget.maxToolCalls - call,
-              remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
-              remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
-              remainingMs,
-            },
-          })),
-          new Promise((_, reject) => { timer=setTimeout(() => { controller.abort('timeout'); reject(new Error('timeout')); }, remainingMs); }),
-          externalAbortPromise,
-        ]);
-      } finally {
-        clearTimeout(timer); external?.removeEventListener?.('abort', abort);
-      }
+      step = await awaitRunBudget((signal, remainingMs) => llm.next({
+        goal, query, observations: observations.slice(), availableTools, signal,
+        budget: {
+          remainingToolCalls: budget.maxToolCalls - call,
+          remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
+          remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
+          remainingMs,
+        },
+      }));
     } catch (err) {
       if (cancelled() || err?.message === 'cancelled') stopReason = cancellationReason();
       else if (err?.message === 'timeout') stopReason = 'timeout';
@@ -279,8 +303,9 @@ export async function runAgent(config) {
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
     let result;
-    try { result = await tools[req.tool](...req.args); }
-    catch (err) {
+    try {
+      result = await awaitRunBudget((signal) => tools[req.tool](...toolArgsWithRunSignal(req.tool, req.args, signal)));
+    } catch (err) {
       const message = (err && err.message) || String(err);
       result = { tool: req.tool, error: message };
       if (message === 'disassembly-budget' || message === 'function-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
