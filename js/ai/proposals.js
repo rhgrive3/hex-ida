@@ -460,6 +460,14 @@ function canonicalIdentity(value, stack = new Set()) {
     return `d${JSON.stringify(value)};`;
   }
   if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type === 'symbol' || type === 'function') {
+    // Function and symbol identity cannot survive a String() encoding: distinct
+    // closures share source text (captures never appear in toString()) and
+    // distinct symbols share their description. Mapping them into the `x`
+    // domain aliased different approved states into one revision (#5754), so
+    // proposal state and binding snapshots refuse them fail-closed instead.
+    throw new AIError('tool_failed', 'Proposal state cannot contain function or symbol values.');
+  }
   if (type !== 'object') return `x${JSON.stringify(String(value))}`;
 
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
