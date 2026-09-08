@@ -177,6 +177,8 @@ test('an option group outside the dependency class cannot change artifact identi
     memorySsaVersion: '2.0.0',
     architectureSemanticVersion: '1',
     abiSemanticVersion: '1',
+    budgetClass: 'interactive',
+    budgetAffectsCompleteness: true,
   };
   const reference = createPhase7ArtifactDescriptor(aliasBase).artifactId;
   assert.equal(
@@ -197,6 +199,8 @@ test('a kind without option dependencies ignores analysis tuning options (#6164)
     debugProviderVersion: '1.0.0',
     debugBuildIdentity: 'build_a',
     debugIdentityDigest: 'digest_issue_6164',
+    budgetClass: 'interactive',
+    budgetAffectsCompleteness: true,
   };
   const reference = createPhase7ArtifactDescriptor(debugBase).artifactId;
   assert.equal(
