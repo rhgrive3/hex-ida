@@ -79,7 +79,7 @@ function semanticValueUseCount(index, valueId) {
   return index?.useCounts?.get(String(valueId ?? '')) ?? 0;
 }
 
-function canonicalFactFor(memorySsa, use, ir, fact) {
+function canonicalFactFor(memorySsa, use, ir, fact, forwardingSession = null) {
   if (fact != null) return fact;
   return forwardMemoryValue(memorySsa, use, {
     functionId: memorySsa.functionId,
@@ -88,6 +88,7 @@ function canonicalFactFor(memorySsa, use, ir, fact) {
     purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
     requireOperand: true,
     ir,
+    ...(forwardingSession == null ? {} : { forwardingSession }),
   });
 }
 
@@ -102,7 +103,7 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir, options
   const uses = memorySsa.uses.filter((item) => String(item?.id ?? '') === String(useId ?? ''));
   if (uses.length !== 1) return null;
   const use = uses[0];
-  const fact = canonicalFactFor(memorySsa, use, ir, options.fact ?? null);
+  const fact = canonicalFactFor(memorySsa, use, ir, options.fact ?? null, options.forwardingSession ?? null);
   const context = options.context ?? forwardingContext(memorySsa, use, fact);
   if (!isCanonicalExactMemoryOperandForwarding(fact, context)) return null;
 

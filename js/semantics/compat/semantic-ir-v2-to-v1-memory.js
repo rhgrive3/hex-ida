@@ -6,6 +6,7 @@ import {
   CANONICAL_MEMORY_FORWARDING_CONSUMER,
   CANONICAL_MEMORY_FORWARDING_PURPOSE,
   canonicalMemoryForwardingContext,
+  createCanonicalMemoryForwardingSession,
   forwardMemoryValue,
 } from '../memoryssa/queries.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
@@ -291,6 +292,13 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     || Array.isArray(memorySsa.byteCoverage)
     || memorySsa.buildVersion != null;
   if (forwardingEligible) {
+    const forwardingSession = createCanonicalMemoryForwardingSession(memorySsa, {
+      functionId: projected.functionId,
+      ...(memorySsa.buildVersion == null ? {} : { memorySsaBuildVersion: memorySsa.buildVersion }),
+      consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+      purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+      ...(canonicalIr == null ? {} : { ir: canonicalIr }),
+    });
     const queriedLoads = new Set();
     const loadUseCounts = new Map();
     const deferredStackOperandRewrites = new Map();
@@ -310,6 +318,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
+        ...(forwardingSession == null ? {} : { forwardingSession }),
       });
       const useMetadata = metadataById.get(String(use.id)) ?? null;
       const currentContext = canonicalMemoryForwardingContext(fact, {
@@ -342,6 +351,15 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         // non-constant stores need their Semantic IR value identity.
         const operandProof = forwardExactStackOperandIdentity(memorySsa, use, canonicalIr, {
           context: currentContext,
+          // The ordinary query above already validated this exact fact. Reuse
+          // it only for the private, deeply frozen producer artifact: a
+          // caller-owned mutable/serialized artifact must take the second
+          // query so mutations between reads remain observable.
+          ...(isCanonicalMemorySsaProducerArtifact(memorySsa) && Object.isFrozen(memorySsa)
+            && fact?.proofKind === 'canonical-memoryssa-operand-forwarding'
+            ? { fact }
+            : {}),
+          ...(forwardingSession == null ? {} : { forwardingSession }),
         });
         const forwardedValue = operandProof?.exact === true
           ? valuesById.get(String(operandProof.storedValueId ?? '')) ?? null

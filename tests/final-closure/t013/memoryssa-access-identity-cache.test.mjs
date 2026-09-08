@@ -15,6 +15,12 @@ import {
   canonicalProducerValueDigest,
   createCanonicalIdentityDigestMemo,
 } from '../../../js/semantics/memoryssa/proof.js';
+import {
+  CANONICAL_MEMORY_FORWARDING_CONSUMER,
+  CANONICAL_MEMORY_FORWARDING_PURPOSE,
+  createCanonicalMemoryForwardingSession,
+  forwardMemoryValue,
+} from '../../../js/semantics/memoryssa/queries.js';
 
 function origin(id, address = 0x4000n) {
   return { instructionIds: [id], virtualRanges: [{ start: address, end: address + 4n }] };
@@ -175,4 +181,61 @@ test('per-build identity digest memo preserves mutable and shallow-freeze bounda
   const mapBefore = memo.digest(shallowFrozen);
   entries.set('after', 2);
   assert.notEqual(memo.digest(shallowFrozen), mapBefore);
+});
+
+test('projection forwarding session reuses only the exact producer lifecycle', () => {
+  const loadUse = artifact.uses.find((use) => use.sourceEntityId === 'n_load');
+  assert.ok(loadUse, 'fixture must publish a load use');
+  const sessionOptions = {
+    functionId: artifact.functionId,
+    memorySsaBuildVersion: artifact.buildVersion,
+    consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+    purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+    ir,
+  };
+  const session = createCanonicalMemoryForwardingSession(artifact, sessionOptions);
+  assert.ok(session, 'exact frozen producer artifact should create a projection session');
+  assert.equal(Object.isFrozen(ir), true, 'producer-bound Semantic IR is immutable before reuse');
+
+  const direct = forwardMemoryValue(artifact, loadUse, sessionOptions);
+  const reused = forwardMemoryValue(artifact, loadUse, {
+    ...sessionOptions,
+    forwardingSession: session,
+  });
+  assert.equal(reused.status, direct.status);
+  assert.equal(reused.exact, direct.exact);
+  assert.equal(reused.artifactDigest, direct.artifactDigest);
+
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal(forwardMemoryValue(artifact, loadUse, {
+    ...sessionOptions,
+    signal: cancelled.signal,
+    forwardingSession: session,
+  }).status, 'cancelled');
+  assert.equal(forwardMemoryValue(artifact, loadUse, {
+    ...sessionOptions,
+    budget: { maxDefinitions: 1 },
+    forwardingSession: session,
+  }).status, 'budget-limited');
+  assert.equal(forwardMemoryValue(artifact, loadUse, {
+    ...sessionOptions,
+    snapshotId: 't013-stale-snapshot',
+    forwardingSession: session,
+  }).status, 'stale');
+
+  const copiedArtifact = structuredClone(artifact);
+  assert.equal(createCanonicalMemoryForwardingSession(copiedArtifact, sessionOptions), null,
+    'serialized copies must not inherit the producer lifecycle');
+  const mutableCallerIr = structuredClone(ir);
+  mutableCallerIr.nodes[0].kind = 'unsupported';
+  assert.equal(createCanonicalMemoryForwardingSession(artifact, {
+    ...sessionOptions,
+    ir: mutableCallerIr,
+  }), null, 'mutated caller-owned IR must not inherit the producer lifecycle');
+  assert.equal(forwardMemoryValue(artifact, loadUse, {
+    ...sessionOptions,
+    ir: mutableCallerIr,
+    forwardingSession: session,
+  }).status, 'stale', 'a changed IR identity must re-enter the ordinary freshness check');
 });

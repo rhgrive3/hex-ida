@@ -91,6 +91,7 @@ export function reachingConcreteStore(memorySsa, useOrId) {
  */
 
 const FORWARD_EXACT = 'exact';
+const DEFAULT_FORWARDING_MAX_ITERATIONS = 4194304;
 const FORWARD_NON_EXACT = new Set([
   'unknown',
   'partial',
@@ -148,6 +149,48 @@ class CanonicalMemoryForwardingFact {
       ? value.#binding
       : null;
   }
+}
+
+/*
+ * One compatibility projection may ask about the same immutable producer
+ * artifact twice for a stack load: once for ordinary byte forwarding and once
+ * for the operand-shaped legacy projection.  Keep the validated producer
+ * indexes for that one projection lifecycle.  The private brand and exact
+ * artifact identity make this a producer-owned snapshot, rather than a cache
+ * for caller-owned mutable or serialized values.
+ */
+class CanonicalMemoryForwardingSession {
+  #artifact;
+  #ir;
+  #usesById;
+  #definitionsById;
+  #regionsById;
+  #metadataById;
+
+  constructor(artifact, ir, { usesById, definitionsById, regionsById, metadataById }) {
+    this.#artifact = artifact;
+    this.#ir = ir ?? null;
+    this.#usesById = usesById;
+    this.#definitionsById = definitionsById;
+    this.#regionsById = regionsById;
+    this.#metadataById = metadataById;
+  }
+
+  static matches(value, artifact) {
+    try {
+      return value !== null && typeof value === 'object'
+        && #artifact in value && value.#artifact === artifact;
+    } catch {
+      return false;
+    }
+  }
+
+  static artifact(value) { return value.#artifact; }
+  static ir(value) { return value.#ir; }
+  static usesById(value) { return value.#usesById; }
+  static definitionsById(value) { return value.#definitionsById; }
+  static regionsById(value) { return value.#regionsById; }
+  static metadataById(value) { return value.#metadataById; }
 }
 
 const intrinsicObjectHasOwn = Object.hasOwn;
@@ -313,6 +356,106 @@ function forwardingMetadataIndex(memorySsa, state = null) {
     index.set(id, item);
   }
   return index;
+}
+
+function hasPerQueryResourceOptions(options) {
+  return Object.hasOwn(options, 'signal')
+    || Object.hasOwn(options, 'budget')
+    || Object.hasOwn(options, 'validationBudget')
+    || Object.hasOwn(options, 'deadline')
+    || Object.hasOwn(options, 'deadlineAt')
+    || Object.hasOwn(options, 'maxIterations')
+    || Object.hasOwn(options, 'cfg')
+    || Object.hasOwn(options, 'currentIdentity')
+    || Object.hasOwn(options, 'sourceByEntityId')
+    || Object.hasOwn(options, 'sourcesByEntityId')
+    || Object.hasOwn(options, 'instructionsBySemanticId');
+}
+
+/*
+ * Build a projection-scoped query session only for the exact frozen artifact
+ * emitted by buildMemorySsa. Resource and caller-source overrides deliberately
+ * opt out, because moving those checks outside each query would change the
+ * cancellation/budget or mutation contract.
+ */
+export function createCanonicalMemoryForwardingSession(memorySsa, options = {}) {
+  const sessionEligible = isCanonicalMemorySsaProducerArtifact(memorySsa)
+      && Object.isFrozen(memorySsa)
+      && !hasPerQueryResourceOptions(options)
+      && options.skipValidation !== true
+      && options.accessMetadata == null
+      && (options.ir == null
+        || canonicalMemorySsaProducerSemanticIrDigest(memorySsa, options.ir) != null);
+  if (!sessionEligible) return null;
+  try {
+    const baseOptions = {
+      functionId: memorySsa.functionId,
+      ...(memorySsa.buildVersion == null ? {} : { memorySsaBuildVersion: memorySsa.buildVersion }),
+      consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
+      purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
+      ...(options.snapshotId == null ? {} : { snapshotId: options.snapshotId }),
+      ...(options.ir == null ? {} : { ir: options.ir }),
+    };
+    forwardingStatusFromArtifact(memorySsa, baseOptions);
+    validateMemorySsa(memorySsa, { cfg: options.cfg });
+    const metadataById = forwardingMetadataIndex(memorySsa, {
+      options: {},
+      iterations: 0,
+      maxIterations: DEFAULT_FORWARDING_MAX_ITERATIONS,
+      deadlineMs: null,
+    });
+    const usesById = new Map((memorySsa.uses ?? []).map((use) => [String(use.id), use]));
+    const definitionsById = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+    const regionsById = new Map((memorySsa.regions ?? []).map((region) => [String(region.id), region]));
+    const session = new CanonicalMemoryForwardingSession(memorySsa, options.ir ?? null, {
+      usesById,
+      definitionsById,
+      regionsById,
+      metadataById,
+    });
+    return session;
+  } catch {
+    // The ordinary query remains the fail-closed path for malformed producer
+    // handoffs and preserves its typed non-exact result.
+    return null;
+  }
+}
+
+function forwardingSessionFor(memorySsa, options) {
+  const session = options?.forwardingSession;
+  if (!CanonicalMemoryForwardingSession.matches(session, memorySsa)
+      || hasPerQueryResourceOptions(options)
+      || options.skipValidation === true
+      || options.accessMetadata != null) return null;
+  const sessionIr = CanonicalMemoryForwardingSession.ir(session);
+  if ((options.ir ?? null) !== sessionIr) return null;
+  if (options.consumerId !== CANONICAL_MEMORY_FORWARDING_CONSUMER
+      || options.purpose !== CANONICAL_MEMORY_FORWARDING_PURPOSE) return null;
+  return session;
+}
+
+function forwardingStatusFromSession(session, options) {
+  if (options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
+  const deadlineMs = forwardingDeadlineMs(options);
+  if (deadlineMs != null && Date.now() >= deadlineMs) {
+    throw new ForwardingStop('budget-limited', 'memory-forwarding-deadline-exhausted');
+  }
+  if (options.consumerId !== CANONICAL_MEMORY_FORWARDING_CONSUMER
+      || options.purpose !== CANONICAL_MEMORY_FORWARDING_PURPOSE) {
+    throw new ForwardingStop('unsupported', 'memory-forwarding-consumer-context-invalid');
+  }
+  const artifact = CanonicalMemoryForwardingSession.artifact(session);
+  if (options.functionId != null && String(artifact.functionId) !== String(options.functionId)) {
+    throw new ForwardingStop('stale', 'memoryssa-stale-function');
+  }
+  if (artifact.snapshotId != null && options.snapshotId != null
+      && String(artifact.snapshotId) !== String(options.snapshotId)) {
+    throw new ForwardingStop('stale', 'memoryssa-stale-snapshot');
+  }
+  if (options.memorySsaBuildVersion != null
+      && String(artifact.buildVersion ?? '') !== String(options.memorySsaBuildVersion)) {
+    throw new ForwardingStop('stale', 'memoryssa-build-mismatch');
+  }
 }
 
 function forwardingDomain(region) {
@@ -2023,7 +2166,7 @@ function regionByIdForCoverage(memorySsa, regionId) {
   return (memorySsa.regions ?? []).some((region) => String(region.id) === regionId);
 }
 
-function forwardingCollect(memorySsa, use, context, options, metadataById, regionById, sourceById, state) {
+function forwardingCollect(memorySsa, use, context, options, metadataById, regionById, sourceById, state, definitionsById = null) {
   const states = forwardingCoverageStates(
     memorySsa,
     use,
@@ -2034,7 +2177,8 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
     regionById,
     sourceById,
   );
-  const definitions = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+  const definitions = definitionsById
+    ?? new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
   if (!states.every((item) => item.regionId && item.definitionId)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-region-state-malformed');
   }
@@ -2312,8 +2456,10 @@ function forwardingAssign(stores, context, options, state) {
 export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
   let context = null;
   try {
-    forwardingStatusFromArtifact(memorySsa, options);
-    const validated = validateMemorySsa(memorySsa, {
+    const session = forwardingSessionFor(memorySsa, options);
+    if (session) forwardingStatusFromSession(session, options);
+    else forwardingStatusFromArtifact(memorySsa, options);
+    const validated = session ? null : validateMemorySsa(memorySsa, {
       signal: options.signal,
       budget: options.validationBudget,
       cfg: options.cfg,
@@ -2325,8 +2471,12 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       ? memorySsa
       : (validated ?? memorySsa);
     const use = useOrId && typeof useOrId === 'object'
-      ? useMap(artifact).get(String(useOrId.id ?? ''))
-      : useFrom(artifact, useOrId);
+      ? (session
+        ? CanonicalMemoryForwardingSession.usesById(session).get(String(useOrId.id ?? ''))
+        : useMap(artifact).get(String(useOrId.id ?? '')))
+      : (session
+        ? CanonicalMemoryForwardingSession.usesById(session).get(String(useOrId))
+        : useFrom(artifact, useOrId));
     if (!use || typeof use !== 'object') throw new ForwardingStop('unknown', 'memory-forwarding-use-missing');
     const definitions = Array.isArray(artifact.definitions) ? artifact.definitions : null;
     const uses = Array.isArray(artifact.uses) ? artifact.uses : null;
@@ -2339,14 +2489,28 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       iterations: 0,
       maxDefinitions: forwardingPositiveInteger(options.budget?.maxDefinitions ?? 262144, 'memory-forwarding-invalid-definition-budget'),
       maxBytes: forwardingPositiveInteger(options.budget?.maxBytes ?? options.budget?.maxWorkItems ?? 1048576, 'memory-forwarding-invalid-byte-budget'),
-      maxIterations: forwardingPositiveInteger(options.maxIterations ?? options.budget?.maxIterations ?? 4194304, 'memory-forwarding-invalid-iteration-budget'),
+      maxIterations: forwardingPositiveInteger(options.maxIterations ?? options.budget?.maxIterations ?? DEFAULT_FORWARDING_MAX_ITERATIONS, 'memory-forwarding-invalid-iteration-budget'),
       deadlineMs: forwardingDeadlineMs(options),
     };
-    const regionById = new Map(regions.map((region) => [String(region.id), region]));
-    const metadataById = forwardingMetadataIndex(artifact, state);
+    const regionById = session
+      ? CanonicalMemoryForwardingSession.regionsById(session)
+      : new Map(regions.map((region) => [String(region.id), region]));
+    const metadataById = session
+      ? CanonicalMemoryForwardingSession.metadataById(session)
+      : forwardingMetadataIndex(artifact, state);
     const sourceById = forwardingSourceMap(options);
     context = forwardingLoadContext(artifact, use, options, metadataById, regionById, sourceById);
-    const stores = forwardingCollect(artifact, use, context, options, metadataById, regionById, sourceById, state);
+    const stores = forwardingCollect(
+      artifact,
+      use,
+      context,
+      options,
+      metadataById,
+      regionById,
+      sourceById,
+      state,
+      session ? CanonicalMemoryForwardingSession.definitionsById(session) : null,
+    );
     const operandStore = forwardingExactOperand(stores, context, state);
     if (operandStore && (options.requireOperand === true
       || operandStore.value?.value == null)) {
