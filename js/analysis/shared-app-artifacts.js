@@ -330,8 +330,8 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
   };
   const epoch = epochOf(app);
-  const symbolsGeneration = symbolsGenerationOf(app);
-  const cacheKey = programCacheKey(epoch, symbolsGeneration, key);
+  const initialCacheKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
+  let cacheKey = initialCacheKey;
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     await app.ensureFunctions?.(primary, {
@@ -342,6 +342,13 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     });
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    const symbolsGeneration = symbolsGenerationOf(app);
+    cacheKey = programCacheKey(epoch, symbolsGeneration, key);
+    if (cacheKey !== initialCacheKey) {
+      const live = mapFor(PROGRAM_ENTRIES, app);
+      if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
+      if (!live.has(cacheKey)) live.set(cacheKey, entry);
+    }
     const scans = [], failures = [];
     const ranges = dataRanges(app);
     const counts = new Map();

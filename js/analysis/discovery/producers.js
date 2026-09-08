@@ -55,18 +55,18 @@ function seedSources(start) {
 }
 
 function hasHighExactConfidence(start) {
-  if (start?.exactFunctionStartConfidence != null) {
-    const confidence = Number(start.exactFunctionStartConfidence);
-    return Number.isFinite(confidence) && confidence >= 0.9;
-  }
-  const confidence = Number(start?.confidence);
-  return Number.isFinite(confidence) && confidence >= 0.9;
+  const confidence = start?.exactFunctionStartConfidence != null
+    ? start.exactFunctionStartConfidence
+    : start?.confidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence >= 0.9;
 }
 
 function isCanonicalLoaderSeed(start) {
   const sources = seedSources(start);
   if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
-  if (start?.exactFunctionStart !== true || Array.isArray(start?.sources)) return false;
+  if (start?.exactFunctionStart !== true) return false;
   return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
 }
 

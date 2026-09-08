@@ -4,7 +4,7 @@ import { installSharedAppArtifacts } from '../../js/analysis/shared-app-artifact
 
 console.log('[phase7] running shared ProgramIndex symbol-generation regression for #4487...');
 
-function makeApp(scanProgram) {
+function makeApp(scanProgram, ensureFunctions = async () => {}) {
   const symbols = new SymbolIndex({
     funcs: new BigUint64Array([0x1000n]),
     functionStartsComplete: true,
@@ -12,6 +12,7 @@ function makeApp(scanProgram) {
   });
   const app = {
     backend: { gen: 0, scanProgram },
+    ensureFunctions,
     store: { get: () => null },
     programRegions: () => [{ id: 'text', exec: true, size: 0x100n, section: '__text', vmAddr: 0x1000n }],
     symbols,
@@ -48,6 +49,30 @@ function makeApp(scanProgram) {
   assert.notStrictEqual(renamed, second, 'rename generation changes must invalidate the projection');
   assert.equal(renamed.gen, symbols.gen);
   assert.equal(scans, 3);
+}
+
+{
+  let scans = 0;
+  let discoveryRuns = 0;
+  const { app, symbols } = makeApp(
+    (regionId) => {
+      scans++;
+      return Promise.resolve({ regionId });
+    },
+    async () => {
+      discoveryRuns++;
+      symbols.addFunctions([0x1100n], { source: 'mandatory-discovery', confidence: 1, confirmed: true });
+    },
+  );
+  installSharedAppArtifacts(app);
+
+  const first = await app.ensureProgram();
+  assert.equal(discoveryRuns, 1);
+  assert.equal(first.gen, symbols.gen, 'the first projection must use the post-discovery generation');
+  assert.equal(first.functionStartOf(0x1100n), 0x1100n);
+  assert.equal(scans, 1);
+  assert.strictEqual(await app.ensureProgram(), first, 'the post-discovery generation must be reusable');
+  assert.equal(scans, 1);
 }
 
 {

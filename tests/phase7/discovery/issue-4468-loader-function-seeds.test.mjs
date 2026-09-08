@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { functionCandidates } from '../../../js/analysis/index.js';
+import { functionSeed, mergeFunctionSeeds } from '../../../js/binary/model.js';
 import { loaderProducer, symbolTableProducer } from '../../../js/analysis/discovery/producers.js';
 
 function candidateAt(result, address) {
@@ -87,6 +88,79 @@ test('#4468 symbol producer preserves normalized symbol size without granting ex
   const candidate = candidateAt(functionCandidates({ input: { image }, architectureId: 'x86_64' }), 0x8000n);
   assert.equal(candidate?.startState, 'heuristic');
   assert.equal(candidate?.extentState, 'heuristic');
+});
+
+test('#4468 preserves exact COFF-style seeds after canonical provenance merging', () => {
+  const [merged] = mergeFunctionSeeds([
+    functionSeed(0x9000n, {
+      name: 'coffFn',
+      source: 'symbol',
+      confidence: 0.98,
+      exactFunctionStart: true,
+      functionStartEvidence: 'COFF derived function type',
+    }),
+    functionSeed(0x9000n, { name: 'coffFn', source: 'export', confidence: 0.95 }),
+  ]);
+  assert.deepEqual(merged.sources, ['symbol', 'export']);
+  assert.equal(merged.exactFunctionStart, true);
+  assert.equal(merged.exactFunctionStartConfidence, 0.98);
+
+  const image = { functions: [merged], functionStarts: [], unwindEntries: [] };
+  const evidence = loaderProducer.produce({ image });
+  assert.deepEqual(evidence.map((item) => item.start), ['36864']);
+  assert.ok(evidence[0].evidenceIds.includes('loader:source:symbol:36864'));
+  assert.ok(evidence[0].evidenceIds.includes('loader:source:export:36864'));
+  assert.equal(candidateAt(functionCandidates({ input: { image }, architectureId: 'x86_64' }), 0x9000n)?.startState, 'exact');
+});
+
+test('#4468 requires primitive finite confidence for explicit exact seeds', () => {
+  const malformed = [
+    ['string confidence', '0.995'],
+    ['array confidence', ['0.995']],
+    ['valueOf object confidence', { valueOf: () => 0.995 }],
+    ['boxed number confidence', new Number(0.995)],
+    ['boolean confidence', true],
+    ['NaN confidence', Number.NaN],
+    ['infinite confidence', Number.POSITIVE_INFINITY],
+  ];
+  for (const [label, confidence] of malformed) {
+    const image = {
+      functions: [{ address: 0x9100n, source: 'symbol', exactFunctionStart: true, confidence }],
+      symbols: [],
+      functionStarts: [],
+      unwindEntries: [],
+    };
+    assert.equal(loaderProducer.produce({ image }).length, 0, `${label} must not mint loader authority`);
+    assert.equal(
+      candidateAt(functionCandidates({ input: { image }, architectureId: 'x86_64' }), 0x9100n),
+      undefined,
+      `${label} must not become an exact function candidate`,
+    );
+  }
+
+  const malformedExactConfidence = {
+    functions: [{
+      address: 0x9101n,
+      source: 'ifunc-resolver',
+      exactFunctionStart: true,
+      confidence: 0.995,
+      exactFunctionStartConfidence: ['0.995'],
+    }],
+    symbols: [],
+    functionStarts: [],
+    unwindEntries: [],
+  };
+  assert.equal(loaderProducer.produce({ image: malformedExactConfidence }).length, 0);
+
+  const valid = {
+    functions: [{ address: 0x9102n, source: 'symbol', exactFunctionStart: true, confidence: 0.995 }],
+    symbols: [],
+    functionStarts: [],
+    unwindEntries: [],
+  };
+  const validEvidence = loaderProducer.produce({ image: valid });
+  assert.equal(validEvidence.length, 1);
+  assert.equal(candidateAt(functionCandidates({ input: { image: valid }, architectureId: 'x86_64' }), 0x9102n)?.startState, 'exact');
 });
 
 console.log('issue-4468 loader function seeds: ok');
