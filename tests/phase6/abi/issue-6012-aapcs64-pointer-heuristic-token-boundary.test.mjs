@@ -28,7 +28,7 @@ function aapcs64(type, extra = {}) {
 }
 
 function darwin(type, extra = {}) {
-  return classifyDarwinArm64Arguments({ callPrototype:{ args:[{ type, ...AGGREGATE, ...extra }] } }).arguments[0];
+  return classifyDarwinArm64Arguments({ callPrototype:{ args:[{ type, ...AGGREGATE, alignmentBytes:8, ...extra }] } }).arguments[0];
 }
 
 test('#6012: identifier substrings must not turn an explicit aggregate into a pointer (AAPCS64)', () => {
