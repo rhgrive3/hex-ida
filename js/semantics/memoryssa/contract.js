@@ -268,18 +268,22 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-cfg-function-mismatch');
   }
 
-  const regions = array(input.regions, 'memory-ssa-regions-required')
+  const rawRegions = array(input.regions, 'memory-ssa-regions-required');
+  const rawDefinitions = array(input.definitions, 'memory-ssa-definitions-required');
+  const rawUses = array(input.uses, 'memory-ssa-uses-required');
+  if (rawRegions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
+  if (rawDefinitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
+
+  const regions = rawRegions
     .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => compareId(a.id, b.id));
-  const definitions = array(input.definitions, 'memory-ssa-definitions-required')
+  const definitions = rawDefinitions
     .map((definition) => { work(); return normalizeDefinition(definition); })
     .sort((a, b) => compareId(a.id, b.id));
-  const uses = array(input.uses, 'memory-ssa-uses-required')
+  const uses = rawUses
     .map((use) => { work(); return normalizeUse(use); })
     .sort((a, b) => compareId(a.id, b.id));
-  if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
-  if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
 
   const regionById = new Map();
   for (const region of regions) {
