@@ -154,7 +154,7 @@ cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
-cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
+cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtmu fcvtns fcvtnu fcvtps fcvtpu scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
 cat('udf .byte', 'data');
@@ -371,13 +371,38 @@ HANDLERS.mov = (o, ops) => {
   addRegRoles(o, ops);
 };
 
-function moveWideShift(op) {
-  const shift = op && op.shift;
-  return shift && shift.op === 'lsl' && Number.isInteger(shift.amount) ? shift.amount : null;
+function moveWideInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, immediate] = ops;
+  const destinationIsGp = destination && destination.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const bits = destinationIsGp && (destination.bits === 32 || destination.bits === 64)
+    ? destination.bits
+    : null;
+  if (bits == null || destination.shift || !immediate || immediate.k !== 'imm' ||
+      immediate.value == null || immediate.value < 0n || immediate.value > 0xffffn ||
+      /^#-/i.test(immediate.text || '')) return null;
+
+  const shift = immediate.shift;
+  if (!shift) return { bits, shift: null };
+  if (shift.op !== 'lsl' || !Number.isInteger(shift.amount)) return null;
+  const legalShift = bits === 32
+    ? shift.amount === 0 || shift.amount === 16
+    : shift.amount === 0 || shift.amount === 16 || shift.amount === 32 || shift.amount === 48;
+  return legalShift ? { bits, shift: shift.amount } : null;
 }
 
-function moveWideWidth(op) {
-  return op && op.bits === 32 ? 32 : 64;
+function unknownMoveWide(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('ワイド即値命令（未解釈）', 'Unknown move-wide form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では値や宛先幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs are not assigned a guessed value or destination width.');
+  o.detail.push(J(
+    '説明できるのは W/X レジスタ、16 ビット即値、合法な LSL 位置を組み合わせた形だけです。',
+    'Only W/X destinations, a 16-bit immediate, and legal move-wide LSL positions are explained.'));
+  o.terms = [];
 }
 
 function moveWideMask(bits) {
@@ -385,9 +410,13 @@ function moveWideMask(bits) {
 }
 
 HANDLERS.movz = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movz');
+    return;
+  }
   const [d, s] = ops;
-  const sh = moveWideShift(s);
-  const bits = moveWideWidth(d);
+  const { bits, shift: sh } = info;
   o.title = J('代入（上を 0 で埋める）', 'Move with zero');
   o.pseudo = opShort(d) + ' = ' + opShort(s);
   if (sh == null) {
@@ -428,9 +457,13 @@ HANDLERS.movk = (o, ops) => {
 };
 
 HANDLERS.movn = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movn');
+    return;
+  }
   const [d, s] = ops;
-  const sh = moveWideShift(s);
-  const bits = moveWideWidth(d);
+  const { bits, shift: sh } = info;
   o.title = J('ビットを反転して代入', 'Move NOT');
   if (sh == null) {
     o.pseudo = opShort(d) + ' = ~' + opShort(s);
@@ -1816,26 +1849,290 @@ HANDLERS.fcmp = (o, ops) => {
     'Compare two floating-point values, updating the flags.');
   o.terms = ['float', 'flags'];
 };
-for (const n of ['fcvtzs', 'fcvtzu', 'fcvtas', 'fcvtau', 'fcvtms', 'fcvtns', 'fcvtps']) {
-  HANDLERS[n] = (o, ops) => {
-    o.title = J('小数を整数にする', 'Float to integer');
-    o.pseudo = opShort(ops[0]) + ' = (int)' + opShort(ops[1]);
+const FCVT_FLOAT_TO_INTEGER_INFO = Object.freeze({
+  fcvtzs: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1、−1.9 → −1',
+    exampleEn: '1.9 → 1, −1.9 → −1',
+  }),
+  fcvtzu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtas: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2、−1.5 → −2',
+    exampleEn: '1.5 → 2, −1.5 → −2',
+  }),
+  fcvtau: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2',
+    exampleEn: '1.5 → 2',
+  }),
+  fcvtms: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1、−1.1 → −2',
+    exampleEn: '1.9 → 1, −1.1 → −2',
+  }),
+  fcvtmu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtns: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtnu: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtps: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2、−1.9 → −1',
+    exampleEn: '1.1 → 2, −1.9 → −1',
+  }),
+  fcvtpu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2',
+    exampleEn: '1.1 → 2',
+  }),
+});
+
+function scalarFcvtFloatToIntegerInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, source] = ops;
+  const destinationIsGp = destination?.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const sourceIsScalarFloat = source?.k === 'reg' && source.cls === 'fp' &&
+    /^[sd]\d+$/i.test(source.text || '');
+  if (!destinationIsGp || ![32, 64].includes(destination.bits) || destination.shift ||
+      !sourceIsScalarFloat || ![32, 64].includes(source.bits) || source.shift) {
+    return null;
+  }
+  return { destination, source };
+}
+
+function unknownFcvtFloatToInteger(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('小数→整数（未解釈）', 'Unknown float-to-integer form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では、丸め方・符号・幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs do not guess rounding, signedness, or width.');
+  o.detail.push(J(
+    '説明できるのは、スカラーの W/X 宛先と S/D 浮動小数点ソースを 2 個だけ使う形です。固定小数点の #fbits、SIMD レーン、余分なオペランドは解釈しません。',
+    'Only the two-operand scalar form with a W/X destination and S/D floating-point source is explained. Fixed-point #fbits, SIMD lanes, and extra operands are not interpreted.'));
+  o.terms = [];
+}
+
+function fcvtFloatToIntegerHandler(mnemonic) {
+  return (o, ops) => {
+    const info = FCVT_FLOAT_TO_INTEGER_INFO[mnemonic];
+    const shape = scalarFcvtFloatToIntegerInfo(ops);
+    if (!info || !shape) {
+      unknownFcvtFloatToInteger(o, mnemonic);
+      return;
+    }
+    const { destination, source } = shape;
+    const destinationText = opShort(destination);
+    const sourceText = opShort(source);
+    const destinationType = (info.signed ? 'int' : 'uint') + destination.bits + '_t';
+    const sourcePrecisionJa = source.bits === 64 ? '倍精度' : '単精度';
+    const sourcePrecisionEn = source.bits === 64 ? 'double-precision' : 'single-precision';
+    const signedJa = info.signed ? '符号付き' : '符号なし';
+    const signedEn = info.signed ? 'signed' : 'unsigned';
+    const integerArticleEn = info.signed ? 'a' : 'an';
+    const roundingClauseEn = info.roundingEn.startsWith('nearest')
+      ? 'to the nearest integer (' + info.roundingEn + ')'
+      : info.roundingEn;
+
+    o.title = J(
+      '小数を' + signedJa + '整数にする（' + info.roundingJa + '）',
+      'Float to ' + signedEn + ' integer (' + info.roundingEn + ')');
+    o.pseudo = destinationText + ' = (' + destinationType + ')' + info.functionName + '(' + sourceText + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の小数を整数に変換して ' + opShort(ops[0]) + ' に入れる（小数点以下は切り捨て）。',
-      'Convert the float in ' + opShort(ops[1]) + ' to an integer.');
+      sourceText + ' の' + sourcePrecisionJa + '（' + source.bits + ' ビット）値を' + info.roundingJa + 'に丸め、' +
+        signedJa + '整数（' + destination.bits + ' ビット、' + destinationType + '）として ' + destinationText + ' に入れる。',
+      'Round the ' + sourcePrecisionEn + ' (' + source.bits + '-bit) value in ' + sourceText + ' ' + roundingClauseEn +
+        ', then store it as ' + integerArticleEn + ' ' + signedEn + ' integer (' + destination.bits + '-bit, ' + destinationType + ') in ' + destinationText + '.');
+    o.detail.push(J(
+      'この丸め方は命令名で固定されます。例: ' + info.exampleJa + '。',
+      'The mnemonic fixes this rounding rule. For example: ' + info.exampleEn + '.'));
     o.terms = ['float'];
   };
 }
-for (const n of ['scvtf', 'ucvtf']) {
-  HANDLERS[n] = (o, ops) => {
+for (const mnemonic of Object.keys(FCVT_FLOAT_TO_INTEGER_INFO)) {
+  HANDLERS[mnemonic] = fcvtFloatToIntegerHandler(mnemonic);
+}
+const INT_FLOAT_VECTOR_SHAPES = Object.freeze({
+  '4h': Object.freeze({ lanes: 4, bits: 16, precision: 'half' }),
+  '8h': Object.freeze({ lanes: 8, bits: 16, precision: 'half' }),
+  '2s': Object.freeze({ lanes: 2, bits: 32, precision: 'float' }),
+  '4s': Object.freeze({ lanes: 4, bits: 32, precision: 'float' }),
+  '2d': Object.freeze({ lanes: 2, bits: 64, precision: 'double' }),
+});
+
+function intFloatRegister(op) {
+  return op?.k === 'reg' && Number.isInteger(op.num) && op.num >= 0 && op.num < 32;
+}
+
+function intFloatScalarFpRegister(op) {
+  return intFloatRegister(op) && op.cls === 'fp' && (op.bits === 32 || op.bits === 64);
+}
+
+function intFloatScalarIntegerRegister(op) {
+  if (!intFloatRegister(op) || !['gp', 'zr'].includes(op.cls) || ![32, 64].includes(op.bits)) return false;
+  return op.cls !== 'gp' || op.num < 31;
+}
+
+function intFloatVectorShape(op) {
+  if (!intFloatRegister(op) || op.cls !== 'vec' || op.bits !== 128 || typeof op.arr !== 'string') return null;
+  const arrangement = op.arr.toLowerCase();
+  const shape = INT_FLOAT_VECTOR_SHAPES[arrangement];
+  return shape ? { ...shape, arrangement } : null;
+}
+
+function intFloatScale(op, maximum) {
+  if (op?.k !== 'imm' || op.shift != null || typeof op.value !== 'bigint') return null;
+  if (op.value < 1n || op.value > BigInt(maximum)) return null;
+  return Number(op.value);
+}
+
+function intFloatShape(ops) {
+  if (!Array.isArray(ops) || ops.length < 2 || ops.some((op) => op?.shift != null || op?.extend != null)) return null;
+  const [d, s] = ops;
+  const destinationVector = intFloatVectorShape(d);
+  const sourceVector = intFloatVectorShape(s);
+  if (destinationVector && sourceVector && destinationVector.arrangement === sourceVector.arrangement) {
+    if (ops.length === 2) return { kind: 'vector', d, s, ...destinationVector, scale: null };
+    if (ops.length === 3) {
+      const scale = intFloatScale(ops[2], destinationVector.bits);
+      return scale == null ? null : { kind: 'vector', d, s, ...destinationVector, scale };
+    }
+    return null;
+  }
+
+  if (intFloatScalarFpRegister(d) && intFloatScalarFpRegister(s) && d.bits === s.bits) {
+    const scalarShape = { kind: 'scalar-simd', d, s, bits: d.bits, precision: d.bits === 64 ? 'double' : 'float' };
+    if (ops.length === 2) return { ...scalarShape, scale: null };
+    if (ops.length !== 3) return null;
+    const scale = intFloatScale(ops[2], d.bits);
+    return scale == null ? null : { ...scalarShape, scale };
+  }
+
+  if (!intFloatScalarFpRegister(d) || !intFloatScalarIntegerRegister(s)) return null;
+  if (ops.length === 2) return { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale: null };
+  if (ops.length !== 3) return null;
+  const scale = intFloatScale(ops[2], s.bits);
+  return scale == null ? null : { kind: 'scalar-integer', d, s, bits: s.bits, precision: d.bits === 64 ? 'double' : 'float', scale };
+}
+
+function intFloatPrecision(precision) {
+  return precision === 'double'
+    ? { ja: '倍精度の小数', en: 'double-precision floating point' }
+    : precision === 'half'
+      ? { ja: '半精度の小数', en: 'half-precision floating point' }
+      : { ja: '単精度の小数', en: 'single-precision floating point' };
+}
+
+function intFloatUnknown(o, mnemonic, ops) {
+  const shown = typeof o.operands === 'string' && o.operands.trim()
+    ? o.operands.trim()
+    : ops.map((op) => opShort(op) || '?').join(', ') || '(missing operands)';
+  o.title = J('整数→小数（オペランド形状不明）', 'Integer to float (operand shape unknown)');
+  o.pseudo = mnemonic.toUpperCase() + '(' + shown + ')';
+  o.summary = J(
+    mnemonic.toUpperCase() + ' のこのオペランド形状は未解釈です。符号・幅・精度を推測していません。',
+    'The operand shape for ' + mnemonic.toUpperCase() + ' is not interpreted; signedness, width, and precision are left unknown.');
+  o.detail.push(J(
+    '対応している W/X から S/D、または SIMD の同じレーン形状ではないため、整数の型変換を断定しません。',
+    'This is not a supported W/X-to-S/D or same-shape SIMD form, so no integer cast is asserted.'));
+  o.terms = ['float'];
+}
+
+function intToFloatHandler(mnemonic, signed) {
+  return (o, ops) => {
+    const shape = intFloatShape(ops);
+    if (!shape) {
+      intFloatUnknown(o, mnemonic, ops);
+      return;
+    }
+
+    const signedLabelJa = signed ? '符号付き' : '符号なし';
+    const signedLabelEn = signed ? 'signed' : 'unsigned';
+    const precision = intFloatPrecision(shape.precision);
+    const scaleNoteJa = shape.scale == null ? '' : '。固定小数点の小数部は ' + shape.scale + ' ビット（2^' + shape.scale + ' で割る）';
+    const scaleNoteEn = shape.scale == null ? '' : ' Fixed-point scale #' + shape.scale + ' divides the value by 2^' + shape.scale + '.';
+
     o.title = J('整数を小数にする', 'Integer to float');
-    o.pseudo = opShort(ops[0]) + ' = (double)' + opShort(ops[1]);
+    if (shape.kind === 'scalar-integer') {
+      const sourceType = (signed ? 'int' : 'uint') + shape.bits + '_t';
+      o.pseudo = shape.scale == null
+        ? shape.d.text + ' = (' + shape.precision + ')(' + sourceType + ')' + shape.s.text
+        : shape.d.text + ' = ((' + shape.precision + ')(' + sourceType + ')' + shape.s.text + ') / 2^' + shape.scale;
+      o.summary = J(
+        shape.s.text + ' の' + signedLabelJa + '整数（' + sourceType + '）を' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' integer (' + sourceType + ') in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn);
+      o.terms = ['float'];
+      return;
+    }
+
+    const lane = shape.bits + '-bit';
+    if (shape.kind === 'scalar-simd') {
+      const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lane_to_' + shape.precision;
+      o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
+      o.summary = J(
+        'SIMD スカラー ' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + 'レーンを' + precision.ja + 'に変換して ' + shape.d.text + ' に入れる' + scaleNoteJa + '。',
+        'Convert the ' + signedLabelEn + ' ' + lane + ' SIMD scalar lane in ' + shape.s.text + ' to ' + precision.en + ' and store it in ' + shape.d.text + '.' + scaleNoteEn,
+      );
+      o.terms = ['float', 'simd'];
+      return;
+    }
+
+    const operation = 'simd_' + (signed ? 'signed' : 'unsigned') + '_lanes_to_' + shape.precision;
+    o.pseudo = shape.d.text + ' = ' + operation + '(' + shape.s.text + (shape.scale == null ? '' : ', fbits=' + shape.scale) + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の整数を小数の形に変換して ' + opShort(ops[0]) + ' に入れる。',
-      'Convert the integer in ' + opShort(ops[1]) + ' to floating point.');
-    o.terms = ['float'];
+      shape.d.text + ' の各レーンを、' + shape.s.text + ' の' + signedLabelJa + ' ' + lane + '整数レーンから' + precision.ja + 'へ変換する' + scaleNoteJa + '。',
+      'Convert each ' + signedLabelEn + ' ' + lane + ' integer lane in ' + shape.s.text + ' to ' + precision.en + ' lanes in ' + shape.d.text + '.' + scaleNoteEn);
+    o.terms = ['float', 'simd'];
   };
 }
+HANDLERS.scvtf = intToFloatHandler('scvtf', true);
+HANDLERS.ucvtf = intToFloatHandler('ucvtf', false);
 HANDLERS.fcvt = (o, ops) => {
   o.title = J('小数の精度を変える', 'Convert float precision');
   o.pseudo = opShort(ops[0]) + ' = (' + (ops[0] && ops[0].bits === 64 ? 'double' : 'float') + ')' + opShort(ops[1]);

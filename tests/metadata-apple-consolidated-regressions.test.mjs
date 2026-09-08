@@ -143,7 +143,20 @@ import '../js/objc-stub-recovery.js';
   console.log('✔ #3608 Swift legacy prefix normalization passed');
 }
 
-// --- Test 6: #3632/#4046 canonical Itanium prefix survives Darwin normalization ---
+// --- Test 6: #5704 Swift length-prefixed identifiers require full input ---
+{
+  for (const symbol of ['$s5abc', '$s10Foo', '$s4Test5abc']) {
+    assert.equal(demangleSwift(symbol), null, `${symbol} must reject a truncated identifier`);
+    assert.equal(readableName(symbol), symbol, `${symbol} must keep its raw name when malformed`);
+  }
+
+  assert.equal(demangleSwift('$s4Test3Foo'), 'Test.Foo');
+  assert.equal(demangleSwift('$s4Test3Foo3Bar'), 'Test.Foo.Bar');
+  assert.equal(readableName('$s4Test3Foo3Bar'), 'Test.Foo.Bar');
+  console.log('✔ #5704 Swift truncated identifier boundaries passed');
+}
+
+// --- Test 7: #3632/#4046 canonical Itanium prefix survives Darwin normalization ---
 {
   assert.equal(isMangled('_Z3foov'), true);
   assert.equal(demangleCxx('_Z3foov'), 'foo()');
