@@ -5,9 +5,9 @@ import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
 import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore } from './session-core/index.js';
-import { sanitizeActions } from './validation.js';
+import { sanitizeActions, addressText } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsSync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -57,7 +57,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope, stores }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope, stores, signal }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -79,7 +79,17 @@ export class AIRuntime {
     for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));
     const hypotheses = hypothesisIds.size ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : hypothesisStore.all();
-    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore: evidenceStore, proposalStore: proposalStore, addressExists: (address) => addressExistsSync(this.localContext, address) });
+    // Suggested actions must respect an async-only `addressExists`: resolve the
+    // authority for every candidate target before sanitizing, so a `false`
+    // cannot be dropped by the synchronous wrapper (#5790).
+    const candidateAddresses = [...new Set((decision.suggestedActions || [])
+      .map((value) => addressText(value?.target ?? value?.address ?? value?.functionAddress))
+      .filter((value) => value != null))];
+    const existence = new Map();
+    for (const address of candidateAddresses) {
+      existence.set(address, await addressExistsAsync(this.localContext, address, signal));
+    }
+    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
     if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
