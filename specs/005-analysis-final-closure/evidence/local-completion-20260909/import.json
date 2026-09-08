@@ -1,0 +1,18 @@
+{
+  "inputZip": "tmp/hex-ida-performance-local-20260908.zip",
+  "inputZipSha256": "f56ecdfb29b7b147e69abc85df459483130e6e16e6032a63f9574aeceab57612",
+  "handoffBase": "1b6d3eebf14e59a051169b1eb86220b05d303acf",
+  "preIntegrationHead": "07a2b6973337116392c4a850929e41d46f4e1938",
+  "sourceCommit": "0b84189c4",
+  "generatedCommit": "2d10f8eed33a15329bf3b01ce0f88603ce636dbe",
+  "generatedTree": "ab918c94744e34f676e30eb64dba8fac81ee5869",
+  "files": {
+    "js/core/identity/origin.js": "0df739defb107c94dd330c82999c3209d08a6fd7f469855cd439281e0e7a57cc",
+    "tests/core-identity-contracts.mjs": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b",
+    "tests/core-origin-canonical-reuse.test.mjs": "ebc6774ce3b2932da4871df7b540455fb50202ad1bbbdd29966230baedf7b101",
+    "tests/helpers/origin-normalization-oracle.mjs": "3b9f6170573d396d7dffc89524dec6c06a2c7aa68e4933179421ab83fa4a477f",
+    "userscript/hex.user.template.js": "a93d61d04de2c245d4da2a889292d03204a1e7ddf8aaf144178e021a12ab82ac",
+    "userscript/release-version.json": "a106fe04ce0fab8bb870d764149e7395605e520e6b6440dc888c74e716094f0b"
+  },
+  "scope": "Performance work ended by owner; only actual bug fixes, verification and development completion. Imported timings describe the supplying environment, not this checkout. External release and physical-device acceptance excluded."
+}

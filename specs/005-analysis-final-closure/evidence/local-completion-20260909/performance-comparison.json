@@ -1,0 +1,84 @@
+{
+  "aggregation": "The official performanceMetrics result: median of the 3 per-repetition function means; not the median of the 405 individual samples.",
+  "procedureVersionBefore": 2,
+  "procedureVersionAfter": 2,
+  "denominator": 135,
+  "stageDenominator": 125,
+  "rawSamplesBefore": 405,
+  "rawSamplesAfter": 405,
+  "sameDenominatorIds": true,
+  "sameStageDenominatorIds": true,
+  "sameProfile": true,
+  "sameCorpusDigest": true,
+  "sameCorpusFileSha256": true,
+  "sameProfileFileSha256": true,
+  "sameNode": true,
+  "sameOS": true,
+  "sourceManifestChangedPaths": [
+    "js/core/identity/origin.js"
+  ],
+  "rows": [
+    {
+      "metric": "coldActiveFunctionMs",
+      "beforeMedianMs": 159.43878665185264,
+      "afterMedianMs": 141.54360271851863,
+      "deltaMs": -17.89518393333401,
+      "reductionPercent": 11.223858578659144,
+      "beforeRepetitionMeansMs": [
+        171.165,
+        159.439,
+        157.432
+      ],
+      "afterRepetitionMeansMs": [
+        142.743,
+        140.383,
+        141.544
+      ]
+    },
+    {
+      "metric": "phase8InteractiveStageMs",
+      "beforeMedianMs": 0.2578722719994839,
+      "afterMedianMs": 0.2644928319999599,
+      "deltaMs": 0.00662056000047595,
+      "reductionPercent": -2.567379559322764,
+      "beforeRepetitionMeansMs": [
+        0.32,
+        0.256,
+        0.258
+      ],
+      "afterRepetitionMeansMs": [
+        0.423,
+        0.264,
+        0.263
+      ]
+    },
+    {
+      "metric": "phase8OptimizeStageMs",
+      "beforeMedianMs": 50.1665485919987,
+      "afterMedianMs": 45.5648991279999,
+      "deltaMs": -4.601649463998797,
+      "reductionPercent": 9.172744773461924,
+      "beforeRepetitionMeansMs": [
+        54.109,
+        50.167,
+        49.076
+      ],
+      "afterRepetitionMeansMs": [
+        47.199,
+        45.52,
+        45.565
+      ]
+    }
+  ],
+  "beforeFailures": [],
+  "afterFailures": [],
+  "unpublishedOptimizerBefore": 0,
+  "unpublishedOptimizerAfter": 0,
+  "samePerSampleStageApplicabilityAndPublication": true,
+  "elapsedMsBefore": 149967.09724,
+  "elapsedMsAfter": 130460.551563,
+  "peakRssBytesBefore": 648892416,
+  "peakRssBytesAfter": 662659072,
+  "outputObservationsCompared": 405,
+  "outputObservationDifferences": []
+}

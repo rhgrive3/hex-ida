@@ -12,6 +12,19 @@ integration status and release acceptance are separate; existing boxes are uncha
 See `development-debt.md` for deferred work. The remainder preserves historical
 requirements and evidence; conflicting execution instructions are superseded.
 
+**Current local-development closure scope (2026-09-09):**
+
+The 2026-09-09 owner amendment closes performance-improvement work and limits
+this handoff to integrating the supplied ZIP, correcting verified bugs, and
+completing local checks and generated artifacts. No new performance measurement
+or 250 ms target work is required. External CI/review, protected-main promotion,
+deployment, external provenance, and physical-device evidence are outside this
+development handoff; their historical release requirements are not passing claims.
+See `evidence/owner-completion-scope-20260909.md` for the task mapping and
+`evidence/local-completion-20260909/README.md` for final identities and results.
+The current denominator is 53 applicable tasks; eight excluded task IDs remain
+as explicit historical entries in `tasks.md`.
+
 # Campaign Execution Quickstart
 
 This is an operator checklist, not a substitute for `tasks.md` or the engineering

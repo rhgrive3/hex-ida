@@ -1,0 +1,5 @@
+Observed local tool results on 2026-09-09:
+imported-core: PASS (5.5s)
+imported-build: PASS (4.6s)
+imported-build-repeat: PASS (3.1s)
+Second build git diff --exit-code over template and release-version: exit 0.

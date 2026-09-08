@@ -1,0 +1,367 @@
+{
+  "method": "Exact comparison of unmasked stableStringify strings (not digest-only comparison).",
+  "comparisons": 36,
+  "matches": 36,
+  "results": [
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 1023203,
+      "bytesAfter": 1023203,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 170462,
+      "bytesAfter": 170462,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 12950,
+      "bytesAfter": 12950,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 1336,
+      "bytesAfter": 1336,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 5625,
+      "bytesAfter": 5625,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": false,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 24629,
+      "bytesAfter": 24629,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 1023203,
+      "bytesAfter": 1023203,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 170462,
+      "bytesAfter": 170462,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 12950,
+      "bytesAfter": 12950,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 7158,
+      "bytesAfter": 7158,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 5595,
+      "bytesAfter": 5595,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "phase8Optimize": true,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 24629,
+      "bytesAfter": 24629,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 882111,
+      "bytesAfter": 882111,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 131150,
+      "bytesAfter": 131150,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 13208,
+      "bytesAfter": 13208,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 1336,
+      "bytesAfter": 1336,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 5600,
+      "bytesAfter": 5600,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": false,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 20348,
+      "bytesAfter": 20348,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 882111,
+      "bytesAfter": 882111,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 131150,
+      "bytesAfter": 131150,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 13208,
+      "bytesAfter": 13208,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 6256,
+      "bytesAfter": 6256,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 4631,
+      "bytesAfter": 4631,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "phase8Optimize": true,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 20315,
+      "bytesAfter": 20315,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 190266,
+      "bytesAfter": 190266,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 60024,
+      "bytesAfter": 60024,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 12575,
+      "bytesAfter": 12575,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 1335,
+      "bytesAfter": 1335,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 5077,
+      "bytesAfter": 5077,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": false,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 16157,
+      "bytesAfter": 16157,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "semanticAst",
+      "equal": true,
+      "bytesBefore": 190266,
+      "bytesAfter": 190266,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "types",
+      "equal": true,
+      "bytesBefore": 60024,
+      "bytesAfter": 60024,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "evidence",
+      "equal": true,
+      "bytesBefore": 12575,
+      "bytesAfter": 12575,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "phase8",
+      "equal": true,
+      "bytesBefore": 6301,
+      "bytesAfter": 6301,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "pseudocode",
+      "equal": true,
+      "bytesBefore": 5099,
+      "bytesAfter": 5099,
+      "presentBefore": true,
+      "presentAfter": true
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "phase8Optimize": true,
+      "field": "sourceMap",
+      "equal": true,
+      "bytesBefore": 16157,
+      "bytesAfter": 16157,
+      "presentBefore": true,
+      "presentAfter": true
+    }
+  ]
+}

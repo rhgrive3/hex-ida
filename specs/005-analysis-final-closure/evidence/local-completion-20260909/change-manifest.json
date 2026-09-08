@@ -1,0 +1,44 @@
+{
+  "inputIdentity": {
+    "inputZip": "hex-ida-handoff-performance-20260908.zip",
+    "inputZipSha256": "27ea703fb08ae11eba73ed62da8e46a578db21dd2dabf29b82a935a5a8b2e951",
+    "downloadCommitSha": null,
+    "downloadCommitShaNote": "The upload does not include a pinned download URL or .git; do not substitute the pre-order commit.",
+    "orderPreGenerationSourceCommit": "98a606df7e10a969c86fbb78bc1f2a379669ba58"
+  },
+  "changedFiles": [
+    {
+      "path": "js/core/identity/origin.js",
+      "status": "modified",
+      "beforeSha256": "cd160dfb4eca0eda1aac7fd0cce7922ac61caf7a8c8d1a64f9914e76799b7b83",
+      "afterSha256": "0df739defb107c94dd330c82999c3209d08a6fd7f469855cd439281e0e7a57cc"
+    },
+    {
+      "path": "tests/core-identity-contracts.mjs",
+      "status": "modified",
+      "beforeSha256": "d247d92f8dd8ca7b612369337d9bbe0b80361d2f7aee317065a76ac8a6612b76",
+      "afterSha256": "a0917b95d061e67d378bf636a6ca437599067b64ac6a906a86acc8a96b42cd1b"
+    },
+    {
+      "path": "tests/core-origin-canonical-reuse.test.mjs",
+      "status": "added",
+      "beforeSha256": null,
+      "afterSha256": "ebc6774ce3b2932da4871df7b540455fb50202ad1bbbdd29966230baedf7b101"
+    },
+    {
+      "path": "tests/helpers/origin-normalization-oracle.mjs",
+      "status": "added",
+      "beforeSha256": null,
+      "afterSha256": "3b9f6170573d396d7dffc89524dec6c06a2c7aa68e4933179421ab83fa4a477f"
+    }
+  ],
+  "patchFile": "hex-ida-performance-local-20260908.patch",
+  "patchSha256": "12903004face9675294ffadec99663ed42b83b4f5e0735897d16cb5844b2d287",
+  "patchBytes": 34340,
+  "patchApplication": {
+    "checkPassed": true,
+    "actualApplyPassed": true,
+    "allFourResultingFilesByteIdentical": true,
+    "scope": "pristine copies of the affected files from the supplied ZIP; git apply is local-only"
+  }
+}

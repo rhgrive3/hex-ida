@@ -2,6 +2,41 @@
 
 Status: **normative**
 
+## Owner development-completion scope amendment — 2026-09-09 (user-authorized)
+
+The repository owner changed the boundary for the current development handoff.
+This amendment applies to this campaign's development-completion decision; it
+does not rewrite historical evidence, change release claims, or turn missing
+evidence into a pass.
+
+For this handoff, the required proof is limited to the local combined product:
+the owner-integrated improvement ZIP, local source/runtime checks applicable to
+that ZIP, local generated/artifact identity where it is produced, and the
+existing public development-branch snapshot when it is recorded. The root
+integration owner records the ZIP inputs and outputs and the local confirmation
+before any applicable task is checked.
+
+Performance improvement work, profiling, and threshold-chasing are closed for
+this handoff. After the ZIP is integrated, only a defect found by the applicable
+verification may justify a source change; an optimization request or an
+unmet-performance target alone does not start new work.
+
+The following are outside the current development-completion stop condition:
+
+- the P-PHASE8 250 ms cold-performance target; retain its historical threshold
+  and any observations, but do not claim a performance pass from its omission;
+- externally sourced binaries or source trees and external-service evidence;
+- hosted CI, external review, protected-`main` promotion or merge, deployment,
+  and post-merge live-main verification;
+- physical-device execution and collection.
+
+These exclusions remove waiting conditions for this development handoff only.
+They do not authorize a release or protected-main claim. `UNMEASURED`, missing,
+identity-invalid, and otherwise unverified results remain conservative states and
+must never be relabeled `PASS`. Task checkboxes and historical records remain
+unchanged unless the owner records the applicable local evidence on the exact
+current product.
+
 ## Physical-device deferral — 2026-09-08 (user-authorized)
 
 The repository owner explicitly deferred physical-device verification until all
