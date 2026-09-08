@@ -3,6 +3,7 @@
 // host-locale collation. The frozen graph IS the canonical representation.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 
 import { createSemanticCfg, analyzeSemanticDominance } from '../js/semantics/cfg/index.js';
 
@@ -58,4 +59,32 @@ test('#5763 dominance tie-breaks are locale-invariant too', () => {
 test('#5763 companion: repeated construction is deterministic', () => {
   const first = JSON.stringify(build());
   for (let i = 0; i < 3; i++) assert.equal(JSON.stringify(build()), first);
+});
+
+test('#5763 equivalent insertion orders have identical CFG and dominance', () => {
+  const first = build();
+  const permuted = createSemanticCfg({
+    functionId: first.functionId, entryBlockId: first.entryBlockId,
+    blocks: [...first.blocks].reverse().map(({ id, successors }) => ({
+      id, successors: [...successors].reverse(),
+    })),
+  });
+  assert.deepEqual(permuted, first);
+  assert.deepEqual(analyzeSemanticDominance(permuted), analyzeSemanticDominance(first));
+});
+
+test('#5763 separate host locales serialize identical CFG and dominance', () => {
+  const moduleUrl = new URL('../js/semantics/cfg/index.js', import.meta.url).href;
+  const script = `import {createSemanticCfg, analyzeSemanticDominance} from ${JSON.stringify(moduleUrl)};
+    ${build.toString()}
+    const cfg = build(); console.log(JSON.stringify({cfg, dominance: analyzeSemanticDominance(cfg)}));`;
+  const results = ['de_DE.UTF-8', 'sv_SE.UTF-8'].map((locale) => {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', timeout: 10000,
+      env: {...process.env, LANG: locale, LC_ALL: locale},
+    });
+    assert.equal(child.status, 0, child.error?.message || child.stderr);
+    return JSON.parse(child.stdout);
+  });
+  assert.deepEqual(results[0], results[1]);
 });
