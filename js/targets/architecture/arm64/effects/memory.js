@@ -591,10 +591,15 @@ function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
     if (address == null) return null;
     evidence.push(BigInt.asUintN(64, address + displacement));
   }
-  const pcRelTarget = asTargetInteger(decoded?.pcRelTarget);
-  if (pcRelTarget != null) evidence.push(pcRelTarget);
-  const literalTarget = asTargetInteger(decoded?.literalTarget);
-  if (literalTarget != null) evidence.push(literalTarget);
+  // A present structured field is evidence, even when its value is malformed.
+  // Do not silently discard an invalid alias and let the immediate operand mint
+  // an exact access; contradictory or schema-invalid evidence must fail closed.
+  for (const key of ['pcRelTarget', 'literalTarget']) {
+    if (!Object.hasOwn(decoded ?? {}, key) || decoded[key] == null) continue;
+    const value = asTargetInteger(decoded[key]);
+    if (value == null) return null;
+    evidence.push(value);
+  }
   const immediate = asTargetInteger(immediateOperandValue);
   if (immediate != null) evidence.push(immediate);
   if (evidence.length === 0) return null;

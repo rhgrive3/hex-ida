@@ -90,14 +90,18 @@ export function createRiscv64DecodedInstruction(input = {}) {
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
 
   // ISA profile metadata must agree with the C-extension capability the
-  // record itself asserts (#5999). `mode:'rv64imc'` (and any compressed
-  // encoding) already requires compressed-instruction capability, so a
-  // `compressedInstructions:false` claim is a self-contradiction that must
-  // fail closed instead of minting contradictory canonical ISA evidence.
-  const compressedInstructions = input.compressedInstructions == null
-    ? null : input.compressedInstructions === true;
-  if (compressedInstructions === false && (mode === 'rv64imc' || size === 2 || fields.compressed === true)) {
-    throw new TypeError('riscv64-decoded-instruction-compressed-profile-contradiction');
+  // record itself asserts (#5999). A non-boolean value is schema-invalid, and
+  // either boolean that disagrees with the decode mode is contradictory
+  // evidence; neither may be laundered into a canonical profile flag.
+  let compressedInstructions = null;
+  if (input.compressedInstructions != null) {
+    if (typeof input.compressedInstructions !== 'boolean') {
+      throw new TypeError('riscv64-decoded-instruction-invalid-compressed-instructions');
+    }
+    if (input.compressedInstructions !== (mode === 'rv64imc')) {
+      throw new TypeError('riscv64-decoded-instruction-compressed-profile-contradiction');
+    }
+    compressedInstructions = input.compressedInstructions;
   }
 
   // `rawBytes` is authoritative for `fields`, so the canonical bytes must

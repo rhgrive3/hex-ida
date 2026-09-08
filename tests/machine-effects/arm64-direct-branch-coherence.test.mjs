@@ -141,7 +141,7 @@ for (const hostile of [[0x1004n], true, { toString: () => '4100' }]) {
 
   const invalidOperand = branch({ explicitTarget: 0x1004n, operandTarget: hostile });
   assert.equal(invalidOperand?.completeness, 'partial');
-  assert.match(invalidOperand.unknownEffects?.reason ?? '', /operand-shape-unmodelled|target-evidence-mismatch/);
+  assert.match(invalidOperand.unknownEffects?.reason ?? '', /operand-shape-invalid|operand-shape-unmodelled|target-evidence-mismatch/);
 }
 
 console.log('ARM64 direct branch target evidence coherence (#6067): PASS');
