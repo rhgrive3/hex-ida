@@ -27,6 +27,22 @@ function requireArtifactId(value) {
   return value;
 }
 
+// A truthy non-AbortSignal cancellation option must be rejected at the option
+// boundary, before a transaction exists: past that point a raw TypeError from
+// listener registration would escape the storage-error contract, and the
+// finally-cleanup would raise its own TypeError over the primary error (#5382).
+function requireAbortSignal(signal, operation) {
+  if (signal == null) return null;
+  if (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function') {
+    throw new ArtifactStorageError(
+      'artifact-storage-signal-invalid',
+      `${operation}: signal must be AbortSignal-compatible`,
+      { operation, cause: 'AbortSignal' },
+    );
+  }
+  return signal;
+}
+
 function storageError(error, operation) {
   const quota = error?.name === 'QuotaExceededError' || error?.code === 22;
   return new ArtifactStorageError(
@@ -267,7 +283,8 @@ export class IndexedDbArtifactBackend {
   }
 
   async putAtomic(record, payload, { signal } = {}) {
-    if (signal?.aborted) throw abortError(signal);
+    const signalOrNull = requireAbortSignal(signal, 'put');
+    if (signalOrNull?.aborted) throw abortError(signalOrNull);
     let tx = null;
     let done = null;
     let onAbort = null;
@@ -275,23 +292,23 @@ export class IndexedDbArtifactBackend {
     const buffer = exactArrayBuffer(payload);
     try {
       const db = await this.#db();
-      if (signal?.aborted) throw abortError(signal);
+      if (signalOrNull?.aborted) throw abortError(signalOrNull);
       // Use the portable two-argument transaction form for older iPad/WebKit.
       // A single readwrite transaction owns conflict detection and publication.
       tx = db.transaction('artifacts', 'readwrite');
       done = transactionPromise(tx);
-      if (signal) {
+      if (signalOrNull) {
         onAbort = () => {
           try { tx.abort(); this.metrics.transactionAborts++; } catch { /* transaction already completed */ }
         };
-        signal.addEventListener('abort', onAbort, { once:true });
+        signalOrNull.addEventListener('abort', onAbort, { once:true });
       }
       const store = tx.objectStore('artifacts');
       const previous = await requestPromise(store.get(id));
-      if (signal?.aborted) {
+      if (signalOrNull?.aborted) {
         try { tx.abort(); this.metrics.transactionAborts++; } catch {}
         await absorbTransactionFailure(done);
-        throw abortError(signal);
+        throw abortError(signalOrNull);
       }
       if (previous) {
         if (!compatiblePublishedArtifact(previous.record, record, previous.payload, buffer)) {
@@ -312,11 +329,11 @@ export class IndexedDbArtifactBackend {
       return { duplicate:false, ...cloneRaw(row) };
     } catch (error) {
       await absorbTransactionFailure(done);
-      if (error?.name === 'AbortError' || signal?.aborted) throw abortError(signal);
+      if (error?.name === 'AbortError' || signalOrNull?.aborted) throw abortError(signalOrNull);
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'put');
     } finally {
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      if (signalOrNull && onAbort) signalOrNull.removeEventListener('abort', onAbort);
     }
   }
 
