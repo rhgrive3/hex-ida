@@ -10,6 +10,12 @@ import { createEscapeRecord } from '../../../js/analysis/summary/escape.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
 
 test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias authority', () => {
+  const status = createAnalysisStatus({
+    snapshotId: 'snap-3041',
+    analyzerId: 'phase7-regression',
+    analyzerVersion: '1',
+    completeness: 'complete',
+  });
   const setFor = (addressSpace, rootIdentity) => createPointsToSet({
     targets: [createPointsToTarget({
       addressSpace,
@@ -25,6 +31,7 @@ test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias au
   const failClosed = pointsToAlias(malformed, canonicalRegister, {
     widthBitsLeft: 32,
     widthBitsRight: 32,
+    status,
   });
   assert.notEqual(failClosed.relation, 'no');
   assert.equal(failClosed.reasonCodes.includes('distinct-address-space'), false);
@@ -33,6 +40,7 @@ test('#3041 unknown address spaces cannot mint distinct-address-space NoAlias au
   const separated = pointsToAlias(canonicalMemory, canonicalRegister, {
     widthBitsLeft: 32,
     widthBitsRight: 32,
+    status,
   });
   assert.equal(separated.relation, 'no');
   assert.ok(separated.reasonCodes.includes('distinct-address-space'));

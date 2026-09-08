@@ -44,7 +44,11 @@ export class AgentJobManager {
         limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
         request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
       };
-      this.jobs.set(job.id, job); await this.save(job); return checkpoint(job);
+      // Keep the ID reserved, but do not publish a runnable job until its
+      // initial checkpoint is durable. Failed saves leave no in-memory ghost.
+      await this.save(job);
+      this.jobs.set(job.id, job);
+      return checkpoint(job);
     } finally {
       this.creatingIds.delete(id);
     }
@@ -165,12 +169,17 @@ function mergeResult(job, result) {
   job.effectiveScope = result?.scope?.effective || job.effectiveScope;
   job.evidenceIds = unique([...job.evidenceIds, ...(result?.evidence || []).map((item) => identityString(item?.id)).filter(Boolean)]);
   job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => identityString(item?.id)).filter(Boolean)]);
-  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result' || item.type === 'tool-start').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
+  job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
   job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
   const usage = result?.usage || {};
-  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += Number(usage.modelCalls || 0); job.budgetUsage.toolCalls += Number(usage.toolCalls || 0);
-  job.budgetUsage.elapsedMs += Number(usage.elapsedMs || 0); job.budgetUsage.contextBytes += Number(usage.contextBytes || 0);
+  // Usage counters feed the job hard-limit authority (`maxElapsedMs` etc.).
+  // `Number()` coercion admitted NaN (silently disabling the elapsed ceiling
+  // forever after) and negative values (rewinding monotonic accounting);
+  // adopt only primitive finite non-negative numbers (#5689).
+  const usageDelta = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
+  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
+  job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
 }
 function collectRefs(result) {
@@ -224,7 +233,7 @@ function randomId() {
 function safeRequest(input) {
   const out = {};
   for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
-  return out;
+  return checkpoint(out);
 }
 
 export function createAgentJobManager(options) { return new AgentJobManager(options); }

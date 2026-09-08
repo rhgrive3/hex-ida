@@ -1,7 +1,10 @@
 const READ_SCOPES = Object.freeze(["auto", "selection", "function", "neighborhood", "binary", "project", "runtime"]);
 
 export function analysisToolContract(toolRegistry, toolName) {
-  const tool = toolRegistry?.get?.(String(toolName));
+  if (typeof toolName !== "string" || !toolName) {
+    throw new Error(`invalid-analysis-tool-id:${toolIdentityLabel(toolName)}`);
+  }
+  const tool = toolRegistry?.get?.(toolName);
   if (!tool) {
     throw new Error(`unknown-analysis-tool:${toolName}`);
   }
@@ -21,7 +24,24 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
   const errors = [];
 
   for (const cap of capabilities) {
-    if (!cap.agentTool) continue;
+    if (cap.agentTool === undefined) continue;
+    if (typeof cap.agentTool !== "string" || !cap.agentTool) {
+      // Explicitly present malformed tool identities must fail the contract
+      // audit instead of disappearing through truthiness or String() coercion
+      // at this machine-enforcement boundary (#6160).
+      const error = `invalid-agent-tool-id:${toolIdentityLabel(cap.agentTool)}`;
+      errors.push(error);
+      rows.push({
+        capabilityId: cap.id,
+        agentTool: cap.agentTool,
+        toolPresent: false,
+        scopeSupport: null,
+        mutability: null,
+        needsApproval: null,
+        errors: [error],
+      });
+      continue;
+    }
     const tool = toolRegistry?.get?.(cap.agentTool);
     const rowErrors = [];
     const toolPresent = Boolean(tool);
@@ -65,4 +85,19 @@ export function auditCapabilityToolContracts({ capabilities = [], toolRegistry }
     rows,
     errors,
   };
+}
+
+function toolIdentityLabel(value) {
+  if (value === null) return "null";
+  const type = typeof value;
+  if (type === "object") {
+    // Never inspect caller-owned objects while formatting a machine-boundary
+    // error. Array.isArray does not enumerate or coerce values; a revoked
+    // proxy is treated as an opaque object rather than escaping its TypeError.
+    try { return Array.isArray(value) ? "array" : "object"; } catch { return "object"; }
+  }
+  if (type === "function") return "function";
+  // Primitive conversion cannot dispatch caller-owned hooks, and preserves
+  // the useful existing labels for primitive invalid identities.
+  return `${type}:${String(value)}`;
 }

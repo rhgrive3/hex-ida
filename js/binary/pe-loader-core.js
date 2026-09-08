@@ -40,14 +40,22 @@ export function createPEMetadataBudget(image, options = {}) {
   const meta = image.metadata.peMetadata ||= { complete:true, reasons:[] };
   meta.limits = { ...limits };
   meta.used = used;
-  const fail = (reason) => { markPEPartial(image, `budget:${reason}`, `PE metadata budget exhausted: ${reason}`); return false; };
+  let nextTimeCheck = 1024;
+  // Budget exhaustion is irreversible for this instance, unlike partial metadata.
+  let stopped = false;
+  const fail = (reason) => { stopped = true; markPEPartial(image, `budget:${reason}`, `PE metadata budget exhausted: ${reason}`); return false; };
   const budget = {
     limits, used, signal,
+    get stopped() { return stopped; },
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
     take(cost = {}, reason = 'metadata') {
+      if (stopped) return false;
       if (signal?.aborted) return fail('aborted');
       const nextOps = used.operations + (cost.operations || 0);
-      if ((nextOps & 1023) === 0 && Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      if (nextOps >= nextTimeCheck) {
+        nextTimeCheck = nextOps + 1024;
+        if (Date.now() - started > limits.wallClockMs) return fail('wall-clock');
+      }
       for (const key of ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes']) {
         const next = used[key] + (cost[key] || 0);
         if (!Number.isFinite(next) || next < 0 || next > limits[key]) return fail(`${reason}:${key}`);
@@ -283,10 +291,21 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const span=mappedFileSpanForRva(image,dir.rva,dir.size); if(!span){budget.partial('exception:directory-span','PE exception directory crosses a mapped boundary');return;}
   const off=span.start,end=span.spanEnd;
   if(machine===0x8664){
-    const meta=exceptionDirectoryMetadata(image,'x64-pdata'); let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'x64-pdata'); let previousBegin=null,previousEnd=null,pendingZeroRecords=0;
     for(let p=off;p+12<=end;p+=12){
       if(!budget.take({inputBytes:12,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
-      const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8); const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
+      const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8);
+      // The directory size bounds this fixed-record array. Zero-filled slots
+      // are tolerated as padding, but never terminate the scan: a later
+      // nonzero record must remain visible. If one follows, account for the
+      // zero slot as an internal malformed record below.
+      if (!begin && !finish && !unwind) { pendingZeroRecords++; continue; }
+      if (pendingZeroRecords) {
+        meta.invalidRecords += pendingZeroRecords;
+        budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled x64 exception record(s) before a later record`);
+        pendingZeroRecords = 0;
+      }
+      const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
       if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
       const decoded=parseX64UnwindDescriptor(r,image,{begin,finish,unwind},budget);
       previousBegin=begin;previousEnd=finish;
@@ -299,10 +318,19 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       meta.count++;
     }
   }else if(machine===0xaa64||machine===0xa641){
-    const meta=exceptionDirectoryMetadata(image,'arm64-pdata'); let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'arm64-pdata'); let previousBegin=null,previousEnd=null,pendingZeroRecords=0;
     for(let p=off;p+8<=end;p+=8){
       if(!budget.take({inputBytes:8,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
-      const begin=r.u32(p),unwindData=r.u32(p+4);if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      const begin=r.u32(p),unwindData=r.u32(p+4);
+      // Keep scanning the size-bounded array after zero-filled padding slots;
+      // a later nonzero ARM64 record must not be hidden by an early zero.
+      if (!begin && !unwindData) { pendingZeroRecords++; continue; }
+      if (pendingZeroRecords) {
+        meta.invalidRecords += pendingZeroRecords;
+        budget.partial('exception:internal-zero-record', `Ignored ${pendingZeroRecords} internal zero-filled ARM64 exception record(s) before a later record`);
+        pendingZeroRecords = 0;
+      }
+      if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
       const flag=unwindData&3; let descriptor=null;
       if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
@@ -323,22 +351,36 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
-
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
-  if(!dir||!dir.rva||dir.size<8)return; const budget=ensureBudget(image,sharedBudget);
+  if(!dir||!dir.rva||dir.size===0)return; const budget=ensureBudget(image,sharedBudget);
+  if(dir.size<8){budget.partial('relocations:malformed-block','Malformed PE base-relocation block: directory is shorter than a block header');return;}
+  if((dir.size&3)!==0){budget.partial('relocations:malformed-block','Malformed PE base-relocation block: directory size is not 4-byte aligned');return;}
+  if((dir.rva&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at unaligned RVA 0x${dir.rva.toString(16)}`);return;}
   const span=mappedFileSpanForRva(image,dir.rva,dir.size);if(!span){budget.partial('relocations:directory-span','PE base-relocation directory crosses a mapped boundary');return;}
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);
+  if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);return;}
   while(off+8<=end){
+    if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:32},'relocation-block'))break;
-    const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
+    const pageRva=r.u32(off),blockSize=r.u32(off+4);if(blockSize<8||(blockSize&1)!==0||(blockSize&3)!==0||off+blockSize>end){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     const count=(blockSize-8)/2;
     for(let i=0;i<count;i++){
       if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
       const raw=r.u16(off+8+i*2),type=raw>>>12,within=raw&0xfff;if(!type)continue;if(!allowed.has(type)){image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva+within).toString(16)}`);continue;}
-      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend:null,section:null,source:'PE-base-reloc'});
+      let addend=null;
+      if(type===4){
+        if(i+1>=count){budget.partial('relocations:highadj-payload',`Malformed PE HIGHADJ base relocation without its second adjustment slot at RVA 0x${(pageRva+within).toString(16)}`);break;}
+        // HIGHADJ occupies two 16-bit slots. Preserve the previous conservative
+        // budget charge for the payload slot even though it is not a record.
+        if(!budget.take({inputBytes:2,records:1,objects:1,operations:1,estimatedHeapBytes:112},'relocation-entry'))break;
+        addend=BigInt(r.i16(off+8+(i+1)*2));
+        i++;
+      }
+      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
   }
+  if(off<end&&off+8>end)budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}: ${end-off} trailing byte(s)`);
 }
 
 export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
@@ -352,7 +394,7 @@ export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
     const p=ptr+i*18;let name;
     if(r.u32(p)===0){const noff=r.u32(p+4);name=noff>=4&&noff<strSize&&strBase+noff<strEnd?mappedCStringAtOffset(r,strBase+noff,strEnd,budget,'COFF symbol'):'';}else{name=r.ascii(p,8);if(name&&!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'coff-inline-name'))name='';}
     const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo);const address=sec?sec.address+BigInt(value):0n;
-    if(name){const derivedFunction=!!(type&0x20),executableExternal=!!(sec&&sec.perms.execute&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
+    if(name){const derivedFunction=!!(type&0x20),valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
     if(aux>count-i-1){budget.partial('coff:aux-overrun','PE COFF auxiliary symbol records exceed declared symbol count');break;}i+=1+aux;
   }
 }

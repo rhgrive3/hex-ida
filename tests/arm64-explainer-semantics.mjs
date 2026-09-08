@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 5 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 7 つの確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -9,6 +9,10 @@
  *   #1289  無関係な adrp + add から実在しない参照先を作る
  *   #1293  アドレスの前後関係だけでループと断定する
  *   #1294  ld2/3/4・st2/3/4 の転送量を常に 16 バイトと説明する
+ *   #3597  Semantic Model のアドレス 0 分岐先が落ちる
+ *   #3610  ordered narrow memory のアクセス幅をレジスタ幅で推定する
+ *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
+ *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -18,6 +22,7 @@
  */
 import assert from 'node:assert/strict';
 import { explain, referenceTarget, operandNotes } from '../js/arm64.js';
+import { buildBasicBlocks, makeInstruction } from '../js/blocks-base.js';
 
 console.log('Testing ARM64 explainer semantics...');
 
@@ -28,16 +33,64 @@ assert.equal(referenceTarget('bl', '#0x0'), 0n, 'bl to address 0 must keep its t
 assert.equal(referenceTarget('b.eq', '#0x0'), 0n, 'conditional branch to 0 must keep its target');
 assert.equal(referenceTarget('cbz', 'x0, #0x0'), 0n, 'cbz to address 0 must keep its target');
 assert.equal(referenceTarget('tbz', 'x0, #3, #0x0'), 0n, 'tbz must report the branch target, not the bit index');
+assert.equal(referenceTarget('tbnz', 'x0, #3, #0x0'), 0n, 'tbnz must report the branch target, not the bit index');
 assert.equal(referenceTarget('adr', 'x0, #0x0'), 0n, 'adr of address 0 must keep its target');
 assert.equal(referenceTarget('adrp', 'x0, #0x0'), 0n, 'adrp of page 0 must keep its target');
 assert.equal(referenceTarget('ldr', 'x0, #0x0'), 0n, 'literal load from address 0 must keep its target');
 // 通常の正のアドレスは今までどおり。
 assert.equal(referenceTarget('b', '#0x1000'), 0x1000n);
 assert.equal(referenceTarget('tbz', 'x0, #3, #0x1000'), 0x1000n);
+assert.equal(referenceTarget('tbnz', 'x0, #3, #0x1000'), 0x1000n);
 // 参照を持たない命令は今までどおり null。
 assert.equal(referenceTarget('add', 'x0, x1, #4'), null);
 assert.equal(referenceTarget('ret', ''), null);
 console.log('  ok 1 address-zero targets survive (#1288)');
+
+/* ── #3597 Semantic Model も address 0 を direct target として保持する ── */
+
+const zeroTargets = [
+  ['b', '#0x0', 'branchTarget'],
+  ['b.eq', '#0x0', 'branchTarget'],
+  ['cbz', 'x0, #0x0', 'branchTarget'],
+  ['tbz', 'x0, #3, #0x0', 'branchTarget'],
+  ['tbnz', 'x0, #3, #0x0', 'branchTarget'],
+  ['adr', 'x0, #0x0', 'pcRelTarget'],
+  ['adrp', 'x0, #0x0', 'pcRelTarget'],
+  ['ldr', 'x0, #0x0', 'pcRelTarget'],
+];
+for (const [mn, ops, field] of zeroTargets) {
+  const insn = makeInstruction({ row:0, address:0x1000n, mn, ops });
+  assert.equal(insn[field], 0n, `${mn} must retain address-zero ${field}`);
+}
+
+const cfg = buildBasicBlocks([
+  makeInstruction({ row:0, address:0x1000n, mn:'nop', ops:'' }),
+  makeInstruction({ row:1, address:0x1004n, mn:'b', ops:'#0x0' }),
+  makeInstruction({ row:2, address:0x1008n, mn:'ret', ops:'' }),
+], { rowOfAddress: (address) => address === 0n ? 0 : null });
+assert.ok(cfg.backEdges.some((edge) => edge.from === 1 && edge.to === 0),
+  'a branch to address zero must remain a direct CFG edge');
+
+// Truly negative target evidence remains unknown. In particular, TBZ/TBNZ
+// must not mistake their preceding bit index for the rejected target.
+for (const [mn, ops] of [
+  ['b', '#-0x4'],
+  ['tbz', 'x0, #3, #-0x4'],
+  ['tbnz', 'x0, #3, #-0x4'],
+]) {
+  const insn = makeInstruction({ row:0, address:0x1000n, mn, ops });
+  assert.equal(insn.branchTarget, null, `${mn} negative target must stay unknown`);
+}
+
+// A missing or malformed TBZ/TBNZ target must stay unknown instead of
+// reinterpreting the bit index as a branch destination.
+for (const mn of ['tbz', 'tbnz']) {
+  const missing = makeInstruction({ row:0, address:0x1000n, mn, ops:'x0, #3' });
+  assert.equal(missing.branchTarget, null, `${mn} missing target must stay unknown`);
+  const malformed = makeInstruction({ row:0, address:0x1000n, mn, ops:'x0, #3, label' });
+  assert.equal(malformed.branchTarget, null, `${mn} malformed target must stay unknown`);
+}
+console.log('  ok 1b blocks-base address-zero targets and CFG edges (#3597)');
 
 /* ── #1289 adrp + add は本当に繋がっているときだけ ─────────── */
 
@@ -105,6 +158,24 @@ for (const c of VECTOR_CASES) {
 }
 console.log('  ok 4 LDn/STn report the real transfer size (#1294)');
 
+/* ── #3610 ordered narrow memory accesses use their architectural width ── */
+
+for (const [mn, bytes] of [['ldarb', 1], ['ldarh', 2], ['stlrb', 1], ['stlrh', 2]]) {
+  const insn = makeInstruction({ row:0, address:0x1000n, mn, ops:'w0, [x1]' });
+  assert.equal(insn.memory?.size, bytes, `${mn} must report ${bytes}-byte memory access`);
+}
+
+// The non-narrow ordered forms still use the destination/source register
+// width, as do the ordinary byte/halfword forms.
+for (const [mn, reg, bytes] of [
+  ['ldar', 'w0', 4], ['ldar', 'x0', 8], ['stlr', 'w0', 4], ['stlr', 'x0', 8],
+  ['ldrb', 'w0', 1], ['ldrh', 'w0', 2],
+]) {
+  const insn = makeInstruction({ row:0, address:0x1000n, mn, ops:`${reg}, [x1]` });
+  assert.equal(insn.memory?.size, bytes, `${mn} ${reg} must report ${bytes}-byte access`);
+}
+console.log('  ok 4b ordered narrow memory widths remain architectural (#3610)');
+
 /* ── handler が例外で落ちていないこと ───────────────────────── */
 
 const CORPUS = [
@@ -142,5 +213,125 @@ const immNotes = operandNotes('add', 'x0, x1, #0x20');
 const imm = immNotes.find((n) => n.kind === 'imm');
 assert.ok(imm && /0x20/i.test(imm.text), 'an immediate note must include its hex form');
 console.log('  ok 6 operand notes render immediates and memory operands');
+
+/* ── #6271 pair register identity is GP-class-sensitive ───────────────── */
+
+const canonicalPairPush = explain('stp', 'x29, x30, [sp, #-16]!');
+assert.ok(canonicalPairPush.terms.includes('prologue'), 'x29/x30 stack save must remain a prologue');
+
+const canonicalPairPop = explain('ldp', 'x29, x30, [sp], #16');
+assert.ok(canonicalPairPop.terms.includes('epilogue'), 'x29/x30 stack restore must remain an epilogue');
+
+for (const [mn, ops] of [
+  ['stp', 'q29, q30, [sp, #-32]!'],
+  ['ldp', 'q29, q30, [sp], #32'],
+  ['stp', 'd29, d30, [sp, #-16]!'],
+]) {
+  const result = explain(mn, ops);
+  assert.ok(!result.terms.includes('prologue'), `${mn} ${ops} must not impersonate x29/x30 prologue`);
+  assert.ok(!result.terms.includes('epilogue'), `${mn} ${ops} must not impersonate x29/x30 epilogue`);
+}
+
+const vectorSavedPair = explain('stp', 'q19, q20, [sp, #-32]!');
+assert.ok(!vectorSavedPair.terms.includes('calleesaved'), 'SIMD q19/q20 must not inherit GP callee-saved explanation');
+const gpSavedPair = explain('stp', 'x19, x20, [sp, #-16]!');
+assert.ok(gpSavedPair.terms.includes('calleesaved'), 'GP x19/x20 must retain callee-saved explanation');
+console.log('  ok 7 pair register identity is class-sensitive (#6271)');
+
+/* ── #3612 SBFIZ/BFXIL は似た形でも別の bitfield semantics ───── */
+
+const sbfizX = explain('sbfiz', 'x0, x1, #8, #8');
+const ubfizX = explain('ubfiz', 'x0, x1, #8, #8');
+assert.equal(sbfizX.handlerError, undefined, 'SBFIZ X handler must not throw');
+assert.equal(ubfizX.handlerError, undefined, 'UBFIZ X handler must not throw');
+assert.notEqual(sbfizX.pseudo, ubfizX.pseudo, 'SBFIZ must not reuse UBFIZ presentation');
+assert.match(sbfizX.pseudo, /sign_extend\(x1\[0\.\.7\], 64\)/, 'SBFIZ must expose signed low-field extension');
+assert.match(sbfizX.pseudo, /<< 8$/, 'SBFIZ must place the signed field at its destination lsb');
+assert.match(sbfizX.summary + ' ' + sbfizX.detail.join(' '), /符号|sign/i, 'SBFIZ explanation must mention sign extension');
+assert.match(ubfizX.pseudo, /x1 & mask\) << 8/, 'UBFIZ zero-fill explanation must remain unchanged');
+
+const bfxilX = explain('bfxil', 'x0, x1, #8, #8');
+const bfiX = explain('bfi', 'x0, x1, #8, #8');
+assert.equal(bfxilX.handlerError, undefined, 'BFXIL X handler must not throw');
+assert.equal(bfiX.handlerError, undefined, 'BFI X handler must not throw');
+assert.notEqual(bfxilX.pseudo, bfiX.pseudo, 'BFXIL must not reuse BFI presentation');
+assert.equal(bfxilX.pseudo, 'x0[0..7] = x1[8..15]', 'BFXIL must map source bits 8..15 to destination bits 0..7');
+assert.match(bfxilX.summary, /上のビットはそのまま|higher destination bits stay unchanged/i, 'BFXIL must preserve higher destination bits');
+assert.ok(bfiX.pseudo.includes('x0[8…]'), 'BFI must retain its destination insertion position');
+
+const sbfizW = explain('sbfiz', 'w0, w1, #24, #8');
+const bfxilW = explain('bfxil', 'w0, w1, #24, #8');
+assert.match(sbfizW.pseudo, /sign_extend\(w1\[0\.\.7\], 32\) << 24/, 'SBFIZ W boundary must use 32-bit signed extension');
+assert.equal(bfxilW.pseudo, 'w0[0..7] = w1[24..31]', 'BFXIL W boundary must retain source/destination direction');
+
+const sbfizXBoundary = explain('sbfiz', 'x0, x1, #56, #8');
+const bfxilXBoundary = explain('bfxil', 'x0, x1, #56, #8');
+assert.match(sbfizXBoundary.pseudo, /sign_extend\(x1\[0\.\.7\], 64\) << 56/, 'SBFIZ X boundary must retain 64-bit width');
+assert.equal(bfxilXBoundary.pseudo, 'x0[0..7] = x1[56..63]', 'BFXIL X boundary must retain source/destination direction');
+console.log('  ok 8 SBFIZ/BFXIL aliases preserve signedness and bit direction (#3612)');
+
+
+/* ── #3627 width and signedness semantics must not collapse into aliases ─── */
+
+// A64 REV reverses the complete register, while REV16 and REV32 reverse bytes
+// inside each 16-bit halfword or 32-bit word.  For the ordinary X-register
+// example x1 = 0x1122334455667788, these are respectively
+// 0x8877665544332211, 0x2211443366558877, and 0x4433221188776655.
+const reverseX = [
+  ['rev', 'byteswap'],
+  ['rev16', 'byteswap16'],
+  ['rev32', 'byteswap32'],
+];
+for (const [mn, operation] of reverseX) {
+  const result = explain(mn, 'x0, x1');
+  assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3627)`);
+  assert.equal(result.pseudo, `x0 = ${operation}(x1)`, `${mn} must describe its byte scope (#3627)`);
+  assert.ok(result.terms.includes('endian'), `${mn} must retain the endian term (#3627)`);
+}
+assert.notEqual(explain('rev16', 'x0, x1').pseudo, explain('rev32', 'x0, x1').pseudo);
+for (const [mn, widths] of [['rev16', ['w', 'x']], ['rev32', ['x']]]) {
+  for (const width of widths) {
+    const result = explain(mn, `${width}0, ${width}1`);
+    assert.equal(result.handlerError, undefined, `${mn} ${width}-form must remain valid (#3627)`);
+    assert.equal(result.pseudo, `${width}0 = byteswap${mn.slice(3)}(${width}1)`);
+  }
+}
+
+const smull = explain('smull', 'x0, w1, w2');
+const umull = explain('umull', 'x0, w1, w2');
+// With w1 = 0xffffffff and w2 = 2, UMULL produces 0x00000001fffffffe;
+// SMULL interprets w1 as -1 and produces 0xfffffffffffffffe.
+assert.equal(smull.handlerError, undefined, 'SMULL handler must not throw (#3627)');
+assert.equal(umull.handlerError, undefined, 'UMULL handler must not throw (#3627)');
+assert.equal(smull.pseudo, 'x0 = (signed)w1 × (signed)w2', 'SMULL must preserve signed operands (#3627)');
+assert.equal(umull.pseudo, 'x0 = (unsigned)w1 × (unsigned)w2', 'UMULL must zero-extend operands (#3627)');
+assert.notEqual(smull.pseudo, umull.pseudo, 'SMULL and UMULL must not share a signedness-blind explanation (#3627)');
+assert.match(smull.summary, /符号付き|Sign-extend/i, 'SMULL summary must state signed widening (#3627)');
+assert.match(umull.summary, /符号なし|Zero-extend/i, 'UMULL summary must state unsigned widening (#3627)');
+console.log('  ok 8 REV16/REV32 scope and SMULL/UMULL signedness stay distinct (#3627)');
+
+/* SIMD encodings must not inherit scalar explanations (#3627) */
+const smullVector = explain('smull', 'v0.4s, v1.4h, v2.4h');
+const umullVector = explain('umull', 'v0.4s, v1.4h, v2.4h');
+assert.equal(smullVector.handlerError, undefined, 'SIMD SMULL handler must not throw (#3627)');
+assert.equal(umullVector.handlerError, undefined, 'SIMD UMULL handler must not throw (#3627)');
+assert.equal(smullVector.pseudo, 'v0.4s = signed_lane_widen_mul(v1.4h, v2.4h)');
+assert.equal(umullVector.pseudo, 'v0.4s = unsigned_lane_widen_mul(v1.4h, v2.4h)');
+assert.ok(smullVector.terms.includes('simd'));
+assert.ok(umullVector.terms.includes('simd'));
+assert.match(smullVector.summary, /レーン|lane/i);
+assert.match(umullVector.summary, /レーン|lane/i);
+
+const rev16Vector = explain('rev16', 'v0.8h, v1.8h');
+const rev32Vector = explain('rev32', 'v0.4s, v1.4s');
+assert.equal(rev16Vector.handlerError, undefined, 'SIMD REV16 handler must not throw (#3627)');
+assert.equal(rev32Vector.handlerError, undefined, 'SIMD REV32 handler must not throw (#3627)');
+assert.equal(rev16Vector.pseudo, 'v0.8h = vector_byteswap16(v1.8h)');
+assert.equal(rev32Vector.pseudo, 'v0.4s = vector_byteswap32(v1.4s)');
+assert.ok(rev16Vector.terms.includes('simd'));
+assert.ok(rev32Vector.terms.includes('simd'));
+assert.match(rev16Vector.summary, /レーン|lane/i);
+assert.match(rev32Vector.summary, /レーン|lane/i);
+console.log('  ok 9 SIMD encodings retain lane-specific semantics (#3627)');
 
 console.log('ARM64 explainer semantics: PASS');

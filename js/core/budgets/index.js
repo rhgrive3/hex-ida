@@ -131,8 +131,13 @@ export class ResourceBudget {
       used: Object.freeze({ ...this.used }),
     };
     if (recursive) {
+      // Scope names are ASCII-only, but collation order for even ASCII
+      // letters differs per ICU locale (en-US ranks 'A' > 'a', da-DK ranks
+      // 'A' < 'a'), so a locale-sensitive comparator made the deterministic
+      // snapshot environment-dependent. Code-unit order is the locale-free
+      // total order the snapshot contract pins (#6023).
       const sortedChildren = [...this.children.values()]
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map((c) => c.snapshot({ recursive: true }));
       snap.children = Object.freeze(sortedChildren);
     }
