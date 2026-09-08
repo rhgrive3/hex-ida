@@ -19,25 +19,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          publish_diag() {
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add .v8-publish-diagnostic.txt
+            git commit -m 'chore: record v8 publish diagnostic'
+            git push origin HEAD:tmp-analysis-v8-publish-20260908
+          }
           : > /tmp/v8.patch.gz
           for f in .v8-staging/part*.b64; do
             base64 -d "$f" >> /tmp/v8.patch.gz
           done
           actual="$(sha256sum /tmp/v8.patch.gz | awk '{print $1}')"
-          echo "bundle_sha=$actual" >> "$GITHUB_STEP_SUMMARY"
           if [ "$actual" != 'e9e5dab90b5dac4a0114b42ab342898390d2d8f3ab0a97cca697bc9e57e4f434' ]; then
-            echo 'failure=bundle-sha-mismatch' >> "$GITHUB_STEP_SUMMARY"
+            printf 'failure=bundle-sha-mismatch actual=%s\n' "$actual" > .v8-publish-diagnostic.txt
+            publish_diag
             exit 11
           fi
           gzip -dc /tmp/v8.patch.gz > /tmp/v8.patch
           if ! git apply --check /tmp/v8.patch 2>/tmp/v8-apply.err; then
-            echo 'failure=git-apply-check' >> "$GITHUB_STEP_SUMMARY"
-            sed -n '1,20p' /tmp/v8-apply.err >> "$GITHUB_STEP_SUMMARY"
+            { printf 'failure=git-apply-check\n'; sed -n '1,12p' /tmp/v8-apply.err; } > .v8-publish-diagnostic.txt
+            publish_diag
             exit 12
           fi
           git apply /tmp/v8.patch
           rm -rf .v8-staging
-          rm -f .github/workflows/v8-publish.yml
+          rm -f .github/workflows/v8-publish.yml .v8-publish-diagnostic.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
