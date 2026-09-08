@@ -56,18 +56,23 @@ export class DevSelfUpdateGate {
     /* A mistyped expectation must not be able to brick the Dev tool surface
        for the rest of the page session, so the declaring side can withdraw it. */
     if (clear === true) return this.clear(reason);
+    /* Every throwing normalization runs before any state commit: a rejected
+       activation must leave the gate exactly as it was. */
     const expected = Object.freeze({
       commit: assertCommit(expectedCommit, 'expectedCommit'),
       buildId: assertBuildId(expectedBuildId, 'expectedBuildId'),
       userscriptVersion: optionalText(expectedUserscriptVersion, 'expectedUserscriptVersion'),
     });
+    const nextCapabilities = new Set(assertCapabilities(capabilities));
+    const nextReason = optionalText(reason, 'reason');
+    const nextRequireReinitialization = requireReinitialization === true;
     this.#expected = expected;
-    this.#capabilities = new Set(assertCapabilities(capabilities));
-    this.#reason = optionalText(reason, 'reason');
+    this.#capabilities = nextCapabilities;
+    this.#reason = nextReason;
     /* Anything observed before the update was observed on the old runtime. */
     this.#active = null;
     this.#observed = false;
-    this.#requireReinitialization = requireReinitialization === true;
+    this.#requireReinitialization = nextRequireReinitialization;
     this.#reinitialized = false;
     this.#mismatches = ['not-observed'];
     return this.status();
@@ -128,11 +133,12 @@ export class DevSelfUpdateGate {
   }
 
   clear(reason = null) {
+    const nextReason = optionalText(reason, 'reason');
     this.#expected = null;
     this.#active = null;
     this.#capabilities = new Set();
     this.#mismatches = [];
-    this.#reason = optionalText(reason, 'reason');
+    this.#reason = nextReason;
     this.#observed = false;
     this.#requireReinitialization = false;
     this.#reinitialized = false;
