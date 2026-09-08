@@ -144,10 +144,12 @@ test('indirect scalar FP arguments use non-overlapping eight-byte stack slots', 
     callingConvention:'vectorcall',
     args:[int(), int(), int(), int(), int(), int(), flt(), { type:'double', floating:true, bits:64 }],
   } });
-  assert.equal(result.arguments[6].offset, 32);
-  assert.equal(result.arguments[7].offset, 40);
-  assert.equal(result.arguments[6].calleeEntryOffset, 40);
-  assert.equal(result.arguments[7].calleeEntryOffset, 48);
+  // The fifth and sixth integer arguments already occupy the first two
+  // caller-stack slots, so the position-six/seven FP pointers follow them.
+  assert.equal(result.arguments[6].offset, 48);
+  assert.equal(result.arguments[7].offset, 56);
+  assert.equal(result.arguments[6].calleeEntryOffset, 56);
+  assert.equal(result.arguments[7].calleeEntryOffset, 64);
   assert.equal(result.stackArgsMayContainPointers, true);
 });
 

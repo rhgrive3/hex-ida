@@ -259,7 +259,7 @@ function targetMatchesCanonicalProof(input, proof) {
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
     ? input.rootEntityId : null;
-  return addressSpace === (proof.addressSpace ?? 'memory')
+  return addressSpace === canonicalAddressSpace(proof.addressSpace)
     && rootKind === proofRootKind(proof)
     && stableStringify(input.rootIdentity ?? null) === stableStringify(proof.rootIdentity ?? null)
     && rootEntityId === (proof.rootEntityId ?? null)

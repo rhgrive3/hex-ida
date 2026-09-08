@@ -169,7 +169,7 @@ function parameterClass(param) {
       ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
     appleLongDouble,
     appleLongDoubleWidthConflict:appleLongDouble && explicitTotalBitsProven && bits !== 64,
-    bits, bytes, alignmentBytes, explicitAlignmentBytes, signed,
+    bits, bytes, alignmentBytes, explicitAlignmentBytes:explicitAlignment, signed,
   };
 }
 

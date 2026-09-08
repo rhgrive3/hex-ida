@@ -17,6 +17,7 @@ const AGGREGATE = {
   aggregate:true,
   bits:128,
   bytes:16,
+  alignmentBytes:8,
   members:[
     { bits:64, bytes:8, byteOffset:0 },
     { bits:64, bytes:8, byteOffset:8 },
