@@ -8,7 +8,7 @@
 // of event count or the truncated override.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { TraceProvider } from '../js/runtime/trace-provider.js';
+import { TraceProvider } from '../../../js/runtime/trace-provider.js';
 
 function providerWith(completeness, events = []) {
   return new TraceProvider({

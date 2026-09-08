@@ -7,7 +7,7 @@
 // (case-insensitive) in the LocalFunctionSandboxAdapter trace buffer.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { LocalFunctionSandboxAdapter } from '../../../js/adapters/index.js';
 
 async function traceFor(text) {
   const io = {
