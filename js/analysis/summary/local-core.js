@@ -35,16 +35,19 @@ function regionsFor(node, resolveRegion) {
   if (typeof resolveRegion !== 'function' || node.memory == null) return [];
   try {
     const resolved = resolveRegion(node.memory, { node });
+    if (resolved == null) return [];
     return Array.isArray(resolved) ? resolved : [resolved];
   } catch { return []; }
 }
 
 function effectsForAccesses(node, scope, resolveRegion, source) {
   const effects = [];
+  let complete = true;
   for (const access of scope.accesses ?? []) {
     const pseudoNode = { ...node, memory: access };
     const regions = regionsFor(pseudoNode, resolveRegion);
     if (!regions.length) {
+      complete = false;
       effects.push(createMemoryEffect({
         regionKind: 'unknown', broad: true, addressSpaces: [access.addressSpace ?? 'memory'],
         source, evidenceIds: evidenceOf(node),
@@ -60,7 +63,7 @@ function effectsForAccesses(node, scope, resolveRegion, source) {
       }));
     }
   }
-  return effects;
+  return { effects, complete };
 }
 
 function broadEffect(node, addressSpaces, source) {
@@ -84,7 +87,11 @@ function broadEffect(node, addressSpaces, source) {
 function applyScope({ node, scope, resolveRegion, into, source }) {
   if (scope == null) { into.push(broadEffect(node, null, source)); return false; }
   if (scope.scope === 'none') return true;
-  if (scope.scope === 'accesses') { into.push(...effectsForAccesses(node, scope, resolveRegion, source)); return true; }
+  if (scope.scope === 'accesses') {
+    const resolved = effectsForAccesses(node, scope, resolveRegion, source);
+    into.push(...resolved.effects);
+    return resolved.complete;
+  }
   if (scope.scope === 'all') { into.push(broadEffect(node, scope.addressSpaces, source)); return true; }
   into.push(broadEffect(node, null, source));
   return false;
@@ -118,6 +125,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   let sawNoreturnCall = false;
   let mayThrow = false;
   let controlUnknown = false;
+  // Set when an intrinsic's memory scope is unknown/missing: the summary
+  // carries broad effects for it and must not claim complete memory semantics
+  // (#5752).
+  let intrinsicScopeUnknown = false;
 
   if (options.signal?.aborted) {
     return {
@@ -371,8 +382,13 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
 
     if (node.kind === 'intrinsic') {
-      applyScope({ node, scope: node.intrinsic?.memoryRead, resolveRegion, into: memoryReadRegions, source: 'abi-rule' });
-      applyScope({ node, scope: node.intrinsic?.memoryWrite, resolveRegion, into: memoryWriteRegions, source: 'abi-rule' });
+      // An intrinsic whose memory scope the IR does not spell out gets a
+      // broad effect, but ignoring applyScope's verdict here published
+      // fully-complete summaries for semantics the analyzer never actually
+      // understood (#5752). The unknown scope must weaken completeness too.
+      const readUnderstood = applyScope({ node, scope: node.intrinsic?.memoryRead, resolveRegion, into: memoryReadRegions, source: 'abi-rule' });
+      const writeUnderstood = applyScope({ node, scope: node.intrinsic?.memoryWrite, resolveRegion, into: memoryWriteRegions, source: 'abi-rule' });
+      if (!readUnderstood || !writeUnderstood) intrinsicScopeUnknown = true;
       continue;
     }
 
@@ -473,7 +489,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   }
 
-  const hasUnknown = unknownCallEffects.length > 0;
+  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,

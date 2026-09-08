@@ -312,7 +312,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
             mnemonic = 'switch';
             consumedValues.push({ id: 'selector', bits: 32 });
             currentStackHeight--;
-            controlEffects.push({ kind: 'switch', targetOffsets:deltas.map((delta) => switchBase + delta) });
+            // ECMA-335: when the unsigned selector is >= the target count,
+            // control continues at the instruction after the table. Without
+            // this edge the default block is unreachable and the CFG/IR
+            // silently drops a real execution path (#7239).
+            controlEffects.push({ kind: 'switch', targetOffsets:deltas.map((delta) => switchBase + delta), defaultTargetOffset: switchBase });
           }
           break;
 
