@@ -9,11 +9,13 @@ import { createInterventionRecord, InterventionLedger } from '../js/runtime/evid
 
 const base = { runtimeSessionId: 'session-1', providerId: 'provider-1', kind: 'memory-write' };
 
-test('#5966 whitespace-only evidence ids are rejected', () => {
-  assert.throws(
-    () => createInterventionRecord({ ...base, evidenceIds: ['   ', '\t'] }),
-    (error) => /non-empty strings/.test(error?.message ?? ''),
-  );
+test('#5966 whitespace-only parent and evidence ids are rejected', () => {
+  for (const field of ['parentInterventionIds', 'evidenceIds']) {
+    assert.throws(
+      () => createInterventionRecord({ ...base, [field]: ['   ', '\t'] }),
+      (error) => /non-empty strings/.test(error?.message ?? ''),
+    );
+  }
 });
 
 test('#5966 padded evidence ids canonicalize and dedupe', () => {
