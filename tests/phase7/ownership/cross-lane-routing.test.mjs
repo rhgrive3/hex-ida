@@ -53,6 +53,12 @@ const objcOwnedFiles = [
 const objcForeignFiles = CROSS_LANE_ROUTES[objcBranch];
 const objcInventory = [...objcOwnedFiles, ...objcForeignFiles];
 
+for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml']) {
+  const workflow = readFileSync(file, 'utf8');
+  assert.match(workflow, /fix\/objc-protocol-class-properties-3979/);
+  assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
+}
+
 assert.deepEqual(
   validateCrossLaneInventory(objcBranch, objcInventory),
   [...objcOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
