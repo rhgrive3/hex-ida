@@ -367,11 +367,18 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     }
 
     let added = 0;
+    let outputComplete = true;
     const addedSeen = new Set();
     for (const candidate of candidates) {
       const key = candidate.address.toString();
       if (addedSeen.has(key)) continue;
-      if (budget && !budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'eh-frame-function')) break;
+      if (budget && !budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'eh-frame-function')) {
+        // Verified FDEs whose function seeds could not be materialized are not
+        // recovered coverage: reporting 'verified' here would let downstream
+        // treat unrecovered functions as nonexistent (#5581).
+        outputComplete = false;
+        break;
+      }
       image.functions.push(functionSeed(candidate.address, {
         source:'unwind',
         confidence:candidate.domainKind === 'section' ? 0.985 : 0.97,
@@ -385,7 +392,8 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     image.metadata.ehFrameHeader = {
       version, ehFrameEnc, countEnc, tableEnc, declaredFunctions:count, recoveredFunctions:added,
       validatedEntries:candidates.length, invalidEntries, tableSorted:true, tableComplete:true,
-      validation:invalidEntries === 0 && candidates.length === count ? 'verified' : 'partial',
+      validation:outputComplete && invalidEntries === 0 && candidates.length === count ? 'verified' : 'partial',
+      ...(outputComplete ? {} : { reason:'output-budget-exhausted' }),
       ehFrameAddress:frame.value, ehFrameDomain:domain.kind,
     };
   } catch (e) {
