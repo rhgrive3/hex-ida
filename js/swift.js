@@ -118,9 +118,25 @@ export async function readSwiftMangledName(read, address, options = {}) {
   };
 }
 function contextKind(flags) { switch (flags & 0x1f) { case 0:return 'module'; case 1:return 'extension'; case 2:return 'anonymous'; case 3:return 'protocol'; case 16:return 'class'; case 17:return 'struct'; case 18:return 'enum'; default:return 'unknown'; } }
+/* Section descriptor addresses/sizes come from loader-recovered Mach-O
+   metadata, so they must be canonical non-negative values: non-negative
+   bigint, non-negative safe integer, or an explicit decimal/hex string.
+   Anything else must not reach BigInt(), whose raw SyntaxError would abort
+   the whole Swift metadata analysis instead of degrading one scan (#5857). */
+function canonicalSectionValue(value) {
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
 function sectionRange(sections, wanted) {
   const list = Array.isArray(sections) ? sections : Object.values(sections || {});
-  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
+  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) { const addrBig = canonicalSectionValue(addr), sizeBig = canonicalSectionValue(size); if (addrBig == null || sizeBig == null) return { invalid: true, raw: s }; return { addr: addrBig, size: sizeBig, raw: s }; } }
   return null;
 }
 /*
@@ -336,6 +352,10 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
 async function relativePointerSection(read,range,budget,parser,options={}){
   const signal=options?.signal??null;
   const items=[];if(!range)return{items,completeness:{present:false,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:0,misalignedBytes:0,complete:true}};
+  // A present-but-malformed section descriptor is a scan failure, not an
+  // absent section: fail closed as incomplete instead of leaking a raw
+  // BigInt conversion error or silently claiming completeness (#5857).
+  if(range.invalid===true)return{items,completeness:{present:true,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:1,misalignedBytes:0,complete:false}};
   const size=range.size,misalignedBytes=Number(size%4n),declared=Number(size/4n),count=Math.min(declared,budget);let scanned=0,unreadableEntries=0,invalidEntries=0;
   for(let i=0;i<count;i++){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
@@ -414,8 +434,20 @@ function addNameCandidate(map,name,value){if(!name)return;let items=map.get(name
    裸の simple name を exact identity に昇格しない。qualified name（module 付き）
    と address identity は引き続き有効。universe が証明済みなら単独 simple name も可。 */
 function finalizeUniqueNames(candidates,out,namesProven){for(const [name,items] of candidates)if(items.length===1&&(namesProven||name!==items[0].name))out.set(name,items[0]);}
-function resolveTypeIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('type@')&&index.typesByAddress.has(raw.slice(5)))return raw;const byAddress=index.typesByAddress.get(raw);if(byAddress)return canonicalTypeKey(byAddress);const byName=index.typesByName.get(raw);return byName?canonicalTypeKey(byName):null;}
-function resolveProtocolIdentity(index,value){if(value==null)return null;const raw=String(value);if(raw.startsWith('protocol@')&&index.protocolsByAddress.has(raw.slice(9)))return raw;const byAddress=index.protocolsByAddress.get(raw);if(byAddress)return canonicalProtocolKey(byAddress);const byName=index.protocolsByName.get(raw);return byName?canonicalProtocolKey(byName):null;}
+/* Dispatch identity/slot authorities accept only primitive canonical
+   representations: a structured value (array/object) must not launder into a
+   real type/protocol identity or slot index through String()/Number()
+   coercion (#5863). Addresses may be BigInt/safe-integer/string; names are
+   strings; slots are non-negative safe integers. */
+function canonicalIdentityText(value){
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
+function resolveTypeIdentity(index,value){if(value==null)return null;const raw=canonicalIdentityText(value);if(raw==null)return null;if(raw.startsWith('type@')&&index.typesByAddress.has(raw.slice(5)))return raw;const byAddress=index.typesByAddress.get(raw);if(byAddress)return canonicalTypeKey(byAddress);const byName=index.typesByName.get(raw);return byName?canonicalTypeKey(byName):null;}
+function resolveProtocolIdentity(index,value){if(value==null)return null;const raw=canonicalIdentityText(value);if(raw==null)return null;if(raw.startsWith('protocol@')&&index.protocolsByAddress.has(raw.slice(9)))return raw;const byAddress=index.protocolsByAddress.get(raw);if(byAddress)return canonicalProtocolKey(byAddress);const byName=index.protocolsByName.get(raw);return byName?canonicalProtocolKey(byName):null;}
+function canonicalDispatchSlot(value){return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;}
 
 export function buildSwiftRuntimeIndex(model={}){
   const typesByAddress=new Map(),typesByName=new Map(),typesBySimpleName=new Map(),protocolsByAddress=new Map(),protocolsByName=new Map(),protocolsBySimpleName=new Map();
@@ -435,8 +467,8 @@ export function resolveSwiftDispatch(index,call={}){
   if(call.target!=null)return{kind:'direct',resolved:{target:call.target,name:call.name||null},candidates:[],confidence:call.name?0.99:0.9,complete:true};
   if(!index)return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0,complete:false};
   const universeComplete=index.model?.complete===true;
-  if(call.kind==='vtable'&&(call.typeAddress!=null||call.typeName!=null)&&call.slot!=null){const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName);if(!typeKey)return{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};const methods=index.vtablesByType.get(typeKey)||[],m=methods.find((x)=>x.index===Number(call.slot));return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};}
-  if((call.kind==='witness'||call.kind==='existential')&&(call.typeAddress!=null||call.typeName)&&(call.protocolAddress!=null||call.protocolName)&&call.slot!=null){const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName),protoKey=resolveProtocolIdentity(index,call.protocolAddress??call.protocolName);if(!typeKey||!protoKey)return{kind:call.kind,resolved:null,candidates:[],confidence:0.2,conformance:null,complete:universeComplete};const conf=index.witnessesByPair.get(`${typeKey}:${protoKey}`),table=(index.model.witnessTables||[]).find((w)=>{if(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())return true;const wType=resolveTypeIdentity(index,w.typeAddress??w.typeName),wProto=resolveProtocolIdentity(index,w.protocolAddress??w.protocolName);return wType===typeKey&&wProto===protoKey;}),entry=table?.entries?.find((x)=>x.index===Number(call.slot));if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null,complete:universeComplete};}
+  if(call.kind==='vtable'&&(call.typeAddress!=null||call.typeName!=null)&&call.slot!=null){const slot=canonicalDispatchSlot(call.slot);const typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName);if(!typeKey||slot==null)return{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};const methods=index.vtablesByType.get(typeKey)||[],m=methods.find((x)=>x.index===slot);return m?{kind:'vtable',resolved:m,candidates:[m],confidence:0.9,complete:true}:{kind:'vtable',resolved:null,candidates:[],confidence:0.2,complete:universeComplete};}
+  if((call.kind==='witness'||call.kind==='existential')&&(call.typeAddress!=null||call.typeName)&&(call.protocolAddress!=null||call.protocolName)&&call.slot!=null){const slot=canonicalDispatchSlot(call.slot),typeKey=resolveTypeIdentity(index,call.typeAddress??call.typeName),protoKey=resolveProtocolIdentity(index,call.protocolAddress??call.protocolName);if(!typeKey||!protoKey||slot==null)return{kind:call.kind,resolved:null,candidates:[],confidence:0.2,conformance:null,complete:universeComplete};const conf=index.witnessesByPair.get(`${typeKey}:${protoKey}`),table=(index.model.witnessTables||[]).find((w)=>{if(conf?.witnessTable!=null&&String(w.address)===conf.witnessTable.toString())return true;const wType=resolveTypeIdentity(index,w.typeAddress??w.typeName),wProto=resolveProtocolIdentity(index,w.protocolAddress??w.protocolName);return wType===typeKey&&wProto===protoKey;}),entry=table?.entries?.find((x)=>x.index===slot);if(entry)return{kind:call.kind,resolved:entry,candidates:[entry],confidence:0.86,conformance:conf||null,complete:true};return{kind:call.kind,resolved:null,candidates:[],confidence:conf?0.55:0.2,conformance:conf||null,complete:universeComplete};}
   return{kind:call.kind||'indirect',resolved:null,candidates:[],confidence:0.15,complete:universeComplete};
 }
 

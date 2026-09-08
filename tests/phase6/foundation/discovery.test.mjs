@@ -59,8 +59,21 @@ test('no owned Phase 6 test file escapes canonical discovery', () => {
 
 test('the canonical Phase 6 runner is wired into the repository check path', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  const commands = packageJson.scripts['phase6:test'].split(/\s*&&\s*/);
-  assert.equal(commands[0], 'node tests/phase6/run.mjs', 'phase6:test must run the complete canonical runner before supplemental regressions');
+  const commands = String(packageJson.scripts['phase6:test']).split(/\s*&&\s*/);
+  assert.equal(
+    commands[0],
+    'node tests/phase6/run.mjs',
+    'phase6:test must run the complete canonical runner before supplemental regressions',
+  );
+  assert.ok(
+    commands.includes('node tests/issue-5990-riscv-identity-string-coercion.mjs'),
+    'phase6:test must retain the required #5990 supplemental regression',
+  );
+  assert.equal(
+    String(packageJson.scripts['phase6:test']).includes('||'),
+    false,
+    'phase6:test must not mask runner failures with ||',
+  );
   assert.ok(
     String(packageJson.scripts.check).split(/\s*&&\s*/).includes('npm run phase6:test'),
     'npm run check must include phase6:test, otherwise Phase 6 tests never run in the canonical gate',

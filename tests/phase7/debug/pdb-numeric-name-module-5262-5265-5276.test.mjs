@@ -96,7 +96,7 @@ test('#5276 SymByteSize bounds keep non-symbol bytes out of module records', () 
   assert.equal(msf.complete, true);
   const dbiBytes = msf.streams[3].read();
   const dbi = parseDbiHeader(dbiBytes);
-  const module = parseModuleInfo(dbiBytes, dbi).find((entry) => (
+  const module = parseModuleInfo(dbiBytes, dbi).modules.find((entry) => (
     entry.streamIndex >= 0
     && entry.symbolByteSize > 8
     && msf.streams[entry.streamIndex]?.size > 64

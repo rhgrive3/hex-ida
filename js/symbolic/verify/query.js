@@ -181,6 +181,18 @@ function normalizeBitWidth(value) {
   return value;
 }
 
+function normalizeTargetEntity(value) {
+  if (value == null || typeof value === 'string') return value ?? null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
+  }
+  return value;
+}
+
 function queryHashPayload(query, constraintHashes, assertionHash) {
   return {
     schemaVersion: QUERY_SCHEMA_VERSION,
@@ -281,6 +293,7 @@ export function createVerificationQuery({
   const normalizedTranslatorVersion = requireIdentityString(translatorVersion, 'translatorVersion');
   const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
   const normalizedBitWidth = normalizeBitWidth(bitWidth);
+  const normalizedTargetEntityInput = normalizeTargetEntity(targetEntity);
 
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
@@ -293,14 +306,14 @@ export function createVerificationQuery({
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
   const identities = validateBoundedIdentityValues([
-    targetEntity,
+    normalizedTargetEntityInput,
     normalizedAssumptions,
     normalizedCompleteness,
     normalizedOutputs,
     proofScope,
   ], DEFAULT_QUERY_HASH_LIMITS);
   if (!identities.ok) throw new TypeError(`createVerificationQuery: ${identities.reason}`);
-  const normalizedTargetEntity = immutableIdentitySnapshot(targetEntity);
+  const normalizedTargetEntity = immutableIdentitySnapshot(normalizedTargetEntityInput);
   const normalizedAssumptionIdentity = immutableIdentitySnapshot(normalizedAssumptions);
   const normalizedCompletenessIdentity = immutableIdentitySnapshot(normalizedCompleteness);
   const normalizedOutputIdentity = immutableIdentitySnapshot(normalizedOutputs);

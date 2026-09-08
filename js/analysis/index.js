@@ -126,16 +126,16 @@ export function createAnalysisSurface({
     return { path: explainMemoryPathQuery(memorySsa, useOrId, pathOptions), status: status('complete') };
   }
 
-  /** This function's summary, built on demand. */
+  /** Tuning options cannot replace the surface's snapshot or resolver binding. */
   function functionSummary(summaryOptions = {}) {
     if (Object.keys(summaryOptions).length > 0) {
       return buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
-        snapshotId, resolveRegion, ...options, ...summaryOptions,
+        ...options, ...summaryOptions, snapshotId, resolveRegion,
       });
     }
     if (localSummary == null) {
       localSummary = buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
-        snapshotId, resolveRegion, ...options,
+        ...options, snapshotId, resolveRegion,
       });
     }
     return localSummary;
@@ -166,7 +166,7 @@ export function createAnalysisSurface({
       const pointsTo = solver.pointsToRun();
       escapeResult = pointsTo == null
         ? { escapes: [], nonEscapingRoots: new Set(), status: status('unsupported', 'dependency-missing') }
-        : analyzeEscape(ir, cfg, ssa, pointsTo, { snapshotId, ...options });
+        : analyzeEscape(ir, cfg, ssa, pointsTo, { ...options, snapshotId });
     }
     return escapeResult;
   }

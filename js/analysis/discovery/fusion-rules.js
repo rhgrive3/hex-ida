@@ -7,7 +7,6 @@
  */
 
 import { createFunctionCandidate } from './candidates.js';
-import { canonicalTypedString } from './canonical-value.js';
 
 function authorityRank(authority) {
   return authority === 'authoritative' ? 2 : authority === 'corroborating' ? 1 : 0;
@@ -17,9 +16,21 @@ function regionSignature(item) {
   return (item.regions ?? []).map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
 
+function compareText(left, right) {
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function compareDiscoveryEvidence(left, right) {
   return authorityRank(right.authority) - authorityRank(left.authority)
-    || canonicalTypedString(left).localeCompare(canonicalTypedString(right));
+    || compareText(left.start, right.start)
+    || compareText(left.producerId, right.producerId)
+    || compareText(left.kind, right.kind)
+    || compareText(left.name ?? '', right.name ?? '')
+    || compareText(left.extentRole ?? '', right.extentRole ?? '')
+    || compareText(left.architectureId ?? '', right.architectureId ?? '')
+    || compareText(regionSignature(left), regionSignature(right));
 }
 
 function fuseStartState(evidence) {

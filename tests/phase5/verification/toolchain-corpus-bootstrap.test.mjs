@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { buildVerificationCorpus, probeToolchain } from '../../../tools/validation/phase5/build-verification-corpus.mjs';
 
@@ -28,6 +31,32 @@ const sourceCategories = Object.freeze([
   'microsoft-x64-abi',
   'variadic-abi-edge',
 ]);
+
+test('P5-6 toolchain resolution prefers configured LLVM18 over an older system installation', () => {
+  const binDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p56-llvm18-'));
+  const versions = Object.freeze({
+    'clang-18': 'Ubuntu clang version 18.1.3 (fixture)',
+    'ld.lld-18': 'Ubuntu LLD 18.1.3 (fixture)',
+    'lld-link-18': 'Ubuntu LLD 18.1.3 (fixture)',
+    'llvm-objdump-18': 'Ubuntu LLVM version 18.1.3 (fixture)',
+    'llvm-readobj-18': 'Ubuntu LLVM version 18.1.3 (fixture)',
+  });
+  try {
+    for (const [name, version] of Object.entries(versions)) {
+      const file = path.join(binDirectory, name);
+      fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`);
+      fs.chmodSync(file, 0o755);
+    }
+    const probe = probeToolchain({ binDirectory });
+    assert.equal(probe.exact, true, JSON.stringify(probe));
+    const selectedNames = Object.freeze({ clang:'clang-18', lld:'ld.lld-18', lldLink:'lld-link-18', objdump:'llvm-objdump-18', readobj:'llvm-readobj-18' });
+    for (const [key, name] of Object.entries(selectedNames)) {
+      assert.equal(probe[key], path.join(binDirectory, name));
+    }
+  } finally {
+    fs.rmSync(binDirectory, { recursive: true, force: true });
+  }
+});
 
 test('P5-6 frozen Clang/LLD provenance is available exactly', () => {
   const probe = probeToolchain();

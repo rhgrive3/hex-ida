@@ -70,9 +70,6 @@ const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)
 function finiteFloatValue(value) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return null;
-    // An integer-valued Number above MAX_SAFE_INTEGER has already lost
-    // integer identity and must not become an exact compatibility fact.
-    if (Number.isInteger(value) && !Number.isSafeInteger(value)) return null;
     return value;
   }
   if (typeof value !== 'string' || !STRICT_FLOAT_LITERAL.test(value)) return null;
@@ -80,22 +77,91 @@ function finiteFloatValue(value) {
   if (!Number.isFinite(number)) return null;
   const significand = value.split(/[eE]/, 1)[0];
   if (number === 0 && /[1-9]/.test(significand)) return null;
-  if (Number.isInteger(number) && !Number.isSafeInteger(number)) return null;
   return number;
 }
 
-function constantPayload(node) {
+function bitPatternBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value !== 'string' || !/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) return null;
+  try { return BigInt(value); } catch { return null; }
+}
+
+function supportedFloatFormat(format, widthBits) {
+  if (![16, 32, 64].includes(widthBits) || typeof format !== 'string') return false;
+  return format === 'ieee754' || format === `ieee754-binary${widthBits}`;
+}
+
+function decodeFloatBitPattern(bitPattern, widthBits, format) {
+  if (!supportedFloatFormat(format, widthBits)) return null;
+  const bits = bitPatternBigInt(bitPattern);
+  if (bits == null || bits < 0n || bits >= (1n << BigInt(widthBits))) return null;
+  if (widthBits === 64 || widthBits === 32) {
+    const buffer = new ArrayBuffer(widthBits / 8);
+    const view = new DataView(buffer);
+    if (widthBits === 64) {
+      view.setBigUint64(0, bits, true);
+      return finiteFloatValue(view.getFloat64(0, true));
+    }
+    view.setUint32(0, Number(bits), true);
+    return finiteFloatValue(view.getFloat32(0, true));
+  }
+
+  const sign = (bits & 0x8000n) === 0n ? 1 : -1;
+  const exponent = Number((bits >> 10n) & 0x1fn);
+  const fraction = Number(bits & 0x3ffn);
+  if (exponent === 0x1f) return null;
+  if (exponent === 0) return finiteFloatValue(sign < 0 ? (fraction === 0 ? -0 : -fraction * 2 ** -24) : fraction * 2 ** -24);
+  return finiteFloatValue(sign * (1 + fraction / 2 ** 10) * 2 ** (exponent - 15));
+}
+
+function canonicalFloatPayload(raw, constKind) {
+  const widthBits = raw.widthBits;
+  const format = raw.format;
+  if (!Number.isSafeInteger(widthBits) || !supportedFloatFormat(format, widthBits)) {
+    return { value: null, float: null, constKind: null };
+  }
+
+  const hasSemanticValue = raw.semanticValue != null;
+  const hasBitPattern = raw.bitPattern != null;
+  const semanticValue = hasSemanticValue ? finiteFloatValue(raw.semanticValue) : null;
+  const bitPatternValue = hasBitPattern ? decodeFloatBitPattern(raw.bitPattern, widthBits, format) : null;
+  if (hasSemanticValue && hasBitPattern) {
+    if (semanticValue == null || bitPatternValue == null || !Object.is(semanticValue, bitPatternValue)) {
+      return { value: null, float: null, constKind: null };
+    }
+    return { value: null, float: semanticValue, constKind: constKind ?? 'float' };
+  }
+  if (hasSemanticValue && semanticValue != null) {
+    return { value: null, float: semanticValue, constKind: constKind ?? 'float' };
+  }
+  if (hasBitPattern && bitPatternValue != null) {
+    return { value: null, float: bitPatternValue, constKind: constKind ?? 'float' };
+  }
+  return { value: null, float: null, constKind: null };
+}
+
+function constantPayload(node, machineType = null) {
   const attrs = node?.attributes || {};
   const metadata = node?.metadata || {};
   const operation = attrs.machineEffects?.operationMetadata || {};
+  const constKind = attrs.constKind ?? metadata.constKind ?? null;
+  const isFloat = machineType?.kind === 'float' || constKind === 'float';
   const raw = attrs.value ?? attrs.constant ?? attrs.address
     ?? operation.value ?? operation.constant ?? operation.address
     ?? metadata.value ?? metadata.constant ?? metadata.address;
   if (raw == null) return { value: null, float: null, constKind: null };
+  if (raw?.kind === 'float' && typeof raw === 'object' && !Array.isArray(raw)) {
+    return canonicalFloatPayload(raw, constKind);
+  }
   const integer = safeBigInt(raw);
-  if (integer != null) return { value: integer, float: null, constKind: attrs.constKind ?? metadata.constKind ?? null };
+  if (integer != null && !isFloat) return { value: integer, float: null, constKind };
   const number = finiteFloatValue(raw);
-  if (number != null) return { value: null, float: number, constKind: attrs.constKind ?? metadata.constKind ?? 'float' };
+  // An integer-valued float such as 2^53 is valid when the canonical type says
+  // float, even though JavaScript cannot use it as an exact integer identity.
+  if (number != null
+      && (!Number.isInteger(number) || Number.isSafeInteger(number) || isFloat)) {
+    return { value: null, float: number, constKind: constKind ?? 'float' };
+  }
   return { value: null, float: null, constKind: null };
 }
 
@@ -140,7 +206,10 @@ function conditionFromCompare(node) {
 
 function constForValue(valueId, context) {
   const producer = context.producerByValueId.get(valueId) ?? null;
-  return producer?.kind === 'const' ? constantPayload(producer).value : null;
+  const machineType = producer?.outputs?.[0] == null
+    ? null
+    : context.valuesById.get(producer.outputs[0])?.machineType ?? null;
+  return producer?.kind === 'const' ? constantPayload(producer, machineType).value : null;
 }
 
 function comparisonCarrier(valueId, context, active = new Set()) {
@@ -365,7 +434,7 @@ export function projectNode(node, context) {
 
   switch (node.kind) {
     case 'const': {
-      const c = constantPayload(node);
+      const c = constantPayload(node, primaryOutput?.machineType);
       setBasic(V1_OP.CONST, null, []);
       inst.extra.value = c.value;
       if (c.float != null) { inst.extra.float = c.float; inst.extra.constKind = c.constKind || 'float'; }

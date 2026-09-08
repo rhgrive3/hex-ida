@@ -149,8 +149,8 @@ export class CapabilityExecutor {
       case 'runtime.breakpoint-create': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.setBreakpoint(args.breakpoint || args); }
       case 'runtime.watchpoint-create': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.watchMemory(args.watchpoint || args); }
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.removeBreakpoint(args.id); }
-      case 'runtime.continue': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.resume(options); }
-      case 'runtime.pause': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.pause(options); }
+      case 'runtime.continue': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.resume({ signal: options?.signal }); }
+      case 'runtime.pause': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.pause({ signal: options?.signal }); }
       case 'runtime.step-in': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepInto(options); }
       case 'runtime.step-over': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepOver(options); }
       case 'runtime.step-out': { const adapter = runtimeAdapter(runtimePlatform); commitGuard?.(); return adapter.stepOut(options); }

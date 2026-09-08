@@ -187,8 +187,14 @@ function clampLike(inst) {
   const cmp = flags && flags.def;
   if (!cmp || cmp.op !== OP.CMP) return false;
   const cmpIds = new Set(cmp.args.map((a) => (a.value ? a.value.id : -1)));
-  const picked = inst.args.slice(0, 2).map((a) => (a.value ? a.value.id : -2));
-  return picked.filter((id) => cmpIds.has(id)).length === 2;
+  const pickedIds = new Set(inst.args.slice(0, 2).map((a) => (a.value ? a.value.id : -2)));
+  // A clamp selects two DIFFERENT compared operands. Picking the same value on
+  // both arms is an unconditional copy, so counting one id twice (or one value
+  // object twice) must not read as "both bounds used" (#5806).
+  if (pickedIds.size !== 2) return false;
+  let matched = 0;
+  for (const id of pickedIds) if (cmpIds.has(id)) matched++;
+  return matched === 2;
 }
 
 export function valueChain(ir, seed, opts) {
