@@ -128,6 +128,16 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
     const name = r.cstring(strp, base + dc.size - strp);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
+    // A positive library ordinal is a 1-based index into the dependent dylib
+    // list; an ordinal beyond it references no library, so publishing it as
+    // canonical import metadata would launder a malformed reference (#5532).
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (ordinal > 0 && ordinal > libraryCount) {
+      status.complete = false; status.importsComplete = false;
+      status.importsPartialReason ||= 'dylib-ordinal-out-of-range';
+      image.warnings.push(`chained-fixups import ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
+      continue;
+    }
     const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
     image.imports.push(imp);
     parsed[i] = imp;
@@ -583,10 +593,20 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
         } else if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           const imported = importedX.text || null;
-          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
-          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
+          const ordinal = Number(ord.value);
+          // A positive library ordinal is a 1-based index into the dependent
+          // dylib list; an ordinal beyond it references no library and must
+          // not become canonical export metadata (dyld binding semantics,
+          // #5532).
+          const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+          if (ordinal > 0 && ordinal > libraryCount) {
+            markPartial(`reexport ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
           } else {
+            const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+            if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+            image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal, imported, source: 'exports-trie' });
+          }
+        } else {
             const exportKind = flags & 0x03;
             if (exportKind === 3) {
               markPartial(`unsupported export kind ${exportKind}`);
