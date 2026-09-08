@@ -266,6 +266,22 @@ export class IframeWorkerPool {
   }
 
   async provisionSlot(index, href, timeoutMs, generation = this.generation) {
+    // Per-slot single-flight (#5204): two overlapping provisions of the same
+    // index used to create two frames — the loser overwrote the winner's map
+    // entry and the winner's live iframe/runtime became unreachable. A slot
+    // join waits on the in-flight provisioning instead of duplicating it.
+    const inFlight = this.provisioningSlots?.get(index);
+    if (inFlight) return inFlight;
+    const promise = this.#provisionSlotOnce(index, href, timeoutMs, generation);
+    (this.provisioningSlots ??= new Map()).set(index, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.provisioningSlots.get(index) === promise) this.provisioningSlots.delete(index);
+    }
+  }
+
+  async #provisionSlotOnce(index, href, timeoutMs, generation) {
     let handle = null;
     try { handle = await this.createFrame({ slot: index, documentRef: this.documentRef, href }); }
     catch (error) {
@@ -302,6 +318,13 @@ export class IframeWorkerPool {
       return null;
     }
     if (!outcome.ready) { slot.error = { code: outcome.code, message: outcome.message }; this.retireProvisionedSlot(slot, false); return null; }
+    if (this.slots.get(index) !== slot) {
+      // This frame lost the slot map to a newer provisioning of the same
+      // index: retire it instead of advertising a ready frame that no lookup
+      // can ever reach (#5204).
+      this.retireProvisionedSlot(slot);
+      return null;
+    }
     slot.ready = true;
     return this.publicSlot(slot);
   }
