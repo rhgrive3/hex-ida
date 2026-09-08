@@ -192,12 +192,14 @@ export async function publishRebuildOutput(materialized, validation, options = {
   if (validation.planId !== materialized.planId || validation.outputHash !== materialized.outputHash) {
     return { status: 'rejected', reason: 'validation-target-mismatch' };
   }
-  let observedOutputHash;
-  try { observedOutputHash = hashBytes(materialized.bytes); }
-  catch (error) { return { status: 'rejected', reason: 'materialized-output-invalid', detail: String(error?.message || error) }; }
+  let publicationBytes, observedOutputHash;
+  try {
+    publicationBytes = bytes(materialized.bytes).slice();
+    observedOutputHash = hashBytes(publicationBytes);
+  } catch (error) { return { status: 'rejected', reason: 'materialized-output-invalid', detail: String(error?.message || error) }; }
   if (observedOutputHash !== validation.outputHash) return { status: 'rejected', reason: 'materialized-output-tampered' };
   if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
-  const promoted = await options.promote(bytes(materialized.bytes).slice(), validation);
+  const promoted = await options.promote(publicationBytes, validation);
   return { status: 'published', outputHash: materialized.outputHash, result: promoted };
 }
 
