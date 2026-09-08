@@ -201,6 +201,13 @@ const legalInitValidation = directValidation({
 });
 assert.equal(legalInitValidation.status, 'partial');
 assert.equal(legalInitValidation.errors.some((error) => error.code === 'jvm-init-flag-conflict'), false);
+assert.equal(parseJvm(makeClass(ACC_PUBLIC | ACC_STRICT, {
+  majorVersion: 60,
+  methodName: '<init>',
+  descriptor: '()V',
+  hasCode: true,
+  maxLocals: 1,
+})).methods[0].name, '<init>');
 for (const bad of [ACC_STATIC, ACC_FINAL, ACC_SYNCHRONIZED, ACC_BRIDGE, ACC_NATIVE, ACC_ABSTRACT]) {
   const flags = ACC_PUBLIC | bad;
   const hasCode = (flags & (ACC_NATIVE | ACC_ABSTRACT)) === 0;
@@ -243,6 +250,13 @@ const legalClinitValidation = directValidation({
   bundles: [{ bytecodeOffset: 0, opcode: 0xb1, completeness: 'exact', controlEffects: [{ kind: 'return' }] }],
 });
 assert.equal(legalClinitValidation.status, 'valid');
+assert.equal(parseJvm(makeClass(ACC_FINAL, {
+  majorVersion: 50,
+  methodName: '<clinit>',
+  descriptor: '()V',
+  hasCode: true,
+  maxLocals: 0,
+})).methods[0].name, '<clinit>');
 assertParserRejects(ACC_FINAL, {
   methodName: '<clinit>',
   descriptor: '()V',
