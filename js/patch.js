@@ -30,7 +30,17 @@ export class PatchSet {
       if (offset < itemEnd && item.offset < end && item.offset !== offset) throw new Error(`patch overlaps existing patch at +${item.offset.toString(16)}`);
     }
     const key = offset.toString();
-    this.items.set(key, Object.assign({ offset, before: beforeBytes, after: afterBytes }, meta || {}));
+    // meta may only carry descriptive metadata: the validated structural fields
+    // are always applied last so caller meta can never overwrite the guard that
+    // apply() relies on (e.g. an emptied `before`) (#5791). The own-key
+    // defineProperty copy also keeps a `__proto__` meta key from retargeting
+    // the stored item.
+    const item = {};
+    for (const [metaKey, metaValue] of Object.entries(meta || {})) {
+      Object.defineProperty(item, metaKey, { value: metaValue, enumerable: true, writable: true, configurable: true });
+    }
+    Object.assign(item, { offset, before: beforeBytes, after: afterBytes });
+    this.items.set(key, item);
   }
 
   remove(fileOffset) { this.items.delete(integerBigInt(fileOffset, 'fileOffset').toString()); }
@@ -66,12 +76,26 @@ export function assemble(text, at) {
   const src = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (!src) return { error: '命令が空です。' };
   const sp = src.indexOf(' '); const mn = sp < 0 ? src : src.slice(0, sp); const rest = sp < 0 ? '' : src.slice(sp + 1); const ops = parseOperands(rest);
+  // Surplus operands change the requested instruction (e.g. `ret x0` into the
+  // x30 default) or are silently dropped by handlers that only read the leading
+  // operands — validate the exact arity per supported mnemonic first (#5795).
+  const arityError = checkOperandArity(mn, ops);
+  if (arityError) return { error: arityError };
   if (mn === 'nop') return word(0xD503201F);
-  if (mn === 'ret') return word(0xD65F03C0);
+  if (mn === 'ret') {
+    if (ops.length === 0) return word(0xD65F03C0);
+    const reg = regInfo(ops[0]);
+    if (!reg || reg.sp || reg.zr || reg.bits !== 64) return { error: 'ret の右側は 64bit 汎用レジスタ（x0〜x30）で指定してください。' };
+    return word(0xD65F0000 | (reg.num << 5));
+  }
   if (mn === 'brk') { const imm = immOf(ops[0]); if (imm == null || imm < 0n || imm > 0xFFFFn) return { error: 'brk の値は 0〜0xFFFF です。' }; return word(0xD4200000 | (Number(imm) << 5)); }
   if (mn === 'mov' || mn === 'movz') {
     const dst = regInfo(ops[0]); const d = dst && dst.num; const imm = immOf(ops[1]);
     if (d == null) return { error: '書き込み先のレジスタが読めません。' };
+    // MOVZ has no register-source form. Falling through to the register MOV
+    // encoding silently rewrote the mnemonic — `movz x0, x1` assembled to the
+    // ORR alias of `mov x0, x1` (#5798).
+    if (mn === 'movz' && imm == null) return { error: 'movz の右側は即値（#0〜#65535）で指定してください。' };
     if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d); }
     const srcReg = regInfo(ops[1]); const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };
@@ -99,6 +123,15 @@ export function assemble(text, at) {
 }
 
 function word(v) { const out = new Uint8Array(4); out[0] = v & 0xff; out[1] = (v >>> 8) & 0xff; out[2] = (v >>> 16) & 0xff; out[3] = (v >>> 24) & 0xff; return { bytes: out }; }
+function checkOperandArity(mn, ops) {
+  if (mn === 'nop') return ops.length === 0 ? null : 'nop は operand を取りません。';
+  if (mn === 'ret') return ops.length <= 1 ? null : 'ret は 0 または 1 個の operand（x0〜x30）で指定してください。';
+  if (mn === 'brk') return ops.length === 1 ? null : 'brk は即値 1 個（#0〜#65535）で指定してください。';
+  if (mn === 'mov' || mn === 'movz') return ops.length === 2 ? null : (mn === 'movz' ? 'movz はレジスタと即値（#0〜#65535）で指定してください。' : 'mov はレジスタ 2 個か、レジスタと即値（#0〜#65535）で指定してください。');
+  if (mn === 'b' || mn === 'bl') return ops.length === 1 ? null : (mn === 'b' ? 'b は飛び先 1 個で指定してください。' : 'bl は飛び先 1 個で指定してください。');
+  if (/^b\.\w+$/.test(mn)) return ops.length === 1 ? null : '条件分岐は飛び先 1 個で指定してください。';
+  return null;
+}
 function regNum(op) { if (!op || op.k !== 'reg') return null; if (op.cls === 'zr' || op.cls === 'sp') return 31; if (op.cls !== 'gp') return null; return op.num; }
 function regInfo(op) { const num = regNum(op); if (num == null) return null; return { num, bits: op.bits === 32 ? 32 : 64, sp: op.cls === 'sp', zr: op.cls === 'zr' }; }
 function immOf(op) { if (!op) return null; if (op.k === 'imm') return op.value; if (op.k === 'other' && /^0x[0-9a-f]+$/.test(op.text)) return BigInt(op.text); return null; }

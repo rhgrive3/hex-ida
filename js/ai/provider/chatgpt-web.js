@@ -77,6 +77,14 @@ export class ChatGPTWebProvider extends AIProvider {
  * Userscript host router. ChatGPT is the default, but Gemini remains available
  * through the existing Worker endpoint without rebuilding or reloading Hex.
  */
+function resolveProviderId(explicit) {
+  // Only null/undefined falls back to the persisted/default selection.
+  // Any specified non-string (Array/Object/number/boolean) is a schema
+  // violation and must never be String()-coerced into a canonical ID.
+  const raw = explicit ?? globalThis.__HEX_AI_PROVIDER__ ?? 'chatgpt-web';
+  if (typeof raw !== 'string') throw new AIError('provider_error', `Unknown AI provider: ${String(raw)}`);
+  return raw.toLowerCase();
+}
 export class UserscriptAIProvider extends AIProvider {
   constructor({
     bridge = globalThis.__HEX_CHATGPT_BRIDGE__,
@@ -90,7 +98,7 @@ export class UserscriptAIProvider extends AIProvider {
   }
 
   selected(request = {}) {
-    const requested = String(request.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    const requested = resolveProviderId(request.provider);
     if (requested === 'gemini' || requested === 'worker') return this.gemini;
     if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
     throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
@@ -106,6 +114,23 @@ export class UserscriptAIProvider extends AIProvider {
       throw new AIError('provider_error', 'ChatGPT Web bridge is not ready.');
     }
     return provider.nextTurn(request, options);
+  }
+
+  // Capability authority belongs to the provider that actually executes the
+  // turn. The wrapper previously kept the base-class snapshot, so a Gemini
+  // turn was budgeted against the wrapper's static defaults and the Worker
+  // capabilities preflight never ran (#5701). Selection needs the request,
+  // which the runtime's preflight does not pass, so both children are kept
+  // prepared: ChatGPT reflects the bridge directly, Gemini runs its
+  // capabilities preflight once (memoized in WorkerAIProvider).
+  async prepareCapabilities(options = {}) {
+    this.providerCapabilities = { ...this.providerCapabilities, ...(await this.chatgpt.prepareCapabilities(options) || {}), ...(await this.gemini.prepareCapabilities(options) || {}) };
+    return this.getCapabilities();
+  }
+
+  getCapabilities(request = {}) {
+    try { return this.selected(request).getCapabilities(); }
+    catch { return super.getCapabilities(); }
   }
 
   cancel() {
@@ -141,7 +166,7 @@ export class UserscriptAIProvider extends AIProvider {
   }
 
   async setSelection(selection = {}, options = {}) {
-    const requested = String(selection.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    const requested = resolveProviderId(selection.provider);
     if (!['chatgpt', 'chatgpt-web', 'gemini', 'worker'].includes(requested)) throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
     const provider = requested === 'gemini' || requested === 'worker' ? 'gemini' : 'chatgpt';
     globalThis.__HEX_AI_PROVIDER__ = provider;

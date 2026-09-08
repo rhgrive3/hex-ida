@@ -1,9 +1,8 @@
 import { AIError } from '../schema.js';
+import { proposalArguments, proposalCapability } from '../proposals.js';
 
-const KIND_CAPABILITY = Object.freeze({
-  rename: 'annotation.rename', comment: 'annotation.comment', type: 'annotation.set-type',
-  'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
-});
+const NOTE_BACKED_KINDS = new Set(['rename', 'comment', 'type', 'struct-field']);
+const NOTE_READY_TIMEOUT_MS = 10_000;
 
 export class ProposalExecutor {
   constructor({ store, capabilityExecutor, app } = {}) {
@@ -18,12 +17,10 @@ export class ProposalExecutor {
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
-      apply: async (item) => {
-        const capability = KIND_CAPABILITY[item.kind];
+      apply: async (item, authorization) => {
+        const capability = proposalCapability(item);
         if (!capability) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${item.kind}`);
-        execution = await this.capabilityExecutor.execute(capability, proposalArguments(item), {
-          authorization: { kind: 'proposal', token: approvalToken, proposalId: item.id },
-        });
+        execution = await this.capabilityExecutor.execute(capability, proposalArguments(item), { authorization });
         await this.verifyPostcondition(item, execution);
       },
     });
@@ -31,6 +28,7 @@ export class ProposalExecutor {
   }
 
   async currentState(proposal) {
+    if (NOTE_BACKED_KINDS.has(proposal.kind)) await awaitNoteStoreReady(this.app);
     const target = targetObject(proposal.target);
     const address = target.address == null ? null : BigInt(target.address);
     switch (proposal.kind) {
@@ -58,21 +56,57 @@ export class ProposalExecutor {
   }
 }
 
-function proposalArguments(proposal) {
-  const target = targetObject(proposal.target);
-  if (proposal.kind === 'rename' || proposal.kind === 'comment') return { ...target, value: proposal.after };
-  if (proposal.kind === 'type') return { ...target, value: proposal.after };
-  if (proposal.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
-  if (proposal.kind === 'patch') return { ...target, before: byteArray(proposal.before), after: byteArray(proposal.after) };
-  return { ...target, value: proposal.after };
+async function awaitNoteStoreReady(app) {
+  if (!app || app.notes?.id) return app?.notes;
+  const controller = app.noteAttachController;
+  const doc = globalThis.document;
+  if (!controller?.signal || typeof doc?.addEventListener !== 'function') return app.notes;
+  if (controller.signal.aborted) throw new AIError('tool_failed', 'Annotation store binding was replaced before the proposal could be applied.');
+
+  await new Promise((resolve, reject) => {
+    let timer = null;
+    const cleanup = () => {
+      doc.removeEventListener('hex:notes-attached', onAttached);
+      controller.signal.removeEventListener('abort', onAbort);
+      if (timer != null) clearTimeout(timer);
+    };
+    const succeed = () => { cleanup(); resolve(); };
+    const fail = (message) => { cleanup(); reject(new AIError('tool_failed', message)); };
+    const onAttached = () => {
+      if (app.noteAttachController === controller && app.notes?.id) succeed();
+    };
+    const onAbort = () => fail('Annotation store binding changed before the proposal could be applied.');
+
+    doc.addEventListener('hex:notes-attached', onAttached);
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    if (app.notes?.id) return succeed();
+    timer = setTimeout(() => fail('Annotation store binding did not become ready before the proposal could be applied.'), NOTE_READY_TIMEOUT_MS);
+  });
+  return app.notes;
 }
+
 function targetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
 function findStructField(app, target) {
   const struct = app?.notes?.structs?.find?.((item) => item?.name === String(target.struct || target.name || ''));
   return struct?.fields?.find?.((item) => Number(item?.offset) === Number(target.offset)) || null;
 }
 function findProjectAnnotation(app, target) { return app?.projectAnnotations?.find?.((item) => item?.id === String(target.id || ''))?.value ?? null; }
-function byteArray(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function byteArray(value) {
+  // The staleness comparison must see exactly the byte identity the mutation
+  // will write. The old `Number` coercion turned string/boolean/null bytes
+  // into canonical numbers, so malformed approved bytes were compared — and
+  // executed — as valid bytes. Validate instead of laundering (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 function same(a, b) { return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b)); }
 function containsValue(actual, expected) {
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
@@ -82,6 +116,7 @@ function containsValue(actual, expected) {
   return same(actual, expected);
 }
 function normalize(value) {
+  if (value instanceof Uint8Array) return Array.from(value, normalize);
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const out = {}; for (const key of Object.keys(value).sort()) out[key] = normalize(value[key]); return out;
   }

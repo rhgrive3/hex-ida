@@ -15,6 +15,7 @@ import {
 } from '../js/targets/abi/index.js';
 import { platformProfile } from '../js/targets/platform/index.js';
 import { classifyCallArguments } from '../js/ir-core.js';
+import './issue-4039-abi-prototype-metadata-authority.mjs';
 
 const BASE = 0x100000000n;
 const region = { vmAddr:BASE, size:0x100n };
@@ -104,11 +105,16 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(AAPCS64_ABI.stackRules().alignment, 16);
 }
 
-// Platform profiles keep their compatibility default ABI string, while the
-// semantic resolver may select a more precise platform variant. Regression:
-// #998 integration must not collapse Darwin back into generic AAPCS64.
+// Platform profiles name their platform-specific default ABI, and the semantic
+// resolver must preserve that precise variant instead of collapsing Darwin to
+// generic AAPCS64. Regression: #998 integration must not lose Darwin semantics.
 {
-  assert.equal(platformProfile('darwin').defaultABI({ architecture:'arm64' }), 'aapcs64');
+  const darwinDefault = platformProfile('darwin').defaultABI({ architecture:'arm64' });
+  assert.equal(darwinDefault, DARWIN_ARM64_ABI.id);
+  assert.equal(
+    resolveABIPlugin({ architecture:'arm64', platform:'darwin', abiId:darwinDefault }),
+    DARWIN_ARM64_ABI,
+  );
   assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'darwin' }), DARWIN_ARM64_ABI);
   assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'linux' }), AAPCS64_ABI);
   assert.notEqual(DARWIN_ARM64_ABI.semanticIdentity, AAPCS64_ABI.semanticIdentity);

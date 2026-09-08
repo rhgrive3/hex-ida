@@ -58,7 +58,11 @@ export function classifyEvexCategory(name) {
   const lower = name.toLowerCase();
   const base = baseFamily(lower);
   if (SIMD_EVEX_BASES.has(base)) return 'simd';
-  if (FP_EVEX_BASES.has(base)) return 'fp';
+  // VBLENDMPD/VBLENDMPS select elements under an opmask and perform no
+  // floating-point arithmetic (Intel SDM: SIMD Floating-Point Exceptions:
+  // None). Classifying them as fp minted architecturally nonexistent MXCSR
+  // dependencies and #XM candidates.
+  if (/^vblendmp[ds]$/.test(lower)) return 'simd';
   if (/^vp(?!er[\w]*p[sd])/.test(lower) || /^valign|^vbroadcasti|^vextracti|^vinserti|^vshufi|^vcompress[bwdq]|^vexpand[bwdq]/.test(lower) || /^k[a-z]/.test(lower)) {
     return 'simd';
   }
@@ -137,7 +141,15 @@ export function liftEvex(instruction, context, family) {
 
   if (!trusted) {
     const ctx = createX86EffectContext(instruction, context);
-    return ctx.partial('x86-evex-trusted-decoder-provenance-required', ['registers', 'memory', 'other'], { metadata: { family: category, operation: family, evexPhysicalStateModeled: true } });
+    return ctx.partial('x86-evex-trusted-decoder-provenance-required', ['registers', 'memory', 'other'], {
+      metadata: {
+        family: category,
+        operation: family,
+        evexPhysicalStateModeled: true,
+        maskRegister: info.maskRegister,
+        maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
+      },
+    });
   }
 
   const ctx = createX86EffectContext(instruction, context);

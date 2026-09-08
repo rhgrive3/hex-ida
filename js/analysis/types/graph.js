@@ -64,9 +64,8 @@ function fail(code) { throw new TypeError(code); }
 
 function positiveLimit(value, fallback, code) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
 }
 
 function defaultAlign(sizeBytes) {
@@ -189,6 +188,14 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
     const rawMembers = [];
     let explicitSize = null;
     let explicitAlign = null;
+    // Only an explicitly typed aggregate may establish whole-object size or
+    // alignment. Offset-less structural-field metadata is member evidence.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
 
     for (const desc of descriptors) {
       if (Array.isArray(desc.members)) {
@@ -196,11 +203,11 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (desc.sizeBytes != null && desc.offset == null) {
+      if (isExplicitAggregateDescriptor(desc) && desc.sizeBytes != null) {
         explicitSize = exactStructuralInteger(desc.sizeBytes);
         if (explicitSize == null) return null;
       }
-      if (desc.alignBytes != null && desc.offset == null) {
+      if (isExplicitAggregateDescriptor(desc) && desc.alignBytes != null) {
         explicitAlign = exactStructuralInteger(desc.alignBytes);
         if (explicitAlign == null) return null;
       }
@@ -263,17 +270,20 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
         const span = offset + size;
         if (span > maxOffsetSpan) maxOffsetSpan = span;
       }
-      calculatedSize = maxAlign > 1n
-        ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
-        : maxOffsetSpan;
-      if (explicitSize != null && explicitSize > calculatedSize) calculatedSize = explicitSize;
+      // A hard explicit aggregate size is a bound, not a suggestion (#5819):
+      // member extents beyond it are incompatible hard facts, never a reason
+      // to silently grow the struct and publish it as certain.
+      if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
+      calculatedSize = explicitSize != null
+        ? explicitSize
+        : maxAlign > 1n
+          ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
+          : maxOffsetSpan;
     }
 
     const calculatedSizeWire = structuralIntegerWire(calculatedSize);
     const maxAlignWire = structuralIntegerWire(maxAlign);
-    const baseDescriptor = updatedMembers[0] ?? descriptors[0];
     const structDescriptor = {
-      ...baseDescriptor,
       kind: 'struct',
       members: updatedMembers,
       sizeBytes: calculatedSizeWire,
@@ -422,6 +432,13 @@ export class TypeConstraintGraph {
 
   /** Every layer's answer for one entity. */
   solveEntity(entityId, { signal = null, sccContext = null } = {}) {
+    if (typeof entityId !== 'string' || entityId.length === 0) {
+      return createTypeResult({
+        entityId: '',
+        status: this.#status('unsupported', 'unsupported-input'),
+        layers: {},
+      });
+    }
     const layers = this.entities.get(entityId);
     if (!layers) {
       return createTypeResult({
@@ -730,7 +747,7 @@ export function createTypeResult(input = {}) {
   if (!status) fail('type-result-status-required');
   return deepFreeze({
     schemaVersion: TYPE_RESULT_SCHEMA_VERSION,
-    entityId: String(input.entityId ?? ''),
+    entityId: typeof input.entityId === 'string' ? input.entityId : '',
     layers: deepFreeze(layers),
     contradictions: deepFreeze(contradictions),
     userConstrained: input.userConstrained === true,
@@ -742,13 +759,34 @@ export function createTypeGraphResult(input = {}) {
   const status = input.status;
   if (!status) fail('type-graph-result-status-required');
   const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
-  const readOnlyMap = new Map();
+  // Overwriting instance mutators cannot actually seal a Map: the real data
+  // lives in an internal slot, so `Map.prototype.set.call(...)` would mutate a
+  // published result (#6070). The only honest read-only view is a frozen proxy
+  // that exposes the read API and rejects every mutator outright — the
+  // internal Map is never reachable from the returned object.
+  const internal = new Map();
   for (const [key, value] of rawMap) {
-    readOnlyMap.set(key, value);
+    internal.set(key, value);
   }
-  readOnlyMap.set = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.delete = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.clear = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  const readOnlyMap = new Proxy(internal, {
+    get(target, property, receiver) {
+      if (property === 'forEach') {
+        return (callback, thisArg) => {
+          if (typeof callback !== 'function') return Map.prototype.forEach.call(target, callback, thisArg);
+          return Map.prototype.forEach.call(target, (value, key) => Reflect.apply(callback, thisArg, [value, key, receiver]));
+        };
+      }
+      if (property === 'set' || property === 'delete' || property === 'clear') {
+        return () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    defineProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    deleteProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    set() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    setPrototypeOf() { throw new TypeError('TypeGraphResult.results is read-only'); },
+  });
 
   return Object.freeze({
     schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,
@@ -775,6 +813,14 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
     return null;
   }
 
+  // A graph query is the authority for the returned identity. In particular,
+  // solveEntity() deliberately returns an empty identity for malformed input;
+  // re-stringifying the raw argument here would turn ['A'] back into 'A' and
+  // reintroduce the lookup/result mismatch at this consumer boundary.
+  const canonicalEntityId = typeof result?.entityId === 'string'
+    ? result.entityId
+    : typeof entityId === 'string' ? entityId : '';
+
   const structuralLayer = result?.layers?.structural;
   const nominalLayer = result?.layers?.nominal;
   const selected = structuralLayer?.selected?.descriptor;
@@ -783,7 +829,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
   if (!selected) {
     return deepFreeze({
       kind: 'unknown',
-      entityId: String(entityId ?? result?.entityId ?? ''),
+      entityId: canonicalEntityId,
       name: nominalName,
       sizeBytes: null,
       alignBytes: null,
@@ -824,12 +870,12 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
 
   return deepFreeze({
     kind: selected.kind ?? 'struct',
-    entityId: String(entityId ?? result?.entityId ?? ''),
+    entityId: canonicalEntityId,
     name: nominalName,
     sizeBytes: totalSize,
     alignBytes: maxAlign,
     isRecursive: selected.isRecursive === true,
-    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? String(entityId ?? result?.entityId ?? '') : null),
+    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? canonicalEntityId : null),
     sccMembers: selected.sccMembers ?? null,
     members: deepFreeze(members),
     confidence: structuralLayer.confidence,

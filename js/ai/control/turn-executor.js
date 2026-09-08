@@ -9,7 +9,7 @@ import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
   ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
-  remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
+  remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
@@ -38,7 +38,8 @@ export async function executeTurn(input = {}, options = {}) {
     }
     const budget = aiBudget(request.mode, budgetOverrides);
     const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
-    const started = Date.now(), activity = [], observations = [];
+    const monotonicNow = resolveMonotonicClock(options.clock, options.monotonicNow, options.now);
+    const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
@@ -55,7 +56,7 @@ export async function executeTurn(input = {}, options = {}) {
     };
 
     try {
-      ensureRunning(signal, started, turnTimeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
       const snapshot = createTurnSnapshot(this.localContext, request);
       const intent = request.intent || routeIntent(request.goal, snapshot);
       request.intent = intent;
@@ -65,7 +66,7 @@ export async function executeTurn(input = {}, options = {}) {
       const snapshotContext = createSnapshotContext(this.localContext, snapshot, scopeController);
 
       let session = request.sessionId ? await this.sessionStore.get(request.sessionId) : null;
-      ensureRunning(signal, started, turnTimeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
       if (session && !sessionMatchesSnapshot(session, snapshot)) {
         throw new AIError('scope_violation', 'The requested AI session belongs to a different binary or project.');
       }
@@ -78,9 +79,15 @@ export async function executeTurn(input = {}, options = {}) {
       }
 
       const stores = this.storesFor(session, snapshot.binaryId);
-      this.evidenceStore = stores.evidenceStore; this.hypothesisStore = stores.hypothesisStore; this.proposalStore = stores.proposalStore;
+      // Turn-local store references: the shared `this.*Store` projection below
+      // is only a post-turn introspection pointer. Every execution read in this
+      // turn uses the captured references — a concurrent turn on the same
+      // runtime re-points the shared fields across awaits, and this turn must
+      // never read or write the other turn's stores (#6216).
+      const evidenceStore = stores.evidenceStore, hypothesisStore = stores.hypothesisStore, proposalStore = stores.proposalStore;
+      this.evidenceStore = evidenceStore; this.hypothesisStore = hypothesisStore; this.proposalStore = proposalStore;
       const registry = createHexToolRegistry(snapshotContext, {
-        evidenceStore: this.evidenceStore, maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly, onActivity: addActivity,
+        evidenceStore: evidenceStore, maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly, onActivity: addActivity,
       });
 
       await this.sessionStore.update(session.id, {
@@ -94,17 +101,19 @@ export async function executeTurn(input = {}, options = {}) {
       addActivity({ type: 'turn-start', label: request.mode === 'agent' ? '調査を開始' : '質問を解析', intent, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, snapshotId: snapshot.id });
 
       try {
-        ensureRunning(signal, started, turnTimeoutMs);
+        ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
             maxSearchResults: request.maxSearchResults || 40,
             timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
-            isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
+            isCancelled: () => !!signal?.aborted || monotonicNow() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
-          const plannedEvidence = this.evidenceStore.ingestPlan(plan);
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
+          const plannedEvidence = evidenceStore.ingestPlan(plan);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
             data: { candidates: (plan.candidates || []).slice(0, 20).map(compactCandidate), best: plan.best ? { address: addressString(plan.best.address), name: plan.best.name, verified: !!plan.best.verification?.verified } : null, missingEvidence: plan.missingEvidence || [] },
@@ -116,22 +125,22 @@ export async function executeTurn(input = {}, options = {}) {
         if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
         else {
           if (typeof this.provider.prepareCapabilities === 'function') {
-            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs)) });
-            ensureRunning(signal, started, turnTimeoutMs);
+            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs, monotonicNow)) });
+            ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
           }
           const seenCalls = new Map(); let repairs = 0;
           while (modelCalls < budget.maxModelCalls) {
-            ensureRunning(signal, started, turnTimeoutMs);
+            ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
             const maxTools = Math.max(1, Math.min(10, Number(caps.maxTools || 10)));
-            const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: this.hypothesisStore.all(), maxTools });
+            const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;
             if (!tools.length) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
             const messages = session.messages.slice(-8).map(({ role, content }) => ({ role, content }));
             const semanticBytes = semanticBudgetFor({ messages, tools, meta: wireMeta(request, scopeController, intent, session.id), capabilities: caps, configuredBytes: budget.contextBytes });
             const built = this.contextBroker.buildModelContext({
-              request, session, evidenceStore: this.evidenceStore, hypotheses: this.hypothesisStore.all(), observations,
+              request, session, evidenceStore: evidenceStore, hypotheses: hypothesisStore.all(), observations,
               budgetBytes: semanticBytes, snapshot, effectiveScope: scopeController.effectiveScope, includeHistory: false,
             });
             contextBytes = Math.max(contextBytes, built.bytes);
@@ -152,7 +161,7 @@ export async function executeTurn(input = {}, options = {}) {
                 intent, task: request.task || null, messages, context: built.context, tools,
               }, {
                 signal,
-                ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs) } : {}),
+                ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs, monotonicNow) } : {}),
               });
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
@@ -169,7 +178,7 @@ export async function executeTurn(input = {}, options = {}) {
               const normalized = normalizeError(error, signal);
               const repairable = normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call';
               if (repairable && repairs === 0 && modelCalls < budget.maxModelCalls) {
-                const repairRemainingMs = Number.isFinite(turnTimeoutMs) ? remainingTime(started, turnTimeoutMs) : null;
+                const repairRemainingMs = Number.isFinite(turnTimeoutMs) ? remainingTime(started, turnTimeoutMs, monotonicNow) : null;
                 if (repairRemainingMs == null || repairRemainingMs >= MIN_MODEL_REPAIR_REMAINING_MS) {
                   repairs++;
                   observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
@@ -203,29 +212,49 @@ export async function executeTurn(input = {}, options = {}) {
         }
       } catch (error) {
         const normalized = normalizeError(error, signal);
+        // Live-binding violations must never become a fallback decision.
+        // The inner catch runs caller-supplied onActivity synchronously, so a
+        // drift detected at the planner boundary could otherwise be masked by
+        // restoring the bindings before the final guard. Latch fail-closed.
+        if (normalized.type === 'scope_violation') throw normalized;
         limitReason = normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
 
+      assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
-      const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
-      await this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer });
-      await this.sessionStore.updateMemory(session.id, {
-        anchor: memoryAnchor(snapshot, scopeController.effectiveScope, this.localContext),
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
+      // Every asynchronous persistence boundary gets a pre/post binding check.
+      // The payloads below are snapshot-derived; a live workbench switch while
+      // a persistence adapter is awaiting cannot turn this turn into a normal
+      // completion or inject current runtime identity into old session memory.
+      const persistWithBindingCheck = async (operation) => {
+        assertLiveBindingsUnchanged(this.localContext, snapshot);
+        try {
+          return await operation();
+        } finally {
+          // A rejected write must still prove that the live binding did not
+          // drift before the rejection escapes this turn.
+          assertLiveBindingsUnchanged(this.localContext, snapshot);
+        }
+      };
+      await persistWithBindingCheck(() => this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer }));
+      await persistWithBindingCheck(() => this.sessionStore.updateMemory(session.id, {
+        anchor: memoryAnchor(snapshot, scopeController.effectiveScope),
         confirmedFacts: result.evidence.filter((item) => item.status === 'verified').map((item) => ({ id: item.id, summary: item.summary || item.title, functionAddress: item.functionAddress })),
         activeHypotheses: result.hypotheses.filter((item) => item.status === 'open' || item.status === 'supported'),
         rejectedHypotheses: result.hypotheses.filter((item) => item.status === 'rejected'),
         unresolvedQuestions: result.followups,
         importantPriorActions: result.actions,
-      });
-      await this.sessionStore.update(session.id, {
-        effectiveScope: scopeController.effectiveScope, hypotheses: this.hypothesisStore.all(),
-        confirmedFindings: typeof this.evidenceStore.byStatus === 'function'
-          ? this.evidenceStore.byStatus('verified')
-          : this.evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: this.proposalStore.all(),
+      }));
+      await persistWithBindingCheck(() => this.sessionStore.update(session.id, {
+        effectiveScope: scopeController.effectiveScope, hypotheses: hypothesisStore.all(),
+        confirmedFindings: typeof evidenceStore.byStatus === 'function'
+          ? evidenceStore.byStatus('verified')
+          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.all(),
         lastActivity: activity[activity.length - 1] || null,
-      });
+      }));
       result.sessionId = session.id;
       return validateAIResult(result);
     } finally {

@@ -288,21 +288,47 @@ export function showStrings(app) {
       const filtered = await queryStrings(rows, input.value, { signal:controller.signal, limit:600 });
       if (controller.signal.aborted || serial !== renderSerial || !sheet.root.isConnected) return;
       results.replaceChildren();
-      const page = filtered.slice(0, 120);
-      for (const row of page) {
-        results.append(tapRow(row.text, {
-          sub:addrHex(row.addr),
-          onTap:() => {
-            sheet.close();
-            if (typeof app.goToStringAddress === 'function') app.goToStringAddress(active, row.addr);
-            else app.goToAddress(row.addr, { announce:true });
-          },
-        }));
-      }
-      if (!page.length) results.append(tapRow(t('strings.none'), { disabled:true }));
+      const pageSize = 120;
+      let shown = 0;
+      const more = tapRow(t('search.more'), { onTap:() => page() });
       const completeness = collection.complete === false || collection.truncated ? '一部' : '完全';
-      status.textContent = `${rows.length.toLocaleString()} 個 · ${completeness}` +
-        (filtered.length >= 600 ? ' · 検索結果は先頭600件' : '');
+      const updateStatus = () => {
+        status.textContent = `${rows.length.toLocaleString()} 個 · ${completeness}` +
+          (filtered.length > pageSize
+            ? ` · ${shown.toLocaleString()}/${filtered.length.toLocaleString()}件表示`
+            : '') +
+          (filtered.length >= 600 ? ' · 検索結果は先頭600件' : '');
+      };
+      const page = () => {
+        more.remove();
+        const frag = document.createDocumentFragment();
+        const end = Math.min(filtered.length, shown + pageSize);
+        for (; shown < end; shown++) {
+          const row = filtered[shown];
+          frag.append(tapRow(row.text, {
+            sub:addrHex(row.addr),
+            onTap:() => {
+              sheet.close();
+              if (typeof app.goToStringAddress === 'function') app.goToStringAddress(active, row.addr);
+              else app.goToAddress(row.addr, { announce:true });
+            },
+          }));
+        }
+        results.append(frag);
+        if (shown < filtered.length) {
+          more.replaceChildren();
+          more.append(el('div', null, t('search.showMore', {
+            n:Math.min(pageSize, filtered.length - shown),
+          })));
+          results.append(more);
+        }
+        updateStatus();
+      };
+      if (filtered.length) page();
+      else {
+        results.append(tapRow(t('strings.none'), { disabled:true }));
+        updateStatus();
+      }
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') return;
       alertDialog(t('search.failed'), userError(error));
@@ -342,7 +368,7 @@ export function showStrings(app) {
   })();
 }
 
-/** Canonical xref sheet: one AnalysisQueryAPI result, with explicit completeness. */
+/** Canonical xref sheet: consume AnalysisQueryAPI pagination without weakening source completeness. */
 export function showXrefs(app, target) {
   const api = app?.analysisQueries;
   if (!api) return;
@@ -350,37 +376,161 @@ export function showXrefs(app, target) {
   const sheet = new Sheet(t('xref.title'), { onClose:() => controller.abort('xrefs-sheet-closed') });
   const status = el('div', 'hint', t('xref.scanning'));
   const results = list();
+  const pageSize = 400;
+  let snapshot = null;
+  let nextOffset = 0;
+  let loaded = 0;
+  let completeness = null;
+  let exactTotal = null;
+  let totalTrusted = true;
+  let loading = false;
+  const more = tapRow(t('search.more'), { onTap:() => { void loadNext(); } });
   sheet.body.append(el('div', 'hint', `${addrHex(target)}\n${t('xref.hint')}`), status, results);
+
+  const updateStatus = () => {
+    const state = completeness || 'unknown';
+    if (!loaded && nextOffset == null) {
+      status.textContent = state === 'complete'
+        ? t('xref.none')
+        : `この時点では参照を確認できません（解析状態: ${state}）。`;
+      return;
+    }
+    const count = exactTotal != null && exactTotal >= loaded
+      ? `${loaded.toLocaleString()}/${exactTotal.toLocaleString()} 件表示`
+      : `${loaded.toLocaleString()} 件表示`;
+    status.textContent = `${count} · ${state}`;
+  };
+
+  const appendRows = (rows) => {
+    const frag = document.createDocumentFragment();
+    for (const row of rows) {
+      const siteRaw = row?.site ?? row?.addr ?? row?.address;
+      let site;
+      try { site = BigInt(siteRaw); } catch { continue; }
+      const fn = app.symbols?.functionAt?.(site) ?? null;
+      const owner = fn ? (app.symbols?.nameAt?.(fn.start) || addrHex(fn.start)) : addrHex(site);
+      frag.append(tapRow(owner, {
+        sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
+        onTap:() => {
+          sheet.close();
+          if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
+          else app.goToAddress(site, { announce:true });
+        },
+      }));
+    }
+    results.append(frag);
+  };
+
+  const markPaginationPartial = () => {
+    if (completeness == null || completeness === 'complete' || completeness === 'unknown') {
+      completeness = 'partial';
+    }
+    exactTotal = null;
+    totalTrusted = false;
+    nextOffset = null;
+    more.remove();
+    updateStatus();
+  };
+
+  const mergeCompleteness = (pageCompleteness) => {
+    if (completeness == null) {
+      completeness = pageCompleteness;
+      return;
+    }
+    if (pageCompleteness === 'complete') return;
+    if (completeness === 'complete' || completeness === 'unknown' || pageCompleteness === 'truncated') {
+      completeness = pageCompleteness;
+    }
+  };
+
+  async function loadNext() {
+    if (loading || snapshot == null || nextOffset == null) return;
+    loading = true;
+    more.remove();
+    const requestedOffset = nextOffset;
+    try {
+      const page = await api.xrefs(
+        snapshot,
+        BigInt(target),
+        { offset:requestedOffset, limit:pageSize },
+        { signal:controller.signal },
+      );
+      if (controller.signal.aborted || !sheet.root.isConnected) return;
+
+      const rowsValid = Array.isArray(page?.value);
+      const rows = rowsValid ? page.value : [];
+      const pageCompleteness = page?.completeness ?? page?.status?.completeness ?? 'unknown';
+      mergeCompleteness(pageCompleteness);
+
+      const pageInfo = page?.page;
+      if (!rowsValid || !pageInfo || !Object.hasOwn(pageInfo, 'next')) {
+        markPaginationPartial();
+        return;
+      }
+
+      const rawTotal = pageInfo.total;
+      if (pageCompleteness !== 'complete') {
+        exactTotal = null;
+        totalTrusted = false;
+      } else if (rawTotal == null) {
+        exactTotal = null;
+      } else if (typeof rawTotal !== 'number' || !Number.isSafeInteger(rawTotal) || !totalTrusted) {
+        markPaginationPartial();
+        return;
+      } else if (exactTotal == null || exactTotal === rawTotal) {
+        if (rawTotal < requestedOffset + rows.length) {
+          markPaginationPartial();
+          return;
+        }
+        exactTotal = rawTotal;
+      } else {
+        markPaginationPartial();
+        return;
+      }
+
+      appendRows(rows);
+      loaded += rows.length;
+
+      const rawNext = pageInfo.next;
+      if (rawNext == null) {
+        nextOffset = null;
+        if (exactTotal != null && loaded < exactTotal) {
+          markPaginationPartial();
+          return;
+        }
+        updateStatus();
+        return;
+      }
+
+      const candidateNext = rawNext;
+      const expectedNext = requestedOffset + rows.length;
+      if (typeof candidateNext !== 'number' || !Number.isSafeInteger(candidateNext) ||
+          candidateNext <= requestedOffset || candidateNext !== expectedNext ||
+          (exactTotal != null && candidateNext >= exactTotal)) {
+        markPaginationPartial();
+        return;
+      }
+
+      nextOffset = candidateNext;
+      const remaining = exactTotal == null ? pageSize : Math.min(pageSize, exactTotal - loaded);
+      more.replaceChildren();
+      more.append(el('div', null, t('search.showMore', { n:remaining })));
+      results.append(more);
+      updateStatus();
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      status.textContent = '';
+      alertDialog(t('search.failed'), userError(error));
+    } finally {
+      loading = false;
+    }
+  }
 
   void (async () => {
     try {
-      const snapshot = await api.snapshot({ signal:controller.signal });
-      const page = await api.xrefs(snapshot, BigInt(target), { offset:0, limit:400 }, { signal:controller.signal });
+      snapshot = await api.snapshot({ signal:controller.signal });
       if (controller.signal.aborted || !sheet.root.isConnected) return;
-      const rows = page?.value || [];
-      const completeness = page?.completeness ?? page?.status?.completeness ?? 'unknown';
-      if (!rows.length) {
-        status.textContent = completeness === 'complete'
-          ? t('xref.none')
-          : `この時点では参照を確認できません（解析状態: ${completeness}）。`;
-        return;
-      }
-      status.textContent = `${rows.length} 件 · ${completeness}`;
-      for (const row of rows) {
-        const siteRaw = row?.site ?? row?.addr ?? row?.address;
-        let site;
-        try { site = BigInt(siteRaw); } catch { continue; }
-        const fn = app.symbols?.functionAt?.(site) ?? null;
-        const owner = fn ? (app.symbols?.nameAt?.(fn.start) || addrHex(fn.start)) : addrHex(site);
-        results.append(tapRow(owner, {
-          sub:`${addrHex(site)} · ${String(row.kind || row.refKind || 'reference')}`,
-          onTap:() => {
-            sheet.close();
-            if (fn?.start != null && app.openFunctionReport) app.openFunctionReport(fn.start);
-            else app.goToAddress(site, { announce:true });
-          },
-        }));
-      }
+      await loadNext();
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') return;
       status.textContent = '';

@@ -32,8 +32,19 @@ const VALID_PROFILE_RECORDS = new WeakMap();
 const VALID_CAPABILITY_PROOFS = new WeakSet();
 
 function sorted(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
+function strictString(value, code) {
+  if (value == null) return '';
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+function strictSortedStrings(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.trim() !== item)) throw new TypeError(code);
+  return [...new Set(value)].sort();
+}
 function includesAll(values, expected) { const set = new Set(values); return expected.every((item) => set.has(item)); }
 function same(values, expected) { const left = sorted(values); const right = sorted(expected); return left.length === right.length && left.every((item, index) => item === right[index]); }
+function isCanonicalString(value) { return typeof value === 'string' && value.length > 0 && value.trim() === value; }
 function isCanonicalStringArray(value, { allowEmpty = true } = {}) {
   if (!Array.isArray(value)) return false;
   if (!allowEmpty && value.length === 0) return false;
@@ -51,8 +62,14 @@ function providerProfileAllowed(itemId, value) {
 function isRecord(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function hasOwn(value, key) { return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key); }
 function evidenceMap(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [String(key), String(item || '')]));
+  if (value == null) return {};
+  if (!isRecord(value)) throw new TypeError('stage2-profile-unit-evidence-map-invalid');
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'string') throw new TypeError(`stage2-profile-unit-evidence-type-invalid:${key}`);
+    out[key] = item;
+  }
+  return out;
 }
 function payload(record) {
   return {
@@ -86,7 +103,10 @@ function denominatorLockPayload(lock) {
 }
 function denominatorLockHash(lock) { return `stage2-denominator-lock:${stableDigest(denominatorLockPayload(lock))}`; }
 function expectedInventoryHash(id, refs, resolveInventoryIdentity) {
-  const identities = refs.map((ref) => [ref, String(resolveInventoryIdentity(ref, id) || '')]);
+  const identities = refs.map((ref) => [
+    ref,
+    strictString(resolveInventoryIdentity(ref, id), `stage2-denominator-inventory-identity-type-invalid:${id}:${ref}`),
+  ]);
   if (identities.some(([, value]) => !value)) throw new TypeError('stage2-denominator-inventory-ref-unresolved');
   return `stage2-denominator-inventory:${stableDigest(identities)}`;
 }
@@ -98,9 +118,9 @@ export function createStage2DenominatorLock(input = {}, { scope, resolveInventor
   const items = {};
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const source = hasOwn(input.items, id) ? input.items[id] || {} : {};
-    const profiles = sorted(source.profiles);
-    const unitIds = sorted(source.unitIds);
-    const inventoryRefs = sorted(source.inventoryRefs);
+    const profiles = strictSortedStrings(source.profiles, `stage2-denominator-profiles-type-invalid:${id}`);
+    const unitIds = strictSortedStrings(source.unitIds, `stage2-denominator-units-type-invalid:${id}`);
+    const inventoryRefs = strictSortedStrings(source.inventoryRefs, `stage2-denominator-inventory-refs-type-invalid:${id}`);
     const item = {
       id: `stage2-denominator:${id}:v1`,
       profiles: Object.freeze(profiles),
@@ -108,12 +128,13 @@ export function createStage2DenominatorLock(input = {}, { scope, resolveInventor
       inventoryRefs: Object.freeze(inventoryRefs),
       inventoryHash: expectedInventoryHash(id, inventoryRefs, resolveInventoryIdentity),
     };
-    if (!same(unitIds, sorted(resolveDenominatorUnitIds(id, inventoryRefs)))) throw new TypeError(`stage2-denominator-unit-set-mismatch:${id}`);
+    const resolvedUnitIds = strictSortedStrings(resolveDenominatorUnitIds(id, inventoryRefs), `stage2-denominator-resolved-units-type-invalid:${id}`);
+    if (!same(unitIds, resolvedUnitIds)) throw new TypeError(`stage2-denominator-unit-set-mismatch:${id}`);
     items[id] = deepFreeze({ ...item, lockHash: denominatorItemHash(item) });
   }
   const lock = {
     schemaVersion: STAGE2_DENOMINATOR_LOCK_SCHEMA,
-    scopeVersion: String(scope.scopeVersion || ''),
+    scopeVersion: strictString(scope.scopeVersion, 'stage2-denominator-scope-version-type-invalid'),
     scopeLockHash: scopeLockHash(scope),
     items: deepFreeze(items),
   };
@@ -145,7 +166,7 @@ export function validateStage2DenominatorLock(lock, { scope, resolveInventoryIde
       if (!unitIds.some((unitId) => unitId.startsWith(`${profile}:`))) failures.push(`${id}:denominator-profile-units-missing:${profile}`);
     }
     let expectedUnits = [];
-    try { expectedUnits = sorted(resolveDenominatorUnitIds(id, inventoryRefs)); }
+    try { expectedUnits = strictSortedStrings(resolveDenominatorUnitIds(id, inventoryRefs), `stage2-denominator-resolved-units-type-invalid:${id}`); }
     catch { failures.push(`${id}:denominator-unit-set-unresolved`); }
     if (!same(unitIds, expectedUnits)) failures.push(`${id}:denominator-unit-set-mismatch`);
     if (inventoryRefs.length === 0 || inventoryRefs.length !== (Array.isArray(item.inventoryRefs) ? item.inventoryRefs.length : -1)) failures.push(`${id}:denominator-inventory-refs-invalid`);
@@ -164,26 +185,26 @@ export function createStage2ProfileEvidence(input = {}) {
   for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
     const source = input.items?.[id] || {};
     items[id] = deepFreeze({
-      profileIds: Object.freeze(sorted(source.profileIds)),
-      candidateCommitSha: String(source.candidateCommitSha || '').toLowerCase(),
-      candidateTreeSha: String(source.candidateTreeSha || '').toLowerCase(),
-      denominatorId: String(source.denominatorId || ''),
-      denominatorLockHash: String(source.denominatorLockHash || '').toLowerCase(),
-      coveredUnitIds: Object.freeze(sorted(source.coveredUnitIds)),
+      profileIds: Object.freeze(strictSortedStrings(source.profileIds, `stage2-profile-ids-type-invalid:${id}`)),
+      candidateCommitSha: strictString(source.candidateCommitSha, `stage2-profile-candidate-commit-type-invalid:${id}`).toLowerCase(),
+      candidateTreeSha: strictString(source.candidateTreeSha, `stage2-profile-candidate-tree-type-invalid:${id}`).toLowerCase(),
+      denominatorId: strictString(source.denominatorId, `stage2-profile-denominator-id-type-invalid:${id}`),
+      denominatorLockHash: strictString(source.denominatorLockHash, `stage2-profile-denominator-lock-type-invalid:${id}`).toLowerCase(),
+      coveredUnitIds: Object.freeze(strictSortedStrings(source.coveredUnitIds, `stage2-profile-covered-units-type-invalid:${id}`)),
       unitEvidence: deepFreeze(evidenceMap(source.unitEvidence)),
-      realFixtureIdentities: Object.freeze(sorted(source.realFixtureIdentities)),
-      negativeTestIdentities: Object.freeze(sorted(source.negativeTestIdentities)),
-      evidenceIdentities: Object.freeze(sorted(source.evidenceIdentities)),
-      providerProfileIds: Object.freeze(sorted(source.providerProfileIds)),
-      implementationIdentity: String(source.implementationIdentity || ''),
-      independentOracleIdentities: Object.freeze(sorted(source.independentOracleIdentities)),
+      realFixtureIdentities: Object.freeze(strictSortedStrings(source.realFixtureIdentities, `stage2-profile-real-fixture-identities-type-invalid:${id}`)),
+      negativeTestIdentities: Object.freeze(strictSortedStrings(source.negativeTestIdentities, `stage2-profile-negative-test-identities-type-invalid:${id}`)),
+      evidenceIdentities: Object.freeze(strictSortedStrings(source.evidenceIdentities, `stage2-profile-evidence-identities-type-invalid:${id}`)),
+      providerProfileIds: Object.freeze(strictSortedStrings(source.providerProfileIds, `stage2-profile-provider-ids-type-invalid:${id}`)),
+      implementationIdentity: strictString(source.implementationIdentity, `stage2-profile-implementation-identity-type-invalid:${id}`),
+      independentOracleIdentities: Object.freeze(strictSortedStrings(source.independentOracleIdentities, `stage2-profile-oracle-identities-type-invalid:${id}`)),
     });
   }
   const record = {
     schemaVersion: STAGE2_PROFILE_EVIDENCE_SCHEMA,
-    commitSha: String(input.commitSha || '').toLowerCase(),
-    treeSha: String(input.treeSha || '').toLowerCase(),
-    generatedAt: String(input.generatedAt || ''),
+    commitSha: strictString(input.commitSha, 'stage2-profile-commit-type-invalid').toLowerCase(),
+    treeSha: strictString(input.treeSha, 'stage2-profile-tree-type-invalid').toLowerCase(),
+    generatedAt: strictString(input.generatedAt, 'stage2-profile-generated-at-type-invalid'),
     items: deepFreeze(items),
   };
   return deepFreeze({ ...record, evidenceId: identity(record) });
@@ -191,12 +212,14 @@ export function createStage2ProfileEvidence(input = {}) {
 
 export function validateStage2ProfileEvidence(record, expected = {}) {
   if (!record || record.schemaVersion !== STAGE2_PROFILE_EVIDENCE_SCHEMA) return { ok: false, reason: 'stage2-profile-evidence-schema-invalid' };
-  if (!/^[0-9a-f]{40}$/.test(record.commitSha || '')) return { ok: false, reason: 'stage2-profile-evidence-commit-invalid' };
-  if (!/^[0-9a-f]{40}$/.test(record.treeSha || '')) return { ok: false, reason: 'stage2-profile-evidence-tree-invalid' };
-  if (!Number.isFinite(Date.parse(record.generatedAt || ''))) return { ok: false, reason: 'stage2-profile-evidence-time-invalid' };
+  if (!isCanonicalString(record.commitSha) || !/^[0-9a-f]{40}$/.test(record.commitSha)) return { ok: false, reason: 'stage2-profile-evidence-commit-invalid' };
+  if (!isCanonicalString(record.treeSha) || !/^[0-9a-f]{40}$/.test(record.treeSha)) return { ok: false, reason: 'stage2-profile-evidence-tree-invalid' };
+  if (!isCanonicalString(record.generatedAt) || !Number.isFinite(Date.parse(record.generatedAt))) return { ok: false, reason: 'stage2-profile-evidence-time-invalid' };
   if (record.evidenceId !== identity(record)) return { ok: false, reason: 'stage2-profile-evidence-tampered' };
-  if (expected.commitSha && record.commitSha !== String(expected.commitSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
-  if (expected.treeSha && record.treeSha !== String(expected.treeSha).toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
+  if (expected.commitSha != null && (typeof expected.commitSha !== 'string' || expected.commitSha.length === 0 || expected.commitSha.trim() !== expected.commitSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-commit-invalid' };
+  if (expected.treeSha != null && (typeof expected.treeSha !== 'string' || expected.treeSha.length === 0 || expected.treeSha.trim() !== expected.treeSha)) return { ok: false, reason: 'stage2-profile-evidence-expected-tree-invalid' };
+  if (expected.commitSha && record.commitSha !== expected.commitSha.toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-commit' };
+  if (expected.treeSha && record.treeSha !== expected.treeSha.toLowerCase()) return { ok: false, reason: 'stage2-profile-evidence-stale-tree' };
   if (!expected.denominatorLock || typeof expected.denominatorLock !== 'object' || Array.isArray(expected.denominatorLock)) return { ok: false, reason: 'stage2-profile-evidence-denominator-lock-required' };
   if (typeof expected.resolveEvidenceIdentity !== 'function') return { ok: false, reason: 'stage2-profile-evidence-identity-resolver-required' };
   const denominatorLock = validateStage2DenominatorLock(expected.denominatorLock, {
@@ -219,15 +242,47 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
       failures.push(`${id}:denominator-lock-missing`);
       continue;
     }
-    if (!isCanonicalStringArray(item.profileIds, { allowEmpty: false })) failures.push(`${id}:profile-identities-invalid`);
-    if (!isCanonicalStringArray(item.coveredUnitIds, { allowEmpty: false })) failures.push(`${id}:covered-unit-identities-invalid`);
-    if (!isCanonicalStringArray(item.realFixtureIdentities, { allowEmpty: false })) failures.push(`${id}:real-fixture-missing`);
-    if (!isCanonicalStringArray(item.negativeTestIdentities, { allowEmpty: false })) failures.push(`${id}:negative-tests-missing`);
-    if (!isCanonicalStringArray(item.evidenceIdentities, { allowEmpty: false })) failures.push(`${id}:evidence-identity-missing`);
-    if (!isCanonicalStringArray(item.providerProfileIds, { allowEmpty: !(id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) })) failures.push(`${id}:provider-profile-missing`);
-    if (!isCanonicalStringArray(item.independentOracleIdentities)) failures.push(`${id}:independent-oracle-identities-invalid`);
-    if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-'))
+    const profileIdsValid = isCanonicalStringArray(item.profileIds, { allowEmpty: false });
+    const coveredUnitIdsValid = isCanonicalStringArray(item.coveredUnitIds, { allowEmpty: false });
+    const realFixtureIdentitiesValid = isCanonicalStringArray(item.realFixtureIdentities, { allowEmpty: false });
+    const negativeTestIdentitiesValid = isCanonicalStringArray(item.negativeTestIdentities, { allowEmpty: false });
+    const evidenceIdentitiesValid = isCanonicalStringArray(item.evidenceIdentities, { allowEmpty: false });
+    const providerProfileIdsValid = isCanonicalStringArray(item.providerProfileIds, { allowEmpty: !(id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-')) });
+    const independentOracleIdentitiesValid = isCanonicalStringArray(item.independentOracleIdentities);
+    if (!profileIdsValid) failures.push(`${id}:profile-identities-invalid`);
+    if (!coveredUnitIdsValid) failures.push(`${id}:covered-unit-identities-invalid`);
+    if (!realFixtureIdentitiesValid) failures.push(`${id}:real-fixture-missing`);
+    if (!negativeTestIdentitiesValid) failures.push(`${id}:negative-tests-missing`);
+    if (!evidenceIdentitiesValid) failures.push(`${id}:evidence-identity-missing`);
+    if (!providerProfileIdsValid) failures.push(`${id}:provider-profile-missing`);
+    if (!independentOracleIdentitiesValid) failures.push(`${id}:independent-oracle-identities-invalid`);
+    const candidateCommitValid = isCanonicalString(item.candidateCommitSha) && /^[0-9a-f]{40}$/.test(item.candidateCommitSha);
+    const candidateTreeValid = isCanonicalString(item.candidateTreeSha) && /^[0-9a-f]{40}$/.test(item.candidateTreeSha);
+    const denominatorIdValid = isCanonicalString(item.denominatorId);
+    const denominatorLockHashValid = isCanonicalString(item.denominatorLockHash);
+    const implementationIdentityValid = isCanonicalString(item.implementationIdentity);
+    if (!candidateCommitValid) failures.push(`${id}:candidate-commit-invalid`);
+    if (!candidateTreeValid) failures.push(`${id}:candidate-tree-invalid`);
+    if (!denominatorIdValid) failures.push(`${id}:denominator-id-invalid`);
+    if (!denominatorLockHashValid) failures.push(`${id}:denominator-lock-invalid`);
+    if (!implementationIdentityValid) failures.push(`${id}:implementation-identity-missing`);
+    if (!profileIdsValid || !coveredUnitIdsValid || !realFixtureIdentitiesValid || !negativeTestIdentitiesValid
+      || !evidenceIdentitiesValid || !providerProfileIdsValid || !independentOracleIdentitiesValid
+      || !candidateCommitValid || !candidateTreeValid || !denominatorIdValid || !denominatorLockHashValid || !implementationIdentityValid) {
+      continue;
+    }
+    // A7 keeps its existential gate here because the exact-set check below is
+    // the full fail-closed contract for its fixed provider list. Managed M6
+    // has no set-level follow-up, so every declared provider profile must be
+    // allowed for that item's frontend (#5809): a single valid entry must not
+    // launder arbitrary or wrong-frontend claims into validated evidence.
+    if (id === 'S2-A7-NATIVE'
       && (!Array.isArray(item.providerProfileIds) || !item.providerProfileIds.some((value) => providerProfileAllowed(id, value)))) {
+      failures.push(`${id}:provider-profile-invalid`);
+    }
+    if (id.startsWith('S2-M6-')
+      && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0
+        || !item.providerProfileIds.every((value) => providerProfileAllowed(id, value)))) {
       failures.push(`${id}:provider-profile-invalid`);
     }
     if (id === 'S2-A7-NATIVE' && !same(item.providerProfileIds, A7_PROVIDER_PROFILE_IDS)) failures.push(`${id}:provider-profile-set-mismatch`);

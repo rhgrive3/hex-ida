@@ -17,6 +17,17 @@ import { findProvider, selectionForModel, selectionForProvider } from './model-p
 
 const MAX_LISTED = 10;
 
+/** Return an index in the rendered menuitems collection, ignoring separators. */
+export function menuItemIndex(items, target) {
+  if (!Array.isArray(items) || target == null) return -1;
+  let index = 0;
+  for (const item of items) {
+    if (item === target) return index;
+    if (item !== '-') index++;
+  }
+  return -1;
+}
+
 function anchorPoint(node) {
   const rect = node.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.bottom + 4 };
@@ -66,15 +77,16 @@ export function openSessionMenu({ button, session, ja = true, onChange = () => {
     action: () => { session.newConversation(); onChange(); },
   });
   if (conversations.length) items.push('-');
-  let currentIndex = -1;
+  let currentItem = null;
   for (const conversation of conversations) {
     const isCurrent = conversation === session.current;
-    if (isCurrent) currentIndex = items.length;
-    items.push({
+    const item = {
       label: (isCurrent ? '✓ ' : '') + conversationTitle(conversation, ja),
       disabled: busy && !isCurrent,
       action: () => { if (session.switchTo(conversation.id)) onChange(); },
-    });
+    };
+    if (isCurrent) currentItem = item;
+    items.push(item);
   }
   items.push('-');
   items.push({
@@ -89,7 +101,7 @@ export function openSessionMenu({ button, session, ja = true, onChange = () => {
 
   const point = anchorPoint(button);
   menu(items, point.x, point.y);
-  markCurrent(currentIndex);
+  markCurrent(menuItemIndex(items, currentItem));
   trackExpanded(button);
 }
 

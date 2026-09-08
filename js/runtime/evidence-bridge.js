@@ -17,10 +17,18 @@ function required(value, code, message) {
 function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
+  const normalized = [];
   for (const item of value) {
-    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string') throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    // Same canonical contract as the scalar ids and the core evidence
+    // stringArray: trim, require non-empty, dedupe/sort canonicalized values.
+    // Keeping raw strings would alias padded duplicates and make parent
+    // references unresolvable against their canonical record ids (#5966).
+    const text = item.trim();
+    if (!text) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    normalized.push(text);
   }
-  return Object.freeze([...new Set(value)].sort());
+  return Object.freeze([...new Set(normalized)].sort());
 }
 
 function optionalSequence(value) {
@@ -172,6 +180,31 @@ function linkableResolution(resolution) {
   return !!resolution && (resolution.state === 'exact' || resolution.state === 'resolved') && Array.isArray(resolution.targetEntityIds) && resolution.targetEntityIds.length > 0;
 }
 
+function canonicalIdentity(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function resolutionBindingKey(resolution) {
+  return resolution == null ? null : stableStringify(resolution);
+}
+
+function linkResolutionMatchesEvidence(evidence, resolution) {
+  if (!linkableResolution(resolution)) return false;
+  if (!canonicalIdentity(resolution.runtimeSessionId) || !canonicalIdentity(resolution.binaryId)) return false;
+  if (!resolution.targetEntityIds.every(canonicalIdentity)) return false;
+
+  const stored = evidence?.payload?.resolution;
+  const storedBinding = evidence?.payload?.resolutionBinding;
+  if (!stored || typeof storedBinding !== 'string' || !storedBinding) return false;
+  if (resolutionBindingKey(resolution) !== storedBinding) return false;
+  if (resolution.runtimeSessionId !== evidence.payload.runtimeSessionId) return false;
+  if (resolution.binaryId !== evidence.binaryId) return false;
+  if (stored.runtimeSessionId !== resolution.runtimeSessionId || stored.state !== resolution.state) return false;
+
+  const resolutionTargets = [...new Set(resolution.targetEntityIds)].sort();
+  return stableStringify(resolutionTargets) === stableStringify(evidence.targetEntityIds);
+}
+
 function resolutionCompleteness(resolution) {
   if (!resolution) return 'partial';
   if (resolution.state === 'exact') return 'complete';
@@ -189,9 +222,43 @@ export class RuntimeEvidenceBridge {
 
   eventToEvidence(eventInput, resolution = null, options = {}) {
     const event = createRuntimeEvent(eventInput);
+    resolution = resolution == null ? null : ownedClone(resolution);
+    if (resolution && resolution.runtimeSessionId !== event.runtimeSessionId) {
+      throw new DebugAdapterError(
+        'runtime-resolution-session-mismatch',
+        'runtime event and address resolution must belong to the same runtime session',
+      );
+    }
+    const resolutionBinding = resolutionBindingKey(resolution);
     const binaryId = resolution?.binaryId ?? options.binaryId ?? null;
     const targetEntityIds = linkableResolution(resolution) ? resolution.targetEntityIds : [];
-    const interventionRecords = this.interventions.ancestry(event.interventionIds);
+    const topLevelInterventions = event.interventionIds.map((interventionId) => {
+      const record = this.interventions.get(interventionId);
+      if (!record) {
+        throw new DebugAdapterError(
+          'runtime-intervention-not-found',
+          `runtime event intervention not found: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      if (record.runtimeSessionId !== event.runtimeSessionId) {
+        throw new DebugAdapterError(
+          'runtime-intervention-session-mismatch',
+          `runtime event intervention belongs to a different session: ${interventionId}`,
+          { interventionId },
+        );
+      }
+      return record;
+    });
+    const interventionRecords = this.interventions.ancestry(
+      topLevelInterventions.map((record) => record.interventionId),
+    );
+    if (interventionRecords.some((record) => record.runtimeSessionId !== event.runtimeSessionId)) {
+      throw new DebugAdapterError(
+        'runtime-intervention-session-mismatch',
+        'runtime event intervention ancestry crosses session boundary',
+      );
+    }
     const evidenceId = createEvidenceId({
       binaryId,
       kind: 'runtime-event',
@@ -229,7 +296,9 @@ export class RuntimeEvidenceBridge {
         eventKind: event.kind,
         eventPayload: event.payload,
         interventionIds: interventionRecords.map((record) => record.interventionId),
+        resolutionBinding,
         resolution: resolution ? {
+          runtimeSessionId: resolution.runtimeSessionId,
           state: resolution.state,
           method: resolution.method,
           staticAddress: resolution.staticAddress,
@@ -249,6 +318,7 @@ export class RuntimeEvidenceBridge {
     if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
     const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
+    resolution = resolution == null ? null : ownedClone(resolution);
     if (!linkableResolution(resolution)) {
       return deepFreeze({ linked: false, reason: resolution?.state === 'mismatch' ? 'identity-mismatch' : 'static-resolution-required', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
     }
@@ -256,6 +326,9 @@ export class RuntimeEvidenceBridge {
     const evidence = this.graph.getNode(evidenceId);
     if (!claim || claim.family !== 'Claim') throw new DebugAdapterError('runtime-claim-not-found', `claim not found: ${claimId}`);
     if (!evidence || evidence.family !== 'RuntimeEvidence') throw new DebugAdapterError('runtime-evidence-not-found', `runtime evidence not found: ${evidenceId}`);
+    if (!linkResolutionMatchesEvidence(evidence, resolution)) {
+      return deepFreeze({ linked: false, reason: 'resolution-evidence-mismatch', claimId: String(claimId), evidenceId: String(evidenceId), relation: type });
+    }
     const edge = createEvidenceEdge({ type, from: claim.id, to: evidence.id, metadata: { resolutionState: resolution.state, method: resolution.method ?? null } });
     this.graph.addEdge(edge);
     return deepFreeze({ linked: true, edge });

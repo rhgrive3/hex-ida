@@ -33,7 +33,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.1.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -127,6 +127,139 @@ function broadEffect(source, addressSpaces = ['memory']) {
   return createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces, source });
 }
 
+/**
+ * Versioned external-model wire contract. A model is authority only when its
+ * identity is bound to the requested target and snapshot, its producer says
+ * it is current and complete, and every effect/control fact is validated.
+ * Empty arrays are valid explicit evidence of absence; omitted or malformed
+ * arrays are not evidence at all and must keep the unknown-call fallback.
+ */
+export const LIBRARY_MODEL_SCHEMA = 'phase7-library-model';
+export const LIBRARY_MODEL_VERSION = '1';
+export const LIBRARY_MODEL_PROVENANCE_SCHEMA = 'phase7-library-model-provenance';
+
+function isPlainRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function nonEmptyModelString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function canonicalModelEvidenceIds(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const entries = Array.from(values);
+  if (!entries.every(nonEmptyModelString)) return null;
+  return [...new Set(entries.map((value) => value.trim()))].sort();
+}
+
+function validateLibraryModelEffect(effect) {
+  if (!isPlainRecord(effect)
+    || effect.source !== 'library-model'
+    || typeof effect.broad !== 'boolean'
+    || (effect.broad !== true && !nonEmptyModelString(effect.regionId))) {
+    return null;
+  }
+  if (!Array.isArray(effect.addressSpaces) || !Array.isArray(effect.evidenceIds)) return null;
+  const addressSpaces = Array.from(effect.addressSpaces);
+  const evidenceIds = Array.from(effect.evidenceIds);
+  if (addressSpaces.length === 0 || !addressSpaces.every(nonEmptyModelString)
+    || evidenceIds.length === 0 || !evidenceIds.every(nonEmptyModelString)) return null;
+  try {
+    const normalized = createMemoryEffect({ ...effect, addressSpaces, evidenceIds });
+    if (normalized.source !== 'library-model'
+      || normalized.addressSpaces.length === 0
+      || normalized.evidenceIds.length === 0) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function validateLibraryModelEscape(escape, provenanceEvidenceIds) {
+  if (!isPlainRecord(escape)
+    || !nonEmptyModelString(escape.kind)
+    || (escape.target != null && !nonEmptyModelString(escape.target))) return null;
+  const evidenceIds = canonicalModelEvidenceIds(escape.evidenceIds);
+  if (!evidenceIds) return null;
+  return Object.freeze({
+    kind: escape.kind.trim(),
+    target: escape.target == null ? null : escape.target.trim(),
+    evidenceIds: [...new Set([...evidenceIds, ...provenanceEvidenceIds])].sort(),
+  });
+}
+
+/**
+ * Validates and normalizes the canonical library-model contract for one call
+ * target. Returning null is deliberate: malformed, stale, incomplete, or
+ * mis-bound models follow the same fail-closed path as a missing model.
+ */
+export function validateLibraryModel(model, { targetEntityId, snapshotId } = {}) {
+  try {
+    const target = typeof targetEntityId === 'string' ? targetEntityId.trim() : '';
+    const snapshot = typeof snapshotId === 'string' ? snapshotId.trim() : '';
+    if (!isPlainRecord(model)
+      || model.modelSchema !== LIBRARY_MODEL_SCHEMA
+      || model.modelVersion !== LIBRARY_MODEL_VERSION
+      || !target
+      || model.targetEntityId !== target
+      || !snapshot
+      || model.snapshotId !== snapshot
+      || model.completeness !== 'complete'
+      || model.stopReason !== null
+      || model.current !== true
+      || !isPlainRecord(model.provenance)
+      || model.provenance.schema !== LIBRARY_MODEL_PROVENANCE_SCHEMA
+      || !nonEmptyModelString(model.provenance.providerId)
+      || !nonEmptyModelString(model.provenance.providerVersion)) {
+      return null;
+    }
+
+    const provenanceEvidenceIds = canonicalModelEvidenceIds(model.provenance.evidenceIds);
+    if (!provenanceEvidenceIds
+      || !Array.isArray(model.memoryReadRegions)
+      || !Array.isArray(model.memoryWriteRegions)
+      || !Array.isArray(model.escapes)
+      || ![true, false, 'unknown'].includes(model.noreturn)
+      || ![true, false, 'unknown'].includes(model.mayThrow)) {
+      return null;
+    }
+
+    const normalizeEffects = (values) => Array.from(values, validateLibraryModelEffect).map((effect) => {
+      if (!effect) return null;
+      return createMemoryEffect({
+        ...effect,
+        evidenceIds: [...new Set([...effect.evidenceIds, ...provenanceEvidenceIds])],
+      });
+    });
+    const memoryReadRegions = normalizeEffects(model.memoryReadRegions);
+    const memoryWriteRegions = normalizeEffects(model.memoryWriteRegions);
+    const escapes = Array.from(model.escapes, (escape) =>
+      validateLibraryModelEscape(escape, provenanceEvidenceIds));
+    if (memoryReadRegions.some((effect) => effect == null)
+      || memoryWriteRegions.some((effect) => effect == null)
+      || escapes.some((escape) => escape == null)) return null;
+
+    return Object.freeze({
+      memoryReadRegions: Object.freeze(memoryReadRegions),
+      memoryWriteRegions: Object.freeze(memoryWriteRegions),
+      escapes: Object.freeze(escapes),
+      noreturn: model.noreturn,
+      mayThrow: model.mayThrow,
+    });
+  } catch {
+    // Treat hostile getters, proxies, and future-shaped values as missing
+    // evidence rather than allowing untrusted model input to escape the gate.
+    return null;
+  }
+}
+
 /** Authority rank: lower wins, because proven evidence outranks a model. */
 const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
 
@@ -134,6 +267,30 @@ function strongestSource(left, right) {
   const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
   const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
   return leftRank <= rightRank ? left : right;
+}
+
+function compareCodeUnitStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function mergeEscapes(values) {
+  const byKey = new Map();
+  for (const escape of values) {
+    const evidenceIds = [...new Set(escape.evidenceIds)].sort();
+    const key = JSON.stringify([escape.kind, escape.target ?? null]);
+    const prior = byKey.get(key);
+    if (!prior) {
+      byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+      continue;
+    }
+    byKey.set(key, Object.freeze({
+      ...prior,
+      evidenceIds: [...new Set([...prior.evidenceIds, ...evidenceIds])].sort(),
+    }));
+  }
+  return [...byKey.entries()]
+    .sort(([left], [right]) => compareCodeUnitStrings(left, right))
+    .map(([, escape]) => escape);
 }
 
 function mergeEffects(lists, cap) {
@@ -227,12 +384,23 @@ export function solveInterproceduralSummaries({
     return { summaries: new Map(), components: [], status: status('partial', 'cancelled'), iterations: 0 };
   }
 
+  // A summary is usable for a function only when the map key and the
+  // producer-declared identity agree. A mis-keyed reachable callee is treated
+  // as missing evidence so its caller takes the conservative unknown-call
+  // path; only a requested root is rejected outright (#6208).
+  const isValidLocal = (functionId) => {
+    const local = locals.get(functionId);
+    return !!local && local.functionId === functionId;
+  };
   const calleesOf = (functionId) => {
     const local = locals.get(functionId);
-    if (!local) return [];
+    if (!isValidLocal(functionId)) return [];
     const direct = local.directCalls.flatMap((call) => call.targetEntityIds);
     const indirect = local.indirectCallSets.flatMap((set) => set.candidateEntityIds);
-    return [...new Set([...direct, ...indirect])].filter((id) => locals.has(id));
+    return [...new Set([...direct, ...indirect])].filter(isValidLocal);
+  };
+  for (const root of roots) {
+    if (!isValidLocal(root)) fail('interprocedural-local-summary-identity-mismatch');
   };
 
   const { components, truncated, cancelled } = condenseCallGraph(roots, calleesOf, {
@@ -278,7 +446,7 @@ export function solveInterproceduralSummaries({
       totalIterations += 1;
       changed = false;
       for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status });
+        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId });
         const digest = functionSummaryDigest(next);
         if (componentDigests.get(functionId) !== digest) {
           componentDigests.set(functionId, digest);
@@ -296,7 +464,7 @@ export function solveInterproceduralSummaries({
       // result instead of a plausible-looking complete one (P7-INV-010).
       for (const functionId of component) {
         solved.set(functionId, composeSummary({
-          functionId, locals, models, solved, component, limits, status, unconverged: true,
+          functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true,
         }));
       }
       worstStopReason = 'iteration-limit';
@@ -319,14 +487,50 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, unconverged = false }) {
+function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
+  if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
 
-  const reads = [local.memoryReadRegions];
-  const writes = [local.memoryWriteRegions];
-  const unknowns = [...local.unknownCallEffects];
-  const statuses = [local.status];
+  // A local P7-3a summary records a placeholder for every call it could not
+  // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
+  // the callee is solved, that placeholder must be *replaced* by the callee's
+  // proven effects, not unioned with them — inheriting both keeps the call
+  // boundary open forever and pins every upstream summary conservative
+  // (#5851). A call site counts as resolved only when every one of its targets
+  // has a solved summary; a model-covered or still-unknown target keeps the
+  // local fallback in place.
+  const resolvedCallSites = new Set();
+  // A summary can exist in the solve map while still being partial (for
+  // example, because its own callee or memory evidence is unresolved). Such a
+  // summary is not enough to replace this caller's conservative fallback: only
+  // a complete callee proves that the call boundary is closed.
+  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
+  for (const call of local.directCalls) {
+    if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(call.callSiteId);
+    }
+  }
+  for (const set of local.indirectCallSets) {
+    if (set.exhaustive && set.candidateEntityIds.length > 0
+      && set.candidateEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(set.callSiteId);
+    }
+  }
+  // Local fallback effects are only replaceable when every unknown the local
+  // pass recorded points at a resolved call site. An unknown from any other
+  // node — an unresolved memory effect, a stale identity, a non-exhaustive
+  // candidate set — keeps the whole local fallback, because the broad effects
+  // are not attributable per call site and dropping them would claim more
+  // than the solve proved.
+  const replaceCallFallbacks = local.unknownCallEffects.length > 0
+    && local.unknownCallEffects.every((unknown) => resolvedCallSites.has(unknown.callSiteId));
+  const notCallFallback = (effect) => effect.source !== 'unknown-call-fallback';
+
+  const reads = [replaceCallFallbacks ? local.memoryReadRegions.filter(notCallFallback) : local.memoryReadRegions];
+  const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
+  const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
+  const calleeStatuses = [];
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
@@ -340,7 +544,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     unknowns.push(...callee.unknownCallEffects);
     noreturn.push(callee.noreturn);
     mayThrow.push(callee.mayThrow);
-    statuses.push(callee.status);
+    calleeStatuses.push(callee.status);
   };
 
   for (const call of local.directCalls) {
@@ -361,13 +565,17 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       const model = models.get(target);
-      if (model && !locals.has(target)) {
+      const validatedModel = model && !locals.has(target)
+        ? validateLibraryModel(model, { targetEntityId: target, snapshotId })
+        : null;
+      if (validatedModel) {
         // A library model applies only where the binary does not define the
         // callee, so it can never override contradictory binary evidence.
-        reads.push(model.memoryReadRegions ?? []);
-        writes.push(model.memoryWriteRegions ?? []);
-        noreturn.push(model.noreturn ?? 'unknown');
-        mayThrow.push(model.mayThrow ?? 'unknown');
+        reads.push(validatedModel.memoryReadRegions);
+        writes.push(validatedModel.memoryWriteRegions);
+        escapes.push(...validatedModel.escapes);
+        noreturn.push(validatedModel.noreturn);
+        mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
@@ -390,11 +598,15 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       }
       if (component.includes(candidate)) continue;
       const model = models.get(candidate);
-      if (model && !locals.has(candidate)) {
-        reads.push(model.memoryReadRegions ?? []);
-        writes.push(model.memoryWriteRegions ?? []);
-        noreturn.push(model.noreturn ?? 'unknown');
-        mayThrow.push(model.mayThrow ?? 'unknown');
+      const validatedModel = model && !locals.has(candidate)
+        ? validateLibraryModel(model, { targetEntityId: candidate, snapshotId })
+        : null;
+      if (validatedModel) {
+        reads.push(validatedModel.memoryReadRegions);
+        writes.push(validatedModel.memoryWriteRegions);
+        escapes.push(...validatedModel.escapes);
+        noreturn.push(validatedModel.noreturn);
+        mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
@@ -457,7 +669,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     registerEffects: local.registerEffects,
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
-    escapes,
+    escapes: mergeEscapes(escapes),
     allocations: local.allocations,
     frees: local.frees,
     directCalls: local.directCalls,
@@ -467,6 +679,6 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: statuses.length > 1 ? mergeAnalysisStatus(localStatus, statuses.slice(1)) : localStatus,
+    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
   });
 }

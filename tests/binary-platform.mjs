@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { BinaryImage, ByteView, auditBinary, openBinary, openBinarySource } from '../js/binary/index.js';
 import { functionSeed, mergeFunctionSeeds } from '../js/binary/model.js';
+import { isExactFunctionSeed } from '../js/platform/worker-validation.js';
 import { makeElf64Fixture, makePe64Fixture } from './universal-binary.mjs';
 import { makeSectionlessElf64Fixture } from './universal-binary-sectionless.mjs';
 import { parseEhFrameHeader } from '../js/binary/elf-unwind.js';
@@ -94,10 +95,11 @@ function peUnwindFragmentRegressions() {
     view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);view.setUint32(0x204,0,true);
     view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);view.setUint32(0x214,0,true);
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:16},image,0xaa64);
-    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
+    // ARM64 .xdata bit 22 is the low bit of Epilog Count, not a fragment flag.
+    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n,0x10002000n]);
     assert.equal(image.functions[0].size,64n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].size,32n);
+    assert.equal(image.functions[1].size,32n);
+    assert.deepEqual(image.metadata.exceptionDirectory.fragments,[]);
   }
   {
     const {bytes,view,image}=makeImage();
@@ -130,5 +132,59 @@ function peUnwindFragmentRegressions() {
 }
 peUnwindFragmentRegressions();
 issue86To97Regressions();
+
+function issue5950SeedExactConfidenceAuthority() {
+  const address = 0x1000n;
+  const lowConfidenceExactMarker = functionSeed(address, {
+    source: 'heuristic', confidence: 0.1, exactFunctionStart: true,
+  });
+  const highConfidenceNonExact = functionSeed(address, {
+    source: 'symbol', confidence: 1.0, exactFunctionStart: false,
+  });
+  assert.equal(isExactFunctionSeed(lowConfidenceExactMarker), false);
+  assert.equal(isExactFunctionSeed(highConfidenceNonExact), false);
+
+  for (const order of [[lowConfidenceExactMarker, highConfidenceNonExact], [highConfidenceNonExact, lowConfidenceExactMarker]]) {
+    const [merged] = mergeFunctionSeeds(order);
+    assert.equal(isExactFunctionSeed(merged), false);
+    assert.equal(merged.confidence, 0.1);
+  }
+
+  const lowConfidenceExactSource = functionSeed(address, {
+    source: 'function_starts', confidence: 0.1, exactFunctionStart: false,
+  });
+  for (const order of [[lowConfidenceExactSource, highConfidenceNonExact], [highConfidenceNonExact, lowConfidenceExactSource]]) {
+    const [merged] = mergeFunctionSeeds(order);
+    assert.equal(isExactFunctionSeed(merged), false);
+    assert.equal(merged.exactFunctionStartConfidence, 0.1);
+  }
+
+  const highConfidenceExactSource = functionSeed(address, {
+    source: 'function_starts', confidence: 0.99, exactFunctionStart: false,
+  });
+  const [sourceBackedExact] = mergeFunctionSeeds([highConfidenceExactSource, highConfidenceNonExact]);
+  assert.equal(isExactFunctionSeed(sourceBackedExact), true);
+  assert.equal(sourceBackedExact.exactFunctionStartConfidence, 0.99);
+
+  const first = functionSeed(address, {
+    source: 'function_starts', confidence: 0.99, exactFunctionStart: true,
+  });
+  const second = functionSeed(address, {
+    source: 'unwind', confidence: 0.8, exactFunctionStart: true,
+  });
+  const [bothExact] = mergeFunctionSeeds([first, second]);
+  assert.equal(bothExact.exactFunctionStart, true);
+  assert.equal(bothExact.confidence, 0.99);
+  assert.equal(isExactFunctionSeed(bothExact), true);
+
+  const nonExact = mergeFunctionSeeds([
+    functionSeed(address, { source: 'symbol', confidence: 1.0 }),
+    functionSeed(address, { source: 'export', confidence: 0.95 }),
+  ])[0];
+  assert.equal(nonExact.exactFunctionStart, false);
+  assert.equal(nonExact.confidence, 1.0);
+}
+
 issue3598FunctionSeedConfidenceRegressions();
+issue5950SeedExactConfidenceAuthority();
 console.log('binary-platform: PASS');

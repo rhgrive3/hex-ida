@@ -107,6 +107,7 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   const fakeStore = new Map([
     ['currentAddress', 0x100001000n],
   ]);
+  const liveSettings = { language: 'en', explain: true, textSize: 'm' };
   const fakeApp = {
     notes: new NoteStore('test-ws-store'),
     patches: { list: () => [], add() {}, clear() {} },
@@ -119,7 +120,10 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
       onChange() {},
     },
     store: { get: (k) => fakeStore.get(k), set: (o) => { for (const [k, v] of Object.entries(o)) fakeStore.set(k, v); } },
-    prefs: { lang: 'en', explain: true, textSize: 'normal' },
+    prefs: { lang: 'en', explain: true, textSize: 'm' },
+    setLanguage(value) { this.prefs.lang = value; liveSettings.language = value; },
+    setExplain(value) { this.prefs.explain = value; liveSettings.explain = value; },
+    setTextSize(value) { this.prefs.textSize = value; liveSettings.textSize = value; },
     lastGoal: { text: 'find coins' },
     codeRegion: () => ({ vmAddr: 0x100000000n, size: 0x100000n }),
     viewer: { goToAddress() {}, setSymbols() {} },
@@ -134,6 +138,11 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   fakeApp.navigation.entries = [];
   fakeApp.navigation.index = -1;
   fakeApp.prefs.lang = 'ja';
+  fakeApp.prefs.explain = false;
+  fakeApp.prefs.textSize = 's';
+  liveSettings.language = 'ja';
+  liveSettings.explain = false;
+  liveSettings.textSize = 's';
   fakeApp.lastGoal = null;
 
   // Restore
@@ -141,8 +150,51 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   assert.equal(fakeApp.navigation.entries.length, 2);
   assert.equal(fakeApp.navigation.index, 1);
   assert.equal(fakeApp.prefs.lang, 'en');
+  assert.equal(fakeApp.prefs.explain, true);
+  assert.equal(fakeApp.prefs.textSize, 'm');
+  assert.deepEqual(liveSettings, { language: 'en', explain: true, textSize: 'm' }, 'project settings must be applied through the live app setters');
   assert.equal(fakeApp.lastGoal?.text, 'find coins');
   assert.equal(fakeStore.get('currentAddress'), 0x100001000n);
+
+  // Issue #3648: malformed/unsupported settings must not overwrite live state.
+  const invalidSettingsProject = {
+    ...snap,
+    analysis: {
+      ...snap.analysis,
+      settings: { language: 'fr', explain: 'true', textSize: 'xxl' },
+    },
+    navigation: { ...snap.navigation, currentFunction: null, history: [] },
+  };
+  applyWorkspaceProject(fakeApp, invalidSettingsProject);
+  assert.deepEqual(liveSettings, { language: 'en', explain: true, textSize: 'm' });
+  assert.deepEqual(fakeApp.prefs, { lang: 'en', explain: true, textSize: 'm' });
+
+  // Issue #3652: rebasing cursorIndex when imported history is truncated to navigation.limit.
+  const longHistory = Array.from({ length: 100 }, (_entry, index) => ({ addr: BigInt(index) }));
+  const truncatedNavigationProject = {
+    ...snap,
+    navigation: {
+      ...snap.navigation,
+      currentFunction: null,
+      history: longHistory,
+      cursorIndex: 70,
+    },
+  };
+  fakeApp.navigation.limit = 40;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.entries.length, 40);
+  assert.equal(fakeApp.navigation.entries[0].addr, 60n);
+  assert.equal(fakeApp.navigation.index, 10, 'cursor must be rebased by the 60 dropped history entries');
+
+  truncatedNavigationProject.navigation.cursorIndex = 20;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.index, 0, 'cursor in dropped prefix must clamp to first retained entry');
+
+  truncatedNavigationProject.navigation.history = longHistory.slice(0, 30);
+  truncatedNavigationProject.navigation.cursorIndex = 20;
+  applyWorkspaceProject(fakeApp, truncatedNavigationProject);
+  assert.equal(fakeApp.navigation.index, 20, 'cursor must remain unchanged when history is not truncated');
+
   fakeApp.notes.clear();
 }
 

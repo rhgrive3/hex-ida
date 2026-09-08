@@ -22,7 +22,15 @@ function makeSummary(returnProvenance, completeness = 'complete') {
   });
 }
 
-function runCall({ valueId = 'v0', outputs = ['v0'], returnProvenance, summaryCompleteness = 'complete' }) {
+function runCall(options = {}) {
+  const {
+    valueId = 'v0',
+    returnProvenance,
+    summaryCompleteness = 'complete',
+  } = options;
+  const outputs = Object.prototype.hasOwnProperty.call(options, 'outputs')
+    ? options.outputs
+    : ['v0'];
   const value = {
     id: valueId,
     kind: 'computed',

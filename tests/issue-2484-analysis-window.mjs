@@ -98,7 +98,9 @@ import { makePinpointAnalyzer } from '../js/ui/pinpoint-runtime.js';
   const symbols = new SymbolIndex({ funcs: new BigUint64Array([0x1000n, 0x1100n, 0x1200n]), regions: [region] });
   const calls = [];
   const app = {
-    store: { get: () => true },
+    // Legacy ARM64 row analyzer requires a proven ARM64 capability (#5818);
+    // this test exercises row-window clamping, so the fixture declares it.
+    store: { get: (key) => (key === 'canDisassemble' ? true : key === 'architecture' ? 'arm64' : { architecture: 'arm64', fixedInstructionSize: 4 }) },
     symbols,
     backend: {},
   };

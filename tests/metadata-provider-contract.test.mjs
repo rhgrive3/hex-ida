@@ -298,4 +298,10 @@ const incompleteEvidence = languageMetadataFunctionEvidence(incompleteAuthoritat
 assert.equal(incompleteEvidence.length, 1);
 assert.equal(incompleteEvidence[0].confidence, 'heuristic');
 
+// Keep the focused metadata issue regressions in the required metadata:test denominator.
+await import('./issue-6220-metadata-result-status-validation.mjs');
+await import('./issue-4812-metadata-identity-authority-verification.mjs');
+await import('./issue-4343-metadata-provider-ecosystem-match.mjs');
+await import('./issue-4845-metadata-page-record-shape-validation.mjs');
+
 console.log('Language Metadata Provider Contract tests passed.');

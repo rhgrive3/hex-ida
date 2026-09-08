@@ -51,7 +51,11 @@ export function mergeProgramScans(scans = [], options = {}) {
   const inputScans = (scans || []).filter(Boolean);
   const ordered = inputScans.filter((x) => !x.cancelled).slice().sort((a,b) => {
     const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
-    return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
+    // Same-vmAddr tie-break decides which region's edges survive the global
+    // caps, so it must be locale-invariant: UTF-16 code-unit order, never
+    // localeCompare() (#5758).
+    const aid=String(a.regionId||''), bid=String(b.regionId||'');
+    return av < bv ? -1 : av > bv ? 1 : (aid < bid ? -1 : aid > bid ? 1 : 0);
   });
   const expectedRegionsSpecified = Array.isArray(options.regions);
   const expectedRegions = (expectedRegionsSpecified ? options.regions : []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
@@ -208,7 +212,7 @@ export class ProgramIndex {
     ])];
     this.completeness = {
       ...(suppliedCompleteness || {}),
-      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete !== false : (!this.callsCapped && !this.refsCapped)),
+      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete === true : (!this.callsCapped && !this.refsCapped)),
       reasons,
     };
     this.queryIncompleteReason = this.unsupported ? 'unsupported-program-analysis'
@@ -285,14 +289,16 @@ export class ProgramIndex {
   }
   callersOf(target, limit = 200) {
     limit = queryLimit(limit, 200);
-    const seen = new Map();
-    const sites = this.callSitesTo(target, Math.max(0, limit * 4));
-    let queryLimited = sites.complete !== true;
-    for (const c of sites) {
-      const key = c.caller != null ? c.caller.toString() : 's' + c.site.toString();
+    const order = this._callToOrder(), seen = new Map();
+    let i = lowerBound(this.callTo, order, target), queryLimited = false;
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.callTo[k] !== target) break;
+      const site = this.callFrom[k], caller = this.functionStartOf(site);
+      const key = caller != null ? caller.toString() : 's' + site.toString();
       if (!seen.has(key)) {
         if (seen.size >= limit) { queryLimited = true; break; }
-        seen.set(key, { addr: c.caller, site: c.site, count: 0 });
+        seen.set(key, { addr: caller, site, count: 0 });
       }
       seen.get(key).count++;
     }
@@ -330,14 +336,21 @@ export class ProgramIndex {
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
     limit = queryLimit(limit, 200);
-    const seen = new Map();
-    const refs = this.refSitesTo(addr, span, Math.max(0, limit * 4));
-    let queryLimited = refs.complete !== true;
-    for (const r of refs) {
-      const fn = this.functionStartOf(r.site), key = fn != null ? fn.toString() : 's' + r.site.toString();
+    const order = this._refToOrder(), seen = new Map();
+    let i = lowerBound(this.refTo, order, addr), queryLimited = false;
+    const hi = addr + (span > 0n ? span : 1n);
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.refTo[k] >= hi) break;
+      const site = this.refFrom[k], fn = this.functionStartOf(site);
+      const key = fn != null ? fn.toString() : 's' + site.toString();
       if (!seen.has(key)) {
-        if (seen.size >= limit) { queryLimited = true; break; }
-        seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 });
+        if (seen.size >= limit) {
+          queryLimited = true;
+          if (seen.size === 0) break;
+          continue;
+        }
+        seen.set(key, { addr: fn, site, kind: this.refKind[k], count: 0 });
       }
       seen.get(key).count++;
     }
