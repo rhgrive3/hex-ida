@@ -54,6 +54,7 @@ async function run() {
     await page.waitForFunction(() => !!window.__app, null, { timeout: 10000 });
     await page.evaluate(() => window.__app.openSample());
     await page.waitForFunction(() => !!window.__app?.store?.get('fileInfo'), null, { timeout: 20000 });
+    await page.waitForFunction(() => !!window.__app?.notes?.id, null, { timeout: 20000 });
 
     const result = await page.evaluate(async () => {
       const app = window.__app;
