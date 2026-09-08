@@ -8,6 +8,10 @@ const APPLE_ARM64E_PLATFORMS = new Set([
   'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
   'tvos', 'watchos', 'visionos',
 ]);
+// The LP64 profiles share one architecture/platform match and differ only by
+// float ABI. Only a profile-selecting calling convention disambiguates them;
+// the shared 'riscv-vector-variant' alias does not.
+const RISCV_PROFILE_SELECTORS = new Set(['lp64', 'lp64f', 'lp64d']);
 
 const STRICT_PROTOTYPE_METADATA_ABIS = new Set([
   'sysv-amd64', 'microsoft-x64', 'microsoft-vectorcall', 'darwin-arm64',
@@ -665,6 +669,13 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   // an architecture-only arm64e target as AAPCS64 would invent register and
   // aggregate placement facts for non-Apple binaries.
   if (arch === 'arm64e' && !APPLE_ARM64E_PLATFORMS.has(platformId)) return abiPlugin('unknown');
+  // riscv64/riscv32 match the soft/single/double float profiles on identical
+  // architecture/platform predicates. Without a profile-selecting calling
+  // convention, the target is ambiguous: registry insertion order must not
+  // invent a float ABI by first-match.
+  if ((arch === 'riscv64' || arch === 'riscv32') && !RISCV_PROFILE_SELECTORS.has(canonicalCallingConvention(callingConvention))) {
+    return abiPlugin('unknown');
+  }
   // An architecture name is not an ABI identity. Require either an explicit
   // registered calling convention or a platform-qualified architecture before
   // selecting a profile; otherwise arm64/x86_64/riscv64 would silently pick a

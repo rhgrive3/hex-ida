@@ -114,10 +114,20 @@ for (const mnemonic of [
   "swpb", "swpah", "swplb", "swpalh",
   "ldaddb", "ldaddah", "ldaddlb", "ldaddalh",
   "ldseta", "ldsetalh", "ldclrlb", "ldclral", "ldeorb", "ldeoralh",
+  "ldsmax", "ldsmaxah", "ldsminlb", "ldumaxal", "lduminh",
+  // Arm's store-only aliases: base/release, byte, and halfword forms (#4495).
+  "stadd", "staddl", "staddb", "staddlb", "staddh", "staddlh",
+  "stclr", "stclrl", "stclrb", "stclrlb", "stclrh", "stclrlh",
+  "steor", "steorl", "steorb", "steorlb", "steorh", "steorlh",
+  "stset", "stsetl", "stsetb", "stsetlb", "stseth", "stsetlh",
+  "stsmax", "stsmaxl", "stsmaxb", "stsmaxlb", "stsmaxh", "stsmaxlh",
+  "stsmin", "stsminl", "stsminb", "stsminlb", "stsminh", "stsminlh",
+  "stumax", "stumaxl", "stumaxb", "stumaxlb", "stumaxh", "stumaxlh",
+  "stumin", "stuminl", "stuminb", "stuminlb", "stuminh", "stuminlh",
 ]) {
   assert.equal(facade.categoryOf(mnemonic), "atomic", `${mnemonic} must be classified as atomic`);
 }
-for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall"]) {
+for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall", "stadda", "staddal", "stsetq", "stsetall", "stsmaxa", "stsminq", "stumaxall", "stuminlbq", "stsmaxal", "stuminq"]) {
   assert.notEqual(facade.categoryOf(mnemonic), "atomic", `${mnemonic} is not a canonical atomic variant`);
 }
 assert.equal(facade.categoryOf("ldxr"), "load", "exclusive loads retain their established presentation category");
@@ -129,7 +139,7 @@ assert.equal(facade.categoryOf("ERETAB"), "system");
 assert.equal(facade.categoryOf("retaa"), "flow");
 assert.equal(facade.categoryOf("retab"), "flow");
 assert.notEqual(facade.categoryOf("eretax"), "system");
-console.log("  ok 6 atomic category variants + authenticated exception-return classification");
+console.log("  ok 6 atomic category variants (including store-only LSE aliases #4495) + authenticated exception-return classification");
 
 // 7. Presentation parser must reject non-existent SIMD/FP registers and lanes (#2068, #2070).
 for (const valid of ["b31", "h31", "s31", "d31", "q31", "v31.16b"]) {
@@ -162,6 +172,15 @@ async function analyzeArm64Fixture(instructions) {
   const region = { id: "arm64-shifted-imm", vmAddr: 0x100000n, size: BigInt(instructions.length * 4) };
   return analyzeFunction(analyzerBackend(instructions), region, 0, instructions.length - 1, null, null, { texts: false });
 }
+
+for (const mnemonic of ["stadd", "stsmax", "stumin"]) {
+  const result = await analyzeArm64Fixture([
+    { mn: mnemonic, ops: "w0, [x1]" },
+    { mn: "ret", ops: "" },
+  ]);
+  assert.equal(result.usesAtomic, true, `${mnemonic} store-only LSE alias must set usesAtomic (#4495)`);
+}
+console.log("  ok 8a store-only LSE aliases set the atomic function summary (#4495)");
 
 for (const [ops, expected] of [
   ["sp, sp, #0x20", 32],
@@ -270,5 +289,47 @@ for (const invalidPostIndex of ["w1", "sp", "xzr"]) {
   assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
 }
 console.log("  ok 10 ARM64 AdvSIMD register post-index presentation (#4105)");
+
+// 11. Unsupported memory modifiers must fail closed instead of becoming a
+// misleading fixed-byte address (#4872).
+for (const [input, expected] of [
+  ["[x1, #8]", "x1 + 8"],
+  ["[x1, x2, lsl #3]", "x1 + x2 << 3"],
+]) {
+  const direct = directOperands.parseOperands(input);
+  const throughFacade = facade.parseOperands(input);
+  assert.deepEqual(throughFacade, direct, `${input} facade must preserve the standard memory representation`);
+  assert.equal(direct.length, 1);
+  assert.equal(direct[0].k, "mem");
+  assert.equal(directOperands.memExpr(direct[0]), expected, `${input} must retain its standard address expression`);
+}
+{
+  const parsed = directOperands.parseOperands("[x1, #8]!");
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].k, "mem");
+  assert.equal(parsed[0].mode, "pre");
+  assert.equal(parsed[0].writebackDisp?.value, 8n);
+}
+{
+  const parsed = directOperands.parseOperands("[x1], #8");
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].k, "mem");
+  assert.equal(parsed[0].mode, "post");
+  assert.equal(parsed[0].writebackDisp?.value, 8n);
+  assert.equal(directOperands.memExpr(parsed[0]), "x1");
+}
+for (const input of [
+  "[x1,#1,mul vl]",
+  "[x1,#8,unsupported_modifier]",
+]) {
+  const direct = directOperands.parseOperands(input);
+  const throughFacade = facade.parseOperands(input);
+  assert.deepEqual(throughFacade, direct, `${input} facade must preserve the raw fallback`);
+  assert.equal(direct.length, 1, `${input} must remain one raw operand`);
+  assert.equal(direct[0].k, "other", `${input} must not become a parsed memory operand`);
+  assert.equal(direct[0].text, input, `${input} raw operand text must be preserved`);
+  assert.equal(directOperands.opShort(direct[0]), input, `${input} short presentation must preserve raw text`);
+}
+console.log("  ok 11 unsupported ARM64 memory modifiers fail closed (#4872)");
 
 console.log("All ARM64 presentation compatibility tests PASS!");

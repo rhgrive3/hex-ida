@@ -88,6 +88,24 @@ function assertDebugPageCursor(cursor) {
   if (!Number.isSafeInteger(offset)) fail('debug-page-cursor-invalid');
 }
 
+const COVERAGE_LIST_KEYS = Object.freeze([
+  'entityIds',
+  'recordKinds',
+  'addresses',
+  'buildIdentities',
+  'modules',
+]);
+
+function canonicalCoverageForDigest(coverage) {
+  if (coverage == null || typeof coverage !== 'object' || Array.isArray(coverage)) return coverage;
+  const canonical = { ...coverage };
+  for (const key of COVERAGE_LIST_KEYS) {
+    const values = coverageList(coverage[key]);
+    if (values) canonical[key] = [...values].sort();
+  }
+  return canonical;
+}
+
 /**
  * The identity verdict for one debug source.
  *
@@ -124,9 +142,24 @@ export function createDebugIdentity(input = {}) {
     providerVersion: identity.providerVersion,
     observed: identity.observed,
     expected: identity.expected,
+    // The digest must cover every field that changes record authority
+    // (#5732): for matched-partial, `coverage` decides which records carry hard
+    // facts, so two identities with different coverage must never collide.
+    method: identity.method,
+    coverage: canonicalCoverageForDigest(identity.coverage),
   });
   return deepFreeze(identity);
 }
+
+/**
+ * Set-canonical view of a matched-partial coverage domain (#5849).
+ *
+ * Selector lists are membership constraints, so their element order must not
+ * influence the canonical digest. Known selectors are sorted; unknown keys are
+ * kept (sorted) so a coverage object that adds an unrecognized selector still
+ * changes the digest rather than silently collapsing into a known one.
+ */
+
 
 /** True when this identity may create authoritative (hard) facts. */
 export function isAuthoritative(identity) {
@@ -188,6 +221,11 @@ export function isDebugRecordAuthoritative(result, record) {
   // record must carry that same build identity to claim authority.
   if (identity.observed != null && record.buildIdentity !== identity.observed) return false;
   if (!isCanonicalDebugRecord(record)) return false;
+  // A source-level identity match says the build is right; it does not say
+  // every record was fully interpreted. A parser that marked its own record
+  // `complete:false` has explicitly withheld hard/exact authority from it
+  // (#5980). Absence of the field stays neutral for minimal descriptors.
+  if (record.descriptor?.complete === false) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -236,7 +274,8 @@ export function isDebugRecordAuthoritative(result, record) {
     if (typeof moduleId !== 'string' || moduleId !== coverage.module.trim()) return false;
   }
 
-  return constrained;
+  // Same record-completeness gate for the matched-partial path (#5980).
+  return constrained && record.descriptor?.complete !== false;
 }
 
 /** One record from a provider, always carrying its debug-source provenance. */

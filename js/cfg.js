@@ -66,6 +66,15 @@ export function buildCfg(model, opts) {
     return nextBlock >= 0 && nextBlock !== node.index ? nextBlock : -1;
   };
 
+  // Entry authority is the function's start row, not the basicBlocks array
+  // position: optimized/cold blocks need not be address ordered, so the real
+  // entry can sit at any index. Legacy models without a start row fall back
+  // explicitly to the earliest block in row order; a start row no block
+  // covers fails closed (-1) instead of silently promoting block 0 (#5989).
+  const entryBlock = typeof model.startRow === 'number' && Number.isSafeInteger(model.startRow)
+    ? blockAtRow(model.startRow)
+    : (blockIntervals.length ? blockIntervals[0].index : -1);
+
   const nodes = blocks.map((b, i) => ({
     index: i,
     startRow: b.startRow,
@@ -73,7 +82,7 @@ export function buildCfg(model, opts) {
     rows: b.rows,
     succ: [],
     pred: [],
-    isEntry: i === 0,
+    isEntry: i === entryBlock && entryBlock >= 0,
     isExit: false,
     isLoopHeader: !!b.isLoopHeader,
     isJoin: !!b.isJoin,
@@ -138,7 +147,7 @@ export function buildCfg(model, opts) {
     }
   }
 
-  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), nodes.length ? 0 : -1);
+  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), entryBlock);
   backEdges.push(...graph.backEdges.map((e) => ({ from: e.from, to: e.to })));
   const loopHeaders = new Set(graph.backEdges.map((e) => e.to));
   for (const n of nodes) n.isLoopHeader = loopHeaders.has(n.index);
@@ -152,7 +161,7 @@ export function buildCfg(model, opts) {
   return {
     nodes,
     backEdges,
-    entry: nodes.length ? 0 : -1,
+    entry: entryBlock,
     exits: nodes.filter((n) => n.isExit).map((n) => n.index),
     shapes: classifyShapes(nodes, backEdges, model, graph.immediatePostDominators),
     dominators: graph.dominators,

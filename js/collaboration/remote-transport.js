@@ -45,6 +45,31 @@ function subtle() {
 }
 async function sha256(value) { return hex(await subtle().digest('SHA-256', bytes(value, 'remote-transport-digest-input-required'))); }
 
+function authorizationTimeout(value) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('remote-transport-authorization-timeout-invalid');
+  return value;
+}
+
+function authorizationSignal(value) {
+  if (value == null) return null;
+  if (typeof value.aborted !== 'boolean'
+    || typeof value.addEventListener !== 'function'
+    || typeof value.removeEventListener !== 'function') {
+    throw new TypeError('remote-transport-authorization-signal-invalid');
+  }
+  return value;
+}
+
+function authorizationAbortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(signal?.reason == null
+    ? 'remote transport authorization aborted'
+    : String(signal.reason));
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
 function declaredResponseLength(response) {
   const raw = response?.headers?.get?.('content-length');
   if (raw == null) return null;
@@ -62,11 +87,11 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
       if (textEncoder.encode(text).byteLength > maxBytes) throw new Error('remote-transport-response-budget-exceeded');
       return text;
     } catch (error) {
-      if (deadline?.expired) {
+      if (deadline?.aborted) {
         try {
           const cancellation = response.body?.cancel?.(error);
           cancellation?.catch?.(() => {});
-        }
+        } catch { }
       }
       throw error;
     }
@@ -86,7 +111,7 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
         try {
           const cancellation = reader.cancel();
           cancellation?.catch?.(() => {});
-        }
+        } catch { }
         throw new Error('remote-transport-response-budget-exceeded');
       }
       received.push(chunk);
@@ -96,39 +121,61 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
     for (const chunk of received) { merged.set(chunk, offset); offset += chunk.byteLength; }
     return new TextDecoder('utf-8', { fatal: false }).decode(merged);
   } catch (error) {
-    if (deadline?.expired) {
+    if (deadline?.aborted) {
       try {
         const cancellation = reader.cancel(error);
         cancellation?.catch?.(() => {});
-      }
+      } catch { }
     }
     throw error;
   }
 }
 
-// The remote authorization boundary has no caller-side cancel path, so an
-// HTTP response (or a custom fetchImpl) that never settles must be bounded by
-// the transport's own timeout instead of pending forever.
-function createAuthorizationDeadline(timeoutMs) {
+// Bound authorization by both the caller's cancellation signal and the
+// transport's own timeout so a response (or custom fetchImpl) that never
+// settles cannot keep the operation pending forever.
+function createAuthorizationDeadline(timeoutMs, externalSignal = null) {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   let timer;
   let expired = false;
-  let timeoutError = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      expired = true;
-      timeoutError = new Error('remote-transport-authorization-timeout:' + timeoutMs);
-      timeoutError.code = 'remote-transport-authorization-timeout';
-      try { controller?.abort(timeoutError); } catch { }
-      reject(timeoutError);
-    }, timeoutMs);
-  });
+  let failure = null;
+  let rejectDeadline;
+  const timeout = new Promise((_, reject) => { rejectDeadline = reject; });
+  // A pre-aborted signal can reject before the first Promise.race() attaches to
+  // this promise. Keep that rejection observable to callers without creating an
+  // unhandled-rejection report while the operation's finally block cleans up.
+  timeout.catch(() => {});
+  const fail = (error, timedOut = false) => {
+    if (failure) return;
+    failure = error;
+    expired = timedOut;
+    try { controller?.abort(error); } catch { }
+    rejectDeadline(error);
+  };
+  timer = setTimeout(() => {
+    const timeoutError = new Error('remote-transport-authorization-timeout:' + timeoutMs);
+    timeoutError.code = 'remote-transport-authorization-timeout';
+    fail(timeoutError, true);
+  }, timeoutMs);
+  let onExternalAbort = null;
+  if (externalSignal) {
+    onExternalAbort = () => fail(authorizationAbortError(externalSignal));
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    if (externalSignal.aborted) onExternalAbort();
+  }
   return {
-    signal: controller?.signal ?? null,
+    signal: controller?.signal ?? externalSignal ?? null,
     timeout,
     get expired() { return expired; },
-    assertActive() { if (expired) throw timeoutError; },
-    cancel() { clearTimeout(timer); },
+    get aborted() { return failure != null; },
+    assertActive() { if (failure) throw failure; },
+    race(value) { return Promise.race([Promise.resolve(value), timeout]); },
+    cancel() {
+      clearTimeout(timer);
+      if (externalSignal && onExternalAbort) {
+        try { externalSignal.removeEventListener('abort', onExternalAbort); } catch { }
+      }
+    },
   };
 }
 
@@ -206,7 +253,7 @@ export class RemoteCanonicalHttpTransport {
       throw new TypeError('remote-transport-confidential-endpoint-required');
     }
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) throw new TypeError('remote-transport-response-budget-invalid');
-    if (!Number.isSafeInteger(authorizationTimeoutMs) || authorizationTimeoutMs < 1) throw new TypeError('remote-transport-authorization-timeout-invalid');
+    authorizationTimeout(authorizationTimeoutMs);
     if (!Number.isSafeInteger(maxVerifiedBindings) || maxVerifiedBindings < 1) throw new TypeError('remote-transport-proof-cache-count-invalid');
     if (!Number.isSafeInteger(maxVerifiedBindingBytes) || maxVerifiedBindingBytes < 1) throw new TypeError('remote-transport-proof-cache-bytes-invalid');
     if (!serverVerificationKey || serverVerificationKey.type !== 'public' || serverVerificationKey.algorithm?.name !== 'Ed25519') throw new TypeError('remote-transport-ed25519-key-required');
@@ -259,43 +306,61 @@ export class RemoteCanonicalHttpTransport {
     this.#verifiedBindingBytes = 0;
   }
 
-  async authorizeEnvelope(input = {}) {
+  async authorizeEnvelope(input = {}, options = {}) {
     if (this.#disposed) throw new Error('remote-transport-disposed');
-    const provisional = createRemoteCollaborationEnvelope({ ...input, transportProof:{ authenticated:false, confidentiality:'unverified', integrity:'unverified' } });
-    if (provisional.egress?.userAuthorized !== true) throw new Error('remote-transport-egress-authorization-required');
-    if (provisional.egress?.rawBinaryBytes === true) throw new Error('remote-transport-raw-binary-egress-forbidden');
-    if (provisional.egress?.derivedDataOnly !== true) throw new Error('remote-transport-derived-data-only-required');
-    const binding = remoteCanonicalTransportBinding(provisional);
-    const canonicalBinding = stableStringify(binding);
-    const plaintext = textEncoder.encode(canonicalBinding);
-    const bindingDigest = await sha256(plaintext);
-    const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-    const aad = textEncoder.encode(`${REMOTE_CANONICAL_TRANSPORT_SCHEMA}:${this.serverKeyId}`);
-    const ciphertext = new Uint8Array(await subtle().encrypt({ name:'AES-GCM', iv, additionalData:aad, tagLength:128 }, this.sessionEncryptionKey, plaintext));
-    const requestId = `remote-request:${await sha256(ciphertext)}`;
-    const deadline = createAuthorizationDeadline(this.authorizationTimeoutMs);
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      throw new TypeError('remote-transport-authorization-options-invalid');
+    }
+    const signal = authorizationSignal(options.signal);
+    const timeoutMs = authorizationTimeout(options.timeoutMs ?? this.authorizationTimeoutMs);
+    const deadline = createAuthorizationDeadline(timeoutMs, signal);
     try {
+      deadline.assertActive();
+      const provisional = createRemoteCollaborationEnvelope({ ...input, transportProof:{ authenticated:false, confidentiality:'unverified', integrity:'unverified' } });
+      if (provisional.egress?.userAuthorized !== true) throw new Error('remote-transport-egress-authorization-required');
+      if (provisional.egress?.rawBinaryBytes === true) throw new Error('remote-transport-raw-binary-egress-forbidden');
+      if (provisional.egress?.derivedDataOnly !== true) throw new Error('remote-transport-derived-data-only-required');
+      const binding = remoteCanonicalTransportBinding(provisional);
+      const canonicalBinding = stableStringify(binding);
+      const plaintext = textEncoder.encode(canonicalBinding);
+      const bindingDigest = await deadline.race(sha256(plaintext));
+      deadline.assertActive();
+      const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+      deadline.assertActive();
+      const aad = textEncoder.encode(`${REMOTE_CANONICAL_TRANSPORT_SCHEMA}:${this.serverKeyId}`);
+      const ciphertext = new Uint8Array(await deadline.race(subtle().encrypt({ name:'AES-GCM', iv, additionalData:aad, tagLength:128 }, this.sessionEncryptionKey, plaintext)));
+      deadline.assertActive();
+      const requestId = `remote-request:${await deadline.race(sha256(ciphertext))}`;
+      deadline.assertActive();
       const response = await boundedFetch(this, {
-      method:'POST', headers:{ 'content-type':'application/json' },
-      body:JSON.stringify({ schemaVersion:REMOTE_CANONICAL_TRANSPORT_SCHEMA, requestId, bindingDigest, keyId:this.serverKeyId, iv:base64(iv), ciphertext:base64(ciphertext) }),
-    }, deadline);
-    if (!response || response.ok !== true) throw new Error(`remote-transport-http-rejected:${response?.status ?? 'unavailable'}`);
-    const result = await readBoundedResponseJson(response, this.maxResponseBytes, deadline);
-    deadline.assertActive();
-    if (result?.schemaVersion !== REMOTE_CANONICAL_RESPONSE_SCHEMA) throw new Error('remote-transport-response-schema-invalid');
-    const signed = signedResponsePayload(result);
-    if (signed.requestId !== requestId || signed.bindingDigest !== bindingDigest || signed.keyId !== this.serverKeyId) throw new Error('remote-transport-response-identity-mismatch');
-    const signature = fromBase64(result.signature, 'remote-transport-response-signature-invalid');
-    const verified = await subtle().verify({ name:'Ed25519' }, this.serverVerificationKey, signature, textEncoder.encode(stableStringify(signed)));
-    if (!verified) throw new Error('remote-transport-response-signature-rejected');
-    if (this.#disposed) throw new Error('remote-transport-disposed');
-    const proofIdentity = `remote-transport-proof:${await sha256(textEncoder.encode(`${stableStringify(signed)}:${base64(signature)}`))}`;
-    if (this.#disposed) throw new Error('remote-transport-disposed');
-    this.#rememberVerifiedBinding(proofIdentity, canonicalBinding);
-    return createRemoteCollaborationEnvelope({
-      ...input,
-      transportProof:{ authenticated:true, confidentiality:'verified', integrity:'verified', proofIdentity },
-    });    } finally { deadline.cancel(); }
+        method:'POST', headers:{ 'content-type':'application/json' },
+        body:JSON.stringify({ schemaVersion:REMOTE_CANONICAL_TRANSPORT_SCHEMA, requestId, bindingDigest, keyId:this.serverKeyId, iv:base64(iv), ciphertext:base64(ciphertext) }),
+      }, deadline);
+      deadline.assertActive();
+      if (!response || response.ok !== true) throw new Error(`remote-transport-http-rejected:${response?.status ?? 'unavailable'}`);
+      const result = await readBoundedResponseJson(response, this.maxResponseBytes, deadline);
+      deadline.assertActive();
+      if (result?.schemaVersion !== REMOTE_CANONICAL_RESPONSE_SCHEMA) throw new Error('remote-transport-response-schema-invalid');
+      const signed = signedResponsePayload(result);
+      if (signed.requestId !== requestId || signed.bindingDigest !== bindingDigest || signed.keyId !== this.serverKeyId) throw new Error('remote-transport-response-identity-mismatch');
+      const signature = fromBase64(result.signature, 'remote-transport-response-signature-invalid');
+      deadline.assertActive();
+      const verified = await deadline.race(subtle().verify({ name:'Ed25519' }, this.serverVerificationKey, signature, textEncoder.encode(stableStringify(signed))));
+      deadline.assertActive();
+      if (!verified) throw new Error('remote-transport-response-signature-rejected');
+      if (this.#disposed) throw new Error('remote-transport-disposed');
+      const proofIdentity = `remote-transport-proof:${await deadline.race(sha256(textEncoder.encode(`${stableStringify(signed)}:${base64(signature)}`)))}`;
+      deadline.assertActive();
+      if (this.#disposed) throw new Error('remote-transport-disposed');
+      // The final synchronous gate is immediately before publication: once the
+      // binding enters this cache it can authorize a later send.
+      deadline.assertActive();
+      this.#rememberVerifiedBinding(proofIdentity, canonicalBinding);
+      return createRemoteCollaborationEnvelope({
+        ...input,
+        transportProof:{ authenticated:true, confidentiality:'verified', integrity:'verified', proofIdentity },
+      });
+    } finally { deadline.cancel(); }
   }
 
   async send(envelope) {

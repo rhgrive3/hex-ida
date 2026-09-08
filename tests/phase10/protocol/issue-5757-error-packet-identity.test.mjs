@@ -2,12 +2,13 @@
 // `message` passed packet validation and flowed straight into
 // DebugAdapterError, so `error.code` could be an Array/Object sent by the
 // remote peer. Only primitive strings are adopted as error identity; anything
-// else falls back to the canonical provider-failure identity.
+// else is rejected; omitted fields use the canonical provider-failure identity.
 import assert from 'node:assert/strict';
 import {
   RUNTIME_PROVIDER_PROTOCOL,
   RUNTIME_PROVIDER_PROTOCOL_VERSION,
   RuntimeProviderProtocolClient,
+  validateProviderPacket,
 } from '../../../js/runtime/provider-protocol.js';
 
 function packet(type, extra = {}) {
@@ -85,4 +86,20 @@ for (const malformed of [
   assert.equal(error?.message, 'provider gave up');
   assert.deepEqual(error?.details, { extra: 1 });
   client.close();
+}
+
+// Validation must preserve omission through transport validation and receipt.
+for (const fields of [{}, { code: 'timeout' }, { message: 'failed' }]) {
+  const first = validateProviderPacket(packet('error', { id: 1, epoch: 1, ...fields }));
+  assert.deepEqual(validateProviderPacket(first), first);
+  assert.equal(Object.hasOwn(first, 'code'), Object.hasOwn(fields, 'code'));
+  assert.equal(Object.hasOwn(first, 'message'), Object.hasOwn(fields, 'message'));
+}
+
+for (const field of ['code', 'message']) {
+  for (const value of [[], {}, true, false, 1, null, '', '   ']) {
+    assert.throws(() => validateProviderPacket(packet('error', {
+      id: 1, epoch: 1, code: 'timeout', message: 'failed', [field]: value,
+    })), (error) => error.code === 'malformed-provider-data');
+  }
 }

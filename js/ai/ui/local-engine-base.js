@@ -217,17 +217,27 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
     : pick('この目的に合う関数を、確かな根拠つきでは特定できませんでした。', 'No candidate function could be identified with dependable evidence.');
 
   const missing = (result.missingEvidence || []).slice(0, 4);
+  // A verified hypothesis must name its verified supporting evidence — the
+  // same invariant HypothesisStore enforces in core (#5797). The verified
+  // candidate evidence is the deterministic verification authority here; if
+  // it is absent from the published evidence, the hypothesis stays
+  // 'supported' instead of claiming verification without support.
+  const verifiedBest = !!(best && best.verification && best.verification.verified);
+  const evidenceList = candidateEvidence(plan);
+  const supportEvidenceIds = verifiedBest && evidenceList.some((item) => item.id === 'local:candidate:' + address && item.status === 'verified')
+    ? ['local:candidate:' + address]
+    : [];
   return {
     mode, style,
     answer,
     confidence: result.confidence,
-    evidence: candidateEvidence(plan),
+    evidence: evidenceList,
     hypotheses: best ? [{
       id: 'local:hyp:' + address,
       claim: pick(`${best.name || address} が目的の処理を行っている`, `${best.name || address} implements the requested behaviour`),
       confidence: result.confidence,
-      status: best.verification && best.verification.verified ? 'verified' : 'supported',
-      supportEvidenceIds: [],
+      status: verifiedBest && supportEvidenceIds.length ? 'verified' : 'supported',
+      supportEvidenceIds,
       contradictionEvidenceIds: [],
       missingEvidence: missing,
     }] : [],

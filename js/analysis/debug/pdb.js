@@ -395,6 +395,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   }
   let offset = headerSize;
   let index = firstIndex;
+  let fieldListsComplete = true;
 
   while (offset + 4 <= bytes.length && types.size < budget.maxRecords) {
     const length = view.getUint16(offset, true);
@@ -456,7 +457,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     } else if (leaf === LF_ENUM) {
       types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
     } else if (leaf === LF_FIELDLIST) {
-      types.set(index, { leaf, kind: 'field-list', members: parseFieldList(view, bytes, body, end) });
+      const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
+      if (!fieldList.complete) fieldListsComplete = false;
+      types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
     } else if (leaf === LF_ARGLIST) {
       types.set(index, { leaf, kind: 'arg-list' });
     } else {
@@ -466,7 +469,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     offset = end;
     index += 1;
   }
-  return { types, unmodelled, complete: offset >= bytes.length, firstIndex };
+  // An incomplete field-list child (unsupported subrecord) fails the stream
+  // closed (#5773).
+  return { types, unmodelled, complete: fieldListsComplete && offset >= bytes.length, firstIndex };
 }
 
 /**
@@ -518,26 +523,40 @@ function readNumeric(view, bytes, offset, end = bytes.length) {
   }
 }
 
-function parseFieldList(view, bytes, start, end) {
+/**
+ * Parses an LF_FIELDLIST's children. Only LF_MEMBER is modeled: any other
+ * (valid) field-list subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD, ... —
+ * cannot be skipped reliably, so the children after it are unreachable and
+ * the field list is incomplete. That incompleteness propagates to the whole
+ * TPI result instead of silently publishing a partial member list as an
+ * exact layout (#5773).
+ */
+function parseFieldList(view, bytes, start, end, unmodelled) {
   const members = [];
   let offset = start;
-  while (offset + 8 <= end) {
+  let complete = true;
+  while (offset + 2 <= end) {
     const leaf = view.getUint16(offset, true);
-    if (leaf !== LF_MEMBER) break;
+    if (leaf !== LF_MEMBER) {
+      unmodelled.add(leaf);
+      complete = false;
+      break;
+    }
+    if (offset + 8 > end) { complete = false; break; }
     const typeIndex = view.getUint32(offset + 4, true);
     const numeric = readNumeric(view, bytes, offset + 8, end);
-    if (!numeric) break;
+    if (!numeric || numeric.value == null) { complete = false; break; }
     const { value: fieldOffset, next } = numeric;
     const nameEntry = cstringWithNext(bytes, next, end);
-    if (!nameEntry) break;
+    if (!nameEntry) { complete = false; break; }
     members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
-    if (cursor <= offset) break;
+    if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return members;
+  return { members, complete: complete && offset === end };
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
@@ -868,7 +887,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     for (const [index, record] of parsed.tpi.types) {
       if (record.kind !== 'aggregate' || record.forwardReference || !record.fieldList) continue;
       const fields = parsed.tpi.types.get(record.fieldList);
-      if (!fields || fields.kind !== 'field-list') continue;
+      if (!fields || fields.kind !== 'field-list' || fields.complete !== true) continue;
       out.push({
         typeIndex: index,
         name: record.name,
