@@ -4,7 +4,7 @@ import test from 'node:test';
 import { runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { DCE_PASS, observableEffectReason, runDcePass } from '../../../js/decompiler/phase8/dce.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
-import { decompileEntry } from '../../../tools/validation/phase8/decompile-corpus.mjs';
+import { corpusAbiIdForEntry, decompileEntry } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 
 /**
@@ -196,7 +196,7 @@ test('the IR maintains complete use lists, which is what makes this pass sound',
   let checked = 0;
   const undeclared = [];
   corpus.functions.forEach((entry, index) => {
-    const result = decompileEntry(entry, { index }).result;
+    const result = decompileEntry(entry, { index, abiId:corpusAbiIdForEntry(corpus, entry) }).result;
     if (!result?.semantic) return;
     const observed = new Map();
     const note = (valueId, instruction) => {
