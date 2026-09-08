@@ -122,6 +122,15 @@ export function createOriginSet(input = {}) {
   return frozen;
 }
 
+/**
+ * Return true only for a deeply frozen origin set issued by this module. This
+ * is a producer-owned capture boundary, not a generic frozen-object shortcut.
+ */
+export function isCanonicalOriginSet(value) {
+  return value != null && typeof value === 'object'
+    && CANONICAL_ORIGIN_SETS.has(value);
+}
+
 export function mergeOriginSets(...sets) {
   const normalized = sets.filter((value) => value != null).map((value) => createOriginSet(value));
   return createOriginSet({

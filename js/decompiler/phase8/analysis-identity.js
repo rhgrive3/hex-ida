@@ -66,9 +66,9 @@ const INTRINSIC_SET_VALUES = Set.prototype.values;
 // #3255 is the Phase 8 consumer lane and must remain independently loadable on
 // current main.  #3382 publishes this producer-owned fast path afterwards; the
 // generic strict graph digest remains the conservative behavior until then.
-const canonicalOriginSetDigest = typeof originIdentity.canonicalOriginSetDigest === 'function'
-  ? originIdentity.canonicalOriginSetDigest
-  : () => null;
+const isCanonicalOriginSet = typeof originIdentity.isCanonicalOriginSet === 'function'
+  ? originIdentity.isCanonicalOriginSet
+  : () => false;
 
 const REQUIRED_FIELDS = INTRINSIC_OBJECT_FREEZE([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
@@ -691,7 +691,7 @@ function capturePhase8SemanticSnapshotWithBudget(ir, workBudget) {
     }
 
     if ((isCanonicalMemorySsaProducerArtifact(value) && INTRINSIC_OBJECT_IS_FROZEN(value))
-        || canonicalOriginSetDigest(value) != null) return value;
+        || (isCanonicalOriginSet(value) && INTRINSIC_OBJECT_IS_FROZEN(value))) return value;
     let record = records.get(value);
     if (record == null) {
       consumeCaptureWork(1);
@@ -937,7 +937,6 @@ function createFastJsonGraphDigester({
   const numberMemo = new INTRINSIC_MAP_CONSTRUCTOR();
   const bigintMemo = new INTRINSIC_MAP_CONSTRUCTOR();
   const memorySsaMemo = new INTRINSIC_MAP_CONSTRUCTOR();
-  const originSetMemo = new INTRINSIC_MAP_CONSTRUCTOR();
   const projectionMemo = new WeakMap();
   const descriptorMemo = new WeakMap();
   // Field and own-key views are immutable for this call after their strict
@@ -1155,11 +1154,6 @@ function createFastJsonGraphDigester({
         && item.canonicalDigest.trim()) {
       return primitiveDigest(memorySsaMemo, item.canonicalDigest, TAG.MEMORY_SSA, item.canonicalDigest);
     }
-    const originSetDigest = canonicalOriginSetDigest(item);
-    if (originSetDigest != null) {
-      return primitiveDigest(originSetMemo, originSetDigest, TAG.ORIGIN_ARTIFACT, originSetDigest);
-    }
-
     const cached = memo.get(item);
     if (cached != null) return cached;
     if (active.has(item)) throw new TypeError('identity-cyclic-semantic-metadata');

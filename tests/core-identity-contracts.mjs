@@ -4,7 +4,12 @@ import {
   createFunctionId, createInstructionId, createVmOperationId, createEvidenceId,
   createRuntimeSessionId, jsonSafe,
 } from '../js/core/identity/index.js';
-import { createOriginSet, mergeOriginSets, createTransformRecord } from '../js/core/identity/origin.js';
+import {
+  createOriginSet,
+  isCanonicalOriginSet,
+  mergeOriginSets,
+  createTransformRecord,
+} from '../js/core/identity/origin.js';
 import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/identity/snapshot.js';
 
 // Keep issue-specific regressions in both the core contract gate and Phase 10 discovery.
@@ -177,6 +182,10 @@ assert.ok(Object.isFrozen(merged));
 assert.ok(Object.isFrozen(merged.byteRanges));
 assert.throws(() => merged.byteRanges.push({}), TypeError);
 assert.doesNotThrow(() => JSON.stringify(merged), 'origin schema must be serialization-safe');
+assert.equal(isCanonicalOriginSet(merged), true, 'canonical origin producer must issue a private brand');
+const copiedOrigin = structuredClone(merged);
+assert.equal(isCanonicalOriginSet(copiedOrigin), false, 'transported origin copies must not inherit the producer brand');
+assert.equal(isCanonicalOriginSet({ ...merged }), false, 'mutable origin-shaped objects must not inherit the producer brand');
 assert.throws(() => createOriginSet({ byteRanges: [{ offset: 10, length: -1 }] }), /origin-invalid-byte-range/);
 
 const artifactId = createArtifactId({
