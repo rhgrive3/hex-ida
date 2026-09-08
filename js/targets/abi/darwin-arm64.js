@@ -512,11 +512,17 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   classifyEntryRegister:(reg) => {
     const text = String(reg || '').trim().toLowerCase();
     const integerArgument = /^x([0-7])$/.exec(text);
-    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]) };
+    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]), abiClass:'integer' };
     const vectorArgument = /^v([0-7])$/.exec(text);
-    if (vectorArgument) return { kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]), view:'vector' };
+    if (vectorArgument) return {
+      kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]),
+      view:'vector', abiClass:'fp-vector',
+    };
     const viewArgument = /^(?:[qbdsh])([0-7])$/.exec(text);
-    if (viewArgument) return { kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]), view:text.slice(0, 1) };
+    if (viewArgument) return {
+      kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]),
+      view:text.slice(0, 1), abiClass:'fp-vector',
+    };
     return { kind:'incoming-register-state', reg:text };
   },
   callerSaved:()=>DARWIN_CALLER_SAVED,
