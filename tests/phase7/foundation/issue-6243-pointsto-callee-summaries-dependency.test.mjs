@@ -233,6 +233,8 @@ test('issue-6243: an accepted but unhashable callee summary fail-closes to unres
   assert.equal(pointsTo.top, true);
   assert.ok(pointsTo.lossReasons.includes('unresolved-call'),
     'digest failure must not permit provenance transfer under a reused or fabricated identity');
+  assert.equal(result.status.completeness, 'unsupported');
+  assert.equal(result.status.stopReason, 'dependency-mismatch');
 });
 
 test('issue-6243: an incomplete callee summary still fail-closes to unresolved-call', () => {
@@ -249,6 +251,27 @@ test('issue-6243: an incomplete callee summary still fail-closes to unresolved-c
   assert.equal(pointsTo.top, true);
   assert.ok(pointsTo.lossReasons.includes('unresolved-call'),
     'a stale/incomplete summary must never publish provenance-derived points-to');
+});
+
+test('issue-6243: a summary for another callee cannot leave the caller complete', () => {
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
+  const mismatched = createFunctionSummary({
+    functionId: 'fn_other',
+    returnValues: ['ret'],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }],
+    noreturn: false,
+    mayThrow: false,
+    status: completeStatus(),
+  });
+  const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
+    snapshotId: 'snapshot_1',
+    summaries: new Map([['fn_callee', mismatched]]),
+  });
+  const pointsTo = result.pointsTo.get('call_ret');
+  assert.equal(pointsTo.top, true);
+  assert.ok(pointsTo.lossReasons.includes('unresolved-call'));
+  assert.equal(result.status.completeness, 'unsupported');
+  assert.equal(result.status.stopReason, 'dependency-mismatch');
 });
 
 const runDetailed = (
@@ -275,6 +298,15 @@ test('issue-6243: A2 exposes the summary identities it actually consumed', () =>
   assert.equal(result.pointsTo.get('call_ret').top, false);
 });
 
+test('issue-6243: external summary labels remain additional to the canonical digest', () => {
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4' }]);
+  const result = runDetailed(fixture, fixture.summary, false, false, new Map([['fn_callee', 'callee-artifact-v1']]));
+  assert.deepEqual(result.calleeSummaryIds, [
+    'callee-artifact-v1',
+    'summary:' + functionSummaryDigest(fixture.summary),
+  ].sort());
+});
+
 test('issue-6243: the production A2 path builds its descriptor from consumed identities', () => {
   const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4' }]);
   const result = runDetailed(fixture, fixture.summary, true, true);
@@ -291,7 +323,7 @@ test('issue-6243: a reused explicit summary id cannot hide semantic changes', ()
   const reused = new Map([['fn_callee', 'reused-summary-id']]);
   const firstRun = runDetailed(first, first.summary, false, true, reused);
   const secondRun = runDetailed(second, second.summary, false, true, reused);
-  assert.notEqual(firstRun.calleeSummaryIds[0], secondRun.calleeSummaryIds[0]);
+  assert.notDeepEqual(firstRun.calleeSummaryIds, secondRun.calleeSummaryIds);
   assert.notEqual(firstRun.artifactDescriptor?.artifactId, secondRun.artifactDescriptor?.artifactId);
 });
 
