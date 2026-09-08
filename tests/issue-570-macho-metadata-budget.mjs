@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ByteView } from '../js/binary/reader.js';
+import { parseMachO } from '../js/binary/macho-core.js';
 import { createMachOMetadataBudget } from '../js/binary/macho-budget.js';
 import { parseChainedImports, parseClassicBindings } from '../js/binary/macho-dyld.js';
 
@@ -11,6 +12,26 @@ function image() {
     sectionAt(a){a=BigInt(a);return a>=0x1000n&&a<0x2000n?{address:0x1000n,size:0x1000n,perms:{execute:true}}:null;},
     addressToOffset(a){a=BigInt(a);return a>=0x1000n&&a<0x2000n?a-0x1000n:null;},
   };
+}
+
+// Public Mach-O parser options must reach the shared metadata budget.
+{
+  const bytes = new Uint8Array(32);
+  const v = new DataView(bytes.buffer);
+  bytes.set([0xcf, 0xfa, 0xed, 0xfe], 0);
+  v.setInt32(4, 0x0100000c, true);
+  v.setInt32(8, 0, true);
+  v.setUint32(12, 2, true);
+  v.setUint32(16, 0, true);
+  v.setUint32(20, 0, true);
+  v.setUint32(24, 0, true);
+  v.setUint32(28, 0, true);
+
+  const defaults = parseMachO(bytes);
+  const bounded = parseMachO(bytes, { metadataLimits:{ records:1 } });
+  const malformed = parseMachO(bytes, { metadataLimits:{ records:NaN } });
+  assert.equal(bounded.metadata.machoMetadata.limits.records, 1);
+  assert.equal(malformed.metadata.machoMetadata.limits.records, defaults.metadata.machoMetadata.limits.records);
 }
 
 {
@@ -39,7 +60,7 @@ function image() {
 
 // Repeat opcode must be prebounded by segment/output capacity, not loop 10M times.
 {
-  const bytes=new Uint8Array([0x70,0x00,0x40,0x5f,0x78,0x00,0xc0,0x64,0x00,0x00]);
+  const bytes=new Uint8Array([0x10,0x70,0x00,0x40,0x5f,0x78,0x00,0x51,0xc0,0x64,0x00,0x00]);
   const img=image(),segment={address:0x1000n,size:0x20n,fileOffset:0n,fileSize:0x20n};
   const budget=createMachOMetadataBudget(img,{limits:{records:100,objects:100,stringBytes:4096,inputBytes:4096,operations:100,warnings:8,estimatedHeapBytes:1<<20,wallClockMs:5000}});
   const status=parseClassicBindings(new ByteView(bytes),{offset:0,size:bytes.length},img,[segment],'bind',budget);
@@ -49,7 +70,8 @@ function image() {
   assert.ok(img.warnings.length<8);
 }
 
-const macho=fs.readFileSync(new URL('../js/binary/macho.js',import.meta.url),'utf8');
+const machoPath = fs.existsSync(new URL('../js/binary/macho-core.js', import.meta.url)) ? '../js/binary/macho-core.js' : '../js/binary/macho.js';
+const macho = fs.readFileSync(new URL(machoPath, import.meta.url), 'utf8');
 const dyld=fs.readFileSync(new URL('../js/binary/macho-dyld.js',import.meta.url),'utf8');
 assert.match(macho,/const metadataBudget = ensureMachOMetadataBudget/);
 for(const call of ['parseSymbolTable','parseFunctionStarts','parseChainedImports','parseChainedBindingSites','parseClassicBindings','parseExportTrie'])

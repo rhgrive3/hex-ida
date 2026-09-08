@@ -1,4 +1,5 @@
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
+import { canonicalContentDigest } from './binary-identity-digest.js';
 
 function abortError(signal, message = 'Binary identity cancelled') {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -30,6 +31,7 @@ function scheduleBackground(signal) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
     if (typeof requestIdleCallback === 'function') {
       requestIdleCallback(() => finish(resolve), { timeout:250 });
     } else {
@@ -60,6 +62,7 @@ function waitForEntry(entry, signal) {
     };
     signal?.addEventListener('abort', onAbort, { once:true });
     entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -77,11 +80,19 @@ export function installSharedWorkerBinaryIdentity(app) {
   backend.ensureBinaryId = function ensureSharedBinaryId(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
+    abortIfNeeded(options.signal);
 
     const file = this.file;
     const epoch = Number(this.gen ?? this.analysisEpoch ?? 0);
     if (current && (current.file !== file || current.epoch !== epoch)) {
       if (!current.settled) current.controller.abort('binary-identity-binding-changed');
+      current = null;
+      this._binaryIdPromise = null;
+    }
+    // Last-waiter cancellation aborts the producer without retiring it
+    // synchronously. It must never accept a fresh consumer: attach here would
+    // inherit the old consumer's AbortError (#5788).
+    if (current && !current.settled && current.controller.signal.aborted) {
       current = null;
       this._binaryIdPromise = null;
     }
@@ -100,7 +111,16 @@ export function installSharedWorkerBinaryIdentity(app) {
             error.stale = true;
             throw error;
           }
-          const binaryId = createBinaryIdFromDigest(hash);
+          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+        })
+        .then((digest) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || Number(this.gen ?? this.analysisEpoch ?? 0) !== epoch) {
+            const error = new Error('stale binary identity');
+            error.stale = true;
+            throw error;
+          }
+          const binaryId = createBinaryIdFromDigest(digest);
           this.binaryId = binaryId;
           entry.settled = true;
           return binaryId;

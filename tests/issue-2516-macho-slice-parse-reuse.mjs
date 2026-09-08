@@ -7,21 +7,21 @@ import { parseMachOSource, clearMachOSourceCache } from '../js/binary/macho-sour
 import { parseMachOSource as parseMachOSourceRaw } from '../js/binary/source-loaders.js';
 
 function fatFixture() {
-  const bytes = new Uint8Array(0x300), dv = new DataView(bytes.buffer);
+  const bytes = new Uint8Array(0x9000), dv = new DataView(bytes.buffer);
   dv.setUint32(0, 0xcafebabe, false); dv.setUint32(4, 2, false);
   const CPU_ARM64 = 0x0100000c;
   const writeFat = (p, subtype, off) => {
     dv.setUint32(p, CPU_ARM64, false); dv.setUint32(p + 4, subtype, false);
-    dv.setUint32(p + 8, off, false); dv.setUint32(p + 12, 32, false); dv.setUint32(p + 16, 0, false);
+    dv.setUint32(p + 8, off, false); dv.setUint32(p + 12, 32, false); dv.setUint32(p + 16, 14, false);
   };
-  writeFat(8, 2, 0x100); writeFat(28, 0, 0x200);
+  writeFat(8, 2, 0x4000); writeFat(28, 0, 0x8000);
   const writeThin = (off, subtype) => {
     dv.setUint32(off, 0xfeedfacf, true);
     dv.setInt32(off + 4, CPU_ARM64, true); dv.setInt32(off + 8, subtype, true);
     dv.setUint32(off + 12, 2, true); dv.setUint32(off + 16, 0, true);
     dv.setUint32(off + 20, 0, true); dv.setUint32(off + 24, 0, true); dv.setUint32(off + 28, 0, true);
   };
-  writeThin(0x100, 2); writeThin(0x200, 0);
+  writeThin(0x4000, 2); writeThin(0x8000, 0);
   return bytes;
 }
 
@@ -44,11 +44,11 @@ test('#2516 selected FAT slice parse is single-flight across analysis and pointe
   const second = parseMachOSource(wrapped, { ...workerOptions });
   assert.notEqual(first, second, 'distinct consumer promises are returned');
   const [a, b] = await Promise.all([first, second]);
-  assert.equal(a.metadata.fat.selected.offset, 0x200n);
-  assert.equal(b.metadata.fat.selected.offset, 0x200n);
+  assert.equal(a.metadata.fat.selected.offset, 0x8000n);
+  assert.equal(b.metadata.fat.selected.offset, 0x8000n);
 
   const third = await parseMachOSource(wrapped, { ...workerOptions });
-  assert.equal(third.metadata.fat.selected.offset, 0x200n);
+  assert.equal(third.metadata.fat.selected.offset, 0x8000n);
 
   const baseline = await (async () => {
     const probeSource = new MemoryByteSource(bytes);
@@ -75,7 +75,7 @@ test('#2516 pointer-resolution cancellation does not destroy the shared slice pa
   await assert.rejects(cancelled, (error) => error?.name === 'AbortError' || /cancelled/i.test(String(error?.message)));
 
   const survivor = await parseMachOSource(source, { ...options });
-  assert.equal(survivor.metadata.fat.selected.offset, 0x200n);
+  assert.equal(survivor.metadata.fat.selected.offset, 0x8000n);
   clearMachOSourceCache(source);
 });
 

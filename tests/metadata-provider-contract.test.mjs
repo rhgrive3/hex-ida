@@ -150,6 +150,18 @@ assert.equal(isLanguageRecordAuthoritative(partialResult, coveredRecord), true);
 assert.equal(isLanguageRecordAuthoritative(partialResult, uncoveredRecord), false);
 assert.equal(isLanguageRecordAuthoritative(partialResult, symbolRecord), false);
 
+// #3423: schemaVersion is not a trust marker for caller-supplied status. A
+// partial status-shaped object must be revalidated by the canonical constructor.
+assert.throws(() => createLanguageMetadataResult({
+  identity: authIdentity,
+  status: { schemaVersion:1, completeness:'complete', stopReason:null },
+}));
+const statusRoundTrip = createLanguageMetadataResult({
+  identity: authIdentity,
+  status: partialResult.status,
+});
+assert.deepEqual(statusRoundTrip.status, partialResult.status);
+
 // #3265: canonical completeness metrics never coerce non-number or invalid
 // numeric values into the result contract.
 const metricFields = ['declared', 'scanned', 'parsed', 'unreadableEntries', 'invalidEntries'];
@@ -268,6 +280,11 @@ const incompleteApplied = applyLanguageMetadataTypesToGraph(incompleteGraph, inc
 assert.equal(incompleteApplied.hard, 0);
 assert.equal(incompleteApplied.soft, 1);
 
+// #3426: matched-authoritative identity cannot bypass canonical per-record
+// authority when the result/status itself is incomplete.
+const authoritativePage = provider.authoritativeRecords(incompleteAuthoritativeResult, provider.types, null);
+assert.deepEqual(authoritativePage.records, []);
+
 // 5. Function discovery evidence
 const symPage = provider.symbols();
 const evidence = languageMetadataFunctionEvidence(probeResult, symPage);
@@ -280,5 +297,11 @@ assert.equal(evidence[0].address, '0x401000');
 const incompleteEvidence = languageMetadataFunctionEvidence(incompleteAuthoritativeResult, symPage);
 assert.equal(incompleteEvidence.length, 1);
 assert.equal(incompleteEvidence[0].confidence, 'heuristic');
+
+// Keep the focused metadata issue regressions in the required metadata:test denominator.
+await import('./issue-6220-metadata-result-status-validation.mjs');
+await import('./issue-4812-metadata-identity-authority-verification.mjs');
+await import('./issue-4343-metadata-provider-ecosystem-match.mjs');
+await import('./issue-4845-metadata-page-record-shape-validation.mjs');
 
 console.log('Language Metadata Provider Contract tests passed.');

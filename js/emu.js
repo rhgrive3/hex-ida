@@ -105,6 +105,7 @@ export class Emulator {
     this.syntheticPages = new Set();
     this.steps = 0;
     this.stopped = null;
+    this.faultCode = null;
     this.callStack = [];
     this.trace = [];
     this.traceTruncated = false;
@@ -283,13 +284,14 @@ export class Emulator {
       }
     }
     this.stopped = null;
+    this.faultCode = null;
     this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
 
   async step(options = {}) {
     const signal = options?.signal ?? null;
     throwIfAborted(signal);
-    if (this.stopped) return { ok: false, text: '', reason: this.stopped };
+    if (this.stopped) return { ok: false, text: '', reason: this.stopped, code: this.faultCode || null };
     const at = this.pc;
     const insn = this.io.fetch ? await awaitAbortable(this.io.fetch(at, { signal }), signal) : null;
     throwIfAborted(signal);
@@ -327,11 +329,11 @@ export class Emulator {
     while (n < limit && !this.stopped) {
       throwIfAborted(signal);
       if (this.breakpoints.has(this.pc.toString())) {
-        return { hitBreakpoint: true, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+        return { hitBreakpoint: true, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
       }
       const r = await this.step({ signal });
       n++;
-      if (!r.ok) break;
+      if (!r.ok) { if (r.code) this.faultCode = r.code; break; }
       if (onProgress && (n % 500) === 0) {
         onProgress(n);
         await new Promise((res) => setTimeout(res, 0));
@@ -340,7 +342,7 @@ export class Emulator {
     }
     throwIfAborted(signal);
     if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
-    return { hitBreakpoint: false, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+    return { hitBreakpoint: false, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }
 
   traceSnapshot() {
@@ -564,7 +566,7 @@ export class Emulator {
   }
 
   externalReturn(at, target) {
-    const label = (this.io.labelFor && this.io.labelFor(at)) ||
+    const label = (target != null && this.io.labelFor && this.io.labelFor(target)) ||
       (target != null ? '0x' + target.toString(16).toUpperCase() : '不明');
     this.log.push({
       call: label,

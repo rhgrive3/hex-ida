@@ -64,9 +64,8 @@ function fail(code) { throw new TypeError(code); }
 
 function positiveLimit(value, fallback, code) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
 }
 
 function defaultAlign(sizeBytes) {
@@ -76,6 +75,34 @@ function defaultAlign(sizeBytes) {
   if (size >= 4) return 4;
   if (size >= 2) return 2;
   return 1;
+}
+
+const MAX_SAFE_LAYOUT_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+function exactStructuralInteger(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+function structuralIntegerWire(value) {
+  return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value.toString();
+}
+
+function defaultStructuralAlign(sizeBytes) {
+  const size = exactStructuralInteger(sizeBytes, 0n);
+  if (size == null || size <= 0n) return 1n;
+  if (size >= 8n) return 8n;
+  if (size >= 4n) return 4n;
+  if (size >= 2n) return 2n;
+  return 1n;
 }
 
 function mergedEvidenceIds(left, right) {
@@ -161,6 +188,14 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
     const rawMembers = [];
     let explicitSize = null;
     let explicitAlign = null;
+    // Only an explicitly typed aggregate may establish whole-object size or
+    // alignment. Offset-less structural-field metadata is member evidence.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
 
     for (const desc of descriptors) {
       if (Array.isArray(desc.members)) {
@@ -168,26 +203,36 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       } else if (desc.offset != null && desc.sizeBytes != null) {
         rawMembers.push(desc);
       }
-      if (desc.sizeBytes != null && desc.offset == null) explicitSize = Number(desc.sizeBytes);
-      if (desc.alignBytes != null && desc.offset == null) explicitAlign = Number(desc.alignBytes);
+      if (isExplicitAggregateDescriptor(desc) && desc.sizeBytes != null) {
+        explicitSize = exactStructuralInteger(desc.sizeBytes);
+        if (explicitSize == null) return null;
+      }
+      if (isExplicitAggregateDescriptor(desc) && desc.alignBytes != null) {
+        explicitAlign = exactStructuralInteger(desc.alignBytes);
+        if (explicitAlign == null) return null;
+      }
     }
 
     const membersByOffset = new Map();
     for (const member of rawMembers) {
-      const offset = Number(member.offset ?? 0);
-      const existing = membersByOffset.get(offset);
+      const offset = exactStructuralInteger(member.offset, 0n);
+      if (offset == null) return null;
+      const key = offset.toString();
+      const existing = membersByOffset.get(key);
       if (existing) {
-        if (stableStringify(existing) !== stableStringify(member)) return null;
+        if (stableStringify(existing.member) !== stableStringify(member)) return null;
       } else {
-        membersByOffset.set(offset, member);
+        membersByOffset.set(key, { offset, member });
       }
     }
 
-    const members = [...membersByOffset.values()].sort((left, right) => {
-      const leftOffset = Number(left.offset ?? 0);
-      const rightOffset = Number(right.offset ?? 0);
-      return leftOffset - rightOffset || stableStringify(left).localeCompare(stableStringify(right));
-    });
+    const members = [...membersByOffset.values()]
+      .sort((left, right) => {
+        if (left.offset < right.offset) return -1;
+        if (left.offset > right.offset) return 1;
+        return stableStringify(left.member).localeCompare(stableStringify(right.member));
+      })
+      .map((entry) => entry.member);
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -203,29 +248,47 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       return m;
     });
 
-    let maxAlign = explicitAlign ?? 1;
+    let maxAlign = explicitAlign ?? 1n;
     for (const m of updatedMembers) {
-      const mAlign = Number(m.alignBytes ?? defaultAlign(m.sizeBytes));
+      let mAlign = null;
+      if (m.alignBytes == null) {
+        mAlign = defaultStructuralAlign(m.sizeBytes);
+      } else {
+        mAlign = exactStructuralInteger(m.alignBytes);
+        if (mAlign == null) return null;
+      }
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
-    let calculatedSize = explicitSize ?? 0;
+    let calculatedSize = explicitSize ?? 0n;
     if (updatedMembers.length > 0) {
-      const maxOffsetSpan = Math.max(...updatedMembers.map((m) => Number(m.offset ?? 0) + Number(m.sizeBytes ?? 0)));
-      calculatedSize = maxAlign > 1
-        ? Math.ceil(maxOffsetSpan / maxAlign) * maxAlign
-        : maxOffsetSpan;
-      if (explicitSize != null && explicitSize > calculatedSize) calculatedSize = explicitSize;
+      let maxOffsetSpan = 0n;
+      for (const m of updatedMembers) {
+        const offset = exactStructuralInteger(m.offset, 0n);
+        const size = exactStructuralInteger(m.sizeBytes, 0n);
+        if (offset == null || size == null) return null;
+        const span = offset + size;
+        if (span > maxOffsetSpan) maxOffsetSpan = span;
+      }
+      // A hard explicit aggregate size is a bound, not a suggestion (#5819):
+      // member extents beyond it are incompatible hard facts, never a reason
+      // to silently grow the struct and publish it as certain.
+      if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
+      calculatedSize = explicitSize != null
+        ? explicitSize
+        : maxAlign > 1n
+          ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
+          : maxOffsetSpan;
     }
 
-    const baseDescriptor = updatedMembers[0] ?? descriptors[0];
+    const calculatedSizeWire = structuralIntegerWire(calculatedSize);
+    const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
-      ...baseDescriptor,
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: baseDescriptor.sizeBytes ?? calculatedSize,
-      totalSizeBytes: calculatedSize,
-      alignBytes: maxAlign,
+      sizeBytes: calculatedSizeWire,
+      totalSizeBytes: calculatedSizeWire,
+      alignBytes: maxAlignWire,
       isRecursive,
       recursiveIdentity: isRecursive ? entityId : null,
       sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
@@ -585,6 +648,10 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
       for (let j = i + 1; j < bucket.hard.length; j += 1) {
         if (!canCompare()) break hardPairs;
         if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
+          if (contradictions.length >= maxContradictions) {
+            stopReason = 'budget-exhausted';
+            break hardPairs;
+          }
           const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
           contradictions.push(createContradiction({
             layer,
@@ -593,10 +660,6 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
             right: pair[1],
             detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
           }));
-          if (contradictions.length >= maxContradictions) {
-            stopReason = 'budget-exhausted';
-            break hardPairs;
-          }
         }
       }
     }
@@ -689,13 +752,34 @@ export function createTypeGraphResult(input = {}) {
   const status = input.status;
   if (!status) fail('type-graph-result-status-required');
   const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
-  const readOnlyMap = new Map();
+  // Overwriting instance mutators cannot actually seal a Map: the real data
+  // lives in an internal slot, so `Map.prototype.set.call(...)` would mutate a
+  // published result (#6070). The only honest read-only view is a frozen proxy
+  // that exposes the read API and rejects every mutator outright — the
+  // internal Map is never reachable from the returned object.
+  const internal = new Map();
   for (const [key, value] of rawMap) {
-    readOnlyMap.set(key, value);
+    internal.set(key, value);
   }
-  readOnlyMap.set = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.delete = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
-  readOnlyMap.clear = () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+  const readOnlyMap = new Proxy(internal, {
+    get(target, property, receiver) {
+      if (property === 'forEach') {
+        return (callback, thisArg) => {
+          if (typeof callback !== 'function') return Map.prototype.forEach.call(target, callback, thisArg);
+          return Map.prototype.forEach.call(target, (value, key) => Reflect.apply(callback, thisArg, [value, key, receiver]));
+        };
+      }
+      if (property === 'set' || property === 'delete' || property === 'clear') {
+        return () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    defineProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    deleteProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    set() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    setPrototypeOf() { throw new TypeError('TypeGraphResult.results is read-only'); },
+  });
 
   return Object.freeze({
     schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,

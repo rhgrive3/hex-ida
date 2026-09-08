@@ -21,7 +21,7 @@ async function decodedPointer(get, raw, storageAddress = null) {
     try {
       const resolved = await get.resolvePointer(raw, { address: storageAddress, imageBase: get.base });
       if (resolved == null) return null;
-      return BigInt(resolved);
+      return pointerTableAddress(resolved);
     } catch { return null; }
   }
   return sanitizePointer(raw, get.base);
@@ -225,6 +225,9 @@ function pointerTableAddress(value) {
   if (typeof value === 'string' && /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) return BigInt(value.trim());
   return null;
 }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function pointerTable(get, range, budget, parse, opts = {}) {
   const items = [];
   if (!range) {
@@ -261,7 +264,10 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
         items.push(item);
         if (item.completeness?.complete === false) incompleteItems++;
       } else invalidEntries++;
-    } catch { invalidEntries++; }
+    } catch (error) {
+      if (isCancellationError(error)) throw error;
+      invalidEntries++;
+    }
   }
   const capped = declared > budget;
   const complete = sizeValid && misalignedBytes === 0 && !capped && unreadableSlots === 0 && invalidEntries === 0 && incompleteItems === 0 && items.length === scanned && scanned === declared && !opts?.signal?.aborted;
@@ -269,7 +275,7 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
-  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts.signal });
+  const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts?.signal });
   get.base = opts.imageBase == null ? null : pointerTableAddress(opts.imageBase);
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;

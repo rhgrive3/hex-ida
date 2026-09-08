@@ -21,7 +21,7 @@ import { analyzeLocalPointsTo } from '../pointsto/local.js';
 import { pointsToAlias } from '../pointsto/alias.js';
 import { analyzeEscape } from '../summary/escape.js';
 import { a1RegionAlias } from './a1-region-alias.js';
-import { createAliasResult, unknownAlias } from './result.js';
+import { createAliasResult, reasonCodeForStopReason, unknownAlias } from './result.js';
 
 export const PHASE7_ALIAS_SOLVER_ID = 'phase7.alias.solver';
 export const PHASE7_ALIAS_SOLVER_VERSION = '1.1.0';
@@ -32,6 +32,13 @@ function contradicts(left, right) {
   if (left === 'no' && right === 'must') return true;
   if (left === 'must' && right === 'no') return true;
   return false;
+}
+
+function strictSnapshotId(value) {
+  if (typeof value !== 'string') throw new TypeError('phase7-alias-invalid-snapshot-id');
+  const text = value.trim();
+  if (!text) throw new TypeError('phase7-alias-invalid-snapshot-id');
+  return text;
 }
 
 /**
@@ -91,7 +98,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       memorySsa: options.memorySsaBinding?.memorySsa ?? options.memorySsa,
     };
     if (options.snapshotId == null && memoryBinding.snapshotId != null) {
-      effectiveSnapshotId = String(memoryBinding.snapshotId);
+      effectiveSnapshotId = strictSnapshotId(memoryBinding.snapshotId);
     }
   }
 
@@ -165,7 +172,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       memorySsa,
     };
     if (options.snapshotId == null && memoryBinding.snapshotId != null) {
-      effectiveSnapshotId = String(memoryBinding.snapshotId);
+      effectiveSnapshotId = strictSnapshotId(memoryBinding.snapshotId);
     }
     refinedRun = null;
     // Preserve demand-driven construction when the solver has not been asked
@@ -197,10 +204,10 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
   }
 
   function setFor(addressValueId) {
-    if (addressValueId == null) return null;
+    if (typeof addressValueId !== 'string' || !addressValueId.trim()) return null;
     const run = pointsTo();
     if (!run) return null;
-    return run.pointsTo.get(String(addressValueId)) ?? null;
+    return run.pointsTo.get(addressValueId.trim()) ?? null;
   }
 
   /**
@@ -211,9 +218,17 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
    * identity alone cannot see field offsets.
    */
   function alias(leftRegion, rightRegion, context = {}) {
-    const status = baseStatus({ signal: options.signal, ...options, snapshotId: effectiveSnapshotId, ...context });
+    const signalAborted = !!(options.signal?.aborted || context?.signal?.aborted);
+    const signal = signalAborted
+      ? (options.signal?.aborted ? options.signal : context.signal)
+      : (options.signal || context?.signal);
+    const status = baseStatus({
+      ...options,
+      snapshotId: effectiveSnapshotId,
+      signal,
+    });
     if (status.stopReason != null && status.completeness !== 'bounded') {
-      return unknownAlias(status, [status.stopReason === 'cancelled' ? 'analysis-cancelled' : 'budget-exhausted']);
+      return unknownAlias(status, [reasonCodeForStopReason(status.stopReason)]);
     }
 
     const a1 = a1RegionAlias(leftRegion, rightRegion, { ...options, status });

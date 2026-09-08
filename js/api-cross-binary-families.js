@@ -17,8 +17,13 @@ const EXTRA_API_TABLE = [
   { id:'nanopb', re:/^_?pb_[A-Za-z0-9_]+$/, cat:'runtime', args:null, ret:null, effect:'convert' },
 
   // Security.framework public namespace not already covered by the precise
-  // SecKey/SecTrust/SecItem entries in blocks.js.
-  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:'crypto' },
+  // SecKey/SecTrust/SecItem entries in blocks.js. Namespace membership alone
+  // does not establish a cryptographic semantic effect (#6182): certificate
+  // and requirement retrieval/serialization APIs (SecCertificateCopyData,
+  // SecRequirementCopyData, …) perform no crypto operation. The family keeps
+  // the Security.framework subsystem identity but its effect stays unknown
+  // unless a precise entry proves one.
+  { id:'security_framework', re:/^_?Sec[A-Z][A-Za-z0-9_]*$/, cat:'crypto', args:null, ret:null, effect:null },
 
   // stdio routines with stable standard/POSIX meaning but heterogeneous ABI.
   { id:'stdio_runtime', re:/^_?(?:fflush|fileno|fputs|fgets|getc|fgetc|ferror|fputc|clearerr|flockfile|ungetc|funlockfile|setvbuf|fscanf|vfprintf|popen|tmpfile|pclose|freopen|setbuf|__srget|ftello)$/, cat:'io', args:null, ret:null, effect:'io' },
@@ -66,7 +71,14 @@ const EXTRA_API_TABLE = [
   { id:'posix_process', re:/^_?(?:__darwin_check_fd_set_overflow|waitpid|sigsetjmp|setjmp|siglongjmp|__longjmp|__setjmp|sigaltstack|sigprocmask|raise|fork|execl|getuid|getgid|getegid|geteuid|getpwuid_r|tcsetattr|tcgetattr|syscall|sleep|getpagesize|setenv)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   { id:'audio_file', re:/^_?AudioFile[A-Za-z0-9_]*$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
-  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|vImage[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
+  // vImage* is Accelerate's CPU image-processing library, not a UI namespace:
+  // its entry points convert/scale/convolve between caller-provided source and
+  // destination buffers (#6189). Keep it a separate memory-transform family
+  // instead of laundering the namespace into a UI effect; the conservative
+  // contract is a read of the source buffer (destination writes vary by entry
+  // point and stay unknown without precise entries).
+  { id:'vimage_transform', re:/^_?vImage[A-Za-z0-9_]*$/, cat:'memory', args:null, ret:null, effect:'read' },
+  { id:'apple_ui_media', re:/^_?(?:UIApplicationMain|UIRectFill|UIAccessibility[A-Za-z0-9_]*|CAFrameRateRange[A-Za-z0-9_]*|CMSampleBuffer[A-Za-z0-9_]*|CVOpenGLES[A-Za-z0-9_]*|UTType[A-Za-z0-9_]*)$/, cat:'ui', args:null, ret:null, effect:'ui' },
 
   // GoogleUtilities logging exports.
   { id:'google_utilities_log', re:/^_?GUL(?:OSLog|SetLogger|IsLoggable)[A-Za-z0-9_]*$/, cat:'log', args:null, ret:null, effect:'log' },
@@ -91,11 +103,18 @@ const EXTRA_API_TABLE = [
   { id:'libc_sort', re:/^_?(?:qsort|mergesort)$/, cat:'memory', args:null, ret:null, effect:'write' },
   { id:'libc_io_runtime', re:/^_?(?:perror|close\$NOCANCEL)$/, cat:'io', args:null, ret:null, effect:'io' },
   { id:'libc_posix_memalign', re:/^_?posix_memalign$/, cat:'memory', args:null, ret:null, effect:'write' },
+  // Darwin malloc_size is an allocator-introspection query, not an allocator.
+  // Keep it distinct from malloc so callers cannot infer allocation effects.
+  { id:'libc_malloc_size', re:/^_?malloc_size$/, cat:'memory', args:['ptr'], ret:'length', effect:'read' },
   { id:'libc_difftime', re:/^_?difftime$/, cat:'runtime', args:null, ret:'number', effect:'pure' },
   // reallocf allocates a new heap buffer and frees the original one on
   // allocation failure, so it keeps the allocation contract with a heap return.
   { id:'libc_reallocf', re:/^_?reallocf$/, cat:'memory', args:null, ret:'heap', effect:'alloc' },
   { id:'libc_runtime', re:/^_?(?:atexit|dlerror)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
+  // os_log_create creates a logging handle; os_log_type_enabled only queries
+  // whether the configured handle/type is enabled. Neither emits a log record.
+  { id:'os_log_create', re:/^_?os_log_create$/, cat:'log', args:['subsystem','category'], ret:'handle', effect:'runtime' },
+  { id:'os_log_type_enabled', re:/^_?os_log_type_enabled$/, cat:'log', args:['log','type'], ret:'status', effect:'read' },
   { id:'os_log', re:/^_?__os_log_fault_impl$/, cat:'log', args:null, ret:null, effect:'log' },
 ];
 

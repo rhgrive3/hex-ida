@@ -1,8 +1,17 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
-import { createManagedValidationReport } from '../shared/validation.js';
+import { createCilMethodSignatureResolver } from './call-signatures.js';
 import { liftCilMethod } from './lifter.js';
+import { validateCilEffectFunction } from './validation.js';
 import { parseCil, probeCil } from './parser.js';
+
+function methodTokenText(bodyIndex, methodAuthority) {
+  const token = methodAuthority?.methodToken;
+  if (Number.isSafeInteger(token) && token >= 0x06000001 && token <= 0x06ffffff) {
+    return `0x${token.toString(16).padStart(8, '0')}`;
+  }
+  return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
+}
 
 export class CilFrontend {
   constructor(options = {}) {
@@ -39,8 +48,10 @@ export class CilFrontend {
   }
 
   async *enumerateMethods(image, options = {}) {
+    const resolveMethodSignature = createCilMethodSignatureResolver(image);
     for (let i = 0; i < image.methodBodies.length; i++) {
-      const token = `0x0600000${(i + 1).toString(16)}`;
+      const methodAuthority = resolveMethodSignature(image.methodBodies[i]);
+      const token = methodTokenText(i, methodAuthority);
       const methodId = createManagedMethodId(image.moduleId, token);
       yield {
         id: methodId,
@@ -59,18 +70,7 @@ export class CilFrontend {
   }
 
   async validateMethod(decoded, context = {}) {
-    const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
-    const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const status = hasUnknowns ? 'partial' : hasPartials ? 'partial' : 'valid';
-    return createManagedValidationReport({
-      targetId: decoded.methodId,
-      status,
-      completeness: {
-        structural: 'complete',
-        specValidation: 'valid',
-        semanticEffect: status === 'valid' ? 'complete' : 'partial',
-      },
-    });
+    return validateCilEffectFunction(decoded, context);
   }
 
   async liftMethod(decoded, validation, context = {}) {

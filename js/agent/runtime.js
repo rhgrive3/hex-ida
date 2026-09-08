@@ -16,10 +16,14 @@ function canonicalAddress(value) {
 }
 
 const FUNCTION_ADDRESS_FIRST_ARG_TOOLS = new Set([
-  'get_function', 'get_callers', 'get_callees', 'get_xrefs',
+  'get_function', 'get_callers', 'get_callees',
   'slice_backward', 'slice_forward', 'find_field_writers', 'find_field_readers',
   'find_thresholds', 'find_paths', 'get_semantic_facts', 'verify_field_update',
   'symbolic_execute', 'decompile', 'emulate',
+  // `get_xrefs` intentionally queries arbitrary target addresses (strings,
+  // data, globals) — the query planner routes data addresses through it — and
+  // its tool cost is `functions: 0`. Counting its first argument as function
+  // analysis made data-address lookups exhaust `maxFunctions` (#5917).
 ]);
 
 function addressFromRequest(tool, args) {
@@ -133,7 +137,7 @@ function budgetOf(opts) {
     maxFunctions: explicitLimit(opts && opts.maxFunctions, 48, 0),
     maxDisassembly: explicitLimit(opts && opts.maxDisassembly, 50000, 0),
     timeoutMs: explicitLimit(opts && opts.timeoutMs, 10000, 1),
-    isCancelled: opts && opts.isCancelled || (() => false),
+    isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
   };
 }
 
@@ -141,7 +145,7 @@ function normalizeToolRequest(step) {
   if (!step || typeof step !== 'object') return null;
   const tool = step.tool || step.name;
   if (typeof tool !== 'string' || !tool) return null;
-  let args = step.args || step.arguments || [];
+  let args = step.args ?? step.arguments ?? [];
   if (!Array.isArray(args)) args = [args];
   return { tool, args };
 }

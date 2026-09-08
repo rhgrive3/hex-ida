@@ -13,13 +13,6 @@ function nonNegativeSafeInteger(value, label) {
   return value;
 }
 
-function isAbortLike(error) {
-  return error?.name === 'AbortError'
-    || error?.name === 'ByteSourceCancelledError'
-    || error?.code === 'ABORT_ERR'
-    || error?.code === 'BYTE_SOURCE_CANCELLED';
-}
-
 export function createPageIdentity({ sourceId, pageIndex, pageSize }) {
   if (typeof sourceId !== 'string' || sourceId.length === 0) throw new TypeError('sourceId must be a non-empty string');
   const index = nonNegativeBigInt(pageIndex, 'page index');
@@ -117,7 +110,15 @@ export class PagedArtifactReader {
 
     if (requestedPrefetch > 0) {
       const lastPage = (start + BigInt(size) - 1n) / BigInt(this.pageSize);
-      await this.prefetch(lastPage + 1n, { count:requestedPrefetch, signal, allowPastEnd:true });
+      try {
+        await this.prefetch(lastPage + 1n, { count:requestedPrefetch, signal, allowPastEnd:true });
+      } catch (error) {
+        if (error instanceof ByteSourceCancelledError) throw error;
+        if (error?.code === 'BYTE_SOURCE_CANCELLED') throw error;
+        if (error?.name === 'AbortError') throw error;
+        if (error?.name === 'ByteSourceCancelledError') throw error;
+        if (signal?.aborted) throw error;
+      }
     }
     return Object.freeze({ offset:start, length:out.byteLength, bytes:out, pageIds:Object.freeze(pageIds) });
   }
@@ -182,6 +183,7 @@ export class PagedArtifactReader {
     }
 
     let entry = this.inflight.get(key);
+    if (entry?.discard || entry?.controller?.signal?.aborted) entry = null;
     if (entry) this.stats.pagesReused++;
     else entry = this.#startPage(key, pageIndex, prefetch);
     return this.#waitForPage(entry, signal);
@@ -204,7 +206,7 @@ export class PagedArtifactReader {
         if (!entry.discard) this.#remember(key, bytes);
         return bytes;
       } catch (error) {
-        if (isAbortLike(error)) throw new ByteSourceCancelledError();
+        if (entry.controller?.signal?.aborted) throw new ByteSourceCancelledError();
         throw error;
       }
     })().finally(() => {
@@ -240,7 +242,7 @@ export class PagedArtifactReader {
       };
       entry.promise.then(
         (value) => finish(resolve, value),
-        (error) => finish(reject, isAbortLike(error) ? new ByteSourceCancelledError() : error),
+        (error) => finish(reject, entry.controller?.signal?.aborted ? new ByteSourceCancelledError() : error),
       );
       signal?.addEventListener?.('abort', onAbort, { once:true });
       if (signal?.aborted) {

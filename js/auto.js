@@ -151,7 +151,12 @@ export async function autoAnalyze(opts) {
   // mid-analysis (#3308).
   const progress = typeof o.onProgress === 'function' ? o.onProgress : () => {};
   const cancelled = typeof o.isCancelled === 'function' ? o.isCancelled : () => false;
-  const deepLimit = o.deepLimit != null ? o.deepLimit : 12;
+  // deepLimit is an analysis-coverage authority like the pinpoint budgets:
+  // only a primitive non-negative safe integer may define it. Malformed
+  // values fall back to the default instead of coercing through relational
+  // comparisons, where Infinity would uncap and strings/booleans would set
+  // arbitrary counts (#5285, #5288). Explicit 0 disables deep analysis.
+  const deepLimit = typeof o.deepLimit === 'number' && Number.isSafeInteger(o.deepLimit) && o.deepLimit >= 0 ? o.deepLimit : 12;
 
   const report = {
     map: null, engine: null, features: [], goals: [], pinned: [], confirmed: [],
@@ -211,7 +216,7 @@ export async function autoAnalyze(opts) {
   // numbers may define one; structured values fall back to the defaults
   // instead of coercing through Math.min/comparisons (#3286).
   const budgetOption = (value, fallback) =>
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
   const startBudget = budgetOption(o.pinpointBudget, 360);
   const perGoal = budgetOption(o.pinpointPerGoal, 24);
   const fieldBudget = budgetOption(o.pinpointFieldBudget, 7);
@@ -455,9 +460,15 @@ export function memoizeAnalysis(analyze) {
     const keyPart = (value) => {
       if (value == null) return 'null';
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
-      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return `structured:opaque:${typeof value}`; }
+      try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return null; }
     };
-    const key = `${keyPart(addr)}:${keyPart(end)}`;
+    const addrPart = keyPart(addr);
+    const endPart = keyPart(end);
+    // An uncanonicalizable value has no safe cache identity. Running it without
+    // memoization preserves the analyzer's actual input and avoids sharing one
+    // opaque sentinel across unrelated cyclic values (#3309).
+    if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
+    const key = `${addrPart}:${endPart}`;
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))

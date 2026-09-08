@@ -1,11 +1,22 @@
 import { stableDigest } from "../../core/identity/index.js";
-import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleError } from "./snapshot.js";
+import {
+  assertAnalysisSnapshot,
+  createAnalysisSnapshot,
+  AnalysisSnapshotStaleError,
+  normalizeAnalysisArtifactVersions,
+} from "./snapshot.js";
 
 const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
+const TYPED_ARRAY_MUTATORS = new Set(["set", "copyWithin", "fill", "reverse", "sort"]);
+const TYPED_ARRAY_CALLBACKS = new Set([
+  "forEach", "map", "filter", "every", "some", "find", "findIndex", "findLast", "findLastIndex",
+]);
 
-function artifactVersionsEqual(left = {}, right = {}) {
+function artifactVersionsEqual(left, right) {
   try {
-    return stableDigest(left || {}) === stableDigest(right || {});
+    const normalizedLeft = normalizeAnalysisArtifactVersions(left);
+    const normalizedRight = normalizeAnalysisArtifactVersions(right);
+    return stableDigest(normalizedLeft) === stableDigest(normalizedRight);
   } catch {
     return false;
   }
@@ -28,8 +39,9 @@ function sameSnapshotIdentity(snapshot, current) {
 function aborted(options) {
   if (!options?.signal?.aborted) return;
   const reason = options.signal.reason;
-  if (reason instanceof Error && reason.name === "AbortError") throw reason;
-  const err = new Error(reason instanceof Error && reason.message ? reason.message : "AbortError");
+  // Abort reasons are arbitrary values, including explicit null and falsy values.
+  if (reason !== undefined) throw reason;
+  const err = new Error("AbortError");
   err.name = "AbortError";
   throw err;
 }
@@ -44,17 +56,208 @@ function unavailable(method) {
   };
 }
 
-function completenessOf(result) {
-  const raw = result?.status?.completeness ?? result?.completeness;
-  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
-  if (raw && typeof raw === "object") {
-    if (raw.complete === true) return result?.truncated === true ? "truncated" : "complete";
-    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
+function readonlyQueryMutation() {
+  throw new TypeError("analysis-query-value-readonly");
+}
+
+function readonlyArrayBuffer(target, seen) {
+  let proxy;
+  proxy = new Proxy(target, {
+    set: readonlyQueryMutation,
+    defineProperty: readonlyQueryMutation,
+    deleteProperty: readonlyQueryMutation,
+    setPrototypeOf: readonlyQueryMutation,
+    get(buffer, prop) {
+      if (prop === "constructor") return buffer.constructor;
+      if (prop === "valueOf") return () => proxy;
+      if (prop === Symbol.iterator) return function* bytes() { yield* new Uint8Array(buffer); };
+      if (prop === "resize" || prop === "transfer" || prop === "transferToFixedLength") {
+        return readonlyQueryMutation;
+      }
+      const value = Reflect.get(buffer, prop, buffer);
+      return typeof value === "function" ? value.bind(buffer) : value;
+    },
+  });
+  seen.set(target, proxy);
+  Object.freeze(target);
+  return proxy;
+}
+
+function readonlyBufferView(target, buffer) {
+  let proxy;
+  proxy = new Proxy(target, {
+    set: readonlyQueryMutation,
+    defineProperty: readonlyQueryMutation,
+    deleteProperty: readonlyQueryMutation,
+    setPrototypeOf: readonlyQueryMutation,
+    get(view, prop) {
+      if (prop === "constructor") return view.constructor;
+      if (prop === "valueOf") return () => proxy;
+      if (prop === "buffer") return buffer;
+      if (TYPED_ARRAY_MUTATORS.has(prop)
+        || (view instanceof DataView && typeof prop === "string" && prop.startsWith("set"))) {
+        return readonlyQueryMutation;
+      }
+      if (!(view instanceof DataView) && prop === "subarray") {
+        return (...args) => readonlyBufferView(view.subarray(...args), buffer);
+      }
+      if (!(view instanceof DataView) && TYPED_ARRAY_CALLBACKS.has(prop)) {
+        return (callback, thisArg) => view[prop]((value, index) => callback.call(thisArg, value, index, proxy));
+      }
+      if (!(view instanceof DataView) && (prop === "reduce" || prop === "reduceRight")) {
+        return (callback, ...args) => view[prop]((acc, value, index) => callback(acc, value, index, proxy), ...args);
+      }
+      const value = Reflect.get(view, prop, view);
+      return typeof value === "function" ? value.bind(view) : value;
+    },
+  });
+  return proxy;
+}
+
+function readonlyMap(source, seen) {
+  const target = new Map();
+  let proxy;
+  proxy = new Proxy(target, {
+    set: readonlyQueryMutation,
+    defineProperty: readonlyQueryMutation,
+    deleteProperty: readonlyQueryMutation,
+    setPrototypeOf: readonlyQueryMutation,
+    get(map, prop) {
+      if (prop === "constructor") return map.constructor;
+      if (prop === "valueOf") return () => proxy;
+      if (prop === "set" || prop === "delete" || prop === "clear") return readonlyQueryMutation;
+      if (prop === "forEach") {
+        return (callback, thisArg) => map.forEach((value, key) => callback.call(thisArg, value, key, proxy));
+      }
+      const value = Reflect.get(map, prop, map);
+      return typeof value === "function" ? value.bind(map) : value;
+    },
+  });
+  seen.set(source, proxy);
+  for (const [key, value] of source) {
+    target.set(deepFreezeTree(key, seen), deepFreezeTree(value, seen));
   }
+  Object.freeze(target);
+  return proxy;
+}
+
+function readonlySet(source, seen) {
+  const target = new Set();
+  let proxy;
+  proxy = new Proxy(target, {
+    set: readonlyQueryMutation,
+    defineProperty: readonlyQueryMutation,
+    deleteProperty: readonlyQueryMutation,
+    setPrototypeOf: readonlyQueryMutation,
+    get(set, prop) {
+      if (prop === "constructor") return set.constructor;
+      if (prop === "valueOf") return () => proxy;
+      if (prop === "add" || prop === "delete" || prop === "clear") return readonlyQueryMutation;
+      if (prop === "forEach") {
+        return (callback, thisArg) => set.forEach((value) => callback.call(thisArg, value, value, proxy));
+      }
+      const value = Reflect.get(set, prop, set);
+      return typeof value === "function" ? value.bind(set) : value;
+    },
+  });
+  seen.set(source, proxy);
+  for (const value of source) target.add(deepFreezeTree(value, seen));
+  Object.freeze(target);
+  return proxy;
+}
+
+function readonlyDate(target, seen) {
+  let proxy;
+  proxy = new Proxy(target, {
+    set: readonlyQueryMutation,
+    defineProperty: readonlyQueryMutation,
+    deleteProperty: readonlyQueryMutation,
+    setPrototypeOf: readonlyQueryMutation,
+    get(date, prop) {
+      if (prop === "constructor") return date.constructor;
+      if (typeof prop === "string" && prop.startsWith("set")) return readonlyQueryMutation;
+      const value = Reflect.get(date, prop, date);
+      return typeof value === "function" ? value.bind(date) : value;
+    },
+  });
+  seen.set(target, proxy);
+  Object.freeze(target);
+  return proxy;
+}
+
+// A query result is an immutable consistent view: consumers must never be able
+// to reach back into adapter-owned analysis/cache state through the exposed
+// value (#5915). Values are detached with structuredClone before publication.
+// If the adapter returns a non-cloneable value (for example functions/symbols),
+// fail closed instead of sharing or freezing the adapter-owned object in place.
+function frozenQueryValue(value) {
+  if (value == null) return value;
+  if (typeof value !== "object") {
+    if (typeof value === "function" || typeof value === "symbol") {
+      throw new TypeError("analysis-query-value-unclonable");
+    }
+    return value;
+  }
+
+  let clone;
+  try {
+    clone = structuredClone(value);
+  } catch {
+    throw new TypeError("analysis-query-value-unclonable");
+  }
+  return deepFreezeTree(clone);
+}
+
+function deepFreezeTree(node, seen = new Map()) {
+  if (node == null || typeof node !== "object") return node;
+  if (seen.has(node)) return seen.get(node);
+  if (typeof SharedArrayBuffer !== "undefined" && node instanceof SharedArrayBuffer) {
+    throw new TypeError("analysis-query-value-unclonable");
+  }
+  if (node instanceof ArrayBuffer) return readonlyArrayBuffer(node, seen);
+  if (ArrayBuffer.isView(node)) {
+    const buffer = deepFreezeTree(node.buffer, seen);
+    const proxy = readonlyBufferView(node, buffer);
+    seen.set(node, proxy);
+    return proxy;
+  }
+  if (node instanceof Map) return readonlyMap(node, seen);
+  if (node instanceof Set) return readonlySet(node, seen);
+  if (node instanceof Date) return readonlyDate(node, seen);
+
+  seen.set(node, node);
+  for (const key of Object.keys(node)) node[key] = deepFreezeTree(node[key], seen);
+  return Object.freeze(node);
+}
+
+function completenessOf(result) {
   if (result?.unsupported === true) return "unsupported";
   if (result?.truncated === true) return "truncated";
   if (result?.partial === true || result?.complete === false) return "partial";
+
+  const raw = result?.status?.completeness ?? result?.completeness;
+  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
+  if (raw && typeof raw === "object") {
+    if (raw.complete === true) return "complete";
+    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
+  }
   return "partial";
+}
+
+function preserveKnownQueryLimitContinuation(result) {
+  const page = result?.page;
+  const queryLimited = result?.status?.reason === "query-limit"
+    || result?.status?.truncationReason === "query-limit";
+  if (result?.completeness !== "partial" || !queryLimited || page?.next != null) return result;
+  const offset = safeNonNegativeInteger(page?.offset);
+  const returned = safeNonNegativeInteger(page?.returned);
+  if (offset == null || returned == null || returned === 0) return result;
+  const next = offset + returned;
+  if (!Number.isSafeInteger(next) || next <= offset) return result;
+  return Object.freeze({
+    ...result,
+    page: Object.freeze({ ...page, next }),
+  });
 }
 
 export class AnalysisQueryAPI {
@@ -101,19 +304,22 @@ export class AnalysisQueryAPI {
     }
 
     const completeness = completenessOf(result);
-    const value = result?.value !== undefined ? result.value : result;
+    const rawStatus = result?.status;
+    const value = frozenQueryValue(result?.value !== undefined ? result.value : result);
     const status = Object.freeze({
-      ...(result?.status && typeof result.status === "object" ? result.status : {}),
+      ...(typeof rawStatus === "object" && rawStatus !== null ? frozenQueryValue(rawStatus) : {}),
       completeness,
     });
+    const page = frozenQueryValue(result?.page ?? null);
+    const cost = frozenQueryValue(result?.cost ?? rawStatus?.cost ?? null);
     return Object.freeze({
       snapshotId: snapshot.snapshotId,
       analysisEpoch: snapshot.analysisEpoch,
       completeness,
       value,
       status,
-      page: result?.page ?? null,
-      cost: result?.cost ?? status.cost ?? null,
+      page,
+      cost,
     });
   }
 
@@ -160,7 +366,8 @@ export class AnalysisQueryAPI {
   }
 
   async xrefs(snapshot, entityId, page = {}, options = {}) {
-    return this.#query("xrefs", snapshot, [entityId, page], options);
+    const result = await this.#query("xrefs", snapshot, [entityId, page], options);
+    return preserveKnownQueryLimitContinuation(result);
   }
 
   async types(snapshot, scope, page = {}, options = {}) {

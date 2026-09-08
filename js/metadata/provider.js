@@ -11,10 +11,32 @@
  */
 
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus } from '../analysis/status.js';
+import { createAnalysisStatus, isCompleteStatus, ANALYSIS_STATUS_SCHEMA_VERSION } from '../analysis/status.js';
 
 export const METADATA_PROVIDER_CONTRACT_VERSION = '1.0.0';
 export const METADATA_PROVIDER_SCHEMA_VERSION = 1;
+
+export function isCanonicalAnalysisStatus(status) {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
+  if (status.schemaVersion !== ANALYSIS_STATUS_SCHEMA_VERSION) return false;
+  try {
+    const canonical = createAnalysisStatus(status);
+    const keys = Object.keys(canonical);
+    if (Object.keys(status).length !== keys.length) return false;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(status, key)) return false;
+      if (Array.isArray(canonical[key])) {
+        if (!Array.isArray(status[key]) || status[key].length !== canonical[key].length) return false;
+        if (canonical[key].some((value, index) => status[key][index] !== value)) return false;
+      } else if (status[key] !== canonical[key]) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Identity verdicts. Only `matched-authoritative` and covered `matched-partial`
@@ -68,6 +90,12 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function arrayField(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  return value;
+}
+
 function optionalSizeBytes(value) {
   if (value == null) return null;
   if (typeof value !== 'number' && typeof value !== 'string') fail('metadata-record-invalid-size');
@@ -83,6 +111,33 @@ function cloneCoverage(value) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneCoverage(item)]));
   }
   return value;
+}
+
+const COVERAGE_LIST_SELECTORS = new Set(['entityIds', 'recordKinds', 'addresses', 'buildIdentities', 'modules']);
+const COVERAGE_STRING_SELECTORS = new Set(['module', 'ecosystem']);
+
+function canonicalCoverageList(value) {
+  if (value == null || !Array.isArray(value)) return null;
+  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
+  return [...new Set(value.map((item) => item.trim()))].sort();
+}
+
+function canonicalCoverage(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return cloneCoverage(value);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (COVERAGE_LIST_SELECTORS.has(key)) {
+      const list = canonicalCoverageList(item);
+      out[key] = list == null ? cloneCoverage(item) : list;
+      continue;
+    }
+    if (COVERAGE_STRING_SELECTORS.has(key) && typeof item === 'string' && item.trim()) {
+      out[key] = item.trim();
+      continue;
+    }
+    out[key] = cloneCoverage(item);
+  }
+  return out;
 }
 
 function nonNegativeSafeInteger(value, code) {
@@ -111,7 +166,7 @@ export function createLanguageMetadataIdentity(input = {}) {
     observed: input.observed == null ? null : strictNonEmptyString(input.observed, 'metadata-identity-invalid-observed'),
     method: nonEmpty(input.method ?? 'runtime-metadata', 'metadata-identity-method-required'),
     detail: input.detail == null ? null : String(input.detail),
-    coverage: input.coverage == null ? null : cloneCoverage(input.coverage),
+    coverage: input.coverage == null ? null : canonicalCoverage(input.coverage),
   };
 
   if (identity.method === 'filename') fail('metadata-identity-filename-is-not-authority');
@@ -131,21 +186,42 @@ export function createLanguageMetadataIdentity(input = {}) {
     binaryIdentity: identity.binaryIdentity,
     observed: identity.observed,
     expected: identity.expected,
+    // coverage constrains `matched-partial` authority, so two identities with
+    // different authoritative record sets must not share a digest (#5949).
+    coverage: identity.coverage,
   });
 
-  return deepFreeze(identity);
+  const frozen = deepFreeze(identity);
+  CANONICAL_IDENTITIES.add(frozen);
+  return frozen;
+}
+
+const CANONICAL_IDENTITIES = new WeakSet();
+
+export function isCanonicalLanguageIdentity(identity) {
+  return !!identity && typeof identity === 'object' && CANONICAL_IDENTITIES.has(identity);
 }
 
 /** True when this identity may create authoritative (hard) facts. */
 export function isAuthoritative(identity) {
-  return !!identity && AUTHORITATIVE_VERDICTS.has(identity.verdict);
+  return isCanonicalLanguageIdentity(identity) && AUTHORITATIVE_VERDICTS.has(identity.verdict);
 }
 
 function coverageList(value) {
-  if (value == null) return null;
-  if (!Array.isArray(value)) return null;
-  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
-  return new Set(value.map((item) => item.trim()));
+  const list = canonicalCoverageList(value);
+  return list == null ? null : new Set(list);
+}
+
+function languageRecordMatchesIdentitySource(identity, record) {
+  if (!identity || !record) return false;
+  if (record.providerId !== identity.providerId) return false;
+  if (record.providerVersion !== identity.providerVersion) return false;
+  if (record.ecosystem !== identity.ecosystem) return false;
+  if (record.buildIdentity != null) {
+    const identityBuild = identity.observed ?? identity.binaryIdentity;
+    if (identityBuild == null || record.buildIdentity !== identityBuild) return false;
+  }
+  return true;
 }
 
 /**
@@ -154,8 +230,10 @@ function coverageList(value) {
  */
 export function isLanguageRecordAuthoritative(result, record) {
   const identity = result?.identity;
-  if (!identity || !record) return false;
-  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status)) return false;
+  if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
+  if (!isCanonicalLanguageRecord(record)) return false;
+  if (!languageRecordMatchesIdentitySource(identity, record)) return false;
+  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
@@ -212,11 +290,17 @@ export function isLanguageRecordAuthoritative(result, record) {
   return constrained;
 }
 
+const CANONICAL_RECORDS = new WeakSet();
+
+export function isCanonicalLanguageRecord(record) {
+  return !!record && typeof record === 'object' && CANONICAL_RECORDS.has(record);
+}
+
 /** One record from a language metadata provider. */
 export function createLanguageMetadataRecord(input = {}) {
   const kind = nonEmpty(input.kind, 'metadata-record-kind-required');
   if (!KIND_SET.has(kind)) fail('metadata-record-invalid-kind');
-  return deepFreeze({
+  const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
     name: input.name == null ? null : String(input.name),
@@ -229,12 +313,14 @@ export function createLanguageMetadataRecord(input = {}) {
     buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'metadata-record-invalid-build-identity'),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
   });
+  CANONICAL_RECORDS.add(record);
+  return record;
 }
 
 /** One page of records. */
 export function createLanguageMetadataPage(input = {}) {
   return deepFreeze({
-    records: deepFreeze([...(input.records ?? [])]),
+    records: deepFreeze([...arrayField(input.records, 'metadata-page-records-must-be-array')]),
     nextCursor: input.nextCursor == null ? null : String(input.nextCursor),
     truncated: input.truncated === true,
   });
@@ -248,11 +334,17 @@ export function createLanguageMetadataResult(input = {}) {
     ecosystem: input.ecosystem,
     verdict: input.verdict ?? 'identity-unavailable',
   });
+  const sections = arrayField(input.sections, 'metadata-result-sections-must-be-array');
+  const reasons = arrayField(input.completeness?.reasons, 'metadata-result-reasons-must-be-array');
+  const diagnostics = arrayField(input.diagnostics, 'metadata-result-diagnostics-must-be-array');
   const defaultCompleteness = input.completeness?.complete === true ? 'complete' : 'partial';
   const defaultStopReason = defaultCompleteness === 'complete' ? null : (input.completeness?.capped ? 'budget-exhausted' : 'evidence-missing');
-  const status = input.status?.schemaVersion
-    ? input.status
-    : createAnalysisStatus(input.status ?? {
+  if (input.status != null && input.status.schemaVersion != null && input.status.schemaVersion !== ANALYSIS_STATUS_SCHEMA_VERSION) {
+    fail('metadata-result-invalid-status-schema');
+  }
+  const status = input.status != null
+    ? createAnalysisStatus(input.status)
+    : createAnalysisStatus({
       snapshotId: input.snapshotId ?? 'metadata-unbound',
       analyzerId: identity.providerId,
       analyzerVersion: identity.providerVersion,
@@ -267,10 +359,10 @@ export function createLanguageMetadataResult(input = {}) {
     ecosystem: identity.ecosystem,
     identity,
     authoritative: isAuthoritative(identity),
-    sections: deepFreeze([...(input.sections ?? [])].map(String).sort()),
+    sections: deepFreeze([...sections].map(String).sort()),
     counts: deepFreeze({ ...(input.counts ?? {}) }),
     completeness: deepFreeze({
-      present: input.completeness?.present ?? (input.sections?.length > 0),
+      present: input.completeness?.present ?? (sections.length > 0),
       declared: nonNegativeSafeInteger(input.completeness?.declared, 'metadata-result-invalid-declared'),
       scanned: nonNegativeSafeInteger(input.completeness?.scanned, 'metadata-result-invalid-scanned'),
       parsed: nonNegativeSafeInteger(input.completeness?.parsed, 'metadata-result-invalid-parsed'),
@@ -278,9 +370,9 @@ export function createLanguageMetadataResult(input = {}) {
       unreadableEntries: nonNegativeSafeInteger(input.completeness?.unreadableEntries, 'metadata-result-invalid-unreadable-entries'),
       invalidEntries: nonNegativeSafeInteger(input.completeness?.invalidEntries, 'metadata-result-invalid-invalid-entries'),
       complete: input.completeness?.complete === true,
-      reasons: deepFreeze([...(input.completeness?.reasons ?? [])].map(String)),
+      reasons: deepFreeze([...reasons].map(String)),
     }),
-    diagnostics: deepFreeze([...(input.diagnostics ?? [])].map(String)),
+    diagnostics: deepFreeze([...diagnostics].map(String)),
     status,
   });
 }
@@ -307,7 +399,6 @@ export class LanguageMetadataProvider {
   authoritativeRecords(result, reader, scope, options = {}) {
     if (!result.authoritative) return createLanguageMetadataPage({ records: [], truncated: false });
     const page = reader.call(this, scope, options);
-    if (result.identity?.verdict !== 'matched-partial') return page;
     return createLanguageMetadataPage({
       records: (page.records ?? []).filter((record) => isLanguageRecordAuthoritative(result, record)),
       nextCursor: page.nextCursor,

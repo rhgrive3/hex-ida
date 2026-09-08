@@ -38,7 +38,7 @@ import { canonicalAnalysisIdentity } from './analysis-identity.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
-  version: '2.0.0',
+  version: '2.0.1',
   stage: 'scalar-optimization',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa'],
@@ -520,6 +520,19 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     const definition = value.def;
     const bits = widthOf(value);
     if (bits == null) return { cell: overdefined(`unsupported width: ${value?.bits}`), range: null };
+    const undefinedResult = definition?.extra?.attributes?.machineEffects?.undefinedResult ?? null;
+    if (undefinedResult != null) {
+      return {
+        cell: overdefined(`architecturally undefined result bits: ${undefinedResult.reason ?? 'unspecified'}`),
+        range: fullRange(bits),
+        fact: fullFact(bits, {
+          valueId: value.id,
+          status: 'unknown',
+          reason: `undefined-result:${undefinedResult.class ?? 'unknown'}:${undefinedResult.mask ?? 'unknown-mask'}`,
+          provenance: valueProvenance(value),
+        }),
+      };
+    }
     if (value.kind === 'phi' || definition?.op === 'phi') return evaluatePhi(value);
     if (value.kind === 'arg' || value.kind === 'undef' || definition == null) {
       return { cell: overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'), range: fullRange(bits) };
@@ -537,6 +550,21 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
 
     const operands = argumentValues(definition);
+    // Dropping a legacy view/shift/negation/bitfield attribute here would
+    // mint a false constant before GVN can inspect that attribute (#4697).
+    // Leave it unknown until an exact scalar lowering represents it.
+    const extra = definition.extra ?? {};
+    const unloweredView = (definition.args ?? []).some((argument) =>
+      argument?.shift != null || argument?.extend != null
+      || (argument?.bits != null && argument.bits !== argument.value?.bits));
+    const unloweredWidth = (extra.sourceBits != null && extra.sourceBits !== operands[0]?.bits)
+      || (extra.targetBits != null && extra.targetBits !== bits);
+    const unloweredBitfield = (shape.kind === 'extract' && extra.width != null && extra.width !== bits)
+      || (shape.kind === 'insert' && (extra.width != null || extra.bitfieldKind != null));
+    if (unloweredView || unloweredWidth || unloweredBitfield
+      || (extra.negate != null && extra.negate !== false) || (extra.float != null && extra.float !== false)) {
+      return { cell: overdefined('family-specific semantics require explicit scalar lowering'), range: fullRange(bits) };
+    }
     const operandCells = operands.map((operand) => cellOf(operand));
     // An operand nobody has reached yet leaves this value at top too: concluding
     // anything from an unevaluated operand would be reading uninitialised state.
@@ -689,6 +717,13 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
 
     if (shape.kind === 'select') {
+      // This branch implements select(predicate, yes, no), not a flags-select
+      // or a projected two-arm conditionValue form. A data arm is never the
+      // predicate merely because it occupies the first operand slot.
+      if (definition.cond != null || definition.conditionValue != null
+        || operands.length !== 3 || operands[0]?.bits !== 1) {
+        return { cell: overdefined('select lacks an explicit one-bit first predicate'), range: fullRange(bits) };
+      }
       const conditionCell = operandCells[0];
       if (conditionCell?.state === CONSTANT) {
         // The condition decides which arm survives; the other contributes

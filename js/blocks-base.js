@@ -167,7 +167,7 @@ const API_TABLE = [
     args: ['dst', 'src', 'size'], ret: null, effect: 'copy' },
   { id: 'memset', re: /^_?(memset|bzero|__memset_chk)$/i, cat: 'memory',
     args: ['dst', 'fill', 'size'], ret: null, effect: 'fill' },
-  { id: 'malloc', re: /^_?(malloc|calloc|valloc|_Znwm|_Znam|operator new)/i, cat: 'memory',
+  { id: 'malloc', re: /^(?:_?(?:malloc|calloc|valloc)|_{1,2}Z(?:nw|na)m.*|_?operator new(?:\[\])?(?:\s*\(.*\))?)$/i, cat: 'memory',
     args: ['size'], ret: 'heap', effect: 'alloc' },
   { id: 'realloc', re: /^_?realloc$/i, cat: 'memory', args: ['ptr', 'size'], ret: 'heap', effect: 'alloc' },
   { id: 'free', re: /^_?(free|_ZdlPv|_ZdaPv|operator delete)/i, cat: 'memory',
@@ -188,7 +188,7 @@ const API_TABLE = [
   { id: 'strstr', re: /^_?(strstr|strchr|strrchr|strtok)$/i, cat: 'string', args: ['str', 'needle'], ret: 'ptr', effect: 'search' },
   { id: 'atoi', re: /^_?(atoi|atol|strtol|strtoul|strtod)$/i, cat: 'string', args: ['str'], ret: 'number', effect: 'convert' },
 
-  { id: 'log', re: /^_?(printf|fprintf|puts|putchar|NSLog|os_log|_os_log_impl|syslog)/i, cat: 'log',
+  { id: 'log', re: /^_?(?:printf|fprintf|puts|putchar|NSLog|os_log|_os_log_impl|syslog)$/i, cat: 'log',
     args: ['format'], ret: null, effect: 'log' },
 
   { id: 'objc_msgSend', re: /^_?objc_msgSend/i, cat: 'objc', args: ['receiver', 'selector'], ret: 'object', effect: 'call' },
@@ -197,7 +197,6 @@ const API_TABLE = [
   { id: 'objc_alloc', re: /^_?(objc_alloc|objc_allocWithZone|objc_opt_new)/i, cat: 'objc', args: ['class'], ret: 'object', effect: 'alloc' },
   { id: 'swift_object', re: /^_?swift_(retain|release|allocObject|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'objc', args: ['object'], ret: 'object', effect: 'refcount' },
-
   /* ── 言語のしくみが勝手に入れている処理 ─────────────────────
    *
    * ここを「知らない呼び出し」のままにしておくと、実際のアプリでは
@@ -246,6 +245,12 @@ const API_TABLE = [
 
   { id: 'crypto', re: /^_?(CC(Crypt|SHA|HMAC|Digest)|SecKey|SecTrust|CryptoKit|AES_|SHA256|SHA1_|MD5_|EVP_)/i,
     cat: 'crypto', args: null, ret: 'status', effect: 'crypto' },
+  // Security.framework data-retrieval/serialization APIs: no cryptographic
+  // operation, they only copy DER representations out of opaque objects (#6182).
+  { id: 'security_cert_data', re: /^_?SecCertificateCopyData$/, cat: 'crypto',
+    args: ['certificate'], ret: 'object', effect: 'read' },
+  { id: 'security_requirement_data', re: /^_?SecRequirementCopyData$/, cat: 'crypto',
+    args: ['requirement'], ret: 'object', effect: 'read' },
   { id: 'keychain', re: /SecItem(Add|Copy|Update|Delete)|Keychain/i, cat: 'secret',
     args: ['query'], ret: 'status', effect: 'secret' },
   { id: 'random', re: /^_?(arc4random|arc4random_uniform|SecRandomCopyBytes|rand|random)$/i, cat: 'random',
@@ -322,8 +327,8 @@ const API_TABLE = [
 
 /** 名前 → API の知識。知らない名前なら null（知ったかぶりをしない）。 */
 export function apiInfo(name) {
-  if (!name) return null;
-  const clean = String(name).trim();
+  if (typeof name !== 'string') return null;
+  const clean = name.trim();
   for (const a of PRECISE_API_TABLE) {
     if (a.re.test(clean)) return a;
   }
@@ -346,7 +351,7 @@ export const FEATURE_OF_CATEGORY = {
    命令の事実（Instruction Model）
    ──────────────────────────────────────────────────────────── */
 
-const CALL_MN = /^(bl|blr|blraa|blrab)$/;
+const CALL_MN = /^(bl|blr|blraa|blrab|blraaz|blrabz)$/;
 const RET_MN = /^(ret|retaa|retab)$/;
 const COND_BRANCH = /^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/;
 const COMPARE_MN = /^(cmp|cmn|tst|ccmp|ccmn|fcmp|fcmpe)$/;
@@ -399,12 +404,19 @@ function targetOf(base, ops) {
   const isBranchImm = base === 'b' || base === 'bl' || /^b\.[a-z]{2}$/.test(base) ||
     base === 'cbz' || base === 'cbnz' || base === 'tbz' || base === 'tbnz';
   if (isBranchImm || base === 'adr' || base === 'adrp') {
-    for (let i = ops.length - 1; i >= 0; i--) {
-      if (ops[i].k === 'imm' && ops[i].value != null && ops[i].value > 0n) return ops[i].value;
-    }
-    return null;
+    const isBitTestBranch = base === 'tbz' || base === 'tbnz';
+    // TBZ/TBNZ have a fixed three-operand shape: register, bit index, target.
+    // If the architectural target is absent or malformed, do not reinterpret
+    // the bit index as a branch destination.
+    if (isBitTestBranch && (ops.length !== 3 || ops[2].k !== 'imm')) return null;
+    // The last immediate is the architectural target (the preceding
+    // immediate in TBZ/TBNZ is the bit index).  Zero is a valid address, but
+    // negative values remain invalid target evidence and must not make us
+    // fall back to that bit index.
+    const target = isBitTestBranch ? ops[2] : [...ops].reverse().find((op) => op.k === 'imm');
+    return target && target.value != null && target.value >= 0n ? target.value : null;
   }
-  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value > 0n) {
+  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {
     return ops[1].value;
   }
   return null;
@@ -412,8 +424,8 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/b$/.test(base) && /^(ldrb|ldrsb|strb|sturb|ldurb|ldursb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh)$/.test(base)) return 2;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw)$/.test(base)) return 4;
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
@@ -488,6 +500,9 @@ export function makeInstruction(raw) {
     }
   }
   insn.reads = Array.from(reads);
+  // BL/BLR (and authenticated link forms) architecturally write X30/LR with
+  // the return address. Expose that implicit write to generic dataflow users.
+  if (insn.isCall) writes.add('x30');
   insn.writes = Array.from(writes);
   insn.destination = wIdx.length ? parsed[wIdx[0]] || null : null;
   insn.source = parsed.length > 1 ? parsed[wIdx.length ? 1 : 0] || null : (parsed[0] || null);
@@ -587,6 +602,18 @@ function value(kind, extra, conf, evList, def) {
  */
 
 const CALLER_SAVED = 18;   // x0〜x17 は呼び出しで壊れる（x18 はプラットフォーム予約）
+
+function toLinkReturnAddress(address) {
+  try {
+    if (address == null) return null;
+    if (typeof address === 'number' && !Number.isSafeInteger(address)) return null;
+    if (typeof address === 'string' && !/^(?:\d+|0[xX][0-9a-fA-F]+)$/.test(address.trim())) return null;
+    if (!['bigint', 'number', 'string'].includes(typeof address)) return null;
+    const pc = typeof address === 'bigint' ? address : BigInt(address);
+    if (pc < 0n) return null;
+    return pc + 4n;
+  } catch { return null; }
+}
 
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
@@ -785,6 +812,20 @@ export function analyzeDataFlow(insns, opts) {
       calls.push(call);
       // 呼び出しで x0〜x17 は壊れる。x0 だけは戻り値として意味を持つ。
       for (let a = 0; a < CALLER_SAVED; a++) regs.delete('x' + a);
+      // BL/BLR は分岐と同時に X30/LR を書く（Arm ISA: branch-with-link は
+      // return address を X30 に格納する）。呼び出し前の X30 値は必ず死ぬ。
+      // 末尾呼び出しとして昇格した plain B は link write を持たないため除外する。
+      if (!insn.isTailCall) {
+        regs.delete('x30');
+        const linkAddr = toLinkReturnAddress(insn.address);
+        if (linkAddr != null) {
+          const link = value('imm', { value: linkAddr },
+            SCORE.confirmed,
+            [ev('call-link', insn.row, { value: linkAddr })], insn.row);
+          set('x30', link);
+          flow('call-link', insn.row, null, 'x30', link);
+        }
+      }
       const retKind = api && api.ret ? api.ret : null;
       const ret = value('callResult', { call, ret: retKind },
         name ? SCORE.high : SCORE.inferred,
@@ -1297,7 +1338,6 @@ function functionFacts(insns, flow, semantic, bbInfo, o) {
     evidence: [],
     leaf: flow.calls.length === 0,
   };
-
   // 戻り値: 最後の ret より前に x0 を作っているか
   const lastRet = [...insns].reverse().find((i) => i.isReturn);
   if (lastRet) {

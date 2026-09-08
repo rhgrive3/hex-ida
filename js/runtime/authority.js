@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
 import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
@@ -85,11 +85,157 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
-function clone(value) {
-  if (typeof structuredClone === 'function') return structuredClone(value);
+// Canonical authority records must not retain mutable binary backing storage.
+// A frozen byte array is safe to expose, but it is not a sufficient identity:
+// it collapses a TypedArray into an ordinary array and collapses all view
+// widths with the same bytes. Keep the original binary constructor name beside
+// an owned, frozen byte copy. The marker is enumerable so structuredClone and
+// transport snapshots retain the canonical representation.
+const CANONICAL_BINARY_TAG = '$hexRuntimeBinary';
+const CANONICAL_BINARY_BYTES = 'bytes';
+const CANONICAL_BINARY_TYPES = new Set([
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+  'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+]);
+
+function sharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
+function binaryTypeName(value) {
+  if (value instanceof ArrayBuffer) return 'ArrayBuffer';
+  if (sharedArrayBuffer(value)) return 'SharedArrayBuffer';
+  const name = value?.constructor?.name;
+  return typeof name === 'string' && name ? name : 'view';
+}
+
+function binaryBytes(value) {
+  if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) return new Uint8Array(value);
+  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+}
+
+function canonicalBinaryType(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_TAG)
+    || !Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_BYTES)) return null;
+  const type = value[CANONICAL_BINARY_TAG];
+  const bytes = value[CANONICAL_BINARY_BYTES];
+  // Only the exact transport representation denotes binary data. Ordinary
+  // metadata that happens to use these field names must retain every field.
+  if (!CANONICAL_BINARY_TYPES.has(type) || !Array.isArray(bytes)
+    || Object.keys(value).length !== 2) return null;
+  if (!Array.from(bytes).every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)) return null;
+  return type;
+}
+
+function canonicalBinary(type, bytes) {
+  return Object.freeze({
+    [CANONICAL_BINARY_TAG]: type,
+    [CANONICAL_BINARY_BYTES]: Object.freeze(Array.from(bytes)),
+  });
+}
+
+function canonicalizeBinary(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) {
+    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
+    seen.set(value, canonical);
+    return canonical;
+  }
+
+  // Keep the structured clone's object graph so repeated references in valid
+  // metadata, Maps, and Sets remain repeated references after binary replacement.
+  seen.set(value, value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = canonicalizeBinary(value[i], seen);
+    return value;
+  }
+  if (value instanceof Map) {
+    const entries = [...value.entries()];
+    value.clear();
+    for (const [key, item] of entries) value.set(canonicalizeBinary(key, seen), canonicalizeBinary(item, seen));
+    return value;
+  }
+  if (value instanceof Set) {
+    const items = [...value.values()];
+    value.clear();
+    for (const item of items) value.add(canonicalizeBinary(item, seen));
+    return value;
+  }
+  for (const key of Object.keys(value)) {
+    const item = canonicalizeBinary(value[key], seen);
+    Object.defineProperty(value, key, { value: item, enumerable: true, configurable: true, writable: true });
+  }
+  return value;
+}
+
+function cloneFallback(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(clone);
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
+  if (seen.has(value)) return seen.get(value);
+
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) {
+    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) copy.set(cloneFallback(key, seen), cloneFallback(item, seen));
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneFallback(item, seen));
+    return copy;
+  }
+  if (Array.isArray(value)) {
+    const copy = [];
+    seen.set(value, copy);
+    for (const item of value) copy.push(cloneFallback(item, seen));
+    return copy;
+  }
+  const copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(copy, key, {
+      value: cloneFallback(value[key], seen), enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return copy;
+}
+
+function clone(value) {
+  if (value == null || typeof value !== 'object') return value;
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) return canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    return canonicalBinary(binaryTypeName(value), binaryBytes(value));
+  }
+  if (typeof structuredClone === 'function') return canonicalizeBinary(structuredClone(value));
+  return cloneFallback(value);
 }
 
 function capabilityList(value) {
@@ -156,9 +302,59 @@ function canonicalBinding(input, { throwOnError = true } = {}) {
   }
 }
 
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function numberWitness(value) {
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Infinity) return '+Infinity';
+  if (value === -Infinity) return '-Infinity';
+  if (Object.is(value, -0)) return '-0';
+  return String(value);
+}
+
+// Observation identity must be sensitive to TYPES and canonical values, not
+// just core jsonSafe text. This wrapper preserves special-number distinctions
+// and gives Map/Set semantic collections insertion-order-independent material.
+function typeTagged(value, seen = new WeakSet()) {
+  if (value === null) return { $t: 'null' };
+  switch (typeof value) {
+    case 'bigint': return { $t: 'bigint', v: value.toString() };
+    case 'number': return { $t: 'number', v: numberWitness(value) };
+    case 'boolean': return { $t: 'boolean', v: value };
+    case 'string': return { $t: 'string', v: value };
+    case 'undefined': case 'function': case 'symbol': return { $t: typeof value };
+  }
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) return { $t: taggedType, v: value[CANONICAL_BINARY_BYTES] };
+  if (seen.has(value)) fail('runtime-observation-cyclic-payload');
+  seen.add(value);
+  const nested = (item) => typeTagged(item, seen);
+  let out;
+  if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
+  else if (ArrayBuffer.isView(value)) out = { $t: value.constructor?.name ?? 'view', v: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+  else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) out = { $t: binaryTypeName(value), v: Array.from(new Uint8Array(value)) };
+  else if (value instanceof Map) {
+    const entries = [...value.entries()].map(([key, item]) => [nested(key), nested(item)]);
+    entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
+    out = { $t: 'Map', v: entries };
+  } else if (value instanceof Set) {
+    const values = [...value].map(nested);
+    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
+    out = { $t: 'Set', v: values };
+  } else if (Array.isArray(value)) out = { $t: 'array', v: value.map(nested) };
+  else {
+    out = { $t: 'object' };
+    for (const key of Object.keys(value).sort()) out[key] = nested(value[key]);
+  }
+  seen.delete(value);
+  return out;
+}
+
 function observationIdentity(observation) {
   const payload = {};
-  for (const field of OBSERVATION_FIELDS) payload[field] = observation[field];
+  for (const field of OBSERVATION_FIELDS) payload[field] = typeTagged(observation[field]);
   return `runtime-observation:${stableDigest(payload)}`;
 }
 
@@ -244,12 +440,13 @@ export function createRuntimeObservation(input = {}) {
     epoch: binding.epoch,
     sequence,
     observedAt,
-    kind: required(input.kind || 'observation', 'runtime-observation-kind-required'),
-    payload: clone(input.payload ?? null),
+    kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
+    payload: freezeObservationValue(clone(input.payload ?? null)),
     authority: 'runtime-evidence',
   };
-  return deepFreeze({ ...observation, observationId: observationIdentity(observation) });
+  return freezeObservationValue(deepFreeze({ ...observation, observationId: observationIdentity(observation) }));
 }
+
 
 export function validateRuntimeObservation(bindingInput, observation, options = {}) {
   const binding = canonicalBinding(bindingInput || {}, { throwOnError: false });
@@ -269,30 +466,73 @@ export function validateRuntimeObservation(bindingInput, observation, options = 
   return { ok: true, binding, observation };
 }
 
+function freezeObservationValue(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [k, v] of value.entries()) {
+      freezeObservationValue(k, seen);
+      freezeObservationValue(v, seen);
+    }
+    Object.defineProperty(value, 'set', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'delete', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'clear', { value: () => { throw new TypeError('Cannot mutate frozen Map'); }, configurable: false, writable: false });
+    return Object.freeze(value);
+  }
+  if (value instanceof Set) {
+    for (const v of value.values()) {
+      freezeObservationValue(v, seen);
+    }
+    Object.defineProperty(value, 'add', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'delete', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    Object.defineProperty(value, 'clear', { value: () => { throw new TypeError('Cannot mutate frozen Set'); }, configurable: false, writable: false });
+    return Object.freeze(value);
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    return value;
+  }
+  for (const child of Object.values(value)) {
+    freezeObservationValue(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+
 export class RuntimeAuthorityTracker {
+  #observations;
+
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
-    this.observations = [];
+    this.#observations = [];
+  }
+
+  get observations() {
+    return this.#observations.map((obs) => deepFreeze(freezeObservationValue(clone(obs))));
   }
 
   accept(input) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
     let observation;
     try {
-      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA ? input : createRuntimeObservation({ ...input, binding: this.binding });
+      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA
+        ? deepFreeze(freezeObservationValue(clone(input)))
+        : createRuntimeObservation({ ...input, binding: this.binding });
     } catch (error) {
       return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
     }
+
     const checked = validateRuntimeObservation(this.binding, observation, { minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     this.lastSequence = observation.sequence;
-    this.observations.push(observation);
-    if (this.observations.length > this.maxObservations) this.observations.shift();
+    this.#observations.push(observation);
+    if (this.#observations.length > this.maxObservations) this.#observations.shift();
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
+
 
   authorizeMutation(input = {}) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
@@ -301,12 +541,16 @@ export class RuntimeAuthorityTracker {
     if (input.explicitApproval !== true) return Object.freeze({ status: 'rejected', reason: 'runtime-mutation-explicit-approval-required' });
     const actorIdentity = required(input.actorIdentity, 'runtime-mutation-actor-required');
     const operation = required(input.operation, 'runtime-mutation-operation-required');
+    const scope = input.scope ?? {};
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) {
+      throw new TypeError('runtime-mutation-scope-invalid');
+    }
     const token = {
       schemaVersion: 'hex-runtime-mutation-authority/v1',
       bindingId,
       actorIdentity,
       operation,
-      scope: clone(input.scope || {}),
+      scope: clone(scope),
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
@@ -314,7 +558,7 @@ export class RuntimeAuthorityTracker {
   }
 
   nextEpoch(bindingOverrides = {}) {
-    const nextBinding = createRuntimeAuthorityBinding({ ...this.binding, ...bindingOverrides, epoch: this.binding.epoch + 1, sessionIdentity: bindingOverrides.sessionIdentity || this.binding.sessionIdentity });
+    const nextBinding = createRuntimeAuthorityBinding({ ...this.binding, ...bindingOverrides, epoch: this.binding.epoch + 1, sessionIdentity: bindingOverrides.sessionIdentity ?? this.binding.sessionIdentity });
     this.closed = true;
     return nextBinding;
   }

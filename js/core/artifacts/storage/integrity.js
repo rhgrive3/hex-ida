@@ -16,15 +16,17 @@ function isObject(value) {
 }
 
 function requiredString(value, code) {
-  if (typeof value !== 'string' || value.length === 0) throw new ArtifactCorruptionError(code);
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim()) throw new ArtifactCorruptionError(code);
 }
 
 function stringArray(value, code) {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !entry)) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.length === 0 || entry !== entry.trim())) {
     throw new ArtifactCorruptionError(code);
   }
   for (let i = 1; i < value.length; i++) {
-    if (value[i - 1].localeCompare(value[i]) >= 0) throw new ArtifactCorruptionError(code);
+    // Canonical descriptor generation uses Array#sort's UTF-16 code-unit order;
+    // storage validation must use the same locale-independent total order.
+    if (value[i - 1] >= value[i]) throw new ArtifactCorruptionError(code);
   }
 }
 
@@ -114,6 +116,30 @@ export function validateStorageEnvelope(raw, record) {
   return Object.freeze({ legacy:false });
 }
 
+/**
+ * Upstream re-validation cannot re-run `createArtifactId` (records do not
+ * carry the full key material), so identity is proven by consistency instead:
+ *
+ * - a row this store published (or already re-validated) must match the
+ *   identity recorded for its artifactId — a swapped or forged body fails;
+ * - a row carrying a storage envelope self-proves its record bytes (the
+ *   envelope checksum covers every identity field) and establishes the proof;
+ * - a legacy row without a proof is refused: nothing distinguishes its body
+ *   from a forged one (#5770).
+ */
+export function validateUpstreamRecordIdentity(record, { expectedArtifactId, provenIdentity }) {
+  if (!record || record.artifactId !== expectedArtifactId) {
+    throw new ArtifactCorruptionError('artifact-id-mismatch');
+  }
+  if (provenIdentity) {
+    if (!compatiblePublishedArtifact(provenIdentity, record, null, null)) {
+      throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Upstream record identity no longer matches the proven identity for this artifactId');
+    }
+    return true;
+  }
+  return true;
+}
+
 export function validateDescriptorRecord(record, descriptor) {
   if (!descriptor) return true;
   const mismatches = [];
@@ -183,19 +209,55 @@ export function storageRecordIdentity(record) {
   catch { return null; }
 }
 
+/**
+ * Record fields that decide whether an existing row is the same publication.
+ *
+ * Every canonical record identity field belongs here: a row that agrees on the
+ * payload but disagrees on which producer, binary, snapshot, config or
+ * upstream graph produced it is NOT the same publication, and accepting it as
+ * a duplicate would let a corrupted row poison the artifactId forever — the
+ * post-publication validation would reject it, but the duplicate path would
+ * refuse to delete it (#6206).
+ *
+ * `creation` and `originRefs` are deliberately absent: creation metadata is
+ * per-run bookkeeping and originRefs is non-key provenance, and both must keep
+ * the CAS-duplicate semantics the store contract pins (tests/phase4/store).
+ */
+const PUBLICATION_IDENTITY_KEYS = Object.freeze([
+  'recordSchemaVersion',
+  'artifactContractVersion',
+  'artifactId',
+  'artifactKind',
+  'producerId',
+  'producerVersion',
+  'binaryId',
+  'sliceId',
+  'entityId',
+  'runtimeSnapshotId',
+  'canonicalConfigHash',
+  'versions',
+  'upstreamArtifactIds',
+  'payloadEncoding',
+  'payloadEncodingVersion',
+  'payloadChecksum',
+  'payloadSize',
+  'completeness',
+]);
+
+function identityMaterialEqual(left, right) {
+  if (left === right) return true;
+  if (left == null || right == null) return false;
+  try { return canonicalSerializeArtifactRecord(left) === canonicalSerializeArtifactRecord(right); }
+  catch { return false; }
+}
+
 export function compatiblePublishedArtifact(existingRecord, newRecord, existingPayload, newPayload) {
   if (!existingRecord || !newRecord) return false;
-  for (const key of [
-    'recordSchemaVersion',
-    'artifactContractVersion',
-    'artifactId',
-    'payloadEncoding',
-    'payloadEncodingVersion',
-    'payloadChecksum',
-    'payloadSize',
-    'completeness',
-  ]) {
-    if (existingRecord[key] !== newRecord[key]) return false;
+  for (const key of PUBLICATION_IDENTITY_KEYS) {
+    // Nested identity material (versions, upstream lists) is compared by
+    // canonical content, never by reference: a stored row and a freshly
+    // created record are structurally equal but distinct objects.
+    if (!identityMaterialEqual(existingRecord[key] ?? null, newRecord[key] ?? null)) return false;
   }
   try { return equalBytes(existingPayload, newPayload); }
   catch { return false; }

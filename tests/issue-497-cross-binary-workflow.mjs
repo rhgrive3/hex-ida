@@ -78,51 +78,116 @@ assert.match(measure, /name:\s*Publish oracle for this run[\s\S]*actions\/upload
 assert.doesNotMatch(measure, /Download required oracle/,
   'the fixture runner must consume its local oracle directly without an artifact round trip');
 
+const resultCacheKeys = [];
 for (const partition of ['core', 'pinpoint', 'pseudoc']) {
   assert.match(measure, new RegExp(`Restore exact ${partition} result cache`),
     `${partition} result must retain an independent exact cache`);
-}
-assert.match(measure, /accuracy-result-v8-/,
-  'single-world layout must use a fresh validated cache generation');
+  assert.match(measure, new RegExp(`Validate restored ${partition} result`),
+    `${partition} cached result must be validated before reuse`);
+  assert.match(measure, new RegExp(`Save exact ${partition} result cache`),
+    `${partition} result cache must only publish validated output`);
 
+  for (const operation of ['Restore', 'Save']) {
+    const stepName = `name: ${operation} exact ${partition} result cache`;
+    const start = measure.indexOf(stepName);
+    assert.ok(start >= 0, `${operation.toLowerCase()} ${partition} cache step must exist`);
+    const nextStep = measure.indexOf('\n      - name:', start + stepName.length);
+    const block = measure.slice(start, nextStep >= 0 ? nextStep : measure.length);
+    const keyMatch = block.match(/\n\s+key:\s*([^\n]+)/);
+    assert.ok(keyMatch, `${operation.toLowerCase()} ${partition} cache must declare an exact key`);
+    resultCacheKeys.push({ operation, partition, key: keyMatch[1].trim() });
+  }
+}
+assert.equal(resultCacheKeys.length, 6,
+  'core, pinpoint, and pseudoc must each have restore and save result-cache keys');
+for (const { operation, partition, key } of resultCacheKeys) {
+  assert.match(key, /^accuracy-result-v8-/,
+    `${operation.toLowerCase()} ${partition} cache must use the v8 result generation`);
+}
+assert.doesNotMatch(measure, /accuracy-result-v7-/,
+  'stale result-cache generations must not remain in the active workflow');
+
+const measureStart = measure.indexOf('name: Measure missing accuracy partitions in one analysis world');
+assert.ok(measureStart >= 0, 'single-world measurement step must exist');
 const measureScript = measure.slice(
-  measure.indexOf('name: Measure missing accuracy partitions in one analysis world'),
-  measure.indexOf('name: Save exact core result cache'),
+  measureStart,
+  measure.indexOf('name: Save exact core result cache', measureStart),
 );
-assert.ok(measureScript.length > 0, 'single-world measurement step must exist');
-assert.match(measureScript, /core_ids='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula'/);
-assert.match(measureScript, /pinpoint_ids='pinpoint,pinpoint-partial'/);
-assert.match(measureScript, /pseudoc_ids='pseudoc'/);
-assert.match(measureScript, /if \[\[ "\$CORE_CACHE_HIT" != "true" \]\]; then append_features "\$core_ids"; fi/);
-assert.match(measureScript, /if \[\[ "\$PINPOINT_CACHE_HIT" != "true" \]\]; then append_features "\$pinpoint_ids"; fi/);
-assert.match(measureScript, /if \[\[ "\$PSEUDOC_CACHE_HIT" != "true" \]\]; then append_features "\$pseudoc_ids"; fi/);
-assert.match(measureScript, /--only="\$features"/,
-  'one scorer process must evaluate exactly the union of cache-missing feature partitions');
-assert.equal(
-  (measureScript.match(/node --max-old-space-size=4096 tests\/accuracy\.mjs/g) || []).length,
-  1,
-  'a fixture cache miss must build exactly one analysis world',
-);
-assert.doesNotMatch(measureScript, /accuracy-pseudoc-parallel\.mjs|accuracy-pseudoc-worker\.mjs/,
-  'CI pseudoc measurement must not fork duplicate whole-binary analysis worlds');
-assert.doesNotMatch(measureScript, /\s&\s*$|pids\+=\("\$!"\)|wait "\$\{pids/m,
-  'single-world measurement must not hide memory pressure behind background process fanout');
-assert.match(measureScript, /combined_output="accuracy-local-missing\.json"/);
-assert.match(measureScript, /accuracy-result-validate\.mjs "\$\{core_output\}\.tmp"/,
-  'new core output must be validated before publication');
-assert.match(measureScript, /accuracy-result-validate\.mjs "\$\{pinpoint_output\}\.tmp"/,
-  'new pinpoint output must be validated before publication');
-assert.match(measureScript, /accuracy-result-validate\.mjs "\$\{pseudoc_output\}\.tmp"/,
-  'new pseudoc output must be validated before publication');
-assert.match(measureScript, /mv "\$\{core_output\}\.tmp" "\$core_output"/);
-assert.match(measureScript, /mv "\$\{pinpoint_output\}\.tmp" "\$pinpoint_output"/);
-assert.match(measureScript, /mv "\$\{pseudoc_output\}\.tmp" "\$pseudoc_output"/);
 
-for (const partition of ['core', 'pinpoint']) {
-  assert.match(measure, new RegExp(`accuracy-part-\\$\\{\\{ matrix\\.target\\.name \\}\\}-${partition}\\.json`),
-    `${partition} must retain an independent result file`);
+for (const cacheEnv of ['CORE_CACHE_HIT', 'PINPOINT_CACHE_HIT', 'PSEUDOC_CACHE_HIT']) {
+  assert.ok(measureScript.includes(cacheEnv), `${cacheEnv} must control missing-partition measurement`);
 }
-assert.match(measure, /pseudoc_output="accuracy-part-\$\{\{ matrix\.target\.name \}\}-pseudoc\.json"/);
+assert.ok(
+  measureScript.includes("core_ids='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula'"),
+  'core denominator must remain exact',
+);
+assert.ok(
+  measureScript.includes("pinpoint_ids='pinpoint,pinpoint-partial'"),
+  'pinpoint denominator must remain exact',
+);
+assert.ok(
+  measureScript.includes("pseudoc_ids='pseudoc'"),
+  'pseudoc denominator must remain exact',
+);
+for (const conditional of [
+  'if [[ "$CORE_CACHE_HIT" != "true" ]]; then append_features "$core_ids"; fi',
+  'if [[ "$PINPOINT_CACHE_HIT" != "true" ]]; then append_features "$pinpoint_ids"; fi',
+  'if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then append_features "$pseudoc_ids"; fi',
+]) assert.ok(measureScript.includes(conditional), 'every cache-missing partition must join the single analysis world');
+assert.match(measureScript, /if \[\[ -z "\$features" \]\][\s\S]*exit 1/,
+  'single-world measurement must fail closed if invoked without a missing partition');
+assert.equal(
+  (measureScript.match(/\btests\/accuracy\.mjs\b/g) || []).length,
+  1,
+  'all cache-missing features must share exactly one accuracy.mjs analysis world',
+);
+assert.ok(measureScript.includes('--only="$features"'),
+  'the single analysis world must receive the complete dynamic feature denominator');
+assert.ok(measureScript.includes('--json > "$combined_output"'),
+  'single-world results must be captured before partition publication');
+assert.ok(measureScript.includes('2> "$combined_log"'),
+  'single-world diagnostics must be preserved');
+assert.doesNotMatch(measureScript, /accuracy-pseudoc-parallel|LOCAL_PSEUDOC_WORKERS|accuracy-local-nonpseudoc-[01]|pids\+=\("\$!"\)/,
+  'the retired multi-process runner-local layout must not return');
+
+assert.ok(measureScript.includes("const rows = JSON.parse(fs.readFileSync('accuracy-local-missing.json', 'utf8'));"),
+  'single-world output must be parsed exactly once for deterministic partitioning');
+assert.ok(measureScript.includes("const coreIds = new Set(['sections','funcs','funcs-guess','disasm','kinds','calls','refs','imports','objc','selstub','strings','xrefs','funcname','selffield','role','apimeaning','summary','expr','formula']);"),
+  'core publication denominator must match the measured core denominator');
+assert.ok(measureScript.includes("const pinpointIds = new Set(['pinpoint', 'pinpoint-partial']);"),
+  'pinpoint publication denominator must match the measured pinpoint denominator');
+assert.ok(measureScript.includes("const pseudocIds = new Set(['pseudoc']);"),
+  'pseudoc publication denominator must match the measured pseudoc denominator');
+assert.ok(measureScript.includes("fs.writeFileSync(path + '.tmp', JSON.stringify(selected, null, 2) + '\\n');"),
+  'new partition results must stage through temporary files');
+
+for (const [cacheEnv, partition] of [
+  ['CORE_CACHE_HIT', 'core'],
+  ['PINPOINT_CACHE_HIT', 'pinpoint'],
+  ['PSEUDOC_CACHE_HIT', 'pseudoc'],
+]) {
+  const expected = "if (process.env." + cacheEnv + " !== 'true') write('accuracy-part-${{ matrix.target.name }}-" + partition + ".json',";
+  assert.ok(measureScript.includes(expected),
+    `${partition} must be split only when its exact cache missed`);
+}
+
+for (const [variable, partition] of [
+  ['core_output', 'core'],
+  ['pinpoint_output', 'pinpoint'],
+  ['pseudoc_output', 'pseudoc'],
+]) {
+  const staged = '"${' + variable + '}.tmp"';
+  const validateCommand = 'accuracy-result-validate.mjs ' + staged;
+  const publishCommand = 'mv ' + staged + ' "$' + variable + '"';
+  const validationIndex = measureScript.indexOf(validateCommand);
+  const publicationIndex = measureScript.indexOf(publishCommand);
+  assert.ok(validationIndex >= 0,
+    `${partition} output must be validated before publication`);
+  assert.ok(publicationIndex >= 0,
+    `${partition} output must publish atomically after validation`);
+  assert.ok(validationIndex < publicationIndex,
+    `${partition} validation must precede atomic publication`);
+}
 
 const targetUpload = measure.slice(measure.indexOf('name: Upload target accuracy partitions'));
 assert.match(targetUpload, /if:\s*success\(\)/,
@@ -157,4 +222,4 @@ assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
 assert.match(workflow, /cancel-in-progress:\s*true/,
   'stale accuracy runs should be cancelled when a newer revision supersedes them');
 
-console.log('issue #497/#2484 cross-binary single-world workflow regression passed');
+console.log('issue #497/#2484 cross-binary workflow gate regression passed');

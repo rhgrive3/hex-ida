@@ -22,7 +22,7 @@ import {
 } from './provider.js';
 
 import { GoMetadataProvider, GO_PROVIDER_ID, GO_PCLNTAB_MAGICS } from './go.js';
-import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable } from './rust.js';
+import { RustMetadataProvider, RUST_PROVIDER_ID, demangleRustSymbol, isRustLayoutStable, stripLegacyRustPrefix, isRustCandidateSymbol } from './rust.js';
 import { SwiftMetadataProvider, SWIFT_PROVIDER_ID } from './swift.js';
 import { ObjcMetadataProvider, OBJC_PROVIDER_ID } from './objc.js';
 
@@ -47,6 +47,8 @@ export {
   RUST_PROVIDER_ID,
   demangleRustSymbol,
   isRustLayoutStable,
+  stripLegacyRustPrefix,
+  isRustCandidateSymbol,
   SwiftMetadataProvider,
   SWIFT_PROVIDER_ID,
   ObjcMetadataProvider,
@@ -78,13 +80,36 @@ export function classifyLanguageRuntimeCall(name) {
     return { runtime: 'go', noise, category: 'runtime', name: symbol };
   }
 
-  // Rust
-  if (/^core::/.test(symbol) || /^alloc::/.test(symbol) || /^std::/.test(symbol) || /^_?rust_/.test(symbol)) {
+  // Rust. `std::` is also the C++ standard library namespace, so a bare
+  // `std::` prefix is ambiguous: demangled C++ symbols like
+  // `std::vector<int>::size()` would otherwise be pinned as Rust. Rust
+  // legacy symbols are distinguishable by their symbol-name hash, which
+  // survives demangling either as the raw `17h<16 hex>E` / `h<16 hex>E`
+  // component or as the toolchain-style `::h<16 hex>` suffix. Require one of
+  // those hash forms before treating a `std::`-prefixed demangled symbol as
+  // Rust evidence.
+  if (/^core::/.test(symbol) || /^alloc::/.test(symbol) || /^_?rust_/.test(symbol)
+    || (/^std::/.test(symbol) && /(?:17h|h)[0-9a-f]{16}E?(@)?$|::h[0-9a-f]{16}$/.test(symbol))) {
     const noise = /_rust_alloc|_rust_dealloc|core::panicking|alloc::raw_vec/.test(symbol);
     return { runtime: 'rust', noise, category: 'runtime', name: symbol };
   }
 
   return null;
+}
+
+function safeSectionName(s) {
+  if (!s || typeof s !== 'object') return '';
+  if (typeof s.name === 'string') return s.name;
+  if (typeof s.section === 'string') return s.section;
+  if (typeof s.sectname === 'string') return s.sectname;
+  return '';
+}
+
+function safeSymbolName(s) {
+  if (!s || typeof s !== 'object') return '';
+  if (typeof s.name === 'string') return s.name;
+  if (typeof s.symbol === 'string') return s.symbol;
+  return '';
 }
 
 /**
@@ -94,10 +119,11 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   const providers = [];
   const sections = Array.isArray(context.sections)
     ? context.sections
-    : Object.values(context.sections || {});
+    : (context.sections && typeof context.sections === 'object' ? Object.values(context.sections) : []);
+  const symbols = Array.isArray(context.symbols) ? context.symbols : [];
 
   // 1. Go
-  if (context.pclntabBuffer || sections.some((s) => (s.name || s.section || '').includes('gopclntab'))) {
+  if (context.pclntabBuffer || sections.some((s) => safeSectionName(s).includes('gopclntab'))) {
     providers.push(new GoMetadataProvider({
       pclntabBuffer: context.pclntabBuffer,
       rodataBuffer: context.rodataBuffer,
@@ -109,10 +135,9 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
     }));
   }
 
-  // 2. Rust
-  if ((context.symbols || []).some((s) => (s.name || s.symbol || '').startsWith('_R') || (s.name || s.symbol || '').startsWith('_ZN')) || context.commentBuffer) {
+  if (symbols.some((s) => isRustCandidateSymbol(safeSymbolName(s))) || context.commentBuffer) {
     providers.push(new RustMetadataProvider({
-      symbols: context.symbols || [],
+      symbols,
       commentBuffer: context.commentBuffer,
       sections,
       binaryIdentity: context.binaryIdentity,
@@ -123,7 +148,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 3. Swift
-  if (sections.some((s) => (s.name || s.section || '').includes('swift5') || (s.name || s.section || '').includes('sw5'))) {
+  if (sections.some((s) => safeSectionName(s).includes('swift5') || safeSectionName(s).includes('sw5'))) {
     providers.push(new SwiftMetadataProvider({
       readAt: context.readAt,
       sections,
@@ -135,7 +160,7 @@ export async function parseUnifiedLanguageMetadata(context = {}, options = {}) {
   }
 
   // 4. ObjC
-  if (sections.some((s) => (s.name || s.section || '').includes('objc_') || (s.name || s.section || '').includes('__OBJC'))) {
+  if (sections.some((s) => safeSectionName(s).includes('objc_') || safeSectionName(s).includes('__OBJC'))) {
     providers.push(new ObjcMetadataProvider({
       readAt: context.readAt,
       sections,
