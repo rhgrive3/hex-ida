@@ -83,4 +83,44 @@ function observe(payload) {
   assert.ok(validateRuntimeObservation(binding, observation).ok);
 }
 
+// 7. Binary values nested in Map/Set must not bypass canonicalization. The
+//    ownership guards already freeze Map/Set mutators; this pins their values too.
+{
+  const observation = observe({
+    map: new Map([['bytes', new Uint8Array([4, 5])]]),
+    set: new Set([new Uint8Array([6, 7])]),
+  });
+  const mapBytes = observation.payload.map.get('bytes');
+  const [setBytes] = observation.payload.set.values();
+  assert.ok(Array.isArray(mapBytes));
+  assert.ok(Array.isArray(setBytes));
+  let mapMutated = false;
+  let setMutated = false;
+  try { mapBytes[0] = 99; mapMutated = mapBytes[0] === 99; } catch { /* frozen */ }
+  try { setBytes[0] = 99; setMutated = setBytes[0] === 99; } catch { /* frozen */ }
+  assert.equal(mapMutated, false);
+  assert.equal(setMutated, false);
+  assert.throws(() => observation.payload.map.set('x', [1]), /Cannot mutate frozen Map/);
+  assert.throws(() => observation.payload.set.add([1]), /Cannot mutate frozen Set/);
+  assert.ok(validateRuntimeObservation(binding, observation).ok);
+}
+
+// 8. Mutation-authority scope uses the same clone boundary and therefore must
+//    not retain mutable TypedArray/ArrayBuffer storage either.
+{
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const authorized = tracker.authorizeMutation({
+    explicitApproval: true,
+    actorIdentity: 'actor-1',
+    operation: 'memory-write',
+    issuedAt: '2026-09-03T00:00:01Z',
+    scope: { bytes: new Uint8Array([9, 10]) },
+  });
+  assert.equal(authorized.status, 'authorized');
+  assert.ok(Array.isArray(authorized.token.scope.bytes));
+  let mutated = false;
+  try { authorized.token.scope.bytes[0] = 77; mutated = authorized.token.scope.bytes[0] === 77; } catch { /* frozen */ }
+  assert.equal(mutated, false, 'mutation token binary scope must be immutable');
+}
+
 console.log('issue #6214 canonical binary payload immutability regressions: PASS');
