@@ -5,8 +5,9 @@ import {
   buildClassificationInput,
   createProductSurfaceQueries,
 } from '../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../js/analysis/query/snapshot.js';
 
-const SNAPSHOT = Object.freeze({ snapshotId:'snap-1', analysisEpoch:1 });
+const SNAPSHOT = createAnalysisSnapshot({ binaryId:'binary-1', analysisEpoch:1 });
 
 function store(values = {}) {
   return { get(key) { return values[key] ?? null; } };
