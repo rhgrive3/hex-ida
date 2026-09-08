@@ -68,9 +68,9 @@ export function parameterClass(parameter) {
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
-  const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
+  const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter)
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   /* AVX-512 intrinsics are vector types exactly like `__m128`/`__m256`;
    * omitting `__m512` sent 512-bit values down the integer scalar path. */
   const intrinsicBits = /__m512/.test(type) ? 512 : /__m256/.test(type) ? 256 : /__m128/.test(type) ? 128 : null;
@@ -256,12 +256,13 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
       reason:'microsoft-x64-aggregate-return-layout-not-proven' };
   }
   if (explicitlyIndirect) return { kind:'indirect', bits:64, reason:'explicit-indirect-result' };
-  const aggregate = prototype.aggregate === true || prototype.isAggregate === true
+  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const aggregate = !isPointerType && (prototype.aggregate === true || prototype.isAggregate === true
     || aggregateLayoutDescriptorPresent(prototype)
     || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
     || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null
       && typeof prototype.returnAggregate !== 'boolean')
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   if (aggregate) {
     return microsoftX64AggregateReturnDecision(aggregateReturnDescriptor(prototype, options), prototype, options);
   }
@@ -298,6 +299,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
   let aggregatePartial = false;
   let aggregateProven = false;
   let stackArgsMayContainPointers = false;
+  let stackArgsUnknown = variadic;
   const indirectResult = returnDecision.kind === 'indirect';
   const positionBias = indirectResult ? 1 : 0;
   if (indirectResult) {
@@ -327,9 +329,19 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
      * impossible type. */
     if (classified.intrinsicBitsConflict) {
       aggregatePartial = true;
+      const candidateRegisters = registerPosition
+        ? [INTEGER_ARGUMENT_REGISTERS[position], VECTOR_ARGUMENT_REGISTERS[position]] : [];
+      if (registerPosition) {
+        appendSource(srcs, seenSources, candidateRegisters[0], 64, {
+          purpose:'vector-width-conflict-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown',
+        });
+        appendSource(srcs, seenSources, candidateRegisters[1], 128, {
+          purpose:'vector-width-conflict-candidate', possible:true, mustUse:false, exact:false, certainty:'unknown',
+        });
+      }
+      stackArgsUnknown = true;
       arguments_.push({
-        index, location:'unknown', candidateRegisters:registerPosition
-          ? [INTEGER_ARGUMENT_REGISTERS[position], VECTOR_ARGUMENT_REGISTERS[position]] : [],
+        index, location:'unknown', candidateRegisters,
         stackPossible:true, abiClass:'vector-width-conflict', pointer:false,
         bits:classified.bits, partial:true, possible:true, mustUse:false,
         exact:false, certainty:'unknown',
@@ -349,6 +361,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
       };
       arguments_.push(entry);
       stackArgsMayContainPointers = true;
+      stackArgsUnknown = true;
       return;
     }
     if (classified.aggregate || classified.vector) {
@@ -495,7 +508,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
     arguments:arguments_,
     stackArguments,
     variadicRegisterFrontier,
-    stackArgsUnknown:variadic,
+    stackArgsUnknown,
     stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
     aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
     variadicClassification:variadic ? 'partial-fixed-parameters-with-floating-mirroring' : 'not-variadic',

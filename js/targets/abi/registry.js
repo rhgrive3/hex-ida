@@ -6,7 +6,8 @@ const ABI_CLASSIFIER_SOURCES = new WeakMap();
 let ABI_REGISTRY_GENERATION = 0;
 const APPLE_ARM64E_PLATFORMS = new Set([
   'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
-  'tvos', 'watchos', 'visionos',
+  'ipados-simulator', 'tvos', 'tvos-simulator', 'watchos',
+  'watchos-simulator', 'visionos', 'visionos-simulator', 'maccatalyst',
 ]);
 // The LP64 profiles share one architecture/platform match and differ only by
 // float ABI. Only a profile-selecting calling convention disambiguates them;

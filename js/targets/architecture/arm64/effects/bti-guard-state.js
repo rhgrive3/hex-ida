@@ -39,16 +39,26 @@ export function normalizeArm64BtiGuardedPageState(input = null) {
       state:'unknown', mappedPageGuarded:null, source:'not-observed', evidence:null, loaderPolicy:null,
     });
   }
-  const raw = input.mappedPageGuarded ?? input.guarded ?? input.state;
+  // Canonical aliases of the same physical page-state fact must agree.
+  const rawCandidates = [];
+  for (const value of [input.mappedPageGuarded, input.guarded, input.state]) {
+    if (value === true || value === 'guarded') rawCandidates.push('guarded');
+    else if (value === false || value === 'unguarded') rawCandidates.push('unguarded');
+  }
+  const first = rawCandidates[0];
+  const contradictory = rawCandidates.length > 1 && rawCandidates.some((candidate) => candidate !== first);
+  const raw = contradictory ? null : first;
   let state = 'unknown';
   let mappedPageGuarded = null;
-  if (raw === true || raw === 'guarded') { state = 'guarded'; mappedPageGuarded = true; }
-  else if (raw === false || raw === 'unguarded') { state = 'unguarded'; mappedPageGuarded = false; }
+  if (raw === 'guarded') { state = 'guarded'; mappedPageGuarded = true; }
+  else if (raw === 'unguarded') { state = 'unguarded'; mappedPageGuarded = false; }
   return Object.freeze({
     state,
     mappedPageGuarded,
-    source:String(input.source || input.mappedPageGuardedSource || 'execution-context'),
-    evidence:deepCopyEvidence(input.evidence ?? input.mappingEvidence ?? null),
+    source:String(input.source || input.mappedPageGuardedSource || (contradictory ? 'contradictory-alias-evidence' : 'execution-context')),
+    evidence:contradictory
+      ? deepCopyEvidence({ conflict:{ raw:{ mappedPageGuarded:input.mappedPageGuarded ?? null, guarded:input.guarded ?? null, state:input.state ?? null } } })
+      : deepCopyEvidence(input.evidence ?? input.mappingEvidence ?? null),
     loaderPolicy:deepCopyEvidence(input.loaderPolicy ?? input.elfPolicy ?? null),
   });
 }
