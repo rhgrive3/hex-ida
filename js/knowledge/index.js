@@ -328,13 +328,11 @@ export class KnowledgeDB {
     // The multiEntry index only answers exact-key lookups. Scan the object
     // store so substring matches use the same predicate and ID order as the
     // memory backend; an exact hit must not change the candidate set or order.
-    if (typeof store.openCursor === 'function') {
-      return new Promise((resolve,reject) => {
-        const records=[]; const req=store.openCursor();
-        req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve(records); if (matches(c.value)) records.push(c.value); c.continue(); };
-        req.onerror=()=>reject(req.error);
-      });
-    }
+    return new Promise((resolve,reject) => {
+      const records=[]; const req=store.openCursor();
+      req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve(records); if (matches(c.value)) records.push(c.value); c.continue(); };
+      req.onerror=()=>reject(req.error);
+    });
   }
 
   async #hasNegativeCandidate(matches, name, identity) {
