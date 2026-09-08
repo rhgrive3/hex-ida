@@ -40,7 +40,39 @@ function compareValues(left, right) {
   }
   return a < b ? -1 : a > b ? 1 : 0;
 }
-function sorted(values) { return unique(values).sort(compareValues); }
+function sorted(values) {
+  // Keep the filter/String/Set semantics of unique(), but avoid its first
+  // lexical sort.  Numeric spellings are decorated once so compareValues is
+  // not forced to parse the same BigInt on every sort comparison.
+  const texts = values.filter((value) => value != null).map(String);
+  const seen = new Set();
+  const decorated = [];
+  let hasNumeric = false;
+  let hasNonNumeric = false;
+  for (const text of texts) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    const numeric = /^-?\d+$/.test(text) ? BigInt(text) : null;
+    if (numeric === null) hasNonNumeric = true;
+    else hasNumeric = true;
+    decorated.push({ text, numeric });
+  }
+  // compareValues has a historical lexical mixed-type branch.  That branch
+  // is not transitive with numeric ordering, so retain unique()'s lexical
+  // pre-order for mixed sets to preserve its deterministic result.  Pure
+  // numeric or pure text sets need only the decorated sort below.
+  if (hasNumeric && hasNonNumeric) {
+    decorated.sort((left, right) => left.text < right.text ? -1 : left.text > right.text ? 1 : 0);
+  }
+  decorated.sort((left, right) => {
+    if (left.numeric !== null && right.numeric !== null) {
+      if (left.numeric < right.numeric) return -1;
+      if (left.numeric > right.numeric) return 1;
+    }
+    return left.text < right.text ? -1 : left.text > right.text ? 1 : 0;
+  });
+  return decorated.map(({ text }) => text);
+}
 function safeDigest(value) {
   try { return stableDigest(value); } catch { return stableDigest({ invalid: String(value) }); }
 }

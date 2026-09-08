@@ -77,6 +77,32 @@ test('T028 preserves stable IDs across rendering changes and rejects stale snaps
   assert.equal(resolveDecompilerProvenance(invalidated, invalidated.raw[0].id).status, 'stale');
 });
 
+test('T028 preserves mixed numeric source ordering and spelling ties', () => {
+  const huge = '1234567890123456789012345678901234567890';
+  const provenance = buildDecompilerProvenance({
+    cAst: { body:[{
+      kind:'stmt', text:'return ordered;',
+      source:{ rows:['10', '2', '01', '1', '-0', '0', '-10', 'foo', '2', null,
+        `-${huge}`, huge, '00000000000000000000001'] },
+    }] },
+    phase8:{ published:true, completeness:'complete', passes:[] },
+  });
+
+  assert.deepEqual(provenance.rendered[0].source.rows,
+    [`-${huge}`, '-10', '-0', '0', '00000000000000000000001', '01', '1', '2', '10', huge, 'foo']);
+  assert.equal(validateDecompilerProvenance(provenance).length, 0);
+
+  const mixedRows = ['2', '10', '1a'];
+  for (const rows of [mixedRows, [...mixedRows].reverse(), ['1a', '2', '10']]) {
+    const variant = buildDecompilerProvenance({
+      cAst:{ body:[{ kind:'stmt', text:'return mixed;', source:{ rows } }] },
+      phase8:{ published:true, completeness:'complete', passes:[] },
+    });
+    assert.deepEqual(variant.rendered[0].source.rows, ['10', '1a', '2'],
+      'mixed numeric/text ordering must remain canonical across input order');
+  }
+});
+
 test('T028 finalizes merged source refs before caching and freezes consumer tokens', () => {
   const lineSource = { ir:['raw-a'] };
   const mapSource = { ir:['raw-b'] };
