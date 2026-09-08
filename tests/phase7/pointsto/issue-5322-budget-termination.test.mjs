@@ -26,6 +26,7 @@ test('#5322 no other budget value can silently disable termination', () => {
     assert.throws(() => run({ maxIterations: invalid }), /points-to-invalid-budget-value/, `maxIterations=${String(invalid)}`);
     assert.throws(() => run({ widenAfterIterations: invalid }), /points-to-invalid-budget-value/, `widenAfterIterations=${String(invalid)}`);
   }
+  assert.throws(() => run({ maxIterations: 0 }), /points-to-invalid-budget-value/, 'maxIterations=0');
 });
 
 test('#5322 valid budgets keep their contracts', () => {

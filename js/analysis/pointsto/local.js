@@ -627,7 +627,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   // closed at the option boundary, matching the lattice's budget contract.
   for (const key of ['maxIterations', 'widenAfterIterations']) {
     const value = budget[key];
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    const minimum = key === 'maxIterations' ? 1 : 0;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
       throw new TypeError('points-to-invalid-budget-value');
     }
   }
