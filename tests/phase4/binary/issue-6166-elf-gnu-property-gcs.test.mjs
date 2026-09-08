@@ -67,6 +67,13 @@ test('#6166 reports GCS-only and combined FEATURE_1 flags', () => {
 });
 
 test('#6166 preserves the fully-scanned absent-bit and unknown policies', () => {
+  const recognizedZero = parseAarch64GnuProperty(makeElf(0));
+  assert.equal(recognizedZero.loaderPolicy, 'bti-not-requested');
+  assert.equal(recognizedZero.featureBits, 0);
+  assert.equal(recognizedZero.btiRequested, false);
+  assert.equal(recognizedZero.pacRequested, false);
+  assert.equal(recognizedZero.gcsRequested, false);
+
   const absent = parseAarch64GnuProperty(makeElf(0, { propertyType: 0 }));
   assert.equal(absent.loaderPolicy, 'feature-bit-absent');
   assert.equal(absent.btiRequested, false);
