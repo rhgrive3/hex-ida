@@ -194,7 +194,7 @@ function installLegacyLauncher(host) {
     boxShadow: '0 4px 18px rgba(0,0,0,.28)', cursor: 'pointer',
   });
   button.hidden = true;
-  button.addEventListener('click', () => showLegacy(host, button));
+  button.onclick = () => showLegacy(host, button);
   document.documentElement.append(button);
   return button;
 }
