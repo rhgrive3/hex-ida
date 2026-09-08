@@ -68,7 +68,9 @@ function engineText(value, fallback, code) {
 }
 
 function deterministicFlag(value) {
-  if (value == null) return true;
+  // Determinism is a positive capability: an engine that never declared it is
+  // unknown, not deterministic, and must not gain the replay capability (#5983).
+  if (value == null) return false;
   if (typeof value !== 'boolean') throw new DebugAdapterError('emulator-deterministic-invalid', 'emulator deterministic flag must be a boolean');
   return value;
 }
