@@ -168,12 +168,6 @@ export class InstrumentationProvider {
       observationMode: 'observed',
     }, this.options.events || {});
     const interventions = new InterventionLedger();
-    let interventionSequence = 0;
-    const interventionDraft = (input) => {
-      const draft = validateInterventionDraft(interventions, { ...input, sequence: interventionSequence });
-      interventionSequence += 1;
-      return draft;
-    };
     const probes = new Map();
 
     const ingest = (raw) => {
@@ -233,7 +227,7 @@ export class InstrumentationProvider {
       capabilities: this._descriptor.capabilities,
       installProbe: async (spec, callOptions = {}) => {
         const install = requiredMethod(this.backend, 'installProbe', 'probe installation');
-        const draft = interventionDraft({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-install',
@@ -252,7 +246,7 @@ export class InstrumentationProvider {
         const normalizedHandle = normalizeProbeHandle(handle);
         if (normalizedHandle == null) throw new DebugAdapterError('runtime-invalid-probe-handle', 'probe handle is required');
         const parent = probes.get(normalizedHandle);
-        const draft = interventionDraft({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'probe-remove',
@@ -269,7 +263,7 @@ export class InstrumentationProvider {
         const install = typeof this.backend.intercept === 'function'
           ? this.backend.intercept.bind(this.backend)
           : requiredMethod(this.backend, 'installProbe', 'interception');
-        const draft = interventionDraft({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'interceptor-install',
@@ -287,7 +281,7 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
         const replace = requiredMethod(this.backend, 'replace', 'function replacement');
-        const draft = interventionDraft({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'function-replacement',
@@ -304,7 +298,7 @@ export class InstrumentationProvider {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
         const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
-        const draft = interventionDraft({
+        const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'memory-write',
