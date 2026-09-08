@@ -461,7 +461,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   }
   return createPointsToSet({
     targets: merged,
-    lossReasons: [...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
+    lossReasons: [...previous.lossReasons, ...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
   });
 }
 
