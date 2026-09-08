@@ -19,7 +19,11 @@
 
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 import { createPhase7ArtifactDescriptor } from '../artifact-identity.js';
-import { classifyCallTargetProof, functionSummaryDigest, summaryIdentityMatches } from '../summary/contract.js';
+import {
+  classifyCallTargetProof,
+  functionSummaryDigest,
+  summaryIdentityMatches,
+} from '../summary/contract.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
@@ -57,34 +61,59 @@ import {
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
 export const A2_ANALYZER_VERSION = '1.2.0';
 
-function summaryDependencyIdentity(calleeId, summary, options) {
-  const configured = options?.summaryArtifactIds ?? options?.calleeSummaryIds;
-  const explicit = configured?.get?.(String(calleeId))
-    ?? (configured && typeof configured === 'object' && !Array.isArray(configured)
-      ? configured[String(calleeId)]
-      : null);
-  const declared = typeof explicit === 'string' && explicit.trim() ? explicit.trim() : null;
-  const embedded = summary?.artifactId
-    ?? summary?.summaryArtifactId
-    ?? summary?.identity?.artifactId;
-  const label = declared ?? (typeof embedded === 'string' && embedded.trim() ? embedded.trim() : null);
+function configuredSummaryArtifactIds(options, calleeId) {
+  const ids = [];
+  for (const configured of [
+    options?.calleeSummaryArtifactIds,
+    options?.summaryArtifactIds,
+    options?.calleeSummaryIds,
+  ]) {
+    const value = configured instanceof Map
+      ? configured.get(String(calleeId))
+      : (configured && typeof configured === 'object' && !Array.isArray(configured)
+        && Object.hasOwn(configured, String(calleeId))
+        ? configured[String(calleeId)]
+        : null);
+    if (typeof value === 'string' && value.trim()) ids.push(value.trim());
+  }
+  return ids;
+}
+
+/**
+ * Returns every identity an A2 result must expose to its artifact descriptor.
+ *
+ * A cache-integrated caller may provide the upstream artifact id through
+ * `calleeSummaryArtifactIds`; that id is retained as an additional edge, but
+ * the canonical FunctionSummary digest is always included as well. An
+ * external label cannot prove that the summary's semantic contents stayed the
+ * same. Standalone summary providers have no ArtifactStore record to attach,
+ * so the digest is their dependency identity and is safe to pass through
+ * `dependencyIds`.
+ */
+function summaryDependencyIds(options, calleeId, summary) {
   try {
-    const semanticDigest = functionSummaryDigest(summary);
-    return label == null ? 'summary:' + semanticDigest : label + '@summary:' + semanticDigest;
+    const digest = functionSummaryDigest(summary);
+    if (typeof digest !== 'string' || !digest.trim()) return null;
+    const ids = new Set([`summary:${digest.trim()}`]);
+    for (const candidate of [
+      ...configuredSummaryArtifactIds(options, calleeId),
+      summary?.artifactId,
+      summary?.summaryArtifactId,
+      summary?.identity?.artifactId,
+    ]) {
+      if (typeof candidate === 'string' && candidate.trim()) ids.add(candidate.trim());
+    }
+    return [...ids].sort();
   } catch {
-    // An unhashable summary has no safe dependency identity. Returning a
-    // fabricated id here would let the caller continue with a summary whose
-    // semantic contents could not be keyed; the call transfer must fail closed.
     return null;
   }
 }
 
 /**
  * Builds the canonical Phase 7 points-to descriptor from the exact summary
- * identities consumed by this producer. The identity input is opt-in so
- * existing callers that do not participate in artifact storage keep the
- * historical result shape; artifact-producing callers get the real observed
- * dependency set rather than a caller-supplied declaration.
+ * identities observed by this run. The descriptor is opt-in so callers that
+ * only need the analysis result keep the historical result shape; artifact
+ * producers receive the dependency set actually consumed by A2.
  */
 function artifactDescriptorForRun(options, calleeSummaryIds) {
   const identity = options?.artifactIdentity;
@@ -607,13 +636,25 @@ function entryRootTarget(definition, functionId, values) {
  *
  * Returns the IR-value map plus the status describing how the run terminated. A
  * run that hits its iteration cap reports `truncated`, never `complete`.
+ * `status.dependencyIds` contains every callee summary identity consulted by
+ * the call transfer. A producer can pass that sorted set to the canonical
+ * `phase7.pointsto.local` descriptor as `calleeSummaryIds`. If the semantic
+ * digest of a consumed summary cannot be computed, the run is unsupported and
+ * cannot be published as a complete artifact.
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
-  const calleeSummaryIds = new Set();
+  const calleeSummaryDependencyIds = new Set();
+  let summaryDependencyFailure = false;
+  let summaryDependencyStopReason = null;
+
+  const markSummaryDependencyFailure = () => {
+    summaryDependencyFailure = true;
+    summaryDependencyStopReason = 'dependency-mismatch';
+  };
 
   const ssaDefinitions = new Map((ssa?.definitions ?? []).map((definition) => [String(definition.valueId), definition]));
   const ssaUsesByEntity = new Map();
@@ -630,6 +671,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     completeness,
     budgetClass: options.budgetClass ?? null,
     stopReason,
+    dependencyIds: [...calleeSummaryDependencyIds].sort(),
   });
 
   if (values.size > budget.maxValues) {
@@ -831,11 +873,14 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const calleeSummary = calleeId == null
         ? null
         : (options.summaries?.get(String(calleeId))
-          || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
-      if (calleeId != null) {
-        const dependencyIdentity = summaryDependencyIdentity(calleeId, calleeSummary, options);
-        if (dependencyIdentity == null) return topPointsTo('unresolved-call');
-        calleeSummaryIds.add(dependencyIdentity);
+          ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
+      if (calleeId != null && calleeSummary != null) {
+        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+        if (dependencyIds == null) {
+          markSummaryDependencyFailure();
+          return topPointsTo('unresolved-call');
+        }
+        for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
       }
       const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;
       const summaryIdentity = configuredSummaryIdentity
@@ -843,8 +888,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
         && !Array.isArray(configuredSummaryIdentity)
         ? configuredSummaryIdentity
         : {};
-      if (!calleeSummary
-        || !summaryIdentityMatches(calleeSummary, {
+      let identityMatches = false;
+      let summaryUsable = false;
+      if (calleeSummary != null) {
+        identityMatches = summaryIdentityMatches(calleeSummary, {
           functionId: calleeId,
           snapshotId: options.snapshotId ?? 'snapshot-unbound',
           analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
@@ -852,12 +899,28 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
             ?? options.expectedSummaryAnalyzerVersion
             ?? summaryIdentity.analyzerVersion
             ?? null,
-        })
-        || !isCompleteStatus(calleeSummary.status)
-        || (calleeSummary.unknownCallEffects || []).length > 0) {
+        });
+        if (identityMatches) {
+          try {
+            summaryUsable = isCompleteStatus(calleeSummary.status)
+              && (calleeSummary.unknownCallEffects || []).length === 0;
+          } catch {
+            summaryUsable = false;
+            markSummaryDependencyFailure();
+          }
+        }
+      }
+      if (calleeSummary != null && !identityMatches) {
+        // A supplied summary for a different function/snapshot/analyzer is a
+        // dependency mismatch, not an ordinary unresolved call. Keep the
+        // known callee edge in the result but never publish this run complete.
+        markSummaryDependencyFailure();
+      }
+      if (!calleeSummary
+        || !identityMatches
+        || !summaryUsable) {
         return topPointsTo('unresolved-call');
       }
-
       if (!Array.isArray(node.outputs)) return topPointsTo('unresolved-call');
       const returnIndex = node.outputs.indexOf(id);
       if (returnIndex < 0) return topPointsTo('unresolved-call');
@@ -937,6 +1000,10 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   for (const [id, set] of ssaState) if (pointsToIsBottom(set)) ssaState.set(id, topPointsTo('unsupported-operation'));
 
   let completeness = stopReason == null ? 'complete' : stopReason === 'cancelled' ? 'partial' : 'truncated';
+  if (summaryDependencyFailure) {
+    completeness = 'unsupported';
+    stopReason = summaryDependencyStopReason ?? 'dependency-mismatch';
+  }
   if (stopReason == null && memoryBoundary.state === 'truncated') {
     completeness = 'truncated';
     stopReason = 'budget-exhausted';
@@ -981,13 +1048,15 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     proofs,
     diagnostics: diagnosticList,
   } : null;
-  const observedCalleeSummaryIds = [...calleeSummaryIds].sort();
+  const observedCalleeSummaryIds = [...calleeSummaryDependencyIds].sort();
   const artifactDescriptor = artifactDescriptorForRun(options, observedCalleeSummaryIds);
   return {
     pointsTo: irState,
     ssaPointsTo: ssaState,
     iterations,
     status: fallbackStatus(completeness, stopReason),
+    // Compatibility alias for callers that consumed the producer-level field
+    // before dependencyIds became the shared Phase 7 status contract.
     calleeSummaryIds: observedCalleeSummaryIds,
     ...(artifactDescriptor == null ? {} : { artifactDescriptor }),
     ...(recovery == null ? {} : { recovery }),
