@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 import { canonicalX86ConditionCode } from '../../js/targets/architecture/x86_64/effects/flags.js';
+import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 
 const indexSource = readFileSync(new URL('../../js/targets/architecture/x86_64/effects/index.js', import.meta.url), 'utf8');
 
@@ -71,5 +72,20 @@ assert.match(indexSource, /const systemSet = liftX86SystemEffects\(instruction, 
 assert.match(indexSource, /ownerId:'system', result:terminalize\(instruction, 'system', systemSet, context\)/);
 assert.match(indexSource, /x86-extended-system-family-requires-dedicated-semantics/);
 
-console.log('issue-5566-x86-setssbsy-routing: PASS');
+// Exercise the actual decoder provenance used by terminalization as well.
+const session = await createCapstoneX86Session();
+try {
+  const decoded = session.decode(Uint8Array.of(0xf3, 0x0f, 0x01, 0xe8), 0x1000n);
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0].instructionFamily, 'setssbsy');
+  const actual = dispatchX86MachineEffects(createX86DecodedInstruction({
+    ...decoded[0], instructionId: 'issue-5566:decoded-setssbsy',
+  }));
+  assert.equal(actual.ownerId, 'system');
+  assert.equal(actual.result.completeness, 'partial');
+  assert.equal(actual.result.unknownEffects.reason, 'x86-extended-system-family-requires-dedicated-semantics');
+} finally {
+  session.close();
+}
 
+console.log('issue-5566-x86-setssbsy-routing: PASS');
