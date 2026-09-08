@@ -136,7 +136,7 @@ test('#7277 leave empties stale source evaluation-stack state', () => {
 });
 
 test('#7277 leave across catch preserves the explicit target without false incompleteness', () => {
-  // 00: leave.s +2 => target 04 (inside the try)
+  // 00: leave.s +2 => target 04 (outside the try)
   // 02: ldc.i4.1; 03: ret (catch handler path, not leave fallthrough)
   // 04: ldc.i4.2; 05: ret (target)
   const bytecode = Uint8Array.from([0xde, 0x02, 0x17, 0x2a, 0x18, 0x2a]);
