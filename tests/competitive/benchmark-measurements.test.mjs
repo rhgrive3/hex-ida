@@ -194,6 +194,18 @@ test('benchmark normalization rejects incomplete, altered, and under-sampled rep
   assert.throws(() => normalizeBenchmarkReport(overSampled, { reference }), /candidate-sample-count-locked/);
 });
 
+test('benchmark normalization enforces deterministic work limits per fixture', () => {
+  const reference = loadBenchmarkReference();
+  const baselineTarget = reference.referenceTargets.find((row) => row.id === 'battlecats');
+  for (const metric of ['rangeReads', 'totalRequestedBytes']) {
+    const regressed = canonicalReport();
+    regressed.targets.battlecats.work[metric] = Math.ceil(
+      baselineTarget.work[metric] * reference.deterministicWorkMaxRatio,
+    ) + 1;
+    assert.throws(() => normalizeBenchmarkReport(regressed, { reference }), new RegExp(`candidate-work-regression:.*battlecats:${metric}`));
+  }
+});
+
 test('missing real twin inputs remain explicitly unmeasured and never invoke the runner', () => {
   const capture = captureBenchmarkTwinWorkload();
   assert.equal(capture.status, 'NOT-INTEGRATED');
@@ -248,6 +260,22 @@ test('a complete READY envelope validates and rejects target mutations', () => {
     expectedMetricId: forged.metricId,
     capture,
   }), /benchmark|candidate/);
+
+  const workRegression = structuredClone(measurement);
+  workRegression.details.candidateTargets[0].work.totalRequestedBytes = Math.ceil(
+    baseline.observations.binary.targets.battlecats.work.totalRequestedBytes * 1.05,
+  ) + 1;
+  workRegression.denominator.candidateTargets = structuredClone(workRegression.details.candidateTargets);
+  const candidateDigest = stableDigest({
+    samplesPerTarget: workRegression.details.samplesPerTarget,
+    targets: workRegression.details.candidateTargets,
+  });
+  workRegression.denominator.candidateObservationDigest = candidateDigest;
+  workRegression.semanticOracle.candidateObservationDigest = candidateDigest;
+  assert.throws(() => validateCompetitiveMeasurement(workRegression, {
+    expectedMetricId: workRegression.metricId,
+    capture,
+  }), /candidate-work-regression/);
 });
 
 test('report binding rejects a non-ready or stale capture before values are accepted', () => {

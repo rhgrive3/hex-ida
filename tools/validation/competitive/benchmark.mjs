@@ -30,6 +30,7 @@ export const BENCHMARK_FIXTURE_MANIFEST_PATH = 'tests/fixtures/real-binaries.jso
 export const BENCHMARK_SCHEMA = 'hex-competitive-benchmark-observation/v1';
 export const BENCHMARK_AGGREGATION = 'max-of-target-loader-medians';
 export const BENCHMARK_FIXTURE_IDS = Object.freeze(['battlecats', 'TsumTsum', 'YWP']);
+const DETERMINISTIC_WORK_METRICS = Object.freeze(['rangeReads', 'totalRequestedBytes']);
 
 const HEX40_RE = /^[0-9a-f]{40}$/i;
 const HEX64_RE = /^[0-9a-f]{64}$/i;
@@ -113,16 +114,29 @@ function fixtureRowsFromReference(baseline, fixtureManifest, requiredSamples = R
         || Number(value.toFixed(3)) !== Number(median(samples).toFixed(3))) {
       fail('reference-latency-invalid', id);
     }
+    const work = object(target.work, `reference-work:${id}`);
+    for (const key of ['rangeReads', 'totalRequestedBytes', 'largestSingleRead']) {
+      safeInteger(work[key], `reference-work-${key}:${id}`);
+    }
     rows.push(Object.freeze({
       id,
       fixture: Object.freeze({ size: fixture.size, sha256: fixture.sha256 }),
       value,
       samples: Object.freeze([...samples]),
       identity: Object.freeze({ ...(target.identity || {}) }),
-      work: Object.freeze({ ...(target.work || {}) }),
+      work: Object.freeze({ ...work }),
     }));
   }
   return Object.freeze(rows);
+}
+
+function deterministicWorkMaxRatio(baseline) {
+  const policy = object(baseline.regressionPolicy?.deterministicWork, 'baseline-work-policy');
+  if (policy.gate !== 'blocking') fail('baseline-work-policy-gate');
+  exactIds(policy.metrics, DETERMINISTIC_WORK_METRICS, 'baseline-work-policy-metrics');
+  const ratio = finite(policy.maxRatio, 'baseline-work-policy-ratio');
+  if (ratio < 1) fail('baseline-work-policy-ratio');
+  return ratio;
 }
 
 /** Load and validate the repository-owned benchmark reference and denominator. */
@@ -134,6 +148,7 @@ export function loadBenchmarkReference() {
       || !HEX40_RE.test(String(baseline.baseline?.sourceTree || ''))) {
     fail('baseline-identity');
   }
+  const workMaxRatio = deterministicWorkMaxRatio(baseline);
   const requiredSamples = Math.max(REQUIRED_SAMPLES, baseline.baseline.environment?.binarySamplesPerTarget || 0);
   const referenceTargets = fixtureRowsFromReference(baseline, fixtureManifest, requiredSamples);
   const files = sourceFiles();
@@ -147,6 +162,7 @@ export function loadBenchmarkReference() {
     fixtureSetDigest: stableDigest(referenceTargets.map((row) => ({ id: row.id, fixture: row.fixture }))),
     referenceTargets,
     requiredSamples,
+    deterministicWorkMaxRatio: workMaxRatio,
   });
 }
 
@@ -154,7 +170,7 @@ function benchmarkTargetKeys(report) {
   exactIds(Object.keys(report.targets || {}), BENCHMARK_FIXTURE_IDS, 'candidate-denominator');
 }
 
-function normalizeCandidateTarget(id, target, reference, samplesPerTarget) {
+function normalizeCandidateTarget(id, target, reference, samplesPerTarget, workMaxRatio) {
   object(target, `candidate-target:${id}`);
   if (target.fixture?.size !== reference.fixture.size || target.fixture?.sha256 !== reference.fixture.sha256) {
     fail('candidate-fixture-identity', id);
@@ -192,6 +208,10 @@ function normalizeCandidateTarget(id, target, reference, samplesPerTarget) {
   text(identity.arch, `candidate-arch:${id}`);
   const work = object(target.work, `candidate-work:${id}`);
   for (const key of ['rangeReads', 'totalRequestedBytes', 'largestSingleRead']) safeInteger(work[key], `candidate-work-${key}:${id}`);
+  for (const key of DETERMINISTIC_WORK_METRICS) {
+    const limit = Math.ceil(reference.work[key] * workMaxRatio);
+    if (work[key] > limit) fail('candidate-work-regression', `${id}:${key}:${work[key]}>${limit}`);
+  }
   return Object.freeze({
     id,
     fixture: Object.freeze({ size: target.fixture.size, sha256: target.fixture.sha256 }),
@@ -238,6 +258,7 @@ export function normalizeBenchmarkReport(report, { reference = loadBenchmarkRefe
     report.targets[id],
     reference.referenceTargets.find((row) => row.id === id),
     samplesPerTarget,
+    reference.deterministicWorkMaxRatio,
   ));
   return Object.freeze({
     samplesPerTarget,
