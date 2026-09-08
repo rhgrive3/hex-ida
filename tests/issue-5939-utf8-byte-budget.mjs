@@ -71,11 +71,14 @@ withoutUtf8Helpers(() => {
 // The JSON envelope is ASCII, so replacing its empty payload adds one byte per A.
 {
   const emptyBytes = packetBytes(hello(''));
+  const under = hello('A'.repeat(LIMIT - emptyBytes - 1));
   const exact = hello('A'.repeat(LIMIT - emptyBytes));
   const over = hello('A'.repeat(LIMIT - emptyBytes + 1));
+  assert.equal(packetBytes(under), LIMIT - 1);
   assert.equal(packetBytes(exact), LIMIT);
   assert.equal(packetBytes(over), LIMIT + 1);
   withoutUtf8Helpers(() => {
+    assert.doesNotThrow(() => validateRemotePacket(under), '1 MiB - 1 byte must be accepted');
     assert.doesNotThrow(() => validateRemotePacket(exact), 'exactly 1 MiB must be accepted');
     assert.throws(
       () => validateRemotePacket(over),
