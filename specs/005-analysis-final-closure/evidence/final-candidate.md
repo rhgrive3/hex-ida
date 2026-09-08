@@ -103,3 +103,29 @@ The 5d46 successor has 10 focused passing subtests across #5990, #6026, and
 retained at `/mnt/workspace/.dev-state/hex-development-batch/t023-issue5990-repair-c32-focused.log`
 and `/mnt/workspace/.dev-state/hex-development-batch/t023-phase10-suffix-5d46.log`.
 Generated refresh and the repaired-candidate canonical gate remain pending.
+
+## Combined 97621 product observations — 2026-09-08
+
+The generated successor is `97621a38e2f7fd18556faeaee79b6e1f97b8a8af`,
+tree `dffc125f95794237327b9c3ce3d6e10f752e3b43`, with source parent
+`9d0512cc620757f69d7abe044f3fcfa4b9193e22`. This supersedes the pending
+generated-refresh observation above. The independent Luna review approves the
+`5d46..97621` code delta, including focused FNV, provenance and CIL regressions.
+
+- Local browser PASS: Chromium 254 checks and WebKit 126 checks, 380 total;
+  `node tests/ui/browser.mjs` exited 0 on Node 22.20.0.
+  Log: `/mnt/workspace/.dev-state/hex-development-batch/t040-browser-97621-evidence/browser.log`,
+  SHA-256 `1f719524ddace92721727911a4f004693ed57424960e4173988e3bab2ef5d0ab`.
+- T039/T045 shadow PASS: six locked cases MATCH; seven scoped counters are
+  `0/1, 0/1, 0/1, 0/1, 0/6, 0/1, 0/1`, bound to the source parent above.
+  Packet: `/mnt/workspace/.dev-state/hex-development-batch/t040-t039-shadow-97621-evidence/stdout.json`,
+  SHA-256 `2bb92b38b61831172f83a8dcdcf4c8b8bf7e03ac68897ecadc7eb04ee5208c9f`.
+- All six CircleCI contexts PASS on the documentation successor
+  `92bbe2f1161e185c87f1098949585756ae8580f5`. The separate CodeRabbit success
+  explicitly means draft review skipped; it is not review approval.
+  API packet: `/mnt/workspace/.dev-state/hex-development-batch/t043-github-92bbe2f11/`.
+
+The canonical full check on immutable 97621 is still running at this observation.
+The separately recorded cold result is 379.479 ms against 250 ms, so these
+completed constituents do not close T040–T044. Physical-device verification is
+DEFERRED until development ends, as authorized by the owner.
