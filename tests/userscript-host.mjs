@@ -73,6 +73,18 @@ assert.doesNotMatch(embedded.PROTECTED_HOST.css, /@import\b/);
 assert.match(embedded.PROTECTED_HOST.scopedCss, /@scope \(#hex-userscript-host\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.scopedCss, /(?:^|[},])\s*(?:html|body)(?=[\s.#:[,{>+~])/);
 
+const x86RevalidationPath = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
+const x86RevalidationSource = embedded.PROTECTED_WORKER_ASSETS.classic?.[x86RevalidationPath];
+assert.equal(typeof x86RevalidationSource, 'string', 'the optional x86 receiver must remain an embedded classic worker asset');
+assert.ok(x86RevalidationSource.length > 1_000_000, 'the embedded x86 receiver must retain its Capstone bundle');
+assert.match(x86RevalidationSource, /HexX86CapstoneStructured/);
+assert.match(x86RevalidationSource, /cs_disasm/);
+assert.match(x86RevalidationSource, /globalThis\.MCapstone=/, 'the bundled Capstone factory must remain visible to the protected WASM bootstrap');
+assert.doesNotMatch(x86RevalidationSource, /\bvar MCapstone\s*=/, 'the bundled Capstone factory must not be trapped in the bundle IIFE');
+assert.match(x86RevalidationSource, /node:fs/, 'the guarded Capstone Node fallback remains external, never executed by the browser path');
+assert.doesNotMatch(x86RevalidationSource, /\bimportScripts\s*\(/, 'classic worker dependencies must be inlined into the protected asset');
+assert.doesNotMatch(x86RevalidationSource, /\bimport\s+[^;]*['"]node:fs['"]/, 'node:fs must not become a browser module import');
+
 const backing = new Uint8Array([9, 1, 2, 3, 8]);
 const exact = toExactArrayBuffer(backing.subarray(1, 4));
 assert.ok(exact instanceof ArrayBuffer);
