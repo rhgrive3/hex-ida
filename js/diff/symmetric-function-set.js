@@ -123,7 +123,7 @@ export async function createSymmetricCodeFunctionSet({
   }
 
   let completed = output.filter(Boolean).length;
-  const normalizedChunk = Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(chunkBytes) || DEFAULT_CHUNK_BYTES));
+  const normalizedChunk = Math.floor(Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(chunkBytes) || DEFAULT_CHUNK_BYTES)));
   for (const [region, rows] of byRegion) {
     rows.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
     const start = BigInt(region.vmAddr);
