@@ -8,9 +8,9 @@ const source = await readFile(new URL('../../../js/ai/control/turn-executor.js',
 const guard = 'assertLiveBindingsUnchanged(this.localContext, snapshot);';
 const plannerBranch = source.indexOf('if (this.planner && shouldRunPlanner(request, snapshot, intent))');
 const plannerAwait = source.indexOf('plan = await this.planner(', plannerBranch);
-const ingest = source.indexOf('const plannedEvidence = this.evidenceStore.ingestPlan(plan);', plannerAwait);
+const ingest = source.indexOf('const plannedEvidence = evidenceStore.ingestPlan(plan);', plannerAwait);
 const caughtDecision = source.indexOf('if (!decision) decision = deterministicDecision(plan, request, normalized);', ingest);
-const finalize = source.indexOf('const result = this.finalize(', caughtDecision);
+const finalize = source.indexOf('const result = await this.finalize(', caughtDecision);
 
 assert.ok(plannerBranch >= 0 && plannerAwait > plannerBranch && ingest > plannerAwait, 'planner path markers must remain discoverable');
 assert.ok(
