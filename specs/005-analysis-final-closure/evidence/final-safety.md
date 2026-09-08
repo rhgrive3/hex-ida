@@ -23,15 +23,23 @@ The T045 registry binding is t045-final-platform-verifier -> t045-browser-platfo
 | stalePublicationAfterCancel | cancellation-publication -> tests/phase4/bytesource/cached-cancellation-lifecycle.test.mjs | 1 | 0 |
 | invalidWriterOutputAccepted | rebuild-invalid-output-rejection -> tests/stage2/rebuild-transaction.test.mjs | 1 | 0 |
 
-The six cases are browser-platform, alias-soundness, indirect-control-soundness, type-soundness-counterexamples, cancellation-publication, and rebuild-invalid-output-rejection. Each oracle/product observation exited with code 0 and each pair was a canonical MATCH; the receipt's proof has caseCount: 6 and verdict: PASS.
+The six cases are browser-platform, alias-soundness, indirect-control-soundness, type-soundness-counterexamples, cancellation-publication, and rebuild-invalid-output-rejection. Each oracle/product observation exited with code 0 and each pair was a canonical MATCH; the receipt's proof has caseCount: 6 and verdict: PASS. These denominator values are projection-case units from the locked contract, not a substituted raw semantic-case count.
+
+## Existing independent adversarial review linkage
+
+No new adversarial review was authored for this evidence update. The T039 review clause is supplemented by the existing independent actual-integrated T019 review in specs/005-analysis-final-closure/evidence/recovery-reviews.md, whose 2026-09-08 exact-head artifact records 30/30 fresh hostile cases across the T011, T012, T014, T015, T016, and T017 production boundaries. It covers explicit unknown, cancellation/publication, identity, budget, malformed-input, and provider-authority failure behavior. That report preserves its own reviewed source identity and limits; it is referenced as independent review evidence, while the T045 receipt below is the exact-source counter authority.
+
+The current origin-leaf lane's existing independent five-boundary review is retained at /mnt/workspace/.dev-state/hex-development-batch/performance-current-cache-review.md. It records 14 fresh observations across five MemorySSA forwarding boundary groups, including mutable/getter input, cloned or frozen unbranded input, cancellation/budget/resource options, stale context, constructor authority, and real owning-projection reuse. The current f0a60ffc5 origin-leaf validation summary is retained at /mnt/workspace/.dev-state/hex-development-batch/perf-origin-leaf-f0a60ffc5-test-observation.md with 14/14 core-identity, 6/6 cache, and 72/72 adversarial focused results. These are existing supplementary review and focused evidence; no new review result is inferred from them.
 
 ## Exact source and authority identities
 
-The collector ran from a clean detached worktree at the exact candidate source, with the pinned Node runtime:
+The collector ran from a clean detached worktree at the exact candidate source, using Node v22.22.1 at /root/.nvm/versions/node/v22.22.1/bin/node:
 
 ```text
 PATH=/root/.nvm/versions/node/v22.22.1/bin:$PATH /root/.nvm/versions/node/v22.22.1/bin/node tools/validation/final-closure/preflight.mjs --emit-shadow-evidence --task T045 --expect-sha 8e045342db6bd9596056942d49b994aad55b895e --expect-tree df2fb9e524d960977d78b17d7667d792ca478f17 --authority-sha a5209e5bd5580ad6bd95c82f496f854b2374183c
 ```
+
+The T045 registered projection commands use the generic node executable and the T045 registry, contract, provider, and preflight assertions do not declare or enforce Node 22.20. The canonical main-check environment's Node 22.20 pin is therefore a separate environment fact; this receipt records the runtime actually used for this collector and does not relabel it as 22.20.
 
 | Identity | Value |
 | --- | --- |
@@ -413,4 +421,4 @@ The central verifier rederived the receipt proof from the candidate ownership ar
 
 ## Decision
 
-The exact-source T045 receipt proves all seven T039 counters at zero with the locked six-case denominator mapping. T039's evidence condition is therefore satisfied as COMPLETE_ZERO; the task-ledger checkbox can be closed by the canonical integration owner when this evidence-only file is integrated.
+The exact-source T045 receipt proves all seven T039 counters at zero with the locked six-case denominator mapping. T039's evidence condition is therefore satisfied as COMPLETE_ZERO. The isolated branch task ledger records T039 as DONE for this exact-source evidence scope; T040/T041/T042, deployment activation, and physical-device evidence remain separate.
