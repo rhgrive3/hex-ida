@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { canonicalMemorySsaDigest } from '../../../js/semantics/memoryssa/proof.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
+import { canonicalMemorySsaDigest, createCanonicalIdentityDigestMemo } from '../../../js/semantics/memoryssa/proof.js';
 import {
   canonicalSemanticIrDigest,
   createSemanticIrFunction,
@@ -25,6 +26,13 @@ test('unbranded mutable MemorySSA-shaped objects are always redigested', () => {
   assert.equal(isCanonicalMemorySsaProducerArtifact(artifact), false);
   assert.notEqual(second, first);
   assert.equal(second, canonicalMemorySsaDigest(artifact));
+});
+
+test('identity digest memo preserves primitive compatibility without weak collection coercion', () => {
+  const memo = createCanonicalIdentityDigestMemo();
+  for (const identity of ['primitive', false, 0, 1.5, 0n]) {
+    assert.equal(memo.digest(identity), stableDigest(identity));
+  }
 });
 
 test('shallow-frozen unbranded Map state is not treated as immutable cache input', () => {

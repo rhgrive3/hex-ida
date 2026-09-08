@@ -153,6 +153,7 @@ export function createCanonicalIdentityDigestMemo() {
         }
         return nullDigest;
       }
+      if (typeof identity !== 'object' && typeof identity !== 'function') return stableDigest(identity);
       if (!eligible.has(identity)) {
         if (!deeplyFrozenIdentity(identity)) return stableDigest(identity);
         eligible.add(identity);
