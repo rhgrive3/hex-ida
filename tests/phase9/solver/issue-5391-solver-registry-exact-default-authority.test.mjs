@@ -8,10 +8,10 @@
 // setDefaultBackend) is gated on isExactProofBackend() in production mode;
 // allowNonExactDefault test registries keep the old lenient selection.
 import assert from 'node:assert/strict';
-import { SolverRegistry, createProductionSolverRegistry } from '../js/symbolic/solver/registry.js';
-import { isExactProofBackend } from '../js/symbolic/solver/backend.js';
-import { ExhaustiveBvBackend, EXHAUSTIVE_BACKEND_ID } from '../js/symbolic/solver/exhaustive-backend.js';
-import { FakeSolverBackend } from '../js/symbolic/solver/fake-backend.js';
+import { SolverRegistry, createProductionSolverRegistry } from '../../../js/symbolic/solver/registry.js';
+import { isExactProofBackend } from '../../../js/symbolic/solver/backend.js';
+import { ExhaustiveBvBackend, EXHAUSTIVE_BACKEND_ID } from '../../../js/symbolic/solver/exhaustive-backend.js';
+import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
 
 // 1. The issue's scenario: a forged self-declared exact object must NOT become
 //    the production default.
