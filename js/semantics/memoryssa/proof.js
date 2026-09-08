@@ -22,15 +22,10 @@ export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 const TRUSTED_CANONICAL_ACCESS_PROVIDERS = new WeakSet();
 
-// The callback boundary is intentionally separate from the serialized issuer
-// fields. A caller can copy those fields into a plain object, so the producer
-// also has to recognize the exact provider callback that it registered.
-export function registerCanonicalAccessProvider(provider) {
-  if (typeof provider !== 'function') throw new TypeError('canonical-access-provider-must-be-function');
-  TRUSTED_CANONICAL_ACCESS_PROVIDERS.add(provider);
-  return provider;
-}
-
+// Provider identity is an authority boundary, so the registry deliberately has
+// no public mutation path. A public registrar would let the caller mint trust
+// for its own callback. Until a separate trusted producer boundary is wired by
+// its owner, externally supplied callbacks remain untrusted and fail closed.
 export function isCanonicalAccessProvider(provider) {
   return typeof provider === 'function' && TRUSTED_CANONICAL_ACCESS_PROVIDERS.has(provider);
 }
