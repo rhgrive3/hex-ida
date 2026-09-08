@@ -1,14 +1,18 @@
-// Regression for #5216: promoteKnowledgeSuggestion() accepted a plain
-// self-declared { approved:true, targetMatchId } object as "user approval",
-// so any caller could forge human confirmation and launder an L2 suggestion
-// into an L4-local-canonical knowledge fact. Contract now: promotion
-// requires an opaque single-use grant issued by a host-held
-// createRecognitionApprovalAuthority() bound to the exact match id, target
-// entity, package identity/hash, algorithm version, actor identity and
-// project/binary binding; replay and cross-target/cross-actor reuse fail
-// closed, and L4 provenance comes from the verified grant.
+// Regression for #5216 (review R2): promoteKnowledgeSuggestion() must not
+// accept approval evidence a caller can fabricate. That covers (a) plain
+// self-declared {approved:true, targetMatchId} tokens, (b) duck-typed
+// { consumeGrant(){…} } authority objects passed as options, and (c) an
+// untrusted caller self-minting an authority (an exported factory would let
+// any caller become the issuer). Contract now: the issuing authority is
+// module-private and host-held — promotion consumes grants only from that
+// instance, callers can only present the opaque token they received from
+// issueRecognitionApprovalGrant(); grants stay single-use and bound to the
+// match identity (match id, target entity, package entry/hash, algorithm
+// version, actor identity, project/binary binding).
 import assert from 'node:assert/strict';
-import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalAuthority } from '../../../js/knowledge/phase12-recognition.js';
+import test from 'node:test';
+import * as recognition from '../../../js/knowledge/phase12-recognition.js';
+const { createMatchResult, promoteKnowledgeSuggestion, issueRecognitionApprovalGrant } = recognition;
 
 function uniqueResult(overrides = {}) {
   return createMatchResult({
@@ -26,72 +30,101 @@ function uniqueResult(overrides = {}) {
 
 const result = uniqueResult();
 
-// 1. A hand-made {approved:true, targetMatchId} token is rejected.
-assert.throws(
-  () => promoteKnowledgeSuggestion(result, { actorId: 'attacker', approvalToken: { approved: true, targetMatchId: result.id } }),
-  /approval/,
-);
-// Missing authority/grant entirely is rejected the same way.
-assert.throws(() => promoteKnowledgeSuggestion(result, { actorId: 'attacker' }), /approval/);
-assert.throws(
-  () => promoteKnowledgeSuggestion(result, { actorId: 'attacker', approvalAuthority: createRecognitionApprovalAuthority(), approvalGrant: 'made-up' }),
-  /not valid/,
-);
+test('#5216 the authority factory is not exported: untrusted code cannot self-mint an issuer', () => {
+  assert.equal(recognition.createRecognitionApprovalAuthority, undefined,
+    'creating an authority must be impossible from outside the module');
+  assert.equal(typeof recognition.issueRecognitionApprovalGrant, 'function',
+    'the host issuance seam is the only way to obtain a grant');
+});
 
-const authority = createRecognitionApprovalAuthority({ projectBinding: 'project-A' });
-
-// 2. A grant issued for a different match result cannot promote this one.
-{
-  const other = uniqueResult({ sourceEntityId: 'fn:2000', packageEntryId: 'pkg:other' });
-  const otherGrant = authority.issueGrant(other, { actorId: 'actor-a' });
+test('#5216 a plain self-declared token is rejected', () => {
   assert.throws(
-    () => promoteKnowledgeSuggestion(result, { approvalAuthority: authority, approvalGrant: otherGrant.token }),
-    /bound to a different/,
+    () => promoteKnowledgeSuggestion(result, { actorId: 'attacker', approvalToken: { approved: true, targetMatchId: result.id } }),
+    /approval/,
   );
-}
+  assert.throws(() => promoteKnowledgeSuggestion(result, { actorId: 'attacker' }), /approval/);
+});
 
-// 3. A consumed grant cannot be replayed.
-{
-  const grant = authority.issueGrant(result, { actorId: 'actor-a' });
-  const fact = promoteKnowledgeSuggestion(result, { approvalAuthority: authority, approvalGrant: grant.token });
+test('#5216 a duck-typed forged authority object cannot consume its own grant', () => {
+  assert.throws(
+    () => promoteKnowledgeSuggestion(result, {
+      approvalAuthority: { consumeGrant: () => ({ actorId: 'attacker', matchId: result.id, sourceEntityId: result.sourceEntityId, packageEntryId: result.packageEntryId, packageContentHash: null, algorithmVersion: result.algorithmVersion }) },
+      approvalGrant: 'forged',
+    }),
+    /host-issued/,
+    'promotion must not accept caller-supplied authority objects',
+  );
+  assert.throws(
+    () => promoteKnowledgeSuggestion(result, {
+      approvalAuthority: { consumeGrant() { throw new Error('never called'); } },
+      approvalGrant: 'forged',
+    }),
+    /host-issued/,
+  );
+});
+
+test('#5216 an untrusted self-mint via any exported surface cannot promote', () => {
+  // No exported binding may expose authority machinery: nothing carries
+  // grant issuance or consumption, and the factory is absent.
+  assert.equal(recognition.createRecognitionApprovalAuthority, undefined);
+  for (const [name, value] of Object.entries(recognition)) {
+    assert.ok(!value?.issueGrant, `${name} must not expose grant issuance`);
+    assert.ok(!value?.consumeGrant, `${name} must not expose grant consumption`);
+  }
+  // Even a forged token cannot pass without host issuance.
+  assert.throws(
+    () => promoteKnowledgeSuggestion(result, { approvalGrant: 'recognition-grant_forged' }),
+    /not valid/,
+  );
+});
+
+test('#5216 a host-issued grant succeeds exactly once, then replays fail', () => {
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a' });
+  const fact = promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
   assert.equal(fact.authority, 'L4-local-canonical');
   assert.equal(fact.confirmation, 'user-confirmed');
   assert.equal(fact.provenance.actorId, 'actor-a', 'L4 actor must come from the verified grant');
   assert.equal(fact.provenance.approvedMatchId, result.id);
   assert.throws(
-    () => promoteKnowledgeSuggestion(result, { approvalAuthority: authority, approvalGrant: grant.token }),
+    () => promoteKnowledgeSuggestion(result, { approvalGrant: grant.token }),
     /not valid/,
     'grant replay must fail closed',
   );
-}
+});
 
-// 4. Bindings: package content hash, actor and project/binary authority.
-{
+test('#5216 grants stay bound to match identity, actor and package content', () => {
+  const other = uniqueResult({ sourceEntityId: 'fn:2000', packageEntryId: 'pkg:other' });
   const changedHash = uniqueResult({ packageContentHash: 'hash-b' });
-  const grant = authority.issueGrant(result, { actorId: 'actor-a' });
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a' });
   assert.throws(
-    () => promoteKnowledgeSuggestion(changedHash, { approvalAuthority: authority, approvalGrant: grant.token }),
+    () => promoteKnowledgeSuggestion(other, { approvalGrant: grant.token }),
     /bound to a different/,
-    'a grant must not survive a package/binary binding change',
-  );
-  // Same authority instance (same binding) still works for the bound match.
-  promoteKnowledgeSuggestion(result, { approvalAuthority: authority, approvalGrant: grant.token });
-  const foreignAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-B' });
-  const grantB = foreignAuthority.issueGrant(result, { actorId: 'actor-a' });
-  assert.throws(
-    () => promoteKnowledgeSuggestion(result, { approvalAuthority: authority, approvalGrant: grantB.token }),
-    /not valid/,
-    'grants are bound to their issuing host authority (project/binary binding)',
   );
   assert.throws(
-    () => promoteKnowledgeSuggestion(result, { approvalAuthority: foreignAuthority, approvalGrant: grantB.token, actorId: 'actor-b' }),
+    () => promoteKnowledgeSuggestion(changedHash, { approvalGrant: grant.token }),
+    /bound to a different/,
+  );
+  assert.throws(
+    () => promoteKnowledgeSuggestion(result, { approvalGrant: grant.token, actorId: 'actor-b' }),
     /bound to a different actor/,
-    'actor mismatch fails closed',
   );
+  // The bound actor can still promote exactly once.
+  promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
+});
+
+test('#5216 the host project/binary binding is recorded on grants', () => {
+  configureHostBinding('project-A');
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a' });
+  assert.equal(grant.projectBinding, 'project-A');
+  const fact = promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
+  assert.equal(fact.confirmation, 'user-confirmed');
+});
+
+function configureHostBinding(binding) {
+  recognition.configureRecognitionApprovalHost({ projectBinding: binding });
 }
 
-// 5. Ambiguous/truncated promotion stays forbidden (grant not even consulted).
-{
+test('#5216 ambiguous/truncated promotion stays forbidden (grant not even consulted)', () => {
   const ambiguous = createMatchResult({
     sourceEntityId: 'fn:3000', packageEntryId: 'pkg:a',
     candidates: [
@@ -99,24 +132,7 @@ const authority = createRecognitionApprovalAuthority({ projectBinding: 'project-
       { packageEntryId: 'pkg:b', score: 0.93 },
     ],
   });
-  assert.throws(
-    () => promoteKnowledgeSuggestion(ambiguous, { approvalAuthority: authority, approvalGrant: 'unused' }),
-    /ambiguous or truncated/,
-  );
+  assert.throws(() => promoteKnowledgeSuggestion(ambiguous, { approvalGrant: 'unused' }), /ambiguous or truncated/);
   const truncated = uniqueResult({ candidateSearchTruncated: true });
-  assert.throws(
-    () => promoteKnowledgeSuggestion(truncated, { approvalAuthority: authority, approvalGrant: 'unused' }),
-    /ambiguous or truncated/,
-  );
-}
-
-// 6. A valid host-issued grant succeeds exactly once with bound provenance.
-{
-  const freshAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-A' });
-  const grant = freshAuthority.issueGrant(result, { actorId: 'actor-c' });
-  const fact = promoteKnowledgeSuggestion(result, { approvalAuthority: freshAuthority, approvalGrant: grant.token, name: 'chosen-name' });
-  assert.equal(fact.kind, 'knowledge-fact');
-  assert.equal(fact.targetEntityId, result.sourceEntityId);
-  assert.deepEqual(fact.value, { packageEntryId: 'pkg:entry', name: 'chosen-name' });
-  assert.equal(fact.provenance.actorId, 'actor-c');
-}
+  assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused' }), /ambiguous or truncated/);
+});

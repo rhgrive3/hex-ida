@@ -78,24 +78,37 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
-// Host-held approval authority for L4 promotion (#5216): a plain
+// Host-held approval authority for L4 promotion (#5216, review R2): a plain
 // { approved:true, targetMatchId } self-declaration is not approval evidence,
-// so promotion requires an opaque, single-use grant issued by the host for a
-// specific match identity. Grants bind the exact match id, target entity,
-// package identity/hash, algorithm version, actor identity and the host's
-// project/binary binding; consumption verifies every binding and burns the
-// grant, so forged, replayed or cross-target grants fail closed.
-export function createRecognitionApprovalAuthority({ projectBinding = null } = {}) {
-  const binding = projectBinding == null ? null : String(projectBinding).trim();
-  if (binding !== null && !binding) throw new TypeError('recognition approval project binding must be a non-empty string');
+// and neither is a caller-supplied authority — a duck-typed
+// { consumeGrant(){…} } option or a self-minted authority (untrusted code
+// calling an exported factory) would resurrect the forgery. The issuing
+// authority is therefore module-private: promotion consumes grants only from
+// the single host-held instance created below, grants bind the exact match
+// id, target entity, package identity/hash, algorithm version, actor
+// identity and the host's project/binary binding, and consumption verifies
+// every binding and burns the grant (single-use). Callers can only pass the
+// opaque token they received from the host issuance seam.
+function createRecognitionApprovalAuthority() {
   const pending = new Map();
+  let projectBinding = null;
   return deepFreeze({
+    configureHost({ projectBinding: binding = null } = {}) {
+      if (binding != null) {
+        const text = String(binding).trim();
+        if (!text) throw new TypeError('recognition approval project binding must be a non-empty string');
+        projectBinding = text;
+      } else {
+        projectBinding = null;
+      }
+    },
+    hostProjectBinding() { return projectBinding; },
     issueGrant(result, { actorId } = {}) {
       if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
       const actor = String(actorId || '').trim();
       if (!actor) throw new TypeError('local approving actor identity is required');
       const nonce = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)));
-      const token = `recognition-grant_${stableDigest({ nonce, matchId: result.id, actor, projectBinding: binding })}`;
+      const token = `recognition-grant_${stableDigest({ nonce, matchId: result.id, actor, projectBinding })}`;
       const grant = deepFreeze({
         token,
         matchId: result.id,
@@ -104,7 +117,7 @@ export function createRecognitionApprovalAuthority({ projectBinding = null } = {
         packageContentHash: result.packageContentHash ?? null,
         algorithmVersion: result.algorithmVersion,
         actorId: actor,
-        projectBinding: binding,
+        projectBinding,
       });
       pending.set(token, grant);
       return grant;
@@ -128,14 +141,29 @@ export function createRecognitionApprovalAuthority({ projectBinding = null } = {
   });
 }
 
+// The one issuing authority. It is not reachable through the module surface:
+// only this module can consume grants, so callers cannot duck-type, swap or
+// self-mint their way into the approval boundary.
+const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
+
+export function configureRecognitionApprovalHost({ projectBinding = null } = {}) {
+  HOST_APPROVAL_AUTHORITY.configureHost({ projectBinding });
+}
+
+export function issueRecognitionApprovalGrant(result, { actorId } = {}) {
+  return HOST_APPROVAL_AUTHORITY.issueGrant(result, { actorId });
+}
+
 export function promoteKnowledgeSuggestion(result, options = {}) {
   if (!result || result.authority !== 'L2-suggestion') throw new TypeError('recognition suggestion required');
   if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
-  const authority = options.approvalAuthority;
-  if (!authority || typeof authority.consumeGrant !== 'function') throw new Error('explicit recognition approval is required');
-  // A host-issued single-use grant is the only approval evidence; verified
-  // actor/provenance come from the grant, not from caller fields (#5216).
-  const grant = authority.consumeGrant(result, options.approvalGrant, { actorId: options.actorId ?? null });
+  if ('approvalAuthority' in options || 'approvalToken' in options) {
+    throw new Error('recognition approval evidence is a host-issued single-use grant token');
+  }
+  // The opaque token is verified against the module-private host authority;
+  // verified actor/provenance come from the consumed grant, not caller
+  // fields (#5216).
+  const grant = HOST_APPROVAL_AUTHORITY.consumeGrant(result, options.approvalGrant, { actorId: options.actorId ?? null });
   const actorId = String(grant.actorId || '').trim();
   if (!actorId) throw new TypeError('local approving actor identity is required');
   return deepFreeze({

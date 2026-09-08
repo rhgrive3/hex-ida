@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
-import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalAuthority } from '../../../js/knowledge/phase12-recognition.js';
+import { createMatchResult, promoteKnowledgeSuggestion, issueRecognitionApprovalGrant } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
 import { compilePattern, evaluatePattern } from '../../../js/pattern/index.js';
 import { createRebuildPlan, materializeRebuildPlan, validateRebuildOutput } from '../../../js/rebuild/index.js';
@@ -21,18 +21,18 @@ assert.throws(
   'self-declared approval tokens must not promote to L4',
 );
 assert.throws(
-  () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalAuthority: createRecognitionApprovalAuthority({ projectBinding: 'project-a' }), approvalGrant: 'forged-grant' }),
-  /not valid/,
+  () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalAuthority: { consumeGrant: () => ({ actorId: 'attacker', matchId: suggestion.id }) }, approvalGrant: 'forged-grant' }),
+  /host-issued/,
+  'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
-const approvalAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-a' });
-const grant = approvalAuthority.issueGrant(suggestion, { actorId: 'local-actor' });
-const fact = promoteKnowledgeSuggestion(suggestion, { approvalAuthority, approvalGrant: grant.token });
+const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor' });
+const fact = promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.provenance.actorId, 'local-actor');
 assert.equal(fact.provenance.source, 'local-user');
 assert.equal(fact.externalProvenance.packageContentHash, packageA.contentHash);
 assert.throws(
-  () => promoteKnowledgeSuggestion(suggestion, { approvalAuthority, approvalGrant: grant.token }),
+  () => promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token }),
   /not valid/,
   'grants are single-use; replay must fail',
 );

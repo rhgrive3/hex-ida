@@ -44,12 +44,11 @@ assert.equal(recognitionCanClaimUnique(ambiguous), false);
 const truncated = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99 }], candidateSearchTruncated: true });
 assert.equal(truncated.completeness, 'partial');
 assert.equal(truncated.unique, false);
-assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalAuthority: createRecognitionApprovalAuthority({ projectBinding: 'p' }), approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
+assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-const packageApprovalAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-a' });
-const packageGrant = packageApprovalAuthority.issueGrant(unique, { actorId: 'local-user' });
-const fact = promoteKnowledgeSuggestion(unique, { approvalAuthority: packageApprovalAuthority, approvalGrant: packageGrant.token, name: 'localName' });
+const packageGrant = issueRecognitionApprovalGrant(unique, { actorId: 'local-user' });
+const fact = promoteKnowledgeSuggestion(unique, { approvalGrant: packageGrant.token, name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.externalProvenance.packageContentHash, sameA.contentHash);
 console.log('[phase12] package/provenance/recognition tests passed');
