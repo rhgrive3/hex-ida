@@ -67,7 +67,7 @@ export function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter)
     || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
@@ -267,7 +267,7 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   }
   const vector = /vector|simd|sse|__m128/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  const rawBits = Number(options.returnBits || prototype.returnBits || prototype.bits || typeBits(type, vector ? 128 : 64));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;
   if (floating) return { kind:'direct', reg:'xmm0', bits };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) return { kind:'direct', reg:'rax', bits };
@@ -383,6 +383,10 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
       }
       const indirect = !exactSmallAggregate;
       aggregateProven = true;
+      // A by-reference vector temporary keeps the intrinsic vector alignment.
+      const temporaryAlignment = indirect
+        ? (classified.vector ? Math.max(16, Math.ceil(classified.bits / 8)) : 16)
+        : undefined;
       const abiValueClass = indirect ? (classified.vector ? 'vector-indirect' : 'aggregate-indirect') : 'integer-aggregate';
       if (registerPosition) {
         const reg = INTEGER_ARGUMENT_REGISTERS[position];
@@ -394,7 +398,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
           bits:indirect ? 64 : classified.bits,
           bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)),
           pointeeBits:indirect ? classified.bits : undefined,
-          requiredTemporaryAlignment:indirect ? 16 : undefined,
+          requiredTemporaryAlignment:temporaryAlignment,
           pieces:[{ pieceIndex:0, order:0, reg, abiClass:abiValueClass,
             bits:indirect ? 64 : classified.bits,
             bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)), byteOffset:0 }],
@@ -407,7 +411,7 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
           bytes:8, abiClass:abiValueClass, pointer:indirect,
           bits:indirect ? 64 : classified.bits,
           pointeeBits:indirect ? classified.bits : undefined,
-          requiredTemporaryAlignment:indirect ? 16 : undefined,
+          requiredTemporaryAlignment:temporaryAlignment,
           pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:abiValueClass,
             bits:indirect ? 64 : classified.bits, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true,

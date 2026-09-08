@@ -32,8 +32,8 @@ function descriptorBoolean(parameter, key) {
   if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
   const values = owners.filter((owner) => Object.hasOwn(owner, key)).map((owner) => owner[key]);
   if (!values.length) return { present:false, value:false };
-  const normalized = values.map((value) => value === true);
-  return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
+  if (values.some((value) => typeof value !== 'boolean')) return { present:true, value:null };
+  return { present:true, value:values.every((value) => value === values[0]) ? values[0] : null };
 }
 
 function vectorRegister(index, bits) {
