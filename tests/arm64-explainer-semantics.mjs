@@ -366,4 +366,45 @@ try {
 }
 console.log('  ok 10 UDIV/SDIV presentation signedness stays distinct (#3653)');
 
+/* ── #3750 UDF is not a debugger breakpoint alias for BRK ────────────── */
+
+const trapLang = lang();
+try {
+  setLang('en');
+  const brkEnglish = explain('brk', '#0', 0n, {});
+  const udfEnglish = explain('udf', '#0', 0n, {});
+  assert.equal(brkEnglish.title, 'Breakpoint / trap', 'BRK keeps its debugger-facing title (#3750)');
+  assert.match(brkEnglish.summary, /debuggers?/i, 'BRK keeps its debugger explanation (#3750)');
+  assert.match(brkEnglish.detail.join(' '), /Swift traps/i, 'BRK keeps its trap detail (#3750)');
+  assert.equal(udfEnglish.title, 'Permanently undefined instruction');
+  assert.equal(udfEnglish.pseudo, 'undefined_instruction_exception()');
+  assert.match(udfEnglish.summary, /permanently undefined/i);
+  assert.match(udfEnglish.summary, /Undefined Instruction exception/i);
+  assert.match(udfEnglish.detail.join(' '), /#imm16.*operation selector/i);
+  assert.doesNotMatch(
+    [udfEnglish.title, udfEnglish.summary, ...udfEnglish.detail].join(' '),
+    /(?:used by|for) debuggers?|Breakpoint \/ trap|debugger-facing/i,
+    'UDF must not be described as a debugger breakpoint (#3750)',
+  );
+  assert.notEqual(udfEnglish.summary, brkEnglish.summary, 'UDF and BRK summaries must stay distinct (#3750)');
+
+  setLang('ja');
+  const brkJapanese = explain('brk', '#0', 0n, {});
+  const udfJapanese = explain('udf', '#0', 0n, {});
+  assert.equal(brkJapanese.title, 'わざと止める', 'BRK keeps its Japanese title (#3750)');
+  assert.match(brkJapanese.summary, /デバッガ用/, 'BRK keeps its Japanese debugger explanation (#3750)');
+  assert.match(udfJapanese.title, /永久に未定義/);
+  assert.match(udfJapanese.summary, /未定義命令例外/);
+  assert.match(udfJapanese.detail.join(' '), /#imm16.*動作を選ぶ値ではありません/);
+  assert.doesNotMatch(
+    [udfJapanese.title, udfJapanese.summary, ...udfJapanese.detail].join(' '),
+    /デバッガ用、または|わざと止める/,
+    'UDF must not be described as a Japanese debugger breakpoint (#3750)',
+  );
+  assert.notEqual(udfJapanese.summary, brkJapanese.summary, 'UDF and BRK Japanese summaries must stay distinct (#3750)');
+} finally {
+  setLang(trapLang);
+}
+console.log('  ok 11 UDF/BRK exception intent stays distinct in both languages (#3750)');
+
 console.log('ARM64 explainer semantics: PASS');
