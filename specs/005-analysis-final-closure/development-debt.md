@@ -7,8 +7,8 @@ current results take precedence.
 
 | Area | Current state | Next action |
 | --- | --- | --- |
-| Local integration | Canonical check at8da22cd95 failed744.9 s: semantic-v2 and Phase4 passed; Phase5 passed304/308, with four LLVM selection mismatches. | Repair the Phase5/6 toolchain selection and preflight actual versions before rerunning; retain the full FAIL log. |
-| T026 comparison | Native ARM64 adapter integrated ata814cac2f; actual-byte positive and identity/method negatives pass with the real18.1.3 capture. All135 frozen IDs remain. Native/legacy reference mixing stays UNMEASURED. | Capture and bind a separate historical native reference; obtain fresh P5/P6 execution identities and external three-game source/compiler/debug assets. No fabricated values or denominator reduction. |
+| Local integration | The exact `ea5d05b24` check failed after261.7 s at semantic-v2 integration (`1.0.1` actual versus stale `1.0.0` expected). Focused repair `6ff3b7b22` was followed by a Phase4 stale invalid-binary fixture stop; `b230b0a4a` repaired that fixture and suffix PID545932 reached Phase5. No full PASS is claimed. | Retain each exact observation and finish the current full check from the repaired suffix; do not convert focused repairs into a full-gate result. |
+| T026 comparison | Native paired quality is now measured at exact `ea5d05b24`: 135/135 observations, 45 native rows, gotos148/148 TIE and fallbacks1038/1090 WIN using the preserved real LLVM18.1.3 capture. Reconstructed P5/P6 evidence from exact producer `8747bddc` measures144/144 and264/264, both TIE; its old raw parser status was `LEDGER-UNAVAILABLE` and is corrected by `2740c1f53`. | Keep T026 PARTIAL: the P5/P6 run predates the exact current generated head, the profile still contains five legacy-unproven nonbinary metrics and five binary rows are not promoted into a unified scorecard, and external game source/compiler/debug identities plus complete P-COMPETITIVE denominator/threshold proof remain outstanding. No fabricated values or denominator reduction. |
 | Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Immutable SemanticIR/MemorySSA reuse is integrated at880f16572 and focused tests pass; one representative call improved38.9%, which is not full acceptance. Shared-host activity limits attribution. Task-local GSettings repair passes all Chromium/WebKit viewports; remaining navigation/mobile/accessibility/AI chain also passes107.4 s on unchanged runtime. Physical execution is deferred; retain browser/runtime requirements. |
 | Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published f853691e5 head passes all six CircleCI jobs. | The published71bf992ab head also passed all six CircleCI jobs. Publish the current test-runner fixes after focused validation; retain current full/UI failures separately. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
@@ -53,7 +53,7 @@ Browser development batch: pinned Playwright 1.62.1 with actual Chromium and Web
 
 T018 reconciles all ten recovery rows against the implemented development branch and explicitly retains combined/release checks. Current unknown-partition and SCCP regressions pass; the superseded C2 snapshot is not replayed.
 
-T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING: five binary rows are still explicitly UNMEASURED. Repository-owned corpus generators exist; native toolchain availability and missing same-binary wiring are being separated, not treated as a terminal no-edit success.
+T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING: the current native P8 quality and reconstructed P5/P6 packets are recorded above, while the profile's five legacy-unproven nonbinary metrics, five binary rows not yet promoted into a unified scorecard, external game identities, and complete performance/threshold proof remain open. The older five-row UNMEASURED statement is superseded by those packets; it is retained only as historical checkpoint context.
 
 Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun also passes after the T030 syntax correction.
 
@@ -71,6 +71,10 @@ T025/T048 development reconciliation independently audited: 23 unique rows, 22 i
 
 Phase 8 full performance observation:135 function IDs,125 stage-applicable IDs,405 samples (three repetitions, initial and optimized modes), zero unpublished applicable optimizer results and zero complete-result divergences. Elapsed557.8 s. Cold622.195 ms FAIL; interactive0.362 ms and optimizer127.139 ms pass their aggregate thresholds. Individual function latencies can exceed these aggregate values. Full measurements and profile/source binding are committed in `evidence/development-performance.json`.
 
+The following T026 capture checkpoint predates the current reconstructed P5/P6
+and native P8 quality packets; it is retained for chronology, not as the current
+measurement state.
+
 T026 capture implementation checkpoint: repository-owned Phase5/6/8 builders now
 support capture-only debug output while preserving their default frozen output.
 The collector creates and independently replays strip-only lineage and exposes
@@ -79,14 +83,16 @@ P5:6 artifacts (ELF/PE) and P6:12 artifacts. The earlier six-artifact x86/RISC-V
 and required LLVM18.1.8 BLOCKED-TOOLCHAIN observations are historical; the earlier
 checkpoint's ARM64 historical-assembly-only state is superseded by a valid current
 P8 nine-artifact capture (`p8-1813-capture.json`) under LLVM18.1.3, including native
-ARM64 artifacts. Canonical P8 quality remains UNMEASURED because the locked
-135-row observations contain ten known conservative fallback rows; the first
-failure is `quality.aggregate_array_stride.O0` with seven unsupported Semantic IR
-instructions, matching the frozen baseline. Archived P5/P6 ledgers still lack
-execution identity, and three external game binaries still lack
-source/compiler/debug identities. All five score rows remain UNMEASURED; capture
-success does not supply measured values or close the denominator. Focused
-twin/capture/scorecard contracts and default-versus-debug isolation pass.
+ARM64 artifacts. At that historical checkpoint, canonical P8 quality was
+UNMEASURED because the locked 135-row observations contained ten known
+conservative fallback rows; the first failure was
+`quality.aggregate_array_stride.O0` with seven unsupported Semantic IR
+instructions, matching the frozen baseline. Archived P5/P6 ledgers then lacked
+execution identity, and three external game binaries then lacked
+source/compiler/debug identities. All five score rows were UNMEASURED at that
+checkpoint; the current reconstructed/native packets above supersede that
+measurement state. Focused twin/capture/scorecard contracts and
+default-versus-debug isolation pass.
 
 Generated-runtime checks: current host and release-version checks pass. The old
 unused 1.0 timestamp-version entry point conflicted with canonical content-bound

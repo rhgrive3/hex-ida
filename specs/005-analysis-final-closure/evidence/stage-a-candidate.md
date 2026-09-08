@@ -23,16 +23,32 @@ also passed in 107.4 s on unchanged runtime source. Together these cover the
 complete development UI chain; the subsequent combined main candidate still
 requires validation for its changed runtime.
 
-Native ARM64 adapter commits are integrated at `a814cac2f` (preceded by
-`4bdb8443e` and `41d66f7ef`). The adapter uses captured linked ELF bytes, checks
-AArch64 machine identity and byte-backed branch targets, and preserves all 135
-frozen function IDs. A native candidate against the historical assembly
-reference remains `UNMEASURED`; a separately captured paired native baseline is
-still required. The integrated adapter and measurement tests passed in 7.3 s
-with Node 22.20.0 and the retained real LLVM 18.1.3 capture fixture. The positive
-adapter test decompiles one function; it does not certify full-corpus quality or
-performance. ELF extraction/relocation and frozen-provenance compatibility tests also passed
-in 1.1 s. No task checkbox changes follow from this integration alone.
+## Current generated-head evidence — 2026-09-08
+
+The exact-head `ea5d05b24` full check terminated **FAIL** after 261.7 s at the
+semantic-v2 integration assertion: the fixture expected `1.0.0` while the
+current value was `1.0.1`. A focused repair at `6ff3b7b22` then stopped at a
+Phase 4 stale invalid-binary fixture; `b230b0a4a` repaired that fixture and a
+new suffix run (PID 545932) had reached Phase 5 when this evidence was
+recorded. The performance-readiness owner is repairing this stale-fixture chain.
+These are bounded observations, not a full-check PASS.
+Retained console: `/mnt/workspace/.dev-state/hex-development-batch/current-head-ea5d05b24-full-check-console.log` (SHA-256 `d13a1afcf6b11d941191704c4197291a9fac119806c9413c67bec20d08eb126c`).
+
+The [current native paired quality packet](reviews/2026-09-08/native-paired-quality-current.md)
+measured 135/135 Phase 8 observations, including 45 native ARM64 rows, from
+the exact `ea5d05b244a0a611d7acddc94064e6857642d21d` / tree
+`48423ce83c8c4914288ec57b672e0fdc2b525ffd` snapshot. Gotos measured 148/148
+(`TIE`) and assembly fallbacks 1038/1090 (`WIN`) against the preserved real
+LLVM 18.1.3 paired capture. This is identity-bound quality evidence and does
+not establish a release threshold, performance result, or full-gate PASS.
+
+The [P5/P6 packet](reviews/2026-09-08/p5-p6-current-proof.md) records
+reconstructed exact-run evidence from pre-parser `8747bddc`: P5 144/144 and P6
+264/264, both candidate/reference `TIE`. Its raw TAP parser status was
+`LEDGER-UNAVAILABLE`; the retained output was reconstructed after the integrated
+`2740c1f53` parser correction. It remains evidence for that exact producer
+head, not a relabeled exact-current-head rerun. No task checkbox changes follow
+from these bounded packets alone.
 
 # Full-check follow-up — 2026-09-08
 

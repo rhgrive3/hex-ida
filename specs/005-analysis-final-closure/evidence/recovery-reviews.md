@@ -12,6 +12,29 @@ archived alongside the reports. No concrete defect was found in these exercised
 boundaries. Final combined convergence and affected integration gates remain
 pending; these bounded results alone do not close T019.
 
+## Current native and binary measurement evidence — 2026-09-08
+
+The [native paired authority review](reviews/2026-09-08/native-paired-authority-current.md)
+passes 11/11 identity and authority boundary cases against its exact detached
+snapshot. It found no concrete acceptance or measurement-truth defect and
+records the lower-level collector's explicit legacy-default layering limit.
+
+The [current native paired quality packet](reviews/2026-09-08/native-paired-quality-current.md)
+is bound to exact current head `ea5d05b244a0a611d7acddc94064e6857642d21d` and
+records 135/135 observations with 45 native rows. Its two current quality
+envelopes measure gotos 148/148 (`TIE`) and assembly fallbacks 1038/1090
+(`WIN`) against the retained LLVM 18.1.3 capture.
+
+The [P5/P6 packet](reviews/2026-09-08/p5-p6-current-proof.md) records
+reconstructed evidence from exact producer head `8747bddc`: 144/144 and
+264/264 tuples, both candidate/reference `TIE`. The raw producer test processes
+exited 0, while the old TAP parser reported `LEDGER-UNAVAILABLE`; the retained
+output was reconstructed after parser fix `2740c1f53`. These packets are bounded
+measurement evidence, not full-gate or T026 release completion: the P5/P6 run
+predates the exact current generated head, the profile still contains five
+legacy-unproven nonbinary metrics and five binary rows require promotion into a
+unified scorecard, and external game assets lack complete identity.
+
 ## Review identity and scope
 
 This bounded T019 review was performed against the current shared-worktree
