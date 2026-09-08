@@ -110,8 +110,8 @@ export function condenseCallGraph(roots, successorsOf, {
           component.push(member);
           if (member === frame.node) break;
         }
+        if (components.length >= maxComponents) { truncated = true; return { components, truncated }; }
         components.push(component.sort());
-        if (components.length > maxComponents) { truncated = true; return { components, truncated }; }
       }
       work.pop();
       if (work.length) {
