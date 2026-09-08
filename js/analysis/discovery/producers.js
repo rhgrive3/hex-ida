@@ -38,6 +38,53 @@ function loaderStartArray(value, code) {
   return value;
 }
 
+const VALIDATED_LOADER_SEED_SOURCES = new Set([
+  'function_starts',
+  'exception',
+  'tls-callback',
+  'guard-cf',
+  'unwind',
+]);
+const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
+
+function seedSources(start) {
+  return new Set([
+    start?.source,
+    ...(Array.isArray(start?.sources) ? start.sources : []),
+  ].filter((source) => typeof source === 'string' && source.length > 0));
+}
+
+function hasHighExactConfidence(start) {
+  if (start?.exactFunctionStartConfidence != null) {
+    const confidence = Number(start.exactFunctionStartConfidence);
+    return Number.isFinite(confidence) && confidence >= 0.9;
+  }
+  const confidence = Number(start?.confidence);
+  return Number.isFinite(confidence) && confidence >= 0.9;
+}
+
+function isCanonicalLoaderSeed(start) {
+  const sources = seedSources(start);
+  if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
+  if (start?.exactFunctionStart !== true || Array.isArray(start?.sources)) return false;
+  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
+}
+
+function extentRegion(record, address) {
+  const rawSize = record?.sizeBytes ?? record?.size;
+  if (rawSize != null) {
+    const size = toAddress(rawSize);
+    return size == null ? null : regionFromSize(address, size);
+  }
+  const end = toAddress(record?.end);
+  if (end == null) return null;
+  try {
+    return regionFromSize(address, BigInt(end) - BigInt(address));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Loader-supplied function starts and unwind entries.
  *
@@ -59,8 +106,7 @@ function loaderFunctionStarts(image) {
   // compatibility-only and may omit provenance/extent fields carried by the
   // canonical BinaryImage.functions seed.
   for (const start of loaderStartArray(image?.functions, 'discovery-loader-invalid-functions')) {
-    const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
-    if (sources.has('function_starts')) add(start);
+    if (isCanonicalLoaderSeed(start)) add(start);
   }
   for (const start of loaderStartArray(image?.functionStarts, 'discovery-loader-invalid-function-starts')) add(start);
   return out;
@@ -74,12 +120,15 @@ export const loaderProducer = Object.freeze({
     for (const start of loaderFunctionStarts(input?.image)) {
       const address = toAddress(start.address ?? start);
       if (address == null) continue;
-      const region = start.sizeBytes ? regionFromSize(address, start.sizeBytes) : null;
+      const sources = seedSources(start);
+      const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
+      const region = extentRegion(start, address);
       out.push(evidence('loader-function-start', {
         start: address,
         name: start.name ?? null,
         regions: region ? [region] : [],
-        evidenceIds: [`loader:start:${address}`],
+        confidence: start.confidence ?? null,
+        evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
       }));
     }
     // A function body can be split across several unwind entries; the loader
@@ -177,7 +226,7 @@ export const symbolTableProducer = Object.freeze({
         && symbol.kind !== 'function'
         && symbol.kind !== 'indirect-function';
       if (address == null || symbol.isFunction === false || explicitlyNonFunction) continue;
-      const region = symbol.sizeBytes ? regionFromSize(address, symbol.sizeBytes) : null;
+      const region = extentRegion(symbol, address);
       out.push(evidence('symbol-table', {
         start: address,
         name: symbol.name ?? null,
