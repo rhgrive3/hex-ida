@@ -36,6 +36,8 @@ assert.throws(()=>parseJvmCore(buildClass(methodrefFixture('<init>','()I'))),/jv
 assert.throws(()=>parseJvm(buildClass(methodrefFixture('<init>','()Ljava/lang/String;'))),/jvm-invalid-cp-methodref-init-return-type/);
 // <clinit> is not a valid Methodref name: '<'-prefixed Methodref names must be <init>.
 assert.throws(()=>parseJvm(buildClass(methodrefFixture('<clinit>','()V'))),/jvm-invalid-cp-methodref-clinit-name/);
+// The same fail-closed rule covers arbitrary unused '<'-prefixed Methodref names.
+assert.throws(()=>parseJvm(buildClass(methodrefFixture('<other>','()V'))),/jvm-invalid-cp-methodref-clinit-name/);
 // void <init> and ordinary method references keep parsing.
 assert.doesNotThrow(()=>parseJvm(buildClass(methodrefFixture('<init>','()V'))));
 assert.doesNotThrow(()=>parseJvm(buildClass(methodrefFixture('run','()V'))));
