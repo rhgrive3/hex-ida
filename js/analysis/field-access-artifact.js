@@ -204,7 +204,10 @@ export async function fieldAccessAcrossExecutableRegions(app, offset, size, {
   await runOne(regions[0]);
   const rest = regions.slice(1);
   let cursor = 0;
-  const workerCount = Math.max(1, Math.min(Math.floor(Number(concurrency) || 1), 3, rest.length || 1));
+  // Only primitive finite numbers may become the worker authority; structured
+  // or boolean values fall back to the published default of 2 (#5433).
+  const requestedConcurrency = typeof concurrency === 'number' && Number.isFinite(concurrency) ? concurrency : 2;
+  const workerCount = Math.max(1, Math.min(Math.floor(requestedConcurrency), 3, rest.length || 1));
   const workers = Array.from({ length:workerCount }, async () => {
     while (cursor < rest.length) {
       const index = cursor++;
