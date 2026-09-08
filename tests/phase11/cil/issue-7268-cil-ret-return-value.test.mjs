@@ -98,10 +98,21 @@ function buildReturnPe({ returnSignature, bytecode }) {
   const tables = metadata + 0x100;
   buf[tables + 4] = 2;
   buf[tables + 7] = 1;
-  view.setUint32(tables + 8, 1 << 6, true);
+  // ECMA-335 II.22.26 rule 2: the MethodDef rows need a TypeDef owner (#7301).
+  view.setUint32(tables + 8, (1 << 2) | (1 << 6), true);
   let tablePos = tables + 24;
-  view.setUint32(tablePos, 2, true);
+  view.setUint32(tablePos, 1, true); // one TypeDef row
   tablePos += 4;
+  view.setUint32(tablePos, 2, true); // two MethodDef rows
+  tablePos += 4;
+
+  // TypeDef row (14 bytes): Flags, Name, Namespace, Extends, FieldList, MethodList.
+  view.setUint32(tablePos, 0, true); tablePos += 4;
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Name (index 0 = legacy null)
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Namespace
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Extends = null
+  view.setUint16(tablePos, 1, true); tablePos += 2; // FieldList
+  view.setUint16(tablePos, 1, true); tablePos += 2; // MethodList
 
   const addMethodDef = (rva, nameIndex, signatureIndex) => {
     view.setUint32(tablePos, rva, true);
