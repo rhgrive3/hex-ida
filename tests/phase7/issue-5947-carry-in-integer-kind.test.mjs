@@ -69,3 +69,9 @@ test('#5947 a malformed structured integer payload does not mint an exact proof'
   const projection = normalized.nodes.find((node) => node.attributes?.canonicalAddressProjection);
   assert.equal(projection, undefined, 'an unparseable structured constant is not exact evidence');
 });
+
+test('#5947 a nonzero bitvector carry stays an intrinsic', () => {
+  const normalized = normalizeAddressProofIr(irFor({ kind: 'bitvector', value: '1' }));
+  assert.equal(normalized.nodes.some((node) => node.attributes?.canonicalAddressProjection), false);
+  assert.ok(normalized.nodes.some((node) => node.operator === 'add-with-carry'));
+});
