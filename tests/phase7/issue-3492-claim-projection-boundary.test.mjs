@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProductSurfaceQueries } from '../../js/analysis/query/product-surface.js';
-import { createAnalysisSnapshot } from '../../js/analysis/query/snapshot.js';
 
-const SNAPSHOT = createAnalysisSnapshot({ binaryId:'binary-3492', analysisEpoch:1 });
+const SNAPSHOT = Object.freeze({ snapshotId:'snap-3492', analysisEpoch:1 });
 
 function queriesFor(report) {
   const app = {

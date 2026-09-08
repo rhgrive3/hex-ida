@@ -11,9 +11,7 @@ for (const field of ['verdict','providerId','providerVersion','expected','observ
 }
 
 let analyzed=null;
-import { createAnalysisSnapshot } from '../../js/analysis/query/snapshot.js';
-
-const snapshot=createAnalysisSnapshot({binaryId:'b-2875',analysisEpoch:1});
+const snapshot={snapshotId:'s',analysisEpoch:1};
 const app={
   analysisQueries:{snapshot:async()=>snapshot},
   store:{get(key){if(key==='regions')return []; if(key==='sliceIndex')return 0; return null;}},
