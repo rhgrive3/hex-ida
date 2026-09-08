@@ -296,6 +296,7 @@ function profileFromRepositoryEvidence(profile, captures, measurements) {
       ];
       config.groundTruth = {
         ...config.groundTruth,
+        kind: 'nonbinary-source-fixture',
         status: 'measured',
         binaryScored: false,
         twinManifest: null,

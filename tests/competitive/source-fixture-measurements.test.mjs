@@ -50,6 +50,7 @@ test('source-fixture evidence promotes all four aliases over the complete V2 que
     }
     const arm64 = result.scorecard.entries.find((entry) => entry.metricId === ARM64_METRIC);
     assert.equal(evidence.measurements[ARM64_METRIC].status, 'MEASURED');
+    assert.equal(result.profile.metrics[ARM64_METRIC].groundTruth.kind, 'nonbinary-source-fixture');
     assert.equal(arm64.groundTruthStatus, 'measured');
     assert.equal(arm64.measurement.status, 'MEASURED');
     assert.equal(arm64.hexValue, evidence.measurements[ARM64_METRIC].candidateValue);
