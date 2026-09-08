@@ -13,6 +13,26 @@ test('#5855 a self-referential vector elementType fails closed, not with a stack
   );
 });
 
+test('#5855 two-node vector references fail closed at both boundaries', () => {
+  const semanticA = { kind: 'vector', laneCount: 1 };
+  const semanticB = { kind: 'vector', laneCount: 1 };
+  semanticA.elementType = semanticB;
+  semanticB.elementType = semanticA;
+  assert.throws(
+    () => createSemanticMachineType(semanticA),
+    (err) => err.message === 'semantic-ir-invalid-vector-element-type',
+  );
+
+  const machineA = { kind: 'vector', laneCount: 1 };
+  const machineB = { kind: 'vector', laneCount: 1 };
+  machineA.elementType = machineB;
+  machineB.elementType = machineA;
+  assert.throws(
+    () => createMachineValue(machineA),
+    (err) => err.message === 'machine-effects-invalid-vector-element-type',
+  );
+});
+
 test('#5855 valid flat and one-level-nested vectors keep working', () => {
   const flat = createSemanticMachineType({ kind: 'vector', laneCount: 4, elementType: { kind: 'bitvector', widthBits: 32 } });
   assert.equal(flat.elementType.widthBits, 32);
