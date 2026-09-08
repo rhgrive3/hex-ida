@@ -119,9 +119,12 @@ export function createClaimNode(input = {}) {
   const contradictingEvidenceIds = stringArray(input.contradictingEvidenceIds, 'evidence-invalid-contradiction-ids');
   const confirmedByEvidenceIds = stringArray(input.confirmedByEvidenceIds, 'evidence-invalid-confirmation-ids');
   const requestedVerdict = enumValue(input.verdict, EVIDENCE_VERDICTS, 'unknown', 'evidence-invalid-verdict');
+  // A contradicting reference alone never manufactures verdict authority
+  // (#6168): whether a contradiction applies is a target-scope question the
+  // graph can only answer at evaluation time, once the referenced evidence
+  // node exists. Explicit upstream verdicts stay authoritative.
   let verdict = requestedVerdict;
-  if (contradictingEvidenceIds.length || requestedVerdict === 'contradicted') verdict = 'contradicted';
-  else if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
+  if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
   else if (requestedVerdict === 'supported' && !supportingEvidenceIds.length) verdict = 'unverified';
   const targetEntityIds = stringArray(input.targetEntityIds, 'evidence-invalid-targets');
   const scope = input.scope == null ? null : jsonSafe(input.scope);
@@ -159,23 +162,28 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
+// Target-scope lattice for evidence→claim applicability (#6154, #6168): a
+// proof that explicitly binds itself to entities must bind to one of the
+// claim's entities (an untargeted proof keeps its historical contract), and
+// a proof bound to a different binary can never apply to a claim from
+// another binary. Confirmation, support, and contradiction all share it.
+export function evidenceAppliesToClaim(evidence, claim) {
+  const evidenceTargets = Array.isArray(evidence?.targetEntityIds) ? evidence.targetEntityIds : [];
+  if (evidenceTargets.length) {
+    const claimTargets = Array.isArray(claim?.targetEntityIds) ? claim.targetEntityIds : [];
+    if (!claimTargets.some((entity) => evidenceTargets.includes(entity))) return false;
+  }
+  if (evidence?.binaryId != null && claim?.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
+  return true;
+}
+
 export function canConfirmClaim(evidence, claim) {
   if (!evidence || typeof evidence !== 'object') return false;
   if (evidence.deterministic !== true) return false;
   if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
     return false;
   }
-  // Confirmation authority is target-scoped (#6154): a proof that explicitly
-  // binds itself to entities must bind to one of the claim's entities (an
-  // untargeted proof keeps its historical contract), and a proof bound to a
-  // different binary can never confirm a claim from another binary.
-  const evidenceTargets = Array.isArray(evidence.targetEntityIds) ? evidence.targetEntityIds : [];
-  if (evidenceTargets.length) {
-    const claimTargets = Array.isArray(claim?.targetEntityIds) ? claim.targetEntityIds : [];
-    if (!claimTargets.some((entity) => evidenceTargets.includes(entity))) return false;
-  }
-  if (evidence.binaryId != null && claim?.binaryId != null && evidence.binaryId !== claim.binaryId) return false;
-  return true;
+  return evidenceAppliesToClaim(evidence, claim);
 }
 
 export class EvidenceGraph {
@@ -271,8 +279,14 @@ export class EvidenceGraph {
     for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
       if (!this.#nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
     }
-    const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
-    const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const knownContradictions = [...contradicting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node != null && evidenceAppliesToClaim(node, claim);
+    });
+    const knownSupport = [...supporting].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return node != null && evidenceAppliesToClaim(node, claim);
+    });
     const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => {
       const node = this.#nodes.get(evidenceId);
       return canConfirmClaim(node, claim);
