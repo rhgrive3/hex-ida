@@ -188,6 +188,15 @@ export function parseDex(bytes, options = {}) {
     methods.push({classType:requireIndex(types,classIdx,'dex-invalid-method-class-index'),proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
   }
 
+  // A DEX class_def_item defines a class: AOSP dex-format requires both its
+  // class_idx and its non-NO_INDEX superclass_idx to resolve to a non-array
+  // class type ('L...;'). Primitive and array descriptors are valid type_ids
+  // but never valid class-role definers (#7436).
+  const requireClassType = (idx, code) => {
+    const descriptor = requireIndex(types, idx, code);
+    if (!descriptor.startsWith('L') || !descriptor.endsWith(';')) fail('dex-invalid-class-def-type');
+    return descriptor;
+  };
   const classes=[];
   for(let i=0;i<classDefsSize;i++) {
     const off=classDefsOff+i*32;
@@ -200,11 +209,7 @@ export function parseDex(bytes, options = {}) {
     dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4,true);
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
-    const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
-    // A DEX class_def_item defines a class: AOSP dex-format requires its
-    // class_idx to resolve to a non-array class type ('L...;'). Primitive and
-    // array descriptors are valid type_ids but never valid definers (#7436).
-    if(!classType.startsWith('L')||!classType.endsWith(';')) fail('dex-invalid-class-def-type');
+    const classType = requireClassType(classIdx,'dex-invalid-class-index');
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
@@ -247,7 +252,7 @@ export function parseDex(bytes, options = {}) {
         lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
+    classes.push({classType,accessFlags,superType:superclassIdx!==0xffffffff?requireClassType(superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
   dexMethodDefinitions({ methods, classes });
