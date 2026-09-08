@@ -141,7 +141,7 @@ export class ToolRegistry {
           Promise.resolve().then(() => this.context.addressExists(address, { signal })),
           signal,
         );
-        if (!exists) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
+        if (exists !== true) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
       }
       if (scope !== "auto" && typeof this.context.scopeContainsAddress === "function") {
         const contained = await raceAbort(

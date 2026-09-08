@@ -108,12 +108,14 @@ const FLOW = new Set([
   'jcxz', 'jecxz', 'jrcxz',
 ]);
 
+const ARM64_CONDITIONAL_BRANCH = /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/;
+
 export function mnemonicClass(mn) {
   if (!mn || typeof mn !== 'string') return '';
   const m = mn.toLowerCase();
   if (m.charCodeAt(0) === 46) return 'data';           // ".byte" from SKIPDATA
   if (FLOW.has(m)) return 'flow';
-  if (m.charCodeAt(0) === 98 /* b */ && m.length <= 4 && /^b\.?[a-z]{0,2}$/.test(m)) return 'flow';
+  if (ARM64_CONDITIONAL_BRANCH.test(m)) return 'flow';
   if (m.charCodeAt(0) === 106 /* j */ && /^j(?:mp|[a-z]{1,4})$/.test(m)) return 'flow';
   return '';
 }

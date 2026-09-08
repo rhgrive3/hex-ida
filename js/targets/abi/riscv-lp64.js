@@ -43,6 +43,18 @@ const VECTOR_VARIANT_CALLER_SAVED = Object.freeze([
   'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat', 'vstart',
 ]);
 
+// Keep the registry vocabulary and both argument/return classifiers on one
+// alias set. LLVM/Clang commonly emits the underscore spelling while the
+// repository's canonical ABI identity uses the hyphen spelling.
+export const RISCV_VECTOR_CALLING_CONVENTION_ALIASES = Object.freeze([
+  'riscv-vector-variant', 'riscv_vector_cc',
+]);
+
+function canonicalRiscvVectorCallingConvention(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text === 'riscv_vector_cc' ? 'riscv-vector-variant' : text;
+}
+
 const ABI_ALIAS = Object.freeze({
   x1:'ra', x2:'sp', x3:'gp', x4:'tp', x5:'t0', x6:'t1', x7:'t2', x8:'s0', x9:'s1',
   x10:'a0', x11:'a1', x12:'a2', x13:'a3', x14:'a4', x15:'a5', x16:'a6', x17:'a7',
@@ -159,8 +171,10 @@ function callSymbol(instruction, options) {
 }
 
 function vectorVariantRequested(instruction, options, prototype) {
-  const explicit = String(instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention || '').toLowerCase();
-  if (explicit === 'riscv-vector-variant' || explicit === 'riscv_vector_cc') return true;
+  const explicit = canonicalRiscvVectorCallingConvention(
+    instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention,
+  );
+  if (explicit === 'riscv-vector-variant') return true;
   return callSymbol(instruction, options)?.riscvVariantCc === true;
 }
 
@@ -760,7 +774,9 @@ function createClassifier(profile) {
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
-    const vectorVariant = String(prototype.callingConvention || options.callingConvention || '').toLowerCase().replace('_cc','-variant') === 'riscv-vector-variant';
+    const vectorVariant = canonicalRiscvVectorCallingConvention(
+      prototype.callingConvention || options.callingConvention,
+    ) === 'riscv-vector-variant';
     if (returnVector) {
       if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
@@ -868,9 +884,18 @@ function createRiscvAbi(profile) {
     semanticVersion:'1',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
-    callingConventions:()=>Object.freeze([profile.id, 'riscv-vector-variant']),
+    // The classifier's vectorVariantRequested() accepts both the canonical
+    // 'riscv-vector-variant' and the legacy 'riscv_vector_cc' alias; the
+    // registry must claim the same spellings so an explicit ABI id resolves
+    // instead of degrading to 'unknown' (#6026).
+    callingConventions:()=>Object.freeze([profile.id, ...RISCV_VECTOR_CALLING_CONVENTION_ALIASES]),
     classifyArguments,
-    classifyCallReturn:(instruction, options = {}) => classifyReturn(callPrototypeOf(instruction, options), options),
+    classifyCallReturn:(instruction, options = {}) => classifyReturn(
+      callPrototypeOf(instruction, options),
+      instruction?.callingConvention == null
+        ? options
+        : { ...options, callingConvention:instruction.callingConvention },
+    ),
     classifyFunctionReturn:(options = {}) => classifyReturn(options.functionPrototype || options.prototype || {}, options),
     classifyEntryRegister:(reg) => {
       const id = String(reg || '').toLowerCase();

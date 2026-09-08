@@ -28,6 +28,17 @@ import { runProductionDevBootstrap } from '../dev/bootstrap/production-bootstrap
 
 const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
+const CONTEXT_STORE_KEYS = new Set([
+  'fileInfo', 'regions', 'currentRegion', 'architecture',
+  'selectedRow', 'selectionStart', 'selectionEnd',
+]);
+
+function storePatchAffectsContext(patch) {
+  // Older/custom stores may only pass the current state to listeners. Keep
+  // those stores fail-open rather than silently leaving the context stale.
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return true;
+  return Object.keys(patch).some((key) => CONTEXT_STORE_KEYS.has(key));
+}
 
 function layoutFor(width) {
   if (width >= DOCK_MIN_WIDTH) return 'dock';
@@ -220,7 +231,10 @@ export function installAssistant(app, ui) {
 
   /* Keep the context chip honest as the user navigates the code. */
   const unsubscribe = typeof app.store.subscribe === 'function'
-    ? app.store.subscribe(() => { if (open) panel.update({ stick: false }); })
+    ? app.store.subscribe((_state, patch) => {
+      if (!open || !storePatchAffectsContext(patch)) return;
+      panel.update({ stick: false });
+    })
     : null;
 
   function api() {

@@ -1,6 +1,6 @@
 {
   "phase": 7,
-  "version": 3,
+  "version": 4,
   "singleOwnerLane": "p7",
   "note": "Phase 7 is executed by one owner on one living integration branch, so there is a single lane. The manifest exists because ownership is what makes 'may this change touch that file' a checkable property (EP-002, EP-004), and because contract, generated and forbidden paths must be explicit even when nobody can race for them.",
   "lanes": {
@@ -21,7 +21,10 @@
       ".github/workflows/phase7-release-validation.yml",
       "package.json",
       "userscript/hex.user.template.js",
-      "userscript/release-version.json"
+      "userscript/release-version.json",
+      "js/app.js",
+      "js/knowledge/index.js",
+      "tests/recognition-intelligence.mjs"
     ]
   },
   "contractPaths": [
@@ -38,7 +41,10 @@
   ],
   "sharedIntegrationPaths": [
     "js/semantics/compat/index.js",
-    "package.json"
+    "package.json",
+    "js/app.js",
+    "js/knowledge/index.js",
+    "tests/recognition-intelligence.mjs"
   ],
   "generatedPaths": [
     "reports/phase7/**",
@@ -90,7 +96,10 @@
     "package.json": "May add Phase 7 scripts and wire them into existing aggregates. Must not remove or weaken an existing gate.",
     "docs/PHASE7_STATIC_ANALYSIS_EXECUTION_PLAN.md": "May be updated only to record that the runbook has been executed and to point at live evidence. Its invariants and exit gates must not be relaxed.",
     "userscript/hex.user.template.js": "Generated output. It MUST be produced by the canonical builder (npm run userscript:build) and committed by the integration owner after each accepted checkpoint. It must never be hand-edited or copied from another branch.",
-    "userscript/release-version.json": "Generated release identity. It advances deterministically from protected runtime content and must never be edited by hand."
+    "userscript/release-version.json": "Generated release identity. It advances deterministically from protected runtime content and must never be edited by hand.",
+    "js/app.js": "Recognition knowledge-revision integration only: cache invalidation, successful-mutation revision publication, and their regressions. Unrelated app UI, knowledge storage semantics, or recognition behavior require separate owner review.",
+    "js/knowledge/index.js": "Recognition knowledge-revision integration only: cache invalidation, successful-mutation revision publication, and their regressions. Unrelated app UI, knowledge storage semantics, or recognition behavior require separate owner review.",
+    "tests/recognition-intelligence.mjs": "Recognition knowledge-revision integration only: cache invalidation, successful-mutation revision publication, and their regressions. Unrelated app UI, knowledge storage semantics, or recognition behavior require separate owner review."
   },
   "generatedWriteOwners": [
     "p7"
