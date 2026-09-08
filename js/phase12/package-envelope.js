@@ -134,13 +134,19 @@ export function createPackageEnvelope(input = {}) {
   const packageVersion = required(input.packageVersion ?? input.version ?? '1', 'package-version-required');
   if (input.payload === undefined) throw new PackageValidationError('package-payload-required');
   const dependencies = normalizeDependencies(input.dependencies);
+  // The producer side always carries a provenance record. A structured value
+  // that cannot stand in for a record (array / primitive) fails closed here so
+  // an envelope that would fail its own import contract is never minted.
+  const provenance = input.provenance == null
+    ? { source: 'local' }
+    : validatedProvenanceRecord(input.provenance);
   const envelope = {
     format: PACKAGE_ENVELOPE_VERSION,
     manifestVersion: PACKAGE_SCHEMA_VERSION,
     packageId,
     packageVersion,
     kind,
-    provenance: input.provenance && typeof input.provenance === 'object' ? input.provenance : { source: 'local' },
+    provenance,
     license: String(input.license || 'unspecified'),
     requiredHexApi: input.requiredHexApi || null,
     requiredSemanticVersions: input.requiredSemanticVersions || null,
@@ -149,8 +155,21 @@ export function createPackageEnvelope(input = {}) {
     payloadIndex: input.payloadIndex || null,
     payload: input.payload,
   };
+  // Provenance integrity binding (#5637): the content identity deliberately
+  // excludes provenance (semantic package content vs. trust metadata), so the
+  // provenance record gets its own digest. Import verifies this digest before
+  // trusting the envelope, making silent provenance erasure or substitution
+  // detectable without changing the package content identity contract.
+  envelope.provenanceHash = stableDigest(stableStringify(provenance));
   envelope.contentHash = packageContentIdentity(envelope);
   return deepFreeze(envelope);
+}
+
+function validatedProvenanceRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new PackageValidationError('package-provenance-required', 'a provenance record object is required');
+  }
+  return value;
 }
 
 function validateEnvelopeShape(envelope, options = {}) {
@@ -162,6 +181,18 @@ function validateEnvelopeShape(envelope, options = {}) {
   required(envelope.kind, 'package-kind-required');
   required(envelope.contentHash, 'package-content-identity-required');
   if (envelope.payload === undefined) throw new PackageValidationError('package-payload-required');
+  // The import boundary enforces the same provenance contract the producer
+  // side guarantees (#5637): a provenance record must exist and must match
+  // its own integrity binding, so erasing or swapping provenance under an
+  // unchanged contentHash is no longer accepted.
+  validatedProvenanceRecord(envelope.provenance === undefined ? null : envelope.provenance);
+  if (typeof envelope.provenanceHash !== 'string' || !envelope.provenanceHash) {
+    throw new PackageValidationError('package-provenance-binding-required');
+  }
+  const expectedProvenanceHash = stableDigest(stableStringify(envelope.provenance));
+  if (expectedProvenanceHash !== envelope.provenanceHash) {
+    throw new PackageValidationError('package-provenance-identity-mismatch', 'package provenance does not match its integrity binding');
+  }
   countEntries(envelope.payload, normalizedPackageLimits(options));
   const dependencies = normalizeDependencies(envelope.dependencies);
   const expected = packageContentIdentity({ ...envelope, dependencies });
