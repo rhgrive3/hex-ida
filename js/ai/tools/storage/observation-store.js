@@ -61,6 +61,13 @@ function boundedLimit(value, fallback = 100, max = 500) {
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+// Detail refs are Map identity keys, not coercible text: only a canonical
+// primitive string may reach a record, so a structured value can never alias
+// another observation's payload/provenance (#5425).
+function observationRefKey(detailRef) {
+  return typeof detailRef === 'string' && detailRef ? detailRef : '';
+}
+
 function finiteConfiguredNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number !== 0 ? number : fallback;
@@ -108,14 +115,14 @@ export class ObservationStore {
   setContext(context) { this.context = context || {}; return this; }
 
   pin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = true;
     return true;
   }
 
   unpin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = false;
     this.evict();
@@ -180,7 +187,7 @@ export class ObservationStore {
 
   get(detailRef) {
     this.evict();
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) throw new Error('unknown-detail-ref');
     const current = this.binding();
     if (record.binding.key !== current.key || record.binaryIdentity !== current.binaryIdentity) throw new Error('stale-detail-ref');

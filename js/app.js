@@ -70,6 +70,14 @@ const showAccuracyNotes = lazyPanel('showAccuracyNotes');
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
+// Recognition coverage budgets are analysis authority (#5447): only a
+// primitive finite number may set them. Structured/junk values fall back to
+// the supplied default instead of being coerced through Number().
+function coverageBudgetNumber(value, fallback) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return value;
+}
+
 /**
  * Build the recognition state from the SymbolIndex function-start contract.
  *
@@ -88,8 +96,10 @@ export async function buildRecognitionState({
   isCurrent = () => true,
 } = {}) {
   if (!sym || sym === EMPTY_INDEX) return null;
-  const max = Math.min(500_000, Math.max(1_000, Number(maxFunctions) || 350_000));
-  const limit = Math.min(2_048, Math.max(0, Number(knowledgeLimit) || 0));
+  // Recognition coverage is analysis authority: only a primitive finite number
+  // may set the budgets, everything else falls back to the defaults (#5447).
+  const max = Math.min(500_000, Math.max(1_000, coverageBudgetNumber(maxFunctions, 350_000)));
+  const limit = Math.min(2_048, Math.max(0, coverageBudgetNumber(knowledgeLimit, 512)));
   const total = sym.functionCount || 0;
   const count = Math.min(total, max);
   const functions = new Array(count);
@@ -153,8 +163,8 @@ export async function ensureRecognitionState(app, options = {}) {
   if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
   if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
   const epoch = app.backend.gen;
-  const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
-  const knowledgeLimit = Math.min(2048, Math.max(0, Number(options.knowledgeLimit ?? 512)));
+  const max = Math.min(500000, Math.max(1000, coverageBudgetNumber(options.maxFunctions, 350000)));
+  const knowledgeLimit = Math.min(2048, Math.max(0, coverageBudgetNumber(options.knowledgeLimit, 512)));
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
     if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
