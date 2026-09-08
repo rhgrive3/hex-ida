@@ -452,6 +452,55 @@ Both corrected fixtures, the full existing integer denominator and ownership
 regressions passed together (23.6 s). No production x86 instruction logic or
 denominator was changed by this reconciliation.
 
+### Restore the existing RISC-V decoder union
+
+Full `npm run check` on clean `e58a71745244093b0577d57517b0819aa4f09189`
+stopped at eight MachineEffects files (148.5 s), down from ten on `d0da0fe57`.
+Log: `/tmp/hex-check-i49w0R/full.log`. The two corrected x86 fixture files
+passed; the remaining files are independent-oracle-report, #5999 compressed
+capability, both #6133 x87 files, closure matrix, extended state, FP denominator
+and SIMD denominator. Later commands in the check chain were not reached.
+
+The RISC-V first divergence is a lost producer union, not an obsolete rejection
+expectation. Merge `91fafb2d3d6fb707d38583d3b4de479bd7b017f6` (#7010) removed
+the existing #7262/#7070/#6973 address/geometry typing, primitive identity,
+intrinsic byte snapshot and two-way compressed-capability validation. Its
+parent `617d7eb4c65635fc91f81bdecfc2df7fd0fbe7bf` already contains those repairs.
+The single existing decoder is restored from that exact parent; the only
+additional reconciliation preserves #7010's `compressed-profile-contradiction`
+diagnostic when a C-capable mode explicitly denies C. The reverse contradiction
+retains `compressed-capability-conflict`, and non-booleans remain invalid.
+Two older fixture assertions now name that preserved diagnostic; their
+rejection conditions and all positive cases remain unchanged.
+
+A canonical MachineEffects union test imports the existing #5813 typed-field,
+#5990 identity and #4992 byte-authority regressions, so those prior contributions
+cannot silently disappear behind a later gate. Before restoration, that union
+plus #5999 failed (0.3 s), including an actual missing rejection for typed
+geometry and for `rv64im` with `compressedInstructions:true`.
+Log: `/tmp/hex-roadmap-riscv-union-before-gsM7YT/full.log`.
+After restoration, the union, both #5999 suites, #6009 byte-domain and both
+ownership regressions passed (0.6 s). Lint passed (3.3 s); canonical generation
+passed (3.2 s), serial `2322242157`, build `67f64a2ec292d23c98bdf2d9`, release
+identity `9a075a3cec9dae23a7a709f1281af4361587b0bd5b3a2ee4685fbe6552498c30`.
+The broader RISC-V MachineEffects and Phase 6 decoder selection, plus #6038
+strict-token checks, passed (19.9 s). The actual 185-path inventory validates
+with the existing Phase 7/8 slices (21/24 paths). Exact-head rebuild and full
+affected gates remain required after commit.
+
+The separate full Phase 8 process on frozen `d0da0fe57` was re-polled and is
+still live. That worktree remains unchanged; its eventual result cannot attest
+the subsequent RISC-V source restoration.
+
+Next x86 diagnosis: the #6910 head
+`e5331237de68183c0c8b11d9e7f083c0e7161d8d` contains the missing Capstone
+`flagsKind` producer classification; #7489 restored consumers but not that
+producer. Inspect and reuse the existing contribution rather than inventing a
+parallel x87 classifier. Separately, the old direct parser/lifter tests do not
+enter #7483's dedicated receiver revalidation Worker. Missing worker authority
+must not be papered over by minting a brand in tests or weakening the production
+guard. These observations explain next checks, not an x86 fix or passing gate.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
