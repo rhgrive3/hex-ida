@@ -1,9 +1,22 @@
 import { deepFreeze, stableStringify } from '../core/identity/index.js';
+import { EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 
 const UTF8_ENCODER = new TextEncoder();
+
+// Recording completeness must belong to the canonical enum at the input
+// boundary (#5231): a non-empty arbitrary string used to survive
+// normalizeRecording, so an empty trace built a ready session that only
+// failed at replay time, while a non-empty trace failed mid-open — validity
+// depended on the trace length instead of the metadata contract.
+function canonicalCompleteness(value) {
+  if (typeof value !== 'string' || !EVIDENCE_COMPLETENESS.includes(value)) {
+    throw new DebugAdapterError('trace-invalid-completeness', 'trace completeness must be a canonical completeness value');
+  }
+  return value;
+}
 
 function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
 
@@ -204,6 +217,9 @@ function normalizeRecording(recording = {}, options = {}) {
   if (encodedByteLength(stableStringify(recording)) > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
   const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
   const truncated = recording.truncated === true || recording.trace?.truncated === true || dropped > 0;
+  // Validate the declared completeness even when the truncated override
+  // replaces it: malformed metadata must be rejected, not silently masked.
+  canonicalCompleteness(recording.completeness ?? 'bounded');
   return deepFreeze({
     recordingId: required(recording.recordingId ?? recording.id ?? `trace:${recording.sourceProvider ?? 'unknown'}`, 'trace-recording-id-required', 'trace recording id is required'),
     schemaVersion: String(recording.schemaVersion ?? recording.version ?? '1'),
@@ -218,7 +234,7 @@ function normalizeRecording(recording = {}, options = {}) {
     events: ownedClone(events),
     interventions: ownedClone(collectionField(recording.interventions, 'interventions')),
     dropped,
-    completeness: truncated ? 'truncated' : required(recording.completeness ?? 'bounded', 'trace-invalid-completeness', 'trace completeness must be a non-empty string'),
+    completeness: truncated ? 'truncated' : (recording.completeness ?? 'bounded'),
     sourceProvenance: ownedClone(recording.sourceProvenance ?? recording.provenance ?? null),
   });
 }
