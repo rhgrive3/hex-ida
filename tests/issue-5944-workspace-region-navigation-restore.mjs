@@ -8,11 +8,12 @@ import { test } from 'node:test';
 import { applyWorkspaceProject } from '../js/workspace.js';
 
 const TEXT = { id: 'text', section: '__text', vmAddr: 0x1000n, size: 0x100n };
+const DATA = { id: 'data', section: '__data', exec: false, vmAddr: 0x5000n, size: 0x100n };
 const COLD = { id: 'cold', section: '__text_cold', vmAddr: 0x3000n, size: 0x100n };
 
 function makeApp({ withGoToAddress }) {
   const state = new Map([
-    ['regions', [TEXT, COLD]],
+    ['regions', [TEXT, COLD, DATA]],
     ['currentRegion', TEXT],
     ['currentAddress', null],
   ]);
@@ -31,7 +32,9 @@ function makeApp({ withGoToAddress }) {
   if (withGoToAddress) {
     // Mimic js/app.js goToAddress: select the owning region, then navigate.
     app.selectedRegions = [];
+    app.navigationOptions = [];
     app.goToAddress = (addr, opts = {}) => {
+      app.navigationOptions.push(opts);
       const region = app.store.get('currentRegion');
       if (region && addr >= region.vmAddr && addr < region.vmAddr + region.size) {
         app.store.set({ currentAddress: addr });
@@ -79,4 +82,17 @@ test('#5944 legacy embedders without app.goToAddress keep the fallback path', ()
   applyWorkspaceProject(app, projectWith(0x1010n));
   assert.equal(app.store.get('currentAddress'), 0x1010n);
   assert.deepEqual(app.viewer.goToAddressCalls, [0x1010n]);
+});
+
+test('#5944 data region restore keeps the restored history cursor', () => {
+  const app = makeApp({ withGoToAddress: true });
+  app.navigation = { entries: [], index: -1, limit: 40 };
+  const history = [{ addr: 0x1010n }, { addr: 0x5040n }];
+  applyWorkspaceProject(app, { user: {}, navigation: { currentFunction: 0x5040n, history, cursorIndex: 1 } });
+  assert.deepEqual(app.selectedRegions, [DATA]);
+  assert.equal(app.store.get('currentAddress'), 0x5040n);
+  assert.deepEqual(app.viewer.goToAddressCalls, [0x5040n]);
+  assert.deepEqual(app.navigationOptions, [{ history: false }]);
+  assert.deepEqual(app.navigation.entries, history);
+  assert.equal(app.navigation.index, 1);
 });
