@@ -214,6 +214,9 @@ function classNameFromReference(value) {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(plain) ? plain : null;
   }
   if (!value || typeof value !== 'object') return null;
+  if (value.complete !== undefined && value.complete !== true) return null;
+  if (value.completeness && typeof value.completeness === 'object'
+    && value.completeness.complete !== undefined && value.completeness.complete !== true) return null;
   const candidate = value.className ?? value.targetClass ?? value.target ?? value.name;
   return typeof candidate === 'string' ? classNameFromReference(candidate) : null;
 }

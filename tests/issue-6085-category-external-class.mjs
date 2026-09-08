@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseObjcExtendedMetadata } from '../js/apple/objc-metadata.js';
 import { buildObjcRuntimeIndex, resolveObjcDispatch } from '../js/apple/objc-runtime.js';
+import { buildObjcRuntimeModel } from '../js/objc.js';
+import { BinaryImage } from '../js/binary/model.js';
+import { parseChainedBindingSites, resolveMachOPointer } from '../js/binary/macho-dyld.js';
+import { ByteView } from '../js/binary/reader.js';
 
 const CATLIST = 0x1000n;
 const CAT = 0x2000n;
@@ -19,6 +23,7 @@ const PROTOCOL_REFS = 0x7400n;
 const PROTOCOL = 0x7500n;
 const PROTOCOL_NAME = 0x7600n;
 const EXTERNAL_RAW = 0xdeadbeefn;
+const EXTERNAL_BIND_RAW = 1n << 63n;
 const CLASS_STORAGE = CAT + 8n;
 
 function buildFixture({ local = false, rawClassPointer = local ? CLASS_POINTER : EXTERNAL_RAW, withProtocol = true } = {}) {
@@ -60,7 +65,7 @@ function buildFixture({ local = false, rawClassPointer = local ? CLASS_POINTER :
     setString(PROTOCOL_NAME, 'CategoryProtocol');
   }
 
-  return { mem };
+  return { mem, setU64, setU32, setString };
 }
 
 function makeRead(mem) {
@@ -99,6 +104,69 @@ async function parseFixture({
     requireImplementationProof: true,
     ...parserOptions,
   });
+}
+
+function buildPublicPipelineFixture() {
+  const fixture = buildFixture();
+  fixture.setU64(CLASS_STORAGE, EXTERNAL_BIND_RAW);
+  const classList = 0x0800n;
+  const classRecord = 0x7800n;
+  const classRo = 0x7900n;
+  const className = 0x7a00n;
+  fixture.setU64(classList, classRecord);
+  fixture.setU64(classRecord + 32n, classRo);
+  fixture.setU32(classRo + 8n, 32);
+  fixture.setU64(classRo + 24n, className);
+  fixture.setString(className, 'NSString');
+
+  const bytes = new Uint8Array(0x10100);
+  bytes.set(fixture.mem);
+  const image = new BinaryImage(bytes, { format: 'macho', arch: 'x86_64', bits: 64, imageBase: 0n });
+  const segment = image.addSegment({
+    name: '__DATA', address: 0n, size: 0x10000n, fileOffset: 0n, fileSize: 0x10000n,
+    perms: { read: true, execute: true },
+  });
+  image.imports.push({ name: '_OBJC_CLASS_$_NSString', ordinal: 0, source: 'chained-fixups', sites: [] });
+  image.metadata.chainedFixups = { complete: true, importsComplete: true };
+
+  const view = new DataView(bytes.buffer);
+  const fixups = 0x10000;
+  const startsOffset = 0x1c;
+  const startsBase = fixups + startsOffset;
+  const record = startsBase + 8;
+  const pageCount = 16;
+  view.setUint32(fixups + 4, startsOffset, true);
+  view.setUint32(startsBase, 1, true);
+  view.setUint32(startsBase + 4, 8, true);
+  view.setUint32(record, 22 + pageCount * 2, true);
+  view.setUint16(record + 4, 0x1000, true);
+  view.setUint16(record + 6, 2, true);
+  view.setBigUint64(record + 8, 0n, true);
+  view.setUint32(record + 16, 0, true);
+  view.setUint16(record + 20, pageCount, true);
+  for (let page = 0; page < pageCount; page++) {
+    view.setUint16(record + 22 + page * 2, page === 2 ? 8 : 0xffff, true);
+  }
+  parseChainedBindingSites(
+    new ByteView(bytes),
+    { offset: fixups, size: 0x80 },
+    image,
+    image.imports,
+    [segment],
+  );
+  image.resolvePointer = (raw, context) => resolveMachOPointer(image, raw, context);
+
+  return {
+    read: makeRead(bytes),
+    classList: { vmAddr: classList, size: 8n, pointerFormat: 2 },
+    sections: {
+      categoryList: { vmAddr: CATLIST, size: 8n },
+      binaryImage: image,
+      architecture: 'x86_64',
+      executableRanges: [{ vmAddr: INSTANCE_IMP, size: 0x200n }],
+    },
+    image,
+  };
 }
 
 test('issue #6085 restores external category owner for instance/class methods and protocols', async () => {
@@ -160,6 +228,33 @@ test('issue #6085 joins external category methods and protocol adoption in runti
   const dispatch = resolveObjcDispatch(index, { receiverType: 'NSString', selector: 'hex_isInteresting' });
   assert.equal(dispatch.resolved?.className, 'NSString');
   assert.equal(dispatch.resolved?.source, 'category');
+});
+
+test('issue #6085 public runtime model preserves external owner and category names', async () => {
+  const fixture = buildPublicPipelineFixture();
+  assert.equal(fixture.image.metadata.chainedFixups.bindingSitesComplete, true);
+  assert.equal(fixture.image.imports[0].sites[0].address, CLASS_STORAGE);
+  assert.equal(
+    resolveMachOPointer(fixture.image, EXTERNAL_BIND_RAW, { address: CLASS_STORAGE }),
+    null,
+    'the numeric Mach-O resolver must keep a bind non-address',
+  );
+
+  const model = await buildObjcRuntimeModel(
+    fixture.read,
+    fixture.classList,
+    fixture.sections,
+    null,
+    0n,
+    2,
+  );
+  const category = model.categories[0];
+  assert.equal(category.className, 'NSString');
+  assert.deepEqual(model.runtimeIndex.classes.get('NSString').protocols, ['CategoryProtocol']);
+  assert.ok(model.names.some((entry) => entry.name === '-[NSString(HexAudit) hex_isInteresting]'));
+  assert.ok(model.names.some((entry) => entry.name === '+[NSString(HexAudit) classHexValue]'));
+  assert.equal(model.runtimeIndex.methodsBySelector.get('-:hex_isInteresting')?.[0]?.className, 'NSString');
+  assert.equal(model.runtimeIndex.methodsBySelector.get('+:classHexValue')?.[0]?.className, 'NSString');
 });
 
 test('issue #6085 uses complete binary-image imports as the automatic bind bridge', async () => {
@@ -241,6 +336,11 @@ test('issue #6085 accepts explicit class-reference fallback and rejects incomple
     parserOptions: { resolveClassReference: () => '_OBJC_CLASS_$_NSString' },
   });
   assert.equal(reference.categories[0].className, 'NSString');
+
+  const incompleteReference = await parseFixture({
+    parserOptions: { resolveClassReference: () => ({ name: '_OBJC_CLASS_$_NSString', complete: false }) },
+  });
+  assert.equal(incompleteReference.categories[0].className, null);
 
   const incomplete = await parseFixture({
     parserOptions: {
