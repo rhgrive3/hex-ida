@@ -8,6 +8,14 @@ const PROPOSAL_CAPABILITIES = Object.freeze({
   'struct-field': 'annotation.struct-field', patch: 'patch.create', 'project-annotation': 'annotation.project',
 });
 const EXECUTION_PAYLOADS = new WeakMap();
+
+function sameBytes(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
 const PROPOSAL_AUTHORITIES = new WeakMap();
 const EXECUTION_AUTHORIZATIONS = new WeakMap();
 let proposalSequence = 1;
@@ -53,6 +61,7 @@ export class ProposalStore {
     // stale-state authority and the backend read both use plain arrays. Keep
     // one canonical payload for either accepted container so equal bytes do
     // not produce different revisions (#6171).
+    const identityPayload = executionPayload.before;
     if (kind === 'patch' && (executionPayload.before instanceof Uint8Array || executionPayload.after instanceof Uint8Array)) {
       executionPayload.before = proposalBytes(executionPayload.before);
       executionPayload.after = proposalBytes(executionPayload.after);
@@ -63,8 +72,12 @@ export class ProposalStore {
     // the payload could contain A while the revision records B (#5945).
     // Structured cloning also rejects symbol-keyed state before this point, so
     // the owned payload is the complete fail-closed identity view.
-    const revision = fingerprint(executionPayload.before);
-    const bindingRevision = fingerprint(binding);
+    // For patch bytes the revision fingerprints the snapshot WITH its
+    // container identity (#6215: Uint8Array vs Array vs other views are
+    // different states) while execution receives the strict canonical byte
+    // array above; both derive from the same owned snapshot, so the TOCTOU
+    // boundary stays closed.
+    const revision = fingerprint(kind === 'patch' ? identityPayload : executionPayload.before);    const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
       kind,
@@ -141,14 +154,27 @@ export class ProposalStore {
     }
 
     let currentRevision;
+    let currentStateIsCanonicalPatchBytes = false;
     try {
+      // A patch proposal created from a Uint8Array snapshot (#6215) carries a
+      // view-identity revision, but the executor's staleness read-back and the
+      // capability authority both speak canonical plain byte arrays (#6171).
+      // Accept the canonical byte array as the same state the approved
+      // Uint8Array window described — byte-for-byte identical, and only for
+      // patch kinds whose stored execution payload is the flattened form.
+      if (proposal.kind === 'patch'
+        && Array.isArray(currentState)
+        && Array.isArray(EXECUTION_PAYLOADS.get(proposal)?.before)
+        && sameBytes(currentState, EXECUTION_PAYLOADS.get(proposal).before)) {
+        currentStateIsCanonicalPatchBytes = true;
+      }
       currentRevision = fingerprint(currentState);
     } catch (error) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
     }
-    if (currentRevision !== authority.revision) {
+    if (currentRevision !== authority.revision && !currentStateIsCanonicalPatchBytes) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');

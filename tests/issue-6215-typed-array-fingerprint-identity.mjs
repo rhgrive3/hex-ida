@@ -13,7 +13,9 @@ const evidenceStore = { has: () => true };
 
 async function attempt({ before, current }) {
   const store = new ProposalStore({ evidenceStore });
-  const proposal = store.create({ kind: 'patch', before, after: { value: 'changed' }, evidenceIds: ['e1'] });
+  // after must satisfy the strict byte contract (#6171, merged after this
+  // regression was first written) — the fingerprint question here is `before`.
+  const proposal = store.create({ kind: 'patch', before, after: Uint8Array.of(9, 9, 9, 9), evidenceIds: ['e1'] });
   const { approvalToken } = store.approve(proposal.id);
   let applied = false;
   let error = null;
