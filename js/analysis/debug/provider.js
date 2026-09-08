@@ -188,6 +188,10 @@ export function isDebugRecordAuthoritative(result, record) {
   // record must carry that same build identity to claim authority.
   if (identity.observed != null && record.buildIdentity !== identity.observed) return false;
   if (!isCanonicalDebugRecord(record)) return false;
+  // The parser's own `descriptor.complete:false` is an explicit statement
+  // that this record has missing/uninterpreted content. Identity match proves
+  // the build, not the meaning — an incomplete record must stay soft (#5980).
+  if (record.descriptor && typeof record.descriptor === 'object' && record.descriptor.complete === false) return false;
   if (identity.verdict === 'matched-authoritative') return true;
   if (identity.verdict !== 'matched-partial') return false;
 
