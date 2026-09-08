@@ -179,10 +179,20 @@ export function applyWorkspaceProject(app, project){
   // Restore currentFunction if present and within valid range
   if(project.navigation?.currentFunction != null){
     const curAddr = BigInt(project.navigation.currentFunction);
-    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
-    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
-      app.store?.set?.({ currentAddress: curAddr });
-      app.viewer?.goToAddress?.(curAddr);
+    if(typeof app.goToAddress === 'function'){
+      // Saved positions can live in any region of the active slice. Route the
+      // restore through the app-level navigation so the owning region gets
+      // selected (secondary code sections, data regions, ...); invalid
+      // addresses stay silently skipped exactly as before (#5944).
+      const regions=app.store?.get?.('regions')||[];
+      const target=regions.find((r)=>r.size>0n&&curAddr>=r.vmAddr&&curAddr<r.vmAddr+r.size);
+      if(target)app.goToAddress(curAddr,{history:false});
+    }else{
+      const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+      if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+        app.store?.set?.({ currentAddress: curAddr });
+        app.viewer?.goToAddress?.(curAddr);
+      }
     }
   }
   // Restore bookmarks
