@@ -96,7 +96,7 @@ function toolIdentity(toolPath) {
   return Object.freeze({ path: toolPath, version: versionText });
 }
 
-function decodedInstruction(raw, id, ops = parseOperands(raw.opStr)) {
+function decodedInstruction(raw, id, ops = parseOperands(raw.opStr), word = null) {
   return {
     instructionId: id,
     address: raw.address,
@@ -104,6 +104,7 @@ function decodedInstruction(raw, id, ops = parseOperands(raw.opStr)) {
     operands: raw.opStr,
     opStr: raw.opStr,
     ops,
+    ...(word == null ? {} : { word }),
     mode: 'a64',
     architectureId: 'arm64',
     origin: { instructionIds: [id] },
@@ -229,7 +230,7 @@ function finalizeCounts(counts, denominatorCount) {
 function decodeOne(session, word, id, opsParser = parseOperands) {
   const raw = session.decode(bytes32(word), 0x400000n)[0] ?? null;
   if (raw == null) return null;
-  return decodedInstruction(raw, id, opsParser(raw.opStr));
+  return decodedInstruction(raw, id, opsParser(raw.opStr), word);
 }
 
 function expectedReference(rawProofs, memoryProof, simdProof) {
