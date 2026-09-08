@@ -23,9 +23,44 @@ test('#5710 canonical return provenance order follows UTF-16 code units, not the
     { kind: 'root', rootEntityId: 'ä' },
     { kind: 'root', rootEntityId: 'z' },
   ]);
-  // Code-unit order: 'z' (U+007A) < 'ä' (U+00E4). ICU collations (en-US, sv-SE)
-  // disagree on this pair, so localeCompare cannot produce this order.
+  // Code-unit order is 'z' (U+007A) < 'ä' (U+00E4). ICU collations can rank
+  // this pair differently, so the adversarial localeCompare test below is the
+  // portable proof that canonicalization no longer delegates to host collation.
   assert.deepEqual(summary.returnProvenance.map((x) => x.rootEntityId), ['z', 'ä']);
+});
+
+test('#5710 canonicalization and digest ignore an adversarial localeCompare implementation', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(String.prototype, 'localeCompare');
+  assert.ok(descriptor);
+  let localeCompareCalls = 0;
+  Object.defineProperty(String.prototype, 'localeCompare', {
+    ...descriptor,
+    value(other) {
+      localeCompareCalls += 1;
+      const left = String(this);
+      const right = String(other);
+      return left < right ? 1 : left > right ? -1 : 0;
+    },
+  });
+
+  try {
+    const provenance = [
+      { kind: 'root', rootEntityId: 'Ä' },
+      { kind: 'root', rootEntityId: 'a' },
+      { kind: 'root', rootEntityId: 'Z' },
+      { kind: 'root', rootEntityId: 'z' },
+    ];
+    const first = summaryWithProvenance(provenance);
+    const second = summaryWithProvenance([...provenance].reverse());
+    const expected = ['Z', 'a', 'z', 'Ä'].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+
+    assert.deepEqual(first.returnProvenance.map((x) => x.rootEntityId), expected);
+    assert.deepEqual(second.returnProvenance.map((x) => x.rootEntityId), expected);
+    assert.equal(functionSummaryDigest(first), functionSummaryDigest(second));
+    assert.equal(localeCompareCalls, 0);
+  } finally {
+    Object.defineProperty(String.prototype, 'localeCompare', descriptor);
+  }
 });
 
 test('#5710 the canonical order is stable and the digest is locale-independent', () => {
