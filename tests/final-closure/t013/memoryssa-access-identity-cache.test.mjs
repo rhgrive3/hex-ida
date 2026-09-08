@@ -13,6 +13,7 @@ import {
   canonicalAliasProofDigest,
   canonicalIdentityDigest,
   canonicalProducerValueDigest,
+  createCanonicalIdentityDigestMemo,
 } from '../../../js/semantics/memoryssa/proof.js';
 
 function origin(id, address = 0x4000n) {
@@ -153,4 +154,25 @@ test('copied and mutable rows remain on content-validation paths', () => {
     copiedProof.identity.digest = 'mutated-proof-identity';
     assert.notEqual(canonicalAccessProofDigest(copiedProof), proofBefore);
   }
+});
+
+test('per-build identity digest memo preserves mutable and shallow-freeze boundaries', () => {
+  const memo = createCanonicalIdentityDigestMemo();
+  const identity = Object.freeze({
+    functionId: 't013-frozen-identity',
+    nested: Object.freeze({ scope: 'function-local' }),
+  });
+  assert.equal(memo.digest(identity), stableDigest(identity));
+  assert.equal(memo.digest(identity), stableDigest(identity));
+
+  const mutable = { functionId: 't013-mutable-identity' };
+  const before = memo.digest(mutable);
+  mutable.functionId = 't013-mutated-identity';
+  assert.notEqual(memo.digest(mutable), before);
+
+  const entries = new Map([['before', 1]]);
+  const shallowFrozen = Object.freeze({ entries });
+  const mapBefore = memo.digest(shallowFrozen);
+  entries.set('after', 2);
+  assert.notEqual(memo.digest(shallowFrozen), mapBefore);
 });

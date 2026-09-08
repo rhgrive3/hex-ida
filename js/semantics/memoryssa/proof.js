@@ -36,6 +36,7 @@ const CANONICAL_PRODUCER_STORE_VALUE_PROOF_DIGESTS = new WeakMap();
 const CANONICAL_ALIAS_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
 const CANONICAL_ACCESS_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
 const CANONICAL_STORE_VALUE_PROOF_CONSTRUCTED_DIGESTS = new WeakMap();
+const CANONICAL_IDENTITY_DIGEST_MEMOS = new WeakSet();
 
 function frozenObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.isFrozen(value)
@@ -113,6 +114,64 @@ export function canonicalIdentityDigest(identity) {
   const cached = CANONICAL_PRODUCER_IDENTITY_DIGESTS.get(identity);
   if (cached !== undefined && Object.isFrozen(identity)) return cached;
   return stableDigest(identity ?? null);
+}
+
+function deeplyFrozenIdentity(value, seen = new WeakSet()) {
+  if (value == null || (typeof value !== 'object' && typeof value !== 'function')) return true;
+  try {
+    if (!Object.isFrozen(value) || typeof value === 'function'
+        || value instanceof Map || value instanceof Set || value instanceof Date
+        || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return false;
+    if (seen.has(value)) return true;
+    seen.add(value);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor == null || !('value' in descriptor) || !deeplyFrozenIdentity(descriptor.value, seen)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/*
+ * Proofs emitted during one MemorySSA build all bind the same immutable identity
+ * snapshot.  Keep this memo scoped to that build, and cache only a deeply frozen
+ * data graph; mutable/untrusted values continue through stableDigest every time.
+ */
+export function createCanonicalIdentityDigestMemo() {
+  const cache = new WeakMap();
+  const eligible = new WeakSet();
+  let nullDigest;
+  let hasNullDigest = false;
+  const memo = Object.freeze({
+    digest(identity) {
+      if (identity == null) {
+        if (!hasNullDigest) {
+          nullDigest = stableDigest(null);
+          hasNullDigest = true;
+        }
+        return nullDigest;
+      }
+      if (!eligible.has(identity)) {
+        if (!deeplyFrozenIdentity(identity)) return stableDigest(identity);
+        eligible.add(identity);
+      }
+      const cached = cache.get(identity);
+      if (cached !== undefined) return cached;
+      const digest = stableDigest(identity);
+      cache.set(identity, digest);
+      return digest;
+    },
+  });
+  CANONICAL_IDENTITY_DIGEST_MEMOS.add(memo);
+  return memo;
+}
+
+function identityDigestForProof(identity, memo) {
+  return CANONICAL_IDENTITY_DIGEST_MEMOS.has(memo)
+    ? memo.digest(identity)
+    : canonicalIdentityDigest(identity);
 }
 
 export function canonicalProducerValueDigest(value) {
@@ -247,6 +306,7 @@ export function canonicalAccessBindingForMetadata(metadata) {
 export function canonicalAliasProof({
   result,
   identity,
+  identityDigestMemo = null,
   functionId,
   leftRegionId,
   rightRegionId,
@@ -279,7 +339,7 @@ export function canonicalAliasProof({
     },
     identity: {
       functionId: String(functionId ?? ''),
-      digest: canonicalIdentityDigest(identity),
+      digest: identityDigestForProof(identity, identityDigestMemo),
     },
     provenance: {
       functionId: String(functionId ?? ''),
@@ -302,7 +362,7 @@ export function canonicalAliasProof({
   return proof;
 }
 
-export function canonicalAccessProof({ raw, descriptor, identity, functionId }) {
+export function canonicalAccessProof({ raw, descriptor, identity, identityDigestMemo = null, functionId }) {
   const memory = descriptor?.memory;
   if (!memory) return null;
   const sourceEntityId = String(descriptor?.node?.id ?? '');
@@ -336,7 +396,7 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId }) 
     },
     identity: {
       functionId: String(functionId ?? ''),
-      digest: canonicalIdentityDigest(identity),
+      digest: identityDigestForProof(identity, identityDigestMemo),
     },
     provenance: {
       functionId: String(functionId ?? ''),
@@ -376,6 +436,7 @@ export function canonicalStoreValueProof({
   value,
   widthBits,
   identity,
+  identityDigestMemo = null,
   functionId,
   resolvedSemanticValue = null,
   resolvedValueId = null,
@@ -454,7 +515,7 @@ export function canonicalStoreValueProof({
     semanticValueDigest: stableDigest(semanticValue),
     identity: {
       functionId: String(functionId ?? ''),
-      digest: canonicalIdentityDigest(identity),
+      digest: identityDigestForProof(identity, identityDigestMemo),
     },
     widthBits: width,
     valueKind,

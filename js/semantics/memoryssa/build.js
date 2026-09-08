@@ -29,6 +29,7 @@ import {
   canonicalAliasProof,
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
+  createCanonicalIdentityDigestMemo,
   MEMORY_SSA_PROOF_VERSION,
   registerCanonicalMemorySsaIdentities,
 } from './proof.js';
@@ -232,8 +233,8 @@ function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, me
   };
 }
 
-function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId) {
-  const identityDigest = stableDigest(identity ?? null);
+function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId, identityDigestMemo) {
+  const identityDigest = identityDigestMemo.digest(identity);
   const proof = {
     kind: 'canonical-memory-stack-no-escape',
     version: MEMORY_SSA_PROOF_VERSION,
@@ -374,7 +375,7 @@ function disjointIntervalReason(leftRegion, rightRegion) {
   return 'disjoint-memory-ranges';
 }
 
-function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId) {
+function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId, identityDigestMemo) {
   // Region identity is the canonical storage root.  For a non-identical
   // precise region, however, an instruction displacement can place the
   // actual access wholly outside that root's interval.  Refine only this
@@ -411,6 +412,7 @@ function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, pu
   const proof = canonicalAliasProof({
     result: { relation: 'no', reasonCodes, evidenceIds, proof: provider },
     identity,
+    identityDigestMemo,
     functionId,
     leftRegionId: sourceRegion.id,
     rightRegionId: targetRegion.id,
@@ -712,7 +714,7 @@ function effectSummary(descriptor, relation) {
   }
   return jsonSafe(out);
 }
-function memoryAccessProof(descriptor, options, identity) {
+function memoryAccessProof(descriptor, options, identity, identityDigestMemo) {
   const raw = typeof options?.accessProofForDescriptor === 'function'
     ? options.accessProofForDescriptor(descriptor)
     : null;
@@ -720,6 +722,7 @@ function memoryAccessProof(descriptor, options, identity) {
     raw,
     descriptor,
     identity,
+    identityDigestMemo,
     functionId: identity?.functionId ?? descriptor?.node?.functionId ?? null,
   });
 }
@@ -807,7 +810,7 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
   return { ...input, value, widthBits: outputWidth };
 }
 
-function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null) {
+function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null, identityDigestMemo = null) {
   if (node?.kind !== 'store' || !Array.isArray(node.inputs) || node.inputs.length !== 2) return null;
   const addressValueId = memoryAddressExpr(node.memory)?.valueId ?? null;
   if (addressValueId == null || String(node.inputs[0]) !== String(addressValueId)) return null;
@@ -825,6 +828,7 @@ function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsa
       value: null,
       widthBits,
       identity,
+      identityDigestMemo,
       functionId,
     });
   }
@@ -840,6 +844,7 @@ function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsa
     value: resolved.value,
     widthBits,
     identity,
+    identityDigestMemo,
     functionId,
     ...(resolved.semanticValue?.id === semanticValue.id ? {} : {
       resolvedSemanticValue: resolved.semanticValue,
@@ -894,6 +899,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
+  const identityDigestMemo = createCanonicalIdentityDigestMemo();
 
   // The Semantic IR access provider is the canonical producer for the
   // decoder's intentionally-unknown ordinary-access qualifiers. Normalize the
@@ -902,7 +908,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // this gap: only the canonical family/provider shape is accepted.
   for (const descriptor of descriptors) {
     if (!descriptor.memory || descriptor.memory.addressSpace !== 'memory') continue;
-    const proof = memoryAccessProof(descriptor, options, identity);
+    const proof = memoryAccessProof(descriptor, options, identity, identityDigestMemo);
     if (!proof
         || proof.volatility !== false || proof.atomic !== false
         || (proof.ordering != null && proof.ordering !== 'unknown')) continue;
@@ -951,6 +957,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     const canonicalProof = canonicalAliasProof({
       result,
       identity,
+      identityDigestMemo,
       functionId: irFunction.functionId,
       leftRegionId: left?.region?.id,
       rightRegionId: right?.region?.id,
@@ -976,6 +983,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         purpose,
         identity,
         irFunction.functionId,
+        identityDigestMemo,
       );
     }),
   );
@@ -1274,11 +1282,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             }),
             aliasProof: reaching.proof ?? null,
             aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
-            accessProof: memoryAccessProof(descriptor, options, identity),
+            accessProof: memoryAccessProof(descriptor, options, identity, identityDigestMemo),
             ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
               ? (() => {
                 const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])))
+                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])), identityDigestMemo)
                   : null;
                 return canonicalValue == null ? {} : { canonicalValue };
               })()
@@ -1323,7 +1331,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       }),
       aliasProof: event.aliasProof,
       aliasRelation: event.aliasRelation,
-      accessProof: memoryAccessProof(event.descriptor, options, identity),
+      accessProof: memoryAccessProof(event.descriptor, options, identity, identityDigestMemo),
       ...(event.descriptor.role === 'write'
         ? (() => {
           const canonicalValue = canonicalStoreOperand(
@@ -1334,6 +1342,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             event.id,
             options.ssa,
             new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])),
+            identityDigestMemo,
           );
           return canonicalValue == null ? {} : { canonicalValue };
         })()
@@ -1373,6 +1382,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             input.useId,
             input.nodeId,
             candidate.id,
+            identityDigestMemo,
           ),
         };
       }
@@ -1406,7 +1416,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       nodeId: input.nodeId,
       regionId: input.regionId,
       loadRange,
-      identityDigest: stableDigest(identity),
+      identityDigest: identityDigestMemo.digest(identity),
     };
     return {
       useId: input.useId,
