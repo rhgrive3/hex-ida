@@ -298,6 +298,17 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 
+  // An operandless system instruction can still carry architecturally implicit
+  // memory (SAVEPREVSSP pops/pushes shadow-stack tokens, IRET/RET far returns
+  // read the return stack frame; #5569). The decoder operand surface plus the
+  // small proven implicit set above is the only access evidence available
+  // here, so an empty surface never proves memory absence. Until a dedicated
+  // per-family proof exists, keep the system owner's fail-closed partial
+  // instead of minting a `memory:none` exact-with-intrinsic summary.
+  if (ownerId === 'system' && memory.reads.length === 0 && memory.writes.length === 0) {
+    return partial;
+  }
+
   const domain = flagDomain(instruction, family);
   if (!domain.valid) return partial;
 
