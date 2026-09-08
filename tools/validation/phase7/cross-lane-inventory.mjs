@@ -36,20 +36,6 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   ]),
 });
 
-// Git reports a path move as both the old and new name in a name-only
-// inventory. These are Phase 7 regression moves, so their sources are
-// accepted only when the exact Phase 7 destination is present as well. They
-// are kept separate from CROSS_LANE_ROUTES: the latter remains the exact
-// foreign-file allowlist for the branch.
-export const CROSS_LANE_RENAMES = Object.freeze({
-  [ANALYSIS_BATCH_LANE]: Object.freeze({
-    'tests/issue-5765-semantic-ir-locale-free-serialization.mjs': 'tests/semantic-v2/issue-5765-locale-free-serialization.test.mjs',
-    'tests/issue-5781-type-entity-identity.mjs': 'tests/phase7/types/issue-5781-type-entity-identity.test.mjs',
-    'tests/issue-5800-search-unsupported-region-completeness.mjs': 'tests/phase7/integration/issue-5800-search-unsupported-region-completeness.test.mjs',
-    'tests/issue-5802-canonical-root-conflict.mjs': 'tests/phase7/alias/issue-5802-canonical-root-conflict.test.mjs',
-  }),
-});
-
 function phase7Owned(file, patterns) {
   return patterns.some((pattern) => regexFor(pattern).test(file));
 }
@@ -64,13 +50,7 @@ export function validateCrossLaneInventory(branch, files, { manifest = loadManif
 
   const unique = [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
   const owned = unique.filter((file) => phase7Owned(file, manifest.lanes.p7));
-  const renameMap = CROSS_LANE_RENAMES[branch] ?? {};
-  const renameSources = new Set(Object.keys(renameMap));
-  const incompleteRenames = unique.filter((file) => renameSources.has(file) && !unique.includes(renameMap[file]));
-  if (incompleteRenames.length) {
-    throw new TypeError(`cross-lane route has incomplete renamed paths: ${incompleteRenames.join(', ')}`);
-  }
-  const foreign = unique.filter((file) => !phase7Owned(file, manifest.lanes.p7) && !renameSources.has(file));
+  const foreign = unique.filter((file) => !phase7Owned(file, manifest.lanes.p7));
   const allowedForeign = new Set(CROSS_LANE_ROUTES[branch]);
   const unexpected = foreign.filter((file) => !allowedForeign.has(file));
   if (unexpected.length) {

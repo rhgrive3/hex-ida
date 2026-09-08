@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 
 import {
   CROSS_LANE_ROUTES,
-  CROSS_LANE_RENAMES,
   validateCrossLaneInventory,
 } from '../../../tools/validation/phase7/cross-lane-inventory.mjs';
 
@@ -88,7 +87,6 @@ const analysisBatchOwnedFiles = [
   '.github/workflows/phase7-ownership.yml',
 ];
 const analysisBatchForeignFiles = CROSS_LANE_ROUTES[analysisBatchBranch];
-const analysisBatchMovedFrom = Object.keys(CROSS_LANE_RENAMES[analysisBatchBranch]);
 assert.deepEqual(
   [...analysisBatchForeignFiles],
   [
@@ -101,18 +99,9 @@ assert.deepEqual(
 );
 const analysisBatchInventory = [...analysisBatchOwnedFiles, ...analysisBatchForeignFiles];
 assert.deepEqual(
-  validateCrossLaneInventory(analysisBatchBranch, [...analysisBatchInventory, ...analysisBatchMovedFrom]),
+  validateCrossLaneInventory(analysisBatchBranch, analysisBatchInventory),
   [...analysisBatchOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
   'the exact #7079 route must return only Phase 7-owned files',
-);
-assert.throws(
-  () => validateCrossLaneInventory(analysisBatchBranch, [
-    ...analysisBatchOwnedFiles.filter((file) => file !== CROSS_LANE_RENAMES[analysisBatchBranch][analysisBatchMovedFrom[0]]),
-    ...analysisBatchForeignFiles.filter((file) => file !== CROSS_LANE_RENAMES[analysisBatchBranch][analysisBatchMovedFrom[0]]),
-    analysisBatchMovedFrom[0],
-  ]),
-  /incomplete renamed paths/,
-  'a moved foreign source without its exact Phase 7 destination must fail closed',
 );
 assert.throws(
   () => validateCrossLaneInventory(analysisBatchBranch, [...analysisBatchInventory, 'js/semantics/ir/nodes.js']),
