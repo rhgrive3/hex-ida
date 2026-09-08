@@ -86,15 +86,67 @@ function boundedCount(value, fallback, max, code) {
 }
 
 // Canonical authority records must not retain mutable binary backing storage.
-// structuredClone preserves TypedArray/ArrayBuffer identity, but Object.freeze
-// cannot freeze their indexed bytes. Canonicalize every binary view to a plain
-// byte array before identity/freeze, including values nested in Map/Set (#6214).
-function canonicalizeBinary(value, seen = new WeakSet()) {
+// A frozen byte array is safe to expose, but it is not a sufficient identity:
+// it collapses a TypedArray into an ordinary array and collapses all view
+// widths with the same bytes. Keep the original binary constructor name beside
+// an owned, frozen byte copy. The marker is enumerable so structuredClone and
+// transport snapshots retain the canonical representation.
+const CANONICAL_BINARY_TAG = '$hexRuntimeBinary';
+const CANONICAL_BINARY_BYTES = 'bytes';
+
+function sharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
+function binaryTypeName(value) {
+  if (value instanceof ArrayBuffer) return 'ArrayBuffer';
+  if (sharedArrayBuffer(value)) return 'SharedArrayBuffer';
+  const name = value?.constructor?.name;
+  return typeof name === 'string' && name ? name : 'view';
+}
+
+function binaryBytes(value) {
+  if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) return new Uint8Array(value);
+  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+}
+
+function canonicalBinaryType(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_TAG)
+    || !Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_BYTES)) return null;
+  const type = value[CANONICAL_BINARY_TAG];
+  const bytes = value[CANONICAL_BINARY_BYTES];
+  if (typeof type !== 'string' || !type || !Array.isArray(bytes)) return null;
+  if (!bytes.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)) return null;
+  return type;
+}
+
+function canonicalBinary(type, bytes) {
+  return Object.freeze({
+    [CANONICAL_BINARY_TAG]: type,
+    [CANONICAL_BINARY_BYTES]: Object.freeze(Array.from(bytes)),
+  });
+}
+
+function canonicalizeBinary(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object') return value;
-  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-  if (seen.has(value)) return value;
-  seen.add(value);
+  if (seen.has(value)) return seen.get(value);
+
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) {
+    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
+    seen.set(value, canonical);
+    return canonical;
+  }
+
+  // Keep the structured clone's object graph so repeated references in valid
+  // metadata, Maps, and Sets remain repeated references after binary replacement.
+  seen.set(value, value);
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) value[i] = canonicalizeBinary(value[i], seen);
     return value;
@@ -111,20 +163,70 @@ function canonicalizeBinary(value, seen = new WeakSet()) {
     for (const item of items) value.add(canonicalizeBinary(item, seen));
     return value;
   }
-  for (const key of Object.keys(value)) value[key] = canonicalizeBinary(value[key], seen);
+  for (const key of Object.keys(value)) {
+    const item = canonicalizeBinary(value[key], seen);
+    Object.defineProperty(value, key, { value: item, enumerable: true, configurable: true, writable: true });
+  }
   return value;
+}
+
+function cloneFallback(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) {
+    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
+    seen.set(value, canonical);
+    return canonical;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) copy.set(cloneFallback(key, seen), cloneFallback(item, seen));
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneFallback(item, seen));
+    return copy;
+  }
+  if (Array.isArray(value)) {
+    const copy = [];
+    seen.set(value, copy);
+    for (const item of value) copy.push(cloneFallback(item, seen));
+    return copy;
+  }
+  const copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(copy, key, {
+      value: cloneFallback(value[key], seen), enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return copy;
 }
 
 function clone(value) {
   if (value == null || typeof value !== 'object') return value;
-  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) return canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    return canonicalBinary(binaryTypeName(value), binaryBytes(value));
+  }
   if (typeof structuredClone === 'function') return canonicalizeBinary(structuredClone(value));
-  if (value instanceof Map) return new Map([...value.entries()].map(([key, item]) => [clone(key), clone(item)]));
-  if (value instanceof Set) return new Set([...value.values()].map(clone));
-  if (value instanceof Date) return new Date(value.getTime());
-  if (Array.isArray(value)) return value.map(clone);
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
+  return cloneFallback(value);
 }
 
 function capabilityList(value) {
@@ -215,13 +317,15 @@ function typeTagged(value, seen = new WeakSet()) {
     case 'string': return { $t: 'string', v: value };
     case 'undefined': case 'function': case 'symbol': return { $t: typeof value };
   }
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) return { $t: taggedType, v: value[CANONICAL_BINARY_BYTES] };
   if (seen.has(value)) fail('runtime-observation-cyclic-payload');
   seen.add(value);
   const nested = (item) => typeTagged(item, seen);
   let out;
   if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
   else if (ArrayBuffer.isView(value)) out = { $t: value.constructor?.name ?? 'view', v: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-  else if (value instanceof ArrayBuffer) out = { $t: 'ArrayBuffer', v: Array.from(new Uint8Array(value)) };
+  else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) out = { $t: binaryTypeName(value), v: Array.from(new Uint8Array(value)) };
   else if (value instanceof Map) {
     const entries = [...value.entries()].map(([key, item]) => [nested(key), nested(item)]);
     entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
