@@ -1,3 +1,48 @@
+# Full-check follow-up — 2026-09-08
+
+The canonical full check on clean `71bf992abe131c044b144175ce8db72939c87b1d`
+completed **FAIL** after1013.0 s. Lint, invariants (including the complete
+MachineEffects denominator), migration, module boundaries and evidence-writer
+checks passed. Semantic-v2 reported two failing leaves:
+
+- `phase3-hard-timeout.test.mjs`: the100 ms fixture timer could fire before
+  child signal handlers initialized; SIGTERM was observed instead of SIGKILL.
+  A readiness correction is under review; no corrected full PASS is claimed.
+- `decompiler-semantic.mjs:62` in legacy mode: under concurrent execution the
+  optional min/max rewrite exceeded its host-time budget and retained the
+  correct signed ternary. `03f2ff08b` makes this display fixture deterministic
+  with explicit finite work limits. Its exact-legacy integrated rerun passes
+  (0.9 s); the product's deadline behavior is unchanged.
+
+The nested required-regression chain passed467.6 s and generated synchronization
+passed101.7 s despite the earlier failures. `6cb08443f` now stops before launching
+later execution lanes after a completed lane fails. Successful runs retain every
+lane and discovered contract. A synthetic regression checks both behaviors and
+passes0.2 s. It does not turn partial runs into PASS.
+
+Durable original log:
+`/mnt/workspace/hex-stage-a-logs/71bf992abe131c044b144175ce8db72939c87b1d-full-check.log`.
+Full-command acceptance remains pending; the ledger is43/61.
+
+The reviewed source71bf992ab was published and all six CircleCI jobs passed.
+The independent cache/reference review exercised six identity probes and eight
+reference probes, with no concrete defect found in those boundaries. Focused
+cache tests passed5/5 and competitive tests passed6/6 with the valid capture
+fixture. This is bounded review evidence, not complete T019 or product-measurement
+acceptance. Reproducible report and probe paths:
+`/mnt/workspace/.dev-state/hex-development-batch/independent-current-cache-reference-review.md`.
+
+Browser dependencies are isolated under task-owned paths. The first UI attempt
+failed WebKit shared-library startup; the second reached WebKit UI but exposed
+missing Chromium overlay entries and GIO TLS support. Both original results
+remain FAIL. The corrected preflight now launches Chromium and WebKit, loads a
+localhost app, performs HTTPS preconnect/fetch, and checks page errors. Full UI
+verification with that environment is in progress. Source the retained
+`/mnt/workspace/.dev-state/hex-development-batch/browser-env.sh` before running
+browser commands. Physical-device execution remains deferred.
+
+---
+
 # Reviewed recovery runtime batch — 2026-09-08
 
 Implementation source: `2313838c3`; canonical generated commit: `71b654adc`.
