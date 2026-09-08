@@ -56,13 +56,17 @@ assert.equal(category.resolved?.types, '@16@0:8');
 assert.equal(category.resolved?.typeEncoding, '@16@0:8');
 assert.equal(index.methodsByIMP.get('4608')?.[0]?.source, 'category');
 
-// Explicit receiver type must not fall back to the same selector on another
-// unrelated class.
+// A known receiver must not fall back to the same selector on another
+// unrelated class. An unknown receiver keeps current-image candidates as
+// conservative evidence because its superclass hierarchy is unavailable.
 const wrongReceiver = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'debugName' });
 assert.equal(wrongReceiver.resolved?.imp, 0x1200n, 'subclass should inherit category method on superclass');
 const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'NoSuchClass', selector: 'debugName' });
 assert.equal(unrelatedReceiver.resolved, null);
-assert.equal(unrelatedReceiver.candidates.length, 0);
+assert.equal(unrelatedReceiver.candidates.length, 2);
+assert.deepEqual(new Set(unrelatedReceiver.candidates.map((entry) => entry.imp)), new Set([0x1200n, 0x2100n]));
+assert.equal(unrelatedReceiver.partial, true);
+assert.match(unrelatedReceiver.reason, /hierarchy is unavailable or incomplete/);
 
 // Inheritance narrowing remains valid for ordinary class methods.
 const inherited = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'baseOnly' });
