@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { extraApiInfo } from '../js/api-cross-binary-families.js';
 import { apiInfo } from '../js/blocks.js';
 
-test('issue #6189: known vImage scale transforms are memory-convert, not UI', () => {
+test('issue #6189: the known vImage scale entry preserves its ABI and conversion contract', () => {
   for (const name of ['vImageScale_ARGB8888', '_vImageScale_ARGB8888']) {
     const extra = extraApiInfo(name);
     assert.ok(extra, `${name} must be classified`);
     assert.equal(extra.id, 'accelerate_vimage_scale');
     assert.equal(extra.cat, 'memory');
+    assert.deepEqual(extra.args, ['src', 'dest', 'tempBuffer', 'flags']);
+    assert.equal(extra.ret, 'status');
     assert.equal(extra.effect, 'convert');
     assert.notEqual(extra.cat, 'ui');
     assert.notEqual(extra.effect, 'ui');
@@ -17,6 +19,8 @@ test('issue #6189: known vImage scale transforms are memory-convert, not UI', ()
     assert.ok(info, `${name} must resolve in apiInfo`);
     assert.equal(info.id, 'accelerate_vimage_scale');
     assert.equal(info.cat, 'memory');
+    assert.deepEqual(info.args, ['src', 'dest', 'tempBuffer', 'flags']);
+    assert.equal(info.ret, 'status');
     assert.equal(info.effect, 'convert');
   }
 });

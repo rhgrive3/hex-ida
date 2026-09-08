@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { extraApiInfo } from '../js/api-cross-binary-families.js';
 import { apiInfo } from '../js/blocks.js';
 
-test('issue #6182: SecCertificateCopyData retrieves certificate data with read effect, not crypto effect', () => {
+test('issue #6182: SecCertificateCopyData keeps the precise base-table read contract', () => {
   for (const name of ['SecCertificateCopyData', '_SecCertificateCopyData']) {
     const extra = extraApiInfo(name);
     assert.ok(extra, `${name} must be classified`);
@@ -16,16 +16,17 @@ test('issue #6182: SecCertificateCopyData retrieves certificate data with read e
 
     const info = apiInfo(name);
     assert.ok(info, `${name} must be returned by apiInfo`);
-    assert.equal(info.id, 'security_certificate_copy_data');
+    assert.equal(info.id, 'security_cert_data');
     assert.equal(info.cat, 'crypto');
-    assert.equal(info.ret, 'ptr');
+    assert.equal(info.ret, 'object');
     assert.equal(info.effect, 'read');
     assert.notEqual(info.effect, 'crypto');
+    assert.deepEqual(info.args, ['certificate']);
   }
 });
 
 test('issue #6182: broad Sec* fallback does not claim crypto effect for arbitrary security symbols', () => {
-  for (const name of ['SecRequirementCopyData', '_SecRequirementCopyData', 'SecAccessControlCreate', 'SecPolicyCreateBasicX509']) {
+  for (const name of ['SecAccessControlCreate', 'SecPolicyCreateBasicX509']) {
     const extra = extraApiInfo(name);
     assert.ok(extra, `${name} should be matched by broad fallback`);
     assert.equal(extra.id, 'security_framework');
@@ -35,6 +36,23 @@ test('issue #6182: broad Sec* fallback does not claim crypto effect for arbitrar
     const info = apiInfo(name);
     assert.ok(info, `${name} must resolve in apiInfo`);
     assert.equal(info.effect, null);
+  }
+});
+
+test('issue #6182: SecRequirementCopyData keeps its precise read contract', () => {
+  for (const name of ['SecRequirementCopyData', '_SecRequirementCopyData']) {
+    const extra = extraApiInfo(name);
+    assert.ok(extra, `${name} should remain covered by the broad fallback`);
+    assert.equal(extra.id, 'security_framework');
+    assert.equal(extra.effect, null);
+
+    const info = apiInfo(name);
+    assert.ok(info, `${name} must resolve in apiInfo`);
+    assert.equal(info.id, 'security_requirement_data');
+    assert.equal(info.cat, 'crypto');
+    assert.deepEqual(info.args, ['requirement']);
+    assert.equal(info.ret, 'object');
+    assert.equal(info.effect, 'read');
   }
 });
 

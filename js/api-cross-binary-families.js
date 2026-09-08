@@ -76,7 +76,8 @@ const EXTRA_API_TABLE = [
 
   { id:'audio_file', re:/^_?AudioFile[A-Za-z0-9_]*$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
   // A scale routine is a known pixel-buffer transform; keep that precise effect.
-  { id:'accelerate_vimage_scale', re:/^_?vImageScale_[A-Za-z0-9_]+$/, cat:'memory', args:null, ret:null, effect:'convert' },
+  { id:'accelerate_vimage_scale', re:/^_?vImageScale_ARGB8888$/, cat:'memory',
+    args:['src','dest','tempBuffer','flags'], ret:'status', effect:'convert' },
   // The wider vImage namespace proves image-processing ownership, not one uniform
   // side effect. Unknown members therefore stay fail-closed instead of being
   // promoted to UI or conversion effects solely from their symbol prefix.
