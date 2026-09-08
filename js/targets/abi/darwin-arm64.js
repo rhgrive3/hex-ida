@@ -6,7 +6,7 @@ import {
   classifyAAPCS64FunctionReturn,
 } from './aapcs64.js';
 
-const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ipados','macos','tvos','watchos','visionos']);
+const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
 
 function callPrototypeOf(insn, opts) {
   // Calls may arrive through the production functionPrototype field while
