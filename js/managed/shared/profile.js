@@ -44,7 +44,18 @@ export function createManagedTargetProfile(input) {
   
   const options = input.options ? input.options : {};
   const decodingOptionsHash = stableDigest(options);
-  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition);
+  // All identity-defining semantic configuration participates in the
+  // canonical id (#5401): feature set, validation policy, decoding options,
+  // runtime hint and frontend semantic version are part of the identity
+  // denominator, so semantically different profiles cannot collide.
+  const semanticTail = {
+    frontendSemanticVersion,
+    featureSet,
+    runtimeVersionHint,
+    validationPolicy,
+    decodingOptionsHash,
+  };
+  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition, semanticTail);
 
   return deepFreeze({
     id,
@@ -65,6 +76,25 @@ export function validateManagedTargetProfile(profile) {
     fail('managed-profile-unsupported-frontend');
   }
   if (!profile.id || typeof profile.id !== 'string') fail('managed-profile-missing-id');
+  // The published id must be the canonical identity of the published
+  // content: re-derive it from the profile's own semantic fields so a
+  // tampered or stale id cannot alias different configuration (#5401).
+  const semanticTail = {
+    frontendSemanticVersion: typeof profile.frontendSemanticVersion === 'string' ? profile.frontendSemanticVersion : null,
+    featureSet: Array.isArray(profile.featureSet) ? sortedUniqueStrings(profile.featureSet) : [],
+    runtimeVersionHint: profile.runtimeVersionHint ?? null,
+    validationPolicy: typeof profile.validationPolicy === 'string' ? profile.validationPolicy : null,
+    decodingOptionsHash: typeof profile.decodingOptionsHash === 'string' ? profile.decodingOptionsHash : null,
+  };
+  const formatVersion = profile.formatVersion === undefined ? null : textOrIndex(profile.formatVersion, 'managed-profile-invalid-format-version');
+  const vmSpecEdition = profile.vmSpecEdition === undefined ? null : textOrIndex(profile.vmSpecEdition, 'managed-profile-invalid-spec-edition');
+  const canonicalId = createManagedTargetProfileId(
+    profile.frontendId,
+    formatVersion ?? '1',
+    vmSpecEdition ?? 'default',
+    semanticTail,
+  );
+  if (profile.id !== canonicalId) fail('managed-profile-identity-mismatch');
   if (profile.frontendSemanticVersion !== undefined
       && (typeof profile.frontendSemanticVersion !== 'string' || !profile.frontendSemanticVersion.trim())) {
     fail('managed-profile-invalid-version');
