@@ -157,11 +157,15 @@ test('#7268 enclosing MethodDef identity, not bodyIndex, owns non-void ret seman
   const frontend = new CilFrontend();
   const methods = [];
   for await (const method of frontend.enumerateMethods(image)) methods.push(method);
-  assert.equal(methods.length, 1);
-  assert.equal(methods[0].token, '0x06000002', 'concrete body belongs to MethodDef RID 2');
+  assert.equal(methods.length, 2, 'metadata enumeration retains the bodyless MethodDef row');
+  assert.equal(methods[0].token, '0x06000001');
+  assert.equal(methods[0].bodyIndex, null);
+  const concreteMethod = methods.find((method) => method.bodyIndex === 0);
+  assert.ok(concreteMethod, 'concrete body is enumerated through its MethodDef row');
+  assert.equal(concreteMethod.token, '0x06000002', 'concrete body belongs to MethodDef RID 2');
 
   const lifted = liftCilMethod(0, image);
-  assert.equal(lifted.methodId, methods[0].id);
+  assert.equal(lifted.methodId, concreteMethod.id);
   assert.equal(lifted.entryState.returnStackSlots, 1);
   const ret = retBundle(lifted);
   assert.equal(ret.completeness, 'exact');

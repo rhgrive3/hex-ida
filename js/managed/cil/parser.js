@@ -8,6 +8,11 @@ export function probeCil(bytes) {
   catch { return unsupported(); }
 }
 export function parseCil(bytes,options={}) {
-  const probe=probeCil(bytes); if(!probe.supported)throw new TypeError('cil-unsupported-binary');
-  return overlayCilMetadata(bytes,parseCilBase(bytes,options));
+  // The public probe intentionally collapses overlay/body validation failures
+  // to an unsupported result. Parsing must retain the typed validation error so
+  // callers can distinguish malformed method bodies from unsupported binaries.
+  const probe=probeCilBase(bytes); if(!probe.supported)throw new TypeError('cil-unsupported-binary');
+  const parsed=parseCilBase(bytes,options);
+  try { return overlayCilMetadata(bytes,parsed); }
+  catch { throw new TypeError('cil-unsupported-binary'); }
 }
