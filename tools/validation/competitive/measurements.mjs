@@ -1557,12 +1557,37 @@ export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Le
 }
 
 /** Parse one machine-readable ledger emitted by the focused P5/P6 test. */
+const TAP_LEDGER_TRAILER = /^(?:Subtest:|tests |suites |pass |fail |cancelled |skipped |todo |duration_ms )/;
+
 export function parsePipelineLedgerOutput(output, marker) {
   const text = String(output || '');
-  const start = text.lastIndexOf(marker);
-  if (start < 0) throw new Error(`competitive-ledger-marker-missing:${marker}`);
-  const payload = text.slice(start + marker.length).split(/\r?\n/, 1)[0].trim();
-  try { return JSON.parse(payload); } catch (error) { throw new Error(`competitive-ledger-json-invalid:${error.message}`); }
+  const lines = text.split(/\r?\n/);
+  let markerLineIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].includes(marker)) {
+      markerLineIndex = index;
+      break;
+    }
+  }
+  if (markerLineIndex < 0) throw new Error('competitive-ledger-marker-missing:' + marker);
+  const markerLine = lines[markerLineIndex];
+  const markerOffset = markerLine.indexOf(marker);
+  const tapWrapped = markerLine.slice(0, markerOffset).trim() === '#';
+  let payload = markerLine.slice(markerOffset + marker.length).trim();
+  if (tapWrapped) {
+    for (let index = markerLineIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line.startsWith('# ')) break;
+      const continuation = line.slice(2);
+      if (TAP_LEDGER_TRAILER.test(continuation)) break;
+      payload += continuation;
+    }
+    // node --test escapes diagnostic backslashes once in TAP output.
+    payload = payload.replaceAll('\\\\', '\\');
+  } else {
+    payload = payload.split(/\r?\n/, 1)[0];
+  }
+  try { return JSON.parse(payload.trim()); } catch (error) { throw new Error('competitive-ledger-json-invalid:' + error.message); }
 }
 
 /** Execute only the focused P5/P6 producer and return its ledger. */

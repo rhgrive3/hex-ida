@@ -12,6 +12,7 @@ import { createTwinManifest } from '../../tools/validation/competitive/twin-mani
 import {
   comparePhase8Quality,
   measurePhase56Coverage,
+  parsePipelineLedgerOutput,
   measurePhase8Quality,
   validatePhase8CaptureLineage,
   validateCompetitiveMeasurement,
@@ -48,6 +49,25 @@ function tinyCapture(fixture, { metricId = 'machine-effects-x86_64-coverage', co
     artifacts: [{ id: 'tiny-O0', path: fixture.debug.path, metadata }],
   });
 }
+
+test('P5/P6 ledger parser accepts wrapped Node TAP diagnostics', () => {
+  const marker = 'P5_6_PIPELINE_LEDGER=';
+  const expected = {
+    totals: { mandatory: 1, passed: 1, blocked: 0, notProven: 0 },
+    compilerIdentity: 'Ubuntu clang version 18.1.3 (1)\nTarget: x86_64-pc-linux-gnu',
+  };
+  const tapEscaped = JSON.stringify(expected).replaceAll('\\', '\\\\');
+  const splitAt = tapEscaped.indexOf('Target');
+  const wrapped = [
+    'TAP version 13',
+    '# ' + marker + tapEscaped.slice(0, splitAt),
+    '# ' + tapEscaped.slice(splitAt),
+    '# Subtest: producer',
+    '# tests 1',
+  ].join('\n');
+  assert.deepEqual(parsePipelineLedgerOutput(wrapped, marker), expected);
+  assert.deepEqual(parsePipelineLedgerOutput('noise\n' + marker + JSON.stringify(expected) + '\n', marker), expected);
+});
 
 test('P5/P6 value binding requires the exact captured artifact bytes', async () => {
   const fixture = buildTwinFixture();
