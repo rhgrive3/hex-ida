@@ -68,7 +68,7 @@ async function awaitAbortable(operation, signal) {
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
-      signal.removeEventListener('abort', onAbort);
+      try { signal.removeEventListener('abort', onAbort); } catch { /* settlement outcome is authoritative (#5402) */ }
       fn(value);
     };
     onAbort = () => {

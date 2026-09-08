@@ -22,6 +22,34 @@ function countingBackend() {
   };
   return state;
 }
+
+function throwingCleanupSignal() {
+  const state = { removals: 0 };
+  state.signal = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() {
+      state.removals++;
+      throw new Error('listener-cleanup-failed');
+    },
+  };
+  return state;
+}
+
+async function settleWithin(promise, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), 250);
+      }),
+    ]);
+  } finally {
+    if (timer != null) clearTimeout(timer);
+  }
+}
+
 const MALFORMED = [
   ['truthy object without listener methods', { aborted: false }],
   ['boolean true', true],
@@ -69,6 +97,37 @@ for (const [label, signal] of MALFORMED) {
   backend.fetchChunk = () => ({ cancel() { state.cancelled++; }, rows: [], complete: true });
   const result = await analyzeFunction(backend, region, 0, 10, null, null, {});
   assert.ok(result, 'analysis completes without a signal');
+}
+
+// 5. Listener cleanup is best-effort: a throwing removeEventListener must not
+//    suppress a successful public analyzeFunction result.
+{
+  const cleanup = throwingCleanupSignal();
+  const state = countingBackend();
+  const result = await settleWithin(
+    analyzeFunction(state.backend, region, 0, 0, null, null, { signal: cleanup.signal }),
+    'successful analysis did not settle after listener cleanup failed',
+  );
+  assert.ok(result, 'the backend result remains authoritative over cleanup failure');
+  assert.equal(cleanup.removals, 1, 'listener cleanup was attempted exactly once');
+}
+
+// 6. The same cleanup failure must not replace the backend's primary error.
+{
+  const cleanup = throwingCleanupSignal();
+  const primary = new Error('backend-primary-failure');
+  const backend = { fetchChunk() { return Promise.reject(primary); } };
+  await assert.rejects(
+    () => settleWithin(
+      analyzeFunction(backend, region, 0, 0, null, null, { signal: cleanup.signal }),
+      'failed analysis did not settle after listener cleanup failed',
+    ),
+    (error) => {
+      assert.equal(error, primary, 'the original backend error must remain authoritative');
+      return true;
+    },
+  );
+  assert.equal(cleanup.removals, 1, 'listener cleanup was attempted exactly once on error');
 }
 
 console.log('issue-5402 analysis signal validated before operation start: ok');
