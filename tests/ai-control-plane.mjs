@@ -115,6 +115,28 @@ assert.equal(routeIntent('この関数のx8は何？', fnSnap), 'trace-value');
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'この関数のx8は何？' }, fnSnap, 'trace-value'), false);
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'XPを増やしている場所を探して' }, fnSnap, 'find-behaviour'), true);
 
+// I2: a general Japanese verification request must stay in static analysis;
+// only an explicit runtime/debug cue may expand an auto scope to runtime.
+for (const goal of [
+  'この関数のCFGを検証して',
+  'この逆コンパイル結果が正しいか検証して',
+  'このcall graphを検証して',
+  'このfield writeを静的に検証して',
+]) {
+  const intent = routeIntent(goal, fnSnap);
+  assert.notEqual(intent, 'runtime-verify', `static request was misrouted: ${goal}`);
+  const staticAuto = new ScopeController(fnSnap, 'auto');
+  staticAuto.ensureForIntent(intent);
+  assert.equal(staticAuto.effectiveScope, 'function', `static request widened scope: ${goal}`);
+  assert.equal(staticAuto.expansions.length, 0, `static request recorded an expansion: ${goal}`);
+}
+for (const goal of ['実行時にこの仮説を検証して', 'runtimeでverifyして', 'debuggerで確認して', '動的に検証して', 'verify this at runtime']) {
+  assert.equal(routeIntent(goal, fnSnap), 'runtime-verify', `runtime request lost its intent: ${goal}`);
+}
+const runtimeAuto = new ScopeController(fnSnap, 'auto');
+runtimeAuto.ensureForIntent(routeIntent('実行時にこの仮説を検証して', fnSnap));
+assert.equal(runtimeAuto.effectiveScope, 'runtime');
+
 // K: provider runtime can carry transcript exactly once (top-level messages).
 const sessionLike = { messages: [{ role: 'user', content: 'one' }], investigationMemory: { goal: 'one', anchor: null, confirmedFacts: [], activeHypotheses: [], rejectedHypotheses: [], unresolvedQuestions: [], userConstraints: [], importantPriorActions: [] } };
 const broker = new ContextBroker(frozenLocal);
