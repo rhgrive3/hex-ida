@@ -98,6 +98,9 @@ export async function sha256TreeByteSource(input, options = {}) {
   const leafSize = options.chunkSize ?? 4 * 1024 * 1024;
   if (!Number.isSafeInteger(leafSize) || leafSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
   const readSize = Math.max(1, Math.min(leafSize, source.maxReadLength));
+  const reportProgress = (done) => {
+    if (onProgress) Reflect.apply(onProgress, options, [{ done, total: source.size }]);
+  };
 
   const digests = [];
   let offset = 0n;
@@ -108,16 +111,20 @@ export async function sha256TreeByteSource(input, options = {}) {
     let bytes;
     if (leafLength <= readSize) {
       bytes = await source.readExactly(offset, leafLength, { signal: options.signal });
+      reportProgress(offset + BigInt(bytes.byteLength));
     } else {
       bytes = new Uint8Array(leafLength);
       for (let at = 0; at < leafLength; at += readSize) {
         const take = Math.min(readSize, leafLength - at);
-        bytes.set(await source.readExactly(offset + BigInt(at), take, { signal: options.signal }), at);
+        const chunk = await source.readExactly(offset + BigInt(at), take, { signal: options.signal });
+        bytes.set(chunk, at);
+        // Preserve the historical progress contract: callbacks observe each
+        // bounded source read, even when several reads form one logical leaf.
+        reportProgress(offset + BigInt(at + chunk.byteLength));
       }
     }
     digests.push(new Uint8Array(await subtle.digest('SHA-256', bytes)));
     offset += BigInt(bytes.byteLength);
-    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
 
   const header = new TextEncoder().encode(

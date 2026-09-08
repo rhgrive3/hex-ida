@@ -94,4 +94,21 @@ await request({ id: 2, t: 'setRegions', regions: [{ id: 'raw', fileOffset: 0, vm
   assert.equal(result.results.length, 0);
 }
 
+// 7. A multi-byte UTF-8 sequence that straddles the scan block boundary is
+//    still matched, with the original byte offset, row, and address preserved.
+{
+  const boundaryOffset = 256 * 1024 - 1;
+  const boundaryBytes = machoFixture(`${'x'.repeat(boundaryOffset - 104)}Ä`);
+  const boundaryFile = {
+    size: boundaryBytes.length,
+    read: async (offset, length) => boundaryBytes.subarray(Number(offset), Number(offset) + length),
+  };
+  await request({ id: 11, t: 'open', file: boundaryFile });
+  await request({ id: 12, t: 'setRegions', regions: [{ id: 'boundary', fileOffset: 0, vmAddr: 0x700000n, size: boundaryBytes.length }] });
+  const result = await request({ id: 13, t: 'search', regionId: 'boundary', kind: 'text', query: 'Ä', from: 0 });
+  assert.deepEqual(result.results.map((entry) => entry.byteOff), [boundaryOffset]);
+  assert.equal(result.results[0].row, Math.floor(boundaryOffset / 4));
+  assert.equal(result.results[0].addr, 0x700000n + BigInt(boundaryOffset));
+}
+
 console.log('issue #5940 text search exact UTF-8 / ASCII-fold regressions: PASS');

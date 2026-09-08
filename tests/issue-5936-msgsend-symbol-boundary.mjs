@@ -7,7 +7,8 @@ import { runtimeOriginForSymbol, resolveAppleCall } from '../js/apple/runtime.js
 import { classifyObjcRuntimeCall, isObjcMsgSendSymbol } from '../js/apple/objc-runtime.js';
 
 // 1. Wrapper-like symbols are ordinary C symbols, not dispatch.
-for (const name of ['my_objc_msgSend_wrapper', 'xxobjc_msgSendyy', 'test_objc_msgSend_helpers', 'notobjc_msgSend']) {
+for (const name of ['my_objc_msgSend_wrapper', 'xxobjc_msgSendyy', 'test_objc_msgSend_helpers', 'notobjc_msgSend',
+  'objc_msgSend_wrapper', '_objc_msgSend_wrapper', 'objc_msgSendFast', 'objc_msgSend$']) {
   assert.notEqual(runtimeOriginForSymbol(name), 'objc', `${name} must not classify as objc`);
   assert.equal(classifyObjcRuntimeCall(name), null, `${name} must not be an objc runtime call`);
   assert.equal(isObjcMsgSendSymbol(name), false);
