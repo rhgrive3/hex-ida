@@ -86,19 +86,37 @@ function normalizeCursorIndex(value) {
   return value;
 }
 
+const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
+const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+
+function normalizeCurrentFunction(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+      throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    }
+    return BigInt(value);
+  }
+  if (typeof value !== 'string' || (!DECIMAL_ADDRESS.test(value) && !HEX_ADDRESS.test(value))) {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+}
+
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
   // currentFunction is consumed as BigInt by the workspace apply; validating
   // the integer representation HERE (at parse time) prevents a malformed value
   // from failing mid-apply, after notes/patches were already persisted (#5953).
-  let currentFunction = value.currentFunction ?? null;
-  if (currentFunction != null) {
-    if (typeof currentFunction !== 'string' && typeof currentFunction !== 'number' && typeof currentFunction !== 'bigint') {
-      throw new ProjectFormatError('navigation.currentFunction must be an integer');
-    }
-    try { currentFunction = BigInt(currentFunction); }
-    catch { throw new ProjectFormatError('navigation.currentFunction must be an integer'); }
-  }
+  const currentFunction = normalizeCurrentFunction(value.currentFunction);
   return {
     currentFunction,
     history: list(value.history, 'navigation.history').slice(-500),
