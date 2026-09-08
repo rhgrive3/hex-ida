@@ -8,6 +8,7 @@ import './issue-2596-range-copy-variable-width.mjs';
 import './issue-2594-showdetail-variable-width.mjs';
 import './issue-4878-field-access-pagination.test.mjs';
 import './issue-5079-product-strings-pagination.test.mjs';
+import '../issue-5111-base-classification-badge.mjs';
 import './next-views.mjs';
 import { NavigationHistory } from '../../js/navigation.js';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
