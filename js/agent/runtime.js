@@ -4,7 +4,7 @@
  */
 import { compileGoal } from '../goalc.js';
 import { createAgentTools } from './tools.js';
-import { planAnalysisGoal } from '../query/planner.js';
+import { createToolCallBudget, planAnalysisGoal } from '../query/planner.js';
 
 function canonicalAddress(value) {
   if (typeof value === 'bigint') return value >= 0n ? value : null;
@@ -203,6 +203,7 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
+  const toolCallBudget = createToolCallBudget(budget.maxToolCalls);
   const monotonicNow = monotonicClockOf(cfg);
   const started = monotonicNow();
   const elapsedMs = () => monotonicNow() - started;
@@ -279,7 +280,7 @@ export async function runAgent(config) {
       step = await awaitRunBudget((signal, remainingMs) => llm.next({
         goal, query, observations: observations.slice(), availableTools, signal,
         budget: {
-          remainingToolCalls: budget.maxToolCalls - call,
+          remainingToolCalls: toolCallBudget.remaining(),
           remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
           remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
           remainingMs,
@@ -310,6 +311,7 @@ export async function runAgent(config) {
       functions.add(budgetKey);
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
+    if (!toolCallBudget.consume()) { stopReason = 'tool-call-budget'; break; }
     let result;
     try {
       result = await awaitRunBudget((signal) => tools[req.tool](...toolArgsWithRunSignal(req.tool, req.args, signal)));
@@ -338,6 +340,7 @@ export async function runAgent(config) {
     maxSearchResults: cfg.maxSearchResults,
     timeoutMs: remainingTimeout,
     isCancelled: cancelled,
+    toolCallBudget,
     tools,
   });
   for (const e of plan.evidence || []) evidence.add(e);
@@ -375,6 +378,6 @@ export async function runAgent(config) {
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
+    stats: { toolCalls: toolCallBudget.used, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
   };
 }
