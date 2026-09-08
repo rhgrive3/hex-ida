@@ -62,6 +62,12 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
         types[i][tokensKey].push(member.token);
       }
     }
+    // ECMA-335 II.22.26 rule 2 (MethodDef) / II.22.24 rule 2 (Field): every
+    // definition row is owned by exactly one TypeDef. An ownerless row is
+    // invalid metadata and must never surface as a spec-valid member (#7301).
+    if (values.some(member => member.declaringTypeToken == null)) {
+      fail(table === 6 ? 'cil-methoddef-owner-missing' : 'cil-fielddef-owner-missing');
+    }
   };
   bindOwners(4, 3, fields, 'fieldList', 'fieldTokens');
   bindOwners(6, 5, methods, 'methodList', 'methodTokens');
