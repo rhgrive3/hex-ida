@@ -18,7 +18,8 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
-import { classifyCallTargetProof, summaryIdentityMatches } from '../summary/contract.js';
+import { createPhase7ArtifactDescriptor } from '../artifact-identity.js';
+import { classifyCallTargetProof, functionSummaryDigest, summaryIdentityMatches } from '../summary/contract.js';
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   defaultRootEntityId,
@@ -55,6 +56,48 @@ import {
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
 export const A2_ANALYZER_VERSION = '1.2.0';
+
+function summaryDependencyIdentity(calleeId, summary, options) {
+  const configured = options?.summaryArtifactIds ?? options?.calleeSummaryIds;
+  const explicit = configured?.get?.(String(calleeId))
+    ?? (configured && typeof configured === 'object' && !Array.isArray(configured)
+      ? configured[String(calleeId)]
+      : null);
+  const declared = typeof explicit === 'string' && explicit.trim() ? explicit.trim() : null;
+  const embedded = summary?.artifactId
+    ?? summary?.summaryArtifactId
+    ?? summary?.identity?.artifactId;
+  const label = declared ?? (typeof embedded === 'string' && embedded.trim() ? embedded.trim() : null);
+  try {
+    const semanticDigest = functionSummaryDigest(summary);
+    return label == null ? 'summary:' + semanticDigest : label + '@summary:' + semanticDigest;
+  } catch {
+    // An unhashable summary has no safe dependency identity. Returning a
+    // fabricated id here would let the caller continue with a summary whose
+    // semantic contents could not be keyed; the call transfer must fail closed.
+    return null;
+  }
+}
+
+/**
+ * Builds the canonical Phase 7 points-to descriptor from the exact summary
+ * identities consumed by this producer. The identity input is opt-in so
+ * existing callers that do not participate in artifact storage keep the
+ * historical result shape; artifact-producing callers get the real observed
+ * dependency set rather than a caller-supplied declaration.
+ */
+function artifactDescriptorForRun(options, calleeSummaryIds) {
+  const identity = options?.artifactIdentity;
+  if (identity == null) return null;
+  if (typeof identity !== 'object' || Array.isArray(identity)) {
+    throw new TypeError('phase7-artifact-identity-invalid');
+  }
+  return createPhase7ArtifactDescriptor({
+    ...identity,
+    kind: 'phase7.pointsto.local',
+    calleeSummaryIds,
+  });
+}
 
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
@@ -570,6 +613,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
+  const calleeSummaryIds = new Set();
 
   const ssaDefinitions = new Map((ssa?.definitions ?? []).map((definition) => [String(definition.valueId), definition]));
   const ssaUsesByEntity = new Map();
@@ -788,6 +832,11 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
         ? null
         : (options.summaries?.get(String(calleeId))
           || (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
+      if (calleeId != null) {
+        const dependencyIdentity = summaryDependencyIdentity(calleeId, calleeSummary, options);
+        if (dependencyIdentity == null) return topPointsTo('unresolved-call');
+        calleeSummaryIds.add(dependencyIdentity);
+      }
       const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;
       const summaryIdentity = configuredSummaryIdentity
         && typeof configuredSummaryIdentity === 'object'
@@ -932,11 +981,15 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     proofs,
     diagnostics: diagnosticList,
   } : null;
+  const observedCalleeSummaryIds = [...calleeSummaryIds].sort();
+  const artifactDescriptor = artifactDescriptorForRun(options, observedCalleeSummaryIds);
   return {
     pointsTo: irState,
     ssaPointsTo: ssaState,
     iterations,
     status: fallbackStatus(completeness, stopReason),
+    calleeSummaryIds: observedCalleeSummaryIds,
+    ...(artifactDescriptor == null ? {} : { artifactDescriptor }),
     ...(recovery == null ? {} : { recovery }),
   };
 }
