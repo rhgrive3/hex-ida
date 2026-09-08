@@ -25,6 +25,7 @@ export class AIRuntime {
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
     this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
+    this.initialStoresClaimed = false;
     this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
     this.storeNamespaces = new Map();
     this.storeNamespaceOwners = new Map();
@@ -40,8 +41,12 @@ export class AIRuntime {
     let stores = this.storeNamespaces.get(key);
     if (stores) return stores;
     const hasPersistedState = (session.confirmedFindings?.length || 0) > 0 || (session.hypotheses?.length || 0) > 0;
-    if (this.storeNamespaces.size === 0 && (this.initialStoresExplicit || !hasPersistedState)) stores = this.initialStores;
-    else {
+    // Initial stores belong to one namespace for their entire lifetime (#6004).
+    // Releasing the last session does not make its contents safe to reuse.
+    if (!this.initialStoresClaimed && (this.initialStoresExplicit || !hasPersistedState)) {
+      stores = this.initialStores;
+      this.initialStoresClaimed = true;
+    } else {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
