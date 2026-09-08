@@ -9,6 +9,7 @@ import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
 import { AIRuntime } from '../js/ai/runtime.js';
+import { createHexToolRegistry } from '../js/ai/tools/index.js';
 
 // A: current UI navigation after turn start cannot move the turn anchor.
 let current = 0x1000n;
@@ -114,6 +115,50 @@ assert.ok(continuity.tools.some((tool) => tool.name === 'search_functions'), 'ph
 assert.equal(routeIntent('この関数のx8は何？', fnSnap), 'trace-value');
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'この関数のx8は何？' }, fnSnap, 'trace-value'), false);
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'XPを増やしている場所を探して' }, fnSnap, 'find-behaviour'), true);
+
+// I2: a general Japanese verification request must stay in static analysis;
+// only an explicit runtime/debug cue may expand an auto scope to runtime.
+for (const goal of [
+  'この関数のCFGを検証して',
+  'この逆コンパイル結果が正しいか検証して',
+  'このcall graphを検証して',
+  'このfield writeを静的に検証して',
+]) {
+  const intent = routeIntent(goal, fnSnap);
+  assert.notEqual(intent, 'runtime-verify', `static request was misrouted: ${goal}`);
+  const staticAuto = new ScopeController(fnSnap, 'auto');
+  staticAuto.ensureForIntent(intent);
+  assert.equal(staticAuto.effectiveScope, 'function', `static request widened scope: ${goal}`);
+  assert.equal(staticAuto.expansions.length, 0, `static request recorded an expansion: ${goal}`);
+}
+for (const goal of ['実行時にこの仮説を検証して', 'runtimeでverifyして', 'debuggerで確認して', '動的に検証して', 'verify this at runtime']) {
+  assert.equal(routeIntent(goal, fnSnap), 'runtime-verify', `runtime request lost its intent: ${goal}`);
+}
+const runtimeAuto = new ScopeController(fnSnap, 'auto');
+runtimeAuto.ensureForIntent(routeIntent('実行時にこの仮説を検証して', fnSnap));
+assert.equal(runtimeAuto.effectiveScope, 'runtime');
+
+// I3: with no runtime backend, the actual registry still exposes static tools
+// for the static request; an explicit intent override remains authoritative.
+const staticRegistry = createHexToolRegistry({});
+const staticIntent = routeIntent('この関数のCFGを検証して', fnSnap);
+const staticWindow = selectToolWindow(staticRegistry, {
+  requestedScope: 'auto', effectiveScope: 'function', intent: staticIntent, maxTools: 9,
+});
+assert.ok(staticWindow.tools.length > 0, 'static verification must retain model-visible tools without a runtime backend');
+assert.ok(staticWindow.tools.some((tool) => ['get_current_function', 'get_cfg', 'get_semantic_facts'].includes(tool.name)));
+assert.equal(staticRegistry.definitionsForModel({ scope: 'runtime' }).length, 0, 'the disconnected registry has no runtime tools');
+const explicitRequest = { goal: 'この関数のCFGを検証して', intent: 'runtime-verify', scope: 'auto' };
+const explicitIntent = explicitRequest.intent || routeIntent(explicitRequest.goal, fnSnap);
+const explicitScope = new ScopeController(fnSnap, explicitRequest.scope);
+explicitScope.ensureForIntent(explicitIntent);
+assert.equal(explicitIntent, 'runtime-verify', 'an explicit request intent must override keyword routing');
+assert.equal(explicitScope.effectiveScope, 'runtime');
+const explicitWindow = selectToolWindow(staticRegistry, {
+  requestedScope: explicitRequest.scope, effectiveScope: explicitScope.effectiveScope, intent: explicitIntent, maxTools: 9,
+});
+assert.equal(explicitWindow.phase, 'runtime');
+assert.equal(explicitWindow.tools.some((tool) => tool.name === 'get_cfg'), false, 'explicit runtime intent must not fall back to static function tools');
 
 // K: provider runtime can carry transcript exactly once (top-level messages).
 const sessionLike = { messages: [{ role: 'user', content: 'one' }], investigationMemory: { goal: 'one', anchor: null, confirmedFacts: [], activeHypotheses: [], rejectedHypotheses: [], unresolvedQuestions: [], userConstraints: [], importantPriorActions: [] } };

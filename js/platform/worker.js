@@ -299,14 +299,15 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [];
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
     }
     runStart = null;
     runBytes = [];
+    runChars = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -328,6 +329,7 @@ async function scanStrings(msg, signal) {
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
       if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      runChars++;
       if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
       i += n - 1;
     }

@@ -6,6 +6,11 @@ const bytes = Uint8Array.of(1, 2, 3, 4, 5);
 const source = () => new MemoryByteSource(bytes, { maxReadLength: 2 });
 const expectedFnv = await hashByteSource(source(), { chunkSize: 2 });
 const expectedTree = await sha256TreeByteSource(source(), { chunkSize: 2 });
+assert.equal(
+  await hashByteSource(source(), { chunkSize: 4 }),
+  expectedFnv,
+  'valid FNV chunk sizes remain clamped by the source read limit',
+);
 
 class ProgressCallback {}
 const CommentedProgressCallback = class/* progress callback */ Commented {};
@@ -38,6 +43,35 @@ assert.equal(
 assert.deepEqual(treeProgress, expectedProgress);
 
 for (const hash of [hashByteSource, sha256TreeByteSource]) {
+  for (const [label, value] of [
+    ['numeric string', '2'],
+    ['boolean', true],
+    ['fraction', 2.5],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['negative', -1],
+  ]) {
+    await assert.rejects(
+      hash(source(), { chunkSize: value }),
+      /chunkSize must be a positive safe integer/,
+      `${label} chunkSize must be rejected before numeric coercion`,
+    );
+  }
+
+  let valueOfCalls = 0;
+  const coercionObject = {
+    valueOf() {
+      valueOfCalls++;
+      return 2;
+    },
+  };
+  await assert.rejects(
+    hash(source(), { chunkSize: coercionObject }),
+    /chunkSize must be a positive safe integer/,
+    'objects with numeric coercion must be rejected',
+  );
+  assert.equal(valueOfCalls, 0, 'chunkSize validation must not invoke valueOf');
+
   const boundEvents = [];
   function progress(value) {
     boundEvents.push(value);
