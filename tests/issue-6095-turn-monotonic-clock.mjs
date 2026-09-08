@@ -1,17 +1,16 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-
-// NOTE: js/ai/control/runtime-support.js currently cannot be imported on main
-// (it imports canonicalBindingId/firstBinding, which snapshot.js does not
-// export -- a pre-existing breakage unrelated to clock handling, also visible
-// via tests/ai-control-plane.mjs). This regression therefore pins the clock
-// contract at the source level and proves the budget arithmetic with an
-// injected clock, mirroring the exact formulas in runtime-support.js.
+import { AIRuntime } from '../js/ai/runtime.js';
+import {
+  createMonotonicClock, ensureRunning, remainingTime,
+} from '../js/ai/control/runtime-support.js';
 
 const support = fs.readFileSync(
   new URL('../js/ai/control/runtime-support.js', import.meta.url), 'utf8');
 const executor = fs.readFileSync(
   new URL('../js/ai/control/turn-executor.js', import.meta.url), 'utf8');
+const runtime = fs.readFileSync(
+  new URL('../js/ai/runtime.js', import.meta.url), 'utf8');
 
 // Budget helpers default to a monotonic clock, never to the wall clock.
 assert.match(support, /export function defaultMonotonicNow\(\)/,
@@ -52,6 +51,8 @@ assert.match(executor, /monotonicNow\(\) - started >= turnTimeoutMs/,
   'planner cancellation must share the turn clock');
 assert.doesNotMatch(executor, /Date\.now\(\) - started/,
   'no turn budget path may read the wall clock directly');
+assert.doesNotMatch(runtime, /Date\.now\(\) - started/,
+  'reported turn elapsed time must use the protected clock');
 
 // Injected-clock arithmetic mirrors the protected runtime-support authority:
 //   elapsed = max(0, nowFn() - started)
@@ -75,18 +76,61 @@ assert.doesNotMatch(executor, /Date\.now\(\) - started/,
   assert.equal(elapsed(monotonicRollback), 0, 'rollback elapsed must clamp at zero');
   assert.equal(remaining(monotonicRollback), timeoutMs, 'rollback remaining must stay at the initial timeout');
 
-  // The shared clock wrapper preserves the last observation on rollback.
-  let last = null;
-  const clamp = (value) => {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return last ?? 0;
-    if (last == null || value > last) last = value;
-    return last;
-  };
-  assert.deepEqual([clamp(10_000), clamp(0), clamp(10_005)], [10_000, 10_000, 10_005]);
+  // The production wrapper preserves the last observation on rollback or
+  // an invalid clock sample.
+  const readings = [10_000, 0, Number.NaN, 10_005];
+  const protectedClock = createMonotonicClock(() => readings.shift());
+  assert.deepEqual(
+    [protectedClock(), protectedClock(), protectedClock(), protectedClock()],
+    [10_000, 10_000, 10_000, 10_005],
+  );
+  assert.equal(remainingTime(started, timeoutMs, () => 0), timeoutMs,
+    'the production helper must cap rollback remaining time');
+  assert.doesNotThrow(
+    () => ensureRunning(null, started, timeoutMs, () => 0),
+    'a rollback must not stop a still-live turn',
+  );
 
   // Deadline arrival stops the turn.
   assert.equal(exceeded(40_000), true, 'monotonic deadline arrival must stop');
   assert.equal(remaining(40_000), 1, 'remaining clamps instead of going negative');
+}
+
+// Exercise the public executeTurn path with a caller clock and a wall-clock
+// jump. The provider must receive the initial budget, and the returned usage
+// must report the same monotonic elapsed time rather than Date.now() - started.
+{
+  let now = 10_000;
+  const observedTimeouts = [];
+  const runtime = new AIRuntime({
+    context: { binaryId: 'fixture:6095', currentAddress: 0x1000n },
+    planner: false,
+    provider: {
+      turnTimeoutMs: () => null,
+      async nextTurn(_request, options) {
+        observedTimeouts.push(options.timeoutMs);
+        now = 10_025;
+        return { type: 'final', answer: 'ok', confidence: 0.2, evidenceIds: [], suggestedActions: [] };
+      },
+    },
+  });
+  const wallNow = Date.now;
+  Date.now = () => 3_610_000;
+  let result;
+  try {
+    result = await runtime.turn(
+      { mode: 'chat', scope: 'auto', goal: 'normal executeTurn clock path', budget: { timeoutMs: 30_000, maxModelCalls: 1 } },
+      { monotonicNow: () => now },
+    );
+  } finally {
+    Date.now = wallNow;
+  }
+  assert.deepEqual(observedTimeouts, [30_000],
+    'a wall-clock jump must not shrink the provider remaining budget');
+  assert.equal(result.limits.exhausted, false,
+    'a live monotonic turn must complete normally');
+  assert.equal(result.usage.elapsedMs, 25,
+    'executeTurn usage must report protected monotonic elapsed time');
 }
 
 console.log('issue #6095 executeTurn monotonic clock regressions PASS');
