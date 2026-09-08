@@ -1193,7 +1193,6 @@ test('C3-02 nested aggregate descriptors are the classifier source of truth', ()
     layout:{
       bits:128,
       bytes:16,
-      alignmentBytes:8,
       members:[
         { type:'uint64', bits:64, bytes:8, byteOffset:0 },
         { type:'uint64', bits:64, bytes:8, byteOffset:8 },
@@ -1253,7 +1252,7 @@ test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and pre
 
   const nested = {
     type:'struct MatrixNested', aggregate:true,
-    layout:{ bits:128, bytes:16, alignmentBytes:8, members },
+    layout:{ bits:128, bytes:16, members },
   };
   for (const [abi, options] of profiles) {
     const adapter = semanticAbiAdapter(abi, options);
@@ -1310,7 +1309,7 @@ test('C3-02 global interval matrix rejects scalar and malformed split duplicates
 
 test('C3-02 padded stack extents remain exact across integer aggregate profiles', () => {
   const padded = {
-    type:'struct PaddedMatrix', aggregate:true, bits:64, bytes:16, alignmentBytes:8,
+    type:'struct PaddedMatrix', aggregate:true, bits:64, bytes:16,
     members:[{ bits:64, bytes:8, byteOffset:0 }], padding:[{ bytes:8, byteOffset:8 }],
   };
   for (const [abi, options, prefix] of [
