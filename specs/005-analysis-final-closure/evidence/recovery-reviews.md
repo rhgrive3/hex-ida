@@ -10,7 +10,8 @@ adds six cache and eight reference boundary probes, with its exact source and
 limits recorded. Original probe bytes, outputs, commands and SHA-256 hashes are
 archived alongside the reports. No concrete defect was found in these exercised
 boundaries. Final combined convergence and affected integration gates remain
-pending; these bounded results alone do not close T019.
+pending in the historical snapshot; the exact-head closure artifact below
+supersedes that snapshot for T019's current review disposition.
 
 ## Current native and binary measurement evidence — 2026-09-08
 
@@ -237,3 +238,84 @@ PR7097 workflow reviews and `stage-a-candidate.md` for the exact scope and
 command evidence. These repairs supersede the earlier bounded review outcome
 for the changed paths; they do not close T019 or final release convergence.
 Physical execution is deferred by the owner until development is finished.
+
+## T019 exact-head independent review artifact — 2026-09-08
+
+**Reviewer:** Luna Max, independent non-owner reviewer. **Scope:** the actual
+integrated source and test diff from `8c53ce3f8` through the current Stage A
+head. Stage B external game assets, T040 final performance acceptance, T021
+full-release gates, deployment, and physical-device execution are outside this
+review.
+
+**Exact source identity:** commit
+`459dfe5bc7345d1ad3a7693738f6f73d5db66d9b`, tree
+`239c8035f06b3e089c2daef186f3028e3f8c8d18`, branch
+`perf/development-gate-policy`. The source worktree was clean before this
+documentation update. The reviewed delta contains the runtime identity
+validator reuse (`c4bdc00bd`), guarded agent queries and exact LLVM selection
+(`7ecb2655c`), T011 fixture binding (`e8c2d51c2`), CSEL publication ordering
+(`27fe582f8`), Mach-O fixture alignment (`03e1357ca`), MemorySSA forwarding and
+constructor branding (`c8375c547`, `79ca46608`), and the competitive/ARM64
+measurement validation changes through `459dfe5bc`.
+
+**Disposition:** `CHANGES_REQUIRED: none`. T019 convergence is **CLEAN** at
+this exact head. No production, test, generated-output, or acceptance-contract
+fix was required by this review.
+
+### Adversarial review and changed-path evidence
+
+The current-root recovery probe was executed with the pinned Node 22 toolchain:
+
+```text
+PATH=/mnt/workspace/.local/hex-final-node22/bin:/mnt/workspace/.local/hex-stage-a-toolchain/git-2.49.1:/mnt/workspace/.local/hex-stage-a-toolchain/install/bin:/usr/bin:/bin \
+  /mnt/workspace/.local/hex-final-node22/bin/node \
+  /mnt/workspace/.dev-state/hex-development-batch/t019-recovery-probes.mjs
+```
+
+It produced five passing attacks in each lane: T011, T012, T014, T015, T016,
+and T017, for **30/30**. The script imports the current checkout at
+`/mnt/workspace/hex-development-gate-policy`; this is not the older 1dab32
+execution. The cases cover physical-load/barrier/rollback, accessor and
+publication poisoning, solver authority/cancellation/hash, Mach-O/dyld/signing
+bounds, discovery extent/reparse identity, and strict MachineEffects result
+transport.
+
+The current integrated deltas were then checked independently as follows:
+
+| Delta | Fresh adversarial evidence at 459d | Result |
+| --- | --- | --- |
+| `c4bdc00bd` runtime binding identity reuse | Five cases: valid observation, payload mutation, sequence mutation, binding mutation, and authority mutation | 5/5 pass; `tests/stage2/managed-runtime.test.mjs` passes |
+| `7ecb2655c` agent query guards | Seven cases: missing, primitive, and null program; missing/invalid/throwing function range; authorized empty range | 7/7 pass; `tests/phase12/adversarial/issue-3727-agent-program-query-support.test.mjs` passes 3/3 |
+| `7ecb2655c` LLVM resolver | Default exact-version selection, wrong explicit version, missing tool, unpinned LLVM14, and invalid timeout | 5/5 pass; `tests/stage2/independent-oracle.test.mjs` passes |
+| `c8375c547`/`79ca46608` MemorySSA forwarding | Constructor-brand forgery plus four access/session identity and mutability cases | 5/5 pass (`1/1` and `4/4`); permanent constructor regression is tracked |
+| `27fe582f8` CSEL clamp and decompiler path | The exact 27fe independent review's eight semantic cases remains source-equivalent at 459d; current semantic/rewrite/pipeline checks pass | 8/8 reused; 5,800 rewrite checks and pipeline checks pass |
+| `03e1357ca` and `e8c2d51c2` fixture deltas | Current Mach-O overlap and T011 budget/publication/fixture checks | Pass; Mach-O 1/1, T011 budget 46/46, publication 1/1 |
+| Competitive validator and ARM64 identity changes | Six benchmark contract tests; five current source-fixture identity mutations; five explicit-UNMEASURED ARM64 mutations | 6/6, 5/5, and 5/5 pass. ARM64 remains explicitly `UNMEASURED`; no numeric run is claimed |
+| T051/T052 async boundary | Current-root transformed `t019-t051-boundary-review.mjs`, five cases covering stale snapshot/proposal, binding drift, cancellation waiter, and runtime commit guard | 5/5 pass |
+
+The unchanged six-lane evidence is therefore reused only after the current-root
+30/30 execution; no retired receipt was reconstructed. The current CSEL review
+is reused because `js/decompiler/pipeline-core.js` is unchanged after `27fe582f8`;
+the current focused semantic, rewrite, issue, and pipeline runs provide the
+post-delta integration check.
+
+### Affected T0–T2 integration rerun
+
+The current Phase 11 and Phase 12 integration suites were each run once at the
+same exact head with the pinned Node 22/npm toolchain through
+`scripts/run-quiet-command.mjs`: `npm run phase11:test` passed in 1.6 seconds
+and `npm run phase12:test` passed in 4.3 seconds. The affected MachineEffects
+checks also passed: the counterexample oracle, negative rejection set (33
+cases), determinism (two byte-identical replays), report profiles (four
+profiles with A2 preserved), and denominator preservation (37 rows with a
+stable digest). These reruns satisfy T019's post-fix T0–T2 clause; they do not
+certify the deferred full corpus or release gate.
+
+### Boundaries retained as debt
+
+This review closes the T019 development/recovery review only. It does not turn
+the current ARM64 `UNMEASURED` row into a measurement, claim a full performance
+threshold, certify external game assets, certify a deployment, or claim
+`npm run check`/`npm test` completion. Those remain explicitly deferred to their
+own owners and gates. Physical-device execution remains `DEFERRED` under the
+guardrails amendment.
