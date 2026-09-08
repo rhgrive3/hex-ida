@@ -266,9 +266,20 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   if (aggregate) {
     return microsoftX64AggregateReturnDecision(aggregateReturnDescriptor(prototype, options), prototype, options);
   }
-  const vector = /vector|simd|sse|__m128/.test(`${type} ${abiClass}`);
-  const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(options.returnBits || prototype.returnBits || prototype.bits || typeBits(type, vector ? 128 : 64));
+  // The return-side vector recognizer matches the parameter-side one (#5997):
+  // `__m256*` spellings are 256-bit vectors, not 128-bit or integer scalars.
+  const typeAndClass = `${type} ${abiClass}`;
+  const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256/.test(typeAndClass);
+  const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass);
+  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  const bitsProven = prototype.returnBits != null || prototype.bits != null || options.returnBits != null;
+  const wideVectorBits = /__m256/.test(typeAndClass) ? 256
+    : vector && bitsProven && Number.isSafeInteger(rawBits) && rawBits > 128 ? rawBits : null;
+  if (wideVectorBits != null) {
+    return { kind:'unknown', partial:true, unsupported:true, vector:true, bits:wideVectorBits,
+      hiddenResultPossible:true,
+      reason:'microsoft-x64-wide-vector-return-not-modeled' };
+  }
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;
   if (floating) return { kind:'direct', reg:'xmm0', bits };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) return { kind:'direct', reg:'rax', bits };
