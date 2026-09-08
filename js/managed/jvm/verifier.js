@@ -1,3 +1,5 @@
+import { validateJvmMethodFlags } from './method-flags.js';
+
 function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -343,25 +345,29 @@ export function verifyJvmMethod(decoded, options = {}) {
 
   const metadata = decoded.metadata ?? {};
   const accessFlags = Number.isInteger(metadata.accessFlags) ? metadata.accessFlags : null;
+  const ownerAccessFlags = Number.isInteger(metadata.ownerAccessFlags)
+    ? metadata.ownerAccessFlags
+    : Number.isInteger(options.image?.accessFlags)
+      ? options.image.accessFlags
+      : null;
   const descriptorText = typeof metadata.descriptor === 'string' ? metadata.descriptor : null;
   const isStatic = accessFlags != null && (accessFlags & 0x0008) !== 0;
   const descriptor = parseMethodDescriptor(descriptorText, isStatic);
   if (!descriptor) errors.push({ code: 'jvm-invalid-method-descriptor' });
-  if (metadata.methodName === '<init>') unsupported.add('constructor-initialization-verification');
+  const methodName = typeof metadata.methodName === 'string' ? metadata.methodName : null;
+  if (methodName === '<init>') unsupported.add('constructor-initialization-verification');
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
-  // JVMS §4.6 flag combinations the JVM rejects with ClassFormatError:
-  // at most one visibility bit, and ACC_ABSTRACT excludes every one of
-  // PRIVATE/STATIC/FINAL/SYNCHRONIZED/NATIVE/STRICT (#7264).
   if (accessFlags != null) {
-    const visibility = accessFlags & (0x0001 | 0x0002 | 0x0004);
-    if (visibility !== 0 && visibility !== 0x0001 && visibility !== 0x0002 && visibility !== 0x0004) {
-      errors.push({ code: 'jvm-method-visibility-conflict' });
-    }
-    if (isAbstract && (accessFlags & (0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0100 | 0x0800)) !== 0) {
-      errors.push({ code: 'jvm-method-abstract-flag-conflict' });
-    }
+    const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
+    const flagValidation = validateJvmMethodFlags(accessFlags, {
+      methodName,
+      ownerAccessFlags,
+      majorVersion: classMajor,
+    });
+    for (const code of flagValidation.errors) errors.push({ code });
+    for (const code of flagValidation.unsupported) unsupported.add(code);
   }
   const hasCode = metadata.hasCode === true;
   if (metadata.hasCode !== true && metadata.hasCode !== false) unsupported.add('method-code-cardinality-metadata-missing');
