@@ -1,3 +1,38 @@
+# Latest verification update — 2026-09-08
+
+Task ledger remains **43/61**. Actual device execution is deferred by the owner.
+
+The canonical `npm run check` on `2a6d9e1a784c1d033dd6a46259100017b82162f5`
+failed after137.8 s in MachineEffects: fixed system-path probing selected LLVM14
+instead of the available LLVM18.1.3 PATH wrapper. Commit `f853691e5` repairs
+all affected ARM64 oracle selection through a version-checked common helper.
+Resolver, integer (68,899 Capstone forms plus two LLVM CSSC forms), and memory
+(267 LLVM/Capstone cases) focused checks pass. The full command has not yet
+been rerun. Original log: `/tmp/hex-stage-a-exact-full-check-CuTMqX/full.log`;
+durable copy: `/mnt/workspace/hex-stage-a-logs/2a6d9e1a784c1d033dd6a46259100017b82162f5-stage-a-exact-full-check.full.log`.
+The published repair head has six successful CircleCI jobs. CodeRabbit skipped
+the draft; no review approval is inferred.
+
+The complete three-repetition T013 measurement then ran on the clean, unchanged
+`f853691e56504eed35b3893ab8f7dbc573816fe4` source using isolated Node22.20.0.
+It completed in1435.029 s, retaining135 functions,125 stage-applicable functions
+and405 samples. Cold1571.855 ms exceeds250; optimizer340.907 ms exceeds150;
+interactive1.246 ms passes5. Unpublished optimizer results and complete-result
+divergences are both zero. The result is **FAIL**, not release acceptance.
+The host also ran unrelated work; this observation does not isolate the cause
+of elapsed-time differences from the earlier Node24 run. No other user's process
+was stopped. Full values and source/environment bindings are in
+`development-performance.json`; raw observations and digest are retained at
+`/mnt/workspace/.dev-state/hex-development-batch/t013-current-full-observation.json`.
+
+Independent static review found additional async mutation and fallback
+cancellation concerns, plus a P8 frozen-reference authority gap. Fixes are under
+focused review in isolated worktrees; they are not represented by this source
+head or the earlier18-component passing batch below. That batch remains
+historical development evidence, not proof of the new Node22 performance gate.
+
+---
+
 # Integrated check update — 2026-09-08
 
 Task ledger: **43/61**. Physical-device execution is deferred by the owner; no
