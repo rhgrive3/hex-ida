@@ -40,6 +40,7 @@ test('#5931 async adapter event listeners stay isolated on the production transp
   const onUnhandled = (reason) => unhandled.push(reason);
   let adapter = null;
   let receiver = null;
+  let secondCalled = false;
   const transport = {
     async send() {},
     onMessage(fn) {
@@ -55,6 +56,7 @@ test('#5931 async adapter event listeners stay isolated on the production transp
   try {
     adapter = new RemoteDebugAdapter(transport, { protocol: { timeoutMs: 100 } });
     adapter.onEvent(async () => { throw new Error('adapter async boom'); });
+    adapter.onEvent(() => { secondCalled = true; });
     const accepted = transport.deliver({
       version: DEBUG_PROTOCOL_VERSION,
       type: 'event',
@@ -63,6 +65,7 @@ test('#5931 async adapter event listeners stay isolated on the production transp
       data: {},
     });
     assert.equal(accepted, true);
+    assert.equal(secondCalled, true, 'adapter listener rejection must not stop later listeners');
     await settle();
     assert.deepEqual(unhandled, [], 'production adapter dispatch must isolate async listener rejections');
   } finally {
@@ -93,6 +96,52 @@ test('#5931 the stream-truncated notice path is isolated as well', async () => {
     assert.equal(second, false);
     await settle();
     assert.deepEqual(unhandled, []);
+    client.close();
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('#5931 thenables are consumed without awaiting or stopping other listeners', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  let completed = false;
+  let resolvePending;
+  const pending = new Promise((resolve) => { resolvePending = resolve; });
+  let secondCalled = 0;
+  let removedCalled = 0;
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const client = new RemoteProtocolClient({ async send() {} }, { timeoutMs: 100 });
+    client.onEvent(() => { throw new Error('sync listener boom'); });
+    client.onEvent(() => ({ then(_resolve, reject) { reject(new Error('thenable listener boom')); } }));
+    client.onEvent(() => { secondCalled++; return pending.then(() => { completed = true; }); });
+    const accepted = client.receive({
+      version: DEBUG_PROTOCOL_VERSION,
+      type: 'event',
+      epoch: 0,
+      event: 'halted',
+      data: {},
+    });
+    assert.equal(accepted, true);
+    assert.equal(secondCalled, 1, 'a listener rejection must not stop later listeners');
+    assert.equal(completed, false, 'event delivery must not await listener completion');
+    resolvePending();
+    await settle();
+    assert.equal(completed, true);
+
+    const unsubscribe = client.onEvent(() => { removedCalled++; });
+    assert.equal(unsubscribe(), true);
+    client.receive({
+      version: DEBUG_PROTOCOL_VERSION,
+      type: 'event',
+      epoch: 0,
+      event: 'halted',
+      data: {},
+    });
+    assert.equal(removedCalled, 0, 'unsubscribed listeners must not be called');
+    await settle();
+    assert.deepEqual(unhandled, [], 'thenable rejection must be consumed');
     client.close();
   } finally {
     process.off('unhandledRejection', onUnhandled);

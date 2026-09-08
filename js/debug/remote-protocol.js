@@ -206,7 +206,7 @@ export function validateRemotePacket(packet) {
 function invokeListener(fn, packet) {
   try {
     const result = fn(packet);
-    if (result && typeof result.catch === 'function') result.catch(() => { /* listener isolation */ });
+    if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => { /* listener isolation */ });
   } catch { /* listener isolation */ }
 }
 
