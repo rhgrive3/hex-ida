@@ -22,6 +22,8 @@ p64(0x1000 + 32, 0);
 p64(0x1000 + 40, 0);
 p64(0x1000 + 48, 0);
 p64(0x1000 + 56, 0);
+p32(0x1000 + 64, 72);          // protocol_t size: fixed layout is fully readable
+p32(0x1000 + 68, 0);           // protocol flags
 str(0x1800, 'CoinProviding');
 
 p32(0x1100, 24); p32(0x1104, 1);
