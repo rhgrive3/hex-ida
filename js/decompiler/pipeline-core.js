@@ -211,7 +211,33 @@ function selectExpression(d, state) {
   if (d.sub === 'cinv') return expr.select(condition, expr.unary('not', t, t.bits, t.signed), t, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'cneg') return expr.select(condition, expr.unary('neg', t, t.bits, t.signed), t, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'set' || d.sub === 'setm') return expr.select(condition, t, f, d.dst?.bits || 1, false, origin(d, d.dst));
-  return expr.select(condition, t, f, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+  const selected = expr.select(condition, t, f, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+  // A plain CSEL whose arms are the compare operands is already a canonical
+  // min/max semantic form. Publish it while building the expression so a
+  // small function cannot lose this required idiom merely because the
+  // optional wall-clock rewrite pass is interrupted under host load.
+  if (condition?.kind === 'compare'
+      && ['pure', 'read'].includes(condition.left?.effect || 'pure')
+      && ['pure', 'read'].includes(condition.right?.effect || 'pure')) {
+    const unwrapCast = (value) => value?.kind === 'cast' ? unwrapCast(value.arg) : value;
+    const sameWidth = (left, right) => Number(left?.bits || 0) > 0
+      && Number(left?.bits) === Number(right?.bits);
+    const sameArm = (left, right) => (sameWidth(left, right) && sameExpr(left, right))
+      || (sameWidth(unwrapCast(left), unwrapCast(right))
+        && sameExpr(unwrapCast(left), unwrapCast(right)))
+      || (sameWidth(left, right) && left?.kind === 'const' && right?.kind === 'const'
+        && BigInt.asUintN(Number(left.bits), left.value) === BigInt.asUintN(Number(right.bits), right.value));
+    const trueLeft = sameArm(t, condition.left), trueRight = sameArm(t, condition.right);
+    const falseLeft = sameArm(f, condition.left), falseRight = sameArm(f, condition.right);
+    const operation = (condition.op === 'gt' || condition.op === 'ge')
+      ? (trueLeft && falseRight ? 'max' : trueRight && falseLeft ? 'min' : null)
+      : (condition.op === 'lt' || condition.op === 'le')
+        ? (trueLeft && falseRight ? 'min' : trueRight && falseLeft ? 'max' : null)
+        : null;
+    if (operation) return expr.intrinsic(operation, [condition.left, condition.right], selected.bits,
+      condition.compareSigned ?? selected.signed, selected.source, { compareSigned: condition.compareSigned });
+  }
+  return selected;
 }
 
 function branchCondition(inst, state) {

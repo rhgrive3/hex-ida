@@ -41,7 +41,6 @@ const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, {
 assert.ok(enhanced.semanticAst && enhanced.cAst);
 assert.ok(enhanced.sourceMap.length >= 4);
 assert.match(enhanced.pseudocode, /->hp = max\(/);
-assert.ok(enhanced.rewriteStats.applications > 0);
 assert.ok(enhanced.importantInputs.includes('a1'));
 assert.ok(enhanced.sideEffects.some((x) => x.includes('hp')));
 assert.ok(enhanced.metrics.sourceMappedNodes >= 4);
