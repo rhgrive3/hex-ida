@@ -66,6 +66,44 @@ test('#5949 identical inputs keep identical digests', () => {
   assert.equal(first.digest, second.digest);
 });
 
+test('#5949 coverage digest differences match the authority boundary for one record', () => {
+  const identityA = createLanguageMetadataIdentity({ ...base, coverage: { entityIds: ['swift:type:ClassA'] } });
+  const identityB = createLanguageMetadataIdentity({ ...base, coverage: { entityIds: ['swift:type:ClassB'] } });
+  const resultA = createLanguageMetadataResult({ identity: identityA, completeness: { complete: true } });
+  const resultB = createLanguageMetadataResult({ identity: identityB, completeness: { complete: true } });
+  const record = createLanguageMetadataRecord({
+    kind: 'type',
+    entityId: 'swift:type:ClassA',
+    providerId: 'swift',
+    providerVersion: '1',
+    ecosystem: 'swift',
+    descriptor: { layer: 'nominal', claim: { name: 'ClassA' } },
+  });
+  assert.notEqual(identityA.digest, identityB.digest);
+  assert.equal(isLanguageRecordAuthoritative(resultA, record), true);
+  assert.equal(isLanguageRecordAuthoritative(resultB, record), false);
+});
+
+test('#5949 matched-authoritative identity digests remain deterministic', () => {
+  const first = createLanguageMetadataIdentity({
+    verdict: 'matched-authoritative',
+    providerId: 'swift',
+    providerVersion: '1',
+    ecosystem: 'swift',
+    observed: 'binary-digest-5949',
+    expected: 'binary-digest-5949',
+  });
+  const second = createLanguageMetadataIdentity({
+    verdict: 'matched-authoritative',
+    providerId: 'swift',
+    providerVersion: '1',
+    ecosystem: 'swift',
+    observed: 'binary-digest-5949',
+    expected: 'binary-digest-5949',
+  });
+  assert.equal(first.digest, second.digest);
+});
+
 test('#5949 coverage still gates matched-partial authority per record', () => {
   const identity = createLanguageMetadataIdentity({ ...base, coverage: { entityIds: ['swift:type:ClassA'] } });
   const result = createLanguageMetadataResult({

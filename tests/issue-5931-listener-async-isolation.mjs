@@ -12,7 +12,6 @@ async function settle(microtasks = 3) {
 }
 
 test('#5931 an async remote-protocol listener that rejects stays isolated', async () => {
-  process.setMaxListeners(0);
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
