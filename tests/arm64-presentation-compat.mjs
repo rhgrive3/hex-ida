@@ -115,16 +115,19 @@ for (const mnemonic of [
   "ldaddb", "ldaddah", "ldaddlb", "ldaddalh",
   "ldseta", "ldsetalh", "ldclrlb", "ldclral", "ldeorb", "ldeoralh",
   "ldsmax", "ldsmaxah", "ldsminlb", "ldumaxal", "lduminh",
+  // Arm's store-only aliases: base/release, byte, and halfword forms (#4495).
+  "stadd", "staddl", "staddb", "staddlb", "staddh", "staddlh",
+  "stclr", "stclrl", "stclrb", "stclrlb", "stclrh", "stclrlh",
+  "steor", "steorl", "steorb", "steorlb", "steorh", "steorlh",
+  "stset", "stsetl", "stsetb", "stsetlb", "stseth", "stsetlh",
+  "stsmax", "stsmaxl", "stsmaxb", "stsmaxlb", "stsmaxh", "stsmaxlh",
+  "stsmin", "stsminl", "stsminb", "stsminlb", "stsminh", "stsminlh",
+  "stumax", "stumaxl", "stumaxb", "stumaxlb", "stumaxh", "stumaxlh",
+  "stumin", "stuminl", "stuminb", "stuminlb", "stuminh", "stuminlh",
 ]) {
   assert.equal(facade.categoryOf(mnemonic), "atomic", `${mnemonic} must be classified as atomic`);
 }
-const storeOnlyLseFamilies = ["stadd", "stclr", "steor", "stset", "stsmax", "stsmin", "stumax", "stumin"];
-for (const family of storeOnlyLseFamilies) {
-  for (const suffix of ["", "l", "b", "lb", "h", "lh"]) {
-    assert.equal(facade.categoryOf(`${family}${suffix}`), "atomic", `${family}${suffix} must be classified as atomic`);
-  }
-}
-for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall", "stadda", "staddal", "stsetq", "stsetall", "stsmaxa", "stsmaxal", "stuminq"]) {
+for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall", "stadda", "staddal", "stsetq", "stsetall", "stsmaxa", "stsminq", "stumaxall", "stuminlbq", "stsmaxal", "stuminq"]) {
   assert.notEqual(facade.categoryOf(mnemonic), "atomic", `${mnemonic} is not a canonical atomic variant`);
 }
 assert.equal(facade.categoryOf("ldxr"), "load", "exclusive loads retain their established presentation category");
@@ -170,14 +173,12 @@ async function analyzeArm64Fixture(instructions) {
   return analyzeFunction(analyzerBackend(instructions), region, 0, instructions.length - 1, null, null, { texts: false });
 }
 
-{
-  for (const mn of ["stadd", "stsmax", "stumin"]) {
-    const result = await analyzeArm64Fixture([
-      { mn, ops: "w0, [x1]" },
-      { mn: "ret", ops: "" },
-    ]);
-    assert.equal(result.usesAtomic, true, `${mn} must set usesAtomic (#4495)`);
-  }
+for (const mnemonic of ["stadd", "stsmax", "stumin"]) {
+  const result = await analyzeArm64Fixture([
+    { mn: mnemonic, ops: "w0, [x1]" },
+    { mn: "ret", ops: "" },
+  ]);
+  assert.equal(result.usesAtomic, true, `${mnemonic} store-only LSE alias must set usesAtomic (#4495)`);
 }
 console.log("  ok 8a store-only LSE aliases set the atomic function summary (#4495)");
 

@@ -1,7 +1,7 @@
 // Issue #6214 regression: canonical RuntimeObservation binary payloads
 // (TypedArray/ArrayBuffer) must be immutable after the observation identity is
 // computed. deepFreeze cannot freeze element storage of views, so the authority
-// clone canonicalizes binary content to plain byte arrays before freeze.
+// clone stores an owned, frozen, type-tagged byte representation.
 import assert from 'node:assert/strict';
 import {
   createRuntimeAuthorityBinding, createRuntimeObservation, validateRuntimeObservation,
@@ -25,9 +25,15 @@ function observe(payload) {
 {
   const observation = observe({ bytes: new Uint8Array([0x11, 0x22]) });
   const originalId = observation.observationId;
+  assert.equal(observation.payload.bytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.deepEqual(observation.payload.bytes.bytes, [0x11, 0x22]);
   let mutated = false;
-  try { observation.payload.bytes[0] = 0xff; mutated = observation.payload.bytes[0] === 0xff; } catch { /* frozen */ }
+  try {
+    observation.payload.bytes.bytes[0] = 0xff;
+    mutated = observation.payload.bytes.bytes[0] === 0xff;
+  } catch { /* frozen */ }
   assert.equal(mutated, false, 'TypedArray payload elements must not be mutable through the record');
+  assert.deepEqual(observation.payload.bytes.bytes, [0x11, 0x22]);
   assert.equal(observation.observationId, originalId);
   assert.ok(validateRuntimeObservation(binding, observation).ok, 'factory observation must stay valid');
 }
@@ -36,8 +42,8 @@ function observe(payload) {
 {
   const observation = observe({ raw: new ArrayBuffer(3) });
   const view = observation.payload.raw;
-  assert.ok(Array.isArray(view), `ArrayBuffer payload must be canonicalized, got ${view?.constructor?.name}`);
-  assert.deepEqual(view, [0, 0, 0]);
+  assert.equal(view.$hexRuntimeBinary, 'ArrayBuffer');
+  assert.deepEqual(view.bytes, [0, 0, 0]);
   assert.ok(validateRuntimeObservation(binding, observation).ok);
 }
 
@@ -45,18 +51,29 @@ function observe(payload) {
 {
   const observation = observe({ frames: [{ bytes: new Uint8Array([1, 2, 3]) }] });
   let mutated = false;
-  try { observation.payload.frames[0].bytes[0] = 9; mutated = observation.payload.frames[0].bytes[0] === 9; } catch { /* frozen */ }
+  try {
+    observation.payload.frames[0].bytes.bytes[0] = 9;
+    mutated = observation.payload.frames[0].bytes.bytes[0] === 9;
+  } catch { /* frozen */ }
   assert.equal(mutated, false);
-  assert.ok(Array.isArray(observation.payload.frames[0].bytes));
+  assert.equal(observation.payload.frames[0].bytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.deepEqual(observation.payload.frames[0].bytes.bytes, [1, 2, 3]);
   assert.ok(validateRuntimeObservation(binding, observation).ok);
 }
 
-// 4. Digest neutrality: byte-array input and equivalent TypedArray input share
-//    one observation identity.
+// 4. Observation identity keeps the original binary type. Equal bytes in a
+//    plain array, a Uint8Array, a Uint16Array, and an ArrayBuffer are distinct
+//    payloads; equivalent values of the same type remain deterministic.
 {
   const fromView = observe({ bytes: new Uint8Array([7, 8]) });
+  const fromSameType = observe({ bytes: new Uint8Array([7, 8]) });
   const fromArray = observe({ bytes: [7, 8] });
-  assert.equal(fromView.observationId, fromArray.observationId, 'binary canonicalization must be digest-neutral');
+  const fromUint16 = observe({ bytes: new Uint16Array(new Uint8Array([7, 8]).buffer) });
+  const fromBuffer = observe({ bytes: new Uint8Array([7, 8]).buffer });
+  assert.equal(fromView.observationId, fromSameType.observationId, 'same binary type and bytes must be deterministic');
+  assert.notEqual(fromView.observationId, fromArray.observationId, 'binary type must differ from a plain array');
+  assert.notEqual(fromView.observationId, fromUint16.observationId, 'binary view width must remain part of identity');
+  assert.notEqual(fromView.observationId, fromBuffer.observationId, 'ArrayBuffer must remain distinct from a view');
 }
 
 // 5. Tracker-accepted factory observations cannot be invalidated afterwards.
@@ -66,12 +83,18 @@ function observe(payload) {
   const accepted = tracker.accept(observation);
   assert.equal(accepted.status, 'accepted');
   let mutated = false;
-  try { observation.payload.bytes[0] = 9; mutated = observation.payload.bytes[0] === 9; } catch { /* frozen */ }
+  try {
+    observation.payload.bytes.bytes[0] = 9;
+    mutated = observation.payload.bytes.bytes[0] === 9;
+  } catch { /* frozen */ }
   assert.equal(mutated, false);
   assert.ok(validateRuntimeObservation(binding, tracker.observations[0]).ok, 'tracker copy must stay valid');
   const snapshot = tracker.snapshot();
   let snapshotMutated = false;
-  try { snapshot.observations[0].payload.bytes[0] = 42; snapshotMutated = snapshot.observations[0].payload.bytes[0] === 42; } catch { /* frozen */ }
+  try {
+    snapshot.observations[0].payload.bytes.bytes[0] = 42;
+    snapshotMutated = snapshot.observations[0].payload.bytes.bytes[0] === 42;
+  } catch { /* frozen */ }
   assert.equal(snapshotMutated, false, 'snapshot binary payload must be immutable');
 }
 
@@ -92,12 +115,14 @@ function observe(payload) {
   });
   const mapBytes = observation.payload.map.get('bytes');
   const [setBytes] = observation.payload.set.values();
-  assert.ok(Array.isArray(mapBytes));
-  assert.ok(Array.isArray(setBytes));
+  assert.equal(mapBytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.equal(setBytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.deepEqual(mapBytes.bytes, [4, 5]);
+  assert.deepEqual(setBytes.bytes, [6, 7]);
   let mapMutated = false;
   let setMutated = false;
-  try { mapBytes[0] = 99; mapMutated = mapBytes[0] === 99; } catch { /* frozen */ }
-  try { setBytes[0] = 99; setMutated = setBytes[0] === 99; } catch { /* frozen */ }
+  try { mapBytes.bytes[0] = 99; mapMutated = mapBytes.bytes[0] === 99; } catch { /* frozen */ }
+  try { setBytes.bytes[0] = 99; setMutated = setBytes.bytes[0] === 99; } catch { /* frozen */ }
   assert.equal(mapMutated, false);
   assert.equal(setMutated, false);
   assert.throws(() => observation.payload.map.set('x', [1]), /Cannot mutate frozen Map/);
@@ -117,10 +142,44 @@ function observe(payload) {
     scope: { bytes: new Uint8Array([9, 10]) },
   });
   assert.equal(authorized.status, 'authorized');
-  assert.ok(Array.isArray(authorized.token.scope.bytes));
+  assert.equal(authorized.token.scope.bytes.$hexRuntimeBinary, 'Uint8Array');
+  assert.deepEqual(authorized.token.scope.bytes.bytes, [9, 10]);
   let mutated = false;
-  try { authorized.token.scope.bytes[0] = 77; mutated = authorized.token.scope.bytes[0] === 77; } catch { /* frozen */ }
+  try {
+    authorized.token.scope.bytes.bytes[0] = 77;
+    mutated = authorized.token.scope.bytes.bytes[0] === 77;
+  } catch { /* frozen */ }
   assert.equal(mutated, false, 'mutation token binary scope must be immutable');
+}
+
+// 9. The clone boundary retains shared references while replacing their
+// mutable binary backing storage. This keeps valid metadata/Map/Set topology
+// intact instead of projecting each occurrence independently.
+{
+  const shared = new Uint8Array([0xaa, 0xbb]);
+  const observation = observe({
+    left: shared,
+    right: shared,
+    map: new Map([['shared', shared]]),
+    set: new Set([shared]),
+  });
+  assert.equal(observation.payload.left, observation.payload.right);
+  assert.equal(observation.payload.map.get('shared'), observation.payload.left);
+  assert.equal([...observation.payload.set][0], observation.payload.left);
+  shared[0] = 0xff;
+  assert.deepEqual(observation.payload.left.bytes, [0xaa, 0xbb]);
+  assert.ok(validateRuntimeObservation(binding, observation).ok);
+}
+
+// Marker-like ordinary metadata must not silently lose fields or type information.
+{
+  const metadata = { $hexRuntimeBinary: 'Uint8Array', bytes: [1, 2], description: 'sample' };
+  assert.deepEqual(observe(metadata).payload, metadata);
+  const ordinary = { $hexRuntimeBinary: 'application-record', bytes: [1, 2] };
+  assert.deepEqual(observe(ordinary).payload, ordinary);
+  const original = observe({ data: new Uint8Array([1, 2]) });
+  const transported = observe(structuredClone(original.payload));
+  assert.equal(transported.observationId, original.observationId);
 }
 
 console.log('issue #6214 canonical binary payload immutability regressions: PASS');
