@@ -24,6 +24,26 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
+function effectiveGlobalSpan(target, accessWidth) {
+  const pointerWidth = target?.widthBits;
+  if (!Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512
+      || typeof accessWidth !== 'bigint' || accessWidth <= 0n) return null;
+  const range = target?.offsetRange;
+  if (!range || typeof range.min !== 'bigint' || typeof range.max !== 'bigint') return null;
+  let base;
+  try { base = BigInt(target.address); }
+  catch { return null; }
+  const addressLimit = 1n << BigInt(pointerWidth);
+  if (base < 0n || base >= addressLimit) return null;
+  const start = base + range.min;
+  const end = base + range.max + accessWidth;
+  // The interval proof is valid only when every possible accessed byte stays
+  // in the machine address space. Otherwise the real pointer arithmetic may
+  // wrap, while the BigInt span below would remain artificially disjoint.
+  if (start < 0n || end > addressLimit) return null;
+  return { start, end };
+}
+
 function isProvenAddressSpace(value) {
   // Canonical spelling only: a value that is not already trimmed was never
   // canonicalized at the target boundary (e.g. a raw passthrough object), and
@@ -95,26 +115,25 @@ export function pointsToAlias(left, right, options = {}) {
         }
 
         if (a.address != null && b.address != null) {
-          try {
-            const baseA = BigInt(a.address);
-            const baseB = BigInt(b.address);
-            if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
-              const spanA_min = baseA + a.offsetRange.min;
-              const spanA_max = baseA + a.offsetRange.max;
-              const spanB_min = baseB + b.offsetRange.min;
-              const spanB_max = baseB + b.offsetRange.max;
-              if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
-                relations.push('no');
-                reasonCodes.add('disjoint-global-interval');
-                continue;
-              }
-              if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
-                relations.push('must');
-                reasonCodes.add('identical-root-and-exact-offset');
-                continue;
-              }
+          const spanA = effectiveGlobalSpan(a, widthA);
+          const spanB = effectiveGlobalSpan(b, widthB);
+          if (spanA && spanB) {
+            if (spanA.end <= spanB.start || spanB.end <= spanA.start) {
+              relations.push('no');
+              reasonCodes.add('disjoint-global-interval');
+              continue;
             }
-          } catch {}
+            if (a.offsetRange.exact && b.offsetRange.exact
+                && spanA.start === spanB.start && widthA === widthB) {
+              relations.push('must');
+              reasonCodes.add('identical-root-and-exact-offset');
+              continue;
+            }
+          } else {
+            // A mathematical BigInt span is not evidence when the target's
+            // pointer width is absent or the accessed interval can wrap.
+            reasonCodes.add('provenance-lost');
+          }
         }
 
         const pair = new Set([a.rootKind, b.rootKind]);
