@@ -184,6 +184,27 @@ test('#7268 unresolved enclosing signature fails closed instead of inferring ret
   assert.equal(lowerVMEffectsToSemanticIr(lifted).semanticIr.completeness, 'partial');
 });
 
+test('#7268 unresolved fallback method tokens retain a valid six-digit RID', async () => {
+  const image = {
+    moduleId: 'managed-module:fallback-token',
+    vmSpecEdition: 'v4.0.30319',
+    methodBodies: Array.from({ length: 16 }, (_, index) => ({
+      headerOffset: index,
+      codeOffset: index,
+      isTiny: true,
+      maxStack: 8,
+      codeSize: 1,
+      bytecode: Uint8Array.of(0x2a),
+      exceptionClauses: [],
+    })),
+  };
+  const frontend = new CilFrontend();
+  const methods = [];
+  for await (const method of frontend.enumerateMethods(image)) methods.push(method);
+  assert.equal(methods[15].token, '0x06000010');
+  assert.equal(liftCilMethod(15, image).methodId, methods[15].id);
+});
+
 test('#7268 declared void with stray stack value is invalid', () => {
   const lifted = liftCilMethod(0, imageFor([0x00, 0x00, 0x01], [0x17, 0x2a])); // static void()
   assert.equal(lifted.entryState.returnStackSlots, 0);

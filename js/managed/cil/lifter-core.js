@@ -9,7 +9,7 @@ function methodTokenText(bodyIndex, methodAuthority) {
   if (Number.isSafeInteger(token) && token >= 0x06000001 && token <= 0x06ffffff) {
     return `0x${token.toString(16).padStart(8, '0')}`;
   }
-  return `0x0600000${(bodyIndex + 1).toString(16)}`;
+  return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
 }
 
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
