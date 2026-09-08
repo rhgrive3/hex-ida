@@ -197,7 +197,8 @@ export class HypothesisVerifier {
     // it without touching the adapter or the maxCases bound (#5658).
     if (!experiment.cases.length) {
       const coverage = { planned:0, executed:0, complete:true, truncated:false, cancelled:false, stoppedOnContradiction:false, unsupported:0, reasons:[] };
-      return { experimentId:experiment.id, verdict:{ status:'inconclusive', confidence:0, reason:'no-runtime-cases', coverage }, coverage, cases:[] };
+      const verdict = classifyHypothesis([], coverage);
+      return { experimentId:experiment.id, verdict, coverage, cases:[] };
     }
     const results = []; const maxCases = boundedInteger(options.maxCases, experiment.cases.length, 1, 64, 'maxCases');
     const maxSteps = executionBound(options.maxSteps, 20000, 1000000, 'maxSteps');
