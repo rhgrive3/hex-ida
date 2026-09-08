@@ -120,4 +120,74 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
 
+const integrationBatchBranch = 'dev-agent-hardening/integration/issue-batch-20260909';
+const integrationBatchOwnedFiles = [
+  'js/analysis/summary/local-core.js',
+  'js/analysis/types/graph.js',
+  'js/knowledge/index.js',
+  'tests/phase7/issue-5719-schema-recovery-strings-progress.mjs',
+  'tests/phase7/summary/issue-6151-structured-call-arguments.test.mjs',
+  'tests/phase7/types/issue-4503-structural-array-claims.test.mjs',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+  'userscript/hex.user.template.js',
+  'userscript/release-version.json',
+];
+const integrationBatchForeignFiles = CROSS_LANE_ROUTES[integrationBatchBranch];
+assert.deepEqual(
+  [...integrationBatchForeignFiles],
+  [
+    '.circleci/config.yml',
+    'js/ai/control/runtime-support.js',
+    'js/ai/control/turn-executor.js',
+    'js/ai/runtime.js',
+    'js/binary/macho-source-cache.js',
+    'js/diff/runtime.js',
+    'js/diff/symmetric-function-set.js',
+    'js/diff/symmetric-workspace-runtime.js',
+    'js/managed/jvm/parser-core.js',
+    'js/platform/plugin-api-core.js',
+    'js/workspace.js',
+    'tests/diff-platform.mjs',
+    'tests/issue-4512-diff-abort-registration-race.mjs',
+    'tests/issue-6086-agent-monotonic-clock.mjs',
+    'tests/issue-6095-turn-monotonic-clock.mjs',
+    'tests/issue-7198-jvm-member-name-grammar.mjs',
+    'tests/knowledge-platform.mjs',
+    'tests/phase11/jvm/jvm-parser.test.mjs',
+    'tests/phase4/binary/issue-5536-source-cache-mutable-input.test.mjs',
+    'tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs',
+    'tests/phase4/issue-4510-macho-source-cache-result-ownership.test.mjs',
+    'tests/plugin-platform-invocation-lifetime-4511.mjs',
+    'tests/project-roundtrip.mjs',
+  ],
+  'the #7535 route must enumerate the exact seven-component foreign union plus CircleCI config',
+);
+const integrationBatchInventory = [...integrationBatchOwnedFiles, ...integrationBatchForeignFiles];
+assert.deepEqual(
+  validateCrossLaneInventory(integrationBatchBranch, integrationBatchInventory),
+  [...integrationBatchOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the #7535 route must return only the Phase 7-owned subset',
+);
+assert.throws(
+  () => validateCrossLaneInventory(integrationBatchBranch, [...integrationBatchInventory, 'js/ui/unrelated.js']),
+  /unexpected foreign paths/,
+  'the #7535 route must reject an unknown foreign path',
+);
+assert.throws(
+  () => validateCrossLaneInventory(integrationBatchBranch, [...integrationBatchInventory, 'js/semantics/ir/nodes.js']),
+  /unexpected foreign paths/,
+  'the #7535 route must reject a forbidden semantic IR path',
+);
+assert.throws(
+  () => validateCrossLaneInventory(`${integrationBatchBranch}-similar`, integrationBatchInventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar integration branch name must not activate the route',
+);
+assert.throws(
+  () => validateCrossLaneInventory(integrationBatchBranch, integrationBatchForeignFiles),
+  /no Phase 7-owned paths/,
+  'the #7535 route must fail closed when no Phase 7 evidence is present',
+);
+
 console.log('phase7 cross-lane ownership routing: PASS');

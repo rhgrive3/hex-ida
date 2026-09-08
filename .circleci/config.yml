@@ -186,6 +186,16 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              dev-agent-hardening/integration/issue-batch-20260909)
+                # #7535 is the exact living integration route for the reviewed
+                # seven-component union. The helper enumerates every foreign
+                # path and returns only the Phase 7-owned subset for validation.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
