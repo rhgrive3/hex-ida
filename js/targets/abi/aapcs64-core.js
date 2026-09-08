@@ -42,7 +42,7 @@ function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const scalableClass = scalableAAPCS64Class(type, cls);
-  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(type + ' ' + cls);
   const hfaMeta = aggregateBoolean(param, 'hfa');
   const hvaMeta = aggregateBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
@@ -544,7 +544,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
     || aggregateLayoutDescriptorPresent(proto)
     || malformedReturnAggregate
     ||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
-  const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  const explicitReturnBits = explicitReturnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
   if (aggregate && !aggregateLayout) {
     return { reg:null, regs:[], bits:explicitReturnBits, bytes:null, aggregate:true, partial:true,
@@ -558,7 +558,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   if (scalableReturnClass(proto,type,cls)) return null;
   const returnBits = aggregate
     ? explicitReturnBits ?? aggregateLayout?.bits ?? null
-    : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+    : returnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };

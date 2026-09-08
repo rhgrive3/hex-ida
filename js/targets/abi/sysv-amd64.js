@@ -67,7 +67,7 @@ function parameterClass(parameter) {
   const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
   const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
-    || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
   const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
@@ -603,7 +603,7 @@ function classifyReturn(prototype, options = {}) {
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
+  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
   const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   if (vector && saneBits > 128) {
     const reg = vectorRegisterView(0, saneBits, options);
