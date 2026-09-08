@@ -82,10 +82,20 @@ function buildCil({
   bytes.set(new TextEncoder().encode('#~\0'), streamPos);
 
   const tablesOffset = metadataOffset + 0x80;
-  view.setUint32(tablesOffset + 8, 1 << 6, true);
+  // ECMA-335 II.22.26 rule 2: the MethodDef row needs a TypeDef owner (#7301).
+  view.setUint32(tablesOffset + 8, (1 << 2) | (1 << 6), true);
   let tablePos = tablesOffset + 24;
-  view.setUint32(tablePos, 1, true);
+  view.setUint32(tablePos, 1, true); // one TypeDef row
   tablePos += 4;
+  view.setUint32(tablePos, 1, true); // one MethodDef row
+  tablePos += 4;
+  // TypeDef row (14 bytes): Flags, Name, Namespace, Extends, FieldList, MethodList.
+  view.setUint32(tablePos, 0, true); tablePos += 4;
+  view.setUint16(tablePos, 0, true); tablePos += 2;
+  view.setUint16(tablePos, 0, true); tablePos += 2;
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Extends = null
+  view.setUint16(tablePos, 1, true); tablePos += 2; // FieldList
+  view.setUint16(tablePos, 1, true); tablePos += 2; // MethodList
   view.setUint32(tablePos, 0x2300, true); // MethodDef RVA -> file 0x500
 
   // Fat method header with CorILMethod_MoreSects and a valid 16-byte body.
