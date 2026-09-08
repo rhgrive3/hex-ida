@@ -33,10 +33,24 @@ export const VERDICT = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
-function freezeDeep(value, seen = new WeakSet()) {
+// Caller-controlled metadata must be normalized inside an explicit budget:
+// freezeDeep's recursive DFS previously relied on the native call stack as its
+// only depth limit, so a schema-valid but deep object could exhaust it
+// synchronously before any query/domain error could be raised (#5496).
+export const QUERY_METADATA_MAX_DEPTH = 512;
+export const QUERY_METADATA_MAX_NODES = 65536;
+
+function freezeDeep(value, seen = new WeakSet(), depth = 0, budget = { nodes: 0 }) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  if (depth > QUERY_METADATA_MAX_DEPTH) {
+    throw new TypeError(`createVerificationQuery: metadata depth budget exceeded (>${QUERY_METADATA_MAX_DEPTH})`);
+  }
+  budget.nodes += 1;
+  if (budget.nodes > QUERY_METADATA_MAX_NODES) {
+    throw new TypeError(`createVerificationQuery: metadata node budget exceeded (>${QUERY_METADATA_MAX_NODES})`);
+  }
   seen.add(value);
-  for (const child of Object.values(value)) freezeDeep(child, seen);
+  for (const child of Object.values(value)) freezeDeep(child, seen, depth + 1, budget);
   return Object.freeze(value);
 }
 
