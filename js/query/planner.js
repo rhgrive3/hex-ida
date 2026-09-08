@@ -238,6 +238,21 @@ function explicitBudget(value, fallback, minimum = 0) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(minimum, Math.floor(value));
 }
+
+export function createToolCallBudget(maxToolCalls = Infinity) {
+  const limit = explicitBudget(maxToolCalls, Infinity, 0);
+  let used = 0;
+  return Object.freeze({
+    limit,
+    get used() { return used; },
+    remaining() { return Math.max(0, limit - used); },
+    consume() {
+      if (used >= limit) return false;
+      used += 1;
+      return true;
+    },
+  });
+}
 function plannerShare(total, ratio = 0.4) {
   if (total <= 0) return 0;
   if (total <= 2) return total;
@@ -253,12 +268,14 @@ function budgetState(opts) {
   const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
   const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
   const requestedMaxDisassembly = explicitBudget(opts && opts.maxDisassembly, 50000, 0);
+  const toolCallBudget = opts?.toolCallBudget || createToolCallBudget(opts?.maxToolCalls);
   const ratioRaw = opts?.plannerBudgetFraction;
   const ratio = typeof ratioRaw === 'number' && Number.isFinite(ratioRaw) ? Math.max(0.1, Math.min(0.8, ratioRaw)) : 0.4;
   const maxFunctions = plannerShare(requestedMaxFunctions, ratio);
   const maxDisassembly = plannerDisassemblyShare(requestedMaxDisassembly, ratio);
   const b = {
     requestedMaxFunctions, requestedMaxDisassembly, maxFunctions, maxDisassembly,
+    toolCallBudget,
     reservedFunctions: Math.max(0, requestedMaxFunctions - maxFunctions),
     reservedDisassembly: Math.max(0, requestedMaxDisassembly - maxDisassembly),
     maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
@@ -287,7 +304,8 @@ function cancelled(b) {
   if (!b.signal.aborted && b.isCancelled()) b.controller.abort('cancelled');
   return b.signal.aborted && !timedOut(b);
 }
-function expired(b) { return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted; }
+function toolCallBudgetExhausted(b) { return b.toolCallBudget.remaining() <= 0; }
+function expired(b) { return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b); }
 function abortError(b) {
   const code = timedOut(b) ? 'timeout' : 'cancelled';
   const error = new Error(code); error.code = code; return error;
@@ -304,6 +322,11 @@ async function awaitBudget(promise, b) {
 async function invokeTool(tools, name, b, ...args) {
   const fn = tools && tools[name];
   if (typeof fn !== 'function') { const error = new Error(`missing-tool:${name}`); error.code = 'missing-tool'; throw error; }
+  if (!b.toolCallBudget.consume()) {
+    const error = new Error('tool-call-budget');
+    error.code = 'tool-call-budget';
+    throw error;
+  }
   if (args.length && args[args.length - 1] && typeof args[args.length - 1] === 'object' && !Array.isArray(args[args.length - 1]) && typeof args[args.length - 1] !== 'bigint') {
     args[args.length - 1] = { ...args[args.length - 1], signal:b.signal };
   } else args.push({ signal:b.signal });
@@ -655,7 +678,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       best = await verifyBest(query, ranked, tools, b);
     } catch (error) {
       const code = String(error && (error.code || error.message) || '');
-      if (code !== 'timeout' && code !== 'cancelled') throw error;
+      if (code !== 'timeout' && code !== 'cancelled' && code !== 'tool-call-budget') throw error;
     }
     ranked = ranked.sort((a, b2) => b2.score - a.score);
     if (best) best = ranked.find((x) => x.address === best.address) || best;
@@ -671,19 +694,21 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (b.sourcePoolTruncated) missingEvidence.push('candidate-source-limit');
     if (b.searchIncomplete) missingEvidence.push('search-incomplete');
     if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
+    if (toolCallBudgetExhausted(b)) missingEvidence.push('tool-call-budget');
     if (timedOut(b)) missingEvidence.push('timeout');
     if (cancelled(b)) missingEvidence.push('cancelled');
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
     const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
     const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete;
-    const budgetLimited = b.disassemblyExhausted || b.functionExhausted;
+    const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
     const all = mergedCandidates(pools);
     const candidateCount = all.size;
     const analyzedCount = ranked.length;
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
     const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
-    const reason = b.functionExhausted ? 'function-budget'
+    const reason = toolCallBudgetExhausted(b) ? 'tool-call-budget'
+      : b.functionExhausted ? 'function-budget'
       : b.disassemblyExhausted ? 'disassembly-budget'
         : timedOut(b) ? 'timeout'
           : cancelled(b) ? 'cancelled'
@@ -716,7 +741,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       searchCompleteness: search,
       stats: {
         analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
-        disassembly: b.analyzedInstructions, elapsedMs: Date.now() - b.started,
+        disassembly: b.analyzedInstructions, toolCalls: b.toolCallBudget.used, elapsedMs: Date.now() - b.started,
         plannerFunctionBudget: b.maxFunctions, requestedFunctionBudget: b.requestedMaxFunctions,
         plannerDisassemblyBudget: b.maxDisassembly, requestedDisassemblyBudget: b.requestedMaxDisassembly,
       },
