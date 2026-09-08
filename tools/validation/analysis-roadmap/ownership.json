@@ -16,6 +16,11 @@
       "tests/phase7/types/issue-4503-structural-array-claims.test.mjs"
     ],
     "phase8": [
+      "tools/validation/phase8/decoded-function-adapter.mjs",
+      "tools/validation/phase8/decompile-corpus.mjs",
+      "tools/validation/phase8/metrics.mjs",
+      "tools/validation/phase8/verify.mjs",
+      "tests/phase8/corpus/explicit-compiler-abi.test.mjs",
       "js/decompiler/phase8/contract.js",
       "js/decompiler/phase8/index.js",
       "js/decompiler/phase8/pass-validation.js",

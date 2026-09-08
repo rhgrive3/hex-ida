@@ -415,7 +415,7 @@ export function structuringAccounting({ corpus = loadCorpus(), decompilerTimeBud
   let unknownEdgeCount = 0;
   let covered = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs, toolchain:corpus.toolchain ?? null });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutIr.push(entry.id); continue; }
     const { ledger, analysis } = runPhase8Stage({ ir }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
@@ -464,7 +464,7 @@ export function aggregateCertainty({ corpus = loadCorpus(), decompilerTimeBudget
   let conflictCount = 0;
   let confirmedCount = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs, toolchain:corpus.toolchain ?? null });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
     const { ledger, analysis } = runPhase8Stage({ ir, types: outcome.result.types ?? null }, { stages: PASS_STAGES, timeBudgetMs: Math.max(decompilerTimeBudgetMs, 10000) });
@@ -513,7 +513,7 @@ export function providerEvidence({ corpus = loadCorpus(), decompilerTimeBudgetMs
   let functionsWithHints = 0;
   let providerFailureCount = 0;
   for (const [index, entry] of corpus.functions.entries()) {
-    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs, toolchain:corpus.toolchain ?? null });
     const ir = outcome?.result?.ir ?? null;
     if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
     const context = { ir, types: outcome.result.types ?? null };

@@ -22,6 +22,7 @@ import { loadCorpus } from './build-corpus.mjs';
 import { decompileDecodedProductFunction } from './decoded-function-adapter.mjs';
 
 const ABI_ADAPTER = semanticAbiAdapter(AAPCS64_ABI);
+const FROZEN_TOOLCHAIN = loadCorpus().toolchain;
 const X86_SESSION = await createCapstoneX86Session();
 const RISCV_SESSION = await createCapstoneRiscv64Session();
 let sessionsClosed = false;
@@ -193,7 +194,23 @@ function decodedFor(entry, baseAddress) {
   throw new TypeError(`phase8 corpus: unsupported machine-byte architecture ${entry.architectureId}`);
 }
 
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
+function compilerCallingConvention(entry, toolchain) {
+  if (entry.architectureId !== 'riscv64') return null;
+  const targets = Array.isArray(toolchain?.targets) ? toolchain.targets.filter(target =>
+    target?.architectureId === entry.architectureId && target?.target === entry.targetTriple) : [];
+  if (targets.length !== 1) throw new TypeError('phase8-measurement-compiler-abi-target-required');
+  const args = targets[0].compilerArgs;
+  if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) {
+    throw new TypeError('phase8-measurement-compiler-abi-arguments-invalid');
+  }
+  const profiles = args.filter(arg => arg.startsWith('-mabi='));
+  if (profiles.length !== 1 || !/^-mabi=lp64(?:f|d)?$/.test(profiles[0])) {
+    throw new TypeError('phase8-measurement-compiler-abi-profile-required');
+  }
+  return profiles[0].slice('-mabi='.length);
+}
+
+export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true, toolchain = FROZEN_TOOLCHAIN } = {}) {
   const baseAddress = 0x100000n + BigInt(index) * 0x10000n;
   try {
     if (entry.architectureId === 'arm64') {
@@ -217,6 +234,7 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
     const result = decompileDecodedProductFunction({
       architecture:entry.architectureId,
       platform:'linux',
+      callingConvention:compilerCallingConvention(entry, toolchain),
       name:entry.function,
       instructions:decoded.instructions,
       decoderSemanticVersion:decoded.decoderSemanticVersion,
@@ -284,7 +302,7 @@ export function observationOf(entry, outcome) {
 }
 
 export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000, deterministicTransforms = true, phase8Optimize = true } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize })));
+  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize, toolchain:corpus.toolchain ?? null })));
 }
 
 export { closeSessions };

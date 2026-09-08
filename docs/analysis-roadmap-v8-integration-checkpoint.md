@@ -204,6 +204,41 @@ unchanged integer denominator (68,899 Capstone forms plus two LLVM CSSC forms)
 and the complete 267-case memory denominator. The prior memory-oracle count
 failure was the LLVM 14 disassembly format, not permission to reduce cases.
 
+The main/generated reconciliation is committed locally as
+`c7d79f70703ce0d87adfb4c7c7f8af0b39f1340c`, tree
+`21b292ae96ce128bc68c009a221a5ed4fa72fd02`. Canonical rebuild passed (6.2 s)
+and produced zero diff in both committed userscript artifacts and the
+deployment-identity stub. A subsequent sequential Chromium/WebKit sandbox
+E2E passed (18.3 s) on that synchronized source/runtime. This is desktop engine
+evidence, not physical iPad evidence or a deployed-runtime claim.
+
+### Phase 8 first-divergence repair: explicit compiler ABI evidence
+
+Merged #6975 intentionally made architecture-only RISC-V ABI selection
+ambiguous. The frozen Phase 8 corpus already records `-mabi=lp64` in its
+toolchain target, but `decoded-function-adapter.mjs` never received a calling
+convention. All 45 RISC-V entries therefore stopped before product analysis.
+The registry's refusal is retained; no architecture-based ABI guess is added.
+
+The measurement path now passes the recorded compiler ABI to the existing
+product resolver, matching both architecture and target triple. Missing,
+duplicate, unsupported, conflicting or malformed target/profile metadata is
+blocking. `observeCorpus`, edge accounting, aggregate certainty and provider
+evidence carry the caller corpus's toolchain explicitly; missing caller
+metadata cannot borrow the default frozen corpus metadata. The frozen corpus,
+compiler argument records, baseline observations, denominators and thresholds
+are unchanged. The default single-entry API still uses its frozen corpus
+toolchain for existing frozen-entry callers.
+
+`tests/phase8/corpus/explicit-compiler-abi.test.mjs` failed 0/2 before the repair
+(log `/tmp/hex-roadmap-p8-abi-before-Tbx8Ub/full.log`) and now passes, including
+negative checks across all metric consumers. Ownership checks pass using the
+existing Phase 8 manifest, without frozen-path exemptions. A complete 45/45
+RISC-V corpus execution passed without per-function errors (33.0 s); this
+focused evidence does not replace the full Phase 8 safety/quality gate.
+Verifier version advances from 1.1.0 to 1.1.1 because measurement changed;
+older verifier reports are not evidence for this repaired candidate.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
