@@ -126,11 +126,25 @@ export function analysisFromBinaryImage(image) {
   const seedByAddress = new Map();
   const exactEndByAddress = new Map();
   const conflictingExactEnds = new Set();
+  // Duplicate seeds for one address must merge by evidence quality, not by
+  // input order: last-write-wins let a trailing heuristic seed demote exact
+  // function-start provenance (and vice versa) depending on producer order
+  // (#6096). Strength = exact over non-exact, then confidence, then a
+  // deterministic source-name tie-break so permutations agree.
+  const seedConfidence = (seed, exact) => Number.isFinite(Number(seed.confidence)) ? Number(seed.confidence) : (exact ? 1 : 0.5);
+  const seedIsStronger = (next, current) => {
+    const nextExact = isExactFunctionSeed(next), currentExact = isExactFunctionSeed(current);
+    if (nextExact !== currentExact) return nextExact;
+    const nextConfidence = seedConfidence(next, nextExact), currentConfidence = seedConfidence(current, currentExact);
+    if (nextConfidence !== currentConfidence) return nextConfidence > currentConfidence;
+    return String(next.source ?? '') < String(current.source ?? '');
+  };
   for (const seed of image.functions || []) {
     if (seed?.address == null) continue;
     const address = u64Address(seed.address);
     const key = address.toString();
-    seedByAddress.set(key, seed);
+    const existing = seedByAddress.get(key);
+    if (existing == null || seedIsStronger(seed, existing)) seedByAddress.set(key, seed);
     const extentConfidence = Number(seed.extentConfidence ?? 0);
     if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
     let end = null;
