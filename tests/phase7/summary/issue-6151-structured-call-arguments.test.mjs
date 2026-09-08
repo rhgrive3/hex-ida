@@ -30,12 +30,15 @@ function calleeSummary() {
 
 // Raw IR (the same pre-validation shape the composer accepts from partial IR
 // sources): caller(arg0) { ret0 = call callee(arg0); return ret0 }.
-function callerIr(argumentList) {
+function callerIr(argumentList, { metadataArgumentLookup = false } = {}) {
   return {
     functionId: 'fn_caller',
-    inputs: ['arg0'],
+    ...(metadataArgumentLookup ? {} : { inputs: ['arg0'] }),
     values: [
-      { id: 'arg0', kind: 'computed', definitionNodeId: 'def-arg0', machineType: { kind: 'bitvector', widthBits: 64 } },
+      {
+        id: 'arg0', kind: 'computed', definitionNodeId: 'def-arg0', machineType: { kind: 'bitvector', widthBits: 64 },
+        ...(metadataArgumentLookup ? { metadata: { argumentIndex: 0 } } : {}),
+      },
       { id: 'ret0', kind: 'computed', definitionNodeId: 'call0', machineType: { kind: 'bitvector', widthBits: 64 } },
     ],
     nodes: [
@@ -68,8 +71,8 @@ function callerIr(argumentList) {
   };
 }
 
-function compose(argumentList) {
-  const { summary } = buildLocalFunctionSummary(callerIr(argumentList), null, { definitions: [], uses: [] }, null, {
+function compose(argumentList, options = {}) {
+  const { summary } = buildLocalFunctionSummary(callerIr(argumentList, options), null, { definitions: [], uses: [] }, null, {
     snapshotId: SNAPSHOT_ID,
     calleeSummaries: new Map([['fn_callee', calleeSummary()]]),
   });
@@ -87,6 +90,11 @@ test('#6151 a structured { valueId } argument composes the callee arg provenance
     'a resolvable provenance must not degrade to unknown');
 });
 
+test('#6151 metadata on a structured argument does not change its value identity', () => {
+  const composed = compose([{ valueId: 'arg0', machineType: { kind: 'bitvector', widthBits: 64 }, role: 'pointer' }]);
+  assert.ok(composed.some((prov) => prov.kind === 'arg' && prov.argIndex === 0 && prov.offset === '8'));
+});
+
 test('#6151 plain string arguments keep composing provenance (no regression)', () => {
   const composed = compose(['arg0']);
   assert.ok(composed.some((prov) => prov.kind === 'arg' && prov.argIndex === 0 && prov.offset === '8'));
@@ -96,4 +104,12 @@ test('#6151 a structured argument without a valueId fails closed to unknown', ()
   const composed = compose([{ notAValueId: true }]);
   assert.ok(composed.some((prov) => prov.kind === 'unknown' && prov.returnIndex === 0),
     'an argument without a resolvable value must stay conservative');
+});
+
+test('#6151 malformed structured arguments never use object coercion for formal lookup', () => {
+  for (const argument of [{}, { valueId: null }, Object.create(null)]) {
+    const composed = compose([argument], { metadataArgumentLookup: true });
+    assert.ok(composed.some((prov) => prov.kind === 'unknown' && prov.returnIndex === 0),
+      'malformed structured arguments must remain explicit unknown');
+  }
 });

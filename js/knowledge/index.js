@@ -316,28 +316,23 @@ export class KnowledgeDB {
     });
   }
   async #searchKnowledgeRecords(query, terms, limit) {
+    const matches = (record) => {
+      const hay = record.searchTerms?.length ? record.searchTerms : searchTermsOf(record);
+      return hay.some((value) => value.includes(query) || terms.some((term) => value.includes(term)));
+    };
     if (this.memory) {
-      return [...this.memory.values()].filter((record) => {
-        const hay = record.searchTerms?.length ? record.searchTerms : searchTermsOf(record);
-        return hay.some((value) => value.includes(query) || terms.some((term) => value.includes(term)));
-      }).slice(0, limit);
+      const ids = [...this.memory.keys()].sort();
+      return ids.map((id) => this.memory.get(id)).filter(matches).slice(0, limit);
     }
-    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions'); const out=new Map();
-    if (store.indexNames.contains('searchTerms')) {
-      const index=store.index('searchTerms');
-      for (const term of [query,...terms]) {
-        const found=await requestPromise(index.getAll(term,limit)); for (const record of found) out.set(record.id,record);
-        if (out.size>=limit) break;
-      }
-    }
-    if (!out.size) {
-      await new Promise((resolve,reject) => {
-        let scanned=0; const req=store.openCursor();
-        req.onsuccess=()=>{ const c=req.result; if (!c || out.size>=limit || scanned>=2000) return resolve(); scanned++; const record=c.value; const hay=record.searchTerms?.length?record.searchTerms:searchTermsOf(record); if (hay.some((value)=>value.includes(query)||terms.some((term)=>value.includes(term)))) out.set(record.id,record); c.continue(); };
-        req.onerror=()=>reject(req.error);
-      });
-    }
-    return [...out.values()].slice(0,limit);
+    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions');
+    // The multiEntry index only answers exact-key lookups. Scan the object
+    // store so substring matches use the same predicate and ID order as the
+    // memory backend; an exact hit must not change the candidate set or order.
+    return new Promise((resolve,reject) => {
+      const records=[]; const req=store.openCursor();
+      req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve(records); if (matches(c.value)) records.push(c.value); c.continue(); };
+      req.onerror=()=>reject(req.error);
+    });
   }
 
   async #hasNegativeCandidate(matches, name, identity) {

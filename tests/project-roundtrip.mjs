@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { NavigationHistory } from '../js/navigation.js';
 import {
   HEX_PROJECT_VERSION,
   ProjectFormatError,
@@ -194,6 +195,32 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   truncatedNavigationProject.navigation.cursorIndex = 20;
   applyWorkspaceProject(fakeApp, truncatedNavigationProject);
   assert.equal(fakeApp.navigation.index, 20, 'cursor must remain unchanged when history is not truncated');
+
+  // Issue #5488: project import must honor the real history capacity, including zero.
+  for (const limit of [0, 1, 40]) {
+    for (const cursorIndex of [70, null]) {
+      let restoredSnapshot;
+      fakeApp.navigation = new NavigationHistory({
+        limit,
+        onChange(snapshot) { restoredSnapshot = snapshot; },
+      });
+      applyWorkspaceProject(fakeApp, {
+        ...truncatedNavigationProject,
+        navigation: { ...truncatedNavigationProject.navigation, history: longHistory, cursorIndex },
+      });
+      const navigation = fakeApp.navigation;
+      assert.equal(navigation.entries.length, limit);
+      assert.equal(navigation.index, limit === 0 ? -1 : cursorIndex === null ? limit - 1 : Math.max(0, cursorIndex - (100 - limit)));
+      assert.deepEqual(restoredSnapshot, navigation.snapshot(), 'import must notify observers of the restored capacity');
+      if (limit === 0) {
+        assert.deepEqual(navigation.entries, []);
+        assert.deepEqual(navigation.snapshot(), { length: 0, canBack: false, canForward: false, current: null });
+      } else {
+        assert.equal(navigation.entries[0].addr, BigInt(100 - limit));
+        assert.equal(navigation.entries.at(-1).addr, 99n);
+      }
+    }
+  }
 
   fakeApp.notes.clear();
 }
