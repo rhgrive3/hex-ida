@@ -128,8 +128,13 @@ export function parseMsf(bytes) {
   if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
     return { streams: [], diagnostics: ['invalid MSF free block map index'], complete: false };
   }
-  if (numBlocks * blockSize > data.length + blockSize) {
-    return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
+  // NumBlocks must match the actual file block count. Both directions of a
+  // mismatch are corrupt: a declared count past the file end (even by exactly
+  // one block) lets unreadable blocks pass as backed, and an under-declared
+  // count hides part of the file. The old `> data.length + blockSize`
+  // tolerance admitted exactly-one-block-short files (#5665).
+  if (numBlocks * blockSize !== data.length) {
+    return { streams: [], diagnostics: ['MSF block count does not match the file size'], complete: false };
   }
   if (numDirectoryBytes < 4) {
     return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
