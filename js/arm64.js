@@ -457,9 +457,13 @@ HANDLERS.movk = (o, ops) => {
 };
 
 HANDLERS.movn = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movn');
+    return;
+  }
   const [d, s] = ops;
-  const sh = moveWideShift(s);
-  const bits = moveWideWidth(d);
+  const { bits, shift: sh } = info;
   o.title = J('ビットを反転して代入', 'Move NOT');
   if (sh == null) {
     o.pseudo = opShort(d) + ' = ~' + opShort(s);
