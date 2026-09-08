@@ -128,6 +128,16 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
     const name = r.cstring(strp, base + dc.size - strp);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
+    // A positive library ordinal is a 1-based index into the dependent dylib
+    // list; an ordinal beyond it references no library, so publishing it as
+    // canonical import metadata would launder a malformed reference (#5532).
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (ordinal > 0 && ordinal > libraryCount) {
+      status.complete = false; status.importsComplete = false;
+      status.importsPartialReason ||= 'dylib-ordinal-out-of-range';
+      image.warnings.push(`chained-fixups import ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
+      continue;
+    }
     const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
     image.imports.push(imp);
     parsed[i] = imp;
@@ -574,17 +584,51 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       const terminalEnd = p + terminalSize;
       if (term.value) {
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
-        if (flags & 0x08) {
+        // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
+        // ("unknown exports flag bits"). Laundering them into regular
+        // exports would mint export metadata the container cannot mean
+        // (#5392).
+        if ((flags >>> 6) !== 0) {
+          markPartial(`unknown exports flag bits 0x${flags.toString(16)}`);
+        } else if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           const imported = importedX.text || null;
-          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
-          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
-        } else {
-          const exportKind = flags & 0x03;
-          if (exportKind === 3) {
-            markPartial(`unsupported export kind ${exportKind}`);
+          const ordinal = Number(ord.value);
+          // A positive library ordinal is a 1-based index into the dependent
+          // dylib list; an ordinal beyond it references no library and must
+          // not become canonical export metadata (dyld binding semantics,
+          // #5532).
+          const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+          if (ordinal > 0 && ordinal > libraryCount) {
+            markPartial(`reexport ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
           } else {
+            const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+            if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+            image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal, imported, source: 'exports-trie' });
+          }
+        } else {
+            const exportKind = flags & 0x03;
+            if (exportKind === 3) {
+              markPartial(`unsupported export kind ${exportKind}`);
+            } else if (flags & 0x20) {
+              // EXPORT_SYMBOL_FLAGS_FUNCTION_VARIANT: the terminal carries a
+              // default-implementation offset plus a function-variant table
+              // index. Decoding it as a regular export would drop the table
+              // index and downgrade a variant-aware symbol to plain export
+              // provenance (#5387). The variant table itself is not modeled
+              // here yet, so publish typed provenance without an exact
+              // address and keep the trie explicitly partial.
+              const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+              const tableIndexX = r.uleb(p, 10, terminalEnd); p = tableIndexX.next;
+              if (tableIndexX.value == null) {
+                markPartial('function-variant terminal is missing its variant table index');
+              } else if (!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')) {
+                markPartial('shared metadata output budget exceeded','budgetExceeded');
+              } else {
+                image.exports.push({ name: prefix, address: null, kind: 'function-variant', flags, defaultImplementationOffset: addrX.value, variantTableIndex: Number(tableIndexX.value), source: 'exports-trie' });
+                markPartial(`function-variant export ${prefix} recorded without variant-table resolution`);
+              }
+            } else {
             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
             const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
             const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
