@@ -118,3 +118,21 @@ test('#5773: aggregate publication requires the entire field list', () => {
     if (!partial) assert.deepEqual(aggregates[0].members.map(({ name, offset }) => ({ name, offset })), [{ name: 'f', offset: 0 }]);
   }
 });
+
+test('#5773: a trailing byte must be consumed as padding, not an unfinished child', () => {
+  // This member's name leaves one byte to reach the record's 4-byte alignment.
+  const member = [0x0d, 0x15, 0, 0, 0x74, 0, 0, 0, 0, 0, 0x66, 0x66, 0x66, 0x66, 0];
+  const provider = new PdbDebugInfoProvider();
+  for (const [tail, complete] of [[0xf1, true], [0x01, false]]) {
+    const parsed = parseTpiStream(tpi(fieldlistRecord(member, [tail])));
+    const fields = parsed.types.get(0x1000);
+    assert.equal(fields.members.length, 1, 'the known member remains parsed');
+    assert.equal(fields.complete, complete, 'completion requires consuming the final byte');
+    assert.equal(parsed.complete, complete);
+    parsed.types.set(0x1001, {
+      kind: 'aggregate', name: 'Example', sizeBytes: 8,
+      fieldList: 0x1000, forwardReference: false,
+    });
+    assert.equal(provider.aggregates({ parsed: { tpi: parsed } }).length, complete ? 1 : 0);
+  }
+});
