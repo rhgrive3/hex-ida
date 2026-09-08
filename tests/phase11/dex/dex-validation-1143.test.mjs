@@ -112,12 +112,13 @@ function hasError(report, code) {
 }
 
 {
-  const { report } = await validate((bytes) => {
-    bytes[0x126] = 0x00; // concrete encoded_method with code_off = 0
-    bytes[0x127] = 0x00;
-  });
-  assert.equal(report.status, 'invalid');
-  assert.ok(hasError(report, 'dex-code-item-required-for-concrete-method'));
+  const bytes = buildMinimalDex();
+  bytes[0x126] = 0x00; // concrete encoded_method with code_off = 0
+  bytes[0x127] = 0x00;
+  await assert.rejects(
+    () => new DexFrontend().open(bytes),
+    /dex-code-item-required-for-concrete-method/,
+  );
 }
 
 {

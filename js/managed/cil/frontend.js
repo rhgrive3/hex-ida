@@ -59,12 +59,15 @@ export class CilFrontend {
       token: body.token ?? methodTokenText(i, resolveMethodSignature(body)),
       name: `Method_${i + 1}`,
     }));
-    for (const method of methods) {
+    for (const [index, method] of methods.entries()) {
       const body = method.bodyIndex == null ? null : image.methodBodies[method.bodyIndex];
       const authority = body ? resolveMethodSignature(body) : null;
       const token = method.token ?? methodTokenText(method.bodyIndex ?? 0, authority);
+      const name = typeof method.name === 'string' && method.name.length > 0
+        ? method.name : `Method_${index + 1}`;
       yield {
         ...method,
+        name,
         token,
         id: createManagedMethodId(image.moduleId, token),
         moduleId: image.moduleId,

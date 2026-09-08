@@ -114,7 +114,7 @@ test('verifyBoundedEquivalence: vacuous proof guard rejects inconsistent precond
   assert.equal(res.evidence, null);
 });
 
-test('verifyBoundedEquivalence: rejects sort and width mismatches immediately', async () => {
+test('verifyBoundedEquivalence: classifies sort and width mismatches as unknown before solving', async () => {
   const bv8 = createBv(8, 42);
   const bv32 = createBv(32, 42);
   const backend = new FakeSolverBackend();
@@ -125,11 +125,11 @@ test('verifyBoundedEquivalence: rejects sort and width mismatches immediately', 
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
 });
 
-test('verifyBoundedEquivalence: reports symbolic sort mismatch before correspondence', async () => {
+test('verifyBoundedEquivalence: reports symbolic sort mismatch as unknown before correspondence', async () => {
   const beforeX = createFreshSymbol(bvSort(8), 'input_before');
   const afterX = createFreshSymbol(bvSort(32), 'input_after');
   const backend = new FakeSolverBackend();
@@ -141,7 +141,7 @@ test('verifyBoundedEquivalence: reports symbolic sort mismatch before correspond
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
   assert.equal(res.unresolvedSymbols, undefined);
 });
