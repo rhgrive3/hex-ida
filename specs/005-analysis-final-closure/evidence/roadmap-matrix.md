@@ -7,7 +7,8 @@ The retained T037 packet is bound to product commit
 The current integrated candidate is runtime commit `1e2df44bf43051068098be04ea37bcd2dc38f881`,
 tree `5ebc67508d4afb3846554aa3854d3fc6ccf40663`, with canonical generated
 outputs at `a5209e5bd5580ad6bd95c82f496f854b2374183c`.
-Canonical roadmap: `docs/解析ツール改善.md.txt` (unchanged by this reconciliation).
+Canonical roadmap: `docs/解析ツール改善.md.txt` (its current development
+closure overlay is updated by T038; historical P0/P1 rows remain retained).
 Reconciliation date: 2026-09-08.
 
 The development-speed amendment permits this reconciliation on the combined
@@ -18,6 +19,11 @@ The pre-recovery 12 DONE / 10 PARTIAL / 1 REMAINING split at
 Existing source/history anchors are preserved below. The independent Luna Max
 read-only audit found no new implementation gap in the twelve previously existing
 rows. All eleven recovered/residual rows have explicit implementation owners.
+T038's current development overlay in the canonical roadmap and finding ledger
+uses the fixed 23-row denominator; all rows are implementation-complete under the
+development-speed amendment. Current-head measurement, external provenance,
+threshold, browser/device, protected-main, and final-release proof remains
+separate release debt and is not promoted by this matrix.
 
 | ID | Requirement / owner subsystem | Status | Source and test proof | Missing delta / dependencies | Risk / assigned model | Required exit gate |
 |---|---|---|---|---|---|---|
@@ -58,8 +64,10 @@ identities exist. The current P8 capture does not close the canonical quality
 measurement while ten known conservative fallback rows remain.
 Checked implementation tasks retain the applicable full-corpus, performance,
 independent oracle, runtime and physical-device obligations in the release column
-and the single development debt list. T038 and the authoritative roadmap remain
-open.
+and the single development debt list. T038's implementation reconciliation and
+the authoritative 23-row development overlay are complete; current-head,
+performance, external-provenance, browser/device, protected-main, and release
+acceptance remain open in the owning T039–T045 tasks.
 
 ## Reuse audit and validation boundary
 
@@ -87,7 +95,7 @@ The authoritative T025 packet is the pre-Stage-A matrix at
 `47f8a44469a5826b6199501a153a12439a280d13`. Its terminal-existing denominator
 is **12** (`DONE`), not the later 22-row development matrix: C1-01, C1-02,
 C1-03, C2-01, C2-02, C3-01, C3-02, C3-03, C4-01, X-01, S2-01, and S2-02.
-The one current `PARTIAL` row, C0-01/T026, and all T026–T036 residual rows are
+The pre-T026 `PARTIAL` row, C0-01/T026, and all T026–T036 residual rows are
 excluded from T037. The user-authorized speed amendment retires T050's old
 rolling-checkpoint receipt topology for development; no checkpoint history was
 reconstructed.
@@ -122,8 +130,10 @@ now records that current contract. After these minimal fixture/expectation
 repairs, both tests pass under Node 22.
 
 T037 is **DONE** for terminal-existing-row revalidation with no production
-regression found. This does not close T026/C0-01, T038, final performance,
-external-asset, deployment, physical-device, or protected-main release gates.
+regression found. T038's 23-row implementation reconciliation is complete under
+the development-speed amendment. This does not close T026/C0-01 current-head
+measurement, final performance, external-asset, deployment, physical-device, or
+protected-main release gates.
 
 ## Approved origin-identity integration delta — 2026-09-08
 

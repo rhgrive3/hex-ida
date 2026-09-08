@@ -29,7 +29,48 @@ fail-closed regressions, Spec Kit convergence, actual changed-file ownership rev
 proof, candidate merge-tree proof, required CI, expected-head merge, and post-merge live-main
 verification. Denominators and tests may not be weakened.
 
-## Current ledger
+## Current development closure overlay — 2026-09-08
+
+Under the user-authorized development-speed amendment, this overlay is the
+authoritative implementation status for the fixed 23-row campaign denominator.
+Every row is `IMPLEMENTATION_COMPLETE`; the exact production source, focused
+tests, and commit identities are preserved in the corresponding current `DONE`
+row of `specs/005-analysis-final-closure/evidence/roadmap-matrix.md` and its
+linked task/evidence packet. This status does not waive current-head
+measurement, external source/compiler/debug provenance, performance thresholds,
+browser/runtime, protected-main, physical-device, or final-release evidence;
+those remain assigned to T039–T044 (and applicable T045 device evidence).
+
+| Finding | Development status | Current source/test authority |
+|---|---|---|
+| HEX-C0-01 | IMPLEMENTATION_COMPLETE | T026 competitive collector/scorecard contracts; current roadmap DONE row |
+| HEX-ME-01 | IMPLEMENTATION_COMPLETE | T027 MachineEffects denominator and focused/full denominator evidence; current roadmap DONE row |
+| HEX-C1-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; points-to/MemorySSA source and focused proof; current roadmap DONE row |
+| HEX-C1-02 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; summary/points-to source and focused matrix; current roadmap DONE row |
+| HEX-C1-03 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; provenance/alias source and focused boundaries; current roadmap DONE row |
+| HEX-C2-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; MemorySSA forwarding source and focused contract; current roadmap DONE row |
+| HEX-C2-02 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; range/SCCP source and adversarial/downstream tests; current roadmap DONE row |
+| HEX-C3-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; type graph source and 14-case counterexamples; current roadmap DONE row |
+| HEX-C3-02 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; ABI classifiers and 66-case profile matrix; current roadmap DONE row |
+| HEX-C3-03 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; versioned metadata providers and focused suites; current roadmap DONE row |
+| HEX-C4-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; Phase 8 transaction/lifecycle source and substrate tests; current roadmap DONE row |
+| HEX-C4-02 | IMPLEMENTATION_COMPLETE | T030 validated structuring/exception preservation source and CFG negatives; current roadmap DONE row |
+| HEX-C4-03 | IMPLEMENTATION_COMPLETE | T028 bidirectional provenance source and focused 5/5 proof; current roadmap DONE row |
+| HEX-C4-04 | IMPLEMENTATION_COMPLETE | T029 pair-bound equivalence/adoption source and proof-gate regressions; current roadmap DONE row |
+| HEX-C4-05 | IMPLEMENTATION_COMPLETE | T031 bounded e-graph candidate source and proof-only adoption tests; current roadmap DONE row |
+| HEX-SYM-01 | IMPLEMENTATION_COMPLETE | T032 tiered solver/profile source and differential/browser focused evidence; current roadmap DONE row |
+| HEX-SYM-02 | IMPLEMENTATION_COMPLETE | T033 byte-memory executor/translator source and focused regressions; current roadmap DONE row |
+| HEX-SYM-03 | IMPLEMENTATION_COMPLETE | T034 taint/proof-gated transform source and focused regressions; current roadmap DONE row |
+| HEX-X-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; independent rebuild transaction/oracle source and F6 tests; current roadmap DONE row |
+| HEX-X-02 | IMPLEMENTATION_COMPLETE | T036 Apple/Mach-O metadata and rebuild source plus focused/F6 tests; current roadmap DONE row |
+| HEX-X-03 | IMPLEMENTATION_COMPLETE | T035 discovery/rebuild binding source and 87/87/F6 checks; current roadmap DONE row |
+| HEX-S2-01 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; runtime identity/session/event source and Phase 10 tests; current roadmap DONE row |
+| HEX-S2-02 | IMPLEMENTATION_COMPLETE | T037 terminal-row packet; collision-preserving recognition source and ambiguity tests; current roadmap DONE row |
+
+The historical ledger below is retained for provenance and prior classifications;
+its `PARTIAL`/`REMAINING` labels are not the current implementation status.
+
+## Historical ledger snapshot (retained)
 
 `—` means no implementation artifact exists yet, not that the field is inapplicable.
 

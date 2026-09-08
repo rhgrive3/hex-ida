@@ -1,7 +1,7 @@
 # Development debt and next actions
 
-Current batch: 2026-09-08, **45/61** tasks checked. Stage A implementation is
-7/7; Stage B implementation is 10/11. Physical-device execution is deferred
+Current batch: 2026-09-08, **47/61** tasks checked. Stage A implementation is
+7/7; Stage B implementation is 11/11. Physical-device execution is deferred
 until development is finished. Historical observations are retained below;
 current results take precedence.
 
@@ -11,8 +11,11 @@ convergence `CLEAN`). T021 full gates, external assets, final performance,
 deployment, and physical-device evidence remain deferred to their owning tasks.
 
 T037 is complete for the authoritative 12 T025 terminal-existing rows on the
-same product source. The focused packet is recorded in `evidence/roadmap-matrix.md`;
-T026/C0-01 and release-only gates remain open.
+same product source. T038 now reconciles all 23 roadmap implementation rows in
+the current roadmap, improvement-document, finding-ledger, and campaign
+overlays. The focused packet is recorded in `evidence/roadmap-matrix.md`;
+current-head measurement, external provenance, and release-only gates remain
+open.
 
 The approved Luna Max runtime integration is recorded at `1e2df44bf` (tree
 `5ebc67508`), with canonical generated outputs at `a5209e5bd`. It only changes
@@ -22,14 +25,14 @@ T025 rows remain source-equivalent to the retained `459dfe5bc` packet. Current
 delta proof is core identity **14/14**, T012 identity publication **3/3**, and
 the two filtered C2-02 origin cases **2/2**; the owner packet additionally
 records cache **6/6**, adversarial **72/72**, and five fresh boundaries. The
-retained 45/61 count is unchanged. The bounded origin-leaf timing observation
+retained implementation count is now 47/61. The bounded origin-leaf timing observation
 is representative evidence only; aggregate performance and the whole benchmark
 are not proven, and release completion is not claimed.
 
 | Area | Current state | Next action |
 | --- | --- | --- |
 | Local integration | The exact `ea5d05b24` check failed after261.7 s at semantic-v2 integration (`1.0.1` actual versus stale `1.0.0` expected). Focused repair `6ff3b7b22` was followed by a Phase4 stale invalid-binary fixture stop; `b230b0a4a` repaired that fixture and suffix PID545932 reached Phase5. No full PASS is claimed. | Retain each exact observation and finish the current full check from the repaired suffix; do not convert focused repairs into a full-gate result. |
-| T026 comparison | Native paired quality is now measured at exact `ea5d05b24`: 135/135 observations, 45 native rows, gotos148/148 TIE and fallbacks1038/1090 WIN using the preserved real LLVM18.1.3 capture. Reconstructed P5/P6 evidence from exact producer `8747bddc` measures144/144 and264/264, both TIE; its old raw parser status was `LEDGER-UNAVAILABLE` and is corrected by `2740c1f53`. | Keep T026 PARTIAL: the P5/P6 run predates the exact current generated head, the profile still contains five legacy-unproven nonbinary metrics and five binary rows are not promoted into a unified scorecard, and external game source/compiler/debug identities plus complete P-COMPETITIVE denominator/threshold proof remain outstanding. No fabricated values or denominator reduction. |
+| T026 comparison | T026 implementation is complete under the development-speed amendment: the current competitive collector/scorecard path is wired and its focused repository-scorecard and twin/measurement contracts pass 3/3 and 13/13 in the retained source-equivalent packet. | Keep current-head measurement, external game source/compiler/debug identities, complete P-COMPETITIVE denominator/threshold proof, and release promotion under T040/T042. The historical native/P5/P6 observations remain explicitly identified packets; no fabricated values, denominator reduction, or release PASS is claimed. |
 | Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Immutable SemanticIR/MemorySSA reuse is integrated at880f16572 and focused tests pass; one representative call improved38.9%, which is not full acceptance. Shared-host activity limits attribution. Task-local GSettings repair passes all Chromium/WebKit viewports; remaining navigation/mobile/accessibility/AI chain also passes107.4 s on unchanged runtime. Physical execution is deferred; retain browser/runtime requirements. |
 | Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published f853691e5 head passes all six CircleCI jobs. | The published71bf992ab head also passed all six CircleCI jobs. Publish the current test-runner fixes after focused validation; retain current full/UI failures separately. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
@@ -79,7 +82,7 @@ Browser development batch: pinned Playwright 1.62.1 with actual Chromium and Web
 
 T018 reconciles all ten recovery rows against the implemented development branch and explicitly retains combined/release checks. Current unknown-partition and SCCP regressions pass; the superseded C2 snapshot is not replayed.
 
-T027: current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. T026 remains PENDING: the current native P8 quality and reconstructed P5/P6 packets are recorded above, while the profile's five legacy-unproven nonbinary metrics, five binary rows not yet promoted into a unified scorecard, external game identities, and complete performance/threshold proof remain open. The older five-row UNMEASURED statement is superseded by those packets; it is retained only as historical checkpoint context.
+Historical checkpoint (T027): current RISC-V FENCE/HINT/TSO classifications are synchronized in the complete denominator and stale fixtures, preserving unsupported FENCE.I/reserved-funct3 negatives. A2 denominator (60.0 s), full RISC-V denominator (19.2 s), and focused control-memory/#6005/hint tests pass. The T026 implementation is now complete under the current amendment; its native/P5/P6 measurement, external identity, and performance/threshold obligations remain open as recorded above. The older five-row UNMEASURED statement is superseded by those packets; it is retained only as historical checkpoint context.
 
 Phase 8 fixture maintenance: removed obsolete public state.__write seeding from SCCP/substrate tests; immutable transaction authority is retained. SCCP and unknown-partition tests pass (48 cases); the substrate rerun also passes after the T030 syntax correction.
 
@@ -93,7 +96,12 @@ T030 final focused batch: dedicated 4/4, edge accounting 19/19, providers 18/18,
 
 Combined source11873792c: userscript build PASS (2.8 s), module boundaries PASS (1.1 s). Actual frozen-toolchain resolution restored from previously extracted native binaries; no version string is emulated. Runtime/event/recognition/rebuild development batch passed 16 cases, and the initially blocked real F6 fixture passes separately (2.0 s) with LLVM18.1.3.
 
-T025/T048 development reconciliation independently audited: 23 unique rows, 22 implementation-complete/1 partial, eleven unique residual task owners, zero uncovered/duplicate rows. This does not close T037/T038 or protected-main release acceptance.
+T025/T048 development reconciliation independently audited: 23 unique rows, all
+23 implementation-complete under the current amendment, eleven unique residual
+task owners, zero uncovered/duplicate rows. T038 reconciles the authoritative
+roadmap, improvement document, finding ledger, and campaign matrix without
+deleting their historical snapshots. This does not close protected-main or
+release acceptance.
 
 Phase 8 full performance observation:135 function IDs,125 stage-applicable IDs,405 samples (three repetitions, initial and optimized modes), zero unpublished applicable optimizer results and zero complete-result divergences. Elapsed557.8 s. Cold622.195 ms FAIL; interactive0.362 ms and optimizer127.139 ms pass their aggregate thresholds. Individual function latencies can exceed these aggregate values. Full measurements and profile/source binding are committed in `evidence/development-performance.json`.
 
@@ -143,6 +151,7 @@ including the earlier three repaired failures; combined build PASS (2.8s);
 current generated host/release-version validation PASS (1.2s). Generated runtime
 buildId is `dd8deed2e9f1d8262fa0554a`. Earlier failing Phase7 observations remain
 historical; this successful combined run supersedes them for development.
-T026 and cold-performance/release acceptance remain open. No protected-main
+T026 implementation is complete; its current measurement/provenance/threshold
+debt and cold-performance/release acceptance remain open. No protected-main
 promotion, hosted deployment, physical-device acceptance or full `npm run check`
 completion is claimed. User tmp work is untouched.
