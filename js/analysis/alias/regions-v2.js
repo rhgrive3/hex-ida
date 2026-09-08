@@ -80,12 +80,21 @@ function normalizedOrigin(...origins) {
 
 function uniqueBinaryId(origin, explicit) {
   const direct = optionalIdentityString(explicit, 'binary-id');
-  if (direct) return direct;
   const ids = new Set();
   for (const range of origin?.byteRanges ?? []) {
     if (range?.binaryId == null) continue;
     ids.add(optionalIdentityString(range.binaryId, 'binary-id'));
   }
+  // The explicit binary identity and the origin's own provenance are two
+  // authorities over the same region. When the origin names binaries, the
+  // explicit id must agree: silently preferring the explicit value let a
+  // region carry `binaryId: bin-B` while its evidence bytes came from bin-A,
+  // minting a precise global that MustAliases a real bin-B global (#5218).
+  // A multi-binary origin is never a single binary-scoped authority.
+  if (ids.size > 1 || (direct && ids.size === 1 && !ids.has(direct))) {
+    throw new TypeError('alias-region-binary-identity-mismatch');
+  }
+  if (direct) return direct;
   return ids.size === 1 ? [...ids][0] : null;
 }
 
