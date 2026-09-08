@@ -28,6 +28,20 @@ function verdictBadge(verdict) {
   }
 }
 
+// A matching label is not independent confirmation when the semantic query
+// copied the base result into a partial fallback. Only the producer's
+// complete, evidence-backed semantic confirmation may promote the base row.
+export function baseClassificationBadge(value, result) {
+  const base = value?.base;
+  const refinement = value?.refinement;
+  if (!base || base.classification !== value?.classification) return 'unverified';
+  if (result?.completeness !== 'complete') return 'unverified';
+  if (value?.refinementReason !== 'semantic-evidence-confirmed-classification') return 'unverified';
+  if (!refinement || refinement.classification !== value.classification) return 'unverified';
+  if (!Array.isArray(refinement.evidence) || refinement.evidence.length === 0) return 'unverified';
+  return 'confirmed';
+}
+
 export async function loadCanonicalClaims(queries, snapshot, detailId = null, options = {}) {
   if (detailId != null) {
     return queries.claims(snapshot, { claimId:detailId }, { offset:0, limit:1 }, options);
@@ -149,7 +163,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
           title:text('基礎分類', 'Base classification'),
           subtitle:String(value.base.classification || 'UNKNOWN'),
           meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
-          badge:evidenceBadge(value.base.classification === value.classification ? 'confirmed' : 'unverified'),
+          badge:evidenceBadge(baseClassificationBadge(value, result)),
         }));
       }
       if (value.refinement) {

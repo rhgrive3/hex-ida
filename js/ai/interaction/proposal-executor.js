@@ -119,7 +119,22 @@ function findStructField(app, target) {
   return struct?.fields?.find?.((item) => Number(item?.offset) === Number(target.offset)) || null;
 }
 function findProjectAnnotation(app, target) { return app?.projectAnnotations?.find?.((item) => item?.id === String(target.id || ''))?.value ?? null; }
-function byteArray(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function byteArray(value) {
+  // The staleness comparison must see exactly the byte identity the mutation
+  // will write. The old `Number` coercion turned string/boolean/null bytes
+  // into canonical numbers, so malformed approved bytes were compared — and
+  // executed — as valid bytes. Validate instead of laundering (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 function same(a, b) { return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b)); }
 function containsValue(actual, expected) {
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
@@ -129,6 +144,7 @@ function containsValue(actual, expected) {
   return same(actual, expected);
 }
 function normalize(value) {
+  if (value instanceof Uint8Array) return Array.from(value, normalize);
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const out = {}; for (const key of Object.keys(value).sort()) out[key] = normalize(value[key]); return out;
   }

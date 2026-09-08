@@ -31,6 +31,7 @@ export class CapabilityExecutor {
     assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
     this.verifyBinding(entry, executionArgs, runtimePlatform);
+    this.verifyScope(entry, options);
     if (entry.requiresApproval && !isLiveProposalAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
     const hasCapabilityProposal = proposalCapability({ kind: 'capability', target: { capabilityId: id } });
     let approvalState;
@@ -105,6 +106,21 @@ export class CapabilityExecutor {
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
     if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+  }
+
+  verifyScope(entry, options = {}) {
+    const scope = options?.scope || 'auto';
+    if (scope === 'auto') return;
+    let allowedScopes;
+    if (entry.agentTool) {
+      const record = this.toolRegistry?.get?.(entry.agentTool);
+      allowedScopes = record?.scopeSupport || entry.scopeSupport || [];
+    } else {
+      allowedScopes = entry.scopeSupport || [];
+    }
+    if (!allowedScopes.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
   }
 
   executeTool(entry, args, options) {
@@ -515,7 +531,12 @@ function assertRuntimeWriteTarget(platform, expected) {
   }
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
-function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
+function byteArray(value) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  const raw = Array.from(value);
+  for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Uint8Array.from(raw);
+}
 function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
 
 function callRequired(target, method, ...args) {

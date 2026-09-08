@@ -24,7 +24,8 @@ import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
-import { recoverSchemas } from './schema.js';
+import { normalizeSchemaRecoveryLimit, recoverSchemas } from './schema.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
 import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
@@ -36,6 +37,7 @@ import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
+import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 
 
 let _panelsModulePromise = null;
@@ -183,7 +185,7 @@ export async function ensureRecognitionState(app, options = {}) {
 }
 
 
-class App {
+export class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
 
   constructor() {
@@ -680,6 +682,7 @@ class App {
   forgetSemantics(dropCache) {
     this.semantic = null;
     if (dropCache) {
+      clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
       this.autoReport = null;
@@ -864,8 +867,9 @@ class App {
    * 文字列と呼び出し関係が要るので、先にそちらを用意してから走る。
    */
   async ensureSchemas(onProgress) {
-    if (this.schemas) return this.schemas;
     const epoch = this.backend.gen;
+    const maxSchemas = normalizeSchemaRecoveryLimit();
+    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas)) return this.schemas;
     if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
     this.schemasBusyEpoch = epoch;
     this.schemasBusy = (async () => {
@@ -873,15 +877,22 @@ class App {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
-        if (!program) { this.schemas = []; return this.schemas; }
+        if (!program) {
+          this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+          return this.schemas;
+        }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
         const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
         const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
-          isCancelled: () => epoch !== this.backend.gen });
-        if (epoch === this.backend.gen) this.schemas = schemas;
+          limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+        }
       } catch {
-        if (epoch === this.backend.gen) this.schemas = [];
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas });
+        }
       } finally {
         if (this.schemasBusyEpoch === epoch) {
           this.schemasBusy = null;
@@ -898,6 +909,13 @@ class App {
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
   async ensureStrings(onProgress) {
+    // Positional `(onProgress)` is the canonical signature; an options object
+    // with an `onProgress` field is tolerated exactly like ensureProgram so a
+    // legacy caller can never register a non-function as the backend progress
+    // callback (#5719).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     if (this.stringIndex) return this.stringIndex;
     const epoch = this.backend.gen;
     if (this.stringsBusy && this.stringsBusyEpoch === epoch) return this.stringsBusy;
@@ -947,7 +965,7 @@ class App {
         const remaining = collectionBudget.requestLimit();
         if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
         const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
-          onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+          progressFn && ((p) => progressFn({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {

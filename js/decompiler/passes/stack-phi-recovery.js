@@ -7,6 +7,7 @@ import {
   memoryMutationCollides,
   memoryMutationDescriptor,
 } from './stack-return-recovery.js';
+import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
 function ownData(object, key) {
   if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
@@ -225,18 +226,14 @@ function canReach(ir, start, target, blocked, cap = 256, control) {
 }
 
 function armIndex(ir, controllerIndex, successor, mergeBlock, predecessors, control) {
-  if (successor === mergeBlock) {
-    for (let index = 0; index < predecessors.length; index++) {
-      if (control?.isAborted?.()) return -1;
-      if (predecessors[index] === controllerIndex) return index;
-    }
-    return -1;
-  }
-  for (let index = 0; index < predecessors.length; index++) {
-    if (control?.isAborted?.()) return -1;
-    if (canReach(ir, successor, predecessors[index], mergeBlock, 256, control)) return index;
-  }
-  return -1;
+  if (control?.isAborted?.()) return -1;
+  // The shared proof rejects malformed/incomplete CFG identity and ambiguous
+  // arms. Keep the local cancellation check around it so bounded recovery
+  // retains the candidate branch's cancellation contract.
+  const index = uniqueReachableMergePredecessorIndex(
+    ir, controllerIndex, successor, mergeBlock, predecessors,
+  );
+  return control?.isAborted?.() ? -1 : index;
 }
 
 function dominates(ir, candidate, node, control) {
@@ -828,10 +825,22 @@ function restorePhiPublication(result, snapshot) {
 
 function stackReturnSlot(ir, expression, control) {
   const slot = exactStackLoadSlot(ir, null, expression, control);
-  // A rendered stack key is not evidence that a physical read occurred.
   const bits = fieldValue(expression, 'bits');
-  if (!slot || !validBits(bits) || slot.size * 8 !== bits) return null;
-  return slot;
+  if (slot) return validBits(bits) && slot.size * 8 === bits ? slot : null;
+
+  // A structured stack-PHI output can be emitted before a physical LOAD is
+  // materialized. Keep this fallback merge-only: the later CFG proof binds the
+  // requested slot to every incoming store and rejects single-block or
+  // ambiguous paths. This preserves the physical-LOAD requirement for the
+  // ordinary exact-return path.
+  const location = fieldValue(expression, 'location');
+  const key = fieldValue(location, 'key');
+  if (fieldValue(expression, 'kind') !== 'load' || fieldValue(location, 'kind') !== 'stack'
+      || typeof key !== 'string' || key.length === 0 || !validBits(bits) || bits % 8 !== 0) return null;
+  const size = positiveAccessSize(fieldValue(location, 'size'))
+    || positiveAccessSize(bits / 8)
+    || positiveAccessSize(Number(key.match(/:s(\d+)$/)?.[1]));
+  return size != null && size * 8 === bits ? { load:null, key, size } : null;
 }
 
 function returnSiteForNode(node, ir, allowSingleFallback = false, control) {
@@ -871,6 +880,16 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
   if (!slot) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback, control);
   if (!retInst) return null;
+  if (!slot.load) {
+    const retBlock = fieldValue(retInst, 'block');
+    const blocks = arrayField(result.ir, 'blocks');
+    const block = blocks.ok && validBlock(retBlock) ? blocks.value[retBlock] : null;
+    const predecessors = ownData(block, 'pred');
+    if (!predecessors.present || !predecessors.valid || !Array.isArray(predecessors.value)
+        || predecessors.value.length < 2) return null;
+    return resolveStackBefore(result.ir, retBlock, fieldValue(retInst, 'row'), slot.key, slot.size,
+      maps, opts, engine, new Set(), 0, control);
+  }
   const load = slot.load;
   const loadRow = fieldValue(load, 'row');
   const retRow = fieldValue(retInst, 'row');

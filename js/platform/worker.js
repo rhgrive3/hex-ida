@@ -360,7 +360,13 @@ async function runSearch(msg, signal) {
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
-    pattern = new TextEncoder().encode(q.toLowerCase());
+    // This is a byte-oriented search, so preserve the query's exact UTF-8
+    // encoding. Unicode toLowerCase() can change code points (including
+    // supplementary-plane characters) and cannot be mirrored safely on raw
+    // haystack bytes without decoding and retaining a byte/address map (#5940).
+    // Keep the established ASCII-insensitive contract by folding both byte
+    // operands with lower() during comparison; non-ASCII bytes remain exact.
+    pattern = new TextEncoder().encode(q);
   }
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
@@ -373,7 +379,7 @@ async function runSearch(msg, signal) {
       let ok = true;
       for (let j = 0; j < pattern.length; j++) {
         const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-        const expected = pattern[j];
+        const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
         if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
       }
       if (!ok) continue;

@@ -27,8 +27,19 @@ export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.1.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
+// Instruction origin evidence carries the same primitive non-empty string
+// contract as the canonical origin set (#5776): a structured value must never
+// launder into a canonical instruction evidence ID via String(), so malformed
+// evidence fails closed instead of joining summary provenance.
 function evidenceOf(node) {
-  return [...(node.origin?.instructionIds ?? [])].map(String);
+  const raw = node.origin?.instructionIds ?? [];
+  if (!Array.isArray(raw)) throw new TypeError('summary-invalid-instruction-evidence');
+  const evidenceIds = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || !value) throw new TypeError('summary-invalid-instruction-evidence');
+    if (!evidenceIds.includes(value)) evidenceIds.push(value);
+  }
+  return evidenceIds;
 }
 
 function regionsFor(node, resolveRegion) {
@@ -241,9 +252,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     // runtime target value; an explicit empty array means a zero-argument
     // call, not a missing field. `callNode.inputs` is a legacy fallback for
     // fixtures that predate the canonical field, never an argument source
-    // when the canonical field exists.
+    // when the canonical field exists. Arguments may be plain value ids or
+    // the canonical structured spelling ({ valueId }); the structured form is
+    // unwrapped exactly as escape analysis does (#6151).
     const argumentIds = Array.isArray(callNode.call?.arguments)
-      ? callNode.call.arguments
+      ? callNode.call.arguments.map((argument) => argument?.valueId ?? argument)
       : callNode.inputs;
     const composed = [];
     for (const provenance of alternatives) {

@@ -68,7 +68,9 @@ function engineText(value, fallback, code) {
 }
 
 function deterministicFlag(value) {
-  if (value == null) return true;
+  // Determinism is a positive capability: an engine that never declared it is
+  // unknown, not deterministic, and must not gain the replay capability (#5983).
+  if (value == null) return false;
   if (typeof value !== 'boolean') throw new DebugAdapterError('emulator-deterministic-invalid', 'emulator deterministic flag must be a boolean');
   return value;
 }
@@ -119,7 +121,16 @@ export class EmulatorProvider {
         if (this.activeSession === session) this.activeSession = null;
       },
     });
-    if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});
+    // Claim provider ownership before the first await. A second open must not
+    // race through while this session is still connecting.
+    this.activeSession = session;
+    try {
+      if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});
+    } catch (error) {
+      session.setState('failed');
+      try { await session.close(); } catch {}
+      throw error;
+    }
     const evidence = new RuntimeEvidenceBridge();
     let lastRun = null;
     let activeRun = null;
@@ -183,6 +194,12 @@ export class EmulatorProvider {
 
       const termination = abortTermination ?? terminationOf(raw || {});
       const completeness = completenessFor(termination);
+      if (session.closed || session.state === 'closing') {
+        throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime session began closing', {
+          termination,
+          completeness,
+        });
+      }
       const eventSource = raw?.events != null ? raw.events : raw?.trace?.events;
       if (eventSource != null && !Array.isArray(eventSource)) {
         session.setState('degraded');

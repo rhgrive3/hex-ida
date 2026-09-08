@@ -153,6 +153,13 @@ function noteSliceIdentityParts(file, fileInfo, sliceIndex) {
   };
 }
 
+function isLegacyV3DigestKey(value) {
+  // v1 tree identities and the pre-WebCrypto FNV fallback are the only
+  // historical digest namespaces this migration boundary may recover when a
+  // current digest was computed but has not yet been persisted.
+  return /(?:^|\|)(?:sha256tree:v1|fnv1a64):/.test(value);
+}
+
 /** Exact note namespace without a second full traversal of the active slice. */
 export function noteKeyFromBinaryId(file, fileInfo, sliceIndex, binaryId) {
   if (typeof binaryId !== 'string' || !binaryId.trim()) throw new TypeError('note-binary-id-required');
@@ -183,7 +190,16 @@ export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = global
     const cacheable = (typeof file === 'object' && file !== null) || typeof file === 'function';
     const cachedKey = cacheable ? NOTE_KEY_CACHE.get(file)?.get(identity) : null;
     if (cachedKey) {
-      return matches.has(cachedKey) ? cachedKey : null;
+      if (matches.has(cachedKey)) return cachedKey;
+      // A current v2 key in the in-memory cache must not hide the one old v1
+      // namespace that still needs migration.  Require a single explicitly
+      // recognized legacy digest so a stale/ambiguous namespace remains
+      // conservative.
+      if (matches.size === 1) {
+        const [legacy] = matches;
+        if (isLegacyV3DigestKey(legacy)) return legacy;
+      }
+      return null;
     }
     if (matches.size === 1) {
       return matches.values().next().value;
@@ -867,7 +883,10 @@ export class NoteStore {
   fromJSON(text) {
     const o = JSON.parse(text);
     if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
-    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
+    // Identity comparison stays type-preserving: a structured id must never
+    // launder into this store's namespace through String() coercion (#5968).
+    if (o.id != null && typeof o.id !== 'string') throw new Error('notes-file-mismatch');
+    if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }

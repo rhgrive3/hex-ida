@@ -156,6 +156,37 @@ jobs:
                   }
             NODE
                 ;;
+              codex/lane5-6633-abi-a8b2)
+                # #6975 intentionally pairs a Phase 7 production-path regression
+                # with the ABI/Phase 6 owner slice. The exact helper rejects every
+                # foreign path except that declared three-file slice before the
+                # Phase 7-owned subset is validated.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
+              fix/objc-protocol-class-properties-3979)
+                # #6817 intentionally pairs a Phase 7 regression with the ObjC
+                # metadata owner slice. The exact helper rejects every foreign
+                # path except the two owner files and this routing edit.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
+              fix/analysis-batch-20260907-l62)
+                # #7079 pairs Phase 7 analysis fixes with four explicitly-owned
+                # Semantic IR/AI/config paths. The exact helper rejects every
+                # foreign path outside that list before Phase 7 validation.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;

@@ -168,7 +168,12 @@ function controlKind(plugin, instruction) {
 function directTarget(plugin, instruction) {
   try {
     const target = plugin.directControlTarget?.(instruction);
-    return target == null ? null : BigInt(target);
+    if (target == null) return null;
+    // Blank strings coerce to 0n and would mint a fake direct edge to address
+    // 0 (#5741). Use the same strict non-negative integer contract as
+    // instruction addresses; anything else means "no direct target".
+    if (typeof target === 'string' && target !== target.trim()) return null;
+    return canonicalInstructionAddress(target, 'semantic-function-direct-control-target-invalid');
   } catch { return null; }
 }
 

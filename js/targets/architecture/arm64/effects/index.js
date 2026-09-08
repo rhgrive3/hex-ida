@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { adrTargetOperandValue, canonicalAddressValue, createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic, numericOtherTargetValue } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -114,8 +114,7 @@ function movImmediateEncodable(op, widthBits) {
 }
 
 function asBigIntOrNull(value) {
-  try { return value == null ? null : BigInt(value); }
-  catch { return null; }
+  return canonicalAddressValue(value);
 }
 
 function isGpOrZrRegister(operand) {
@@ -355,7 +354,11 @@ function literalMemoryEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   if (address == null) return `arm64-${mnemonic}-literal-address-unavailable-for-encoding`;
   if ((target & 3n) !== 0n) return `arm64-${mnemonic}-literal-target-misaligned-encoding`;
-  const displacement = target - address;
+  // Literal PC-relative offsets are SignExtend(imm19:'00', 64) added to the
+  // 64-bit PC: valid encodings may wrap the 64-bit address boundary, so the
+  // architectural displacement is the modulo-2^64 signed difference, not the
+  // raw BigInt subtraction.
+  const displacement = BigInt.asIntN(64, target - address);
   if (displacement < -(1n << 20n) || displacement > (1n << 20n) - 4n) return `arm64-${mnemonic}-literal-target-out-of-range-encoding`;
   return null;
 }
@@ -392,9 +395,14 @@ function addressImmediateEncodingFailure(instruction) {
   const address = asBigIntOrNull(instruction?.address);
   const target = asBigIntOrNull(instruction?.pcRelTarget);
   if (address == null || target == null) return `arm64-${mnemonic}-encoding-address-unavailable`;
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
+  if (targetOperand?.k === 'imm' && canonicalAddressValue(targetOperand.value) !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
+  if (targetOperand?.k === 'other') {
+    const otherValue = numericOtherTargetValue(targetOperand);
+    if (otherValue != null && otherValue !== target) return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
+
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX
@@ -429,7 +437,7 @@ function normalizedInstruction(decoded, context) {
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
-  const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
+  const adrImmediate = operands.length > 1 ? adrTargetOperandValue(operands[1]) : null;
   const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
     ? (adrImmediate ?? directTargetOf(decoded))
     : decoded.pcRelTarget;

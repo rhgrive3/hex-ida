@@ -16,8 +16,8 @@ import { resolveLlvmTool18 } from './helpers/llvm-toolchain.mjs';
 function bytes32(word) { const value=Number(word)>>>0; return Uint8Array.of(value&255,(value>>>8)&255,(value>>>16)&255,value>>>24); }
 const denominator = validateArm64ePacDenominator();
 assert.equal(denominator.denominatorId,ARM64E_PAC_DENOMINATOR_ID);
-assert.equal(denominator.encodingFamilyCount,40);
-assert.equal(denominator.encodingCaseCount,45_517);
+assert.equal(denominator.encodingFamilyCount,44);
+assert.equal(denominator.encodingCaseCount,45_521);
 
 // PACGA encodes its modifier in Rm and interprets Rm==31 as SP. This is a
 // valid discriminator boundary, not a reserved row to remove from the corpus.

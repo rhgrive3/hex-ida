@@ -24,6 +24,7 @@ const SHN_LORESERVE = 0xff00;
 const SHN_ABS = 0xfff1;
 const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
+const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
@@ -226,23 +227,34 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
     const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
     if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
-    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
+    // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
+    // ABI): it must stay in the export/linkage truth, not be lumped into an
+    // anonymous `bind-N` bucket (#5844).
+    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : bind === STB_GNU_UNIQUE ? 'gnu-unique' : `bind-${bind}`;
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
     const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
     const riscvVariantCc = riscvVariantCcFlag && type === 2;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
+    // virtual address (ELF gABI). Keep it out of the VA domain and
+    // image.exports as a canonical address (#5843).
+    const tls = type === 6;
+    const sym = { name, address: tls ? null : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
-    if (defined === false && (bind === 1 || bind === 2)) {
+    const externallyVisible = bind === 1 || bind === 2 || bind === STB_GNU_UNIQUE;
+    if (defined === false && externallyVisible) {
       if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
-    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+    if (defined === true && externallyVisible && (sym.visibility === 0 || sym.visibility === 3)) {
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
-      image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+      // TLS exports keep their name/visibility fact but never mint a VA (#5843).
+      image.exports.push(tls
+        ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
+        : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
     if (defined === true && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;

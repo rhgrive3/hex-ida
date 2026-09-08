@@ -9,6 +9,7 @@ import {
   isCanonicalExactMemoryOperandForwarding,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
+import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
@@ -567,18 +568,11 @@ function canReach(ir, start, target, blocked, cap = 256, control) {
 }
 
 function armPredecessorIndex(ir, controller, successor, merge, predecessors, control) {
-  if (successor === merge) {
-    for (let index = 0; index < predecessors.length; index++) {
-      if (control?.isAborted?.()) return -1;
-      if (predecessors[index] === controller.index) return index;
-    }
-    return -1;
-  }
-  for (let index = 0; index < predecessors.length; index++) {
-    if (control?.isAborted?.()) return -1;
-    if (canReach(ir, successor, predecessors[index], merge, 256, control)) return index;
-  }
-  return -1;
+  if (control?.isAborted?.()) return -1;
+  const index = uniqueReachableMergePredecessorIndex(
+    ir, controller.index, successor, merge, predecessors,
+  );
+  return control?.isAborted?.() ? -1 : index;
 }
 
 function dominates(ir, candidate, node, control) {
@@ -685,6 +679,27 @@ function exactReturnLoad(result, root, ret, control) {
     return null;
   }
   return { load, size };
+}
+
+function mergeReturnSlot(result, root, ret, control) {
+  if (control?.isAborted?.()) return null;
+  const location = fieldValue(root, 'location');
+  const key = fieldValue(location, 'key');
+  const bits = fieldValue(root, 'bits');
+  const retBlock = fieldValue(ret, 'block');
+  if (fieldValue(root, 'kind') !== 'load' || fieldValue(location, 'kind') !== 'stack'
+      || typeof key !== 'string' || key.length === 0 || !validBits(bits) || bits % 8 !== 0
+      || !validBlock(retBlock)) return null;
+  const blocks = arrayField(result.ir, 'blocks');
+  if (!blocks.ok) return null;
+  const block = blocks.value[retBlock];
+  const predecessors = ownData(block, 'pred');
+  if (!predecessors.present || !predecessors.valid || !Array.isArray(predecessors.value)
+      || predecessors.value.length < 2) return null;
+  const size = positiveAccessSize(fieldValue(location, 'size'))
+    || positiveAccessSize(bits / 8)
+    || positiveAccessSize(Number(key.match(/:s(\d+)$/)?.[1]));
+  return size != null && size * 8 === bits ? { load:null, size } : null;
 }
 
 function storeValue(inst, key, size, values) {
@@ -1786,7 +1801,8 @@ export function recoverExactStackReturn(result, opts = {}) {
   // envelope, so it must not guess among multiple physical RETs or statements.
   if (returns.length !== 1 || returnStatements.length !== 1) return result;
   const ret = returns[0];
-  const loadProof = exactReturnLoad(result, root, ret, control);
+  const loadProof = exactReturnLoad(result, root, ret, control)
+    || mergeReturnSlot(result, root, ret, control);
   if (!loadProof || !returnNodeMatches(returnStatements[0], ret, control)) return result;
 
   const values = mapsOf(result, control);
@@ -1806,9 +1822,11 @@ export function recoverExactStackReturn(result, opts = {}) {
     maxApplications:512,
   });
   if (control.isAborted()) return result;
-  let committed = committedReturnValue(result, root, ret, opts, control, loadProof.load);
+  let committed = loadProof.load
+    ? committedReturnValue(result, root, ret, opts, control, loadProof.load)
+    : null;
   let committedSpill = null;
-  if (!committed) {
+  if (!committed && loadProof.load) {
     const proof = committedStackSpillOnExactReturnPath(result, root, loadProof.load, loadProof.size, control);
     if (proof) {
       committedSpill = proof.stackStore;
@@ -1820,8 +1838,19 @@ export function recoverExactStackReturn(result, opts = {}) {
       });
     }
   }
-  const recovered = committed || resolve(result.ir, fieldValue(loadProof.load, 'block'), fieldValue(loadProof.load, 'row'), rootKey,
-    loadProof.size, values, opts, engine, new Set(), 0, control);
+  const recovered = committed || resolve(
+    result.ir,
+    fieldValue(loadProof.load, 'block') ?? fieldValue(ret, 'block'),
+    fieldValue(loadProof.load, 'row') ?? fieldValue(ret, 'row'),
+    rootKey,
+    loadProof.size,
+    values,
+    opts,
+    engine,
+    new Set(),
+    0,
+    control,
+  );
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   const transaction = snapshotReturnPublication(result);

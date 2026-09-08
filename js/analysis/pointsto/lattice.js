@@ -46,6 +46,14 @@ export const PROVENANCE_LOSS_REASONS = Object.freeze([
 
 function fail(code) { throw new TypeError(code); }
 
+function maxTargetsPerSet(budget) {
+  const value = budget?.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    fail('points-to-invalid-max-targets-per-set');
+  }
+  return value;
+}
+
 function big(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
@@ -129,9 +137,8 @@ export function widenRange(previous, next) {
  * an interval.
  */
 function signedBounds(widthBits) {
-  const bits = Number(widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 1 || bits > 512) return null;
-  const half = 1n << BigInt(bits - 1);
+  if (typeof widthBits !== 'number' || !Number.isSafeInteger(widthBits) || widthBits <= 1 || widthBits > 512) return null;
+  const half = 1n << BigInt(widthBits - 1);
   return { min: -half, max: half - 1n };
 }
 
@@ -153,7 +160,7 @@ export function addRange(range, delta, widthBits) {
   const min = range.min + d;
   const max = range.max + d;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -167,7 +174,7 @@ export function addRanges(a, b, widthBits) {
   const min = a.min + b.min;
   const max = a.max + b.max;
   const bounds = signedBounds(widthBits);
-  if (bounds && (min < bounds.min || max > bounds.max)) {
+  if (!bounds || min < bounds.min || max > bounds.max) {
     return { range: UNBOUNDED_RANGE, lost: 'width-overflow' };
   }
   return { range: createOffsetRange(min, max), lost: null };
@@ -230,11 +237,25 @@ function canonicalProofMetadataIsValid(proof) {
     && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass);
 }
 
+/**
+ * Canonical address-space identity for a points-to target (#5717).
+ *
+ * `addressSpace` backs a strong `NoAlias` authority (distinct spaces cannot
+ * alias), so a non-canonical notation must never become its own space:
+ * surrounding whitespace on 'memory ' would manufacture a space the storage
+ * never had. The value is trimmed; a whitespace-only value degrades to
+ * 'unknown', which alias separation never treats as proven.
+ */
+function canonicalAddressSpace(value) {
+  if (value == null) return 'memory';
+  if (typeof value !== 'string') return 'unknown';
+  const text = value.trim();
+  return text ? text : 'unknown';
+}
+
 function targetMatchesCanonicalProof(input, proof) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
-  const addressSpace = input.addressSpace == null
-    ? 'memory'
-    : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown');
+  const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
     ? input.rootEntityId : null;
@@ -250,7 +271,7 @@ function inputMatchesCanonicalProof(input, proof) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
   const expectedRootKind = proofRootKind(proof);
   const checks = [
-    ['addressSpace', proof.addressSpace ?? 'memory'],
+    ['addressSpace', canonicalAddressSpace(proof.addressSpace)],
     ['rootKind', expectedRootKind],
     ['rootIdentity', proof.rootIdentity ?? null],
     ['rootEntityId', proof.rootEntityId ?? null],
@@ -259,8 +280,10 @@ function inputMatchesCanonicalProof(input, proof) {
   ];
   for (const [key, expected] of checks) {
     if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
-    const actual = key === 'rootEntityId' && input[key] != null
-      ? String(input[key]) : (input[key] ?? null);
+    const actual = key === 'addressSpace'
+      ? canonicalAddressSpace(input[key])
+      : key === 'rootEntityId' && input[key] != null
+        ? String(input[key]) : (input[key] ?? null);
     if (key === 'rootIdentity') {
       if (stableStringify(actual) !== stableStringify(expected)) return false;
     } else if (actual !== expected) {
@@ -277,10 +300,13 @@ export function createPointsToTarget(input = {}) {
   const proof = input[ROOT_DESCRIPTOR_PROOF];
   const proven = targetMatchesCanonicalProof(input, proof);
   const target = {
-    addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
+    addressSpace: canonicalAddressSpace(input.addressSpace),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
-    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId : null,
+    // Canonical root token, not the raw spelling (#6063): 'A' and '  A  ' are
+    // the same root, and storing the raw string split one root into two
+    // identities — a false strong NoAlias between them.
+    rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId.trim() : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: proven ? 'root-descriptor' : null,
     address: typeof input.address === 'string' || typeof input.address === 'bigint'
@@ -307,7 +333,7 @@ export function createRootDescriptorSeparatedTarget(input = {}, proof = null) {
   }
   const target = {
     ...input,
-    addressSpace: proof.addressSpace ?? 'memory',
+    addressSpace: canonicalAddressSpace(proof.addressSpace),
     rootKind: proofRootKind(proof),
     rootIdentity: proof.rootIdentity ?? null,
     rootEntityId: proof.rootEntityId ?? null,
@@ -343,7 +369,13 @@ export function createPointsToSet(input = {}) {
   // and pointsToDigest() for the identical semantic set (#5715). UTF-16
   // code-unit order is the same total order stableDigest's string encoding
   // already uses elsewhere in the identity stack.
-  const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
+  // Rebuild every target before sorting so caller-supplied derived rootKey
+  // values cannot become same-root proof authority (#4712). This also keeps
+  // set construction safe when a producer passes a plain target object rather
+  // than one returned by createPointsToTarget().
+  const targets = top ? [] : [...(input.targets ?? [])]
+    .map((target) => createPointsToTarget(target))
+    .sort((a, b) => (a.rootKey < b.rootKey ? -1 : a.rootKey > b.rootKey ? 1 : 0));
   const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
   // A loss reason outside the declared vocabulary would be an unexplainable
   // imprecision: the alias layer maps these onto proof reasons, and a free-form
@@ -373,6 +405,7 @@ export function pointsToIsBottom(set) {
  * silently dropping a target (dropping one would falsely prove separation).
  */
 export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (a.top || b.top) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons] });
   }
@@ -387,7 +420,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
       evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
     }));
   }
-  if (byRoot.size > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (byRoot.size > targetLimit) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons, 'target-cap'] });
   }
   return createPointsToSet({
@@ -398,6 +431,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
 
 /** Widening applied at loop headers once the iteration threshold is passed. */
 export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET) {
+  const targetLimit = maxTargetsPerSet(budget);
   if (next.top) return next;
   if (previous == null) return next;
   if (previous.top) return previous;
@@ -415,7 +449,7 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     }
     return createPointsToTarget({ ...target, offsetRange: widenedRange });
   });
-  if (targets.length > (budget.maxTargetsPerSet ?? POINTS_TO_DEFAULT_BUDGET.maxTargetsPerSet)) {
+  if (targets.length > targetLimit) {
     return topPointsTo('target-cap');
   }
   return createPointsToSet({

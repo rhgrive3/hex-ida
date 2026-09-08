@@ -551,7 +551,14 @@ function installDemandQueryAPI(app, recognitionVersion) {
         options.signal?.addEventListener('abort', onAbort, { once:true });
         Promise.resolve(request).then(resolve, reject).finally(() => options.signal?.removeEventListener('abort', onAbort));
       });
-      abortIfNeeded(options.signal); const completeness = value?.capped || value?.cancelled ? 'partial' : 'complete';
+      abortIfNeeded(options.signal);
+      // An explicit backend `unsupported` must survive the query boundary:
+      // "the backend cannot run this search" is not a complete empty result
+      // (#5840, #5833).
+      if (value?.unsupported === true) {
+        return unsupported(value?.unsupportedReason ?? 'search-kind-unsupported');
+      }
+      const completeness = value?.capped || value?.cancelled ? 'partial' : 'complete';
       return paged(value?.results || [], page, completeness, { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
   };

@@ -11,6 +11,10 @@ export const SEMANTIC_CFG_EDGE_KINDS = Object.freeze([
   // are real execution paths; without this kind the canonical CFG contract
   // cannot represent them and the managed bridge cannot publish them (#7239).
   'switch-default',
+  // CIL `leave`/`leave.s` exits a protected region (or acts as a plain branch
+  // outside EH) by transferring to its target with an emptied evaluation
+  // stack; the canonical CFG must carry that edge as its own kind (#7277).
+  'leave',
   'call',
   'tail-call',
   'return',

@@ -29,10 +29,27 @@ function searchTermsOf(input = {}) {
 }
 function addrText(value) {
   if (value == null) return 'unknown';
-  const type = typeof value;
-  if (type !== 'number' && type !== 'bigint' && type !== 'string') throw new TypeError('address must be an integer primitive');
-  if (type === 'string' && !value.trim()) throw new TypeError('address must be a non-empty integer string');
-  return BigInt(value).toString(16);
+  if (typeof value === 'number') {
+    // A number above 2^53-1 has already lost address bits before reaching this
+    // boundary; accepting it would pin a rounded value as canonical address
+    // identity and collide distinct addresses (#6135). Callers must pass
+    // BigInt or an integer string for such addresses.
+    if (!Number.isSafeInteger(value)) throw new TypeError('address number must be a safe integer');
+    return BigInt(value).toString(16);
+  }
+  if (typeof value === 'bigint') return value.toString(16);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) throw new TypeError('address must be a non-empty integer string');
+    return BigInt(text).toString(16);
+  }
+  throw new TypeError('address must be an integer primitive');
+}
+function validateAddressSources(input) {
+  if (input == null || (typeof input !== 'object' && typeof input !== 'function')) return;
+  for (const value of [input.address, input.fingerprint?.address]) {
+    if (value != null) addrText(value);
+  }
 }
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
 function transactionPromise(transaction) {
@@ -65,6 +82,7 @@ export class KnowledgeDB {
   }
 
   async remember(input = {}) {
+    validateAddressSources(input);
     const fingerprint = input.fingerprint?.schema ? fingerprintFunction(input.fingerprint) : fingerprintFunction(input.fingerprint || input);
     const sourceBinaryHash = input.sourceBinaryHash || 'unknown';
     const address = input.address ?? fingerprint.address;
@@ -92,6 +110,7 @@ export class KnowledgeDB {
   }
 
   async reject(input = {}) {
+    validateAddressSources(input);
     const targetFingerprint = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
     const key = input.id || [input.sourceBinaryHash || 'unknown', input.candidateName || input.candidateIdentity || 'unknown', targetFingerprint?.semanticHash || targetFingerprint?.normalizedBytesHash || targetFingerprint?.hash || addrText(input.address)].join(':');
     const targetAddress = input.address ?? targetFingerprint?.address ?? null;
@@ -104,10 +123,10 @@ export class KnowledgeDB {
   }
 
   async isRejected(input = {}) {
+    validateAddressSources(input);
     const name = input.candidateName || null, identity = input.candidateIdentity || null;
     const fp = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
-    const records = this.negativeMemory ? [...this.negativeMemory.values()] : await this.#negativeCandidates(name, identity, fp);
-    return records.some((r) => {
+    const matches = (r) => {
       if (r.candidateName && r.candidateName !== name) return false;
       if (r.candidateIdentity && r.candidateIdentity !== identity) return false;
       if (fp) {
@@ -118,10 +137,16 @@ export class KnowledgeDB {
       const address = input.address ?? fp?.address ?? null;
       const sameBinary = r.sourceBinaryHash !== 'unknown' && input.sourceBinaryHash && r.sourceBinaryHash === input.sourceBinaryHash;
       return !r.targetHash && !r.targetNormalizedBytesHash && !r.targetSemanticHash && sameBinary && address != null && r.targetAddress === addrText(address);
-    });
+    };
+    if (this.negativeMemory) {
+      for (const record of this.negativeMemory.values()) if (matches(record)) return true;
+      return false;
+    }
+    return this.#hasNegativeCandidate(matches, name, identity);
   }
 
   async findMatches(input, options = {}) {
+    validateAddressSources(input);
     const fingerprint = fingerprintFunction(input);
     const limit = Math.min(50, Math.max(1, Number(options.limit) || 10));
     const records = this.memory ? this.#memoryCandidates(fingerprint) : await this.#candidateRecords(fingerprint, this.maxCandidates);
@@ -308,12 +333,46 @@ export class KnowledgeDB {
     return [...out.values()].slice(0,limit);
   }
 
-  async #negativeCandidates(name,identity) {
-    const db=await this.#dbOpen(); const store=db.transaction('negative','readonly').objectStore('negative');
-    if (name && store.indexNames.contains('candidateName')) return requestPromise(store.index('candidateName').getAll(name,200));
-    if (identity && store.indexNames.contains('candidateIdentity')) return requestPromise(store.index('candidateIdentity').getAll(identity,200));
-    return [];
+  async #hasNegativeCandidate(matches, name, identity) {
+    const db = await this.#dbOpen();
+    const tx = db.transaction('negative', 'readonly');
+    const store = tx.objectStore('negative');
+
+    // Real IndexedDB stores expose a cursor. Stream the complete relation so
+    // no finite getAll cap can be mistaken for evidence of absence (#6134).
+    // Waiting for transaction completion also preserves read/abort failures.
+    if (typeof store.openCursor === 'function') {
+      const done = transactionPromise(tx);
+      const result = new Promise((resolve, reject) => {
+        const request = store.openCursor();
+        request.onerror = () => reject(request.error || new Error('Knowledge negative lookup failed'));
+        request.onsuccess = () => {
+          try {
+            const cursor = request.result;
+            if (!cursor) return resolve(false);
+            if (matches(cursor.value)) return resolve(true);
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+      });
+      const [found] = await Promise.all([result, done]);
+      return found;
+    }
+
+    // Some embedders/test doubles implement only index.getAll(). Do not
+    // reintroduce the old 200-row cap: retrieve the complete selective index
+    // result and apply the exact same predicate locally.
+    const candidates = new Map();
+    const readIndex = async (indexName, value) => {
+      if (value == null || !store.indexNames?.contains?.(indexName)) return;
+      const rows = await requestPromise(store.index(indexName).getAll(value));
+      for (const row of rows || []) candidates.set(row.id, row);
+    };
+    await readIndex('candidateIdentity', identity);
+    await readIndex('candidateName', name);
+    return [...candidates.values()].some(matches);
   }
+
 }
 
 export function fingerprintVendors(input = {}) {

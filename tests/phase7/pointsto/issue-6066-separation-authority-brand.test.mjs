@@ -25,7 +25,7 @@ function singleton(target) {
   return createPointsToSet({ targets: [target] });
 }
 
-function canonicalProof(rootEntityId, separationClass) {
+function canonicalProof(rootEntityId, separationClass, addressSpace = 'memory') {
   const valueId = `proof-${separationClass}-${rootEntityId}`;
   const proof = deriveCanonicalAddressProof({
     functionId: 'issue-6066-canonical-proof',
@@ -39,14 +39,14 @@ function canonicalProof(rootEntityId, separationClass) {
           kind: separationClass,
           rootEntityId,
           baseOffset: 0,
-          addressSpace: 'memory',
+          addressSpace,
           linearOffsets: true,
         },
       },
     }],
     nodes: [],
     blocks: [],
-  }, valueId);
+  }, valueId, { addressSpace });
   assert.equal(proof.kind, 'rooted');
   return proof;
 }
@@ -108,6 +108,21 @@ test('#6066 the canonical proof boundary mints authority and preserves NoAlias p
   const result = aliasOf(singleton(proven('a')), singleton(proven('b')));
   assert.equal(result.relation, 'no');
   assert.ok(result.reasonCodes.includes('distinct-proven-root'));
+});
+
+test('#6066 canonical proof address-space spelling is normalized without losing its brand', () => {
+  const proven = (rootEntityId) => createRootDescriptorSeparatedTarget({
+    addressSpace: ' memory ',
+    rootKind: 'rooted',
+    rootEntityId,
+    offsetRange: exactRange(0),
+  }, canonicalProof(rootEntityId, 'heap-like', 'memory '));
+  const left = proven('padded-a');
+  const right = proven('padded-b');
+  assert.equal(left.addressSpace, 'memory');
+  assert.equal(left.separationAuthority, 'root-descriptor');
+  assert.equal(provenSeparationAuthority(left), 'root-descriptor');
+  assert.equal(aliasOf(singleton(left), singleton(right)).relation, 'no');
 });
 
 test('#6066 the proof boundary rejects an unproven or unknown separation class', () => {

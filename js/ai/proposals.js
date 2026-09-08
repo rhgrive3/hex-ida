@@ -53,7 +53,20 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const executionPayload = snapshotProposalPayload(input);
+    // Capture the caller-controlled property once. Besides closing the
+    // revision/payload TOCTOU, this preserves the explicit symbol-key fail
+    // closed check below because structuredClone intentionally omits symbols.
+    const before = input.before;
+    rejectUnstableProposalState(before);
+    const executionPayload = snapshotProposalPayload(input, before);
+    // Uint8Array is an accepted wire representation of patch bytes, but the
+    // stale-state authority and the backend read both use plain arrays. Keep
+    // one canonical payload for either accepted container so equal bytes do
+    // not produce different revisions (#6171).
+    if (kind === 'patch' && (executionPayload.before instanceof Uint8Array || executionPayload.after instanceof Uint8Array)) {
+      executionPayload.before = proposalBytes(executionPayload.before);
+      executionPayload.after = proposalBytes(executionPayload.after);
+    }
     const capability = proposalCapability({ kind, target: executionPayload.target });
     if (!capability) throw new AIError('invalid_tool_call', 'Unsupported capability proposal.');
     const revision = fingerprint(executionPayload.before);
@@ -305,7 +318,23 @@ function proposalSnapshot(proposal) {
 }
 
 function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
-function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function proposalBytes(value) {
+  // Patch bytes are mutation-authority input. Coercing each element (the old
+  // `Number` mapping) let string/boolean/null bytes reach the strict
+  // capability validator as canonical numbers, so the original type violation
+  // could never be detected and the approved identity was compared against a
+  // laundered view. Validate byte identity instead of laundering it (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
@@ -351,25 +380,21 @@ function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
   }
 }
 
-function snapshotProposalPayload(value) {
+function snapshotProposalPayload(value, stableBefore = value.before) {
   const clone = globalThis.structuredClone;
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
   }
-  // Capture each outer field once: getters must not supply one value for the
-  // stale-state guard and another for the execution snapshot.
-  const source = { target: value.target, before: value.before, after: value.after };
-  assertSnapshotStateShape(source.before);
   let payload;
   try {
     payload = {
-      target: clone(source.target),
-      before: clone(source.before),
-      after: clone(source.after),
+      target: clone(value.target),
+      before: clone(stableBefore),
+      after: clone(value.after),
     };
-    restoreRegExpLastIndex(source.target, payload.target);
-    restoreRegExpLastIndex(source.before, payload.before);
-    restoreRegExpLastIndex(source.after, payload.after);
+    restoreRegExpLastIndex(value.target, payload.target);
+    restoreRegExpLastIndex(stableBefore, payload.before);
+    restoreRegExpLastIndex(value.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
   }
@@ -379,30 +404,47 @@ function snapshotProposalPayload(value) {
   return payload;
 }
 
-function assertSnapshotStateShape(value, seen = new WeakSet()) {
-  if (value === null || typeof value !== 'object' || seen.has(value)) return;
+// `structuredClone` omits symbol-keyed properties and invokes accessors. The
+// proposal boundary must not silently lose identity-bearing state or read a
+// mutable accessor twice while preparing an approval. Capture the top-level
+// before value once in create(), then reject unsupported nested accessors and
+// symbol keys without invoking them.
+function rejectUnstableProposalState(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') return;
+  if (seen.has(value)) return;
   seen.add(value);
-  if (Object.getOwnPropertySymbols(value).length) throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
-  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-    if (!('value' in descriptor)) throw new AIError('tool_failed', 'Proposal state contains an accessor and cannot be snapshotted safely.');
-    assertSnapshotStateShape(descriptor.value, seen);
-  }
-  if (value instanceof Map) {
-    for (const [key, item] of Map.prototype.entries.call(value)) {
-      assertSnapshotStateShape(key, seen);
-      assertSnapshotStateShape(item, seen);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key === 'symbol')) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
     }
-    return;
-  }
-  if (value instanceof Set) {
-    for (const item of Set.prototype.values.call(value)) assertSnapshotStateShape(item, seen);
-    return;
-  }
-  if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)
-      || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) return;
-  const prototype = Object.getPrototypeOf(value);
-  if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
-    throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+      }
+      rejectUnstableProposalState(descriptor.value, seen);
+    }
+    if (value instanceof Map) {
+      for (const [key, item] of Map.prototype.entries.call(value)) {
+        rejectUnstableProposalState(key, seen);
+        rejectUnstableProposalState(item, seen);
+      }
+      return;
+    }
+    if (value instanceof Set) {
+      for (const item of Set.prototype.values.call(value)) rejectUnstableProposalState(item, seen);
+      return;
+    }
+    if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)
+        || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) return;
+    const prototype = Object.getPrototypeOf(value);
+    if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be fingerprinted safely.');
+    }
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('tool_failed', 'Proposal state cannot be snapshotted safely.');
   }
 }
 
@@ -494,6 +536,14 @@ function canonicalIdentity(value, stack = new Set()) {
     return `d${JSON.stringify(value)};`;
   }
   if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type === 'symbol' || type === 'function') {
+    // Function and symbol identity cannot survive a String() encoding: distinct
+    // closures share source text (captures never appear in toString()) and
+    // distinct symbols share their description. Mapping them into the `x`
+    // domain aliased different approved states into one revision (#5754), so
+    // proposal state and binding snapshots refuse them fail-closed instead.
+    throw new AIError('tool_failed', 'Proposal state cannot contain function or symbol values.');
+  }
   if (type !== 'object') return `x${JSON.stringify(String(value))}`;
 
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');

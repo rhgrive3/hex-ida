@@ -218,7 +218,8 @@ for (const malformed of ["x8, x8, #1, lsl #1", "x8, x8, #1, lsr #12"]) {
 }
 console.log("  ok 8 shifted ADD/SUB immediate analyzer regression (#2051)");
 
-// 9. ARM64 UI short expressions must preserve extended-register semantics (#5046).
+// 9. ARM64 UI short expressions must preserve extended-register semantics and
+// group shifted memory indexes (#5046, #5052).
 for (const [input, expected] of [
   ["w1, sxtw", "sxtw(w1)"],
   ["w1, sxtw #0", "sxtw(w1) << 0"],
@@ -233,14 +234,20 @@ for (const [input, expected] of [
   assert.equal(facade.opShort(throughFacade), expected, `${input} facade must preserve its extend modifier`);
 }
 for (const [input, expected] of [
+  ["[x0, x1]", "x0 + x1"],
+  ["[x0, x1, lsl #0]", "x0 + (x1 << 0)"],
+  ["[x0, x1, lsl #1]", "x0 + (x1 << 1)"],
+  ["[x0, x1, lsl #3]", "x0 + (x1 << 3)"],
   ["[x0, w1, sxtw #2]", "x0 + (sxtw(w1) << 2)"],
   ["[x0, w1, uxtw #2]", "x0 + (uxtw(w1) << 2)"],
 ]) {
   const mem = directOperands.parseOperands(input)[0];
-  assert.equal(directOperands.memExpr(mem), expected, `${input} must preserve its extend modifier`);
+  assert.equal(directOperands.memExpr(mem), expected, `${input} must preserve its address expression`);
+  assert.equal(directOperands.opShort(mem), `[${expected}]`, `${input} short memory display must preserve index grouping`);
+  assert.equal(facade.opShort(facade.parseOperands(input)[0]), `[${expected}]`, `${input} facade short memory display must preserve index grouping`);
 }
 assert.equal(directOperands.opShort(directOperands.parseOperands("w1, lsl #2")[0]), "w1 << 2", "ordinary LSL display must remain unchanged");
-console.log("  ok 9 ARM64 extended-register presentation (#5046)");
+console.log("  ok 9 ARM64 extended-register and shifted-index presentation (#5046, #5052)");
 
 // 10. AdvSIMD structure operands must preserve legal register post-index writeback (#4105).
 {
@@ -289,5 +296,47 @@ for (const invalidPostIndex of ["w1", "sp", "xzr"]) {
   assert.equal(Object.hasOwn(parsed[1], "writebackReg"), false);
 }
 console.log("  ok 10 ARM64 AdvSIMD register post-index presentation (#4105)");
+
+// 11. Unsupported memory modifiers must fail closed instead of becoming a
+// misleading fixed-byte address (#4872, #5052).
+for (const [input, expected] of [
+  ["[x1, #8]", "x1 + 8"],
+  ["[x1, x2, lsl #3]", "x1 + (x2 << 3)"],
+]) {
+  const direct = directOperands.parseOperands(input);
+  const throughFacade = facade.parseOperands(input);
+  assert.deepEqual(throughFacade, direct, `${input} facade must preserve the standard memory representation`);
+  assert.equal(direct.length, 1);
+  assert.equal(direct[0].k, "mem");
+  assert.equal(directOperands.memExpr(direct[0]), expected, `${input} must retain its standard address expression`);
+}
+{
+  const parsed = directOperands.parseOperands("[x1, #8]!");
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].k, "mem");
+  assert.equal(parsed[0].mode, "pre");
+  assert.equal(parsed[0].writebackDisp?.value, 8n);
+}
+{
+  const parsed = directOperands.parseOperands("[x1], #8");
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].k, "mem");
+  assert.equal(parsed[0].mode, "post");
+  assert.equal(parsed[0].writebackDisp?.value, 8n);
+  assert.equal(directOperands.memExpr(parsed[0]), "x1");
+}
+for (const input of [
+  "[x1,#1,mul vl]",
+  "[x1,#8,unsupported_modifier]",
+]) {
+  const direct = directOperands.parseOperands(input);
+  const throughFacade = facade.parseOperands(input);
+  assert.deepEqual(throughFacade, direct, `${input} facade must preserve the raw fallback`);
+  assert.equal(direct.length, 1, `${input} must remain one raw operand`);
+  assert.equal(direct[0].k, "other", `${input} must not become a parsed memory operand`);
+  assert.equal(direct[0].text, input, `${input} raw operand text must be preserved`);
+  assert.equal(directOperands.opShort(direct[0]), input, `${input} short presentation must preserve raw text`);
+}
+console.log("  ok 11 unsupported ARM64 memory modifiers fail closed (#4872)");
 
 console.log("All ARM64 presentation compatibility tests PASS!");

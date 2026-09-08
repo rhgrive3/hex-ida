@@ -331,8 +331,17 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         pendingZeroRecords = 0;
       }
       if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      // AArch64 instructions are fixed 4-byte units: an exception range that
+      // does not start on an instruction boundary cannot describe a real
+      // function start, so it must not mint a high-confidence seed (#5667).
+      if(begin%4!==0){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-pdata-alignment',`Ignored ARM64 exception entry at unaligned RVA 0x${begin.toString(16)} (AArch64 instructions are 4-byte aligned)`);previousBegin=begin;continue;}
       const flag=unwindData&3; let descriptor=null;
-      if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
+      if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        // Packed unwind encodes RegI as the count of saved nonvolatile integer
+        // registers x19-x28; only 10 such registers exist, so values 11-15
+        // cannot describe a valid function prologue (#5673).
+        const packedRegI=(unwindData>>>16)&0xf;if(packedRegI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packedRegI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
       if(!descriptor){previousBegin=begin;continue;}
@@ -456,7 +465,13 @@ function readPointer(r, off, bits) { return bits===64?r.u64(off):BigInt(r.u32(of
 
 export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   const need=image.bits===64?40:24;if(!dir||!dir.rva||dir.size<need)return;const budget=ensureBudget(image,sharedBudget);const hdr=mappedFileSpanForRva(image,dir.rva,need);if(!hdr){budget.partial('tls:directory-span','PE TLS directory header is not fully file-backed');return;}const off=hdr.start,callbacksVa=readPointer(r,off+(image.bits===64?24:12),image.bits),callbacks=[];
-  if(callbacksVa){const ptrSize=image.bits===64?8:4,range=mappedFileRangeForAddress(image,callbacksVa);if(!range){budget.partial('tls:callback-table-span','PE TLS callback table is not file-backed');}else{let terminated=false;for(let i=0,p=range.start;i<65536&&p+ptrSize<=range.end;i++,p+=ptrSize){if(!budget.take({inputBytes:ptrSize,records:1,objects:1,operations:1,estimatedHeapBytes:128},'tls-callback'))break;const target=readPointer(r,p,image.bits);if(!target){terminated=true;break;}const sec=image.sectionAt(target);if(!sec?.perms?.execute)continue;if(!mappedFileRangeForAddress(image,target))continue;callbacks.push(target);image.functions.push(functionSeed(target,{source:'tls-callback',confidence:0.999}));}if(!terminated)budget.partial('tls:unterminated-callback-table','PE TLS callback table reached its mapped boundary without a zero terminator');}}
+  if(callbacksVa){const ptrSize=image.bits===64?8:4,range=mappedFileRangeForAddress(image,callbacksVa);if(!range){budget.partial('tls:callback-table-span','PE TLS callback table is not file-backed');}else{let terminated=false;for(let i=0,p=range.start;i<65536&&p+ptrSize<=range.end;i++,p+=ptrSize){if(!budget.take({inputBytes:ptrSize,records:1,objects:1,operations:1,estimatedHeapBytes:128},'tls-callback'))break;const target=readPointer(r,p,image.bits);if(!target){terminated=true;break;}const sec=image.sectionAt(target);if(!sec?.perms?.execute)continue;if(!mappedFileRangeForAddress(image,target))continue;
+    // A callback address that is not on the architecture's instruction
+    // boundary cannot be a function entry: mirror seedValidatedEntrypoint()'s
+    // alignment contract so crafted tables cannot mint misplaced seeds (#5667).
+    const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
+    if(target%alignment!==0n){budget.partial('tls:callback-target-alignment',`Ignored PE TLS callback target 0x${target.toString(16)} not ${alignment}-byte aligned`);continue;}
+    callbacks.push(target);image.functions.push(functionSeed(target,{source:'tls-callback',confidence:0.999}));}if(!terminated)budget.partial('tls:unterminated-callback-table','PE TLS callback table reached its mapped boundary without a zero terminator');}}
   image.metadata.tls={callbacks,callbacksAddress:callbacksVa||null};
 }
 
@@ -464,6 +479,12 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size<4)return;const budget=ensureBudget(image,sharedBudget),head=mappedFileSpanForRva(image,dir.rva,4);if(!head){budget.partial('load-config:header-span','PE load-config header is not file-backed');return;}const off=head.start,declared=Math.min(r.u32(off),dir.size);const full=mappedFileSpanForRva(image,dir.rva,declared);if(!full){budget.partial('load-config:directory-span','PE load-config directory crosses a mapped boundary');return;}const is64=image.bits===64,tableOffset=is64?128:80,countOffset=is64?136:84,flagsOffset=is64?144:88,ptrSize=is64?8:4;if(declared<countOffset+ptrSize)return;
   const tableVa=readPointer(r,off+tableOffset,image.bits),count64=readPointer(r,off+countOffset,image.bits),guardFlags=declared>=flagsOffset+4?r.u32(off+flagsOffset):0,extra=(guardFlags>>>28)&0xf,entrySize=4+extra,functions=[];const tableRange=tableVa?mappedFileRangeForAddress(image,tableVa):null;
   if(tableVa&&!tableRange)budget.partial('load-config:guardcf-table-span','PE GuardCF table is not file-backed');
-  if(tableRange){const capacity=Math.floor((tableRange.end-tableRange.start)/entrySize);if(count64>BigInt(capacity))budget.partial('load-config:guardcf-count-span','PE GuardCF count exceeds its mapped file-backed table');const count=Number(count64<BigInt(capacity)?count64:BigInt(capacity));for(let i=0;i<count;i++){if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:1,estimatedHeapBytes:128},'guardcf-function'))break;const p=tableRange.start+i*entrySize,rva=r.u32(p);if(!rva)continue;const address=image.imageBase+BigInt(rva),sec=image.sectionAt(address);if(!sec?.perms?.execute)continue;if(!mappedFileRangeForAddress(image,address))continue;functions.push(address);image.functions.push(functionSeed(address,{source:'guard-cf',confidence:0.995}));}}
+  if(tableRange){const capacity=Math.floor((tableRange.end-tableRange.start)/entrySize);if(count64>BigInt(capacity))budget.partial('load-config:guardcf-count-span','PE GuardCF count exceeds its mapped file-backed table');const count=Number(count64<BigInt(capacity)?count64:BigInt(capacity));for(let i=0;i<count;i++){if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:1,estimatedHeapBytes:128},'guardcf-function'))break;const p=tableRange.start+i*entrySize,rva=r.u32(p);if(!rva)continue;const address=image.imageBase+BigInt(rva),sec=image.sectionAt(address);if(!sec?.perms?.execute)continue;if(!mappedFileRangeForAddress(image,address))continue;
+    // GuardCF targets are function entries: reject addresses that are not on
+    // the architecture's instruction boundary (seedValidatedEntrypoint's
+    // alignment contract), so crafted tables cannot mint misplaced seeds (#5667).
+    const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
+    if(address%alignment!==0n){budget.partial('load-config:guardcf-target-alignment',`Ignored PE GuardCF target 0x${address.toString(16)} not ${alignment}-byte aligned`);continue;}
+    functions.push(address);image.functions.push(functionSeed(address,{source:'guard-cf',confidence:0.995}));}}
   image.metadata.loadConfig={guardFlags,guardCFFunctionTable:tableVa||null,guardCFFunctionCount:count64,guardCFFunctions:functions};
 }

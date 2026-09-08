@@ -153,7 +153,7 @@ cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp l
 cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
-cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
+cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
@@ -371,17 +371,44 @@ HANDLERS.mov = (o, ops) => {
   addRegRoles(o, ops);
 };
 
+function moveWideShift(op) {
+  const shift = op && op.shift;
+  return shift && shift.op === 'lsl' && Number.isInteger(shift.amount) ? shift.amount : null;
+}
+
+function moveWideWidth(op) {
+  return op && op.bits === 32 ? 32 : 64;
+}
+
+function moveWideMask(bits) {
+  return bits === 32 ? '0xFFFFFFFF' : '0xFFFFFFFFFFFFFFFF';
+}
+
 HANDLERS.movz = (o, ops) => {
   const [d, s] = ops;
+  const sh = moveWideShift(s);
+  const bits = moveWideWidth(d);
   o.title = J('代入（上を 0 で埋める）', 'Move with zero');
   o.pseudo = opShort(d) + ' = ' + opShort(s);
-  o.summary = J(
-    opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
-    'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
-  o.detail.push(J(
-    'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
-    'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
-    'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  if (sh == null) {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を入れ、残りのビットは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ', zeroing every other bit.');
+    o.detail.push(J(
+      'ARM64 の命令は 4 バイトしかないので、64 ビットの大きな定数は一度に書き込めません。' +
+        'そこで movz で下 16 ビットを置き、movk で 16 ビットずつ足していきます。',
+      'An ARM64 instruction is only 4 bytes, so a 64-bit constant is built 16 bits at a time: movz then movk.'));
+  } else {
+    o.summary = J(
+      opShort(d) + ' に ' + immText(s) + ' を ' + sh + ' ビット左へずらした値を入れ、' +
+        bits + ' ビット幅の残りは全部 0 にする。',
+      'Set ' + opShort(d) + ' to ' + immText(s) + ' shifted left by ' + sh +
+        ' bits, zeroing the remaining bits of its ' + bits + '-bit width.');
+    o.detail.push(J(
+      '16 ビットの即値を ' + sh + ' ビット目から置き、' + bits + ' ビット幅の値にします。' +
+        '大きな定数は、後続の movk で別の 16 ビット部分を足して組み立てます。',
+      'Place the 16-bit immediate at bit ' + sh + ' in the ' + bits + '-bit result; later movk instructions can fill other 16-bit fields.'));
+  }
   o.terms = ['immediate', 'register'];
 };
 
@@ -402,11 +429,25 @@ HANDLERS.movk = (o, ops) => {
 
 HANDLERS.movn = (o, ops) => {
   const [d, s] = ops;
+  const sh = moveWideShift(s);
+  const bits = moveWideWidth(d);
   o.title = J('ビットを反転して代入', 'Move NOT');
-  o.pseudo = opShort(d) + ' = ~' + opShort(s);
-  o.summary = J(
-    immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
-    'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  if (sh == null) {
+    o.pseudo = opShort(d) + ' = ~' + opShort(s);
+    o.summary = J(
+      immText(s) + ' の 0 と 1 をすべてひっくり返した値を ' + opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' into ' + opShort(d) + ' — how small negative constants are made.');
+  } else {
+    o.pseudo = opShort(d) + ' = ~(' + opShort(s) + ') & ' + moveWideMask(bits);
+    o.summary = J(
+      immText(s) + ' を ' + sh + ' ビット左へずらした値を ' + bits + ' ビット幅で反転して ' +
+        opShort(d) + ' に入れる。−1 などの負の数を作るのに使います。',
+      'Put the bitwise inverse of ' + immText(s) + ' shifted left by ' + sh + ' bits into ' +
+        opShort(d) + ', limited to ' + bits + ' bits — how small negative constants are made.');
+    o.detail.push(J(
+      '反転は ' + bits + ' ビット幅に限ります。W レジスタなら下位 32 ビット、X レジスタなら 64 ビットだけを使います。',
+      'The NOT is limited to ' + bits + ' bits: W registers use 32 bits and X registers use 64 bits.'));
+  }
   o.terms = ['immediate', 'twoscomplement'];
 };
 
@@ -511,8 +552,11 @@ HANDLERS.sdiv = (o, ops) => {
 };
 HANDLERS.udiv = (o, ops) => {
   HANDLERS.sdiv(o, ops);
+  const [d, n, m] = ops;
   o.title = J('割り算（符号なし）', 'Unsigned divide');
-  o.summary = o.summary.replace(J('マイナスも扱えます。', ''), J('マイナスは扱いません（全部プラスとして計算）。', ''));
+  o.summary = J(
+    opShort(n) + ' を ' + opShort(m) + ' で割った商（小数は切り捨て）を ' + opShort(d) + ' に入れる。マイナスは扱いません（全部プラスとして計算）。',
+    'Divide ' + opShort(n) + ' by ' + opShort(m) + ' (truncating), unsigned.');
 };
 
 HANDLERS.madd = (o, ops) => {
@@ -1355,7 +1399,17 @@ HANDLERS.brk = (o) => {
     'Swift の配列範囲外アクセスや、整数のあふれ検出で、この命令に飛ばされてクラッシュします。',
     'Swift traps such as array-out-of-bounds land here.'));
 };
-HANDLERS.udf = HANDLERS.brk;
+HANDLERS.udf = (o) => {
+  o.title = J('永久に未定義の命令', 'Permanently undefined instruction');
+  o.pseudo = 'undefined_instruction_exception()';
+  o.summary = J(
+    'この命令は永久に未定義です。実行すると未定義命令例外になり、通常の命令実行は続きません。',
+    'This instruction is permanently undefined. Executing it raises an Undefined Instruction exception; normal instruction execution does not continue.');
+  o.detail.push(J(
+    '命令に埋め込まれた #imm16 は、未定義命令のエンコードに含まれる印で、動作を選ぶ値ではありません。これは BRK のデバッガ用ブレークポイントではありません。',
+    'The #imm16 field is part of the undefined-instruction encoding, not an operation selector. This is not a debugger breakpoint like BRK.'));
+  o.terms = ['immediate'];
+};
 
 HANDLERS.bti = (o) => {
   o.title = J('ここへの飛び込みを許可する目印', 'Branch target marker');
@@ -1401,6 +1455,14 @@ for (const n of ['pacia1716', 'pacib1716']) {
     o.terms = ['pac', 'security'];
   };
 }
+for (const n of ['paciaz', 'pacibz']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('戻り先アドレスにゼロ修飾値で封をする', 'Sign the return address with zero modifier');
+    o.pseudo = 'lr = sign(lr, 0)';
+    o.summary = J('戻り先アドレス (x30) を修飾値 0 で署名し、書き換えを検出できるようにする。', 'Sign the return address in x30 with a zero modifier.');
+    o.terms = ['pac', 'security', 'lr'];
+  };
+}
 for (const n of ['autiasp', 'autibsp']) {
   HANDLERS[n] = (o) => {
     o.title = J('戻り先アドレスの封を確かめる', 'Authenticate the return address');
@@ -1435,6 +1497,14 @@ for (const n of ['autia1716', 'autib1716']) {
     o.terms = ['pac', 'security'];
   };
 }
+for (const n of ['autiaz', 'autibz']) {
+  HANDLERS[n] = (o) => {
+    o.title = J('戻り先アドレスの封をゼロ修飾値で確かめる', 'Authenticate the return address with zero modifier');
+    o.pseudo = 'lr = authenticate(lr, 0)';
+    o.summary = J('修飾値 0 で戻り先アドレス (x30) の署名を検証する。', 'Authenticate the return address in x30 with a zero modifier.');
+    o.terms = ['pac', 'security', 'lr'];
+  };
+}
 for (const n of ['xpaci', 'xpacd']) {
   HANDLERS[n] = (o, ops) => {
     const destination = opShort(ops[0]);
@@ -1458,17 +1528,130 @@ HANDLERS.pacga = (o, ops) => {
   o.terms = ['pac', 'security'];
 };
 
-for (const n of ['dmb', 'dsb', 'isb']) {
-  HANDLERS[n] = (o) => {
-    o.title = J('順番を守らせる', 'Memory barrier');
-    o.pseudo = 'barrier()';
+const DATA_BARRIER_OPTION_INFO = Object.freeze({
+  sy: Object.freeze({ ja: 'sy（システム全体の読み書き）', en: 'sy (full-system loads/stores)' }),
+  st: Object.freeze({ ja: 'st（システム全体のストア）', en: 'st (full-system stores)' }),
+  ld: Object.freeze({ ja: 'ld（システム全体のロード）', en: 'ld (full-system loads)' }),
+  ish: Object.freeze({ ja: 'ish（Inner Shareable の読み書き）', en: 'ish (inner-shareable loads/stores)' }),
+  ishst: Object.freeze({ ja: 'ishst（Inner Shareable のストア）', en: 'ishst (inner-shareable stores)' }),
+  ishld: Object.freeze({ ja: 'ishld（Inner Shareable のロード）', en: 'ishld (inner-shareable loads)' }),
+  nsh: Object.freeze({ ja: 'nsh（Non-shareable の読み書き）', en: 'nsh (non-shareable loads/stores)' }),
+  nshst: Object.freeze({ ja: 'nshst（Non-shareable のストア）', en: 'nshst (non-shareable stores)' }),
+  nshld: Object.freeze({ ja: 'nshld（Non-shareable のロード）', en: 'nshld (non-shareable loads)' }),
+  osh: Object.freeze({ ja: 'osh（Outer Shareable の読み書き）', en: 'osh (outer-shareable loads/stores)' }),
+  oshst: Object.freeze({ ja: 'oshst（Outer Shareable のストア）', en: 'oshst (outer-shareable stores)' }),
+  oshld: Object.freeze({ ja: 'oshld（Outer Shareable のロード）', en: 'oshld (outer-shareable loads)' }),
+});
+
+const DSB_OPTION_INFO = Object.freeze({
+  ...DATA_BARRIER_OPTION_INFO,
+  ssbb: Object.freeze({ kind: 'speculation', ja: 'ssbb（ストアバイパス投機の抑制）', en: 'ssbb (store-bypass speculation barrier)' }),
+  pssbb: Object.freeze({ kind: 'speculation', ja: 'pssbb（特権ストアバイパス投機の抑制）', en: 'pssbb (privileged store-bypass speculation barrier)' }),
+  oshnxs: Object.freeze({ ja: 'oshnxs（Outer Shareable の nXS アクセス）', en: 'oshnxs (outer-shareable nXS accesses)' }),
+  nshnxs: Object.freeze({ ja: 'nshnxs（Non-shareable の nXS アクセス）', en: 'nshnxs (non-shareable nXS accesses)' }),
+  ishnxs: Object.freeze({ ja: 'ishnxs（Inner Shareable の nXS アクセス）', en: 'ishnxs (inner-shareable nXS accesses)' }),
+  synxs: Object.freeze({ ja: 'synxs（システム全体の nXS アクセス）', en: 'synxs (full-system nXS accesses)' }),
+});
+
+const BARRIER_OPTION_INFO = Object.freeze({
+  dmb: DATA_BARRIER_OPTION_INFO,
+  dsb: DSB_OPTION_INFO,
+  isb: Object.freeze({
+    sy: Object.freeze({ ja: 'sy（命令同期の指定）', en: 'sy (instruction-synchronization option)' }),
+  }),
+});
+
+function barrierOptionInfo(mnemonic, ops) {
+  const operands = Array.isArray(ops) ? ops : [];
+  if (operands.length === 0) {
+    return {
+      raw: '',
+      known: true,
+      defaulted: true,
+      kind: 'data',
+      ja: 'オプション省略（AArch64 の既定値 sy）',
+      en: 'option omitted (AArch64 architectural default: sy)',
+    };
+  }
+  const raw = operands.map((operand) => typeof operand?.text === 'string' ? operand.text.trim() : '').join(', ');
+  const optionTable = BARRIER_OPTION_INFO[mnemonic];
+  const optionKey = raw.toLowerCase();
+  const descriptor = operands.length === 1 && optionTable &&
+    Object.prototype.hasOwnProperty.call(optionTable, optionKey)
+    ? optionTable[optionKey]
+    : null;
+  if (descriptor) {
+    return {
+      raw,
+      known: true,
+      defaulted: false,
+      kind: descriptor.kind || 'data',
+      ja: 'オプション ' + descriptor.ja,
+      en: 'option ' + descriptor.en,
+    };
+  }
+  const display = raw || '<unparsed>';
+  return {
+    raw: display,
+    known: false,
+    defaulted: false,
+    kind: 'unknown',
+    ja: 'オプション ' + display + ' は未解釈（範囲・種別は不明）',
+    en: 'option ' + display + ' is not interpreted (scope/type unknown)',
+  };
+}
+
+for (const mnemonic of ['dmb', 'dsb', 'isb']) {
+  HANDLERS[mnemonic] = (o, ops) => {
+    const option = barrierOptionInfo(mnemonic, ops);
+    const optionNote = J(option.ja, option.en);
+    const pseudo = mnemonic + '(' + option.raw + ')';
+    o.pseudo = pseudo;
+
+    if (mnemonic === 'dmb') {
+      o.title = J('データメモリアクセスの順序付けバリア', 'Data memory ordering barrier');
+      o.summary = J(
+        'DMB はデータメモリアクセスの順序をこの地点の前後で保つ。アクセスの完了を待つ命令ではない。' + optionNote + '。',
+        'DMB orders data-memory accesses across this point; it does not wait for those accesses to complete. ' + optionNote + '.');
+      o.detail.push(J(
+        'DMB は指定されたデータアクセスを順序付けする。DSB のような完了待ちや、ISB のような命令取得の同期は行わない。' + optionNote + '。',
+        'DMB orders the selected data accesses; unlike DSB it does not add completion/wait semantics, and unlike ISB it does not synchronize instruction fetch. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    if (mnemonic === 'dsb' && option.kind === 'speculation') {
+      o.title = J('ストアバイパス投機を抑える同期バリア', 'Store-bypass speculation barrier');
+      o.summary = J(
+        'DSB の ' + option.raw + ' はストアバイパス投機を抑える特殊な指定で、通常のデータアクセス範囲や完了待ちとしては解釈しない。' + optionNote + '。',
+        'DSB ' + option.raw + ' is a specialized store-bypass speculation barrier; its data-access scope and completion behavior are not interpreted here. ' + optionNote + '.');
+      o.detail.push(J(
+        'この特殊な指定は通常の DSB のデータアクセス範囲と同じものとして扱わない。' + optionNote + '。',
+        'Do not treat this specialized option as the ordinary DSB data-access scope. ' + optionNote + '.'));
+      o.terms = [];
+      return;
+    }
+
+    if (mnemonic === 'dsb') {
+      o.title = J('データ同期バリア', 'Data synchronization barrier');
+      o.summary = J(
+        'DSB はデータメモリアクセスの順序を保ち、対象アクセスの完了を待ってから後続命令を進める。' + optionNote + '。',
+        'DSB orders data-memory accesses and waits for covered accesses to complete before later instructions proceed. ' + optionNote + '.');
+      o.detail.push(J(
+        'DSB は DMB の順序付けに加えて、指定されたアクセスなどの完了を待つ。ISB のような命令取得の同期ではない。' + optionNote + '。',
+        'DSB adds completion/wait semantics to DMB-style ordering for the selected accesses; it is not ISB instruction-fetch synchronization. ' + optionNote + '.'));
+      o.terms = ['thread'];
+      return;
+    }
+
+    o.title = J('命令ストリーム同期バリア', 'Instruction synchronization barrier');
     o.summary = J(
-      'CPU が勝手に順番を入れ替えないよう、ここで一度そろえる。',
-      'Stop the CPU from reordering memory operations across this point.');
+      'ISB は前のコンテキスト変更の効果を後続命令の取得・実行に反映させるため、命令ストリームを同期する。データメモリアクセスの順序付けを行う命令ではない。' + optionNote + '。',
+      'ISB synchronizes the instruction stream so later instruction fetch and execution observe earlier context-changing operations; it is not a data-memory ordering barrier. ' + optionNote + '.');
     o.detail.push(J(
-      'CPU は速度のために命令の順番を入れ替えます。複数のスレッドが同じデータを触るときは、それが困るのでここで止めます。',
-      'CPUs reorder for speed; with multiple threads that is unsafe, so this pins the order.'));
-    o.terms = ['thread'];
+      'ISB はシステムレジスタ更新などの後で、後続命令を新しい実行コンテキストから取得・実行する境界を作る。スレッド間のデータ順序付けとして説明しない。' + optionNote + '。',
+      'ISB synchronizes instruction fetch and execution after a context-changing operation such as a system-register update; it is not thread data-memory ordering. ' + optionNote + '.'));
+    o.terms = [];
   };
 }
 HANDLERS.mrs = (o, ops) => {

@@ -332,18 +332,20 @@ export function createSemanticIrFunction(input, options = {}) {
   // Preflight the complete reference denominator before nested normalization.
   assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes, referenceReads), options, 'maxReferences');
 
+  // Fixed UTF-16 code-unit order keeps canonical serialization locale independent (#5765).
+  const compareCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
     contractVersion: SEMANTIC_IR_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-ir-function-id-required'),
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
-    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
-    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
-    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
+    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)
-      .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
+      .sort((a, b) => compareCodeUnit(stableStringify(a), stableStringify(b))),
     origin: requiredOrigin(input, 'semantic-ir-function-origin-required'),
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');

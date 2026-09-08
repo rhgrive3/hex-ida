@@ -54,13 +54,12 @@ export function jsonSafe(value, seen = new WeakSet()) {
   seen.add(value);
   let out;
   if (value instanceof Map) {
-    const entries = [...value.entries()].map(([k, v]) => [jsonSafe(k, seen), jsonSafe(v, seen)]);
-    entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
-    out = { $map: entries };
+    out = { $map: canonicalMapEntries(value, seen).map(({ key, value: entryValue }) => [
+      jsonSafe(key, seen),
+      jsonSafe(entryValue, seen),
+    ]) };
   } else if (value instanceof Set) {
-    const values = [...value].map((v) => jsonSafe(v, seen));
-    values.sort((a, b) => compareCanonicalText(stableStringify(a), stableStringify(b)));
-    out = { $set: values };
+    out = { $set: canonicalSetEntries(value, seen).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
     out = {};
@@ -96,6 +95,43 @@ function fnv64(text, seed) {
 export function stableDigest(value) {
   const text = stableStringify(value);
   return fnv64(text, 0xcbf29ce484222325n) + fnv64(text, 0x84222325cbf29ce4n);
+}
+
+function canonicalWitnessParts(value, seen = new WeakSet()) {
+  return {
+    normalized: jsonSafe(value, seen),
+    witness: lossyTypeWitness(value, '', seen),
+  };
+}
+
+function compareCanonicalWitnessParts(left, right) {
+  return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
+    || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
+}
+
+function canonicalMapEntries(value, seen = new WeakSet()) {
+  const entries = [...value.entries()].map(([key, entryValue]) => ({
+    key,
+    value: entryValue,
+    keyParts: canonicalWitnessParts(key, seen),
+    valueParts: canonicalWitnessParts(entryValue, seen),
+  }));
+  entries.sort((left, right) => (
+    compareCanonicalText(stableStringify(left.keyParts.normalized), stableStringify(right.keyParts.normalized))
+    || compareCanonicalText(stableStringify(left.valueParts.normalized), stableStringify(right.valueParts.normalized))
+    || compareCanonicalText(stableStringify(left.keyParts.witness), stableStringify(right.keyParts.witness))
+    || compareCanonicalText(stableStringify(left.valueParts.witness), stableStringify(right.valueParts.witness))
+  ));
+  return entries;
+}
+
+function canonicalSetEntries(value, seen = new WeakSet()) {
+  const entries = [...value].map((entryValue) => ({
+    value: entryValue,
+    parts: canonicalWitnessParts(entryValue, seen),
+  }));
+  entries.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
+  return entries;
 }
 
 function typedId(prefix, payload) {
@@ -178,8 +214,12 @@ export function createArtifactId(input = {}) {
 export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
   const type = typeof value;
   if (type === 'bigint') out.push([path, 'bigint']);
-  else if (type === 'number') { if (!Number.isFinite(value)) out.push([path, 'non-finite-number']); }
-  else if (type === 'undefined') out.push([path, 'undefined']);
+  else if (type === 'number') {
+    if (Number.isNaN(value)) out.push([path, 'number:nan']);
+    else if (value === Infinity) out.push([path, 'number:+infinity']);
+    else if (value === -Infinity) out.push([path, 'number:-infinity']);
+    else if (Object.is(value, -0)) out.push([path, 'number:-0']);
+  } else if (type === 'undefined') out.push([path, 'undefined']);
   else if (type === 'function') out.push([path, 'function']);
   else if (type === 'symbol') out.push([path, 'symbol']);
   else if (value !== null && type === 'object') {
@@ -187,15 +227,15 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     seen.add(value);
     if (value instanceof Map) {
       out.push([path, 'map']);
-      for (const [k, v] of value.entries()) {
-        lossyTypeWitness(k, `${path}.<key>`, seen, out);
-        lossyTypeWitness(v, `${path}.<val>`, seen, out);
-      }
+      canonicalMapEntries(value, seen).forEach((entry, index) => {
+        lossyTypeWitness(entry.key, `${path}.$map[${index}].<key>`, seen, out);
+        lossyTypeWitness(entry.value, `${path}.$map[${index}].<val>`, seen, out);
+      });
     } else if (value instanceof Set) {
       out.push([path, 'set']);
-      for (const v of value.values()) {
-        lossyTypeWitness(v, `${path}[]`, seen, out);
-      }
+      canonicalSetEntries(value, seen).forEach((entry, index) => {
+        lossyTypeWitness(entry.value, `${path}.$set[${index}]`, seen, out);
+      });
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);

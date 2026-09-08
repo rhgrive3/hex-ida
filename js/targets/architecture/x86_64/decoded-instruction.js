@@ -158,7 +158,7 @@ function registerOf(value, code, { decoderRegisterCode = null, widthBits = null 
   });
 }
 
-function normalizeOperand(input, index, mode) {
+function normalizeOperand(input, index, mode, instructionAddressSizeBits = null) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-decoded-instruction-invalid-operand');
   const type = token(input.type ?? input.kind ?? 'invalid', 'x86-decoded-instruction-invalid-operand-type').toLowerCase();
   if (!OPERAND_TYPES.has(type)) throw new TypeError('x86-decoded-instruction-invalid-operand-type');
@@ -195,7 +195,8 @@ function normalizeOperand(input, index, mode) {
         scale,
         displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
         segment,
-        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? 64, mode),
+        // Unstated operand sizes inherit the instruction-level address size.
+        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? instructionAddressSizeBits ?? 64, mode),
       }),
     });
   }
@@ -252,7 +253,15 @@ export function createX86DecodedInstruction(input = {}) {
   const instructionFamily = text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required');
   const rawDetail = input.detail && typeof input.detail === 'object' ? input.detail : {};
   const rawOperands = rawDetail.operands ?? input.structuredOperands ?? (Array.isArray(input.operands) ? input.operands : []);
-  const operands = rawOperands.map((operand, index) => normalizeOperand(operand, index, mode));
+  const operands = rawOperands.map((operand, index) => normalizeOperand(
+    operand,
+    index,
+    mode,
+    (() => {
+      const stated = rawDetail.addressSizeBits ?? input.detail?.addressSizeBits;
+      return stated == null || stated === 0 ? null : stated;
+    })(),
+  ));
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
   // Strip provider-zero/nullish address-size metadata from the copied detail.

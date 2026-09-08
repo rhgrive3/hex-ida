@@ -22,6 +22,11 @@ const base = (overrides = {}) => ({
   memorySsaVersion: '2.0.0',
   architectureSemanticVersion: '1',
   abiSemanticVersion: '1',
+  // Points-to completeness depends on the budget, so the fixture declares a
+  // budget class; #5751 makes an unbound budget class on a
+  // completeness-affecting artifact a fail-closed construction error.
+  budgetClass: 'interactive',
+  budgetAffectsCompleteness: true,
   ...overrides,
 });
 
@@ -73,13 +78,61 @@ test('interprocedural results are keyed by exact callee summary identity', () =>
 });
 
 test('debug-derived facts are keyed by provider version and matched build identity', () => {
-  const withDebug = (providerVersion, buildIdentity) => createPhase7ArtifactDescriptor(base({
+  const withDebug = (providerVersion, buildIdentity, digest = 'digest_a') => createPhase7ArtifactDescriptor(base({
     kind: 'phase7.debug.facts',
     debugProviderVersion: providerVersion,
     debugBuildIdentity: buildIdentity,
+    debugIdentityDigest: digest,
   })).artifactId;
   assert.notEqual(withDebug('1.0.0', 'build_a'), withDebug('1.0.1', 'build_a'));
   assert.notEqual(withDebug('1.0.0', 'build_a'), withDebug('1.0.0', 'build_b'));
+});
+
+test('debug facts bind the canonical debug identity digest (#5849)', () => {
+  // matched-partial coverage decides which records are hard evidence, so two
+  // debug identities with different coverage must not share an identity.
+  const withDigest = (digest) => createPhase7ArtifactDescriptor(base({
+    kind: 'phase7.debug.facts',
+    debugProviderVersion: '1.0.0',
+    debugBuildIdentity: 'build_a',
+    debugIdentityDigest: digest,
+  })).artifactId;
+  assert.notEqual(withDigest('digest_a'), withDigest('digest_b'),
+    'a different debug identity digest must change artifact identity');
+  for (const kind of ['phase7.debug.facts', 'phase7.types.constraint-graph', 'phase7.discovery.candidates']) {
+    assert.throws(
+      () => createPhase7ArtifactDescriptor(base({
+        kind,
+        ...(kind === 'phase7.types.constraint-graph' ? { abiId: 'abi_a' } : {}),
+        debugProviderVersion: '1.0.0',
+        debugBuildIdentity: 'build_a',
+        debugIdentityDigest: undefined,
+      })),
+      /phase7-artifact-debug-identity-digest-required/,
+      `${kind} declares the debugIdentity class, so the digest is required`,
+    );
+  }
+});
+
+test('debug facts require the provider version and build identity they declare (#5836)', () => {
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({
+      kind: 'phase7.debug.facts',
+      debugIdentityDigest: 'digest_a',
+      debugBuildIdentity: 'build_a',
+      debugProviderVersion: undefined,
+    })),
+    /phase7-artifact-debug-provider-version-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({
+      kind: 'phase7.debug.facts',
+      debugIdentityDigest: 'digest_a',
+      debugProviderVersion: '1.0.0',
+      debugBuildIdentity: undefined,
+    })),
+    /phase7-artifact-debug-build-identity-required/,
+  );
 });
 
 test('presentation state can never enter a semantic cache key', () => {
@@ -143,6 +196,7 @@ test('a kind without option dependencies ignores analysis tuning options (#6164)
     semanticSchemaVersion: '2',
     debugProviderVersion: '1.0.0',
     debugBuildIdentity: 'build_a',
+    debugIdentityDigest: 'digest_issue_6164',
   };
   const reference = createPhase7ArtifactDescriptor(debugBase).artifactId;
   assert.equal(
@@ -189,7 +243,9 @@ test('explicit blank optional identities fail closed instead of becoming absent'
   const cases = [
     [{ sliceId: '   ' }, /phase7-artifact-invalid-slice-id/],
     [{ functionId: '   ' }, /phase7-artifact-invalid-entity-id/],
-    [{ budgetClass: '   ' }, /phase7-artifact-invalid-budget-class/],
+    // With budget relevance explicitly denied the budget class is an optional
+    // key slot, so a blank value still fails closed instead of becoming absent.
+    [{ budgetClass: '   ', budgetAffectsCompleteness: false }, /phase7-artifact-invalid-budget-class/],
     [{ platformId: '   ' }, /phase7-artifact-invalid-platform-id/],
   ];
   for (const [overrides, expected] of cases) {
@@ -199,21 +255,27 @@ test('explicit blank optional identities fail closed instead of becoming absent'
   assert.throws(
     () => createPhase7ArtifactDescriptor(base({
       kind: 'phase7.debug.facts',
+      debugIdentityDigest: 'digest_a',
       debugProviderVersion: '   ',
+      debugBuildIdentity: 'build_a',
     })),
-    /phase7-artifact-invalid-debug-provider-version/,
+    // debug.facts declares the debugProvider dependency, so a blank value is
+    // a missing required dependency rather than a blank optional identity.
+    /phase7-artifact-debug-provider-version-required/,
   );
   assert.throws(
     () => createPhase7ArtifactDescriptor(base({
       kind: 'phase7.debug.facts',
+      debugIdentityDigest: 'digest_a',
       debugProviderVersion: '1.0.0',
       debugBuildIdentity: '   ',
     })),
-    /phase7-artifact-invalid-debug-build-identity/,
+    /phase7-artifact-debug-build-identity-required/,
   );
   assert.throws(
     () => createPhase7ArtifactDescriptor(base({
       kind: 'phase7.discovery.candidates',
+      debugIdentityDigest: 'digest_a',
       loaderEvidenceId: '   ',
     })),
     /phase7-artifact-invalid-loader-evidence-id/,
@@ -246,4 +308,29 @@ test('required identity is enforced rather than defaulted', () => {
   assert.throws(() => createPhase7ArtifactDescriptor(base({ snapshotId: null })), /snapshot-required/);
   assert.throws(() => createPhase7ArtifactDescriptor(base({ memorySsaVersion: null })), /memoryssa-version-required/);
   assert.throws(() => createPhase7ArtifactDescriptor(base({ kind: 'phase7.not.a.kind' })), /unknown-kind/);
+});
+
+test('a completeness-affecting artifact must bind its budget generation (#5751)', () => {
+  // budgetAffectsCompleteness defaults to "relevant", so a producer that
+  // forgets budgetClass must not mint an identity where the budget dimension
+  // is silently absent — interactive and exhaustive results would collide.
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: undefined })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: null })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetClass: '   ' })),
+    /phase7-artifact-budget-class-required/,
+  );
+  assert.throws(
+    () => createPhase7ArtifactDescriptor(base({ budgetAffectsCompleteness: true, budgetClass: null })),
+    /phase7-artifact-budget-class-required/,
+  );
+  // A denied budget dependence keeps the old identity semantics: the budget
+  // class is excluded from the key, so omitting it stays legal.
+  assert.doesNotThrow(() => createPhase7ArtifactDescriptor(base({ budgetAffectsCompleteness: false, budgetClass: null })));
 });

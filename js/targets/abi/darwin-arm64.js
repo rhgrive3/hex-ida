@@ -1,12 +1,16 @@
 import { ABIPlugin } from './registry.js';
-import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
+import {
+  aggregateLayoutDescriptorPresent,
+  aggregateRequiresIndirectCopy,
+  canonicalAggregateLayout,
+} from './aggregate-layout.js';
 import {
   AAPCS64_ABI,
   classifyAAPCS64CallReturn,
   classifyAAPCS64FunctionReturn,
 } from './aapcs64.js';
 
-const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ipados','macos','tvos','watchos','visionos']);
+const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
 
 function callPrototypeOf(insn, opts) {
   // Calls may arrive through the production functionPrototype field while
@@ -39,10 +43,53 @@ function descriptorBoolean(parameter, key) {
   return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
 }
 
+function aggregateAlignmentEvidence(parameter, layoutEvidence) {
+  const alignmentKeys = ['alignmentBytes', 'alignBytes', 'alignment'];
+  const ownAlignment = (record) => {
+    if (!nestedRecord(record)) return { present:false, value:null };
+    const owners = [record];
+    if (nestedRecord(record.layout)) owners.push(record.layout);
+    const values = owners
+      .filter((owner) => alignmentKeys.some((key) => Object.hasOwn(owner, key)))
+      .map((owner) => alignmentKeys
+        .filter((key) => Object.hasOwn(owner, key))
+        .map((key) => {
+          const value = owner[key];
+          return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+        }));
+    if (!values.length) return { present:false, value:null };
+    const flattened = values.flat();
+    if (flattened.some((value) => value == null)
+      || flattened.some((value) => value !== flattened[0])) return { present:true, value:null };
+    return { present:true, value:flattened[0] };
+  };
+  const explicit = ownAlignment(parameter);
+  if (explicit.present) return explicit.value == null
+    ? { proven:false, alignment:1 } : { proven:true, alignment:explicit.value };
+  if (!layoutEvidence?.members?.length) return { proven:false, alignment:1 };
+  const memberAlignments = [];
+  for (const member of layoutEvidence.members) {
+    const evidence = ownAlignment(member);
+    if (!evidence.present || evidence.value == null) return { proven:false, alignment:1 };
+    memberAlignments.push(evidence.value);
+  }
+  return { proven:true, alignment:Math.max(8, ...memberAlignments) };
+}
+
+function pointerSpelling(value) {
+  return /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(String(value || '').toLowerCase());
+}
+
+function isAppleLongDoubleScalar(...values) {
+  const text = values.map((value) => String(value || '')).join(' ').toLowerCase();
+  return /(?:^|\s)long double(?:\s|$)/.test(text) && !pointerSpelling(text);
+}
+
 function parameterClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
-  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${cls}`);
+  const pointer = param?.pointer === true || param?.isPointer === true || pointerSpelling(`${type} ${cls}`);
+  const appleLongDouble = !pointer && /(?:^|\s)long double(?:\s|$)/.test(`${type} ${cls}`);
   const hfaMeta = descriptorBoolean(param, 'hfa');
   const hvaMeta = descriptorBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
@@ -54,8 +101,8 @@ function parameterClass(param) {
   const aggregateHint = param?.aggregate === true || param?.isAggregate === true
     || aggregateDescriptorPresent || /aggregate|struct|union|record|array|composite/.test(`${type} ${cls}`);
   const vector = !aggregateHint && (param?.vector === true || cls.includes('vector') || /vector|simd/.test(type));
-  const aggregate = !pointer && !homogeneous && aggregateHint;
-  const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
+  const aggregate = !pointer && !homogeneous && !appleLongDouble && aggregateHint;
+  const fp = !aggregate && (appleLongDouble || hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   // A nested layout descriptor is the canonical aggregate source.  Resolve it
   // before reading legacy aliases so a classifier cannot publish bits/member
   // lanes from one descriptor while the validated physical layout comes from
@@ -102,11 +149,12 @@ function parameterClass(param) {
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
   const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
-  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
-    ? explicitAlignment : null;
-  let alignmentBytes = explicitAlignmentBytes ?? 1;
-  if (explicitAlignmentBytes == null) {
-    if (bytes >= 16) alignmentBytes = 16;
+  const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;
+  const aggregateAlignment = aggregateAlignmentEvidence(param, layoutEvidence);
+  let alignmentBytes = explicitAlignmentProven ? explicitAlignment : 1;
+  if (!explicitAlignmentProven) {
+    if (aggregate && aggregateAlignment.proven) alignmentBytes = aggregateAlignment.alignment;
+    else if (!aggregate && bytes >= 16) alignmentBytes = 16;
     else if (bytes >= 8) alignmentBytes = 8;
     else if (bytes >= 4) alignmentBytes = 4;
     else if (bytes >= 2) alignmentBytes = 2;
@@ -114,11 +162,13 @@ function parameterClass(param) {
   const signed = param?.signed === true || /(^|\s)(?:signed|int\d*)/.test(type);
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateMetadataInvalid,
-    aggregate, aggregateLayoutProven, aggregateLayout:layoutEvidence,
+    aggregate, aggregateLayoutProven, aggregateAlignmentProven:!aggregate || aggregateAlignment.proven, aggregateLayout:layoutEvidence,
     aggregateBytes:aggregate ? bytes : null,
     vector, fp, members, elementBits,
     elementBytes:homogeneousElementBytes
       ?? (homogeneous && elementBits > 0 ? Math.ceil(elementBits / 8) : null),
+    appleLongDouble,
+    appleLongDoubleWidthConflict:appleLongDouble && explicitTotalBitsProven && bits !== 64,
     bits, bytes, alignmentBytes, explicitAlignmentBytes, signed,
   };
 }
@@ -168,6 +218,21 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
   for (let index = 0; index < params.length; index++) {
     const param = params[index];
     const c = parameterClass(param);
+    const variadicProto = proto?.variadic === true || proto?.varargs === true;
+    const fixedCount = Number.isSafeInteger(proto?.fixedParameterCount) && proto.fixedParameterCount >= 0
+      ? proto.fixedParameterCount : null;
+    const anonymousVararg = variadicProto && (
+      param?.variadic === true || param?.unnamed === true || param?.named === false
+      || (fixedCount != null && index >= fixedCount)
+    );
+    const forceStack = anonymousVararg === true;
+    if (c.appleLongDoubleWidthConflict) {
+      aggregatePartial = true;
+      arguments_.push({ index, location:'unknown', abiClass:'darwin-long-double-width-conflict',
+        bits:c.bits, partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' });
+      continue;
+    }
     if (c.aggregateMetadataInvalid) {
       aggregatePartial = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
@@ -193,7 +258,39 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       });
       continue;
     }
-    if (c.fp) {
+    if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
+      const reg = !forceStack && gp < 8 ? `x${gp++}` : null;
+      const stackPointerOffset = reg ? null : alignUp(stackOffset, 8);
+      const entry = reg
+        ? {
+          index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true, bits:64, bytes:8,
+          pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
+          possible:false, mustUse:true,
+        }
+        : {
+          index, location:'stack', offset:stackPointerOffset, bytes:8,
+          abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
+          pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
+          possible:false, mustUse:true,
+        };
+      if (reg) srcs.push(registerSource(reg, 64));
+      else { stackArguments.push(entry); stackOffset = stackPointerOffset + 8; }
+      arguments_.push(entry);
+      stackArgsMayContainPointers = true;
+      continue;
+    }
+    if (c.aggregate && !c.aggregateAlignmentProven) {
+      aggregatePartial = true;
+      arguments_.push({
+        index, location:'unknown', abiClass:'aggregate-alignment-unproven', aggregate:true,
+        partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+        reason:'darwin-arm64-aggregate-alignment-not-proven',
+      });
+      continue;
+    }
+    if ((c.fp || c.hva) && !forceStack) {
       const regsNeeded = c.homogeneous ? c.members : 1;
       if (fp + regsNeeded <= 8) {
         const regs = [];
@@ -229,6 +326,11 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         });
         continue;
       }
+      /* AAPCS64 Stage C: an HFA/HVA that cannot fit the remaining SIMD/FP
+       * registers sets NSRN to 8 before the stack allocation. Without this
+       * cursor exhaustion a later scalar FP argument could re-enter the
+       * v-register path with registers the spilled aggregate never used. */
+      if (c.homogeneous) fp = 8;
     } else {
       const regsNeeded = Math.max(1, Math.ceil(c.bits / 64));
       // A padded aggregate needs a physical lane proof that differs from its
@@ -243,7 +345,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           reason:'aggregate-physical-padding-register-layout-not-represented' });
         continue;
       }
-      if (gp + regsNeeded <= 8) {
+      if (gp + regsNeeded <= 8 && !forceStack) {
         const regs = [];
         for (let n = 0; n < regsNeeded; n++) {
           const reg = `x${gp++}`;
@@ -322,6 +424,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       possible:false,
       mustUse:true,
       compactDarwinSlot:true,
+      ...(forceStack ? { variadicAnonymous:true } : {}),
     };
     stackArguments.push(entry);
     arguments_.push(entry);
@@ -355,6 +458,46 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
 const DARWIN_CALLER_SAVED = Object.freeze(AAPCS64_ABI.callerSaved().filter((reg) => reg !== 'x18'));
 const DARWIN_CALLEE_SAVED = Object.freeze(AAPCS64_ABI.calleeSaved().filter((reg) => reg !== 'x18'));
 
+function normalizeAppleReturnType(proto, opts = {}) {
+  const source = opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '';
+  const sourceClass = opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '';
+  if (!isAppleLongDoubleScalar(source, sourceClass)) return proto;
+  const normalized = { ...proto };
+  delete normalized.ret;
+  delete normalized.result;
+  normalized.returnType = 'double';
+  if (Object.hasOwn(normalized, 'returnClass') || Object.hasOwn(normalized, 'abiClass') || Object.hasOwn(normalized, 'resultClass')) normalized.returnClass = 'fp';
+  return normalized;
+}
+
+function appleLongDoubleReturnConflict(proto, opts = {}) {
+  const source = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '');
+  const sourceClass = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '');
+  if (!isAppleLongDoubleScalar(source, sourceClass)) return null;
+  if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true) return null;
+  const raw = opts?.returnBits ?? proto?.returnBits ?? proto?.bits;
+  const bits = Number(raw);
+  if (!Number.isSafeInteger(bits) || bits <= 0 || bits === 64) return null;
+  return { reg:null, regs:[], bits, bytes:null, partial:true, unsupported:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+    reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' };
+}
+
+function classifyDarwinArm64CallReturn(insn, opts = {}) {
+  const proto = callPrototypeOf(insn, opts);
+  const conflict = appleLongDoubleReturnConflict(proto, opts);
+  if (conflict) return conflict;
+  const normalized = normalizeAppleReturnType(proto, opts);
+  if (!proto || normalized === proto) return classifyAAPCS64CallReturn(insn, opts);
+  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, opts);
+}
+
+function classifyDarwinArm64FunctionReturn(opts = {}) {
+  const proto = opts?.functionPrototype || opts?.prototype || null;
+  const conflict = appleLongDoubleReturnConflict(proto, opts);
+  if (conflict) return conflict;
+  return classifyAAPCS64FunctionReturn({ ...opts, functionPrototype:normalizeAppleReturnType(proto, opts) });
+}
+
 export const DARWIN_ARM64_ABI = new ABIPlugin({
   id:'darwin-arm64',
   semanticVersion:'1',
@@ -363,11 +506,19 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   platformPredicate:({ platform }) => DARWIN_PLATFORMS.has(String(platform || '').toLowerCase()),
   callingConventions:()=>Object.freeze(['darwin-arm64','apple-arm64','aapcs64']),
   classifyArguments:classifyDarwinArm64Arguments,
-  classifyCallReturn:classifyAAPCS64CallReturn,
-  classifyFunctionReturn:classifyAAPCS64FunctionReturn,
-  classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || ''))
-    ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) }
-    : { kind:'incoming-register-state', reg:String(reg || '') },
+  classifyCallReturn:classifyDarwinArm64CallReturn,
+  classifyFunctionReturn:classifyDarwinArm64FunctionReturn,
+  // v0-v7 and their b/h/s/d/q views are the FP/SIMD argument bank.
+  classifyEntryRegister:(reg) => {
+    const text = String(reg || '').trim().toLowerCase();
+    const integerArgument = /^x([0-7])$/.exec(text);
+    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]) };
+    const vectorArgument = /^v([0-7])$/.exec(text);
+    if (vectorArgument) return { kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]), view:'vector' };
+    const viewArgument = /^(?:[qbdsh])([0-7])$/.exec(text);
+    if (viewArgument) return { kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]), view:text.slice(0, 1) };
+    return { kind:'incoming-register-state', reg:text };
+  },
   callerSaved:()=>DARWIN_CALLER_SAVED,
   calleeSaved:()=>DARWIN_CALLEE_SAVED,
   stackRules:()=>Object.freeze({

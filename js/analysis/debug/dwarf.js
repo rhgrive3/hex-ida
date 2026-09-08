@@ -88,6 +88,13 @@ const DW_FORM = Object.freeze({
   addrx1: 0x29, addrx2: 0x2a, addrx3: 0x2b, addrx4: 0x2c,
 });
 
+// DWARF5 address forms carry a zero-based index into the unit's `.debug_addr`
+// address array (#6184), not an address themselves.
+const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
+/** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
+const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
+
 const DW_UT = Object.freeze({
   compile: 0x01,
   type: 0x02,
@@ -102,6 +109,12 @@ const ENCODING_CLASS = Object.freeze({
   0x02: 'boolean', 0x04: 'float', 0x05: 'integer', 0x06: 'integer',
   0x07: 'integer', 0x08: 'integer', 0x0d: 'integer', 0x0e: 'integer',
 });
+
+// Abbreviation parsing is independent of the DIE-record budget. Keep explicit
+// parser-local ceilings so a large `.debug_abbrev` cannot consume unbounded CPU
+// or memory before the first DIE is charged (#3932).
+const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
+const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
 
 class Cursor {
   constructor(bytes, offset = 0) {
@@ -175,27 +188,42 @@ function cstring(bytes, offset) {
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
-/** Parses `.debug_abbrev` into `code -> { tag, hasChildren, attributes }`. */
-function parseAbbrev(bytes, tableOffset) {
+/** Parses one `.debug_abbrev` table with shared per-parse budgets. */
+function parseAbbrev(bytes, tableOffset, state = null) {
   const table = new Map();
-  if (!bytes || tableOffset >= bytes.length) return table;
+  // DWARF §7.5.3: an abbreviation code is unique within one table. A duplicate
+  // declaration makes the DIE→declaration mapping ambiguous, so the table is
+  // marked malformed and its duplicates must not silently overwrite (#5728).
+  let duplicateCode = false;
+  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode };
   const cursor = new Cursor(bytes, tableOffset);
   while (!cursor.eof) {
+    if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
     const code = Number(cursor.uleb());
     if (code === 0) break;
+    if (state) {
+      state.declarations += 1;
+      if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
+    }
     const tag = Number(cursor.uleb());
     const hasChildren = cursor.u8() === 1;
     const attributes = [];
     for (;;) {
+      if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
       const attribute = Number(cursor.uleb());
       const form = Number(cursor.uleb());
       const implicitConst = form === DW_FORM.implicit_const ? cursor.sleb() : null;
       if (attribute === 0 && form === 0) break;
+      if (state) {
+        state.attributes += 1;
+        if (state.attributes > state.maxAttributes) return { table: null, stopReason: 'attribute-budget' };
+      }
       attributes.push({ attribute, form, implicitConst });
     }
-    table.set(code, { tag, hasChildren, attributes });
+    if (table.has(code)) duplicateCode = true;
+    else table.set(code, { tag, hasChildren, attributes });
   }
-  return table;
+  return { table, stopReason: null, duplicateCode };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -303,29 +331,153 @@ function strxString(index, unit, sections) {
 }
 
 /**
+ * Finds the `.debug_addr` contribution whose first address entry is `base`.
+ *
+ * DW_AT_addr_base names the first entry, not the contribution header. Walking
+ * contribution lengths from the section start lets addrx resolution prove that
+ * the base is not a header/interior offset and binds it to the header fields
+ * that define the entry layout (#6184).
+ */
+function debugAddrContributionAtBase(table, base, state = null) {
+  if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  let offset = 0;
+  while (offset < table.length) {
+    // A lookup for a later contribution re-inspects earlier headers. Charge
+    // each header before reading it so the shared parse-wide budget bounds the
+    // actual work across all distinct addrBase values, not just lookup count.
+    if (state && state.scans >= state.maxScans) {
+      state.exhausted = true;
+      return null;
+    }
+    if (state) state.scans += 1;
+    if (offset + 4 > table.length) return null;
+    const initialLength = view.getUint32(offset, true);
+    let length;
+    let lengthFieldSize;
+    if (initialLength === 0xffffffff) {
+      if (offset + 12 > table.length) return null;
+      const wideLength = view.getBigUint64(offset + 4, true);
+      if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      length = Number(wideLength);
+      lengthFieldSize = 12;
+    } else {
+      // 0xfffffff0..0xfffffffe are reserved initial-length encodings.
+      if (initialLength >= 0xfffffff0) return null;
+      length = initialLength;
+      lengthFieldSize = 4;
+    }
+    // version(2) + address_size(1) + segment_selector_size(1)
+    if (length < 4) return null;
+    const bodyStart = offset + lengthFieldSize;
+    const end = bodyStart + length;
+    if (!Number.isSafeInteger(end) || end > table.length) return null;
+    const entriesStart = bodyStart + 4;
+    if (entriesStart > end) return null;
+    const contribution = {
+      entriesStart,
+      end,
+      version: view.getUint16(bodyStart, true),
+      addressSize: view.getUint8(bodyStart + 2),
+      segmentSelectorSize: view.getUint8(bodyStart + 3),
+    };
+    if (base === entriesStart) return contribution;
+    // A base inside this contribution but not at its first entry is not the
+    // authority described by this header (including header/interior offsets).
+    if (base >= offset && base < end) return null;
+    offset = end;
+  }
+  return null;
+}
+
+/** Resolves a DW_FORM_addrx* index through a validated DWARF5 `.debug_addr` contribution. */
+function addrxAddress(index, unit, sections, state = null) {
+  const table = sections.debug_addr;
+  const base = unit.addrBase;
+  let contribution;
+  if (state?.cache?.has(base)) {
+    contribution = state.cache.get(base);
+  } else {
+    // The shared state is charged by contribution header below, not once per
+    // lookup: a late base may otherwise make a fresh full-section walk for
+    // every distinct CU and exceed the global work budget (#6184).
+    contribution = debugAddrContributionAtBase(table, base, state);
+    if (state?.cache) state.cache.set(base, contribution);
+  }
+  if (!contribution
+      || contribution.version !== 5
+      || contribution.addressSize !== unit.addressSize
+      || contribution.addressSize < 1
+      || contribution.addressSize > 8
+      || contribution.segmentSelectorSize !== 0) return null;
+  const indexNumber = Number(index);
+  if (!Number.isSafeInteger(indexNumber) || indexNumber < 0) return null;
+  const entrySize = contribution.addressSize;
+  const relative = indexNumber * entrySize;
+  if (!Number.isSafeInteger(relative)) return null;
+  const at = base + relative;
+  if (!Number.isSafeInteger(at) || at + entrySize > contribution.end) return null;
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  let value = 0n;
+  for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  return value;
+}
+
+/**
  * Walks `.debug_info` and returns the DIE forest.
  *
  * DIEs are kept flat, keyed by their section offset, with a `parent` link. That
  * is what DW_AT_type references need, and it avoids building a deep object
  * graph for a structure that is already addressed by offset.
  */
-export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
+export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null } = {}) {
   const info = sections.debug_info;
   const diagnostics = [];
   const dies = new Map();
-  if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false };
-  // A missing or malformed record budget must fall back to the default, never
-  // disable the cap: comparisons against undefined/NaN are always false (#5352).
+  if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false, cancelled: false };
+  // Missing or malformed budgets fall back to explicit defaults, never disable
+  // a cap: comparisons against undefined/NaN are always false (#5352, #3932).
   const maxRecords = Number.isSafeInteger(budget?.maxRecords) && budget.maxRecords > 0
     ? budget.maxRecords
     : DEBUG_DEFAULT_BUDGET.maxRecords;
+  const maxAbbrevDeclarations = Number.isSafeInteger(budget?.maxAbbrevDeclarations) && budget.maxAbbrevDeclarations > 0
+    ? budget.maxAbbrevDeclarations
+    : DEFAULT_MAX_ABBREV_DECLARATIONS;
+  const maxAbbrevAttributes = Number.isSafeInteger(budget?.maxAbbrevAttributes) && budget.maxAbbrevAttributes > 0
+    ? budget.maxAbbrevAttributes
+    : DEFAULT_MAX_ABBREV_ATTRIBUTES;
 
   const units = [];
   const cursor = new Cursor(info, 0);
+  const abbrevCache = new Map();
+  const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
+    && budget.maxAddrContributionScans > 0
+    ? budget.maxAddrContributionScans
+    : DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS;
+  const addrContributionState = {
+    cache: new Map(),
+    maxScans: Math.max(1, Math.min(requestedAddrContributionScans, DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS, maxRecords)),
+    scans: 0,
+    exhausted: false,
+  };
+  const abbrevState = {
+    declarations: 0,
+    attributes: 0,
+    maxDeclarations: maxAbbrevDeclarations,
+    maxAttributes: maxAbbrevAttributes,
+    isCancelled: () => signal?.aborted === true,
+  };
   let recordCount = 0;
   let complete = true;
+  let cancelled = false;
 
   while (cursor.offset + 11 <= info.length) {
+    if (abbrevState.isCancelled()) {
+      diagnostics.push('debug parse cancelled');
+      complete = false;
+      cancelled = true;
+      break;
+    }
     const unitStart = cursor.offset;
     let length = cursor.u32();
     let offsetSize = 4;
@@ -385,8 +537,31 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       }
     }
 
-    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null };
-    const abbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset);
+    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
+    let abbrev;
+    let duplicateCode = false;
+    if (abbrevCache.has(abbrevOffset)) {
+      const cached = abbrevCache.get(abbrevOffset);
+      abbrev = cached.table;
+      duplicateCode = cached.duplicateCode;
+    } else {
+      const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      if (parsedAbbrev.stopReason != null) {
+        complete = false;
+        if (parsedAbbrev.stopReason === 'cancelled') {
+          diagnostics.push('debug parse cancelled');
+          cancelled = true;
+        } else if (parsedAbbrev.stopReason === 'declaration-budget') {
+          diagnostics.push('abbreviation declaration budget exhausted');
+        } else {
+          diagnostics.push('abbreviation attribute budget exhausted');
+        }
+        break;
+      }
+      abbrev = parsedAbbrev.table;
+      duplicateCode = parsedAbbrev.duplicateCode;
+      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode });
+    }
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
       complete = false;
@@ -394,10 +569,21 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       cursor.limit = info.length;   // the unit-end advance itself is not unit-local
       continue;
     }
+    if (duplicateCode) {
+      diagnostics.push(`duplicate abbreviation code in table at 0x${abbrevOffset.toString(16)}`);
+      complete = false;
+    }
 
     const stack = [];
     let unitComplete = true;
     while (cursor.offset < unitEnd) {
+      if (abbrevState.isCancelled()) {
+        diagnostics.push('debug parse cancelled');
+        complete = false;
+        unitComplete = false;
+        cancelled = true;
+        break;
+      }
       if (recordCount >= maxRecords) {
         diagnostics.push('record budget exhausted');
         complete = false;
@@ -425,7 +611,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
         break;
       }
       const attributes = new Map();
-      let dieComplete = true;
+      // Keep the first declaration for deterministic decoding, but never
+      // publish a DIE from an ambiguous abbreviation table as complete
+      // evidence (#5728).
+      let dieComplete = !duplicateCode;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
@@ -451,11 +640,53 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
       if (attributes.has(DW_AT.str_offsets_base)) {
         unit.strOffsetsBase = Number(attributes.get(DW_AT.str_offsets_base).value);
       }
+      if (attributes.has(DW_AT.addr_base)) {
+        const raw = attributes.get(DW_AT.addr_base).value;
+        const base = Number(raw);
+        // addr_base is a section offset in bytes: it must land inside
+        // `.debug_addr` past its header, or no addrx entry can resolve (#6184).
+        unit.addrBase = Number.isSafeInteger(base) && base >= 0 && sections.debug_addr && base <= sections.debug_addr.length
+          ? base
+          : null;
+      }
       for (const [attribute, entry] of attributes) {
         if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
           const resolved = strxString(entry.value, unit, sections);
           attributes.set(attribute, { form: entry.form, value: resolved });
           if (resolved == null) dieComplete = false;
+        } else if (ADDRX_FORMS.includes(entry.form)) {
+          // addrx forms are indices into `.debug_addr`, not addresses (#6184).
+          // An unresolvable index stays unknown (null) and marks the DIE
+          // partial: publishing the raw index as an address would point
+          // consumers at a function start that does not exist.
+          const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections, addrContributionState) : null;
+          attributes.set(attribute, { form: entry.form, value: resolved, addressForm: resolved != null });
+          if (resolved == null) {
+            // An address the parser cannot establish must make the whole unit's
+            // evidence partial, not only the DIE: a raw index must never be
+            // published as a PC (#6184).
+            dieComplete = false;
+            complete = false;
+            diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
+            if (addrContributionState.exhausted) {
+              const diagnostic = 'debug_addr contribution scan budget exhausted';
+              if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+            }
+          }
+        }
+      }
+      // DW_AT_ranges carries non-contiguous address evidence in
+      // .debug_rnglists/.debug_ranges. No resolver exists for either format,
+      // so a DIE that locates its code only through a range list cannot claim
+      // complete evidence: the DIE stays incomplete (no fabricated address)
+      // and the parse result never reports complete (#5731). Sibling DIEs
+      // keep parsing so their facts remain available.
+      if (attributes.has(DW_AT.ranges)) {
+        dieComplete = false;
+        complete = false;
+        if (!unit.rangesUnsupportedReported) {
+          diagnostics.push('DW_AT_ranges range lists (.debug_rnglists/.debug_ranges) are not resolvable; affected DIEs stay incomplete');
+          unit.rangesUnsupportedReported = true;
         }
       }
 
@@ -477,6 +708,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     units.push(unit);
     cursor.offset = unitEnd;
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
+    if (cancelled) break;
   }
 
   if (complete && cursor.offset < info.length) {
@@ -484,7 +716,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
     complete = false;
   }
 
-  return { dies, units, diagnostics, complete };
+  return { dies, units, diagnostics, complete, cancelled };
 }
 
 function attributeValue(die, attribute) {
@@ -497,18 +729,80 @@ function attributeFlag(die, attribute) {
   return value != null && value !== 0n && value !== 0 && value !== false;
 }
 
-function attributeName(die) {
+function attributeName(die, dies) {
   const value = attributeValue(die, DW_AT.name);
-  return typeof value === 'string' ? value : null;
+  if (typeof value === 'string') return value;
+  // A defining DIE inherits name (and other declaration attributes) from the
+  // declaration it specifies (#5738).
+  const inherited = dies ? effectiveAttribute(die, DW_AT.name, dies) : null;
+  return inherited && typeof inherited.entry.value === 'string' ? inherited.entry.value : null;
 }
 
-/** Follows DW_AT_type, which is a unit-relative reference for the ref* forms. */
-function referencedType(die, dies) {
-  const entry = die.attributes.get(DW_AT.type);
+/** Resolves one DW_AT_specification target, honoring unit-relative ref forms. */
+function specificationTarget(die, dies) {
+  const entry = die.attributes.get(DW_AT.specification);
   if (!entry) return null;
   const raw = Number(entry.value ?? 0);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
-  const target = isUnitRelative ? die.unit.start + raw : raw;
+  const target = isUnitRelative && die.unit ? die.unit.start + raw : raw;
+  return dies.get(target) ?? null;
+}
+
+/**
+ * Resolves the complete DW_AT_specification chain used for inherited
+ * attributes. A missing target, cycle, or chain that would require more than
+ * eight specification hops is unresolved and therefore cannot authorize a
+ * complete descriptor (#5738).
+ */
+function resolveSpecificationChain(die, dies) {
+  const chain = [die];
+  const seen = new Set([die.offset]);
+  let current = die;
+  for (let depth = 0; current.attributes.has(DW_AT.specification); depth += 1) {
+    if (depth >= 8) return { resolved: false, chain };
+    const target = specificationTarget(current, dies);
+    if (!target || seen.has(target.offset)) return { resolved: false, chain };
+    chain.push(target);
+    seen.add(target.offset);
+    current = target;
+  }
+  return { resolved: true, chain };
+}
+
+/**
+ * Reads an attribute from a DIE, falling back through its DW_AT_specification
+ * chain (DWARF v5 §2.13/§3.3.5: a defining DIE need not repeat attributes
+ * already present on the non-defining declaration it specifies).
+ *
+ * Returns `{ entry, owner }` where `owner` is the DIE the attribute was found
+ * on (unit-relative reference forms resolve against the owner's unit), or
+ * null when neither the DIE nor a fully resolved specification chain carries
+ * the attribute. Direct attributes always take precedence.
+ */
+function effectiveAttribute(die, attribute, dies) {
+  const direct = die.attributes.get(attribute);
+  if (direct) return { entry: direct, owner: die };
+  const resolution = resolveSpecificationChain(die, dies);
+  if (!resolution.resolved) return null;
+  for (const owner of resolution.chain.slice(1)) {
+    const inherited = owner.attributes.get(attribute);
+    if (inherited) return { entry: inherited, owner };
+  }
+  return null;
+}
+
+/** A DIE's specification chain must resolve completely before it is complete. */
+function specificationResolved(die, dies) {
+  return resolveSpecificationChain(die, dies).resolved;
+}
+
+function referencedType(die, dies) {
+  const effective = effectiveAttribute(die, DW_AT.type, dies);
+  if (!effective) return null;
+  const { entry, owner } = effective;
+  const raw = Number(entry.value ?? 0);
+  const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
+  const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
   return dies.get(target) ?? null;
 }
 
@@ -725,26 +1019,29 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     }
 
     const normalized = normalizeSections(sections);
-    const parsed = parseDebugInfo(normalized, budget);
+    const parsed = parseDebugInfo(normalized, budget, { signal });
     diagnostics.push(...parsed.diagnostics);
 
     const result = createDebugProviderResult({
       ecosystem: 'dwarf',
       identity: {
-        verdict,
+        // Cancellation is an authority boundary, not merely a partial status.
+        // A matched build must not keep hard-fact authority after parsing stops
+        // before the debug source has been fully validated (#3932).
+        verdict: parsed.cancelled ? 'unsupported' : verdict,
         providerId: this.id,
         providerVersion: this.version,
         expected: expectedIdentity,
         observed: observedIdentity,
-        method,
-        detail,
+        method: parsed.cancelled ? 'cancelled' : method,
+        detail: parsed.cancelled ? 'debug parsing cancelled before completion' : detail,
       },
       sections: Object.keys(normalized).filter((key) => normalized[key] != null),
       counts: { dies: parsed.dies.size, units: parsed.units.length },
       diagnostics,
       status: parsed.complete && diagnostics.length === 0
         ? status('complete', null)
-        : status('partial', 'evidence-missing'),
+        : status('partial', parsed.cancelled ? 'cancelled' : 'evidence-missing'),
     });
     // The parsed forest travels with the result rather than being re-parsed by
     // every reader; it is not part of the frozen contract surface.
@@ -761,20 +1058,36 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       const highPc = attributeValue(die, DW_AT.high_pc);
       const isFunction = die.tag === DW_TAG.subprogram;
       // DW_AT_high_pc is an offset from low_pc when its form is a constant, and
-      // an absolute address when its form is an address class.
+      // an absolute address when its form is an address class (DW_FORM_addr or
+      // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
+      const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
       const sizeBytes = highPc == null
         ? null
-        : highForm === DW_FORM.addr
-          ? Number(BigInt(highPc) - BigInt(lowPc ?? 0n))
+        : highIsAddress
+          ? lowPc == null
+            ? null
+            : Number(BigInt(highPc) - BigInt(lowPc))
           : Number(highPc);
+      const descriptor = {
+        isFunction,
+        external: attributeFlag(die, DW_AT.external),
+        complete: die.complete && specificationResolved(die, dies),
+      };
+      // DW_AT_external is inherited through DW_AT_specification, but a direct
+      // flag (including an explicit false) always wins. Other boolean flags
+      // remain DIE-local at their call sites.
+      const effectiveExternal = effectiveAttribute(die, DW_AT.external, dies);
+      if (effectiveExternal?.owner && effectiveExternal.owner !== die) {
+        descriptor.external = attributeFlag(effectiveExternal.owner, DW_AT.external);
+      }
       return createDebugRecord({
         kind: 'symbol',
         entityId: `dwarf_die_${die.offset}`,
-        name: attributeName(die),
+        name: attributeName(die, dies),
         address: toAddress(lowPc),
         sizeBytes,
-        descriptor: { isFunction, external: attributeFlag(die, DW_AT.external), complete: die.complete },
+        descriptor,
         providerId: result.providerId,
         providerVersion: result.providerVersion,
         buildIdentity: result.identity.observed,
@@ -789,18 +1102,18 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     if (!dies) return createDebugPage({ records: [] });
     const typed = [...dies.values()].filter((die) => (
       die.tag === DW_TAG.subprogram || die.tag === DW_TAG.variable || die.tag === DW_TAG.formal_parameter
-    ) && die.attributes.has(DW_AT.type));
+    ) && effectiveAttribute(die, DW_AT.type, dies) != null);
     return page(typed, cursor, pageSize, (die) => {
       const described = describeType(referencedType(die, dies), dies);
       return createDebugRecord({
         kind: 'type',
         entityId: `dwarf_die_${die.offset}`,
-        name: attributeName(die),
+        name: attributeName(die, dies),
         descriptor: {
           layer: 'nominal',
           claim: { name: described.name, aliases: described.aliases ?? [] },
           machine: described.widthBits == null ? null : { widthBits: described.widthBits, class: described.class },
-          complete: described.complete,
+          complete: described.complete && specificationResolved(die, dies),
         },
         providerId: result.providerId,
         providerVersion: result.providerVersion,
