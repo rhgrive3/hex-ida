@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from '../../../js/analysis/query/index.js';
+import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 
 const identity = Object.freeze({
   binaryId:'bin_contract',
@@ -209,10 +210,22 @@ function riscvApp(flags) {
         riscvCalls++;
         assert.equal(options.architecture, 'riscv64');
         assert.equal(options.abiId, 'lp64d', 'EF_RISCV_FLOAT_ABI_DOUBLE must select LP64D');
+        const abi = resolveABIPlugin({
+          architecture:options.architecture,
+          platform:options.platform,
+          abiId:options.abiId,
+        });
+        const floatingArgument = abi.classifyArguments({
+          callPrototype:{ parameters:[{ type:'double', bits:64 }] },
+        }).arguments[0];
+        const floatingReturn = abi.classifyFunctionReturn({
+          functionPrototype:{ returnType:'double', returnBits:64, returnsValue:true },
+        });
         return {
           route:'phase5-shadow-v2',
           architectureId:'riscv64',
           abiId:options.abiId,
+          abiPhysicalProbe:{ argument:floatingArgument, return:floatingReturn },
           pipeline:{ semanticIr, cfg },
           decompiler:{ semantic:true, pseudocode:'long f(void);', lines:[], evidence:[] },
         };
@@ -233,6 +246,10 @@ const rvFunction = await rvApi.function(rvSnapshot, '0x1000');
 assert.equal(rvFunction.completeness, 'complete');
 assert.equal(rvFunction.value.abiId, 'lp64d');
 assert.equal(rvFunction.status.abiEvidence, 'elf-e-flags');
+assert.equal(rvFunction.value.abiPhysicalProbe.argument.reg, 'f10',
+  'metadata-selected LP64D FP arguments must use fa0/f10, never soft-float a0/x10');
+assert.equal(rvFunction.value.abiPhysicalProbe.return.reg, 'f10',
+  'metadata-selected LP64D FP returns must use fa0/f10, never soft-float a0/x10');
 assert.equal(riscvCalls, 1);
 
 const unprovenRv = riscvApp(null);
