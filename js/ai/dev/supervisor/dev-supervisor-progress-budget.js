@@ -17,6 +17,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
     this.progressDecisionWindow = this.maxDecisions;
     this.progressDecisionCount = 0;
     this.progressRunActive = false;
+    this.progressRunQueue = null;
 
     /* Never Proxy the production bridge: request may be a non-configurable,
        non-writable own property. A Proxy get trap returning a wrapper function
@@ -62,6 +63,17 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
   }
 
   async run(input = {}) {
+    // Decision-budget state (progressDecisionCount, progressRunActive and the
+    // base engine's mutable maxDecisions loop bound) is instance-scoped while
+    // the budget itself is run-scoped. Concurrent runs would overwrite each
+    // other's counters, windows and finally-cleanup, so runs through the same
+    // engine are explicitly single-flight: concurrent callers queue in
+    // arrival order and each executes with pristine budget state (#6210).
+    const release = { finish: null };
+    const done = new Promise((resolve) => { release.finish = resolve; });
+    const prior = this.progressRunQueue || Promise.resolve();
+    this.progressRunQueue = prior.then(() => done);
+    await prior;
     this.progressDecisionCount = 0;
     this.maxDecisions = this.progressDecisionWindow;
     this.progressRunActive = true;
@@ -71,6 +83,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
       this.progressRunActive = false;
       this.progressDecisionCount = 0;
       this.maxDecisions = this.progressDecisionWindow;
+      release.finish();
     }
   }
 }
