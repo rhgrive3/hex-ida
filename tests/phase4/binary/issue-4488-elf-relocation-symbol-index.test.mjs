@@ -7,7 +7,7 @@ const SHT_STRTAB = 3;
 const SHT_RELA = 4;
 const SHT_REL = 9;
 
-function buildRelocatable({ bits, symIndex, named = true, symbolType = 2 }) {
+function buildRelocatable({ bits, symIndex, named = true, symbolType = 2, symbolSizeExtra = 0 }) {
   const is64 = bits === 64;
   const sectionCount = 6;
   const sectionHeaderOffset = 0x200;
@@ -16,7 +16,7 @@ function buildRelocatable({ bits, symIndex, named = true, symbolType = 2 }) {
   const stringOffset = 0x60;
   const symbolOffset = 0x90;
   const symbolEntrySize = is64 ? 24 : 16;
-  const symbolSize = symbolEntrySize * 2;
+  const symbolSize = symbolEntrySize * 2 + symbolSizeExtra;
   const relocationOffset = is64 ? 0xd0 : 0xb0;
   const relocationEntrySize = is64 ? 24 : 8;
   const relocationSize = relocationEntrySize;
@@ -149,6 +149,13 @@ function parse(options) {
   assert.equal(image.metadata.elfMetadata.complete, false);
   assert.ok(image.metadata.elfMetadata.reasons.includes('relocations:4:symbol-index-range'));
   assert.equal(image.relocations.length, 0, 'out-of-range symbol references do not become canonical relocations');
+}
+
+{
+  const image = parse({ bits: 64, symIndex: 2, symbolSizeExtra: 1 });
+  assert.equal(image.metadata.elfMetadata.complete, false);
+  assert.ok(image.metadata.elfMetadata.reasons.includes('relocations:4:symbol-table-span'));
+  assert.equal(image.relocations.length, 0, 'a malformed symbol-table span must not publish a nonzero relocation');
 }
 
 {

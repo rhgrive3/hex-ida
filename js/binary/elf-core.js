@@ -455,11 +455,17 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(declaredBig>BigInt(fileCapacity))budget.partial(`relocations:${sec.index}:truncated`,`ELF relocation section ${sec.index} exceeds its file-backed capacity`);
   const symbolTable=sections[sec.link];
   const symbolMinEnt=BigInt(bits===64?24:16);
-  const symbolEntryCount=symbolTable
-    && (symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM)
-    && symbolTable.entsize>=symbolMinEnt
-    ? symbolTable.size/symbolTable.entsize
-    : null;
+  const linkedSymbolTable=symbolTable&&(symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM);
+  let symbolEntryCount=null;
+  if(linkedSymbolTable){
+    if(symbolTable.entsize<symbolMinEnt){
+      budget.partial(`relocations:${sec.index}:symbol-table-entry-size`,`ELF symbol table ${sec.link} entry size ${symbolTable.entsize} is smaller than ${symbolMinEnt}`);
+    }else if(symbolTable.size%symbolTable.entsize!==0n){
+      budget.partial(`relocations:${sec.index}:symbol-table-span`,`ELF symbol table ${sec.link} size ${symbolTable.size} is not divisible by entry size ${symbolTable.entsize}`);
+    }else{
+      symbolEntryCount=symbolTable.size/symbolTable.entsize;
+    }
+  }
   const symbols=image.symbols.filter((x)=>x.tableIndex===sec.link);
   if(!budget.take({objects:symbols.length,operations:symbols.length,estimatedHeapBytes:symbols.length*48},'relocation-symbol-index'))return;
   const byIndex=new Map(symbols.map((x)=>[x.index,x]));
