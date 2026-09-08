@@ -73,6 +73,8 @@ export function createMatchBudget(overrides = {}) {
   let solverRelaxations = 0;
   let solverAugmentations = 0;
   let postprocessWork = 0;
+  let postprocessingStopped = false;
+  let postprocessingReason = null;
   let oversizedComponents = 0;
   let truncated = false;
   let candidateGraphIncomplete = false;
@@ -90,6 +92,19 @@ export function createMatchBudget(overrides = {}) {
     if (truncated) return false;
     if (signal?.aborted) return stop(`${stage} aborted`, incomplete, preprocessing);
     if (now() - started > limits.maxWallMs) return stop(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`, incomplete, preprocessing);
+    return true;
+  };
+  const stopPostprocess = (message) => {
+    truncated = true;
+    postprocessingStopped = true;
+    if (postprocessingReason == null) postprocessingReason = message;
+    if (reason == null) reason = message;
+    return false;
+  };
+  const postprocessWallOkay = (stage = 'match post-processing') => {
+    if (postprocessingStopped) return false;
+    if (signal?.aborted) return stopPostprocess(`${stage} aborted`);
+    if (now() - started > limits.maxWallMs) return stopPostprocess(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`);
     return true;
   };
 
@@ -158,13 +173,14 @@ export function createMatchBudget(overrides = {}) {
       if (solverAugmentations > limits.maxSolverAugmentations) return stop(`solver augmentations exceeded ${limits.maxSolverAugmentations}`);
       return true;
     },
+    checkPostprocessWall(stage = 'match post-processing') { return postprocessWallOkay(stage); },
     postprocess(cost = 1) {
-      if (truncated) return false;
-      if (signal?.aborted) return stop('match post-processing aborted');
-      if (!Number.isSafeInteger(cost) || cost < 1) return stop('match post-processing cost is invalid');
-      if (postprocessWork > limits.maxPostprocessWork - cost) return stop(`post-processing work exceeded ${limits.maxPostprocessWork}`);
+      if (postprocessingStopped) return false;
+      if (!Number.isSafeInteger(cost) || cost < 1) return stopPostprocess('match post-processing cost is invalid');
+      if (postprocessWork > limits.maxPostprocessWork - cost) return stopPostprocess(`post-processing work exceeded ${limits.maxPostprocessWork}`);
+      if (!postprocessWallOkay('match post-processing')) return false;
       postprocessWork += cost;
-      return wallOkay('match post-processing');
+      return true;
     },
     snapshot() {
       return {
@@ -180,6 +196,8 @@ export function createMatchBudget(overrides = {}) {
         solverRelaxations,
         solverAugmentations,
         postprocessWork,
+        postprocessingStopped,
+        postprocessingReason,
         oversizedComponents,
         truncated,
         candidateGraphIncomplete,

@@ -203,7 +203,6 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
-  const solverWasAlreadyTruncated = budget.truncated;
   const incompletePostprocessing = () => {
     const matchingBudget = budget.snapshot();
     return {
@@ -230,7 +229,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       },
     };
   };
-  const postprocessStep = () => solverWasAlreadyTruncated || budget.postprocess();
+  const postprocessStep = () => budget.postprocess();
   const collectAlternatives = (list, excludedIndex, side, confidence) => {
     const alternatives = [];
     for (const x of list) {
@@ -242,7 +241,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     }
     return alternatives;
   };
-  if (!solverWasAlreadyTruncated && !budget.checkSolverWall('match post-processing')) return incompletePostprocessing();
+  if (!budget.checkPostprocessWall()) return incompletePostprocessing();
   for (const c of selected) {
     if (!postprocessStep()) return incompletePostprocessing();
     // Ambiguity is evidence about the original candidate distribution, not a

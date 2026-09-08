@@ -85,4 +85,22 @@ assert.equal(aborted.matching.postprocessingIncomplete, true);
 assert.equal(aborted.matches.length, 0);
 assert.match(aborted.matching.budget.reason, /post-processing aborted/);
 
+// Upstream solver truncation must not disable the independent post-processing
+// work/abort/wall guard. Preserve the original solver reason while publishing
+// the secondary post-processing failure as stage-specific evidence.
+const solverThenPostprocessLimited = matchFunctionsFast(before, after, {
+  matchBudget: {
+    maxSolverRelaxations: 1,
+    maxPostprocessWork: 1,
+    maxWallMs: 10_000,
+  },
+});
+assert.equal(solverThenPostprocessLimited.truncated, true);
+assert.equal(solverThenPostprocessLimited.matching.postprocessingIncomplete, true);
+assert.equal(solverThenPostprocessLimited.matches.length, 0);
+assert.equal(solverThenPostprocessLimited.deleted.length, before.length);
+assert.equal(solverThenPostprocessLimited.new.length, after.length);
+assert.match(solverThenPostprocessLimited.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.match(solverThenPostprocessLimited.matching.budget.postprocessingReason, /post-processing work exceeded 1/);
+
 console.log('issue #4527 matcher post-process budget: PASS');
