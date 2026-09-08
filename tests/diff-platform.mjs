@@ -19,6 +19,37 @@ const fp = fingerprintFunction({ ...base, relocationOffsets: relocation });
 const movedReloc = fingerprintFunction({ ...base, address: 9n, bytes: Uint8Array.from([9,9,9,9,9,9,9,9]), relocationOffsets: relocation });
 assert.equal(fp.normalizedByteHash, movedReloc.normalizedByteHash);
 
+// #4518: structured relocation coordinates are unknown metadata, never mask authority.
+const malformedReloc = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: ['0'], width: ['4'] }],
+});
+const validReloc = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([9,8,7,6]),
+  relocationRanges: [{ offset: 0, width: 4 }],
+});
+const originalReloc = fingerprintFunction({ architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]) });
+assert.equal(malformedReloc.relocationNormalization.masked, 0);
+assert.equal(malformedReloc.relocationNormalization.unknown, 1);
+assert.equal(malformedReloc.relocationNormalization.confidence, 0.65);
+assert.equal(malformedReloc.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.notEqual(compareFingerprints(malformedReloc, validReloc).identity, 'normalized-identical');
+
+const malformedLength = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: 0, length: ['2'] }],
+});
+const malformedRLength = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: 0, r_length: { valueOf: () => 2 } }],
+});
+assert.equal(malformedLength.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.equal(malformedLength.relocationNormalization.masked, 0);
+assert.equal(malformedLength.relocationNormalization.confidence, 0.65);
+assert.equal(malformedRLength.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.equal(malformedRLength.relocationNormalization.masked, 0);
+assert.equal(malformedRLength.relocationNormalization.confidence, 0.65);
+
 // Missing metadata is absence of evidence, not perfect semantic similarity.
 const sparseA = fingerprintFunction({ address: 1n, size: 64, bytes: Uint8Array.from({ length: 64 }, (_, i) => i) });
 const sparseB = fingerprintFunction({ address: 2n, size: 64, bytes: Uint8Array.from({ length: 64 }, (_, i) => i < 40 ? i : 255 - i) });
