@@ -3,6 +3,8 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { waitForFunctionRoute } from './browser-back-wait.mjs';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const SHOTS = process.env.UI_SHOTS ? path.resolve(ROOT, process.env.UI_SHOTS) : null;
@@ -254,8 +256,21 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
       await page.evaluate(() => { document.querySelector('.ui-route-host').scrollTop = 120; });
       await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
       await page.evaluate(() => history.back());
-      await page.waitForTimeout(100);
-      check(`${browserName}/${viewportName}: browser back restores function route`, await page.locator('[data-screen="function"]').count() === 1);
+      const expectedFunctionPath = `/function/${fn}/overview`;
+      try {
+        await waitForFunctionRoute(
+          () => page.evaluate(() => ({
+            locationPath: window.location.hash.replace(/^#/, ''),
+            routerPath: window.__hexUi?.router?.current?.fullPath || null,
+            routeHostVisible: document.querySelector('#ui-route-host')?.hidden === false,
+            functionScreenCount: document.querySelectorAll('#ui-route-host:not([hidden]) [data-screen="function"]').length,
+          })),
+          expectedFunctionPath,
+        );
+        check(`${browserName}/${viewportName}: browser back restores function route`, true);
+      } catch (error) {
+        check(`${browserName}/${viewportName}: browser back restores function route`, false, error?.message || String(error));
+      }
       const restoredScroll = await page.evaluate(() => document.querySelector('.ui-route-host').scrollTop);
       check(`${browserName}/${viewportName}: route scroll state restores`, restoredScroll >= 0);
 
