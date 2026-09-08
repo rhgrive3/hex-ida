@@ -1,3 +1,32 @@
+# Current combined development result — 2026-09-08
+
+The canonical `npm run check` at `8da22cd959241d1d0c61b7ca1f663f77b8e7e982`
+terminated **FAIL** after 744.9 s. The corrected semantic-v2 chain and Phase 4
+passed. Phase 5 passed 304/308 cases; the four failures report
+`P5_6_TOOLCHAIN_MISMATCH` because its probe selects system LLVM 14 before the
+available task-local LLVM 18.1.3. Later gates did not run. This replaces the
+previous RUNNING observation, not the failed result with a partial PASS.
+
+Durable log:
+`/mnt/workspace/hex-stage-a-logs/8da22cd959241d1d0c61b7ca1f663f77b8e7e982-full-check.log`.
+
+The traced UI browser run also terminated **FAIL** after 58.7 s. Chromium
+viewports passed. WebKit network subprocesses report `No GSettings schemas are
+installed on the system`; actual-page preflight and the complete browser matrix
+must pass with the same repaired environment before this gate can close.
+Log: `/tmp/hex-ui-browser-with-runtime-trace-3RXotG/full.log`.
+
+Native ARM64 adapter commits are integrated at `a814cac2f` (preceded by
+`4bdb8443e` and `41d66f7ef`). The adapter uses captured linked ELF bytes, checks
+AArch64 machine identity and byte-backed branch targets, and preserves all 135
+frozen function IDs. A native candidate against the historical assembly
+reference remains `UNMEASURED`; a separately captured paired native baseline is
+still required. The integrated adapter and measurement tests passed in 7.3 s
+with Node 22.20.0 and the retained real LLVM 18.1.3 capture fixture. The positive
+adapter test decompiles one function; it does not certify full-corpus quality or
+performance. ELF extraction/relocation and frozen-provenance compatibility tests also passed
+in 1.1 s. No task checkbox changes follow from this integration alone.
+
 # Full-check follow-up — 2026-09-08
 
 The canonical full check on clean `71bf992abe131c044b144175ce8db72939c87b1d`
