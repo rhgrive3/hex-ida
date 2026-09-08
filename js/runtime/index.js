@@ -62,6 +62,9 @@ function operationController(session, externalSignal) {
   }
   return {
     signal:controller.signal,
+    abort(reason = 'cancelled') {
+      if (!controller.signal.aborted) controller.abort(reason);
+    },
     release() {
       // Detachment is best-effort cleanup of a caller-owned signal; a throwing
       // removeEventListener must not mask the operation outcome, because
@@ -94,6 +97,63 @@ function runtimePositiveInteger(value, name, max = Number.MAX_SAFE_INTEGER) {
 
 function runtimeTimeout(value) {
   return value == null ? undefined : runtimePositiveInteger(value, 'timeoutMs', 60000);
+}
+
+function runtimeAbortError(signal) {
+  let reason = 'cancelled';
+  try { reason = signal?.reason ?? reason; } catch {}
+  if (reason === 'disconnected') return new DebugAdapterError('disconnected', 'runtime field read session disconnected');
+  if (reason === 'session-epoch-changed') return new DebugAdapterError('session-epoch-changed', 'runtime field read was invalidated by a newer session epoch');
+  return new DebugAdapterError('cancelled', 'runtime field read cancelled');
+}
+
+// A provider may accept the signal without actually interrupting its pending
+// read. Settle the caller at the boundary while retaining handlers on the
+// provider promise so a late result or rejection cannot publish evidence or
+// become an unhandled rejection.
+function boundedRuntimeRead(read, { signal, timeoutMs, onTimeout }) {
+  let timer = null;
+  let abortHandler = null;
+  let settled = false;
+  let resolveResult;
+  let rejectResult;
+  const cleanup = () => {
+    if (timer != null) clearTimeout(timer);
+    timer = null;
+    if (signal && abortHandler) {
+      try { signal.removeEventListener('abort', abortHandler); } catch {}
+    }
+    abortHandler = null;
+  };
+  const finish = (error, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    if (error) rejectResult(error);
+    else resolveResult(value);
+  };
+  return new Promise((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+    abortHandler = () => finish(runtimeAbortError(signal));
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once:true });
+      if (signal.aborted) {
+        abortHandler();
+        return;
+      }
+    }
+    if (timeoutMs != null) {
+      timer = setTimeout(() => {
+        finish(new DebugAdapterError('timeout', `runtime field read timed out after ${timeoutMs} ms`, { timeoutMs }));
+        try { if (typeof onTimeout === 'function') onTimeout(); } catch {}
+      }, timeoutMs);
+    }
+    Promise.resolve().then(() => {
+      if (signal?.aborted) throw runtimeAbortError(signal);
+      return read();
+    }).then((value) => finish(null, value), (error) => finish(error));
+  });
 }
 
 function isReplayable(adapter, observation = null, trace = null) {
@@ -239,10 +299,23 @@ export class RuntimeAnalysisPlatform {
     this._recordEvidence(evidence);
     return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };
   }
-  async readRuntimeField(address, size = 8) {
+  async readRuntimeField(address, size = 8, options = {}) {
     const session = this.currentSession();
     const n = runtimePositiveInteger(size == null ? 8 : size, 'size', 4096);
-    const bytes = await session.adapter.readMemory(address, n);
+    const timeoutMs = runtimeTimeout(options?.timeoutMs);
+    const operation = operationController(session, options?.signal);
+    const readEpoch = session.epoch;
+    let bytes;
+    try {
+      bytes = await boundedRuntimeRead(
+        () => session.adapter.readMemory(address, n, { signal:operation.signal, timeoutMs }),
+        { signal:operation.signal, timeoutMs, onTimeout:() => operation.abort('timeout') },
+      );
+    } finally { operation.release(); }
+    if (session.closed) throw new DebugAdapterError('session-closed', 'runtime field read completed after the session closed');
+    if (session.epoch !== readEpoch) {
+      throw new DebugAdapterError('session-epoch-changed', 'runtime field read completed after the active session epoch changed', { readEpoch, sessionEpoch:session.epoch });
+    }
     if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
     const replayable=isReplayable(session.adapter);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
