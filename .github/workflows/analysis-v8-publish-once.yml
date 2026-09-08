@@ -22,7 +22,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Reconcile and publish v8 tree
+
+      - name: Verify staged payload
         shell: bash
         run: |
           set -euo pipefail
@@ -30,23 +31,38 @@ jobs:
           echo "ccbfc7bf6c84ee2726a1c0724fc02cb48a168c988d664bb9c12c32dbec952c70  .analysis-v8-publish/overlay.tar.xz" | sha256sum -c -
           test "$(wc -l < .analysis-v8-publish/paths.txt)" -eq 140
           test "$(sort -u .analysis-v8-publish/paths.txt | wc -l)" -eq 140
+          sort .analysis-v8-publish/paths.txt > /tmp/analysis-v8-expected
 
+      - name: Merge current main without committing
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main --depth=1
           git merge --no-commit --no-ff origin/main
 
+      - name: Apply overlay and remove staging
+        shell: bash
+        run: |
+          set -euo pipefail
           tar -xJf .analysis-v8-publish/overlay.tar.xz -C .
           rm -rf .analysis-v8-publish .analysis-v8-staging
           rm -f .github/workflows/analysis-v8-publish-once.yml
           git add -A
 
-          sort /tmp/analysis-v8-expected 2>/dev/null || true
-          sort <(git diff --cached --name-only origin/main) > /tmp/analysis-v8-actual
-          sort <(git show HEAD:.analysis-v8-publish/paths.txt) > /tmp/analysis-v8-expected
+      - name: Verify exact final diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --name-only origin/main | sort > /tmp/analysis-v8-actual
           diff -u /tmp/analysis-v8-expected /tmp/analysis-v8-actual
           test "$(wc -l < /tmp/analysis-v8-actual)" -eq 140
           git diff --cached --check
 
+      - name: Commit and push clean merge
+        shell: bash
+        run: |
+          set -euo pipefail
           git commit -m "feat(analysis): integrate v8 roadmap improvements"
           git push origin HEAD:"$GITHUB_REF_NAME"
