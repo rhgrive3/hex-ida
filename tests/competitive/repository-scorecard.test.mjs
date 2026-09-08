@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,5 +171,21 @@ test('repository evidence rejects missing, stale, mutated, and wrongly keyed inp
   } finally {
     removeTwinFixture(evidence.fixture);
     fs.rmSync(evidence.root, { recursive: true, force: true });
+  }
+});
+
+test('repository scorecard CLI completes through verifier import boundary', () => {
+  const evidence = makeEvidence();
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [path.join(REPOSITORY_ROOT, 'tools/validation/competitive/score.mjs'), '--from-measurements', evidence.root],
+      { cwd: REPOSITORY_ROOT, encoding: 'utf8' },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Competitive Scorecard generated from/);
+  } finally {
+    removeTwinFixture(evidence.fixture);
   }
 });

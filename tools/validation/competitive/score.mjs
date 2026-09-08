@@ -12,6 +12,7 @@ import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/
 import { validateTwinManifest } from './twin-manifest.mjs';
 import { competitiveTwinWorkloadFor, validateCompetitiveTwinCapture } from './workload-twins.mjs';
 import { captureContainsTwinManifest, validateCompetitiveMeasurement } from './measurements.mjs';
+import { verifyCompetitiveProfile, verifyCompetitiveScorecard } from './verify.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
@@ -535,7 +536,6 @@ export async function generateCompetitiveScorecardFromRepositoryEvidence({
   outputRoot,
   profile = loadCompetitiveProfile(),
 } = {}) {
-  const { verifyCompetitiveProfile, verifyCompetitiveScorecard } = await import('./verify.mjs');
   const canonicalProfile = loadCompetitiveProfile();
   if (stableDigest(profile) !== stableDigest(canonicalProfile)) {
     repositoryEvidenceError('profile-not-canonical');
