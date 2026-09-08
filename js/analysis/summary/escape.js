@@ -369,7 +369,15 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
  * Escape reasons that invalidate a separation proof which relied on a root not
  * being visible outside the function. Used by artifact invalidation so exactly
  * the affected proofs are dropped, and no more (§9.4).
+ *
+ * Full recompute treats every observed escape fact as revoking the root's
+ * non-escape proof (`analyzeEscape()` adds every record's root to
+ * `escapedRoots`, and `passed-to-known-call` is one of those records), so the
+ * incremental policy must agree — a policy that spared the known-call reason
+ * would let invalidation keep a proof a fresh analysis would withdraw (#5362).
+ * If a proof-preserving known-call contract is ever introduced, both sides
+ * must change together; until then every escape fact invalidates.
  */
 export function invalidatesNonEscapeProof(record) {
-  return record.reason !== 'passed-to-known-call';
+  return record != null;
 }
