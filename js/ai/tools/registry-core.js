@@ -7,6 +7,32 @@ export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 })
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
 
+function boundaryIdentity(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (typeof value !== 'object') return null;
+  for (const key of ['identity', 'id', 'uuid', 'address', 'functionAddress', 'selectionId']) {
+    if (value[key] != null) return boundaryIdentity(value[key]);
+  }
+  const start = value.startAddress ?? value.start;
+  const end = value.endAddress ?? value.end;
+  if (start != null || end != null) return (boundaryIdentity(start) || '') + ':' + (boundaryIdentity(end) || '');
+  return null;
+}
+
+function scopeBoundaryFor(scope, args = {}, options = {}, context = {}) {
+  if (scope !== 'function' && scope !== 'selection') return null;
+  const candidate = options.scopeBoundary ?? options.scopeIdentity ??
+    (scope === 'function'
+      ? options.functionIdentity ?? args.functionAddress ?? args.function ?? context.functionIdentity ??
+        context.currentFunction?.address ?? context.currentFunction?.id
+      : options.selectionIdentity ?? args.selectionId ?? args.selection ?? args.selectionAddress ??
+        context.selectionIdentity ?? context.selection?.id);
+  const identity = boundaryIdentity(candidate);
+  if (!identity) return null;
+  return identity.startsWith(scope + ':') ? identity : scope + ':' + identity;
+}
+
 export class ToolRegistry {
   constructor({ context = {}, evidenceStore = null, onActivity = null, observationStore = null } = {}) {
     this.context = context;
@@ -55,21 +81,23 @@ export class ToolRegistry {
     if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
     if (options.signal?.aborted) throw abortError(options.signal);
     const started = Date.now();
+    const scope = scope;
+    const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
     const previousSignal = this.executionSignal;
     const timeoutMs = resolveToolTimeout(tool, options);
     const execution = createExecutionSignal(options.signal, timeoutMs);
     this.executionSignal = execution.signal;
     try {
       assertSchema(args, tool.inputSchema, "invalid_tool_call");
-      this.assertScope(tool, args, options.scope || "auto");
-      await this.assertAddresses(args, options.scope || "auto", execution.signal);
+      this.assertScope(tool, args, scope);
+      await this.assertAddresses(args, scope, execution.signal);
       if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
       this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
       let record = null;
       let raw;
       let cached = false;
       if (tool.storeResult !== false && tool.deterministic !== false) {
-        record = this.observationStore.getCached(name, args, {}, options.scope || "auto");
+        record = this.observationStore.getCached(name, args, {}, scope, scopeBoundary);
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
       if (!record) {
@@ -84,7 +112,8 @@ export class ToolRegistry {
             deterministic: tool.deterministic !== false,
             // Record the turn scope that acquired this data (#5641): detail
             // retrieval must not re-expose it inside a narrower explicit turn.
-            effectiveScope: options.scope || "auto",
+            effectiveScope: scope,
+            scopeBoundary,
           });
         }
       }
@@ -94,7 +123,7 @@ export class ToolRegistry {
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
       if (resultPublishable && !evidence) {
-        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: options.scope || "auto" }) : [];
+        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
         if (record) record.evidence = evidence;
       }
       const evidenceList = Array.isArray(evidence) ? evidence : [];
@@ -122,6 +151,7 @@ export class ToolRegistry {
       const message = error?.message || String(error);
       if (message === "cancelled" || options.signal?.aborted) throw new AIError("cancelled", "AI investigation was cancelled.");
       if (message === "timeout") throw new AIError("tool_failed", `${name} timed out.`, { cause: message });
+      if (message === "scope_violation") throw new AIError("scope_violation", `${name} is outside the current scope boundary.`);
       if (/^(invalid-cursor|stale-cursor|cursor-|unknown-detail-ref|stale-detail-ref|detail-path|invalid-detail-path)/.test(message)) {
         throw new AIError("invalid_tool_call", `${name} rejected stale or invalid retrieval state.`, { cause: message });
       }

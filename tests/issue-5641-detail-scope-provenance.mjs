@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { ToolRegistry } from '../js/ai/tools/registry-core.js';
 import { ObservationStore } from '../js/ai/tools/storage/observation-store.js';
+import { EvidenceStore } from '../js/ai/evidence.js';
+import { evidenceDetail } from '../js/ai/tools/registry-base.js';
 
 function registryWithTool() {
   const registry = new ToolRegistry({ context: { binaryId: 'b1' } });
@@ -26,7 +28,7 @@ test('#5641 a selection-scope turn must not re-expose broad-scope observation de
   const broad = await registry.execute('search_strings', {}, { scope: 'binary' });
   assert.ok(broad.detailRef);
   await assert.rejects(
-    () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'selection' }),
+    () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'selection', scopeIdentity: 'selection-A' }),
     (error) => error.code === 'scope_violation' || /scope_violation/.test(error.message),
     'narrow turn must not read back broad-scope detail',
   );
@@ -39,7 +41,7 @@ test('#5641 function-scope turn cannot read binary-scope records but reads its o
   const registry = registryWithTool();
   const broad = await registry.execute('search_strings', {}, { scope: 'binary' });
   await assert.rejects(
-    () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'function' }),
+    () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'function', scopeIdentity: 'function-A' }),
     /scope_violation/,
   );
   const own = await registry.execute('search_strings', {}, { scope: 'function' });
@@ -61,10 +63,48 @@ test('#5641 auto and wide turns keep full access, including legacy records', asy
 
 test('#5641 records acquired under a narrow scope carry the origin on the record', async () => {
   const registry = registryWithTool();
-  const own = await registry.execute('search_strings', {}, { scope: 'selection' });
+  const own = await registry.execute('search_strings', {}, { scope: 'selection', scopeIdentity: 'selection-A' });
   const record = [...registry.observationStore.records.values()].find((item) => item.id === own.detailRef);
   assert.equal(record.effectiveScope, 'selection');
+  assert.equal(record.scopeBoundary, 'selection:selection-A');
   // EvidenceStore provenance threads the acquisition scope too.
   const evidence = registry.evidenceStore?.records?.get(null);
   assert.ok(true);
+});
+
+test('#5641 function and selection identities cannot cross-read within the same width', async () => {
+  const registry = registryWithTool();
+  const functionA = await registry.execute('search_strings', {}, { scope: 'function', scopeIdentity: 'function-A' });
+  const sameFunction = await registry.execute('get_observation_detail', { detailRef: functionA.detailRef }, { scope: 'function', scopeIdentity: 'function-A' });
+  assert.equal(sameFunction.result?.detailRef, functionA.detailRef);
+  await assert.rejects(
+    () => registry.execute('get_observation_detail', { detailRef: functionA.detailRef }, { scope: 'function', scopeIdentity: 'function-B' }),
+    /scope_violation/,
+  );
+  const selectionA = await registry.execute('search_strings', {}, { scope: 'selection', scopeIdentity: 'selection-A' });
+  const sameSelection = await registry.execute('get_observation_detail', { detailRef: selectionA.detailRef }, { scope: 'selection', scopeIdentity: 'selection-A' });
+  assert.equal(sameSelection.result?.detailRef, selectionA.detailRef);
+  await assert.rejects(
+    () => registry.execute('get_observation_detail', { detailRef: selectionA.detailRef }, { scope: 'selection', scopeIdentity: 'selection-B' }),
+    /scope_violation/,
+  );
+});
+
+test('#5641 get_evidence_detail applies the same boundary to source traversal', async () => {
+  const observationStore = new ObservationStore({ context: { binaryId: 'b1' } });
+  const evidenceStore = new EvidenceStore({ observationStore });
+  const evidence = evidenceStore.add({
+    id: 'ev_scope',
+    sourceTool: 'search_strings',
+    sourceData: { secret: 'function-A' },
+    effectiveScope: 'function',
+    scopeBoundary: 'function:function-A',
+  });
+  const registry = { observationStore, evidenceStore };
+  await assert.rejects(
+    () => evidenceDetail(registry, evidence.id, null, 10, 'function', 'function:function-B'),
+    /scope_violation/,
+  );
+  const same = await evidenceDetail(registry, evidence.id, null, 10, 'function', 'function:function-A');
+  assert.equal(same.relevantSourceRecords?.secret, 'function-A');
 });

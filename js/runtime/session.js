@@ -196,12 +196,16 @@ export class DebugSession {
     return { ok:true, count:prepared.length };
   }
   newEpoch() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
     const next = this.epoch + 1;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
     this.epoch = next;
     this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
   }
-  controller() { const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c; }
+  controller() {
+    if(this.closed) throw new DebugAdapterError('session-closed','cannot mint a controller on a closed debug session');
+    const c=new AbortController(); this.controllers.add(c); c.signal.addEventListener('abort',()=>this.controllers.delete(c),{once:true}); return c;
+  }
   releaseController(controller) { this.controllers.delete(controller); }
   cancelAll(reason='cancelled') { for (const c of [...this.controllers]) c.abort(reason); this.controllers.clear(); }
   addExperiment(exp) { this.experiments.push(exp); if (this.experiments.length>256) this.experiments.shift(); }
