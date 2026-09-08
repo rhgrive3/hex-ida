@@ -100,6 +100,30 @@ function extendedFixture() {
   return { baseRead };
 }
 
+function extendedCategoryFixture() {
+  const mem = new Uint8Array(0x5000);
+  const dv = new DataView(mem.buffer);
+  const p64 = (at, v) => dv.setBigUint64(at, BigInt(v), true);
+  const p32 = (at, v) => dv.setUint32(at, Number(v) >>> 0, true);
+  const str = (at, s) => { for (let i = 0; i < s.length; i++) mem[at + i] = s.charCodeAt(i); mem[at + s.length] = 0; };
+  p64(0x100, 0x1000);
+  p64(0x1000, 0x1800); str(0x1800, 'Category');
+  p64(0x1000 + 16, 0x1100);
+  p32(0x1100, 24); p32(0x1100 + 4, 5);
+  for (let i = 0; i < 5; i++) {
+    const entry = 0x1108 + i * 24;
+    const sel = 0x1900 + i * 0x30, typ = 0x1a00 + i * 0x30;
+    str(sel, `m${i}:`); str(typ, 'v16@0:8');
+    p64(entry, sel); p64(entry + 8, typ); p64(entry + 16, 0);
+  }
+  const baseRead = async (addr, len) => {
+    const at = Number(addr);
+    if (at < 0 || at >= mem.length) return null;
+    return mem.subarray(at, Math.min(mem.length, at + len));
+  };
+  return { baseRead };
+}
+
 {
   const { baseRead } = extendedFixture();
   const sections = { protocolList: { vmAddr: 0x100n, size: 8n }, categoryList: null };
@@ -117,12 +141,42 @@ function extendedFixture() {
     reads++;
     if (controller.signal.aborted) postAbort++;
     const result = await baseRead(addr, len);
-    if (doAbort && reads === 2) { doAbort = false; controller.abort(); }
+    if (doAbort && addr === 0x1100n) { doAbort = false; controller.abort(); }
     return result;
   };
   await parseObjcExtendedMetadata(read, sections, { pageBytes: 32, signal: controller.signal });
+  assert.equal(doAbort, false, 'protocol fixture must abort at its nested method-list header read');
   assert.equal(postAbort, 0, `no new reads after abort, got ${postAbort} post-abort reads of ${reads}`);
   assert.ok(reads < 10, `nested scan must stop early, got ${reads} reads`);
+}
+
+{
+  const { baseRead } = extendedCategoryFixture();
+  const sections = { protocolList: null, categoryList: { vmAddr: 0x100n, size: 8n } };
+  const full = await parseObjcExtendedMetadata(baseRead, sections, { pageBytes: 32 });
+  assert.equal(full.categories.length, 1);
+  assert.equal(full.categories[0].methods.length, 5);
+}
+
+{
+  const { baseRead } = extendedCategoryFixture();
+  const sections = { protocolList: null, categoryList: { vmAddr: 0x100n, size: 8n } };
+  let reads = 0, postAbort = 0;
+  const controller = new AbortController();
+  let doAbort = true;
+  const read = async (addr, len) => {
+    reads++;
+    if (controller.signal.aborted) postAbort++;
+    const result = await baseRead(addr, len);
+    if (doAbort && addr === 0x1100n) { doAbort = false; controller.abort(); }
+    return result;
+  };
+  const result = await parseObjcExtendedMetadata(read, sections, { pageBytes: 32, signal: controller.signal });
+  assert.equal(doAbort, false, 'category fixture must abort at its nested method-list header read');
+  assert.equal(postAbort, 0, `category parse must not read after abort, got ${postAbort} post-abort reads of ${reads}`);
+  assert.equal(result.categories.length, 1);
+  assert.equal(result.categories[0].methods.length, 0, 'category method-list scan must stop at the aborted header read');
+  assert.equal(result.completeness.categories.complete, false);
 }
 
 {
