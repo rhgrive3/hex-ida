@@ -24,6 +24,7 @@ const SHN_LORESERVE = 0xff00;
 const SHN_ABS = 0xfff1;
 const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
+const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
@@ -124,9 +125,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const symbolFileCapacity = symtab != null && symentValid
     ? dynamicSymbolFileCapacity(r, image, tags, symtab, syment)
     : 0;
+  let sysvCount = 0;
+  let gnuCount = 0;
+  if (one(DT_HASH) != null) sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
+  if (one(DT_GNU_HASH) != null) gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
   if (symtab != null && symentValid) {
-    const sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
-    const gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
     const sizeCount = symbolCountFromSymtabSize(one(DT_SYMTABSZ), symtab, syment, image);
     minimumSymbolCount = symbolCountFromRelocations(relocs);
     const exact = [
@@ -224,7 +227,10 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
     const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
     if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
-    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
+    // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
+    // ABI): it must stay in the export/linkage truth, not be lumped into an
+    // anonymous `bind-N` bucket (#5844).
+    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : bind === STB_GNU_UNIQUE ? 'gnu-unique' : `bind-${bind}`;
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
     const ifunc = type === STT_GNU_IFUNC && defined === true;
@@ -234,11 +240,12 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
-    if (defined === false && (bind === 1 || bind === 2)) {
+    const externallyVisible = bind === 1 || bind === 2 || bind === STB_GNU_UNIQUE;
+    if (defined === false && externallyVisible) {
       if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
-    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+    if (defined === true && externallyVisible && (sym.visibility === 0 || sym.visibility === 3)) {
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
       image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
@@ -409,17 +416,24 @@ export function dynamicSymbolFileCapacity(r, image, tags, symtabVa, syment) {
 }
 
 function symbolCountFromHash(r, hashVa, image) {
-  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+8>range.end)return 0;
+  if(hashVa==null)return 0;
+  const range=mappedELFFileRangeForVa(image,hashVa);
+  const end=range ? Math.min(range.end,r.length) : 0;
+  if(!range||range.start+8>end){markDynamicPartial(image,'DT_HASH header is not fully file-backed');return 0;}
   const nbucket=r.u32(range.start),nchain=r.u32(range.start+4);if(!nchain||nchain>10_000_000)return 0;
-  const bytes=8n+BigInt(nbucket+nchain)*4n;if(bytes>BigInt(range.end-range.start)){markDynamicPartial(image,'DT_HASH table crosses a file-backed PT_LOAD boundary');return 0;}return nchain;
+  const bytes=8n+BigInt(nbucket+nchain)*4n;if(bytes>BigInt(end-range.start)){markDynamicPartial(image,'DT_HASH table crosses a file-backed PT_LOAD boundary');return 0;}return nchain;
 }
 
 function symbolCountFromGnuHash(r, hashVa, image, bits) {
-  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+16>range.end)return 0;const off=range.start;
+  if(hashVa==null)return 0;
+  const range=mappedELFFileRangeForVa(image,hashVa);
+  const end=range ? Math.min(range.end,r.length) : 0;
+  if(!range||range.start+16>end){markDynamicPartial(image,'DT_GNU_HASH header is not fully file-backed');return 0;}
+  const off=range.start;
   const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
-  const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>range.end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
+  const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
   let max=null,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
-  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
   return max==null?symOffset:max+1;
 }
 

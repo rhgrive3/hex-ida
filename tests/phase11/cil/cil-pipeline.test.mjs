@@ -28,7 +28,9 @@ assert.equal(wrongReturn.status, 'invalid');
 assert.ok(wrongReturn.errors.some((error) => error.code === 'cil-return-stack-shape-invalid'));
 
 const val = await frontend.validateMethod(decoded, { returnStackSlots: 1 });
-assert.equal(val.status, 'valid');
+// The explicit shape fallback validates stack height, but cannot recover the
+// missing MethodDef return operand authority from this metadata-light image.
+assert.equal(val.status, 'partial');
 
 const lifted = await frontend.liftMethod(decoded, val);
 const bridged = lowerVMEffectsToSemanticIr(lifted);

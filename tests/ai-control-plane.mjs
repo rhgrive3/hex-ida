@@ -156,13 +156,13 @@ assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.r
     registry: { analysisStats: { disassembly: 0 }, accounting: { cost: 0 } },
     snapshot: snap, effectiveScope: 'selection',
   };
-  const providerFailure = runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
+  const providerFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
   assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
-  const modelTimeout = runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
+  const modelTimeout = await runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
   assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
-  const budgetFailure = runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
+  const budgetFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
   assert.deepEqual(budgetFailure.limits, { exhausted: true, reason: 'model-call-budget' });
-  const deadline = runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
+  const deadline = await runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
   assert.deepEqual(deadline.limits, { exhausted: true, reason: 'budget_exhausted' });
 }
 

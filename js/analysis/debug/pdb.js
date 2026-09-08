@@ -264,30 +264,41 @@ export function parseDbiHeader(bytes) {
  */
 export function parseModuleInfo(bytes, dbi) {
   const modules = [];
-  if (!bytes || !dbi || dbi.moduleSubstreamSize <= 0) return modules;
+  // A silently truncated scan is indistinguishable from an empty module list
+  // unless the scan reports its own completeness (#5746/#5744): missing module
+  // entries mean missing per-module procedure symbols, so the caller must not
+  // treat the provider evidence as complete.
+  let complete = true;
+  if (!dbi || dbi.moduleSubstreamSize <= 0) return { modules, complete };
+  // A declared module substream with no backing bytes is truncated evidence,
+  // not a complete empty list (#5746/#5744).
+  if (!bytes) return { modules, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, bytes.length);
+  const declaredEnd = DBI_HEADER_SIZE + dbi.moduleSubstreamSize;
+  const end = Math.min(declaredEnd, bytes.length);
+  if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
     const streamIndex = view.getInt16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
-    if (!moduleNameEntry) break;
+    if (!moduleNameEntry) { complete = false; break; }
     const objectNameEntry = cstringWithNext(bytes, moduleNameEntry.next, end);
-    if (!objectNameEntry) break;
+    if (!objectNameEntry) { complete = false; break; }
     let cursor = objectNameEntry.next;
     // Entries are aligned to 4 bytes.
     cursor = (cursor + 3) & ~3;
+    if (cursor <= offset || cursor > end) { complete = false; break; }
     modules.push({
       streamIndex,
       symbolByteSize,
       moduleName: moduleNameEntry.value,
       objectName: objectNameEntry.value,
     });
-    if (cursor <= offset) break;
     offset = cursor;
   }
-  return modules;
+  if (end - offset >= 4 || (offset === DBI_HEADER_SIZE && end > offset)) complete = false;
+  return { modules, complete };
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
@@ -384,6 +395,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   }
   let offset = headerSize;
   let index = firstIndex;
+  let fieldListsComplete = true;
 
   while (offset + 4 <= bytes.length && types.size < budget.maxRecords) {
     const length = view.getUint16(offset, true);
@@ -445,7 +457,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     } else if (leaf === LF_ENUM) {
       types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
     } else if (leaf === LF_FIELDLIST) {
-      types.set(index, { leaf, kind: 'field-list', members: parseFieldList(view, bytes, body, end) });
+      const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
+      if (!fieldList.complete) fieldListsComplete = false;
+      types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
     } else if (leaf === LF_ARGLIST) {
       types.set(index, { leaf, kind: 'arg-list' });
     } else {
@@ -455,7 +469,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     offset = end;
     index += 1;
   }
-  return { types, unmodelled, complete: offset >= bytes.length, firstIndex };
+  // An incomplete field-list child (unsupported subrecord) fails the stream
+  // closed (#5773).
+  return { types, unmodelled, complete: fieldListsComplete && offset >= bytes.length, firstIndex };
 }
 
 /**
@@ -507,26 +523,40 @@ function readNumeric(view, bytes, offset, end = bytes.length) {
   }
 }
 
-function parseFieldList(view, bytes, start, end) {
+/**
+ * Parses an LF_FIELDLIST's children. Only LF_MEMBER is modeled: any other
+ * (valid) field-list subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD, ... —
+ * cannot be skipped reliably, so the children after it are unreachable and
+ * the field list is incomplete. That incompleteness propagates to the whole
+ * TPI result instead of silently publishing a partial member list as an
+ * exact layout (#5773).
+ */
+function parseFieldList(view, bytes, start, end, unmodelled) {
   const members = [];
   let offset = start;
-  while (offset + 8 <= end) {
+  let complete = true;
+  while (offset + 2 <= end) {
     const leaf = view.getUint16(offset, true);
-    if (leaf !== LF_MEMBER) break;
+    if (leaf !== LF_MEMBER) {
+      unmodelled.add(leaf);
+      complete = false;
+      break;
+    }
+    if (offset + 8 > end) { complete = false; break; }
     const typeIndex = view.getUint32(offset + 4, true);
     const numeric = readNumeric(view, bytes, offset + 8, end);
-    if (!numeric) break;
+    if (!numeric || numeric.value == null) { complete = false; break; }
     const { value: fieldOffset, next } = numeric;
     const nameEntry = cstringWithNext(bytes, next, end);
-    if (!nameEntry) break;
+    if (!nameEntry) { complete = false; break; }
     members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
-    if (cursor <= offset) break;
+    if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return members;
+  return { members, complete };
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
@@ -720,7 +750,12 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     // Procedure symbols live in the per-module streams. Each module stream
     // begins with a 4-byte signature before its symbol records.
-    const modules = parseModuleInfo(dbiBytes, dbi);
+    const moduleInfo = parseModuleInfo(dbiBytes, dbi);
+    const modules = moduleInfo.modules;
+    if (!moduleInfo.complete) {
+      symbols.complete = false;
+      diagnostics.push('DBI module substream is malformed: the module list is incomplete');
+    }
     for (const module of modules) {
       const declaredSize = module.symbolByteSize;
       if (declaredSize < 4) {
@@ -852,7 +887,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     for (const [index, record] of parsed.tpi.types) {
       if (record.kind !== 'aggregate' || record.forwardReference || !record.fieldList) continue;
       const fields = parsed.tpi.types.get(record.fieldList);
-      if (!fields || fields.kind !== 'field-list') continue;
+      if (!fields || fields.kind !== 'field-list' || fields.complete !== true) continue;
       out.push({
         typeIndex: index,
         name: record.name,

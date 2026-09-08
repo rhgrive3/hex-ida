@@ -79,8 +79,8 @@ export class CapabilityExecutor {
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
       case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
-      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume(options);
-      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause(options);
+      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume({ signal: options?.signal });
+      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause({ signal: options?.signal });
       case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
       case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
       case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
@@ -418,7 +418,12 @@ async function applyPatch(app, args) {
   return { ok: true, output, size: output.size, patches: app.patches.list().map(serializePatch) };
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
-function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
+function byteArray(value) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  const raw = Array.from(value);
+  for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Uint8Array.from(raw);
+}
 function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
 
 function callRequired(target, method, ...args) {

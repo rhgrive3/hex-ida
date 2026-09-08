@@ -28,7 +28,7 @@ import {
   MEMORY_SSA_PROOF_VERSION,
 } from './proof.js';
 
-export const MEMORY_SSA_BUILD_VERSION = '1.0.0';
+export const MEMORY_SSA_BUILD_VERSION = '1.0.1';
 export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
   ...MEMORY_SSA_DEFAULT_BUDGET,
   maxAliasQueries: 1048576,
@@ -841,58 +841,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const fallbackRegion = defaultUnknownRegion(irFunction.functionId);
   const orderedNodes = nodeOrder(irFunction, cfg, options);
   const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes);
-  const stackValues = stackDerivedValueIds(irFunction);
   const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
   const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
   for (const descriptor of descriptors) for (const region of descriptor.regions) addRegion(regionById, region);
-  // The address root can remain the ABI stack pointer across a call while its
-  // post-call SSA value has a distinct identity. If canonical address proof
-  // still establishes that root, reuse the already discovered fixed-stack
-  // region for the access so the producer's MemorySSA chain remains precise.
-  // This is an IR/value proof, not a compatibility-layer instruction walk.
-  const stackRegionBySlot = new Map();
-  for (const descriptor of descriptors) {
-    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
-    const displacement = memoryDescriptorDisplacement(descriptor.node);
-    const widthBits = Number(descriptor.memory?.widthBits);
-    if (displacement == null || !Number.isSafeInteger(widthBits) || widthBits <= 0) continue;
-    for (const region of descriptor.regions ?? []) {
-      if (!String(region.kind).startsWith('stack')) continue;
-      stackRegionBySlot.set(`${displacement.toString()}\u0000${widthBits}`, region);
-    }
-  }
-  for (const descriptor of descriptors) {
-    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
-    const addressValueId = descriptor.memory?.addressExpr?.valueId;
-    if (addressValueId == null || !stackValues.derives(addressValueId)) continue;
-    const displacement = memoryDescriptorDisplacement(descriptor.node);
-    if (displacement == null) continue;
-    const widthBits = Number(descriptor.memory?.widthBits);
-    const stackRegion = stackRegionBySlot.get(`${displacement.toString()}\u0000${widthBits}`)
-      ?? [...regionById.values()].find((region) => {
-        if (!String(region.kind).startsWith('stack')) return false;
-        try { return BigInt(region.offset) === displacement; }
-        catch { return false; }
-      });
-    if (stackRegion) {
-      descriptor.regions = [stackRegion];
-      // The memory-effect decoder intentionally leaves qualifiers
-      // unknown until a higher-level region proves ordinary function-local
-      // storage. A fixed stack root is that canonical proof: this access is
-      // neither volatile nor atomic, while ordering remains the decoder's
-      // explicit (and still conservative) value.
-      if (descriptor.memory?.volatility === 'unknown' && descriptor.memory?.atomic === 'unknown') {
-        descriptor.memory = {
-          ...descriptor.memory,
-          volatility: false,
-          atomic: false,
-        };
-      }
-    }
-  }
+  // Region identity belongs to the canonical resolver. A stack-derived
+  // value may have a different root, a dynamic offset, or lost provenance.
+  // Borrowing a region from another access based on displacement/width alone
+  // would issue a false must-alias/forwarding proof (#4388). Access qualifiers
+  // are established independently by the canonical access provider below.
   if (!regionById.size) addRegion(regionById, fallbackRegion);
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));

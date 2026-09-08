@@ -105,6 +105,7 @@ export class Emulator {
     this.syntheticPages = new Set();
     this.steps = 0;
     this.stopped = null;
+    this.faultCode = null;
     this.callStack = [];
     this.trace = [];
     this.traceTruncated = false;
@@ -283,13 +284,14 @@ export class Emulator {
       }
     }
     this.stopped = null;
+    this.faultCode = null;
     this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
 
   async step(options = {}) {
     const signal = options?.signal ?? null;
     throwIfAborted(signal);
-    if (this.stopped) return { ok: false, text: '', reason: this.stopped };
+    if (this.stopped) return { ok: false, text: '', reason: this.stopped, code: this.faultCode || null };
     const at = this.pc;
     const insn = this.io.fetch ? await awaitAbortable(this.io.fetch(at, { signal }), signal) : null;
     throwIfAborted(signal);
@@ -331,7 +333,7 @@ export class Emulator {
       }
       const r = await this.step({ signal });
       n++;
-      if (!r.ok) break;
+      if (!r.ok) { if (r.code) this.faultCode = r.code; break; }
       if (onProgress && (n % 500) === 0) {
         onProgress(n);
         await new Promise((res) => setTimeout(res, 0));

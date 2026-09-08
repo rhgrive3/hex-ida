@@ -93,15 +93,55 @@ function resolveIndexed(index, token, depth = 0) {
   }
 }
 
-export function createCilCallSignatureResolver(cilImage) {
-  let index;
+function buildResolverIndex(cilImage) {
   try {
-    index = buildCilCallMetadataIndex(cilImage?.rawBytes);
+    return { index:buildCilCallMetadataIndex(cilImage?.rawBytes), reason:null };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : 'cil-call-signature-metadata-invalid';
-    return () => Object.freeze({ complete:false, reason });
+    return {
+      index:null,
+      reason:error instanceof Error ? error.message : 'cil-call-signature-metadata-invalid',
+    };
   }
+}
+
+export function createCilCallSignatureResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) return () => Object.freeze({ complete:false, reason });
   return (token) => resolveIndexed(index, token);
+}
+
+export function createCilMethodSignatureResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) return () => Object.freeze({ complete:false, reason });
+
+  return (methodBody) => {
+    const bodyOffset = methodBody?.headerOffset;
+    if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0) {
+      return Object.freeze({ complete:false, reason:'cil-return-method-body-identity-unavailable' });
+    }
+
+    const matches = [];
+    for (let row = 0; row < index.methodDefs.length; row++) {
+      if (index.methodDefs[row]?.bodyOffset === bodyOffset) matches.push(row + 1);
+    }
+    if (matches.length !== 1) {
+      return Object.freeze({
+        complete:false,
+        reason:matches.length === 0
+          ? 'cil-return-methoddef-unresolved'
+          : 'cil-return-methoddef-ambiguous',
+      });
+    }
+
+    const rid = matches[0];
+    const methodToken = tokenFor(METHOD_DEF_TABLE, rid);
+    const resolved = resolveIndexed(index, methodToken);
+    return Object.freeze({
+      ...resolved,
+      methodToken,
+      bodyOffset,
+    });
+  };
 }
 
 export function createCilCallStackEffect(kind, resolution) {
