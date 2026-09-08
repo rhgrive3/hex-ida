@@ -37,7 +37,10 @@ export async function executeTurn(input = {}, options = {}) {
         : (request.mode === 'agent' ? 120000 : 30000);
     }
     const budget = aiBudget(request.mode, budgetOverrides);
-    const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
+    const providerDefault = Number(providerTimeout);
+    const turnTimeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
+      ? Math.min(budget.timeoutMs, Math.floor(providerDefault))
+      : budget.timeoutMs;
     const monotonicNow = resolveMonotonicClock(options.clock, options.monotonicNow, options.now);
     const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
