@@ -151,6 +151,12 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     pointsToRun = candidate.recovery == null
       ? baseline
       : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+    // Escape facts belong to whichever points-to map is published. A
+    // non-publishable swap returns the baseline map, so any cached escape run
+    // computed against the rejected candidate must be dropped — reusing it let
+    // non-escape proofs from the rejected map flow into alias answers
+    // computed against the baseline (#5215).
+    escapeRun = null;
     return pointsToRun;
   }
 
