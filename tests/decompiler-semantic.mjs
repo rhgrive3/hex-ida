@@ -58,6 +58,12 @@ function make(lines, opts = {}) {
   const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: 'damage', rowOfAddress, receiverType: 'Player', beginner: false,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' } : null,
+    // This assertion checks the rewrite result. Keep the fixture bounded by
+    // work while removing host scheduling from the optional transform choice.
+    deterministicTransforms: true,
+    decompilerNodeBudget: 12000,
+    decompilerTimeBudgetMs: 5000,
+    decompilerIterationCap: 16,
   });
   assert.match(r.pseudocode, /self->hp\s*=\s*max\(/);
   assert.match(r.pseudocode, /self->hp/);
