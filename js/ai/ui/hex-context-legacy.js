@@ -26,8 +26,10 @@ function abortIfNeeded(signal) {
 }
 
 function awaitWithSignal(request, signal) {
-  abortIfNeeded(signal);
-  if (!request || typeof request.then !== 'function') return Promise.resolve(request);
+  if (!request || typeof request.then !== 'function') {
+    abortIfNeeded(signal);
+    return Promise.resolve(request);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -39,9 +41,12 @@ function awaitWithSignal(request, signal) {
     const onAbort = () => {
       try { abortIfNeeded(signal); } catch (error) { finish(reject, error); }
     };
+    // Attach producer handlers before checking the signal. A producer may
+    // abort the signal synchronously while returning a promise that rejects
+    // later; the rejected promise must still have an observer in that race.
+    Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
     signal?.addEventListener?.('abort', onAbort, { once: true });
     if (signal?.aborted) { onAbort(); return; }
-    Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
 

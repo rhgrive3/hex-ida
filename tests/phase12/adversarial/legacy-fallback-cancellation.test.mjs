@@ -13,8 +13,9 @@ function baseApp(overrides = {}) {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function decompileApp(ensureObjc) {
@@ -56,6 +57,28 @@ test('legacy string fallback preserves exact preabort reason and leaves producer
 
   await assert.rejects(ctx.searchStrings('x', { signal: controller.signal }), (error) => error === reason);
   assert.equal(producerCalls, 0);
+});
+
+test('legacy waiter observes a late producer rejection after synchronous producer abort', async () => {
+  const pending = deferred();
+  const controller = new AbortController();
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const ctx = createHexAIContext(baseApp({
+      ensureStrings() {
+        controller.abort(false);
+        return pending.promise;
+      },
+    }));
+    await assert.rejects(ctx.searchStrings('x', { signal: controller.signal }), (error) => error === false);
+    pending.reject(new Error('late producer failure'));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
 });
 
 test('legacy string fallback cancels one waiter without cancelling the shared producer', async () => {
