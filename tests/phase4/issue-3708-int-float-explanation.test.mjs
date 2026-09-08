@@ -71,17 +71,20 @@ for (const c of CASES) {
 }
 
 // Fixed-point forms carry an fbits operand; dropping it changes the value.
+const FIXED_POINT_CASES = [
+  { mnemonic:'scvtf', operands:'d0, w1, #1', scale:1, pseudo:'d0 = ((double)(int32_t)w1) / 2^1' },
+  { mnemonic:'scvtf', operands:'d0, w1, #32', scale:32, pseudo:'d0 = ((double)(int32_t)w1) / 2^32' },
+  { mnemonic:'ucvtf', operands:'d0, x1, #64', scale:64, pseudo:'d0 = ((double)(uint64_t)x1) / 2^64' },
+  { mnemonic:'scvtf', operands:'s0, s1, #1', scale:1, pseudo:'s0 = simd_signed_lane_to_float(s1, fbits=1)' },
+  { mnemonic:'ucvtf', operands:'d0, d1, #64', scale:64, pseudo:'d0 = simd_unsigned_lane_to_double(d1, fbits=64)' },
+];
 for (const language of ['ja', 'en']) {
-  for (const [mnemonic, operands, scale] of [
-    ['scvtf', 'd0, w1, #1', '2\\^1'],
-    ['scvtf', 'd0, w1, #32', '2\\^32'],
-    ['ucvtf', 'd0, x1, #64', '2\\^64'],
-    ['scvtf', 's0, s1, #1', '2\\^1'],
-    ['ucvtf', 'd0, d1, #64', '2\\^64'],
-  ]) {
-    const result = explainIn(language, mnemonic, operands);
-    assert.match(result.pseudo + result.summary, new RegExp(scale + '|fixed|固定小数点|小数部'),
-      `${language}: ${mnemonic} fixed-point scale must remain explicit`);
+  for (const fixed of FIXED_POINT_CASES) {
+    const result = explainIn(language, fixed.mnemonic, fixed.operands);
+    assert.equal(result.pseudo, fixed.pseudo,
+      `${language}: ${fixed.mnemonic} ${fixed.operands} must preserve the exact fixed-point operation and scale`);
+    assert.ok(result.summary.includes(`2^${fixed.scale}`),
+      `${language}: ${fixed.mnemonic} ${fixed.operands} summary must preserve the exact fixed-point scale`);
   }
 }
 
@@ -93,15 +96,17 @@ for (const operands of ['d0, w1, #0', 'd0, w1, #33', 'd0, x1, #65', 's0, s1, #0'
 
 // SIMD scalar/vector forms are not ordinary W/X casts; retain lane shape and
 // signedness without inventing an int32_t/uint32_t source type.
-for (const [mnemonic, signedness] of [['scvtf', 'signed'], ['ucvtf', 'unsigned']]) {
-  for (const operands of ['s0, s1', 'v0.4s, v1.4s']) {
-    const result = explainIn('en', mnemonic, operands);
-    assert.match(result.pseudo, /simd|lane/i, `${mnemonic} ${operands}: SIMD lane shape must be explicit`);
-    assert.match(result.summary, new RegExp(`${signedness}|lane|SIMD`, 'i'),
-      `${mnemonic} ${operands}: SIMD ${signedness} semantics must be explicit`);
-    assert.doesNotMatch(result.pseudo, /int(?:32|64)_t|uint(?:32|64)_t/,
-      `${mnemonic} ${operands}: SIMD must not fabricate a GP integer cast`);
-  }
+for (const [mnemonic, operands, pseudo, signedness] of [
+  ['scvtf', 's0, s1', 's0 = simd_signed_lane_to_float(s1)', 'signed'],
+  ['ucvtf', 's0, s1', 's0 = simd_unsigned_lane_to_float(s1)', 'unsigned'],
+  ['scvtf', 'v0.4s, v1.4s', 'v0.4s = simd_signed_lanes_to_float(v1.4s)', 'signed'],
+  ['ucvtf', 'v0.4s, v1.4s', 'v0.4s = simd_unsigned_lanes_to_float(v1.4s)', 'unsigned'],
+]) {
+  const result = explainIn('en', mnemonic, operands);
+  assert.equal(result.pseudo, pseudo,
+    `${mnemonic} ${operands}: SIMD operation must preserve exact ${signedness} semantics and lane shape`);
+  assert.match(result.summary, new RegExp(`\\b${signedness}\\b`, 'i'),
+    `${mnemonic} ${operands}: SIMD summary must state ${signedness} semantics`);
 }
 
 // Unsupported operand classes/modifiers must stay explicit instead of being
