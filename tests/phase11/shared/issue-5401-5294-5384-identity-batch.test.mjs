@@ -54,15 +54,26 @@ test('#5296 the validator re-derives the id and rejects tampered or absent ident
   assert.throws(() => validateManagedTargetProfile({ ...profile, featureSet: other.featureSet, id: profile.id }), /managed-profile-identity-mismatch/);
 });
 
-test('#5294 validation report ids separate profile and status denominators', () => {
+test('#5294 validation report ids use an injective typed identity tuple', () => {
   const a = createManagedValidationReport({ targetId: 'method:m', profileId: 'managed-profile:jvm:52:java-se-8', status: 'valid' });
   const b = createManagedValidationReport({ targetId: 'method:m', profileId: 'managed-profile:jvm:65:java-se-21', status: 'invalid', errors: [{ code: 'version-specific-validation-failed' }] });
   assert.notEqual(a.id, b.id);
-  assert.ok(a.id.includes(a.profileId) && a.id.endsWith(':valid'), a.id);
-  // Same target without a profile keeps a distinct, self-describing id.
-  const c = createManagedValidationReport({ targetId: 'method:m', status: 'valid' });
-  assert.notEqual(c.id, a.id);
-  assert.ok(c.id.startsWith('val-rep:method:m:-:valid'), c.id);
+  assert.match(a.id, /^val-rep:[0-9a-f]{32}$/);
+
+  // Null is a typed tuple member, never a string sentinel.
+  const noProfile = createManagedValidationReport({ targetId: 'method:m', status: 'valid' });
+  const dashProfile = createManagedValidationReport({ targetId: 'method:m', profileId: '-', status: 'valid' });
+  assert.notEqual(noProfile.id, dashProfile.id, 'null profileId must not alias the literal "-" profile id');
+
+  // Raw delimiter joining used to collapse these two distinct field tuples:
+  // `method:m:a` + `b` and `method:m` + `a:b` both rendered `...:a:b:valid`.
+  const delimiterLeft = createManagedValidationReport({ targetId: 'method:m:a', profileId: 'b', status: 'valid' });
+  const delimiterRight = createManagedValidationReport({ targetId: 'method:m', profileId: 'a:b', status: 'valid' });
+  assert.notEqual(delimiterLeft.id, delimiterRight.id, '":" inside identity fields must not move tuple boundaries');
+
+  // The canonical tuple remains deterministic for identical validation facts.
+  const repeat = createManagedValidationReport({ targetId: 'method:m', profileId: 'managed-profile:jvm:52:java-se-8', status: 'valid' });
+  assert.equal(repeat.id, a.id);
 });
 
 test('#5384 the wasm probe refuses versions the open path rejects', () => {

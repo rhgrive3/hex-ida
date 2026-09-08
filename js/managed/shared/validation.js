@@ -1,4 +1,4 @@
-import { deepFreeze, jsonSafe } from '../../core/identity/index.js';
+import { deepFreeze, jsonSafe, stableDigest } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 
 export const MANAGED_VALIDATION_STATUS = Object.freeze(['valid', 'invalid', 'partial', 'unsupported']);
@@ -39,11 +39,10 @@ export function createManagedValidationReport(input) {
   };
 
   return deepFreeze({
-    // Validation report identity binds what was validated to the validation
-    // context: target + profile + status. Reports that differ in profile or
-    // outcome are different validation facts and must never share an id
-    // (#5294).
-    id: `val-rep:${targetId}:${profileId ?? '-'}:${status}`,
+    // Report identity is a canonical typed tuple, not delimiter-joined fields:
+    // null and every string profile id stay distinct, and ':' inside target or
+    // profile ids cannot move a field boundary (#5294).
+    id: `val-rep:${stableDigest({ targetId, profileId, status })}`,
     targetId,
     profileId,
     status,
