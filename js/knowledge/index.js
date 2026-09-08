@@ -335,21 +335,6 @@ export class KnowledgeDB {
         req.onerror=()=>reject(req.error);
       });
     }
-    // Keep a bounded compatibility path for embedders that expose only the
-    // exact searchTerms index. Real IndexedDB object stores always provide a
-    // cursor, so this path is necessarily exact-only when no cursor exists.
-    const out=new Map();
-    if (store.indexNames.contains('searchTerms')) {
-      const index=store.index('searchTerms');
-      for (const term of [query,...terms]) {
-        const found=await requestPromise(index.getAll(term,limit));
-        for (const record of found) if (matches(record)) out.set(record.id,record);
-      }
-    }
-    return [...out.values()].sort((a,b) => {
-      const left=String(a.id), right=String(b.id);
-      return left < right ? -1 : left > right ? 1 : 0;
-    }).slice(0,limit);
   }
 
   async #hasNegativeCandidate(matches, name, identity) {
