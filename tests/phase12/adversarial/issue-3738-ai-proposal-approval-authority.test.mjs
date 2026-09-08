@@ -155,7 +155,9 @@ async function expectApprovalFailure(promise) {
   let executionBefore = null;
   await store.apply(proposal.id, {
     approvalToken,
-    currentState: firstBefore,
+    // Patch bytes are canonicalized to plain arrays when the proposal is
+    // created; stale-state comparison must use the same wire representation.
+    currentState: Array.from(firstBefore),
     apply: (item, authorization) => {
       executionBefore = Array.from(item.before);
       assert.equal(

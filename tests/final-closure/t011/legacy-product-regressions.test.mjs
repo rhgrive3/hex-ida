@@ -86,7 +86,7 @@ test('legacy apply_damage carries the ABI return and exact forwarded field proof
   assert.ok(ret.args?.[0]?.value, 'legacy RET must carry the ABI-proven reaching value');
   const zeroStore = result.lines.find((line) => /self->hp\s*=\s*0;/.test(line.text));
   assert.ok(zeroStore, result.pseudocode);
-  assert.equal(formatDecompilerSource(zeroStore), '000498 · 0004B8–0004C0');
+  assert.equal(formatDecompilerSource(zeroStore), '100000498 · 1000004B8–1000004C0');
 });
 
 function selectModel(name, branch) {
