@@ -237,11 +237,25 @@ function canonicalProofMetadataIsValid(proof) {
     && PROVEN_SEPARATION_CLASSES.includes(proof.separationClass);
 }
 
+/**
+ * Canonical address-space identity for a points-to target (#5717).
+ *
+ * `addressSpace` backs a strong `NoAlias` authority (distinct spaces cannot
+ * alias), so a non-canonical notation must never become its own space:
+ * surrounding whitespace on 'memory ' would manufacture a space the storage
+ * never had. The value is trimmed; a whitespace-only value degrades to
+ * 'unknown', which alias separation never treats as proven.
+ */
+function canonicalAddressSpace(value) {
+  if (value == null) return 'memory';
+  if (typeof value !== 'string') return 'unknown';
+  const text = value.trim();
+  return text ? text : 'unknown';
+}
+
 function targetMatchesCanonicalProof(input, proof) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
-  const addressSpace = input.addressSpace == null
-    ? 'memory'
-    : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown');
+  const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
     ? input.rootEntityId : null;
@@ -257,7 +271,7 @@ function inputMatchesCanonicalProof(input, proof) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
   const expectedRootKind = proofRootKind(proof);
   const checks = [
-    ['addressSpace', proof.addressSpace ?? 'memory'],
+    ['addressSpace', canonicalAddressSpace(proof.addressSpace)],
     ['rootKind', expectedRootKind],
     ['rootIdentity', proof.rootIdentity ?? null],
     ['rootEntityId', proof.rootEntityId ?? null],
@@ -266,8 +280,10 @@ function inputMatchesCanonicalProof(input, proof) {
   ];
   for (const [key, expected] of checks) {
     if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
-    const actual = key === 'rootEntityId' && input[key] != null
-      ? String(input[key]) : (input[key] ?? null);
+    const actual = key === 'addressSpace'
+      ? canonicalAddressSpace(input[key])
+      : key === 'rootEntityId' && input[key] != null
+        ? String(input[key]) : (input[key] ?? null);
     if (key === 'rootIdentity') {
       if (stableStringify(actual) !== stableStringify(expected)) return false;
     } else if (actual !== expected) {
@@ -284,7 +300,7 @@ export function createPointsToTarget(input = {}) {
   const proof = input[ROOT_DESCRIPTOR_PROOF];
   const proven = targetMatchesCanonicalProof(input, proof);
   const target = {
-    addressSpace: input.addressSpace == null ? 'memory' : (typeof input.addressSpace === 'string' ? input.addressSpace : 'unknown'),
+    addressSpace: canonicalAddressSpace(input.addressSpace),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
     rootIdentity: input.rootIdentity ?? null,
     // Canonical root token, not the raw spelling (#6063): 'A' and '  A  ' are
@@ -317,7 +333,7 @@ export function createRootDescriptorSeparatedTarget(input = {}, proof = null) {
   }
   const target = {
     ...input,
-    addressSpace: proof.addressSpace ?? 'memory',
+    addressSpace: canonicalAddressSpace(proof.addressSpace),
     rootKind: proofRootKind(proof),
     rootIdentity: proof.rootIdentity ?? null,
     rootEntityId: proof.rootEntityId ?? null,
