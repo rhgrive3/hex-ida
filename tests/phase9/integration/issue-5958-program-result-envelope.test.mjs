@@ -27,7 +27,22 @@ test('structured caller rows preserve upstream status and local pagination', asy
   assert.equal(second.reason, null);
 });
 
+test('an inconsistent upstream total cannot prove a complete local page', async () => {
+  const tools = createAgentTools({ program: {
+    callersOf() {
+      return { results: [{ addr: 0x2600n }, { addr: 0x2700n }, { addr: 0x2800n }], complete: true, total: 2 };
+    },
+  } });
+  const result = await tools.get_callers(address, { limit: 2 });
+  assert.deepEqual(result.results.map((row) => row.addr), [0x2600n, 0x2700n]);
+  assert.equal(result.complete, false);
+  assert.equal(result.truncated, true);
+  assert.equal(result.total, null, 'contradictory totals remain unknown');
+  assert.equal(result.reason, 'result-limit');
+});
+
 test('callers, callees, and xrefs retain structured rows and incompleteness', async () => {
+  let xrefMode = 'structured-sites';
   const tools = createAgentTools({ program: {
     functionRange() { return { start: address, end: address + 0x100n }; },
     callersOf() {
@@ -37,9 +52,11 @@ test('callers, callees, and xrefs retain structured rows and incompleteness', as
       return { results: [{ addr: 0x3100n }], completeness: { complete: false, reason: 'callee-budget' } };
     },
     refSitesTo() {
+      if (xrefMode === 'reverse') return [{ from: 0x4200n, to: address }];
       return { results: [{ from: 0x4100n, to: address }], complete: false, reason: 'xref-budget' };
     },
     functionsReferencing() {
+      if (xrefMode === 'reverse') return { results: [{ addr: 0x5200n }], complete: true, total: 1 };
       return [{ addr: 0x5100n }];
     },
   } });
@@ -65,6 +82,15 @@ test('callers, callees, and xrefs retain structured rows and incompleteness', as
   assert.equal(xrefs.totals.sites, null);
   assert.equal(xrefs.totals.functions, 1);
   assert.equal(xrefs.reason, 'xref-budget');
+
+  xrefMode = 'reverse';
+  const reverseXrefs = await tools.get_xrefs(address);
+  assert.deepEqual(reverseXrefs.sites, [{ from: 0x4200n, to: address }]);
+  assert.deepEqual(reverseXrefs.functions, [{ addr: 0x5200n }]);
+  assert.equal(reverseXrefs.complete, true);
+  assert.equal(reverseXrefs.truncated, false);
+  assert.deepEqual(reverseXrefs.totals, { sites: 1, functions: 1 });
+  assert.equal(reverseXrefs.reason, null);
 });
 
 for (const metadata of [

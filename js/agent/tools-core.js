@@ -295,8 +295,19 @@ function programResultTotal(meta) {
 
 function programResultLocalComplete(rows, meta, offset, returned, request) {
   const total = programResultTotal(meta);
-  if (total != null) return offset + returned >= total;
+  if (total != null) {
+    if (rows.length > total) return false;
+    return offset + returned >= total && offset + returned >= rows.length;
+  }
+  const hasTotal = meta?.total != null
+    || (meta?.completeness && typeof meta.completeness === 'object' && meta.completeness.total != null);
+  if (hasTotal) return false;
   return rows.length < request || offset + returned >= rows.length;
+}
+
+function programResultConsistentTotal(meta, rows) {
+  const total = programResultTotal(meta);
+  return total != null && rows.length <= total ? total : null;
 }
 
 function programResultCompleteness(results, localComplete, cappedReason, sourceSupported, valid = true) {
@@ -387,7 +398,10 @@ export function createAgentTools(context, opts) {
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
       const localComplete = valid && programResultLocalComplete(raw, meta, offset, results.length, request);
       const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported, valid);
-      const total = status.upstreamComplete ? (programResultTotal(meta) ?? (raw.length < request ? raw.length : null)) : null;
+      const total = status.upstreamComplete
+        ? (programResultConsistentTotal(meta, raw)
+          ?? (meta?.total == null && meta?.completeness?.total == null && raw.length < request ? raw.length : null))
+        : null;
       return { tool: 'get_callers', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_callees(address, options) {
@@ -402,7 +416,10 @@ export function createAgentTools(context, opts) {
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
       const localComplete = valid && programResultLocalComplete(raw, meta, offset, results.length, request);
       const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported, valid);
-      const total = status.upstreamComplete ? (programResultTotal(meta) ?? (raw.length < request ? raw.length : null)) : null;
+      const total = status.upstreamComplete
+        ? (programResultConsistentTotal(meta, raw)
+          ?? (meta?.total == null && meta?.completeness?.total == null && raw.length < request ? raw.length : null))
+        : null;
       return { tool: 'get_callees', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_xrefs(address, options) {
@@ -422,8 +439,14 @@ export function createAgentTools(context, opts) {
       const sitesStatus = programResultCompleteness(sitesMeta, sitesLocalComplete, 'refs-source-capped', sites.supported, sitesValid);
       const functionsStatus = programResultCompleteness(functionsMeta, functionsLocalComplete, 'refs-source-capped', functions.supported, functionsValid);
       const complete = sitesStatus.complete && functionsStatus.complete;
-      const siteTotal = sitesStatus.upstreamComplete ? (programResultTotal(sitesMeta) ?? (rawSites.length < request ? rawSites.length : null)) : null;
-      const functionTotal = functionsStatus.upstreamComplete ? (programResultTotal(functionsMeta) ?? (rawFunctions.length < request ? rawFunctions.length : null)) : null;
+      const siteTotal = sitesStatus.upstreamComplete
+        ? (programResultConsistentTotal(sitesMeta, rawSites)
+          ?? (sitesMeta?.total == null && sitesMeta?.completeness?.total == null && rawSites.length < request ? rawSites.length : null))
+        : null;
+      const functionTotal = functionsStatus.upstreamComplete
+        ? (programResultConsistentTotal(functionsMeta, rawFunctions)
+          ?? (functionsMeta?.total == null && functionsMeta?.completeness?.total == null && rawFunctions.length < request ? rawFunctions.length : null))
+        : null;
       return { tool: 'get_xrefs', address: addr, supported:{sites:sites.supported,functions:functions.supported}, sites:siteRows, functions:functionRows, offset, returned:Math.max(siteRows.length, functionRows.length), total:siteTotal != null && functionTotal != null ? Math.max(siteTotal, functionTotal) : null, totals:{sites:siteTotal,functions:functionTotal}, complete, truncated:!complete, reason:complete ? null : (!sites.supported || !functions.supported ? 'unsupported-program-query' : (sitesStatus.reason || functionsStatus.reason)), cost:{ functions:0, disassembly:0 } };
     },
 
