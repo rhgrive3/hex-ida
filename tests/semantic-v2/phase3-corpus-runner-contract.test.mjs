@@ -53,19 +53,27 @@ try {
   };
   const baseKey = phase3CorpusReuseKey({
     suite:'reuse-contract', files:['count.mjs'], root, env:reuseEnv,
-    timeoutMs:10_000, envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
+    timeoutMs:10_000, readinessTimeoutMs:10_000,
+    envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
   });
   assert.equal(typeof baseKey, 'string');
   assert.equal(phase3CorpusReuseKey({
     suite:'reuse-contract', files:['count.mjs'], root,
     env:{ ...reuseEnv, HEX_PHASE3_INPROCESS_REUSE_TOKEN:'' },
-    timeoutMs:10_000, envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
+    timeoutMs:10_000, readinessTimeoutMs:10_000,
+    envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
   }), null, 'reuse must be impossible without an explicit process-scoped token');
   assert.notEqual(baseKey, phase3CorpusReuseKey({
     suite:'reuse-contract', files:['count.mjs'], root,
     env:{ ...reuseEnv, PHASE3_REUSE_VARIANT:'changed' },
-    timeoutMs:10_000, envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
+    timeoutMs:10_000, readinessTimeoutMs:10_000,
+    envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
   }), 'environment drift must invalidate in-process proof reuse');
+  assert.notEqual(baseKey, phase3CorpusReuseKey({
+    suite:'reuse-contract', files:['count.mjs'], root, env:reuseEnv,
+    timeoutMs:10_000, readinessTimeoutMs:10_001,
+    envName:'HEX_PHASE3_CORPUS_CONCURRENCY', concurrency:1,
+  }), 'readiness deadline drift must invalidate in-process proof reuse');
 
   await runPhase3Corpus({
     suite:'reuse-contract', files:['count.mjs'], root, env:reuseEnv,
