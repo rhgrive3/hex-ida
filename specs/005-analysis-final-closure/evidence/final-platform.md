@@ -115,3 +115,27 @@ suffix passes for #5755 and #5760. The focused logs are
 and `/mnt/workspace/.dev-state/hex-development-batch/t023-phase10-suffix-5d46.log`.
 Generated output must be refreshed for this successor before any new exact-head
 candidate gate; T040 remains **PENDING**.
+
+
+## Completed CPU measurement on repaired source 5d46 — 2026-09-08
+
+The immutable repaired source `5d46d550f5b999e662f07a70c5407b2877c8d82e`,
+tree `c992886c4a15a30fb2fcd759a578c6f232c7cdf9`, completed the canonical
+`performanceMetrics({ repetitions: 3, corpus })` timing API in 324.629 seconds
+with Node 22.20.0 and LLVM/Clang 18.1.3. The worktree remained clean.
+`current-cpu-performance.json` retains all 405 raw samples, the frozen 135-function
+and 125-applicable-function denominators, runtime/profile identities, and the
+full observation digest. Aggregate values were recomputed from those samples.
+
+| Metric | Median | Limit | Result |
+| --- | ---: | ---: | --- |
+| Cold active function | 359.341 ms | 250 ms | FAIL |
+| Interactive Phase 8 | 0.445 ms | 5 ms | PASS |
+| Optimizer Phase 8 | 93.683 ms | 150 ms | PASS |
+
+The unpublished optimizer count is zero. The remaining CPU performance defect
+is cold decompilation; profiling and its production repair precede the next full
+performance measurement. This observation supersedes older CPU timings for this
+source without asserting a controlled speedup or changing thresholds. It does not
+close T040's external-binary, H9, or deployed-runtime requirements. Physical-device
+execution remains deferred by the owner.
