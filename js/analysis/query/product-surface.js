@@ -112,14 +112,18 @@ function newStringState(app) {
   for (const region of targets) {
     const bytes = budget.requestBytes(Number(region.size));
     if (bytes <= 0) { skipped.push(region); continue; }
-    plan.push({ region, bytes });
-    if (bytes < Number(region.size)) skipped.push(region);
+    const partial = bytes < Number(region.size);
+    plan.push({ region, bytes, partial });
+    if (partial) {
+      skipped.push(region);
+    }
   }
   return {
     key: `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`,
     budget,
     plan,
     skipped,
+    totalRegions: targets.length,
     cursor: 0,
     rows: [],
     scannedBytes: 0,
@@ -356,13 +360,19 @@ export function createProductSurfaceQueries(app) {
       const globallyComplete = state.complete === true;
       const next = offset + value.length < matches.length || (!globallyComplete && value.length === limit) ? offset + value.length : null;
       await assertCurrentSnapshot(app, snapshot, options);
+      const partiallyPlanned = new Set(state.plan.filter((item) => item.partial).map((item) => item.region.id));
+      const partiallyScanned = state.plan.slice(0, state.cursor)
+        .filter((item) => item.partial)
+        .map((item) => item.region.id);
       return queryEnvelope(snapshot, value, globallyComplete ? 'complete' : 'partial', {
         reason:globallyComplete ? null : state.truncationReason || state.budget.truncationReason || 'string-artifact-incomplete',
         producer:'canonical-product-string-artifact/v1',
         scannedRegions:state.cursor,
-        totalRegions:state.plan.length + state.skipped.length,
+        totalRegions:state.totalRegions,
         scannedBytes:state.scannedBytes,
-        unscannedRegions:state.plan.slice(state.cursor).map((item) => item.region.id).concat(state.skipped.map((region) => region.id)),
+        partiallyScannedRegions:partiallyScanned,
+        unscannedRegions:state.plan.slice(state.cursor).map((item) => item.region.id)
+          .concat(state.skipped.filter((region) => !partiallyPlanned.has(region.id)).map((region) => region.id)),
       }, { offset, limit, returned:value.length, total:globallyComplete ? matches.length : null, next });
     },
 
