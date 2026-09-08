@@ -745,8 +745,13 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         aggregate:true,
       }));
     }
-    const scalarBits = Number(classified.bits);
-    const scalarBytes = classified.bytes == null ? Math.ceil(scalarBits / 8) : Number(classified.bytes);
+    // Exact return placement requires primitive width identity. Number()
+    // would launder structured values like ['32'] into a canonical width and
+    // publish a malformed schema value as exact ABI evidence (#5814).
+    if (typeof classified.bits !== 'number'
+      || (classified.bytes != null && typeof classified.bytes !== 'number')) return [];
+    const scalarBits = classified.bits;
+    const scalarBytes = classified.bytes == null ? Math.ceil(scalarBits / 8) : classified.bytes;
     if (!Number.isSafeInteger(scalarBits) || scalarBits <= 0
       || !Number.isSafeInteger(scalarBytes) || scalarBytes <= 0) return [];
     const locations = rawRegisters.map((rawReg, index) => {
