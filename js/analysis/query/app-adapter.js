@@ -273,15 +273,36 @@ function descriptorMetadata(app) {
   return descriptor?.formatMetadata ?? {};
 }
 
+// The legacy ARM64 model keeps this callback for presentation consumers, but
+// callbacks are not query values: AnalysisQueryAPI must be able to detach and
+// freeze every published result. The lookup is reconstructed only on the
+// app-owned presentation sidecar below, never published through the query API.
+function cloneableLegacyModel(model) {
+  if (!model || typeof model !== 'object' || typeof model.blockOfRow !== 'function') return model;
+  const { blockOfRow: _blockOfRow, ...data } = model;
+  return data;
+}
+
+function legacyPresentationModel(model) {
+  if (!model || typeof model !== 'object' || typeof model.blockOfRow === 'function') return model;
+  if (!Array.isArray(model.semantic)) return model;
+  const presentation = {
+    ...model,
+    blockOfRow: (row) => model.semantic.find((block) => row >= block.startRow && row <= block.endRow) || null,
+  };
+  return Object.freeze(presentation);
+}
+
 function applyLegacyPresentation(app, value) {
   if (!value?.model) return;
   const start = value.startAddr ?? value.startAddress ?? value.model?.startAddress;
   if (start == null) return;
   const region = executableRegion(app, start);
   if (!region) return;
-  app.semantic = { regionId:region.id, model:value.model, result:value };
+  const model = legacyPresentationModel(value.model);
+  app.semantic = { regionId:region.id, model, result:value };
   if (storeValue(app, 'currentRegion') === region) {
-    try { app.viewer?.setBlockOverlay?.(region.id, buildOverlay(value.model)); } catch { /* presentation only */ }
+    try { app.viewer?.setBlockOverlay?.(region.id, buildOverlay(model)); } catch { /* presentation only */ }
   }
 }
 
@@ -381,8 +402,9 @@ export function createAppAnalysisQueryAdapter(app) {
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
+      const queryValue = value?.model ? { ...value, model:cloneableLegacyModel(value.model) } : value;
       const enriched = {
-        ...value, functionId:functionId(range.start), architectureId:architecture,
+        ...queryValue, functionId:functionId(range.start), architectureId:architecture,
         startAddress:range.start, endAddress:range.end, name,
         completeness:{ complete:completeness === 'complete', reason:value?.truncated ? 'analysis-budget' : range.reason || null, provenance:range.provenance, regionId:range.region.id },
       };
