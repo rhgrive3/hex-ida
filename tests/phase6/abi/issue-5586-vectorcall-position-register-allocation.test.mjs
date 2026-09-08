@@ -50,6 +50,55 @@ test('HVA members fill the unused vector registers after positional reservation'
   assert.deepEqual(result.arguments[2].regs, ['xmm2']);
   assert.deepEqual(result.arguments[4].regs, ['xmm4']);
   assert.deepEqual(result.arguments[5].regs, ['xmm1', 'xmm3'], 'the HVA members use the unused registers');
+  const vectorRegs = result.arguments.flatMap((entry) => entry.regs ?? []);
+  assert.equal(new Set(vectorRegs).size, vectorRegs.length,
+    'different arguments cannot reuse one physical vector lane');
+});
+
+test('Microsoft official Example 3 keeps HVA members and integer positions distinct', () => {
+  // `int a, hva2 b, int c, int d, int e`: the HVA consumes the unused
+  // vector positions while the integer arguments retain their own x64
+  // positions; the fifth argument is the first caller stack slot.
+  const hva2 = {
+    hva:true, bits:256, bytes:32,
+    members:[{ bits:128, bytes:16, byteOffset:0 }, { bits:128, bytes:16, byteOffset:16 }],
+  };
+  const result = classifyMicrosoftVectorcallArguments({ callPrototype:{
+    callingConvention:'vectorcall',
+    args:[int(), hva2, int(), int(), int()],
+  } });
+  assert.equal(result.arguments[0].reg, 'rcx');
+  assert.deepEqual(result.arguments[1].regs, ['xmm0', 'xmm1']);
+  assert.deepEqual(result.arguments[1].pieces.map((piece) => piece.reg), ['xmm0', 'xmm1']);
+  assert.equal(result.arguments[2].reg, 'r8');
+  assert.equal(result.arguments[3].reg, 'r9');
+  assert.equal(result.arguments[4].location, 'stack');
+  assert.equal(result.arguments[4].offset, 32);
+  assert.equal(result.partial, false);
+});
+
+test('Microsoft official Example 4 reserves direct FP positions before HVA lanes', () => {
+  // The documented example uses four __m256 members and therefore YMM views.
+  // This canonical four-member fixture exercises the same non-contiguous
+  // reservation topology with the repository's exact __m128 HVA shape;
+  // Example 2 separately proves the XMM/YMM width views.
+  const hva4 = {
+    hva:true, bits:512, bytes:64,
+    members:Array.from({ length:4 }, (_unused, index) => ({ bits:128, bytes:16, byteOffset:index * 16 })),
+  };
+  const result = classifyMicrosoftVectorcallArguments({ callPrototype:{
+    callingConvention:'vectorcall',
+    args:[int(), flt(), hva4, vector(128), int()],
+  } });
+  assert.equal(result.arguments[0].reg, 'rcx');
+  assert.equal(result.arguments[1].reg, 'xmm1');
+  assert.deepEqual(result.arguments[2].regs, ['xmm0', 'xmm2', 'xmm4', 'xmm5']);
+  assert.equal(result.arguments[3].reg, 'xmm3');
+  assert.equal(result.arguments[4].location, 'stack');
+  assert.equal(result.arguments[4].offset, 32);
+  const vectorRegs = result.arguments.flatMap((entry) => entry.regs ?? []);
+  assert.equal(new Set(vectorRegs).size, vectorRegs.length);
+  assert.equal(result.partial, false);
 });
 
 test('an HVA too large for the unused registers goes indirect in its integer register', () => {
@@ -144,10 +193,32 @@ test('indirect scalar FP arguments use non-overlapping eight-byte stack slots', 
     callingConvention:'vectorcall',
     args:[int(), int(), int(), int(), int(), int(), flt(), { type:'double', floating:true, bits:64 }],
   } });
-  assert.equal(result.arguments[6].offset, 32);
-  assert.equal(result.arguments[7].offset, 40);
-  assert.equal(result.arguments[6].calleeEntryOffset, 40);
-  assert.equal(result.arguments[7].calleeEntryOffset, 48);
+  const stackEntries = result.arguments.slice(4);
+  assert.deepEqual(stackEntries.map((entry) => entry.index), [4, 5, 6, 7]);
+  assert.deepEqual(stackEntries.map((entry) => entry.offset), [32, 40, 48, 56]);
+  assert.equal(new Set(stackEntries.map((entry) => entry.offset)).size, stackEntries.length,
+    'each spilled argument has a distinct caller stack slot');
+  assert.deepEqual(stackEntries.map((entry) => entry.calleeEntryOffset), [40, 48, 56, 64]);
+  for (const entry of stackEntries) {
+    assert.equal(entry.offsetBase, 'caller-stack-before-call');
+    assert.equal(entry.calleeEntryOffset, entry.offset + 8);
+    assert.equal(entry.bytes, 8);
+  }
+  assert.deepEqual(stackEntries.map((entry) => entry.abiClass), ['integer', 'integer', 'fp-indirect', 'fp-indirect']);
+  assert.deepEqual(stackEntries.map((entry) => entry.pointer), [false, false, true, true]);
+  assert.deepEqual(stackEntries.map((entry) => entry.bits), [32, 32, 64, 64]);
+  assert.deepEqual(stackEntries.slice(2).map((entry) => ({
+    indirectReference:entry.indirectReference,
+    pointeeBits:entry.pointeeBits,
+    pieceStackOffset:entry.pieces?.[0]?.stackOffset,
+    pieceBits:entry.pieces?.[0]?.bits,
+    pieceBytes:entry.pieces?.[0]?.bytes,
+  })), [
+    { indirectReference:true, pointeeBits:32, pieceStackOffset:48, pieceBits:64, pieceBytes:8 },
+    { indirectReference:true, pointeeBits:64, pieceStackOffset:56, pieceBits:64, pieceBytes:8 },
+  ]);
+  assert.deepEqual(result.stackArguments, stackEntries,
+    'stackArguments retains every spill with the same provenance');
   assert.equal(result.stackArgsMayContainPointers, true);
 });
 
