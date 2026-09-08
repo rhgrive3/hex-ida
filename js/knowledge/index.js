@@ -316,31 +316,40 @@ export class KnowledgeDB {
     });
   }
   async #searchKnowledgeRecords(query, terms, limit) {
+    const matches = (record) => {
+      const hay = record.searchTerms?.length ? record.searchTerms : searchTermsOf(record);
+      return hay.some((value) => value.includes(query) || terms.some((term) => value.includes(term)));
+    };
     if (this.memory) {
-      return [...this.memory.values()].filter((record) => {
-        const hay = record.searchTerms?.length ? record.searchTerms : searchTermsOf(record);
-        return hay.some((value) => value.includes(query) || terms.some((term) => value.includes(term)));
-      }).slice(0, limit);
+      const ids = [...this.memory.keys()].sort();
+      return ids.map((id) => this.memory.get(id)).filter(matches).slice(0, limit);
     }
-    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions'); const out=new Map();
-    if (store.indexNames.contains('searchTerms')) {
-      const index=store.index('searchTerms');
-      for (const term of [query,...terms]) {
-        const found=await requestPromise(index.getAll(term,limit)); for (const record of found) out.set(record.id,record);
-        if (out.size>=limit) break;
-      }
-    }
-    // The multiEntry index only answers exact-key lookups.  It is a seed for
-    // the same substring semantics used by the memory backend, not a reason
-    // to skip the cursor scan when one exact record was found.
-    if (out.size < limit) {
-      await new Promise((resolve,reject) => {
-        let scanned=0; const req=store.openCursor();
-        req.onsuccess=()=>{ const c=req.result; if (!c || out.size>=limit || scanned>=2000) return resolve(); scanned++; const record=c.value; const hay=record.searchTerms?.length?record.searchTerms:searchTermsOf(record); if (hay.some((value)=>value.includes(query)||terms.some((term)=>value.includes(term)))) out.set(record.id,record); c.continue(); };
+    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions');
+    // The multiEntry index only answers exact-key lookups. Scan the object
+    // store so substring matches use the same predicate and ID order as the
+    // memory backend; an exact hit must not change the candidate set or order.
+    if (typeof store.openCursor === 'function') {
+      return new Promise((resolve,reject) => {
+        const records=[]; const req=store.openCursor();
+        req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve(records); if (matches(c.value)) records.push(c.value); c.continue(); };
         req.onerror=()=>reject(req.error);
       });
     }
-    return [...out.values()].slice(0,limit);
+    // Keep a bounded compatibility path for embedders that expose only the
+    // exact searchTerms index. Real IndexedDB object stores always provide a
+    // cursor, so this path is necessarily exact-only when no cursor exists.
+    const out=new Map();
+    if (store.indexNames.contains('searchTerms')) {
+      const index=store.index('searchTerms');
+      for (const term of [query,...terms]) {
+        const found=await requestPromise(index.getAll(term,limit));
+        for (const record of found) if (matches(record)) out.set(record.id,record);
+      }
+    }
+    return [...out.values()].sort((a,b) => {
+      const left=String(a.id), right=String(b.id);
+      return left < right ? -1 : left > right ? 1 : 0;
+    }).slice(0,limit);
   }
 
   async #hasNegativeCandidate(matches, name, identity) {

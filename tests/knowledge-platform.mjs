@@ -28,12 +28,13 @@ function createIndexedDBSearchFixture(records) {
     return out;
   };
   const rows = records.map(copy);
+  const cursorRows = rows.slice().sort((a, b) => String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
   const functions = {
     indexNames:{ contains:(name) => name === 'searchTerms' },
     index(name) {
       assert.equal(name, 'searchTerms');
       return { getAll(value, limit = Infinity) {
-        const found = rows.filter((record) => record.searchTerms?.includes(value)).slice(0, limit);
+        const found = cursorRows.filter((record) => record.searchTerms?.includes(value)).slice(0, limit);
         return request(found.map(copy));
       } };
     },
@@ -41,9 +42,9 @@ function createIndexedDBSearchFixture(records) {
       const out = { result:undefined, error:null, onsuccess:null, onerror:null };
       let position = 0;
       const advance = () => queueMicrotask(() => {
-        if (position >= rows.length) out.result = null;
+        if (position >= cursorRows.length) out.result = null;
         else {
-          const record = rows[position++];
+          const record = cursorRows[position++];
           out.result = { key:record.id, value:copy(record), continue:advance };
         }
         out.onsuccess?.();
@@ -58,9 +59,13 @@ function createIndexedDBSearchFixture(records) {
 
 const searchFunctionA = { address:0x1000n, architecture:'arm64', bytes:Uint8Array.from([1,2,3,4]), instructions:['ret'], strings:[] };
 const searchFunctionB = { address:0x2000n, architecture:'arm64', bytes:Uint8Array.from([5,6,7,8]), instructions:['ret'], strings:[] };
+const searchFunctionC = { address:0x3000n, architecture:'arm64', bytes:Uint8Array.from([9,10,11,12]), instructions:['ret'], strings:[] };
+const searchFunctionD = { address:0x4000n, architecture:'arm64', bytes:Uint8Array.from([13,14,15,16]), instructions:['ret'], strings:[] };
 const searchRecords = [
-  { id:'exact', fingerprint:searchFunctionA, names:['foo'], sourceBinaryHash:'knowledge-search-a' },
-  { id:'substring', fingerprint:searchFunctionB, names:['foobar'], sourceBinaryHash:'knowledge-search-b' },
+  { id:'b-exact', fingerprint:searchFunctionA, names:['foo'], sourceBinaryHash:'knowledge-search-a' },
+  { id:'a-substring', fingerprint:searchFunctionB, names:['foobar'], sourceBinaryHash:'knowledge-search-b' },
+  { id:'z-late-substring', fingerprint:searchFunctionC, names:['foobaz'], sourceBinaryHash:'knowledge-search-c' },
+  { id:'c-bar-substring', fingerprint:searchFunctionD, names:['barrel'], sourceBinaryHash:'knowledge-search-d' },
 ];
 const memorySearch = new KnowledgeDB({ indexedDB:null, memory:new Map(), negativeMemory:new Map() });
 const rememberedRecords = [];
@@ -69,11 +74,22 @@ for (const record of searchRecords) {
 }
 const indexedSearch = new KnowledgeDB({ indexedDB:{} });
 indexedSearch._db = createIndexedDBSearchFixture(rememberedRecords);
-const memorySearchResults = await memorySearch.query('foo', [searchFunctionA, searchFunctionB], { knowledgeLimit:10 });
-const indexedSearchResults = await indexedSearch.query('foo', [searchFunctionA, searchFunctionB], { knowledgeLimit:10 });
-const addresses = (results) => results.map((result) => String(result.function.address)).sort();
-assert.deepEqual(addresses(indexedSearchResults), addresses(memorySearchResults),
-  'IndexedDB exact searchTerms hits must be unioned with substring matches like memory search');
-assert.deepEqual(addresses(indexedSearchResults), ['4096','8192'],
-  'an exact hit must not suppress a distinct substring candidate');
+const searchFunctions = [searchFunctionA, searchFunctionB, searchFunctionC, searchFunctionD];
+const addresses = (results) => results.map((result) => String(result.function.address));
+for (const limit of [1, 2, 3, 10]) {
+  const memorySearchResults = await memorySearch.query('foo', searchFunctions, { knowledgeLimit:limit });
+  const indexedSearchResults = await indexedSearch.query('foo', searchFunctions, { knowledgeLimit:limit });
+  assert.deepEqual(addresses(indexedSearchResults), addresses(memorySearchResults),
+    `IndexedDB and memory search must agree for reverse insertion order and limit ${limit}`);
+}
+assert.deepEqual(addresses(await memorySearch.query('foo', searchFunctions, { knowledgeLimit:1 })), ['8192'],
+  'the stable record ID order must select an earlier substring match when it fills the limit');
+assert.deepEqual(addresses(await indexedSearch.query('foo', searchFunctions, { knowledgeLimit:2 })), ['8192','4096'],
+  'the exact candidate must follow an earlier substring candidate in stable ID order');
+assert.deepEqual(addresses(await indexedSearch.query('foo', searchFunctions, { knowledgeLimit:3 })), ['8192','4096','12288'],
+  'a late substring candidate must be retained after an exact hit while capacity remains');
+const multiWordMemory = await memorySearch.query('foo bar', searchFunctions, { knowledgeLimit:10 });
+const multiWordIndexed = await indexedSearch.query('foo bar', searchFunctions, { knowledgeLimit:10 });
+assert.deepEqual(addresses(multiWordIndexed), addresses(multiWordMemory), 'multiple search terms must retain backend parity');
+assert.deepEqual(await indexedSearch.query('  ', searchFunctions, { knowledgeLimit:10 }), [], 'an empty query must remain a no-op');
 console.log('issue #4681 KnowledgeDB search backend parity: PASS');
