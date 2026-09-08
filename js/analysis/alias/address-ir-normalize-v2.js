@@ -26,6 +26,8 @@ function uniqueIdMap(items) {
   return map;
 }
 
+const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
+
 function exactIntegerConstant(valuesById, nodesById, valueId) {
   const id = canonicalId(valueId);
   if (id == null) return null;
@@ -35,16 +37,23 @@ function exactIntegerConstant(valuesById, nodesById, valueId) {
   if (value.definitionNodeId != null && definitionNodeId == null) return null;
   const node = definitionNodeId == null ? null : nodesById.get(definitionNodeId);
   if (!node || node.kind !== 'const') return null;
+  const machineType = value.machineType;
+  if (machineType != null && (typeof machineType !== 'object' || Array.isArray(machineType))) return null;
+  const machineKind = machineType?.kind ?? null;
+  if (machineKind != null && !INTEGER_CONSTANT_KINDS.has(machineKind)) return null;
+  const candidates = [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant];
   // The carry-in is a machine integer: a constant payload of a different
   // semantic kind (e.g. a float) is not an integer 0 even when its raw value
   // text parses as one (#5947).
-  for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+  for (const candidate of candidates) {
+    if (candidate == null || typeof candidate !== 'object') continue;
+    if (Array.isArray(candidate)) return null;
     const kind = candidate.kind;
-    if (kind !== 'bitvector' && kind !== 'integer') return null;
+    if (!INTEGER_CONSTANT_KINDS.has(kind) || (machineKind != null && kind !== machineKind)) return null;
+    if (!Object.hasOwn(candidate, 'value') || parseInteger(candidate) == null) return null;
   }
   let exact = null;
-  for (const candidate of [value.metadata?.constant, node.attributes?.constant, node.metadata?.constant]) {
+  for (const candidate of candidates) {
     const integer = parseInteger(candidate);
     if (integer == null) continue;
     if (exact == null) {

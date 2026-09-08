@@ -8,7 +8,7 @@ import { normalizeAddressProofIr } from '../../js/analysis/alias/address-ir-norm
 
 const origin = (id) => ({ instructionIds: [id] });
 
-function irFor(constant) {
+function irFor(constant, machineKind = constant.kind === 'float' ? 'float' : constant.kind ?? 'bitvector') {
   return {
     functionId: 'fn_5947',
     values: [
@@ -18,7 +18,7 @@ function irFor(constant) {
         id: 'cin',
         kind: 'definition',
         definitionNodeId: 'c0',
-        machineType: { kind: 'float', widthBits: 32 },
+        machineType: { kind: machineKind, widthBits: 32 },
         metadata: { constant: { ...constant } },
       },
       { id: 'sum', kind: 'definition', definitionNodeId: 'adc' },
@@ -56,4 +56,16 @@ test('#5947 an integer-typed zero carry-in still projects to exact add', () => {
   const normalized = normalizeAddressProofIr(irFor({ kind: 'integer', value: '0' }));
   const projection = normalized.nodes.find((node) => node.attributes?.canonicalAddressProjection);
   assert.ok(projection, 'exact integer-zero carry-in must project');
+});
+
+test('#5947 a float machine type cannot be relabeled as an integer zero', () => {
+  const normalized = normalizeAddressProofIr(irFor({ kind: 'bitvector', value: '0' }, 'float'));
+  const projection = normalized.nodes.find((node) => node.attributes?.canonicalAddressProjection);
+  assert.equal(projection, undefined, 'machine type must agree with the integer constant domain');
+});
+
+test('#5947 a malformed structured integer payload does not mint an exact proof', () => {
+  const normalized = normalizeAddressProofIr(irFor({ kind: 'bitvector', value: 'not-an-integer' }));
+  const projection = normalized.nodes.find((node) => node.attributes?.canonicalAddressProjection);
+  assert.equal(projection, undefined, 'an unparseable structured constant is not exact evidence');
 });
