@@ -1,3 +1,47 @@
+# Reviewed recovery runtime batch — 2026-09-08
+
+Implementation source: `2313838c3`; canonical generated commit: `71b654adc`.
+The later `f087026bd` changes T026 documentation only. The task ledger remains
+43/61; neither full-command acceptance nor performance acceptance is claimed.
+
+Integrated repairs bind asynchronous proposal mutations to the original patch,
+session and binary immediately before writes (`baa392ec6`, `35a977e49`,
+`af4c9615b`). Legacy AI search/decompile now preserves cancellation reasons and
+observes late producer rejection (`b11f4a8dc`, `2313838c3`). Five focused AI
+regression files pass together on Node22.20.0 (0.8 s).
+
+Frozen P8 reference and numeric authority are enforced by `030378938`. The
+competitive measurement suite, including the valid repository capture path,
+passed 6/6 (13.8 s) with `HEX_COMPETITIVE_P8_CAPTURE_FIXTURE` pointing to the
+retained `p8-1813-capture.json`. Fixture positives do not constitute measured
+product evidence. The remaining ten fallback rows are recorded in the roadmap.
+
+`880f16572` reuses privately produced immutable SemanticIR/MemorySSA identities.
+Its focused cache regression passes on the integrated tree (0.5 s). A single
+representative call improved from 5133.72 to 3134.67 ms; this is not a full-corpus
+threshold result. The failed three-repetition observation below remains the
+latest complete measurement, predating this optimization.
+
+Two canonical userscript builds passed (3.2 s and 3.0 s), with identical hashes
+after the second build. Release `2.0.2322242157`, build `c00112ebe190ff24e2498edf`:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `userscript/hex.user.template.js` | `1444fb35b285cb00fc259314b79276b62ad34d77231bc31c60aaea877b4ff146` |
+| `userscript/release-version.json` | `b768a4ee1a60e98fb8715c147cb383d0cb95c6779c9338c539f87761b317947e` |
+| `js/userscript/deployment-identity.generated.js` | `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252` |
+
+`npm run userscript:test` passed (49.1 s) on the generated runtime with Node22.
+Its local route builds stamp the deployment identity; the canonical generator
+must restore the local unbound stamp before the next clean-head verification.
+The combined UI browser command failed after53.5 s: Chromium viewports passed,
+but WebKit could not start because libxslt.so.1 is absent from its loader path.
+Retained log: `/tmp/hex-integrated-ui-browser-IonGpV/full.log`. Dependency repair
+and full-command verification remain pending. Physical-device execution is
+explicitly deferred.
+
+---
+
 # Latest verification update — 2026-09-08
 
 Task ledger remains **43/61**. Actual device execution is deferred by the owner.

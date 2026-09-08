@@ -9,10 +9,10 @@ current results take precedence.
 | --- | --- | --- |
 | Local integration | Main65bc985e8 merged; legacy/v2 corpus and repaired Phase6 pass. The earlier Node24 batch has18-component composed passing evidence. A fresh full command stopped on LLVM selection; f853691e5 repairs it with focused passes. | SHA256 note initialization, real UI approval and measurement-contract repairs are complete and tested. Retain original logs; full-command npm check is not relabeled PASS. |
 | T026 comparison | Repository-owned P5/P6 capture artifacts and a valid P8 nine-artifact LLVM18.1.3 capture (`p8-1813-capture.json`, including ARM64) exist. Canonical P8 measured quality remains `UNMEASURED`: the locked 135-row observations contain ten known conservative fallback rows; the first failure is `quality.aggregate_array_stride.O0` with seven unsupported Semantic IR instructions, matching the frozen baseline. Reviewed metric bindings are implemented; all 32 competitive contract tests pass. | Obtain corresponding external data or explicit deferral. Archived P5/P6 ledgers still lack execution identity; three external game binaries still lack source/compiler/debug identities. The historical LLVM18.1.8 capture is not the frozen P8 lineage. Preserve the full denominator; do not fabricate values. |
-| Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Diagnose representative slow functions before another full measurement. Shared-host activity limits attribution. Physical execution is deferred; retain browser/runtime requirements. |
+| Performance/platform | Current f853691e5 / Node22.20 three-repetition result: cold1571.855 ms FAIL250; optimizer340.907 ms FAIL150; interactive1.246 ms PASS5. All405 samples collected; unpublished/divergence counts are zero. | Immutable SemanticIR/MemorySSA reuse is integrated at880f16572 and focused tests pass; one representative call improved38.9%, which is not full acceptance. Shared-host activity limits attribution. Physical execution is deferred; retain browser/runtime requirements. |
 | Hosted checks/review | Draft PR7097 exists. Main UI trigger and Phase12 scheduling corrections pass focused checks; CircleCI aggregate ownership routing passes locally; raw-heredoc compilation error is repaired; the published f853691e5 head passes all six CircleCI jobs. | Integrate reviewed follow-up fixes, then publish and classify the resulting exact-head checks. Draft CodeRabbit skip is not review approval. |
 | Main admission | Read-only ruleset22276485 has no required status checks. | Record the external enforcement gap; do not merge a red/unreviewed candidate or call local feedback release approval. |
-| Additional review | Async mutation target changes, legacy cancellation and frozen P8 reference identity need focused follow-up. | Fix confirmed gaps in isolated lanes; integrate once reviewed. No speculative task completion. |
+| Additional review | Async mutation target guards, exact legacy cancellation and frozen P8 reference authority repairs are integrated and focused regressions pass. | Complete the combined batch and outstanding independent review scope. No speculative task completion. |
 | Historical administration | T047/T049/T050/T061 remain retired unchecked history. | No checkpoint receipt reconstruction under the owner's speed amendment. |
 | T045 physical numeric contract | Collector, fourteen-row validation and Stage2 scenario/numeric binding implemented and tested. | Collect actual device evidence only after development, per owner instruction. |
 
@@ -21,8 +21,9 @@ and `evidence/post-development-device-checks.md` for deferred physical checks.
 The prior generated source at 0809dbfb5 was built twice with zero second-run
 tracked diff; a07ff5bb5 contains those historical artifacts. Its generated runtime
 tests passed (45.4 s). Subsequent integrated runtime changes now require the
-canonical generated rebuild; that rebuild is in progress and no new generated-runtime
-PASS is claimed here. The original issue worktree and user tmp work are untouched.
+canonical generated rebuild. That update is committed at71b654adc; two builds
+produce identical hashes and userscript:test passes49.1 s. Browser and full-command
+checks remain pending. The original issue worktree and user tmp work are untouched.
 
 ## Historical implementation observations
 
