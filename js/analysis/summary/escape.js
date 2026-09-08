@@ -19,6 +19,7 @@
 
 import { deepFreeze } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
+import { provenSeparationAuthority } from '../pointsto/lattice.js';
 
 export const ESCAPE_ANALYZER_ID = 'phase7.summary.escape';
 export const ESCAPE_ANALYZER_VERSION = '1.0.0';
@@ -106,8 +107,10 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
    * (issue #5892): `global-like` normalizes to a `rooted` proof, but it is a
    * global storage root, not an incoming argument. Only descriptor-backed
    * authority counts — a `separationClass` without that authority must not
-   * mint a global, so an ordinary `rooted` target stays `incoming`. */
-  if (target.separationAuthority === 'root-descriptor'
+   * mint a global, so an ordinary `rooted` target stays `incoming`. The
+   * authority is verified against the target's proof brand (#6066), not the
+   * stored string. */
+  if (provenSeparationAuthority(target) === 'root-descriptor'
     && target.separationClass === 'global-like') return 'global';
   if (target.rootKind === 'rooted') return 'incoming';
   return 'unknown';
@@ -115,6 +118,24 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
 
 function evidenceOf(node) {
   return [...(node.origin?.instructionIds ?? [])].map(String);
+}
+
+function callArgumentValueIds(node) {
+  const canonicalArguments = node.call?.arguments;
+  if (Array.isArray(canonicalArguments) && canonicalArguments.length) {
+    return canonicalArguments
+      .map((argument) => argument?.valueId ?? argument)
+      .filter((value) => value != null);
+  }
+
+  const targetValueIds = new Set(
+    (Array.isArray(node.call?.targetValueIds) ? node.call.targetValueIds : [])
+      .map((target) => target?.valueId ?? target)
+      .filter((value) => value != null),
+  );
+  return (node.inputs ?? [])
+    .map((input) => input?.valueId ?? input)
+    .filter((value) => value != null && !targetValueIds.has(value));
 }
 
 /**
@@ -152,8 +173,13 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   let sawUnresolvedFlow = false;
 
   const setsFor = (valueId) => {
-    const set = pointsToRun.pointsTo.get(String(valueId));
-    return set ?? null;
+    // Points-to map keys are canonical value ID strings. A non-string
+    // reference is not an alias for some canonical value: String-coercion
+    // would let a structured id like ['v1'] read 'v1''s points-to set and
+    // turn another value's flow into escape evidence (#5783). Fail closed to
+    // an unresolved flow instead.
+    if (typeof valueId !== 'string') return null;
+    return pointsToRun.pointsTo.get(valueId) ?? null;
   };
 
   const record = (set, { reason, boundary, siteId, evidenceIds }) => {
@@ -234,11 +260,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       const complete = node.call?.completeness === 'complete';
       const reason = complete ? 'passed-to-known-call' : 'passed-to-unknown-call';
       const boundary = complete ? 'known-call' : 'unknown-call';
-      const argumentValueIds = [
-        ...(node.call?.arguments ?? []).map((argument) => argument?.valueId ?? argument),
-        ...(node.inputs ?? []),
-      ].filter((value) => value != null);
-      for (const valueId of argumentValueIds) {
+      for (const valueId of callArgumentValueIds(node)) {
         record(setsFor(valueId), { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       if (!complete) sawUnresolvedFlow = true;

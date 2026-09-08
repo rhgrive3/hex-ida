@@ -761,17 +761,24 @@ export function canonicalAddressProofToRegionEvidence(proof) {
     return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });
   }
   if (proof.kind !== 'rooted') return null;
+  // Preserve the proof's proven storage domain into the region layer (#5901).
+  // Flat `memory` rooted-offsets keep their historical shape; a rooted proof
+  // in `tls`/`io`/etc. must not silently become a flat memory region.
+  const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace && proof.addressSpace !== 'memory'
+    ? proof.addressSpace : null;
   if (proof.separationSafe) {
     return deepFreeze({
       kind: 'rooted-offset',
       rootEntityId: proof.rootEntityId,
       offset: proof.offset.toString(),
+      ...(proofSpace ? { addressSpace: proofSpace } : {}),
     });
   }
   return deepFreeze({
     kind: 'rooted-offset',
     rootEntityId: exactAddressRootId(proof),
     offset: '0',
+    ...(proofSpace ? { addressSpace: proofSpace } : {}),
   });
 }
 

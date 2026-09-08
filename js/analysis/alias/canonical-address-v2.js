@@ -29,6 +29,10 @@ export {
 
 const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
 
+// A proof object is valid only when it came through this canonical producer.
+// The WeakSet is intentionally private: matching fields alone are not a minting capability.
+const CANONICAL_ROOT_DESCRIPTOR_PROOFS = new WeakSet();
+
 function rootDescriptorForProof(proof) {
   if (!proof || !['rooted', 'root-only'].includes(proof.kind)) return null;
   // The core has already normalized and validated this provenance. This
@@ -43,11 +47,19 @@ function rootDescriptorForProof(proof) {
 function attachSeparationAuthority(proof) {
   const descriptor = rootDescriptorForProof(proof);
   const kind = typeof descriptor?.kind === 'string' ? descriptor.kind : null;
-  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)
-      || descriptor.authority !== 'root-descriptor') return proof;
+  if (PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)
+      && descriptor.authority === 'root-descriptor') {
+    CANONICAL_ROOT_DESCRIPTOR_PROOFS.add(proof);
+  }
   // `proof` is frozen by the core, and the metadata above is its validated
   // provenance. Returning it directly avoids a provider/table re-invocation.
   return proof;
+}
+
+export function isCanonicalRootDescriptorProof(proof) {
+  return proof != null
+    && (typeof proof === 'object' || typeof proof === 'function')
+    && CANONICAL_ROOT_DESCRIPTOR_PROOFS.has(proof);
 }
 
 // The rewrite below is a pure function of the incoming SSA. Cache it by SSA

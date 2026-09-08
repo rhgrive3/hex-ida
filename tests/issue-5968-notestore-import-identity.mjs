@@ -19,10 +19,17 @@ for (const bad of [['binary-A'], { toString: () => 'binary-A' }, 4096, true, ['b
   const store = new NoteStore('binary-A');
   assert.throws(
     () => store.fromJSON(payload(bad)),
-    (err) => err instanceof Error && err.message === 'invalid-notes-import',
+    (err) => err instanceof Error && err.message === 'notes-file-mismatch',
     `non-string id ${JSON.stringify(bad)} must be rejected as malformed identity`,
   );
   assert.equal(store.nameOf(4096n), null, 'malformed identity backup content must not enter the store');
+}
+
+// The identity type rule also applies before a store has a binary binding.
+for (const bad of [['binary-A'], {}, 4096, true]) {
+  const store = new NoteStore();
+  assert.throws(() => store.fromJSON(payload(bad)), /notes-file-mismatch/);
+  assert.equal(store.nameOf(4096n), null);
 }
 
 // Canonical string identity still matches and imports.

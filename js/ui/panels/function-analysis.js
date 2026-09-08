@@ -3,6 +3,7 @@ import { addrHex, sizeText } from '../../format.js';
 import { showDecompiler, showCfg, showCallGraphPanel } from '../../tools.js';
 import { functionViews, openFunctionView } from '../next-views.js';
 import { decompile as decompileModel } from '../../decompile.js';
+import { t } from '../../i18n.js';
 
 const COMPLETENESS_JA = Object.freeze({
   complete:'完全',
@@ -53,13 +54,80 @@ export async function analysisBundle(app, functionId, options = {}) {
   }, options);
 }
 
-async function functionPage(app, text, signal) {
+const FUNCTION_PAGE_LIMIT = 600;
+
+async function functionPage(app, text, signal, offset = 0) {
   return withFreshSnapshot(app, (api, snapshot) => api.functions(
     snapshot,
     text ? { text } : {},
-    { offset:0, limit:600 },
+    { offset, limit:FUNCTION_PAGE_LIMIT },
     { signal },
   ), { signal });
+}
+
+/**
+ * Keep the UI consumer on the canonical function pagination contract.  The
+ * query API owns the page size and continuation; the panel only requests the
+ * next page when the user asks for it.
+ */
+export function createFunctionPager(fetchPage) {
+  let offset = 0;
+  let done = false;
+  let completeness = 'complete';
+  let total = null;
+
+  return {
+    get hasMore() { return !done; },
+    get completeness() { return completeness; },
+    get total() { return total; },
+    async next(options = {}) {
+      if (done) return { value:[], completeness, total, done:true, unsupported:false };
+      const requestedOffset = offset;
+      const response = await fetchPage(requestedOffset, options);
+      const rowsValid = Array.isArray(response?.value);
+      const value = rowsValid ? response.value : [];
+      const pageCompleteness = response?.completeness ?? response?.status?.completeness ?? 'unknown';
+      if (!rowsValid || pageCompleteness !== 'complete') completeness = 'partial';
+
+      const page = response?.page;
+      const rawTotal = page?.total;
+      if (rawTotal == null) {
+        total = null;
+      } else if (typeof rawTotal !== 'number' || !Number.isSafeInteger(rawTotal) || rawTotal < requestedOffset + value.length) {
+        completeness = 'partial';
+        total = null;
+      } else if (total == null) {
+        total = rawTotal;
+      } else if (total !== rawTotal) {
+        completeness = 'partial';
+        total = null;
+      }
+
+      if (!page || !Object.hasOwn(page, 'next')) {
+        completeness = 'partial';
+        done = true;
+      } else if (page.next === null) {
+        done = true;
+      } else {
+        const expectedNext = requestedOffset + value.length;
+        if (!Number.isSafeInteger(page.next) || page.next <= requestedOffset || page.next !== expectedNext) {
+          completeness = 'partial';
+          done = true;
+        } else {
+          offset = page.next;
+        }
+      }
+
+      return {
+        value,
+        completeness,
+        total,
+        done,
+        unsupported: response?.completeness === 'unsupported' || !rowsValid,
+        status: response?.status ?? null,
+      };
+    },
+  };
 }
 
 function productRouter() {
@@ -128,41 +196,95 @@ export function showFunctions(app) {
 
   let sequence = 0;
   let controller = null;
+  let pager = null;
+  let loaded = 0;
+  let loading = false;
+  let more = null;
+
+  const updateStatus = (completeness, total) => {
+    const count = total != null && total >= loaded
+      ? `${total.toLocaleString()} 個中 ${loaded.toLocaleString()} 個を表示`
+      : `${loaded.toLocaleString()} 個`;
+    status.textContent = `${count} · ${COMPLETENESS_JA[completeness] ?? completeness}`;
+  };
+
+  const appendRows = (items) => {
+    const fragment = document.createDocumentFragment();
+    for (const item of items) {
+      const address = item.address ?? item.addr ?? null;
+      if (address == null) continue;
+      const addr = BigInt(address);
+      const details = [addrHex(addr)];
+      const size = item.size == null ? null : BigInt(item.size);
+      if (size != null && size > 0n) details.push(sizeText(size));
+      fragment.append(tapRow(item.name || '名前のない関数', {
+        sub:details.join('  ·  '),
+        onTap:() => { sheet.close(); app.goToFunction(addr); },
+      }));
+    }
+    results.append(fragment);
+  };
+
+  const updateMore = (current, completeness, total) => {
+    if (!pager?.hasMore) {
+      more?.remove();
+      more = null;
+      return;
+    }
+    if (!more) more = tapRow(t('search.more'), { onTap:() => { void loadMore(current); } });
+    more.replaceChildren(el('div', null, total != null
+      ? t('search.showMore', { n:Math.max(0, total - loaded).toLocaleString() })
+      : t('search.more')));
+    results.append(more);
+    updateStatus(completeness, total);
+  };
+
+  const loadMore = async (current) => {
+    if (loading || current !== sequence || !pager) return;
+    loading = true;
+    more?.remove();
+    try {
+      const page = await pager.next({ signal:controller.signal });
+      if (current !== sequence || controller.signal.aborted) return;
+      loaded += page.value.length;
+      appendRows(page.value);
+      updateMore(current, page.completeness, page.total);
+    } catch (error) {
+      if (current !== sequence && error?.name !== 'AbortError') return;
+      if (error?.name !== 'AbortError' && current === sequence) {
+        alertDialog('関数を調べられませんでした', userError(error));
+        updateMore(current, pager.completeness, pager.total);
+      }
+    } finally {
+      loading = false;
+    }
+  };
+
   const render = async () => {
     const current = ++sequence;
     controller?.abort();
     controller = new AbortController();
     const text = input.value.trim();
     status.textContent = '関数を確認しています…';
+    results.replaceChildren();
+    pager = createFunctionPager((offset, options) => functionPage(app, text, options.signal, offset));
+    loaded = 0;
+    loading = false;
+    more = null;
     try {
-      const page = await functionPage(app, text, controller.signal);
+      const page = await pager.next({ signal:controller.signal });
       if (current !== sequence) return;
-      results.replaceChildren();
-      if (page?.completeness === 'unsupported' || !Array.isArray(page?.value)) {
-        const reason = page?.status?.reason ? `（${page.status.reason}）` : '';
+      if (page.unsupported) {
+        const reason = page.status?.reason ? `（${page.status.reason}）` : '';
         status.textContent = `関数一覧は現在の解析経路では利用できません${reason}。`;
         results.append(tapRow('関数一覧を作れませんでした', { disabled:true }));
         return;
       }
-      for (const item of page.value) {
-        const address = item.address ?? item.addr ?? null;
-        if (address == null) continue;
-        const addr = BigInt(address);
-        const details = [addrHex(addr)];
-        const size = item.size == null ? null : BigInt(item.size);
-        if (size != null && size > 0n) details.push(sizeText(size));
-        results.append(tapRow(item.name || '名前のない関数', {
-          sub:details.join('  ·  '),
-          onTap:() => { sheet.close(); app.goToFunction(addr); },
-        }));
-      }
+      loaded = page.value.length;
+      appendRows(page.value);
       if (!page.value.length) results.append(tapRow('見つかりませんでした', { disabled:true }));
-      const total = Number(page.page?.total ?? page.value.length);
-      const returned = Number(page.page?.returned ?? page.value.length);
-      const completeness = COMPLETENESS_JA[page.completeness] ?? page.completeness;
-      status.textContent = total > returned
-        ? `${total.toLocaleString()} 個中 ${returned.toLocaleString()} 個を表示 · ${completeness}`
-        : `${total.toLocaleString()} 個 · ${completeness}`;
+      updateStatus(page.completeness, page.total);
+      updateMore(current, page.completeness, page.total);
     } catch (error) {
       if (error?.name === 'AbortError' || current !== sequence) return;
       status.textContent = '';
