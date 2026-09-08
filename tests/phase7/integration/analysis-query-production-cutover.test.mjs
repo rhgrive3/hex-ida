@@ -143,8 +143,12 @@ assert.equal(bypassCalls, 0, 'production Function Workspace must not fall back t
 assert.equal(canonicalCalls, 1);
 
 const x86Snapshot = await x86Api.snapshot();
-assert.equal((await x86Api.semanticIR(x86Snapshot, '0x1000')).value, semanticIr);
-assert.equal((await x86Api.cfg(x86Snapshot, '0x1000')).value, cfg);
+const detachedSemanticIr = (await x86Api.semanticIR(x86Snapshot, '0x1000')).value;
+assert.notEqual(detachedSemanticIr, semanticIr, 'semantic IR must be detached from the producer-owned value');
+assert.deepEqual(detachedSemanticIr, semanticIr, 'detached semantic IR must preserve canonical content');
+const detachedCfg = (await x86Api.cfg(x86Snapshot, '0x1000')).value;
+assert.notEqual(detachedCfg, cfg, 'CFG must be detached from the producer-owned value');
+assert.deepEqual(detachedCfg, cfg, 'detached CFG must preserve canonical content');
 assert.equal((await x86Api.decompile(x86Snapshot, '0x1000')).value.pseudocode, 'int f(void) { return 1; }');
 assert.equal(canonicalCalls, 4, 'each immutable query reaches the canonical producer or its artifact warm path');
 
