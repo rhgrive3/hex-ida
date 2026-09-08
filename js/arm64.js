@@ -1155,8 +1155,9 @@ const plainLdr = HANDLERS.ldr;
 HANDLERS.ldr = (o, ops, base, addr, c) => {
   if (ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null) {
     const at = ops[1].value;
+    const size = sizeOfReg(ops[0]);
     o.title = J('近くに置かれた定数を読む', 'Load from a literal pool');
-    o.pseudo = opShort(ops[0]) + ' = *(uint64*)0x' + at.toString(16).toUpperCase();
+    o.pseudo = opShort(ops[0]) + ' = *(' + cType(size, false) + '*)0x' + at.toString(16).toUpperCase();
     o.summary = J(
       'この命令の近くに埋め込まれている値（' + tgt(at, c) + ' の場所）を読み込んで ' + opShort(ops[0]) + ' に入れる。',
       'Read the constant stored at ' + tgt(at, c) + ' into ' + opShort(ops[0]) + '.');

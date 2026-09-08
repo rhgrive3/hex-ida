@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 8 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 10 件の確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -14,6 +14,7 @@
  *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
  *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
  *   #3620  条件付き比較/select の別演算 alias を同じ説明にする
+ *   #3677  LDR literal の転送幅を destination 幅に関係なく固定する
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -212,6 +213,23 @@ try {
   setLang(conditionalLang);
 }
 console.log('  ok 4c conditional compare/select aliases retain W/X and true/false-path semantics (#3620)');
+
+/* ── #3677 literal LDR uses the destination transfer width ─────────────── */
+
+for (const [reg, type] of [
+  ['w0', 'uint32'], ['x0', 'uint64'], ['s0', 'uint32'], ['d0', 'uint64'], ['q0', 'uint128'],
+]) {
+  const e = explain('ldr', `${reg}, #0x1000`, 0x2000n, {});
+  assert.equal(e.handlerError, undefined, `ldr ${reg} literal handler must not throw (#3677)`);
+  assert.equal(e.pseudo, `${reg} = *(${type}*)0x1000`,
+    `ldr ${reg} literal must describe its ${type} transfer width (#3677)`);
+}
+
+// The ordinary base-plus-displacement path remains delegated to loadStore.
+const offsetLoad = explain('ldr', 'w0, [x1, #4]', 0x2000n, {});
+assert.equal(offsetLoad.pseudo, 'w0 = *(uint32*)(x1 + 4)',
+  'non-literal ldr must retain its existing addressing path (#3677)');
+console.log('  ok 4d LDR literal explanations retain W/X/S/D/Q transfer widths (#3677)');
 
 /* ── handler が例外で落ちていないこと ───────────────────────── */
 
