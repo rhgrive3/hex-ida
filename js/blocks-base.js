@@ -245,6 +245,12 @@ const API_TABLE = [
 
   { id: 'crypto', re: /^_?(CC(Crypt|SHA|HMAC|Digest)|SecKey|SecTrust|CryptoKit|AES_|SHA256|SHA1_|MD5_|EVP_)/i,
     cat: 'crypto', args: null, ret: 'status', effect: 'crypto' },
+  // Security.framework data-retrieval/serialization APIs: no cryptographic
+  // operation, they only copy DER representations out of opaque objects (#6182).
+  { id: 'security_cert_data', re: /^_?SecCertificateCopyData$/, cat: 'crypto',
+    args: ['certificate'], ret: 'object', effect: 'read' },
+  { id: 'security_requirement_data', re: /^_?SecRequirementCopyData$/, cat: 'crypto',
+    args: ['requirement'], ret: 'object', effect: 'read' },
   { id: 'keychain', re: /SecItem(Add|Copy|Update|Delete)|Keychain/i, cat: 'secret',
     args: ['query'], ret: 'status', effect: 'secret' },
   { id: 'random', re: /^_?(arc4random|arc4random_uniform|SecRandomCopyBytes|rand|random)$/i, cat: 'random',
