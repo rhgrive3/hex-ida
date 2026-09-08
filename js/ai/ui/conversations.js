@@ -138,7 +138,6 @@ const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
-  const storageKey = String(key);
   const backing = () => {
     if (storage) return storage;
     try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
@@ -148,8 +147,15 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
+  // Re-canonicalize defensively: a boxed/coercible key (e.g. `new String(...)`
+  // with a throwing toString) must never alias the default store's bucket or
+  // index paths, and custom stores must not own the legacy v1 key.
+  const storageKey = (() => {
+    try { return String(key); } catch { return null; }
+  })();
   const bucketKey = (space) => `${storageKey}.${space}`;
   const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
+  const ownsLegacyStorage = storageKey === STORAGE_KEY;
 
   const readIndex = () => {
     const store = backing();
@@ -190,6 +196,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
   };
 
   const migrateLegacyIfNeeded = () => {
+    if (!ownsLegacyStorage) return;
     const store = backing();
     if (!store) return;
     try {
@@ -229,11 +236,13 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) return parsed.map((item) => reviveConversation(item, space));
         }
-        const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
-        if (legacyRaw) {
-          const parsed = JSON.parse(legacyRaw);
-          if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
-            return parsed[space].map((item) => reviveConversation(item, space));
+        if (ownsLegacyStorage) {
+          const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+          if (legacyRaw) {
+            const parsed = JSON.parse(legacyRaw);
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
+              return parsed[space].map((item) => reviveConversation(item, space));
+            }
           }
         }
       } catch { return []; }
@@ -282,7 +291,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
         store.removeItem(indexKey());
-        store.removeItem(LEGACY_STORAGE_KEY);
+        if (ownsLegacyStorage) store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },
   };

@@ -24,7 +24,8 @@ import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
-import { recoverSchemas } from './schema.js';
+import { normalizeSchemaRecoveryLimit, recoverSchemas } from './schema.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
 import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
@@ -36,6 +37,7 @@ import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
+import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 
 
 let _panelsModulePromise = null;
@@ -68,8 +70,122 @@ const showAccuracyNotes = lazyPanel('showAccuracyNotes');
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
+/**
+ * Build the recognition state from the SymbolIndex function-start contract.
+ *
+ * Kept outside App so the state-producing behavior can be exercised without
+ * constructing the browser UI.  The browser path and the regression harness
+ * therefore share the exact same population, naming, window, completeness,
+ * and knowledge-count logic.
+ */
+export async function buildRecognitionState({
+  sym,
+  maxFunctions = 350_000,
+  knowledgeLimit = 512,
+  fields = EMPTY_FIELDS,
+  knowledge = null,
+  binaryHash = null,
+  isCurrent = () => true,
+} = {}) {
+  if (!sym || sym === EMPTY_INDEX) return null;
+  const max = Math.min(500_000, Math.max(1_000, Number(maxFunctions) || 350_000));
+  const limit = Math.min(2_048, Math.max(0, Number(knowledgeLimit) || 0));
+  const total = sym.functionCount || 0;
+  const count = Math.min(total, max);
+  const functions = new Array(count);
+  for (let i = 0; i < count; i++) {
+    if (!isCurrent()) return null;
+    const address = sym.funcs[i], name = sym.nameAt?.(address) || null;
+    const windowEnd = sym.functionWindowBound?.(address) || null;
+    const owner = fields?.ownerOf?.(address) || null;
+    const swiftName = name && /^(.*)::method_(\d+)$/.exec(name);
+    functions[i] = {
+      address, name, size: windowEnd != null && windowEnd > address ? Number(windowEnd - address) : 0,
+      objc: owner?.className ? { class: owner.className } : {},
+      swift: swiftName ? { typeDescriptor: swiftName[1] } : {},
+      strings: [], calls: [], imports: [], semantic: { writes: [], thresholds: [] }, fieldAccessShape: [],
+    };
+    if ((i & 8191) === 8191) await Promise.resolve();
+  }
+  const ranked = rankApplicationFunctions(functions, () => ({ notKnownVendor: true }));
+  const knowledgeCount = Math.min(limit, ranked.length);
+  let knowledgeMatches = 0, knowledgeAmbiguous = 0;
+  for (let i = 0; i < knowledgeCount; i++) {
+    if (!isCurrent()) return null;
+    try {
+      const propagated = await knowledge?.propagate?.(ranked[i].function, { threshold: 0.84, ambiguityWindow: 0.035 });
+      if (propagated?.propagated) { ranked[i].knowledge = propagated; knowledgeMatches++; }
+      else if (propagated?.ambiguous || propagated?.truncated) knowledgeAmbiguous++;
+    } catch { /* local knowledge must never block binary analysis */ }
+    if ((i & 63) === 63) await Promise.resolve();
+  }
+  const records = ranked.map((x) => {
+    const known = x.knowledge?.candidate || null;
+    return {
+      address: x.function.address,
+      name: known?.names?.[0] || x.function.name || null,
+      originalName: x.function.name || null,
+      score: x.score, classification: x.classification.classification,
+      confidence: x.classification.confidence, evidence: x.classification.evidence,
+      fingerprint: x.function, knowledge: known, knowledgeConfidence: x.knowledge?.confidence || 0,
+      knowledgeSourceId: x.knowledge?.sourceId || null,
+    };
+  });
+  return {
+    gen: sym.gen, records, total, scannedCount: count,
+    complete: count === total && sym.functionStartsComplete === true,
+    truncationReason: count === total ? (sym.functionStartsComplete === true ? null : 'function-discovery-incomplete') : 'function-budget',
+    binaryHash, knowledge, knowledgeScanned: knowledgeCount, knowledgeMatches, knowledgeAmbiguous,
+    knowledgeComplete: knowledgeCount === ranked.length,
+  };
+}
 
-class App {
+// Keep the App cache/epoch wrapper executable in integration tests without
+// constructing the browser UI. App.ensureRecognition delegates to this seam,
+// so tests exercise the same production state and completeness path.
+export async function ensureRecognitionState(app, options = {}) {
+  const sym = app?.symbols;
+  if (!sym || sym === EMPTY_INDEX) return null;
+  // The recognition state bakes in knowledge propagation results, so a
+  // knowledge mutation must invalidate cached and in-flight recognition (#5723).
+  const knowledgeRev = Number(app.knowledge?.revision ?? 0);
+  const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
+  if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
+  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
+  const epoch = app.backend.gen;
+  const max = Math.min(500000, Math.max(1000, Number(options.maxFunctions) || 350000));
+  const knowledgeLimit = Math.min(2048, Math.max(0, Number(options.knowledgeLimit ?? 512)));
+  const pending = (async () => {
+    try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
+    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
+    // Symbol metadata can change while the async state build yields. Pin the
+    // generation after optional metadata producers finish and reject any
+    // snapshot that crosses a symbol-index or knowledge mutation.
+    const symbolGen = sym.gen;
+    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
+    const state = await buildRecognitionState({
+      sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
+      binaryHash:app.backend.contentHash || null,
+      isCurrent,
+    });
+    if (state == null || !isCurrent()) return null;
+    app.recognition = state;
+    app.recognitionKnowledgeRev = knowledgeRev;
+    return state;
+  })();
+  app.recognitionBusy = pending;
+  app.recognitionBusyKnowledgeRev = knowledgeRev;
+  try { return await pending; }
+  finally {
+    if (app.recognitionBusy === pending) {
+      app.recognitionBusy = null;
+      app.recognitionBusyKnowledgeRev = null;
+    }
+  }
+}
+
+
+export class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
 
   constructor() {
@@ -566,6 +682,7 @@ class App {
   forgetSemantics(dropCache) {
     this.semantic = null;
     if (dropCache) {
+      clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
       this.autoReport = null;
@@ -750,8 +867,9 @@ class App {
    * 文字列と呼び出し関係が要るので、先にそちらを用意してから走る。
    */
   async ensureSchemas(onProgress) {
-    if (this.schemas) return this.schemas;
     const epoch = this.backend.gen;
+    const maxSchemas = normalizeSchemaRecoveryLimit();
+    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas)) return this.schemas;
     if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
     this.schemasBusyEpoch = epoch;
     this.schemasBusy = (async () => {
@@ -759,15 +877,22 @@ class App {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
-        if (!program) { this.schemas = []; return this.schemas; }
+        if (!program) {
+          this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+          return this.schemas;
+        }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
         const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
         const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
-          isCancelled: () => epoch !== this.backend.gen });
-        if (epoch === this.backend.gen) this.schemas = schemas;
+          limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+        }
       } catch {
-        if (epoch === this.backend.gen) this.schemas = [];
+        if (epoch === this.backend.gen) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas });
+        }
       } finally {
         if (this.schemasBusyEpoch === epoch) {
           this.schemasBusy = null;
@@ -1216,67 +1341,7 @@ class App {
   }
 
   async ensureRecognition(options={}) {
-    const sym=this.symbols;
-    if(!sym || sym===EMPTY_INDEX) return null;
-    if(this.recognition && this.recognition.gen===sym.gen) return this.recognition;
-    if(this.recognitionBusy) return this.recognitionBusy;
-    const epoch=this.backend.gen;
-    const max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
-    const knowledgeLimit=Math.min(2048,Math.max(0,Number(options.knowledgeLimit ?? 512)));
-    const pending=(async()=>{
-      try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
-      if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=new Array(count);
-      for(let i=0;i<count;i++){
-        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-        const address=sym.addrs[i], name=sym.names?.[i]||null;
-        const next=i+1<total?sym.addrs[i+1]:null;
-        const owner=this.fields?.ownerOf?.(address)||null;
-        const swiftName=name&&/^(.*)::method_(\d+)$/.exec(name);
-        functions[i]={
-          address,name,size:next!=null&&next>address?Number(next-address):0,
-          objc:owner?.className?{class:owner.className}:{},
-          swift:swiftName?{typeDescriptor:swiftName[1]}:{},
-          strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[],
-        };
-        if((i&8191)===8191) await Promise.resolve();
-      }
-      const ranked=rankApplicationFunctions(functions,()=>({notKnownVendor:true}));
-      const knowledgeCount=Math.min(knowledgeLimit,ranked.length);
-      let knowledgeMatches=0, knowledgeAmbiguous=0;
-      for(let i=0;i<knowledgeCount;i++){
-        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
-        try {
-          const propagated=await this.knowledge.propagate(ranked[i].function,{threshold:0.84,ambiguityWindow:0.035});
-          if(propagated?.propagated){ranked[i].knowledge=propagated;knowledgeMatches++;}
-          else if(propagated?.ambiguous || propagated?.truncated) knowledgeAmbiguous++;
-        } catch { /* local knowledge must never block binary analysis */ }
-        if((i&63)===63) await Promise.resolve();
-      }
-      const records=ranked.map((x)=>{
-        const known=x.knowledge?.candidate||null;
-        return {
-          address:x.function.address,
-          name:known?.names?.[0]||x.function.name||null,
-          originalName:x.function.name||null,
-          score:x.score,classification:x.classification.classification,
-          confidence:x.classification.confidence,evidence:x.classification.evidence,
-          fingerprint:x.function,knowledge:known,knowledgeConfidence:x.knowledge?.confidence||0,
-          knowledgeSourceId:x.knowledge?.sourceId||null,
-        };
-      });
-      const state={
-        gen:sym.gen,records,total,scannedCount:count,complete:count===total,
-        truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,
-        knowledge:this.knowledge,knowledgeScanned:knowledgeCount,knowledgeMatches,knowledgeAmbiguous,
-        knowledgeComplete:knowledgeCount===ranked.length,
-      };
-      if(epoch===this.backend.gen && sym===this.symbols)this.recognition=state;
-      return state;
-    })();
-    this.recognitionBusy=pending;
-    try { return await pending; }
-    finally { if(this.recognitionBusy===pending)this.recognitionBusy=null; }
+    return ensureRecognitionState(this, options);
   }
 
   /** その関数がどのクラスのメソッドか。分からなければ null。 */
@@ -1536,9 +1601,11 @@ function friendly(message) {
 
 /* ── 起動 ───────────────────────────────────────────────────── */
 
-window.addEventListener('error', (e) => {
-  if (e && e.message && /ResizeObserver/.test(e.message)) return;
-});
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('error', (e) => {
+    if (e && e.message && /ResizeObserver/.test(e.message)) return;
+  });
 
-const app = new App();
-window.__app = app;   // Safari の Web インスペクタ用。UI からは使っていない。
+  const app = new App();
+  window.__app = app;   // Safari の Web インスペクタ用。UI からは使っていない。
+}

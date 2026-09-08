@@ -129,7 +129,49 @@ export function humanError(error) {
   const diagnostics = visibleProviderDiagnostics(error);
   return diagnostics ? `${label}\n\n${diagnostics}` : label;
 }
-export function addressExistsSync(context, address) { if (typeof context.addressExists === 'function') { const result = context.addressExists(address); if (typeof result === 'boolean') return result; } try { if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address)); if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address)); } catch { return false; } return true; }
+export function raceAbort(promise, signal, fallback = false) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.resolve(fallback);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = () => finish(fallback);
+    signal.addEventListener('abort', onAbort, { once:true });
+    Promise.resolve(promise).then(finish, () => finish(fallback));
+  });
+}
+export function addressExistsSync(context, address) {
+  if (typeof context.addressExists === 'function') {
+    try {
+      const result = context.addressExists(address);
+      if (typeof result === 'boolean') return result;
+      if (result && typeof result.then === 'function') return null;
+      return false;
+    } catch { return false; }
+  }
+  try {
+    if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address));
+    if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address));
+  } catch { return false; }
+  return true;
+}
+// An `addressExists` capability is authoritative when present: both explicit
+// false and schema-invalid/non-boolean results must fail closed. Program/symbol
+// fallback is used only when that capability is absent (#5790).
+export async function addressExistsAsync(context, address, signal = null) {
+  if (typeof context.addressExists === 'function') {
+    try {
+      const result = await raceAbort(context.addressExists(address), signal, false);
+      return typeof result === 'boolean' ? result : false;
+    } catch { return false; }
+  }
+  return addressExistsSync(context, address);
+}
 export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
 export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
 

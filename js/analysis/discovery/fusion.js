@@ -56,8 +56,9 @@ export class DiscoveryProducerRegistry {
     // Registry identity and evidence provenance must be the same canonical
     // string authority. A structured id must not coerce into a real registry
     // key (String(['p1']) === 'p1') while the raw value keeps flowing into
-    // evidence provenance.
-    if (typeof producer.id !== 'string' || !producer.id) throw new TypeError('discovery-producer-id-required');
+    // evidence provenance, and a whitespace-only or padded id must not
+    // manufacture a second "independent" producer (#5792).
+    if (typeof producer.id !== 'string' || producer.id.trim() === '' || producer.id.trim() !== producer.id) throw new TypeError('discovery-producer-id-required');
     const id = producer.id;
     this.producers.set(id, producer);
     return this;
@@ -67,7 +68,7 @@ export class DiscoveryProducerRegistry {
   for(architectureId) {
     return [...this.producers.values()]
       .filter((producer) => producer.architectureId == null || producer.architectureId === architectureId)
-      .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      .sort((left, right) => compareText(left.id, right.id));
   }
 
   collect(input, architectureId, options = {}) {
@@ -110,15 +111,28 @@ function regionSignature(item) {
   return item.regions.map((region) => `${region.start}-${region.end}-${region.ownership ?? ''}`).join(',');
 }
 
+/*
+ * Host-locale independent total order over strings (UTF-16 code units).
+ * Canonical/deterministic discovery ordering must not depend on the runtime
+ * ICU locale: default-locale localeCompare() ranks 'ä' vs 'z' differently
+ * under de_DE and sv_SE, which reordered evidence and changed which evidence
+ * a full budget retained (#5725).
+ */
+function compareText(left, right) {
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function compareEvidence(left, right) {
   return authorityRank(right.authority) - authorityRank(left.authority)
-    || String(left.start).localeCompare(String(right.start))
-    || String(left.producerId).localeCompare(String(right.producerId))
-    || String(left.kind).localeCompare(String(right.kind))
-    || String(left.name ?? '').localeCompare(String(right.name ?? ''))
-    || String(left.extentRole ?? '').localeCompare(String(right.extentRole ?? ''))
-    || String(left.architectureId ?? '').localeCompare(String(right.architectureId ?? ''))
-    || regionSignature(left).localeCompare(regionSignature(right));
+    || compareText(left.start, right.start)
+    || compareText(left.producerId, right.producerId)
+    || compareText(left.kind, right.kind)
+    || compareText(left.name ?? '', right.name ?? '')
+    || compareText(left.extentRole ?? '', right.extentRole ?? '')
+    || compareText(left.architectureId ?? '', right.architectureId ?? '')
+    || compareText(regionSignature(left), regionSignature(right));
 }
 
 /**
@@ -231,7 +245,7 @@ function fuseExtent(evidence) {
       const byStart = BigInt(left.start) < BigInt(right.start) ? -1 : BigInt(left.start) > BigInt(right.start) ? 1 : 0;
       if (byStart !== 0) return byStart;
       const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
-      return byEnd || left.ownership.localeCompare(right.ownership);
+      return byEnd || compareText(left.ownership, right.ownership);
     });
     return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
   }

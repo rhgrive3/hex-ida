@@ -29,26 +29,37 @@ export {
 
 const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
 
-function rootDescriptorForProof(proof, options = {}) {
+// A proof object is valid only when it came through this canonical producer.
+// The WeakSet is intentionally private: matching fields alone are not a minting capability.
+const CANONICAL_ROOT_DESCRIPTOR_PROOFS = new WeakSet();
+
+function rootDescriptorForProof(proof) {
   if (!proof || !['rooted', 'root-only'].includes(proof.kind)) return null;
-  const table = options.rootDescriptors;
-  if (table == null) return null;
-  const variableKey = proof.rootIdentity?.variable?.key;
-  const keys = variableKey == null ? [] : [`variable:${String(variableKey)}`, String(variableKey)];
-  if (table instanceof Map) {
-    for (const key of keys) if (table.has(key)) return table.get(key);
-    return null;
-  }
-  if (typeof table !== 'object' || Array.isArray(table)) return null;
-  for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return table[key];
-  return null;
+  // The core has already normalized and validated this provenance. This
+  // projection is intentionally proof-local: it never re-reads either the
+  // descriptor table or the provider.
+  return {
+    kind: proof.separationClass,
+    authority: proof.separationAuthority,
+  };
 }
 
-function attachSeparationAuthority(proof, options = {}) {
-  const descriptor = rootDescriptorForProof(proof, options);
-  const kind = typeof descriptor?.kind === 'string' ? descriptor.kind.trim() : null;
-  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)) return proof;
-  return Object.freeze({ ...proof, separationClass: kind, separationAuthority: 'root-descriptor' });
+function attachSeparationAuthority(proof) {
+  const descriptor = rootDescriptorForProof(proof);
+  const kind = typeof descriptor?.kind === 'string' ? descriptor.kind : null;
+  if (PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind)
+      && descriptor.authority === 'root-descriptor') {
+    CANONICAL_ROOT_DESCRIPTOR_PROOFS.add(proof);
+  }
+  // `proof` is frozen by the core, and the metadata above is its validated
+  // provenance. Returning it directly avoids a provider/table re-invocation.
+  return proof;
+}
+
+export function isCanonicalRootDescriptorProof(proof) {
+  return proof != null
+    && (typeof proof === 'object' || typeof proof === 'function')
+    && CANONICAL_ROOT_DESCRIPTOR_PROOFS.has(proof);
 }
 
 // The rewrite below is a pure function of the incoming SSA. Cache it by SSA
@@ -89,7 +100,7 @@ export {
 
 export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   const normalizedOptions = addressProofOptions(options);
-  return attachSeparationAuthority(deriveCanonicalAddressProofCore(ir, addressValueId, normalizedOptions), normalizedOptions);
+  return attachSeparationAuthority(deriveCanonicalAddressProofCore(ir, addressValueId, normalizedOptions));
 }
 
 export function deriveCanonicalRegionEvidence(ir, addressValueId, options = {}) {

@@ -22,12 +22,16 @@ const SHN_LORESERVE = 0xff00;
 const SHN_ABS = 0xfff1;
 const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
+const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
+const SHT_RISCV_ATTRIBUTES = 0x70000003;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -55,7 +59,11 @@ export function parseELF(input, options = {}) {
   nameSections(r, rawSections, h);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
-    const attributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
+    const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
+    const attributes = namedAttributeSections.find((section) => section.type === SHT_RISCV_ATTRIBUTES) || null;
+    if (namedAttributeSections.some((section) => section.type !== SHT_RISCV_ATTRIBUTES)) {
+      image.warnings.push('RISC-V .riscv.attributes section name without SHT_RISCV_ATTRIBUTES is not authoritative');
+    }
     if (attributes) {
       const start = safeOffset(attributes.offset), size = safeOffset(attributes.size);
       if (start == null || size == null || size > 1024 * 1024 || start > r.length || size > r.length - start) {
@@ -68,12 +76,25 @@ export function parseELF(input, options = {}) {
   }
   if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
+    // A file-backed SHF_ALLOC section must live inside the file to serve as
+    // virtual mapping authority: `sectionHasMappedAddress()` ranks the
+    // smallest covering mapping, so an unvalidated section header whose
+    // sh_offset/sh_size points past EOF could shadow a validated PT_LOAD and
+    // turn readable VAs into out-of-file offsets (#5888). Such a section
+    // stays listed for metadata but loses mapping authority
+    // ('unmapped-section').
+    const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
+      && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    if (fileSpanInvalid) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
+    }
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
       address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
       fileSize: s.type === 8 ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
-      flags: s.flags, type: s.type, index: s.index, source: h.type === ET_REL ? 'ET_REL-synthetic-section' : 'section-header',
+      flags: s.flags, type: s.type, index: s.index,
+      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid ? 'unmapped-section' : 'section-header',
     });
   }
 
@@ -132,6 +153,7 @@ export function parseELF(input, options = {}) {
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
   });
+  validateSectionRiscvVariantCcTag(image, rawSections);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
@@ -357,21 +379,54 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
     const address=sectionIdentityKnown?symbolAddressForELF(elfType,value,resolvedShndx,sections):null;
-    const binding=bind===0?'local':bind===1?'global':bind===2?'weak':`bind-${bind}`;
+    // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
+    // ABI): it must stay in the export/linkage truth, not be lumped into an
+    // anonymous `bind-N` bucket (#5844).
+    const binding=bind===0?'local':bind===1?'global':bind===2?'weak':bind===STB_GNU_UNIQUE?'gnu-unique':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
     const ifunc=type===STT_GNU_IFUNC&&defined===true;
-    const riscvVariantCc=image.metadata.machine===EM_RISCV&&type===2&&(other&STO_RISCV_VARIANT_CC)!==0;
-    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
+    const riscvVariantCc=riscvVariantCcFlag&&type===2;
+    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
-    if(defined===false&&(bind===1||bind===2)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
-    if(defined===true&&address!=null&&(bind===1||bind===2)&&(sym.visibility===0||sym.visibility===3)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
+    const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
+    if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
+    if(defined===true&&address!=null&&externallyVisible&&(sym.visibility===0||sym.visibility===3)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
     if(defined===true&&(type===2||type===STT_GNU_IFUNC)&&address!=null&&address!==0n){
       const owner=executableELFRange(image,address,size||0n,normal?resolvedShndx:null);
       if(owner){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }
+}
+
+
+function validateSectionRiscvVariantCcTag(image, sections) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  if (image?.metadata?.riscvVariantCcTagPresent === true) return;
+  const dynamicSymbolTables = new Set(
+    (sections || []).filter((section) => section.type === SHT_DYNSYM).map((section) => section.index),
+  );
+  if (!dynamicSymbolTables.size) return;
+  const symbolsByKey = new Map(
+    (image.symbols || [])
+      .filter((symbol) => dynamicSymbolTables.has(symbol.tableIndex))
+      .map((symbol) => [`${symbol.tableIndex}:${symbol.index}`, symbol]),
+  );
+  const missing = (image.relocations || []).some((relocation) =>
+    (relocation.source === 'REL' || relocation.source === 'RELA') &&
+    Number(relocation.type) === R_RISCV_JUMP_SLOT &&
+    dynamicSymbolTables.has(relocation.symbolTableIndex) &&
+    symbolsByKey.get(`${relocation.symbolTableIndex}:${relocation.symbolIndex}`)?.riscvVariantCcFlag === true,
+  );
+  if (!missing) return;
+  const message = 'section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC';
+  image.metadata.programDynamicPartial = true;
+  const diagnostics = image.metadata.programDynamicDiagnostics ||= [];
+  if (!diagnostics.includes(message)) diagnostics.push(message);
+  const warning = `ELF: ${message}`;
+  if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
 function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
@@ -397,26 +452,89 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
     const sym=byIndex.get(symIndex)||null;
-    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
+    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
     if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
 function parseDynamic(r, sec, sections, image, bits, budget) {
-  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;
-  const minEnt=BigInt(bits===64?16:8),rawEnt=sec.entsize||minEnt;
-  if(rawEnt<minEnt){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);return;}
-  const ent=safeOffset(rawEnt);if(ent==null||!ent){budget.partial(`dynamic-section:${sec.index}:entry-size`,`ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);return;}
-  const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
-  const declaredBig=sec.size/rawEnt,fileCapacity=Math.floor((r.length-start)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
-  if(declaredBig>BigInt(fileCapacity))budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
-  for(let i=0;i<count;i++){
-    if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
-    const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
-    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=terminatedStringInTable(r,strStart,strSize,off,max);if(name==null&&off<strSize){budget.partial(`dynamic-section:${sec.index}:unterminated-string`,`ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`);continue;}if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
+  const minEnt = BigInt(bits === 64 ? 16 : 8);
+  const rawEnt = sec.entsize || minEnt;
+  if (rawEnt < minEnt) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);
+    return;
+  }
+  const ent = safeOffset(rawEnt);
+  if (ent == null || !ent) {
+    budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);
+    return;
+  }
+
+  // Processor-specific tags are still authoritative evidence when a section
+  // has no usable string-table link. Decode the dynamic table before applying
+  // optional string lookups so section-backed DT_RISCV_VARIANT_CC cannot be
+  // lost behind an unrelated string-table validation failure.
+  const start = safeOffset(sec.offset);
+  if (start == null || start > r.length) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC ${sec.index} has an invalid file span`);
+    return;
+  }
+  const declaredBig = sec.size / rawEnt;
+  const fileCapacity = Math.floor((r.length - start) / ent);
+  const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
+  const count = Math.min(declared, fileCapacity);
+  if (declaredBig > BigInt(fileCapacity)) {
+    budget.partial(`dynamic-section:${sec.index}:truncated`, `ELF SHT_DYNAMIC exceeds its file-backed capacity`);
+  }
+
+  const str = sections[sec.link];
+  const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
+  const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
+  const stringTableValid = str?.type === SHT_STRTAB
+    && strStart != null
+    && strSize != null
+    && strStart <= r.length
+    && strSize <= r.length - strStart;
+  if (str?.type === SHT_STRTAB && !stringTableValid) {
+    budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC/string table exceeds the file`);
+  }
+
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
+    const p = start + i * ent;
+    const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
+    const val = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
+
+    if (tag === DT_RISCV_VARIANT_CC && Number(image?.metadata?.machine) === EM_RISCV) {
+      image.metadata.riscvVariantCcTagPresent = true;
+    }
+    if (tag === 0n) break;
+
+    if (stringTableValid && (tag === 1n || tag === 14n) && val < BigInt(strSize)) {
+      const off = Number(val);
+      const max = Math.min(
+        strSize - off,
+        1 << 20,
+        Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
+      );
+      const name = terminatedStringInTable(r, strStart, strSize, off, max);
+      if (name == null && off < strSize) {
+        budget.partial(
+          `dynamic-section:${sec.index}:unterminated-string`,
+          `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+        );
+        continue;
+      }
+      if (name && !budget.take({
+        inputBytes: Math.min(max, name.length + 1),
+        stringBytes: name.length * 2,
+        estimatedHeapBytes: name.length * 2 + 32,
+      }, 'SHT_DYNAMIC-string')) break;
+      if (tag === 1n && name) image.libraries.push(name);
+      else if (tag === 14n && name) image.metadata.soname = name;
+    }
   }
 }
-
 function findImageBase(image) {
   const loads = image.segments.filter((s) => s.address != null);
   if (!loads.length) return 0n;

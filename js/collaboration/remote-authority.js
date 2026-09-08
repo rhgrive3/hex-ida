@@ -354,8 +354,25 @@ export class RemoteCollaborationChannel {
     if (!checked.ok) return { status: 'rejected', reason: checked.reason };
     const snap = this.gate.validatedSnapshot(envelope);
     if (!snap) return { status: 'rejected', reason: 'remote-ingress-snapshot-required' };
-    await this.transport.send(snap);
-    return { status: 'sent', envelopeId: snap.envelopeId };
+    let result;
+    try { result = await this.transport.send(snap); }
+    catch {
+      return Object.freeze({
+        status:'rejected',
+        reason:'remote-transport-delivery-unconfirmed',
+        envelopeId:snap.envelopeId,
+      });
+    }
+    // A verification-only transport result is not delivery acknowledgement.
+    // Never promote it to sent; require an explicit matching delivery status.
+    if (result?.status === 'sent' && result?.envelopeId === snap.envelopeId) {
+      return Object.freeze({ status: 'sent', envelopeId: snap.envelopeId });
+    }
+    return Object.freeze({
+      status: 'rejected',
+      reason: 'remote-transport-delivery-unconfirmed',
+      envelopeId: snap.envelopeId,
+    });
   }
 
   receive(envelope) {

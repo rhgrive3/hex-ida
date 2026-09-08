@@ -51,11 +51,13 @@ assert.equal(fn.value.id, 'fn_1000');
 
 const ir = await api.semanticIR(snapshot, '0x1000');
 assert.equal(ir.completeness, 'complete');
-assert.equal(ir.value, semanticIr, 'query layer must prefer canonical semantic-v2 truth over compatibility projection');
+assert.notEqual(ir.value, semanticIr, 'query layer must detach canonical semantic-v2 truth from the producer-owned value');
+assert.deepEqual(ir.value, semanticIr, 'query layer must prefer canonical semantic-v2 truth over compatibility projection');
 
 const cfg = await api.cfg(snapshot, '0x1000');
 assert.equal(cfg.completeness, 'complete');
-assert.equal(cfg.value, canonicalCfg, 'query layer must prefer canonical semantic CFG over compatibility projection');
+assert.notEqual(cfg.value, canonicalCfg, 'query layer must detach canonical semantic CFG from the producer-owned value');
+assert.deepEqual(cfg.value, canonicalCfg, 'query layer must prefer canonical semantic CFG over compatibility projection');
 assert.equal(fetches, 3, 'each public query resolves through the captured live non-UI-mutating producer');
 
 const workspaceModel = await app._fetchFunctionModel(0x1000n);
