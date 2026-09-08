@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { installSharedAppArtifacts } from '../js/analysis/shared-app-artifacts.js';
+import { installSharedAppArtifacts } from '../../js/analysis/shared-app-artifacts.js';
 
 // Issue #5816: a consumer can abort while a shared producer is starting,
 // before attach() registers the first waiter. The zero-waiter producer must be
