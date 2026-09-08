@@ -173,7 +173,10 @@ export const symbolTableProducer = Object.freeze({
     const out = [];
     for (const symbol of input?.image?.symbols ?? []) {
       const address = toAddress(symbol.address);
-      if (address == null || symbol.isFunction === false) continue;
+      const explicitlyNonFunction = symbol.kind != null
+        && symbol.kind !== 'function'
+        && symbol.kind !== 'indirect-function';
+      if (address == null || symbol.isFunction === false || explicitlyNonFunction) continue;
       const region = symbol.sizeBytes ? regionFromSize(address, symbol.sizeBytes) : null;
       out.push(evidence('symbol-table', {
         start: address,

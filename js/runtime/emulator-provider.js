@@ -149,6 +149,10 @@ export class EmulatorProvider {
       // the engine can succeed and only then make run() throw while recording.
       const recordedOptions = recordableClone(replayOptions);
       const controller = session.controller();
+      // The run's identity is fixed at start: a late completion (engine that
+      // ignored the abort) must never be re-labelled as the current epoch's
+      // normal observation (#5878).
+      const startedEpoch = session.epoch;
       let externalAbort = null;
       let externalCancelled = false;
       if (runOptions.signal) {
@@ -196,6 +200,17 @@ export class EmulatorProvider {
       const completeness = completenessFor(termination);
       if (session.closed || session.state === 'closing') {
         throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime session began closing', {
+          termination,
+          completeness,
+        });
+      }
+      // Fail closed on epoch change: events/evidence derived from a stale
+      // execution belong to the dead epoch and must not enter the new epoch's
+      // stream, session state, or evidence bridge (#5878).
+      if (session.epoch !== startedEpoch) {
+        throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime epoch changed', {
+          startedEpoch,
+          currentEpoch: session.epoch,
           termination,
           completeness,
         });
