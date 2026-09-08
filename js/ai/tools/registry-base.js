@@ -3,7 +3,7 @@ import { irFor } from '../../ir.js';
 import { semanticEvidenceIds, semanticFacts } from '../../semantic.js';
 import { AIError } from '../schema.js';
 import { assertSchema, addressText, jsonSafe } from '../validation.js';
-import { ObservationStore } from './storage/observation-store.js';
+import { ObservationStore, assertScopeAccess } from './storage/observation-store.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import {
   completenessOf, projectBinaryDiff, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,
