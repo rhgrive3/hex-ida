@@ -81,3 +81,14 @@ for (const [name, word, expectedPredecessor, expectedSuccessor] of [
   assert.deepEqual(barrier.scope?.successor, expectedSuccessor, name);
   assert.equal(barrier.scope?.fenceMode, 'normal', name);
 }
+
+// The forward-compatible rule applies only to the FENCE funct3 encoding. Keep
+// explicit negative neighbors for Zifencei and reserved misc-mem funct3 rows.
+for (const [name, word, reason] of [
+  ['zifencei-outside-profile', 0x0000100f, 'riscv64-zifencei-outside-phase6-profile'],
+  ['reserved-misc-mem-funct3', 0x0000200f, 'riscv64-reserved-misc-mem-funct3'],
+]) {
+  const fields = decodeRiscv64InstructionWord(bytes32(word));
+  assert.equal(fields.supported, false, name);
+  assert.equal(fields.reason, reason, name);
+}

@@ -150,7 +150,7 @@ function fakeApp(architecture, overrides = {}) {
     calleesOf: () => [{ addr:0x3000n }],
     mostCalled: () => [{ addr:0x3000n, count:5 }],
     graphCompleteness:{ complete:true, supported:true },
-    completeness:{ complete:true },
+    completeness:{ complete:true, reasons:[] },
     callsCapped:false,
     refsCapped:false,
     statsComplete:true,

@@ -716,6 +716,10 @@ function materializationIdentityValid(transaction, materialized, original) {
     if (materialized.outputHash !== hashBytes(output)) return false;
     if (materialized.outputIdentity !== canonicalOutputIdentity(transaction.transactionId, materialized.outputHash)) return false;
     return mappingsMatchTransaction(transaction, materialized.mappings, original.length, output.length)
+      // The transaction's approved `after` payloads are authority: materialized
+      // operation regions must equal them byte for byte, independently of the
+      // output self-hashes (which an attacker can recompute) (#5978).
+      && operationRegionsMatchTransaction(transaction, output, materialized.mappings)
       && relocationBindingsMatchMaterialization(transaction, materialized);
   } catch {
     return false;
@@ -868,6 +872,24 @@ function verifyUnchangedMappings(original, output, mappings) {
   return true;
 }
 
+// The output self-consistency checks (outputHash/outputIdentity) prove nothing
+// about WHAT the operation regions contain: an attacker can swap an operation's
+// bytes and recompute both hashes (#5978). The operation regions must equal the
+// transaction-approved `after` payloads byte for byte.
+function operationRegionsMatchTransaction(transaction, output, mappings) {
+  let operationIndex = 0;
+  for (const mapping of mappings) {
+    if (mapping.kind !== 'operation') continue;
+    const operation = transaction.operations[operationIndex++];
+    const after = operation.after;
+    if (mapping.afterLength !== after.length) return false;
+    const region = output.subarray(mapping.outputOffset, mapping.outputOffset + mapping.afterLength);
+    if (region.length !== after.length) return false;
+    for (let i = 0; i < after.length; i++) if (region[i] !== after[i]) return false;
+  }
+  return true;
+}
+
 function validatorResult(name, executed, ok, reason = null, detail = null) {
   return deepFreeze({ validator: name, executed, status: ok ? 'passed' : 'failed', reason: ok ? null : reason, detail: clone(detail) });
 }
@@ -879,7 +901,15 @@ async function executeExternal(name, fn, context) {
   }
   try {
     const result = await fn(context);
-    if (!result || (result.ok !== true && result.status !== 'passed' && result.status !== 'valid')) return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    // Fail-closed normalization (#5785): explicit failure tokens win over
+    // success tokens. A result that says both `ok:false` and `status:'passed'`
+    // is a contradiction, and contradictions must never count as passed.
+    if (!result) return validatorResult(name, true, false, 'validator-rejected', null);
+    if (result.ok === false) return validatorResult(name, true, false, result?.reason || 'validator-reported-failure', result);
+    if (result.status === 'failed' || result.status === 'invalid' || result.status === 'rejected') {
+      return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
+    }
+    if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
     if (name === 'independent-differential') {
       const contractFailure = independentOracleResultFailure(result, context);
       if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
@@ -958,6 +988,8 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     && materialized.outputHash === hashBytes(materialized.bytes)
     && materialized.outputIdentity === canonicalOutputIdentity(transaction.transactionId, materialized.outputHash);
   const unchangedMatches = verifyUnchangedMappings(original, materialized.bytes, materialized.mappings);
+  const operationRegionsMatch = mappingsMatchTransaction(transaction, materialized.mappings, materialized.sourceLength, materialized.outputLength)
+    && operationRegionsMatchTransaction(transaction, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
   const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);
   const independentOracleTrusted = isCanonicalIndependentOracleProvider(options.independentOracle);

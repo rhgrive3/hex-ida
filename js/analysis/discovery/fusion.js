@@ -89,9 +89,10 @@ export class DiscoveryProducerRegistry {
     // Registry identity and evidence provenance must be the same canonical
     // string authority. A structured id must not coerce into a real registry
     // key (String(['p1']) === 'p1') while the raw value keeps flowing into
-    // evidence provenance.
+    // evidence provenance, and a whitespace-only or padded id must not
+    // manufacture a second "independent" producer (#5792).
     const id = ownOption(producer, 'id', 'discovery-producer-id-required');
-    if (typeof id !== 'string' || !id) throw new TypeError('discovery-producer-id-required');
+    if (typeof id !== 'string' || !id || id.trim() !== id) throw new TypeError('discovery-producer-id-required');
     if (this.producers.has(id)) throw new TypeError(`discovery-producer-id-duplicate:${id}`);
     const version = ownOption(producer, 'version', 'discovery-producer-version-invalid');
     if (version != null && (typeof version !== 'string' || !version)) {
@@ -112,7 +113,7 @@ export class DiscoveryProducerRegistry {
   for(architectureId) {
     return [...this.producers.values()]
       .filter((producer) => producer.architectureId == null || producer.architectureId === architectureId)
-      .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      .sort((left, right) => compareText(left.id, right.id));
   }
 
   collect(input, architectureId, options = {}, intervalCounts = new Map()) {
@@ -212,6 +213,13 @@ function primitiveInteger(value, code) {
   }
 }
 
+/* Registry ordering is canonical data. Compare UTF-16 code units directly so
+ * host locale settings cannot reorder producer identities. */
+function compareText(left, right) {
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 /**
  * Fuses all evidence into candidates.
  *

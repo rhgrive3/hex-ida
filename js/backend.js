@@ -131,6 +131,13 @@ function carryCancellation(mapped, source) {
   return mapped;
 }
 
+function freezeArchitectureProbeResult(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) freezeArchitectureProbeResult(child, seen);
+  return Object.freeze(value);
+}
+
 export class Backend {
   constructor(options = {}) {
     this._legacyWorker = null;
@@ -155,6 +162,7 @@ export class Backend {
     this._archProbe = null;
     this._archProbeWorker = null;
     this._archProbeFinish = null;
+    this._archProbeResult = null;
     this._disasmWorker = null;
     this._disasmSeq = 1;
     this._disasmPending = new Map();
@@ -474,6 +482,12 @@ export class Backend {
   probeArchitectures() {
     if (this.disposed) return Promise.resolve({ ok:false, error:'Backend has been disposed.', support:{ arm64:false, x86_64:false } });
     if (this._archProbe) return this._archProbe;
+    // Capstone capability is a property of the engine runtime, not of the
+    // binary this Backend has open, so a settled probe result stays valid for
+    // the Backend lifetime. Regenerating a probe Worker (plus its WASM module
+    // init) per sequential decode makes every disassembly pay a fixed
+    // re-probe tax; only failure results are retried (#5957).
+    if (this._archProbeResult) return Promise.resolve(this._archProbeResult);
     this._archProbe = new Promise((resolve) => {
       const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));
       this._archProbeWorker = worker;
@@ -492,6 +506,9 @@ export class Backend {
       worker.onmessageerror = fail;
       try { worker.postMessage({ t: 'probe' }); }
       catch (error) { finish({ ok:false, error:error.message, support:{ arm64:false, x86_64:false } }); }
+    }).then((value) => {
+      if (value?.ok === true) this._archProbeResult = freezeArchitectureProbeResult(value);
+      return value;
     }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });
     return this._archProbe;
   }
@@ -929,7 +946,7 @@ export class Backend {
     this.resetCache();
     this._releaseDisassembly(failure);
     this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });
-    this._archProbeFinish = null; this._archProbeWorker = null;
+    this._archProbeFinish = null; this._archProbeWorker = null; this._archProbeResult = null;
     for (const pending of this.pending.values()) pending.reject(failure);
     this.pending.clear();
     for (const worker of [this._legacyWorker, this._platformWorker]) {

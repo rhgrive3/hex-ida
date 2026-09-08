@@ -407,6 +407,28 @@ export function claimsConflict(left, right) {
     if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
     if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
 
+    // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
+    // hard aggregate size N + hard field [offset, offset+size) with
+    // offset+size > N are hard facts that cannot both hold.
+    // Only an explicitly typed aggregate can supply a whole-object bound.
+    // Offset-less structural-field metadata is member evidence, not a bound.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
+    const extentBeyondAggregate = (aggregate, field) => {
+      if (!isExplicitAggregateDescriptor(aggregate)) return false;
+      if (field.offset == null || field.sizeBytes == null) return false;
+      const start = toBigInt(field.offset, null);
+      const size = toBigInt(field.sizeBytes, null);
+      const total = toBigInt(aggregate.sizeBytes, null);
+      if (start == null || size == null || total == null) return false;
+      return start + size > total;
+    };
+    if (extentBeyondAggregate(a, b) || extentBeyondAggregate(b, a)) return true;
+
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
     const overlap = intervalsOverlap(a, b);

@@ -225,6 +225,8 @@ export function validateRv64imcDecoderDenominator() {
     ['forward-compatible-fence-registers-pred-zero', 0x0011008f, 'rv64i-fence'],
     ['forward-compatible-fence-registers-succ-zero', 0x0101008f, 'rv64i-fence'],
     ['forward-compatible-fence-tso-register', 0x8330008f, 'rv64i-fence-tso'],
+    ['zifencei-outside-profile', 0x0000100f, null],
+    ['reserved-misc-mem-funct3', 0x0000200f, null],
   ];
   for (const [id, word, expectedFamily] of fenceBoundaryCases) {
     const matches = matchingFamilies(word);
