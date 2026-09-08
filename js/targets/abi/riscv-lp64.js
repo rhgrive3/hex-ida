@@ -212,7 +212,11 @@ function parameterClass(parameter) {
   const bytes = aggregate
     ? aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
     : bits > 0 ? Math.ceil(bits / 8) : 0;
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes };
+  // C++ call-triviality evidence: positive proof only. Absence cannot prove
+  // triviality, while any explicit nontrivial evidence selects the sound
+  // by-reference convention (#5623).
+  const nonTrivialForCalls = aggregate && (parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true);
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -408,6 +412,23 @@ function createClassifier(profile) {
       }
 
       if (classified.aggregate) {
+        // C++ aggregates with nontrivial copy constructors, destructors, or
+        // vtables are passed by reference regardless of size or FP flattening.
+        if (classified.nonTrivialForCalls) {
+          aggregateProven = true;
+          const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
+          if (reg) {
+            integerIndex += 1;
+            useInteger(reg, { purpose:'aggregate-by-reference' });
+            arguments_.push({ index, location:'register', reg, aggregate:true, abiName:ABI_ALIAS[reg], abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:classified.bits, hiddenIndirection:true, nonTrivialForCalls:true,
+              pieces:[aggregatePiece({ pieceIndex:0, reg, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] });
+          } else {
+            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, aggregate:true, abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true, nonTrivialForCalls:true,
+              pieces:[aggregatePiece({ pieceIndex:0, stackOffset, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
+          }
+          return;
+        }
         if (!classified.aggregateLayoutProven) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-size-layout-unproven', { candidates:['integer-convention','memory-by-reference'] });
@@ -769,6 +790,11 @@ function createClassifier(profile) {
       ? aggregateLayoutProven ? canonicalDeclaredBits : 0
       : Number(declaredBits ?? riscvTypeBits(type, XLEN));
     const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 0;
+    // The C++ non-trivial rule is authoritative even when aggregate layout
+    // evidence is absent or padded: the return still uses caller memory.
+    if (aggregate && (prototype.nonTrivialForCalls === true || prototype.nonTrivial === true || prototype.returnNonTrivialForCalls === true)) {
+      return indirectResult();
+    }
     if (aggregate && !aggregateLayoutProven) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
@@ -906,6 +932,8 @@ function createRiscvAbi(profile) {
       const id = String(reg || '').toLowerCase();
       const index = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
       if (index >= 0) return { kind:'argument', reg:id, abiName:ABI_ALIAS[id], index, abiClass:'integer' };
+      const floatIndex = abiFlenBits > 0 ? FLOAT_ARGUMENT_REGISTERS.indexOf(id) : -1;
+      if (floatIndex >= 0) return { kind:'argument', reg:id, abiName:`fa${floatIndex}`, index:floatIndex, abiClass:'float' };
       if (id === 'x2') return { kind:'stack-pointer', reg:id, abiName:'sp' };
       if (id === 'x1') return { kind:'return-address', reg:id, abiName:'ra' };
       if (UNALLOCATABLE.includes(id)) return { kind:'reserved-register-state', reg:id, abiName:ABI_ALIAS[id] ?? 'zero' };

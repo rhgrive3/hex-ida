@@ -148,7 +148,10 @@ function parameterClass(param) {
     : aggregate
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
-  const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
+  const rawExplicitAlignment = param?.alignmentBytes || param?.alignBytes || param?.alignment || 0;
+  const explicitAlignment = typeof rawExplicitAlignment === 'number' ? rawExplicitAlignment : 0;
+  const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
+    ? explicitAlignment : null;
   const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;
   const aggregateAlignment = aggregateAlignmentEvidence(param, layoutEvidence);
   let alignmentBytes = explicitAlignmentProven ? explicitAlignment : 1;
@@ -512,11 +515,17 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
   classifyEntryRegister:(reg) => {
     const text = String(reg || '').trim().toLowerCase();
     const integerArgument = /^x([0-7])$/.exec(text);
-    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]) };
+    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]), abiClass:'integer' };
     const vectorArgument = /^v([0-7])$/.exec(text);
-    if (vectorArgument) return { kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]), view:'vector' };
+    if (vectorArgument) return {
+      kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]),
+      view:'vector', abiClass:'fp-vector',
+    };
     const viewArgument = /^(?:[qbdsh])([0-7])$/.exec(text);
-    if (viewArgument) return { kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]), view:text.slice(0, 1) };
+    if (viewArgument) return {
+      kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]),
+      view:text.slice(0, 1), abiClass:'fp-vector',
+    };
     return { kind:'incoming-register-state', reg:text };
   },
   callerSaved:()=>DARWIN_CALLER_SAVED,
