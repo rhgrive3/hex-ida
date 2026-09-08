@@ -10,6 +10,7 @@ import './issue-4878-field-access-pagination.test.mjs';
 import './issue-5079-product-strings-pagination.test.mjs';
 import '../issue-5111-base-classification-badge.mjs';
 import './next-views.mjs';
+import './browser-back-wait.test.mjs';
 import { NavigationHistory } from '../../js/navigation.js';
 import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
