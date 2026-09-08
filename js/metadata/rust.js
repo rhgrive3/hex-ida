@@ -325,14 +325,9 @@ function parseV0Path(str, state, depth = 0) {
     const ns = str[state.pos++]; // namespace character
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
-    // NOTE (#5864): a missing identifier here still resolves to the parent
-    // path. Tightening this would break the established repo contract tested
-    // by tests/metadata-rust.test.mjs, tests/phase12/integration/
-    // metadata-rust.test.mjs and tests/issues-unlinked-batch-20260901.mjs
-    // (identifier-less N followed by a `.llvm.N` vendor suffix), so the
-    // lenient behavior stays until the demangler contract is revisited.
+    // A nested path always includes an identifier, even when its length is 0.
     const ident = parseV0Identifier(str, state.pos);
-    if (!ident) return parent;
+    if (!ident) return null;
     state.pos = ident.nextPos;
     let name = ident.identifier;
     if (!name) {
