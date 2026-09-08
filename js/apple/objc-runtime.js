@@ -396,6 +396,19 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   if (cleanReceiver) {
     const narrowed = candidates.filter((m) => ranks.has(m.className));
     if (!narrowed.length) {
+      if (!hierarchyComplete(index, chain)) {
+        return {
+          resolved: null,
+          candidates,
+          requirements,
+          confidence: 0,
+          receiverType: cleanReceiver,
+          selector,
+          classMethod: !!classMethod,
+          reason: 'receiver class hierarchy is unavailable or incomplete; selector candidates are inconclusive',
+          partial: true,
+        };
+      }
       return {
         resolved: null,
         candidates: [],
