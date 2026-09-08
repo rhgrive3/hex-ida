@@ -550,7 +550,7 @@ function compactSelection(selection) {
   const rows = Array.isArray(selection.instructions) ? selection.instructions : Array.isArray(selection) ? selection : [];
   return { start: addressText(selection.start ?? rows[0]?.address), end: addressText(selection.end ?? rows[rows.length - 1]?.address), instructions: rows.slice(0, 80).map((i) => ({ address: addressText(i.address), mnemonic: i.mnemonic, operands: i.operands })), total: rows.length, returned: Math.min(rows.length, 80), truncated: rows.length > 80 };
 }
-function currentFunctionAddress(context) { return addressText(context.currentAddress ?? context.activeFunction?.address ?? context.currentFunction?.address ?? context.activeFunction?.identity?.startAddr); }
+function currentFunctionAddress(context) { return addressText(context.activeFunction?.address ?? context.currentFunction?.address ?? context.activeFunction?.identity?.startAddr ?? context.currentAddress); }
 
 async function inspectFunctionRegion(context, legacy, args, offset, cursorFor) {
   const model = await legacy.__loader.get(args.functionAddress);
