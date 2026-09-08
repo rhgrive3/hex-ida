@@ -1,6 +1,7 @@
 import { AnalysisQueryAPI } from './query/api.js';
 import { createAppAnalysisQueryAdapter as createBaseQueryAdapter } from './query/app-adapter.js';
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
+import { canonicalContentDigest } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
 
@@ -57,8 +58,8 @@ function paged(values, page, completeness = 'complete', status = {}) {
 function unsupported(reason) { return { value: null, status: { completeness: 'unsupported', reason } }; }
 function executableRegions(app) {
   try {
-    const regions = typeof app?.programRegions === 'function' ? app.programRegions() : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
-    return Array.from(regions || []).filter((r) => r?.exec === true && BigInt(r.size ?? 0) > 0n);
+    const regions = typeof app?.programRegions === 'function' ? app.programRegions() : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && canonicalRegionId(r) != null && BigInt(r.size ?? 0) > 0n);
+    return Array.from(regions || []).filter((r) => r?.exec === true && canonicalRegionId(r) != null && BigInt(r.size ?? 0) > 0n);
   } catch { return []; }
 }
 function regionForAddress(app, address) {
@@ -73,6 +74,16 @@ function dedupeRegions(regions) {
   const seen = new Set();
   return regions.filter((r) => { if (!r?.id || seen.has(r.id)) return false; seen.add(r.id); return true; });
 }
+// Region identity is a single canonical string. Template literals and join()
+// coerce structured ids (`['text']` → `'text'`), which collides the cache and
+// single-flight keys of different region values and lets one region's producer
+// result be served to another (#5771, #5772). Regions without a canonical
+// string id are not scannable, so they are rejected here instead of being
+// coerced behind the caller's back.
+function canonicalRegionId(region) {
+  const id = region?.id;
+  return typeof id === 'string' && id ? id : null;
+}
 function regionScanLimits(count) {
   const divisor = Math.max(1, Number(count) || 1);
   const share = (value) => Math.max(1, Math.floor(Number(value || 0) / divisor));
@@ -80,9 +91,10 @@ function regionScanLimits(count) {
 }
 function localRegionPlan(app, address, kind) {
   const allRegions = executableRegions(app);
-  const target = regionForAddress(app, address);
+  const candidate = regionForAddress(app, address);
+  const target = canonicalRegionId(candidate) != null ? candidate : null;
   const current = storeValue(app, 'currentRegion');
-  const currentExec = current?.exec === true && BigInt(current?.size ?? 0) > 0n ? current : null;
+  const currentExec = current?.exec === true && canonicalRegionId(current) != null && BigInt(current?.size ?? 0) > 0n ? current : null;
   const local = kind === 'callees' ? dedupeRegions([target].filter(Boolean)) : dedupeRegions([target, currentExec].filter(Boolean));
   const unscanned = allRegions.filter((region) => !local.some((item) => item.id === region.id));
   return { allRegions, target, local, unscanned };
@@ -202,7 +214,15 @@ function installWorkerBackedIdentity(app) {
         .then((hash) => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
-          const binaryId = createBinaryIdFromDigest(hash); this.binaryId = binaryId; return binaryId;
+          // The platform content hash is an FNV cache key; `bin_sha256_` identities
+          // must bind an exact SHA-256 digest, so re-derive from the canonical
+          // full-content producer instead of laundering the cache hash (#7054).
+          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+        })
+        .then((digest) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+          const binaryId = createBinaryIdFromDigest(digest); this.binaryId = binaryId; return binaryId;
         })
         .finally(() => {
           entry.settled = true;
@@ -329,7 +349,7 @@ function installCancellableFunctionDiscovery(app) {
       const symbols = app.symbols;
       if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
       const targets = executableRegions(app);
-      if (region?.exec === true && !targets.some((item) => item.id === region.id)) targets.push(region);
+      if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
       const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);

@@ -79,8 +79,8 @@ export class CapabilityExecutor {
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
       case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
-      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume(options);
-      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause(options);
+      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume({ signal: options?.signal });
+      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause({ signal: options?.signal });
       case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
       case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
       case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);

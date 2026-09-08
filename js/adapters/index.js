@@ -290,7 +290,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const signal = resumeSignal(options.signal);
     const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
-    if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
+    if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
     const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
     // Injectable per call or at construction time (tests, embedders) so the
@@ -550,16 +550,24 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
+  requireConnected() {
+    // Every remote request is gated on a completed connect handshake. Before
+    // that, this.capabilities still holds the caller's local allow-list and
+    // the remote advertisement is unverified: sending a wire request here
+    // would bypass negotiation entirely (#5807).
+    if (!this.connected) throw new DebugAdapterError('not-connected', 'connect the remote debug adapter before calling remote methods');
+  }
   call(method, params = {}, options = {}) {
     if (!REMOTE_CALL_METHODS.has(method)) throw new DebugAdapterError('unsupported-method', `remote debug method is not exposed: ${method}`);
+    this.requireConnected();
     this.requireMethod(method); return this.protocol.request(method, params, { ...options, epoch:this.epoch });
   }
   attach(spec,requestOptions={}){return this.call('attach',spec,requestOptions)}
   launch(spec,requestOptions={}){return this.call('launch',spec,requestOptions)}
-  pause(options={}){const {signal,...params}=options||{};return this.call('pause',params,{signal})}
-  resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
+  pause(options={}){return this.call('pause',{}, { signal:options?.signal })}
+  resume(options={}){return this.call('resume',{}, { signal:options?.signal })}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
-  setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
+  setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.requireConnected(); this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
   removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
   }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
@@ -575,8 +583,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async evaluate(expression,context){const text=String(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
   async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
-  getObjCRuntimeInfo(request={}){this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
-  getSwiftRuntimeInfo(request={}){this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
+  getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
+  getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
