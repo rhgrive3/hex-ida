@@ -69,7 +69,7 @@ export class ToolRegistry {
       let raw;
       let cached = false;
       if (tool.storeResult !== false && tool.deterministic !== false) {
-        record = this.observationStore.getCached(name, args);
+        record = this.observationStore.getCached(name, args, {}, options.scope || "auto");
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
       if (!record) {
@@ -82,6 +82,9 @@ export class ToolRegistry {
             tool: name, arguments: jsonSafe(args), fullResult: raw,
             functionIdentity: args.functionAddress ?? args.address ?? null,
             deterministic: tool.deterministic !== false,
+            // Record the turn scope that acquired this data (#5641): detail
+            // retrieval must not re-expose it inside a narrower explicit turn.
+            effectiveScope: options.scope || "auto",
           });
         }
       }
@@ -91,7 +94,7 @@ export class ToolRegistry {
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
       if (resultPublishable && !evidence) {
-        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef }) : [];
+        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: options.scope || "auto" }) : [];
         if (record) record.evidence = evidence;
       }
       const evidenceList = Array.isArray(evidence) ? evidence : [];

@@ -61,6 +61,25 @@ function boundedLimit(value, fallback = 100, max = 500) {
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+// An explicitly narrowed turn scope must not re-expose full detail that was
+// acquired under a broader scope (#5641). 'auto'/'binary'/'project' turns see
+// everything bound to the binary; 'selection'/'function' turns only records
+// acquired in the same (or narrower) scope; records with no recorded origin
+// scope predate the boundary and stay fail-closed in narrow turns.
+const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
+function assertRecordWithinScope(record, requestedScope) {
+  if (!record || typeof record !== 'object') return;
+  const requested = typeof requestedScope === 'string' ? requestedScope : null;
+  if (!requested || requested === 'auto') return;
+  const requestedWidth = SCOPE_WIDTH[requested];
+  if (requestedWidth == null || requestedWidth >= 3) return;
+  const acquired = typeof record.effectiveScope === 'string' ? record.effectiveScope : null;
+  const acquiredWidth = acquired != null ? SCOPE_WIDTH[acquired] : null;
+  if (acquiredWidth == null || acquiredWidth > requestedWidth) {
+    throw new Error('scope_violation');
+  }
+}
+
 function finiteConfiguredNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number !== 0 ? number : fallback;
@@ -127,14 +146,14 @@ export class ObservationStore {
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
-  getCached(tool, args, extra = {}) {
+  getCached(tool, args, extra = {}, requestedScope = null) {
     const key = this.cacheKey(tool, args, extra);
     const id = this.cache.get(key);
     if (!id) return null;
-    try { return this.get(id); } catch { this.cache.delete(key); return null; }
+    try { return this.get(id, requestedScope); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {} } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null } = {}) {
     const binding = this.binding(extraBinding);
     const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
@@ -150,6 +169,9 @@ export class ObservationStore {
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
       createdAt: Date.now(), cacheKey, pinned: false,
+      // Origin scope of the turn that acquired this record (#5641): detail
+      // retrieval must not re-expose broad-scope data into a narrower turn.
+      effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
     };
     this.records.set(id, record);
     if (cacheKey) this.cache.set(cacheKey, id);
@@ -178,18 +200,19 @@ export class ObservationStore {
     }
   }
 
-  get(detailRef) {
+  get(detailRef, requestedScope = null) {
     this.evict();
     const record = this.records.get(String(detailRef || ''));
     if (!record) throw new Error('unknown-detail-ref');
+    assertRecordWithinScope(record, requestedScope);
     const current = this.binding();
     if (record.binding.key !== current.key || record.binaryIdentity !== current.binaryIdentity) throw new Error('stale-detail-ref');
     if (!record.pinned && Date.now() - record.createdAt > this.maxAgeMs) throw new Error('stale-detail-ref');
     return record;
   }
 
-  detail({ detailRef, path = '$', cursor = null, limit = 100 } = {}) {
-    const record = this.get(detailRef);
+  detail({ detailRef, path = '$', cursor = null, limit = 100, effectiveScope = null } = {}) {
+    const record = this.get(detailRef, effectiveScope);
     const currentBinding = this.binding();
     let offset = 0;
     let effectivePath = path || '$';

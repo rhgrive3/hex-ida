@@ -165,6 +165,7 @@ export class EvidenceStore {
           fullResult: input.sourceData,
           functionIdentity: input.functionAddress ?? input.address ?? null,
           deterministic: true,
+          effectiveScope: typeof input.effectiveScope === 'string' && input.effectiveScope ? input.effectiveScope : null,
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
@@ -190,6 +191,7 @@ export class EvidenceStore {
     };
     if (sourceBinding) record.sourceBinding = sourceBinding;
     if (sourceRef) record.sourceRef = sourceRef;
+    if (typeof input.effectiveScope === 'string' && input.effectiveScope) record.effectiveScope = input.effectiveScope;
     const address = addressText(input.address);
     const functionAddress = addressText(input.functionAddress);
     if (address) record.address = address;
@@ -232,7 +234,7 @@ export class EvidenceStore {
     return storedRecord;
   }
 
-  ingest(toolName, result, { verifier = false, sourceRef = null } = {}) {
+  ingest(toolName, result, { verifier = false, sourceRef = null, effectiveScope = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
     const rootSourceRef = normalizeSourceRef(sourceRef);
@@ -261,6 +263,7 @@ export class EvidenceStore {
         const evidence = this.add({
           sourceId, sourceTool: toolName, sourceRef: rowSourceRef, sourceBinding: rowSourceRef?.bindingKey,
           kind, status, address: addr, functionAddress: fnAddr,
+          effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
           functionName: row.functionName || row.name || output.name,
           title: `${toolName}: ${kind}`,
           summary: summarizeRow(row), sourceData: row,

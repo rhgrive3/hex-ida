@@ -246,11 +246,11 @@ export function createHexToolRegistry(context = {}, options = {}) {
     return projectSearchLocal(context.project, query, limit, offset, (next) => pageCursor('project_search', params, next));
   }, { scopeSupport: ['auto', 'project'], category: 'discovery', resultKind: 'project-search', modelProjection: projectSearch });
 
-  register('get_observation_detail', 'Retrieve a bounded path/page from a prior trusted full tool observation by detailRef.', observationDetailSchema(), async ({ detailRef, path = '$', cursor, limit = 100 }) => registry.observationStore.detail({ detailRef, path, cursor, limit }), {
+  register('get_observation_detail', 'Retrieve a bounded path/page from a prior trusted full tool observation by detailRef.', observationDetailSchema(), async ({ detailRef, path = '$', cursor, limit = 100 }, options = {}) => registry.observationStore.detail({ detailRef, path, cursor, limit, effectiveScope: options.scope || 'auto' }), {
     scopeSupport: allReadScopes, category: 'detail', resultKind: 'observation-detail', modelProjection: projectDetail,
     storeResult: false, deterministic: false,
   });
-  register('get_evidence_detail', 'Retrieve compact evidence provenance and bounded source records. Does not grant verification authority.', evidenceDetailSchema(), async ({ evidenceId, cursor, limit = 100 }) => evidenceDetail(registry, evidenceId, cursor, limit), {
+  register('get_evidence_detail', 'Retrieve compact evidence provenance and bounded source records. Does not grant verification authority.', evidenceDetailSchema(), async ({ evidenceId, cursor, limit = 100 }, options = {}) => evidenceDetail(registry, evidenceId, cursor, limit, options.scope || 'auto'), {
     scopeSupport: allReadScopes, category: 'detail', resultKind: 'evidence-detail', modelProjection: projectDetail,
     storeResult: false, deterministic: false,
   });
@@ -744,13 +744,13 @@ async function binaryDiff(context, { limit, offset = 0, cursorFor }) {
   return paged;
 }
 
-async function evidenceDetail(registry, evidenceId, cursor, limit) {
+async function evidenceDetail(registry, evidenceId, cursor, limit, requestedScope = null) {
   const record = registry.evidenceStore?.get(String(evidenceId));
   if (!record) return { found: false, evidenceId: String(evidenceId), completeness: { complete: true, returned: 0, total: 0, coverage: 1, reason: null } };
   let source = null;
   if (record.sourceRef?.detailRef) {
     try {
-      source = registry.observationStore.detail({ detailRef: record.sourceRef.detailRef, path: record.sourceRef.path || '$', cursor, limit });
+      source = registry.observationStore.detail({ detailRef: record.sourceRef.detailRef, path: record.sourceRef.path || '$', cursor, limit, effectiveScope: requestedScope });
     } catch (error) {
       // Small evidence rows are stored losslessly inline and do not need to stay
       // pinned in memory forever. Oversized rows are pinned and must never fall
