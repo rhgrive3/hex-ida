@@ -23,6 +23,13 @@ export function createMatchResult(input = {}) {
     evidenceIds: list(candidate.evidenceIds || candidate.evidence),
     packageContentHash: String(candidate.packageContentHash || input.packageContentHash || ''),
   })).sort((a, b) => b.score - a.score || tierRank(a.tier) - tierRank(b.tier) || a.packageEntryId.localeCompare(b.packageEntryId));
+  /* #5332: candidates are ranking alternatives for ONE source entity. A
+     candidate carrying a different sourceEntityId would let another entity's
+     match evidence bind to this result's target (and onward to an L4 fact),
+     so the identity binding is enforced at the constructor boundary. */
+  if (candidates.some((candidate) => candidate.sourceEntityId !== sourceEntityId)) {
+    throw new TypeError('recognition candidate source entity mismatch');
+  }
   const top = candidates[0];
   const second = candidates[1] || null;
   const rawAmbiguityWindow = Number(input.ambiguityWindow ?? 0.035);
