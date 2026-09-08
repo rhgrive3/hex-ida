@@ -105,6 +105,16 @@ export class AgentJobManager {
         delete job.executionLeaseId;
         throw saveError;
       }
+      // Every started slice attempt consumes the job hard-limit budget
+      // (#5205): a slice that throws after doing model/tool work must still
+      // count its attempt and its wall-clock elapsed time — otherwise a
+      // failure-heavy workload could retry past maxSlices/maxElapsedMs
+      // forever, because only successful slices were accounted. Successful
+      // slices keep the provider-reported usage aggregation below (no
+      // double counting); the attempt counter replaces the success-only
+      // increment that used to live inside mergeResult().
+      const attemptStartedMs = monotonicNow();
+      job.budgetUsage.slices += 1;
       let result;
       try {
         result = await this.runtime.turn({
@@ -113,7 +123,9 @@ export class AgentJobManager {
           provider: job.provider, model: job.model, reasoning: job.reasoning,
         }, options);
       } catch (error) {
-        job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
+        const attemptElapsedMs = monotonicNow() - attemptStartedMs;
+        if (Number.isFinite(attemptElapsedMs) && attemptElapsedMs >= 0) job.budgetUsage.elapsedMs += attemptElapsedMs;
+        job.status = hardLimit(job) ? 'hard-limit' : options.signal?.aborted ? 'checkpointed' : 'failed';
         delete job.executionLeaseId;
         job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
         job.updatedAt = new Date().toISOString();
@@ -222,9 +234,15 @@ function mergeResult(job, result) {
   // forever after) and negative values (rewinding monotonic accounting);
   // adopt only primitive finite non-negative numbers (#5689).
   const usageDelta = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
-  job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
+  // The slice-attempt count is incremented when the attempt starts (see
+  // runSlice, #5205), so successful and failed attempts share one hard-limit
+  // denominator; mergeResult only aggregates the provider-reported usage.
+  job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
   job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
+}
+function monotonicNow() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 }
 function collectRefs(result) {
   const refs = [];
