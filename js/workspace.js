@@ -198,10 +198,10 @@ export function applyWorkspaceProject(app, project){
   // Restore navigation history & cursor
   const history=navigation.history||[];
   if(app.navigation&&history.length){
-    app.navigation.entries=history.slice(-app.navigation.limit);
+    app.navigation.entries=app.navigation.limit>0?history.slice(-app.navigation.limit):[];
     const droppedHistoryCount=history.length-app.navigation.entries.length;
     const cursor = navigation.cursorIndex;
-    app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
+    app.navigation.index = (app.navigation.entries.length > 0 && cursor != null && !isNaN(Number(cursor)))
       ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)-droppedHistoryCount))
       : app.navigation.entries.length - 1;
     app.navigation.onChange?.(app.navigation.snapshot());
