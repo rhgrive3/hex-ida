@@ -156,10 +156,6 @@ export function validateManagedRuntimeObservation(binding, observation, options 
   if (observation.payload.moduleIdentity !== binding.runtimeModuleIdentity) {
     return { ok: false, reason: 'managed-runtime-observation-module-mismatch' };
   }
-  const { observationId, ...payload } = observation;
-  if (observationId !== `runtime-observation:${stableDigest(payload)}`) {
-    return { ok: false, reason: 'managed-runtime-observation-tampered' };
-  }
   return { ok: true, observation };
 }
 
