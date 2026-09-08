@@ -253,6 +253,11 @@ function createReturnProvenance(input = {}) {
 }
 
 function canonicalReturnProvenance(values) {
+  // Canonical ordering must not depend on the host ICU collation: the digest
+  // feeds caller/callee dependency identity and recursive fixed-point
+  // convergence, so the sort is defined over UTF-16 code units (#5710,
+  // same contract as the points-to canonical order).
+  const codeUnitCompare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
   const byKey = new Map();
   for (const value of values) {
     const key = [
@@ -268,7 +273,7 @@ function canonicalReturnProvenance(values) {
   return [...byKey.values()].sort((left, right) => {
     const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? ''].join('\u0000');
     const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? ''].join('\u0000');
-    return leftKey.localeCompare(rightKey);
+    return codeUnitCompare(leftKey, rightKey);
   });
 }
 
