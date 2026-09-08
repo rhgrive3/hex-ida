@@ -114,10 +114,15 @@ for (const mnemonic of [
   "swpb", "swpah", "swplb", "swpalh",
   "ldaddb", "ldaddah", "ldaddlb", "ldaddalh",
   "ldseta", "ldsetalh", "ldclrlb", "ldclral", "ldeorb", "ldeoralh",
+  // Arm's store-only aliases: base/release, byte, and halfword forms (#4495).
+  "stadd", "staddl", "staddb", "staddlb", "staddh", "staddlh",
+  "stclr", "stclrl", "stclrb", "stclrlb", "stclrh", "stclrlh",
+  "steor", "steorl", "steorb", "steorlb", "steorh", "steorlh",
+  "stset", "stsetl", "stsetb", "stsetlb", "stseth", "stsetlh",
 ]) {
   assert.equal(facade.categoryOf(mnemonic), "atomic", `${mnemonic} must be classified as atomic`);
 }
-for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall"]) {
+for (const mnemonic of ["casx", "swpaa", "ldaddq", "ldsetall", "stadda", "staddal", "stsetq", "stsetall"]) {
   assert.notEqual(facade.categoryOf(mnemonic), "atomic", `${mnemonic} is not a canonical atomic variant`);
 }
 assert.equal(facade.categoryOf("ldxr"), "load", "exclusive loads retain their established presentation category");
@@ -129,7 +134,7 @@ assert.equal(facade.categoryOf("ERETAB"), "system");
 assert.equal(facade.categoryOf("retaa"), "flow");
 assert.equal(facade.categoryOf("retab"), "flow");
 assert.notEqual(facade.categoryOf("eretax"), "system");
-console.log("  ok 6 atomic category variants + authenticated exception-return classification");
+console.log("  ok 6 atomic category variants (including store-only LSE aliases #4495) + authenticated exception-return classification");
 
 // 7. Presentation parser must reject non-existent SIMD/FP registers and lanes (#2068, #2070).
 for (const valid of ["b31", "h31", "s31", "d31", "q31", "v31.16b"]) {
@@ -162,6 +167,15 @@ async function analyzeArm64Fixture(instructions) {
   const region = { id: "arm64-shifted-imm", vmAddr: 0x100000n, size: BigInt(instructions.length * 4) };
   return analyzeFunction(analyzerBackend(instructions), region, 0, instructions.length - 1, null, null, { texts: false });
 }
+
+{
+  const result = await analyzeArm64Fixture([
+    { mn: "stadd", ops: "w0, [x1]" },
+    { mn: "ret", ops: "" },
+  ]);
+  assert.equal(result.usesAtomic, true, "store-only LSE aliases must set usesAtomic (#4495)");
+}
+console.log("  ok 8a store-only LSE aliases set the atomic function summary (#4495)");
 
 for (const [ops, expected] of [
   ["sp, sp, #0x20", 32],
