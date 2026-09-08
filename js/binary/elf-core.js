@@ -200,11 +200,18 @@ function normalSectionIndex(index, sections) {
   return Number.isInteger(index) && index > 0 && index < sections.length && index < SHN_LORESERVE;
 }
 
-function symbolAddressForELF(elfType, value, sectionIndex, sections) {
+function actualSectionIndex(index, sections) {
+  return Number.isInteger(index) && index > 0 && index < sections.length;
+}
+
+function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSectionIndex = false) {
   if (elfType !== ET_REL) return value;
-  if (sectionIndex === SHN_ABS) return value;
-  if (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF) return null;
-  if (!normalSectionIndex(sectionIndex, sections)) return null;
+  if (!extendedSectionIndex && sectionIndex === SHN_ABS) return value;
+  if (!extendedSectionIndex && (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF)) return null;
+  const valid = extendedSectionIndex
+    ? actualSectionIndex(sectionIndex, sections)
+    : normalSectionIndex(sectionIndex, sections);
+  if (!valid) return null;
   const sec = sections[sectionIndex];
   if (value > sec.size) return null;
   return (sec.syntheticAddr ?? 0n) + value;
@@ -350,8 +357,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const count = Math.min(declared,fileCapacity);
   if (declaredBig > BigInt(fileCapacity)) budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
   const xindex = sections.find((sec) => sec.type === SHT_SYMTAB_SHNDX && sec.link === table.index) || null;
-  const xindexValid = !!xindex && xindex.entsize === 4n
-    && xindex.size === BigInt(count) * 4n
+  const xindexValid = !!xindex && (!xindex.entsize || xindex.entsize === 4n)
     && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
   if (xindex && !xindexValid) budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
 
@@ -373,17 +379,18 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       resolvedShndx=null;sectionIdentityKnown=false;
       const xoff=xindexValid?safeOffset(xindex.offset+BigInt(i*4)):null;
       if(xoff==null||xoff+4>r.length||BigInt((i+1)*4)>xindex.size){image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);}
-      else{const candidate=r.u32(xoff);if(candidate===SHN_UNDEF||candidate===SHN_ABS||candidate===SHN_COMMON||candidate<sections.length){resolvedShndx=candidate;sectionIdentityKnown=true;}else image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);}
+      else{const candidate=r.u32(xoff);if(candidate===SHN_UNDEF||actualSectionIndex(candidate,sections)){resolvedShndx=candidate;sectionIdentityKnown=true;}else image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);}
     }
-    const normal=sectionIdentityKnown&&normalSectionIndex(resolvedShndx,sections);
-    const specialKnown=resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON;
+    const extendedSectionIndex=shndx===SHN_XINDEX&&actualSectionIndex(resolvedShndx,sections);
+    const normal=sectionIdentityKnown&&(extendedSectionIndex?actualSectionIndex(resolvedShndx,sections):normalSectionIndex(resolvedShndx,sections));
+    const specialKnown=!extendedSectionIndex&&(resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON);
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
     const tls=type===6;
-    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,value,resolvedShndx,sections):null;
+    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,value,resolvedShndx,sections,extendedSectionIndex):null;
     // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
     // ABI): it must stay in the export/linkage truth, not be lumped into an
     // anonymous `bind-N` bucket (#5844).
