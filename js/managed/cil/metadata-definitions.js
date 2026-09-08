@@ -169,5 +169,21 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
       if ((method.accessFlags & 0x2000) === 0) fail('cil-implmap-row-without-flag');
     }
   }
-  return { types, methods, fields, interfaceImpls, methodImpls, implMaps, moduleRefs };
+  // II.22.18 FieldRVA: a static field's initial data lives at an RVA in the
+  // PE image. Without decoding it, changing the mapping or the backing bytes
+  // never reaches the canonical image (#7545).
+  const fieldRvas = readRows(0x1d, pos => {
+    const rva = view.getUint32(pos, true);
+    const fieldRid = index(pos + 4, tableIndexSize(counts, 4));
+    failIf(fieldRid < 1 || fieldRid > counts[4], 'cil-fieldrva-field-invalid');
+    return { rva, fieldToken: cilMetadataToken(4, fieldRid) };
+  });
+  const fieldByToken = new Map(fields.map(field => [field.token, field]));
+  for (const row of fieldRvas) {
+    const field = fieldByToken.get(row.fieldToken);
+    if (field == null) fail('cil-fieldrva-field-invalid');
+    field.rva = row.rva;
+  }
+
+  return { types, methods, fields, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
 }

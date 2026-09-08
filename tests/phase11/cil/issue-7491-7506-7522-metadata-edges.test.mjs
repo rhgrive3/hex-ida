@@ -159,3 +159,35 @@ test('#7491/#7506/#7522 a row changes the projection (no more invisible metadata
   const a = parseCil(withEdge), b = parseCil(withoutEdge);
   assert.notEqual(project(a), project(b));
 });
+
+test('#7545 a FieldRVA row binds the static field initial-data RVA', () => {
+  const base = { types: [{ name:'K', namespace:'Interop', methodList:1, fieldList:1 }], fields: [{ name:'X', flags:0x0116 }], methods: [] };
+  const withRva = parseCil(buildCil({
+    ...base,
+    // FieldRVA: RVA = 0x3000, Field RID 1.
+    extraRows: new Map([[0x1d, { count:1, bytes: Uint8Array.of(0,0x30,0,0, 1,0) }]]),
+  }).bytes);
+  assert.equal(withRva.fields[0].rva, 0x3000);
+});
+
+test('#7545 FieldRVA validation is fail-closed', () => {
+  const base = { types: [{ name:'K', namespace:'Interop', methodList:1, fieldList:1 }], fields: [{ name:'X', flags:0x0116 }], methods: [] };
+  // Field RID 9 with a single Field row.
+  assert.throws(() => parseCil(buildCil({
+    ...base,
+    extraRows: new Map([[0x1d, { count:1, bytes: Uint8Array.of(0,0x30,0,0, 9,0) }]]),
+  }).bytes), /cil-unsupported-binary/);
+});
+
+test('#7545 changing the RVA changes the canonical projection', () => {
+  const base = { types: [{ name:'K', namespace:'Interop', methodList:1, fieldList:1 }], fields: [{ name:'X', flags:0x0116 }], methods: [] };
+  const at0x3000 = parseCil(buildCil({
+    ...base,
+    extraRows: new Map([[0x1d, { count:1, bytes: Uint8Array.of(0,0x30,0,0, 1,0) }]]),
+  }).bytes);
+  const at0x3010 = parseCil(buildCil({
+    ...base,
+    extraRows: new Map([[0x1d, { count:1, bytes: Uint8Array.of(0x10,0x30,0,0, 1,0) }]]),
+  }).bytes);
+  assert.notEqual(at0x3000.fields[0].rva, at0x3010.fields[0].rva);
+});
