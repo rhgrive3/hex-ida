@@ -241,7 +241,7 @@ test('memory-version collection framing distinguishes one delimited ID from two 
   assert.equal(memoryVersionKey({ memUse:{ memDefs:[{ id:'a' }, { id:'b' }] } }),
     memoryVersionKey({ memUse:{ memDefs:[{ id:'b' }, { id:'a' }] } }),
     'reaching definitions remain order-independent');
-  assert.equal(GVN_PASS.version, '1.0.3');
+  assert.equal(GVN_PASS.version, '1.0.4');
 });
 
 test('memory-version item framing distinguishes numeric and string IDs', () => {
@@ -575,7 +575,7 @@ test('scalar congruence accepts only canonical definition and produced-value sch
   }
 });
 
-test('complex scalar families remain singleton until their full semantics are represented', () => {
+test('modeled scalar families retain their semantic attributes in congruence', () => {
   const cases = [
     {
       name:'cmp-predicate', op:'cmp', sub:'sub',
@@ -603,7 +603,6 @@ test('complex scalar families remain singleton until their full semantics are re
     f.ret();
     const { facts } = analyze(f.build());
     assert.equal(congruent(facts, first, second), false, entry.name);
-    assert.match(facts.singletonReasons.get(second.id) ?? '', /operation identity/, entry.name);
   }
 });
 

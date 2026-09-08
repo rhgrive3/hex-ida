@@ -53,7 +53,7 @@ const INTRINSIC_SET_CONSTRUCTOR = Set;
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
-  version: '1.0.3',
+  version: '1.0.4',
   stage: 'memory-optimization',
   budgetClass: 'standard',
   // `ranges` is SCCP's output: two values that are the same constant are the
@@ -108,7 +108,8 @@ const INSTRUCTION_PROVENANCE_KEYS = [
   'sourceEffectIds', 'sourceInstructionIds', 'address', 'text', 'origin',
 ];
 const SCALAR_DEFINITION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
-  'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', ...INSTRUCTION_PROVENANCE_KEYS,
+  'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', 'cond', 'conditionValue',
+  ...INSTRUCTION_PROVENANCE_KEYS,
 ]);
 const LOAD_DEFINITION_KEYS = new INTRINSIC_SET_CONSTRUCTOR([
   'op', 'sub', 'block', 'row', 'args', 'dst', 'extra', 'loc', 'addr', 'memUse',
@@ -378,6 +379,34 @@ function supportedResultWidth(bits) {
   return typeof bits === 'number' && Number.isSafeInteger(bits) && bits > 0;
 }
 
+// These are the producer-owned scalar families from the public V1 projection.
+// Each family gets an explicit, finite attribute vocabulary below; an unknown
+// operation or an open-ended metadata bag remains a singleton in GVN.
+const SCALAR_FAMILY_ATTRIBUTES = Object.freeze({
+  bin: ['negate', 'signed', 'float', 'roundingMode'],
+  un: ['sourceBits', 'targetBits', 'float', 'roundingMode'],
+  mov: ['castKind', 'sourceBits', 'targetBits'],
+  mac: ['widen', 'negate', 'float', 'roundingMode'],
+  cmp: ['comparison', 'signed', 'float', 'semanticComparisonCarrier'],
+  sel: ['conditionValueId', 'conditionCarrierValueId'],
+  bfx: ['lsb', 'width', 'signed'],
+  bfi: ['lsb', 'width', 'bitfieldKind'],
+});
+const SCALAR_FAMILY_OPERATORS = Object.freeze({
+  bin: new INTRINSIC_SET_CONSTRUCTOR([
+    ...BITVECTOR_BINARY_OPERATORS, 'ror', 'smull', 'umull', 'eq', 'ne', 'lt', 'le', 'gt', 'ge',
+  ]),
+  un: new INTRINSIC_SET_CONSTRUCTOR([
+    ...BITVECTOR_UNARY_OPERATORS, 'bool', 'lnot', 'abs', 'clz', 'ctz', 'rbit', 'rev',
+  ]),
+  mov: new INTRINSIC_SET_CONSTRUCTOR([null, 'copy', 'mov', 'sext', 'zext', 'trunc']),
+  mac: new INTRINSIC_SET_CONSTRUCTOR(['madd', 'msub']),
+  cmp: new INTRINSIC_SET_CONSTRUCTOR([null, 'sub', 'cmp', 'add']),
+  sel: new INTRINSIC_SET_CONSTRUCTOR([null, 'sel', 'inc', 'inv', 'neg']),
+  bfx: new INTRINSIC_SET_CONSTRUCTOR([null, 'bfx', 'sbfx', 'ubfx', 'extract']),
+  bfi: new INTRINSIC_SET_CONSTRUCTOR([null, 'bfi', 'bfxil', 'insert']),
+});
+
 function isPlainRecord(value) {
   if (value == null || typeof value !== 'object' || INTRINSIC_ARRAY_IS_ARRAY(value)) return false;
   const prototype = INTRINSIC_OBJECT_GET_PROTOTYPE_OF(value);
@@ -489,7 +518,93 @@ function scalarExtraKey(extra, producedBits, allowedSemanticKeys = new INTRINSIC
   return framedTupleKey('scalar-extra', fields);
 }
 
-function scalarOperationKey(instruction, produced, argumentKeys) {
+const scalarNonEmptyString = (value) => typeof value === 'string' && value.length > 0;
+const scalarBoolean = (value) => typeof value === 'boolean';
+const scalarIdentity = (value) => supportedIdentityPrimitive(value);
+const scalarBitfieldOffset = (value) => Number.isSafeInteger(value) && value >= 0;
+const scalarFloatMarker = (value) => value === false;
+const scalarSignedness = scalarBoolean;
+const scalarWidth = (value) => supportedResultWidth(value);
+const scalarWidening = (value) => scalarNonEmptyString(value) || scalarBoolean(value);
+const scalarComparisonCarrier = (value) => scalarBoolean(value) || scalarIdentity(value);
+
+const SCALAR_ATTRIBUTE_VALIDATORS = Object.freeze({
+  negate: scalarBoolean,
+  signed: scalarSignedness,
+  float: scalarFloatMarker,
+  roundingMode: scalarNonEmptyString,
+  sourceBits: scalarWidth,
+  targetBits: scalarWidth,
+  castKind: scalarNonEmptyString,
+  widen: scalarWidening,
+  comparison: scalarNonEmptyString,
+  semanticComparisonCarrier: scalarComparisonCarrier,
+  conditionValueId: scalarIdentity,
+  conditionCarrierValueId: scalarIdentity,
+  lsb: scalarBitfieldOffset,
+  width: scalarWidth,
+  bitfieldKind: scalarNonEmptyString,
+});
+
+function scalarAttributeMap(op) {
+  const fields = SCALAR_FAMILY_ATTRIBUTES[op];
+  if (fields == null) return null;
+  return new INTRINSIC_MAP_CONSTRUCTOR(fields.map((field) => [field, SCALAR_ATTRIBUTE_VALIDATORS[field]]));
+}
+
+function scalarConditionKey(instruction, argumentKeys, valueKey) {
+  const hasConditionCode = INTRINSIC_OBJECT_HAS_OWN(instruction, 'cond');
+  const hasConditionValue = INTRINSIC_OBJECT_HAS_OWN(instruction, 'conditionValue');
+
+  // A condition carrier is owned by the select family. Top-level conditional
+  // fields on every other scalar family are unmodelled execution semantics.
+  if (instruction.op !== 'sel') {
+    return hasConditionCode || hasConditionValue ? null : framedTupleKey('scalar-condition-none', []);
+  }
+
+  const predicate = hasConditionValue ? instruction.conditionValue : null;
+  if (hasConditionValue && predicate == null) return null;
+  const predicateKey = predicate == null ? null : valueKey(predicate);
+  if (predicate != null && (predicate.bits !== 1
+      || predicateKey == null || predicateKey === INVALID_CONGRUENCE_KEY)) return null;
+
+  if (hasConditionCode) {
+    const code = instruction.cond;
+    const normalizedCode = scalarNonEmptyString(code) ? code.trim() : '';
+    if (!normalizedCode || ['unknown', '?'].includes(normalizedCode.toLowerCase())) return null;
+    if (predicate == null && argumentKeys.length < 3) return null;
+    return framedTupleKey('scalar-condition-code', [code, predicateKey]);
+  }
+  if (predicate != null) return framedTupleKey('scalar-predicate-value', [predicateKey]);
+
+  // The generic select representation carries a one-bit predicate first.
+  // A legacy flags-select with no condition code is not that representation.
+  const first = instruction.args?.[0]?.value;
+  if (argumentKeys.length !== 3 || !supportedResultWidth(first?.bits) || first.bits !== 1
+      || argumentKeys[0] == null || argumentKeys[0] === INVALID_CONGRUENCE_KEY) return null;
+  return framedTupleKey('scalar-predicate-first', [argumentKeys[0]]);
+}
+
+function scalarBitfieldGeometry(instruction, produced) {
+  const extra = instruction.extra;
+  const lsb = extra?.lsb;
+  const sourceArgument = instruction.args?.[0];
+  const insertedArgument = instruction.args?.[1];
+  const hasWidth = extra != null && INTRINSIC_OBJECT_HAS_OWN(extra, 'width');
+  const width = hasWidth ? extra.width
+    : instruction.sub === 'extract' ? produced.bits
+      : instruction.sub === 'insert'
+        ? insertedArgument?.bits ?? insertedArgument?.value?.bits : null;
+  // An argument view is the actual source width for a bitfield operation. The
+  // underlying SSA value may be wider, and argumentCongruenceKey has already
+  // validated this bounded view before this geometry check.
+  const sourceBits = sourceArgument?.bits ?? sourceArgument?.value?.bits;
+  if (!scalarBitfieldOffset(lsb) || !scalarWidth(width) || !scalarWidth(sourceBits)
+      || lsb + width > sourceBits) return null;
+  return framedTupleKey('scalar-bitfield-geometry', [lsb, width, sourceBits]);
+}
+
+function scalarOperationKey(instruction, produced, argumentKeys, valueKey) {
   const resultType = producedBitvectorKey(produced, instruction);
   if (resultType == null || !hasOnlyOwnKeys(instruction, SCALAR_DEFINITION_KEYS)
       || typeof instruction.op !== 'string' || instruction.dst !== produced) {
@@ -497,46 +612,30 @@ function scalarOperationKey(instruction, produced, argumentKeys) {
   }
   const operands = framedTupleKey('operands', argumentKeys);
   if (operands == null) return null;
-
-  if (instruction.op === 'bin') {
-    if (!BITVECTOR_BINARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 2) return null;
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
-      ['negate', (value) => typeof value === 'boolean'],
-    ]));
-    if (extra == null) return null;
-    const ordered = COMMUTATIVE.has(instruction.sub) ? [...argumentKeys].sort() : argumentKeys;
-    return framedTupleKey('scalar-bin', [
-      instruction.sub, resultType, extra, framedTupleKey('operands', ordered),
-    ]);
-  }
-  if (instruction.op === 'un') {
-    if (!BITVECTOR_UNARY_OPERATORS.has(instruction.sub) || argumentKeys.length !== 1) return null;
-    const positiveWidth = (value) => supportedResultWidth(value);
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
-      ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
-    ]));
-    return extra == null ? null
-      : framedTupleKey('scalar-un', [instruction.sub, resultType, extra, operands]);
-  }
+  const operators = SCALAR_FAMILY_OPERATORS[instruction.op];
+  if (operators == null || !operators.has(instruction.sub ?? null)) return null;
+  if (instruction.op === 'bin' && argumentKeys.length !== 2) return null;
+  if (instruction.op === 'un' && argumentKeys.length !== 1) return null;
   if (instruction.op === 'mov') {
     // Zero-argument mov nodes are state reads. Their state identity is complex
-    // metadata and deliberately remains singleton until it has a producer-owned
+    // metadata and deliberately remains singleton until its producer gives it a
     // scalar equality contract.
-    if (argumentKeys.length !== 1
-        || (instruction.sub != null && typeof instruction.sub !== 'string')) return null;
-    const positiveWidth = (value) => supportedResultWidth(value);
-    const extra = scalarExtraKey(instruction.extra, produced.bits, new INTRINSIC_MAP_CONSTRUCTOR([
-      ['castKind', (value) => typeof value === 'string' && value.length > 0],
-      ['sourceBits', positiveWidth], ['targetBits', positiveWidth],
-    ]));
-    return extra == null ? null
-      : framedTupleKey('scalar-mov', [instruction.sub, resultType, extra, operands]);
+    if (argumentKeys.length !== 1) return null;
   }
 
-  // cmp/sel/mac/bfx/bfi, FP/vector operations, state reads and unknown future
-  // forms carry semantics beyond an op/sub/bits tuple. Missing CSE is safe;
-  // merging one of those forms without a complete key is not.
-  return null;
+  const extra = scalarExtraKey(instruction.extra, produced.bits, scalarAttributeMap(instruction.op));
+  if (extra == null) return null;
+  const condition = scalarConditionKey(instruction, argumentKeys, valueKey);
+  if (condition == null) return null;
+  const geometry = instruction.op === 'bfx' || instruction.op === 'bfi'
+    ? scalarBitfieldGeometry(instruction, produced) : framedTupleKey('scalar-geometry-none', []);
+  if (geometry == null) return null;
+  const ordered = instruction.op === 'bin' && COMMUTATIVE.has(instruction.sub)
+    ? [...argumentKeys].sort() : argumentKeys;
+  return framedTupleKey('scalar-operation', [
+    instruction.op, instruction.sub ?? null, resultType, extra, condition, geometry,
+    framedTupleKey('operands', ordered),
+  ]);
 }
 
 function constantCongruenceKey(constant) {
@@ -1121,6 +1220,37 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         singleton(produced, 'constant identity has unsupported tuple fields');
         continue;
       }
+
+      // Never-congruent operations and family-specific scalar attributes must
+      // be checked before a range fact can turn the result into a constant.
+      // Otherwise a changed select condition or bitfield geometry could hide
+      // behind SCCP's value and authorize an invalid reuse.
+      if (NEVER_CONGRUENT.has(instruction.op)) {
+        singleton(produced, `${instruction.op} may produce a different value each time it runs`);
+        continue;
+      }
+
+      let scalarKey = null;
+      if (instruction.op !== 'load' && instruction.op !== 'const') {
+        if (!INTRINSIC_ARRAY_IS_ARRAY(instruction.args)) {
+          singleton(produced, 'operation arguments are malformed');
+          continue;
+        }
+        const operands = instruction.args.map((argument) => {
+          const valueKey = operandKey(argument?.value);
+          return argumentCongruenceKey(argument, valueKey) ?? INVALID_CONGRUENCE_KEY;
+        });
+        if (operands.includes(INVALID_CONGRUENCE_KEY)) {
+          singleton(produced, 'an operand identity has unsupported tuple fields');
+          continue;
+        }
+        scalarKey = scalarOperationKey(instruction, produced, operands, operandKey);
+        if (scalarKey == null) {
+          singleton(produced, 'operation identity has unsupported tuple fields');
+          continue;
+        }
+      }
+
       if (constant != null) {
         // Every proved constant of the same width and value is one class.
         const existing = keyToNumber.get(constant);
@@ -1133,11 +1263,6 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
           numbers.set(produced.id, number);
           classes.set(number, [produced.id]);
         }
-        continue;
-      }
-
-      if (NEVER_CONGRUENT.has(instruction.op)) {
-        singleton(produced, `${instruction.op} may produce a different value each time it runs`);
         continue;
       }
 
@@ -1179,23 +1304,11 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         continue;
       }
 
-      if (!INTRINSIC_ARRAY_IS_ARRAY(instruction.args)) {
-        singleton(produced, 'operation arguments are malformed');
-        continue;
-      }
-      const operands = instruction.args.map((argument) => {
-        const valueKey = operandKey(argument?.value);
-        return argumentCongruenceKey(argument, valueKey) ?? INVALID_CONGRUENCE_KEY;
-      });
-      if (operands.includes(INVALID_CONGRUENCE_KEY)) {
-        singleton(produced, 'an operand identity has unsupported tuple fields');
-        continue;
-      }
-      const key = scalarOperationKey(instruction, produced, operands);
-      if (key == null) {
+      if (scalarKey == null) {
         singleton(produced, 'operation identity has unsupported tuple fields');
         continue;
       }
+      const key = scalarKey;
       const existing = keyToNumber.get(key);
       if (existing == null) {
         const number = nextNumber++;
