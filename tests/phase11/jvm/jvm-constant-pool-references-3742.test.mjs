@@ -40,9 +40,9 @@ mustReject([...base,cpMethodHandle(0,2)]);
 mustReject([...base,cpMethodHandle(1,2)]);
 mustReject([...base,utf8('run'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(8,8)],/jvm-invalid-cp-methodhandle-target-name/);
 mustReject([...base,utf8('<init>'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(5,8)],/jvm-invalid-cp-methodhandle-target-name/);
-// A Methodref naming <clinit> is itself §4.4.2-invalid (#7405); the pool pass
-// rejects it before the MethodHandle target-name rule can.
-mustReject([...base,utf8('<clinit>'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(6,8)],/jvm-invalid-cp-methodref-clinit-name/);
+// A Methodref naming <clinit> is itself §4.4.2-invalid (#7405); the shared
+// member-name grammar rejects it before the MethodHandle target-name rule can.
+mustReject([...base,utf8('<clinit>'),utf8('()V'),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(6,8)],/jvm-invalid-cp-memberref-name/);
 mustReject([...base,cpMethodType(0)]);
 mustReject([...base,cpDynamic(17,0,0)]);
 mustReject([...base,cpDynamic(18,0,0)]);
