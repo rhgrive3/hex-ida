@@ -160,7 +160,7 @@ assert.equal(supportsArm64SemanticAnalysis('x86_64'),false);
 
 // Cancellation must cross the real UI->semantic-analysis seam and cancel the
 // backend chunk RPC, rather than merely rejecting the outer AI tool race.
-{
+for (const reason of ['test-analysis-abort', false, 0, '', null]) {
   clearAnalysisCache();
   const region={id:'text-abort',vmAddr:0x8000n,size:0x100n,exec:true};
   let cancelled=0;
@@ -175,8 +175,8 @@ assert.equal(supportsArm64SemanticAnalysis('x86_64'),false);
   const app={store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x8000n,0x8040n)};
   const controller=new AbortController();
   const pending=analyzeModelAt(app,0x8000n,0x8040n,{maxInstructions:16,signal:controller.signal});
-  controller.abort('test-analysis-abort');
-  await assert.rejects(pending,(error)=>error?.name==='AbortError' && error?.code==='ABORT_ERR');
+  controller.abort(reason);
+  await assert.rejects(pending,(error)=>Object.is(error, reason));
   assert.equal(cancelled,1,'analysis abort must invoke the underlying chunk request cancel hook');
 }
 
