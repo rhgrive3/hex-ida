@@ -171,4 +171,15 @@ function observe(payload) {
   assert.ok(validateRuntimeObservation(binding, observation).ok);
 }
 
+// Marker-like ordinary metadata must not silently lose fields or type information.
+{
+  const metadata = { $hexRuntimeBinary: 'Uint8Array', bytes: [1, 2], description: 'sample' };
+  assert.deepEqual(observe(metadata).payload, metadata);
+  const ordinary = { $hexRuntimeBinary: 'application-record', bytes: [1, 2] };
+  assert.deepEqual(observe(ordinary).payload, ordinary);
+  const original = observe({ data: new Uint8Array([1, 2]) });
+  const transported = observe(structuredClone(original.payload));
+  assert.equal(transported.observationId, original.observationId);
+}
+
 console.log('issue #6214 canonical binary payload immutability regressions: PASS');

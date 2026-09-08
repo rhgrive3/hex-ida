@@ -93,6 +93,12 @@ function boundedCount(value, fallback, max, code) {
 // transport snapshots retain the canonical representation.
 const CANONICAL_BINARY_TAG = '$hexRuntimeBinary';
 const CANONICAL_BINARY_BYTES = 'bytes';
+const CANONICAL_BINARY_TYPES = new Set([
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+  'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+]);
 
 function sharedArrayBuffer(value) {
   return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
@@ -116,8 +122,11 @@ function canonicalBinaryType(value) {
     || !Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_BYTES)) return null;
   const type = value[CANONICAL_BINARY_TAG];
   const bytes = value[CANONICAL_BINARY_BYTES];
-  if (typeof type !== 'string' || !type || !Array.isArray(bytes)) return null;
-  if (!bytes.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)) return null;
+  // Only the exact transport representation denotes binary data. Ordinary
+  // metadata that happens to use these field names must retain every field.
+  if (!CANONICAL_BINARY_TYPES.has(type) || !Array.isArray(bytes)
+    || Object.keys(value).length !== 2) return null;
+  if (!Array.from(bytes).every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)) return null;
   return type;
 }
 
