@@ -32,7 +32,8 @@ export function buildSelectorIndex({ selectorRefs = [], stubs = [], fixups = [] 
     if (key == null) return;
     const entry = { addr, selector, source, ...extra };
     let at = byAddress.get(key); if (!at) { at = []; byAddress.set(key, at); }
-    if (!at.some((x) => x.selector === selector && x.source === source)) at.push(entry);
+    if (at.some((x) => x.selector === selector && x.source === source)) return;
+    at.push(entry);
     let ss = bySelector.get(selector); if (!ss) { ss = []; bySelector.set(selector, ss); }
     ss.push(entry);
   };
