@@ -92,4 +92,96 @@ test('issue #4503: an array claim conflicts with a structural field fragment', (
   assert.equal(result.selected, null);
 });
 
+
+test('issue #4503: explicit field fragments still reconstruct a structural member', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-4503-explicit-field' });
+  graph.addHardConstraint({
+    kind: 'structural-field',
+    origin: 'binary-evidence',
+    claim: {
+      layer: 'structural', entityId: 'record',
+      descriptor: {
+        kind: 'field', offset: 0, sizeBytes: 4,
+        fieldName: 'value', memberType: { kind: 'integer', widthBits: 32 },
+      },
+    },
+    evidenceIds: ['record:value'],
+  });
+
+  const result = structural(graph, 'record');
+  assert.equal(result.contradictions.length, 0);
+  assert.equal(result.confidence, 'certain');
+  assert.equal(result.selected.descriptor.kind, 'struct');
+  assert.equal(result.selected.descriptor.totalSizeBytes, 4);
+  assert.deepEqual(result.selected.descriptor.members, [{
+    kind: 'field', offset: 0, sizeBytes: 4,
+    fieldName: 'value', memberType: { kind: 'integer', widthBits: 32 },
+  }]);
+});
+
+test('issue #4503: explicit recursive field fragments retain SCC reconstruction', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-4503-explicit-recursive-field' });
+  graph.addHardConstraint({
+    kind: 'structural-field',
+    origin: 'binary-evidence',
+    claim: {
+      layer: 'structural', entityId: 'Node',
+      descriptor: {
+        kind: 'field', offset: 0, sizeBytes: 8,
+        fieldName: 'next', memberType: { kind: 'pointer', targetEntityId: 'Node' },
+      },
+    },
+    evidenceIds: ['Node:next'],
+  });
+
+  const result = structural(graph, 'Node');
+  assert.equal(result.contradictions.length, 0);
+  assert.equal(result.confidence, 'certain');
+  assert.equal(result.selected.descriptor.kind, 'struct');
+  assert.equal(result.selected.descriptor.isRecursive, true);
+  assert.equal(result.selected.descriptor.members[0].isRecursive, true);
+  assert.equal(result.selected.descriptor.members[0].memberType.isRecursive, true);
+});
+
+test('issue #4503: compatible top-level pointer facts merge without synthesizing a struct', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-4503-pointer-merge' });
+  for (const [index, descriptor] of [
+    { kind: 'pointer', targetEntityId: 'Target', sizeBytes: 8 },
+    { kind: 'pointer', targetEntityId: 'Target', alignBytes: 8 },
+  ].entries()) {
+    graph.addHardConstraint({
+      kind: 'recursive-pointer',
+      origin: 'binary-evidence',
+      claim: { layer: 'structural', entityId: 'ptr', descriptor },
+      evidenceIds: [`ptr:${index}`],
+    });
+  }
+
+  const result = structural(graph, 'ptr');
+  assert.equal(result.contradictions.length, 0);
+  assert.equal(result.confidence, 'certain');
+  assert.deepEqual(result.selected.descriptor, {
+    kind: 'pointer', targetEntityId: 'Target', sizeBytes: 8, alignBytes: 8,
+  });
+});
+
+test('issue #4503: incompatible top-level pointer facts withhold selection conservatively', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 'issue-4503-pointer-conflict' });
+  for (const [index, targetEntityId] of ['TargetA', 'TargetB'].entries()) {
+    graph.addHardConstraint({
+      kind: 'recursive-pointer',
+      origin: 'binary-evidence',
+      claim: {
+        layer: 'structural', entityId: 'ptr',
+        descriptor: { kind: 'pointer', targetEntityId, sizeBytes: 8 },
+      },
+      evidenceIds: [`ptr-conflict:${index}`],
+    });
+  }
+
+  const result = structural(graph, 'ptr');
+  assert.equal(result.confidence, 'unknown');
+  assert.equal(result.selected, null);
+});
+
 console.log('issue-4503-structural-array-claims: ok');
