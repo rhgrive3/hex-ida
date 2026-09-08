@@ -26,8 +26,12 @@ function readU16(view, offset, code = 'cil-truncated-structure') {
   return view.getUint16(offset, true);
 }
 
-function align4(offset) {
-  return (offset + 3) & ~3;
+export function align4(offset) {
+  if (!Number.isSafeInteger(offset) || offset < 0) fail('cil-offset-invalid');
+  const remainder = offset % 4;
+  const aligned = remainder === 0 ? offset : offset + (4 - remainder);
+  if (!Number.isSafeInteger(aligned)) fail('cil-offset-overflow');
+  return aligned;
 }
 
 function parseStringsHeap(bytes, offset, size) {
@@ -729,7 +733,7 @@ export function parseCil(bytes, options = {}) {
         while (sPos < u8.length && u8[sPos] !== 0) {
           sName += String.fromCharCode(u8[sPos++]);
         }
-        sPos = (sPos + 4) & ~3; // 4-byte align
+        sPos = align4(sPos + 1); // 4-byte align after the NUL terminator
         streams.push({ name: sName, offset: bsjbOffset + sOffset, size: sSize });
       }
 
