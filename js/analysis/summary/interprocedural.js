@@ -384,12 +384,23 @@ export function solveInterproceduralSummaries({
     return { summaries: new Map(), components: [], status: status('partial', 'cancelled'), iterations: 0 };
   }
 
+  // A summary is usable for a function only when the map key and the
+  // producer-declared identity agree. A mis-keyed reachable callee is treated
+  // as missing evidence so its caller takes the conservative unknown-call
+  // path; only a requested root is rejected outright (#6208).
+  const isValidLocal = (functionId) => {
+    const local = locals.get(functionId);
+    return !!local && local.functionId === functionId;
+  };
   const calleesOf = (functionId) => {
     const local = locals.get(functionId);
-    if (!local) return [];
+    if (!isValidLocal(functionId)) return [];
     const direct = local.directCalls.flatMap((call) => call.targetEntityIds);
     const indirect = local.indirectCallSets.flatMap((set) => set.candidateEntityIds);
-    return [...new Set([...direct, ...indirect])].filter((id) => locals.has(id));
+    return [...new Set([...direct, ...indirect])].filter(isValidLocal);
+  };
+  for (const root of roots) {
+    if (!isValidLocal(root)) fail('interprocedural-local-summary-identity-mismatch');
   };
 
   const { components, truncated, cancelled } = condenseCallGraph(roots, calleesOf, {
@@ -479,6 +490,7 @@ export function solveInterproceduralSummaries({
 function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
+  if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
 
   // A local P7-3a summary records a placeholder for every call it could not
   // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
