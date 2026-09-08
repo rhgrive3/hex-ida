@@ -276,40 +276,53 @@ export function deriveFunctionCandidates(evidence, {
   let evidenceOverflow = false;
   for (const start of [...byStart.keys()].sort(compareStart)) {
     const entry = byStart.get(start);
-    const bucket = entry.items;
+    const fullBucket = entry.items;
     evidenceOverflow ||= entry.overflow;
-    let extent = fuseExtent(bucket);
-    const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
-    const conflicts = [...extent.conflicts];
-    if (entry.overflow) {
-      extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
-      conflicts.push({
-        kind: 'evidence-budget',
-        detail: 'candidate evidence exceeded maxEvidencePerCandidate',
-        alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
-      });
+    // Fusion is per-architecture: evidence naming distinct architectures
+    // never corroborates across that boundary — arm64 and x86_64 evidence
+    // sharing a numeric address is coincidence, not agreement (#5743).
+    // Generic (null-architecture) evidence carries no architecture claim, so
+    // it supports each hypothesis.
+    const distinctArchitectures = [...new Set(fullBucket.map((item) => item.architectureId).filter(Boolean))]
+      .sort((left, right) => compareText(left, right));
+    const partitions = distinctArchitectures.length <= 1
+      ? [fullBucket]
+      : distinctArchitectures.map((candidateArchitectureId) => fullBucket
+        .filter((item) => item.architectureId == null || item.architectureId === candidateArchitectureId));
+    for (const bucket of partitions) {
+      let extent = fuseExtent(bucket);
+      const names = [...new Set(bucket.map((item) => item.name).filter(Boolean))];
+      const conflicts = [...extent.conflicts];
+      if (entry.overflow) {
+        extent = { regions: [], state: 'unknown', conflicts: extent.conflicts };
+        conflicts.push({
+          kind: 'evidence-budget',
+          detail: 'candidate evidence exceeded maxEvidencePerCandidate',
+          alternatives: [{ retained: bucket.length, omitted: 'one-or-more' }],
+        });
+      }
+      const authoritativeNames = [...new Set(bucket
+        .filter((item) => item.authority === 'authoritative' && item.name)
+        .map((item) => item.name))];
+      if (authoritativeNames.length > 1) {
+        conflicts.push({
+          kind: 'name',
+          detail: 'authoritative sources disagree about the name',
+          alternatives: authoritativeNames,
+        });
+      }
+      candidates.push(createFunctionCandidate({
+        start,
+        name: entry.overflow ? null : (names[0] ?? null),
+        regions: extent.regions,
+        startEvidence: bucket,
+        extentEvidence: bucket.filter((item) => item.regions.length > 0),
+        startState: fuseStartState(bucket),
+        extentState: extent.state,
+        conflicts,
+        architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? architectureId,
+      }));
     }
-    const authoritativeNames = [...new Set(bucket
-      .filter((item) => item.authority === 'authoritative' && item.name)
-      .map((item) => item.name))];
-    if (authoritativeNames.length > 1) {
-      conflicts.push({
-        kind: 'name',
-        detail: 'authoritative sources disagree about the name',
-        alternatives: authoritativeNames,
-      });
-    }
-    candidates.push(createFunctionCandidate({
-      start,
-      name: entry.overflow ? null : (names[0] ?? null),
-      regions: extent.regions,
-      startEvidence: bucket,
-      extentEvidence: bucket.filter((item) => item.regions.length > 0),
-      startState: fuseStartState(bucket),
-      extentState: extent.state,
-      conflicts,
-      architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? architectureId,
-    }));
   }
   return {
     candidates: reconcileCandidateOverlaps(candidates, { signal }),
