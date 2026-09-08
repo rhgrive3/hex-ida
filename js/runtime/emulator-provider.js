@@ -75,6 +75,34 @@ function deterministicFlag(value) {
   return value;
 }
 
+function fallbackStreamId(runOccurrence, sourceStreamId = null) {
+  const sourcePart = sourceStreamId == null ? '' : `:source:${sourceStreamId}`;
+  return `emulator:run:${runOccurrence}${sourcePart}`;
+}
+
+function eventIdentity(source, index, runOccurrence) {
+  const providerEventId = source.providerEventId ?? source.id;
+  const hasProviderEventId = providerEventId != null;
+  const hasExplicitStreamSequence = source.streamId != null && source.sequence != null;
+  // Provider event IDs are already the engine's stable identity. Keep the
+  // historical fallback stream when no stream was supplied so adding a run
+  // namespace cannot change the digest for providerEventId-only events.
+  let streamId = source.streamId ?? (hasProviderEventId ? 'emulator' : fallbackStreamId(runOccurrence));
+  // A complete engine-supplied stream/sequence pair (or provider event ID)
+  // owns its identity. When either half is absent, the provider's generated
+  // fallback must include this run occurrence (#5929).
+  if (!hasProviderEventId && !hasExplicitStreamSequence && source.streamId != null) {
+    streamId = typeof source.streamId === 'string' && source.streamId.trim()
+      ? fallbackStreamId(runOccurrence, source.streamId)
+      : source.streamId;
+  }
+  return {
+    streamId,
+    sequence: source.sequence ?? index,
+    providerEventId,
+  };
+}
+
 function normalizeEngineDescriptor(engine, options) {
   const source = typeof engine?.descriptor === 'function' ? engine.descriptor() : {};
   return deepFreeze({
@@ -138,6 +166,7 @@ export class EmulatorProvider {
     const evidence = new RuntimeEvidenceBridge();
     let lastRun = null;
     let activeRun = null;
+    let nextRunOccurrence = 0;
 
     const run = async (input = {}, runOptions = {}) => {
       if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
@@ -152,6 +181,7 @@ export class EmulatorProvider {
       // symbol, Proxy, or other non-cloneable option must fail closed before
       // the engine can succeed and only then make run() throw while recording.
       const recordedOptions = recordableClone(replayOptions);
+      const runOccurrence = ++nextRunOccurrence;
       const controller = session.controller();
       // The run's identity is fixed at start: a late completion (engine that
       // ignored the abort) must never be re-labelled as the current epoch's
@@ -226,31 +256,34 @@ export class EmulatorProvider {
       }
       const sourceEvents = eventSource ?? [];
       session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
-      const events = sourceEvents.map((source, index) => createRuntimeEvent({
-        runtimeSessionId: session.runtimeSessionId,
-        providerId: session.providerId,
-        providerVersion: session.providerVersion,
-        sessionEpoch: session.epoch,
-        streamId: source.streamId ?? 'emulator',
-        sequence: source.sequence ?? index,
-        providerEventId: source.providerEventId ?? source.id,
-        timestamp: source.timestamp,
-        processKey: session.target.processKey,
-        moduleBindingKey: source.moduleBindingKey,
-        moduleGeneration: source.moduleGeneration,
-        kind: source.kind ?? source.type ?? 'emulator-checkpoint',
-        payload: source.payload ?? source,
-        observationMode: 'synthetic',
-        completeness,
-        interventionIds: source.interventionIds,
-      }));
+      const events = sourceEvents.map((source, index) => {
+        const identity = eventIdentity(source, index, runOccurrence);
+        return createRuntimeEvent({
+          runtimeSessionId: session.runtimeSessionId,
+          providerId: session.providerId,
+          providerVersion: session.providerVersion,
+          sessionEpoch: session.epoch,
+          streamId: identity.streamId,
+          sequence: identity.sequence,
+          providerEventId: identity.providerEventId,
+          timestamp: source.timestamp,
+          processKey: session.target.processKey,
+          moduleBindingKey: source.moduleBindingKey,
+          moduleGeneration: source.moduleGeneration,
+          kind: source.kind ?? source.type ?? 'emulator-checkpoint',
+          payload: source.payload ?? source,
+          observationMode: 'synthetic',
+          completeness,
+          interventionIds: source.interventionIds,
+        });
+      });
       if (!events.length) {
         events.push(createRuntimeEvent({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           providerVersion: session.providerVersion,
           sessionEpoch: session.epoch,
-          streamId: 'emulator',
+          streamId: fallbackStreamId(runOccurrence),
           sequence: 0,
           processKey: session.target.processKey,
           kind: 'emulator-checkpoint',

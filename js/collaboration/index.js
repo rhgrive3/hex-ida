@@ -127,7 +127,13 @@ function rawActionRejection(input) {
   return reason ? Object.freeze({ status: 'rejected', reason }) : null;
 }
 
-function compareOperations(a, b) { return a.operationId.localeCompare(b.operationId); }
+export function compareOperationId(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function compareOperations(a, b) { return compareOperationId(a.operationId, b.operationId); }
 
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
@@ -271,7 +277,7 @@ export class ChangeLog {
     if (previous) { this.operations.set(operation.operationId, operation); return { status: 'applied', operationId: operation.operationId, effect: 'idempotent-value' }; }
     const record = current || { key, targetEntityId: operation.targetEntityId, factKind: operation.factKind, values: [], resolvedOperationId: null, stateFingerprint: null };
     record.values.push(candidate);
-    record.values.sort((a, b) => a.operationId.localeCompare(b.operationId));
+    record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
     record.stateFingerprint = payloadDigest(record.values.map((item) => ({ operationId: item.operationId, value: item.value })));
     this.state.facts[key] = record;
     if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
@@ -289,7 +295,7 @@ export class ChangeLog {
     let progressed = true;
     while (progressed) {
       progressed = false;
-      for (const [operationId, operation] of [...this.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      for (const [operationId, operation] of [...this.pending.entries()].sort(([a], [b]) => compareOperationId(a, b))) {
         if (!operation.causalParents.every((parent) => this.operations.has(parent))) continue;
         if (permanentlyBlockedOp(this, operationId)) continue;
         this.pending.delete(operationId);
