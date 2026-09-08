@@ -123,7 +123,8 @@ const GAME_VALUE_GOALS = new Set([
  * 読めない形なら null（当てずっぽうの名前は返さない）。
  */
 export function swiftModuleOf(name) {
-  const s = String(name || '');
+  if (typeof name !== 'string') return null;
+  const s = name;
   const m = /^_TtC[VOP]?(\d+)/.exec(s);
   if (!m) return null;
   const len = Number(m[1]);
@@ -141,7 +142,8 @@ export function swiftModuleOf(name) {
  * どれが実際にまとまっているかは数で決める。
  */
 function prefixesOf(name) {
-  const s = String(name || '');
+  if (typeof name !== 'string') return [];
+  const s = name;
   if (!/^[A-Z]{2}/.test(s)) return [];
   const out = [];
   for (let n = Math.min(5, s.length - 1); n >= 2; n--) {
@@ -157,7 +159,8 @@ function prefixesOf(name) {
 
 /** 名前そのものから当てる（第 1 段階）。 */
 function matchPattern(name) {
-  const s = String(name || '');
+  if (typeof name !== 'string') return null;
+  const s = name;
   for (const p of VENDOR_PATTERNS) {
     if (p.re.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
   }
@@ -169,7 +172,8 @@ function matchPattern(name) {
  * その形でなければ null（当てずっぽうは返さない）。
  */
 export function classFromSymbol(name) {
-  const m = /^[-+]\s*\[\s*([^\s\]]+)/.exec(String(name || ''));
+  if (typeof name !== 'string') return null;
+  const m = /^[-+]\s*\[\s*([^\s\]]+)/.exec(name);
   return m ? m[1] : null;
 }
 
@@ -279,8 +283,8 @@ export function vendorsOf(fields) {
  * @param {object} [learned] learnVendors の結果（あると精度が上がる）
  */
 export function vendorOf(className, learned) {
-  const name = String(className || '');
-  if (!name) return null;
+  if (typeof className !== 'string' || !className) return null;
+  const name = className;
   const direct = matchPattern(name);
   if (direct) return Object.assign({ confidence: 'high' }, direct);
   if (learned) {
