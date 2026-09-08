@@ -243,7 +243,11 @@ export function createHexAIContext(app) {
             query:String(query ?? ''),
             from:0,
           }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
-          if (queryCompleteness(result) === 'unsupported') continue;
+          if (queryCompleteness(result) === 'unsupported') {
+            complete = false;
+            reason ||= queryReason(result) || 'typed-search-producer-unavailable';
+            continue;
+          }
           anySupported = true;
           const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
           if (queryCompleteness(result) !== 'complete') {

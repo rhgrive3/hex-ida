@@ -10,6 +10,7 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const LANE = 'codex/lane5-6633-abi-a8b2';
 const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
+const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -26,6 +27,12 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     '.circleci/config.yml',
     'js/apple/objc-metadata.js',
     'tests/issue-6270-objc-methodlist-cancellation.mjs',
+  ]),
+  [ANALYSIS_BATCH_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/ai/ui/hex-context-query-base.js',
+    'js/semantics/ir/function.js',
+    'tests/semantic-v2/issue-5765-locale-free-serialization.test.mjs',
   ]),
 });
 

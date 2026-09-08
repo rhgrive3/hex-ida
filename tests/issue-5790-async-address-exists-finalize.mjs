@@ -10,6 +10,12 @@ import test from 'node:test';
 import { AIRuntime } from '../js/ai/runtime.js';
 import { addressExistsAsync, addressExistsSync } from '../js/ai/control/runtime-support.js';
 import { EvidenceStore } from '../js/ai/evidence.js';
+import { ToolRegistry } from '../js/ai/tools/index.js';
+
+const ADDRESS_ACTION_KINDS = Object.freeze([
+  'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
+  'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value',
+]);
 
 function evidenceStore() {
   const store = new EvidenceStore();
@@ -17,7 +23,7 @@ function evidenceStore() {
   return store;
 }
 
-function runtimeWith({ addressExists, program }) {
+function runtimeWith({ addressExists, program, kinds = ['open-function'] }) {
   return new AIRuntime({
     context: {
       binaryId: 'fixture:1',
@@ -36,7 +42,7 @@ function runtimeWith({ addressExists, program }) {
           answer: 'addCoins is the strongest indexed candidate.',
           confidence: 0.9,
           evidenceIds: ['e1'],
-          suggestedActions: [{ kind: 'open-function', target: '0x1000' }],
+          suggestedActions: kinds.map((kind) => ({ kind, target: '0x1000', evidenceId: 'e1' })),
           followups: [],
         };
       },
@@ -119,4 +125,42 @@ test('#5790 synchronous authority errors and cancellation fail closed', async ()
   }, '0x1000', controller.signal);
   controller.abort('cancelled');
   assert.equal(await pending, false);
+});
+
+test('#5790 keeps address-action kinds and tool preflight on one strict authority', async () => {
+  for (const expected of [false, true]) {
+    let calls = 0;
+    const addressExists = async (address) => {
+      calls++;
+      assert.equal(address, '0x1000');
+      return expected;
+    };
+    const final = await runtimeWith({ addressExists, kinds: ADDRESS_ACTION_KINDS }).turn({ mode: 'agent', goal: 'Locate coin increase behavior' });
+    if (expected) {
+      assert.deepEqual(final.actions.map(({ kind, target }) => ({ kind, target })), ADDRESS_ACTION_KINDS.map((kind) => ({ kind, target: '0x1000' })));
+    } else {
+      assert.deepEqual(final.actions, []);
+    }
+    assert.equal(calls, 1, 'duplicate action targets share one final authority check');
+
+    const registry = new ToolRegistry({ context: { addressExists } });
+    registry.register({ name: 'check_address', inputSchema: { type: 'object' }, execute: async () => ({ ok: true }) });
+    const toolCall = registry.execute('check_address', { address: '0x1000' });
+    if (expected) await assert.doesNotReject(() => toolCall);
+    else await assert.rejects(() => toolCall, (error) => error?.type === 'invalid_tool_call');
+    assert.equal(calls, 2, 'tool preflight checks the same target authority');
+  }
+
+  for (const malformed of [undefined, null, {}, 1, 'yes']) {
+    const addressExists = async () => malformed;
+    const final = await runtimeWith({ addressExists, kinds: ['open-address'] }).turn({ mode: 'agent', goal: 'Locate coin increase behavior' });
+    assert.deepEqual(final.actions, [], `malformed ${String(malformed)} authority must reject the final action`);
+    const registry = new ToolRegistry({ context: { addressExists } });
+    registry.register({ name: 'check_address', inputSchema: { type: 'object' }, execute: async () => ({ ok: true }) });
+    await assert.rejects(
+      () => registry.execute('check_address', { address: '0x1000' }),
+      (error) => error?.type === 'invalid_tool_call',
+      `malformed ${String(malformed)} authority must reject tool arguments too`,
+    );
+  }
 });
