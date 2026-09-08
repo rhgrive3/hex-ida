@@ -205,10 +205,13 @@ export class EvidenceStore {
       }
     }
     const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
-    const identity = JSON.stringify(jsonSafe([
+    const sourceCoordinate = canonicalIdentityRef(input.sourceCoordinate);
+    const identityParts = [
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
-    ]));
+    ];
+    if (sourceCoordinate) identityParts.push({ sourceCoordinate });
+    const identity = JSON.stringify(jsonSafe(identityParts));
     const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
@@ -284,6 +287,13 @@ export class EvidenceStore {
         ...rootSourceRef,
         path: key === 'result' ? (rootSourceRef.path || '$') : `${rootSourceRef.path === '$' ? '$.' : `${rootSourceRef.path}.`}${key}[${index}]`,
       } : null;
+      // A producer-supplied row id/evidence id is the stable identity. When it
+      // is absent, retain the fact's source coordinate so sibling rows cannot
+      // collapse into one record. sourceRef.path is already canonicalized;
+      // the generated path covers results without an external sourceRef.
+      const sourceCoordinate = ids.length
+        ? null
+        : (rowSourceRef?.path || `$.${key}[${index}]`);
       for (const sourceId of sourceIds.length ? sourceIds : [null]) {
         const sourceVerified = sourceId != null && (rowVerifiedIds.has(sourceId) || outputVerifiedIds.has(sourceId));
         const verified = verifier === true && (sourceVerified || rowVerdict || singleTopLevelVerdict);
@@ -291,6 +301,7 @@ export class EvidenceStore {
         const kind = String(row.kind || key || 'observation');
         const evidence = this.add({
           sourceId, sourceTool: toolName, sourceRef: rowSourceRef, sourceBinding: rowSourceRef?.bindingKey,
+          sourceCoordinate,
           kind, status, address: addr, functionAddress: fnAddr,
           effectiveScope, scopeBoundary,
           functionName: row.functionName || row.name || output.name,
