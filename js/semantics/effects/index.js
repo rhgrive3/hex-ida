@@ -10,6 +10,7 @@ export const MACHINE_EFFECT_DEFAULT_BUDGET = Object.freeze({
   maxIntrinsicValues: 4096,
   maxIntrinsicRegisters: 4096,
   maxIntrinsicControlEffects: 256,
+  maxIntrinsicMemoryAccesses: 4096,
 });
 
 export const MACHINE_EFFECT_COMPLETENESS = Object.freeze([
@@ -467,7 +468,8 @@ function normalizeIntrinsicMemoryScope(input, options = {}) {
   if (scope !== 'all' && input.spaces != null) fail('machine-effects-intrinsic-memory-spaces-not-allowed');
   const out = { scope };
   if (scope === 'accesses') {
-    const accesses = array(input.accesses, 'machine-effects-intrinsic-memory-accesses-required').map((access) => createMemoryAccess(access, options));
+    const accesses = boundedArray(input.accesses, 'machine-effects-intrinsic-memory-accesses-required', options, 'maxIntrinsicMemoryAccesses')
+      .map((access) => createMemoryAccess(access, options));
     if (accesses.length === 0) fail('machine-effects-intrinsic-memory-accesses-required');
     out.accesses = accesses;
   }
