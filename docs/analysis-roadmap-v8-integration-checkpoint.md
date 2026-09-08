@@ -131,6 +131,39 @@ that commit does not complete the locked generated-output transaction and is
 not approval to merge #7036 into main. No release or competitor-superiority
 claim is authorized by it.
 
+Source reconciliation is locally committed as
+`84d1a4f70c94169e6d65f3ba5659864207bf8e9d`, tree
+`9b6039df5755ae3e32c38034c344f34b1fe005e4`, with the recorded PR head and
+`404537698` as its two parents. Exact-SHA ownership CLI checks and both
+ownership regression suites passed on that commit. Its 155-path inventory
+retains all original 140 changed paths. It has not been pushed to #7036.
+
+### First full-gate divergence: restore an existing ARM64e contribution
+
+Git history identifies the first machine-effects failure precisely: merged
+PR #7317 (`d37711f09f39542d11a526387cf23cb620ad4cc7`) added the four
+`paciaz`/`pacibz`/`autiaz`/`autibz` effect definitions. The next architecture
+merge, #7319 (`a16dcf744`), added authenticated loads but deleted those
+definitions while leaving the encoding and denominator additions intact.
+This is lost existing work, not a new missing implementation.
+
+The original seven-line definition/comment patch is restored in the current
+integration tree, preserving #7319's authenticated-load dispatch. The two
+additional exact ownership paths are the ARM64e effect provider and
+`tests/machine-effects/arm64e-retained-provider-union.test.mjs`; no blanket
+architecture or verifier exemption was added. The new canonical-discovered
+regression requires both merged contributions on the same product and the
+full unchanged PAuth denominator. It failed 0/2 before restoration:
+`/tmp/hex-roadmap-arm64e-union-before-ORLqpU/full.log`.
+
+After restoration, the new union test plus existing zero-modifier,
+authenticated-load, operand-arity and full PAuth denominator suites passed
+(6.9 s). No denominator, oracle or assertion was reduced. This removes the
+first diagnosed divergence, not all 20 full-gate failures; the complete gate
+still requires a new run on the next exact candidate. The LLVM oracle check
+also confirmed this environment has LLVM MC 14 while the AArch64 CSSC tests
+require LLVM MC 18; substituting an older oracle cannot count as proof.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
