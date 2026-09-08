@@ -8,7 +8,6 @@ import {
   collectCompetitiveSourceMeasurements,
 } from '../../tools/validation/competitive/source-fixture.mjs';
 import {
-  currentCompetitiveGitIdentity,
   generateCompetitiveScorecardFromRepositoryEvidence,
 } from '../../tools/validation/competitive/score.mjs';
 import profileJson from '../../tools/validation/competitive/profile.json' with { type: 'json' };
@@ -50,10 +49,12 @@ test('source-fixture evidence promotes all four aliases over the complete V2 que
       assert.equal(entry.comparison, measurement.comparison);
     }
     const arm64 = result.scorecard.entries.find((entry) => entry.metricId === ARM64_METRIC);
-    assert.equal(evidence.measurements[ARM64_METRIC].status, 'UNMEASURED');
-    assert.equal(arm64.groundTruthStatus, 'legacy-unproven');
-    assert.equal(arm64.hexValue, null);
-    assert.equal(arm64.referenceValue, null);
+    assert.equal(evidence.measurements[ARM64_METRIC].status, 'MEASURED');
+    assert.equal(arm64.groundTruthStatus, 'measured');
+    assert.equal(arm64.measurement.status, 'MEASURED');
+    assert.equal(arm64.hexValue, evidence.measurements[ARM64_METRIC].candidateValue);
+    assert.equal(arm64.referenceValue, evidence.measurements[ARM64_METRIC].referenceValue);
+    assert.equal(arm64.comparison, evidence.measurements[ARM64_METRIC].comparison);
   } finally {
     fs.rmSync(evidence.root, { recursive: true, force: true });
   }
@@ -92,25 +93,37 @@ test('source-fixture promotion preserves unknown rows and rejects provenance/val
       fs.rmSync(evidence.root, { recursive: true, force: true });
     }
   }
+
+  for (const [label, mutate] of [
+    ['ARM64 candidate value', (row) => { row.candidateValue += 0.01; }],
+    ['ARM64 denominator', (row) => { row.denominator.rawCaseCount += 1; }],
+    ['ARM64 source file', (row) => { row.semanticOracle.sourceFiles[0].sha256 = '0'.repeat(64); }],
+  ]) {
+    const evidence = sourceEvidence();
+    try {
+      mutate(evidence.measurements[ARM64_METRIC]);
+      writeMeasurements(evidence.root, evidence.measurements);
+      await assert.rejects(
+        () => generateCompetitiveScorecardFromRepositoryEvidence({ outputRoot: evidence.root }),
+        /arm64-provenance-or-value-mismatch/,
+        label,
+      );
+    } finally {
+      fs.rmSync(evidence.root, { recursive: true, force: true });
+    }
+  }
 });
 
-test('ARM64 placeholder cannot be promoted without a scalar source workload', async () => {
+test('ARM64 missing evidence remains explicitly unmeasured', async () => {
   const evidence = sourceEvidence();
   try {
-    const row = evidence.measurements[ARM64_METRIC];
-    Object.assign(row, {
-      status: 'MEASURED',
-      candidateValue: 0,
-      referenceValue: 0,
-      comparison: 'TIE',
-      producerGitSha: currentCompetitiveGitIdentity().gitSha,
-      producerTreeSha: currentCompetitiveGitIdentity().treeSha,
-    });
+    delete evidence.measurements[ARM64_METRIC];
     writeMeasurements(evidence.root, evidence.measurements);
-    await assert.rejects(
-      () => generateCompetitiveScorecardFromRepositoryEvidence({ outputRoot: evidence.root }),
-      /metric-unavailable/,
-    );
+    const result = await generateCompetitiveScorecardFromRepositoryEvidence({ outputRoot: evidence.root });
+    const arm64 = result.scorecard.entries.find((entry) => entry.metricId === ARM64_METRIC);
+    assert.equal(arm64.groundTruthStatus, 'legacy-unproven');
+    assert.equal(arm64.hexValue, null);
+    assert.equal(arm64.referenceValue, null);
   } finally {
     fs.rmSync(evidence.root, { recursive: true, force: true });
   }

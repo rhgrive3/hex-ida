@@ -208,6 +208,17 @@ export function validateCompetitiveMeasurement(value, {
     if (value.candidateValue !== null || value.referenceValue !== null || value.comparison !== UNMEASURED_STATUS) {
       measurementError('unmeasured-values', value.metricId);
     }
+    if (metricConfig.kind === 'source-fixture') {
+      try {
+        validateSourceFixtureMeasurement(value, { expectedMetricId, expectedProducerIdentity });
+      } catch (error) {
+        measurementError('source-fixture', `${value.metricId}:${error.message}`);
+      }
+      if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+        measurementError('evidence-refs', value.metricId);
+      }
+      return Object.freeze(value);
+    }
   }
   if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.some((entry) => typeof entry !== 'string' || !entry.trim())) {
     measurementError('evidence-refs', value.metricId);

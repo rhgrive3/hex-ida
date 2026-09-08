@@ -8,7 +8,6 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { ALIAS_QUERIES_V2, buildFixture, memoryAccessOf, regionOf, scoreAliasQueriesV2 } from '../phase7/scoring.mjs';
 import { createPhase7AliasSolver } from '../../../js/analysis/alias/solver.js';
 import { aliasMemoryRegions } from '../../../js/analysis/alias/legacy-safety-floor.js';
-import { measureMachineEffectsCoverage } from '../../../js/targets/architecture/coverage.js';
 import { validateTwinManifest } from './twin-manifest.mjs';
 import { competitiveTwinWorkloadFor, validateCompetitiveTwinCapture } from './workload-twins.mjs';
 import { captureContainsTwinManifest, validateCompetitiveMeasurement } from './measurements.mjs';
@@ -424,20 +423,7 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   const aliasV2Candidate = scoreAliasQueriesV2(candidateAnswer, { queries: ALIAS_QUERIES_V2 });
   const aliasV2Baseline = scoreAliasQueriesV2(baselineAnswer, { queries: ALIAS_QUERIES_V2 });
 
-  // 2. MachineEffects coverage
-  const sampleInstruction = {
-    instructionId: 'sample-arm64-b',
-    mnemonic: 'b',
-    operands: '#0x5000',
-    ops: [{ type: 'imm', value: 0x5000n }],
-    mode: 'a64',
-    address: 0x4000n,
-    origin: { instructionIds: ['sample-arm64-b'] },
-    branchTarget: 0x5000n,
-  };
-  const arm64Coverage = measureMachineEffectsCoverage('arm64', [sampleInstruction]);
-
-  // 3. Normalized metric comparisons. Source-fixture measurements replace
+  // 2. Normalized metric comparisons. Source-fixture measurements replace
   // these rows only after their independent oracle is validated; absent rows
   // retain their historical values only as non-authoritative context.
   const entries = [
@@ -491,15 +477,15 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     }, measurementsByMetric)),
     makeEntry(profile, 'machine-effects-arm64-coverage', fieldsWithMeasurement('machine-effects-arm64-coverage', {
       corpusId: 'arm64-effects-corpus',
-      inputIdentity: 'arm64-effects-sample',
+      inputIdentity: 'unmeasured:machine-effects-arm64-coverage',
       hexVersion: headCommit,
-      referenceTool: 'capstone',
-      referenceVersion: '5.0.1',
-      configuration: 'default',
+      referenceTool: 'unmeasured',
+      referenceVersion: 'unmeasured',
+      configuration: 'source-fixture',
       runPolicy: 'exact',
-      hexValue: arm64Coverage.coverageRate ?? 1.0,
-      referenceValue: 0.0,
-      evidenceRefs: ['tests/stage1/a2-machine-effects-coverage.test.mjs'],
+      hexValue: null,
+      referenceValue: null,
+      evidenceRefs: ['tests/stage1/a2-machine-effects-coverage.test.mjs', 'tests/machine-effects/a2-denominator-inventory.json'],
     }, measurementsByMetric)),
   ];
 
