@@ -283,7 +283,7 @@ function programResultRows(q) {
     if (Array.isArray(value.results)) return { rows: value.results, meta: value, valid: true };
     return { rows: [], meta: value, valid: false };
   }
-  return { rows: [], meta: value ?? [], valid: true };
+  return { rows: [], meta: value ?? [], valid: value == null };
 }
 
 function programResultTotal(meta) {

@@ -99,6 +99,11 @@ test('plain arrays and valid empty structured results retain their semantics', a
   assert.equal(arrayResult.complete, true);
   assert.equal(arrayResult.total, 2);
 
+  const arrayPage = await tools.get_callers(address, { limit: 1, offset: 1 });
+  assert.deepEqual(arrayPage.results.map((row) => row.addr), [0x2400n]);
+  assert.equal(arrayPage.complete, true);
+  assert.equal(arrayPage.total, 2);
+
   mode = 'empty';
   const emptyResult = await tools.get_callers(address);
   assert.deepEqual(emptyResult.results, []);
@@ -111,6 +116,18 @@ test('plain arrays and valid empty structured results retain their semantics', a
 test('an object without a results array fails closed', async () => {
   const tools = createAgentTools({ program: {
     callersOf() { return { complete: true }; },
+  } });
+  const result = await tools.get_callers(address);
+  assert.deepEqual(result.results, []);
+  assert.equal(result.complete, false);
+  assert.equal(result.truncated, true);
+  assert.equal(result.total, null);
+  assert.equal(result.reason, 'invalid-program-result-envelope');
+});
+
+test('a non-array primitive result fails closed', async () => {
+  const tools = createAgentTools({ program: {
+    callersOf() { return 'not-a-program-result'; },
   } });
   const result = await tools.get_callers(address);
   assert.deepEqual(result.results, []);
