@@ -16,9 +16,10 @@ function ulebBytes(value) {
 }
 
 // __TEXT: vmaddr 0x100000000, vmsize 0x2000, fileoff 0, filesize 0x1000 (RX).
-// Optional __text section with S_ATTR_PURE|SOME_INSTRUCTIONS; optional
-// LC_FUNCTION_STARTS / LC_UNIXTHREAD / LC_SYMTAB.
-function build({ fsDelta = null, entryAt = null, symtabAddress = null }) {
+// Optional section defaults to __text with S_ATTR_PURE|SOME_INSTRUCTIONS;
+// its offset/extent/flags can be varied for symbol-authority regressions.
+// Optional LC_FUNCTION_STARTS / LC_UNIXTHREAD / LC_SYMTAB.
+function build({ fsDelta = null, entryAt = null, symtabAddress = null, sectionOffset = 0, sectionSize = 0x100, sectionFlags = 0x80000400 }) {
   const withText = fsDelta != null || symtabAddress != null;
   const bytes = new Uint8Array(0x1200);
   const dv = new DataView(bytes.buffer);
@@ -43,9 +44,10 @@ function build({ fsDelta = null, entryAt = null, symtabAddress = null }) {
   if (withText) {
     const q = seg + 72;
     bytes.set(Buffer.from('__text'), q); bytes.set(Buffer.from('__TEXT'), q + 16);
-    dv.setBigUint64(q + 32, 0x100000000n, true); dv.setBigUint64(q + 40, 0x100n, true);
-    dv.setUint32(q + 48, 0, true);
-    dv.setUint32(q + 64, 0x80000400, true); // S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
+    dv.setBigUint64(q + 32, 0x100000000n + BigInt(sectionOffset), true);
+    dv.setBigUint64(q + 40, BigInt(sectionSize), true);
+    dv.setUint32(q + 48, sectionOffset, true);
+    dv.setUint32(q + 64, sectionFlags, true);
   }
   let p = seg + segCmdSize;
   if (fsDelta != null) {
@@ -112,16 +114,34 @@ const seedsOf = (image, source) => image.functions.filter((f) => f.source === so
 
 // --- #5559: symbol fallback ----------------------------------------------
 {
-  // A symbol whose section lacks instruction attributes (plain __TEXT with
-  // nsects=0) must not mint a symbol seed.
-  const image = parseMachO(build({ symtabAddress: 0x100000000n + 0x810n }), {});
+  // Keep the symbol inside a real RX section while withholding instruction
+  // attributes. Main would seed this solely from sec.perms.execute.
+  const image = parseMachO(build({
+    symtabAddress: 0x100000000n + 0x810n,
+    sectionOffset: 0x800,
+    sectionSize: 0x100,
+    sectionFlags: 0,
+  }), {});
   assert.deepEqual(seedsOf(image, 'symbol').map((f) => f.name), [],
-    'a symbol in a section without instruction attributes must not become a function seed');
+    'an in-range symbol in an attribute-less RX section must not become a function seed');
 }
 {
-  const image = parseMachO(build({ symtabAddress: 0x100000000n + 0x10n }), {});
+  // SOME_INSTRUCTIONS describes a mixed section and does not prove that this
+  // particular symbol address is code; symbol-only authority must fail closed.
+  const image = parseMachO(build({
+    symtabAddress: 0x100000000n + 0x10n,
+    sectionFlags: 0x400,
+  }), {});
+  assert.deepEqual(seedsOf(image, 'symbol').map((f) => f.name), [],
+    'a SOME_INSTRUCTIONS-only section must not mint a 0.9 symbol function seed');
+}
+{
+  const image = parseMachO(build({
+    symtabAddress: 0x100000000n + 0x10n,
+    sectionFlags: 0x80000000,
+  }), {});
   const seeds = seedsOf(image, 'symbol');
-  assert.equal(seeds.length, 1, '__text symbols (S_ATTR_*_INSTRUCTIONS) still seed');
+  assert.equal(seeds.length, 1, 'a PURE_INSTRUCTIONS section still authorizes a symbol seed');
   assert.equal(seeds[0].name, '_fn_name');
   assert.equal(seeds[0].address, 0x100000010n);
 }
