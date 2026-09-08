@@ -126,6 +126,7 @@ test('#5851 an incomplete callee keeps the caller fallback conservative', () => 
   const localA = callerWithFallback('A', 'B');
   const localB = createFunctionSummary({
     functionId: 'B',
+    memoryWriteRegions: [broadFallbackWrite()],
     unknownCallEffects: [createUnknownCallEffect({
       callSiteId: 'unresolved_B', reason: 'unresolved-target',
     })],
@@ -271,8 +272,24 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
       regionId: 'region_model',
       regionKind: 'global-absolute',
       addressSpaces: ['memory'],
+      evidenceIds: ['fixture:library-model'],
       source: 'library-model',
     })],
+    modelSchema: 'phase7-library-model',
+    modelVersion: '1',
+    targetEntityId: 'ext',
+    snapshotId: 'snapshot_issue_5851',
+    completeness: 'complete',
+    stopReason: null,
+    current: true,
+    provenance: {
+      schema: 'phase7-library-model-provenance',
+      providerId: 'phase7-test-fixture',
+      providerVersion: '1',
+      evidenceIds: ['fixture:library-model'],
+    },
+    memoryReadRegions: [],
+    escapes: [],
     noreturn: false,
     mayThrow: false,
   };
@@ -281,6 +298,7 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
     roots: ['A'],
     localSummaries: new Map([['A', localA]]),
     libraryModels: new Map([['ext', model]]),
+    snapshotId: 'snapshot_issue_5851',
   }).summaries.get('A');
 
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'),
