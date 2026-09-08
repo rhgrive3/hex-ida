@@ -228,9 +228,13 @@ function hiddenState(ownerId, family, registersRead, registersWritten) {
   }
 }
 
-function promotedControlEffect(partial, instruction, ownerId) {
+function promotedControlEffect(partial, instruction, ownerId, context = {}) {
   const current = partial?.controlEffect;
   if (current && current.kind !== 'unknown') return current;
+  const family = String(instruction?.instructionFamily || '').toLowerCase();
+  if (context?.closureMatrixTerminal && (family === 'ud0' || family === 'ud1')) {
+    return { kind:'trap', reason:`x86-${family}-architectural-invalid-opcode` };
+  }
   const groups = new Set((instruction.detail?.groups || []).map((group) => String(group?.name || '').toLowerCase()));
   if (groups.has('call')) return { kind:'call', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('ret')) return { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
@@ -275,7 +279,7 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 
-  const controlEffect = promotedControlEffect(partial, instruction, ownerId);
+  const controlEffect = promotedControlEffect(partial, instruction, ownerId, context);
   if (!controlEffect) return partial;
 
   const registers = decoderRegisterSets(instruction);

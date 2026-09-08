@@ -94,7 +94,7 @@ function rawVectorPrefixPartial(instruction, ownerId, result, context) {
   });
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-extended-system-family-requires-dedicated-semantics|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-ud[01]-operand-shape-unmodelled|x86-extended-system-family-requires-dedicated-semantics|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
 function terminalize(instruction, ownerId, result, context) {
   // Structured vector-prefix metadata is semantic authority for VEX/EVEX
@@ -116,7 +116,8 @@ function terminalize(instruction, ownerId, result, context) {
     || result?.metadata?.encodingValidated === false
     || result?.metadata?.exactWideAtomicClaim === false
     || result?.metadata?.structuredImplicitAccumulatorMissing === true
-    || STRUCTURED_FAIL_CLOSED_REASON.test(reason)
+    || reason === 'x86-int-delivery-state-unmodelled'
+    || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))
   )) return result;
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
