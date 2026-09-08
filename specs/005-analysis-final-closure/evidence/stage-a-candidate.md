@@ -1,4 +1,52 @@
-# Current combined development result — 2026-09-08
+# Current T021 local gate closure — 2026-09-08
+
+T021 is proved against the exact product source commit
+`8e045342db6bd9596056942d49b994aad55b895e`, tree
+`df2fb9e524d960977d78b17d7667d792ca478f17`. The preflight used Node
+`v22.20.0`/npm `10.9.3`, Git `2.49.1`, LLVM/Clang `18.1.3`, the checked-in
+dependencies, and the task-owned browser environment from
+`/mnt/workspace/.dev-state/hex-development-batch/browser-env.sh`.
+
+The canonical quiet command was:
+
+```sh
+source /mnt/workspace/.dev-state/hex-development-batch/browser-env.sh
+export PATH=/mnt/workspace/.local/hex-stage-a-toolchain/git-2.49.1/bin-wrappers:$PATH
+node scripts/run-quiet-command.mjs --label check -- npm run check
+```
+
+It completed `check: PASS (2254.7s)`. The package check includes the nested
+`npm test` and `benchmark:baseline` commands, so no separate duplicate
+`npm test` run is claimed. The bounded summary is retained at
+`/mnt/workspace/.dev-state/hex-development-batch/t021-check-8e045342d.log`
+with SHA-256
+`1e39dd53f873466500284de5f60c463acd35fca593702d2c5453f98327a1e0c2`.
+
+The canonical check does not invoke `tests/ui/browser.mjs`. Because the
+current runtime/generated integration affects the browser-facing path, the
+missing applicable gate was run once under the same task environment:
+
+```sh
+source /mnt/workspace/.dev-state/hex-development-batch/browser-env.sh
+export NO_PROXY=localhost,127.0.0.1
+export no_proxy=$NO_PROXY
+$HEX_NODE22 node scripts/run-quiet-command.mjs --label t021-ui-browser -- node tests/ui/browser.mjs
+```
+
+It completed `t021-ui-browser: PASS (88.6s)`. The bounded summary is retained
+at `/mnt/workspace/.dev-state/hex-development-batch/t021-ui-browser-8e045342d.log`
+with SHA-256
+`704a41bc1c6343113a6dd59fd24f7e580fe7c005f3d89c07bcad4efaef95bf1b`.
+
+These runs produced no unexplained local red. After they completed, the
+prepared `cd54b6c074b4c8f39974d4a84e4b1422edf6cade` fast-forward changed
+documentation/evidence paths only; it did not change product, test, or
+generated source, so the exact source evidence above remains valid. External
+assets, final performance, deployment/protected-main, and physical-device
+acceptance remain separate release work; physical-device execution is
+deferred by the owner amendment.
+
+# Prior combined development observations — 2026-09-08
 
 The canonical `npm run check` at `8da22cd959241d1d0c61b7ca1f663f77b8e7e982`
 terminated **FAIL** after 744.9 s. The corrected semantic-v2 chain and Phase 4
