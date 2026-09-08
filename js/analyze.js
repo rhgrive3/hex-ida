@@ -80,7 +80,7 @@ const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
   'cmp', 'cmn', 'tst', 'ccmp', 'ccmn', 'fcmp', 'fcmpe',
-  'b', 'bl', 'br', 'braa', 'brab', 'blraa', 'blrab',
+  'b', 'bl', 'br', 'blr', 'braa', 'brab', 'braaz', 'brabz', 'blraa', 'blrab', 'blraaz', 'blrabz',
   'ret', 'retaa', 'retab', 'cbz', 'cbnz', 'tbz', 'tbnz',
   'nop', 'svc', 'brk', 'hlt', 'hint', 'bti', 'dmb', 'dsb', 'isb',
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
@@ -90,7 +90,7 @@ const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
-  if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
+  if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
   // destination write was dropped (#2188). Branch mnemonics take optional
