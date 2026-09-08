@@ -1,6 +1,7 @@
 import { AnalysisQueryAPI } from './query/api.js';
 import { createAppAnalysisQueryAdapter as createBaseQueryAdapter } from './query/app-adapter.js';
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
+import { canonicalContentDigest } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
 
@@ -213,7 +214,15 @@ function installWorkerBackedIdentity(app) {
         .then((hash) => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
-          const binaryId = createBinaryIdFromDigest(hash); this.binaryId = binaryId; return binaryId;
+          // The platform content hash is an FNV cache key; `bin_sha256_` identities
+          // must bind an exact SHA-256 digest, so re-derive from the canonical
+          // full-content producer instead of laundering the cache hash (#7054).
+          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+        })
+        .then((digest) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+          const binaryId = createBinaryIdFromDigest(digest); this.binaryId = binaryId; return binaryId;
         })
         .finally(() => {
           entry.settled = true;
